@@ -1052,7 +1052,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
 
       {/* -- COL 1: Category sidebar ---------------------- */}
       {itemMode === 'menu' && (
-        <div className="biller-category-sidebar w-[25%] shrink-0 flex flex-col border-r border-border bg-muted/40 overflow-y-auto">
+        <div className="biller-category-sidebar shrink-0 flex flex-col border-r border-border bg-muted/40 overflow-y-auto" style={{ width: "clamp(160px, 18vw, 220px)" }}>
           <div className="biller-category-mode px-2 py-2 border-b border-border bg-background shrink-0">
             <div className="flex gap-1 p-0.5 rounded-lg bg-muted">
               <button onClick={() => setItemMode('menu')}
@@ -1111,7 +1111,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
               {filteredItems.length === 0 ? (
                 <EmptyState icon="" message="No items found" sub="Try a different category or clear your search" cta="Clear filters" onCta={() => { setSearch(''); setSelectedCategory('all'); }} />
               ) : (
-                <div className="biller-menu-grid grid grid-cols-4 gap-1.5">
+                <div className="biller-menu-grid grid gap-1.5" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(116px, 1fr))' }}>
                   {filteredItems.map(item => (
                     <MenuItemCard key={item.id} item={item} quantity={getQty(item.id)}
                       onAdd={() => addToCart(item)} onRemove={() => updateCartQuantity(item.id, getQty(item.id) - 1)} compact hideImage />
@@ -1229,7 +1229,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
       </div>
 
       {/* -- COL 3: Cart + Advance form --------------------- */}
-      <div className="biller-cart-panel w-[30%] shrink-0 flex flex-col border-l border-border bg-card overflow-hidden">
+      <div className="biller-cart-panel shrink-0 flex flex-col border-l border-border bg-card overflow-hidden" style={{ width: "clamp(300px, 26vw, 380px)" }}>
         <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0" style={{ background: 'rgba(217,119,6,0.06)' }}>
           <div className="flex items-center gap-2">
             <Wallet className="size-4 text-amber-600" />
@@ -1406,7 +1406,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
 
                 <div>
                   <label className="text-[10px] font-body font-bold text-amber-700 uppercase tracking-widest mb-1.5 block">Payment Method *</label>
-                  <div className="biller-menu-grid grid grid-cols-4 gap-1.5">
+                  <div className="biller-menu-grid grid gap-1.5" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(116px, 1fr))' }}>
                     {(['cash', 'upi', 'card'] as const).map(m => (
                       <button key={m} onClick={() => { setAdvanceMethod(m); setAdvanceError(''); }}
                         className={cn('flex flex-col items-center gap-1 py-3 rounded-xl border-2 text-[11px] font-body font-bold transition-all active:scale-95',
@@ -2040,7 +2040,7 @@ function NewBillPanel() {
 
       {/* -- COL 1: Category sidebar ---------------------- */}
       {itemMode === 'menu' && (
-        <div className="biller-category-sidebar w-[25%] shrink-0 flex flex-col border-r border-border bg-muted/40 overflow-y-auto">
+        <div className="biller-category-sidebar shrink-0 flex flex-col border-r border-border bg-muted/40 overflow-y-auto" style={{ width: "clamp(160px, 18vw, 220px)" }}>
           <div className="biller-category-mode px-2 py-2 border-b border-border bg-background shrink-0">
             <div className="flex gap-1 p-0.5 rounded-lg bg-muted">
               <button onClick={() => setItemMode('menu')}
@@ -2099,7 +2099,7 @@ function NewBillPanel() {
               {filteredItems.length === 0 ? (
                 <EmptyState icon="" message="No items found" sub="Try a different category or clear your search" cta="Clear filters" onCta={() => { setSearch(''); setSelectedCategory('all'); }} />
               ) : (
-                <div className="biller-menu-grid grid grid-cols-4 gap-1.5">
+                <div className="biller-menu-grid grid gap-1.5" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(116px, 1fr))' }}>
                   {filteredItems.map(item => (
                     <MenuItemCard key={item.id} item={item} quantity={getQty(item.id)}
                       onAdd={() => addToCart(item)} onRemove={() => updateCartQuantity(item.id, getQty(item.id) - 1)} compact hideImage />
@@ -2221,7 +2221,7 @@ function NewBillPanel() {
       </div>
 
       {/* -- COL 3: Bill summary ------------------------ */}
-      <div className="biller-cart-panel w-[30%] shrink-0 flex flex-col border-l border-border bg-card overflow-hidden">
+      <div className="biller-cart-panel shrink-0 flex flex-col border-l border-border bg-card overflow-hidden" style={{ width: "clamp(300px, 26vw, 380px)" }}>
         <div className="biller-cart-header flex items-center justify-between px-4 py-3 border-b border-border bg-muted/30 shrink-0">
           <div className="flex items-center gap-2">
             <ShoppingBag className="size-4 text-primary" />
@@ -2346,6 +2346,7 @@ function NewBillPanel() {
               onPromotionChange={handlePromotionChange}
               onCouponChange={handleCouponChange}
               compact
+              showOffers={false}
             />
             {paymentMode === 'wallet' && walletOtherMode === 'credit' && walletRemainder > 0 && (
               <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3">

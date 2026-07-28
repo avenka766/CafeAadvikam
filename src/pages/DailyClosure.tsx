@@ -161,6 +161,8 @@ export default function DailyClosure() {
   const { currentUser } = useAuthStore();
   const [selectedDate, setSelectedDate] = useState(toDateInput());
   const [closingCash, setClosingCash] = useState('');
+  const [actualUpiInput, setActualUpiInput] = useState('');
+  const [upiAuditNotes, setUpiAuditNotes] = useState('');
   const [openingCash, setOpeningCash] = useState('');
   const [cashExpenses, setCashExpenses] = useState('');
   const [notes, setNotes] = useState('');
@@ -187,7 +189,11 @@ export default function DailyClosure() {
   const openingDenomTotal = denominations.reduce((sum, denom) => sum + denom * safeNumber(openDenominations[denom]), 0);
   const closingDenomTotal = denominations.reduce((sum, denom) => sum + denom * safeNumber(closeDenominations[denom]), 0);
   const localCafeCounterOpenRecord = counterOpenings.find((record) => record.branch === 'Cafe' && record.date === selectedDate && record.active !== false);
-  const cafeCounterOpenRecord = localCafeCounterOpenRecord ?? remoteCounterOpenRecord;
+  // If the server confirms today's counter was finalized (closed), that always wins —
+  // a stale locally-cached "still open" record (e.g. from another device/session,
+  // or a closure that happened without this browser being told) must not keep
+  // showing OPENED when it's actually closed.
+  const cafeCounterOpenRecord = remoteClosureFinalized ? null : (localCafeCounterOpenRecord ?? remoteCounterOpenRecord);
   const cafeClosureRecord = cashierClosures.find((record) => record.branch === 'Cafe' && sameBusinessDate(record.createdAt, selectedDate));
   const closureAlreadySaved = !cafeCounterOpenRecord && (Boolean(cafeClosureRecord) || remoteClosureFinalized);
   const activeCashierName = cafeCounterOpenRecord?.cashier || openCashier || cashierName;
@@ -448,6 +454,10 @@ export default function DailyClosure() {
     card: closure.payments.card + closure.creditCollectionPayments.card,
   };
   const cashDifference = Number.isFinite(closingCashValue) ? closingCashValue - expectedCash : 0;
+  const actualUpi = Number(actualUpiInput || 0);
+  const upiAuditEntered = actualUpiInput.trim() !== '';
+  const upiDifference = actualUpi - collectionByMode.upi;
+  const upiMatches = upiAuditEntered && Math.abs(upiDifference) < 0.01;
   const printableTitle = `Cashier Counter Open & Closure - ${printableDate(selectedDate)}`;
 
   const handleOpenCounter = async () => {
@@ -524,6 +534,16 @@ export default function DailyClosure() {
       setTimeout(() => setClosureSavedMessage(''), 3500);
       return;
     }
+    if (!upiAuditEntered || !Number.isFinite(actualUpi) || actualUpi < 0) {
+      setClosureSavedMessage('Enter the verified UPI amount before saving closure.');
+      setTimeout(() => setClosureSavedMessage(''), 3500);
+      return;
+    }
+    if (Math.abs(upiDifference) >= 0.01 && upiAuditNotes.trim().length < 3) {
+      setClosureSavedMessage('UPI amount does not match — add a short note explaining the difference.');
+      setTimeout(() => setClosureSavedMessage(''), 3500);
+      return;
+    }
     setSavingClosure(true);
     const closurePayload = {
       branch: 'Cafe',
@@ -546,6 +566,9 @@ export default function DailyClosure() {
       expected_cash: expectedCash,
       actual_cash: closingCashValue,
       difference: cashDifference,
+      actual_upi: actualUpi,
+      upi_difference: upiDifference,
+      upi_notes: upiAuditNotes.trim() || null,
       notes: notes || null,
       status: 'finalized',
     };
@@ -573,6 +596,9 @@ export default function DailyClosure() {
       cash: closure.payments.cash,
       upi: closure.payments.upi,
       card: closure.payments.card,
+      actualUpi,
+      upiDifference,
+      upiNotes: upiAuditNotes.trim(),
       returns: closure.cancelledButPaidAmount,
       discounts: closure.discountTotal,
       billsCount: closure.billable.length,
@@ -814,8 +840,8 @@ export default function DailyClosure() {
             </div>
               <p className="mt-2 text-sm font-bold text-muted-foreground">
                 {closureAlreadySaved && cafeClosureRecord
-                  ? `Closed by ${cafeClosureRecord.cashier}. Difference ${formatCurrency(cafeClosureRecord.difference)}`
-                  : `Expected ${formatCurrency(expectedCash)} · Counted ${formatCurrency(closingCashValue)} · Difference ${formatCurrency(cashDifference)}`}
+                  ? `Closed by ${cafeClosureRecord.cashier}. Difference ${formatCurrency(cafeClosureRecord.difference)} · UPI difference ${formatCurrency(cafeClosureRecord.upiDifference || 0)}`
+                  : `Expected ${formatCurrency(expectedCash)} · Counted ${formatCurrency(closingCashValue)} · Difference ${formatCurrency(cashDifference)} · UPI diff ${upiAuditEntered ? formatCurrency(upiDifference) : 'enter verified UPI'}`}
             </p>
           </div>
         </div>
@@ -983,6 +1009,31 @@ export default function DailyClosure() {
                 <span className="text-sm font-black">Difference</span>
                 <span className="font-display text-xl font-black tabular-nums">{formatCurrency(cashDifference)}</span>
               </div>
+              <div>
+                <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Verified UPI amount</label>
+                <input
+                  type="number"
+                  value={actualUpiInput}
+                  onChange={e => setActualUpiInput(e.target.value)}
+                  placeholder={`Expected ${formatCurrency(collectionByMode.upi)}`}
+                  className="mt-1 w-full rounded-xl border border-border bg-card px-3 py-3 text-lg font-black tabular-nums focus:outline-none focus:ring-2 focus:ring-primary/30"
+                />
+              </div>
+              <div className={cn('rounded-2xl px-3 py-3 flex items-center justify-between border',
+                !upiAuditEntered ? 'bg-slate-50 border-slate-200 text-slate-600' : upiMatches ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-red-50 border-red-200 text-red-700')}>
+                <span className="text-sm font-black">UPI Difference</span>
+                <span className="font-display text-xl font-black tabular-nums">{upiAuditEntered ? formatCurrency(upiDifference) : '-'}</span>
+              </div>
+              <textarea
+                value={upiAuditNotes}
+                onChange={e => setUpiAuditNotes(e.target.value)}
+                placeholder={upiAuditEntered && Math.abs(upiDifference) >= 0.01 ? 'Required: explain UPI shortage or excess' : 'UPI verification remarks (optional when matched)'}
+                rows={2}
+                className="w-full rounded-2xl border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
+              />
+              {upiAuditEntered && Math.abs(upiDifference) >= 0.01 && upiAuditNotes.trim().length < 3 && (
+                <p className="text-xs font-bold text-red-600">Add a short note before saving — UPI amount does not match.</p>
+              )}
             </div>
             <textarea
               value={notes}
