@@ -12,12 +12,14 @@ import {
   ArrowRightLeft, Calendar, Plus, Send, CheckCircle2, Loader2,
   ChevronDown, ChevronUp, X, RefreshCw, AlertTriangle, FileSpreadsheet, Clock3,
   Store, CreditCard, WalletCards, MessageCircle, Bell, CalendarDays, ShieldCheck,
+  Search, Printer,
 } from 'lucide-react';
 import { useBakeryStore } from './bakeryStore';
 import { useAuthStore } from '@/stores/authStore';
 import { cn } from '@/lib/utils';
 import type { BakeryOrder, BakeryOrderItem, PreparedItem, Branch } from './types';
-import { BRANCHES } from './types';
+import { BRANCHES, BAKERY_ITEMS } from './types';
+import { printHtml } from '@/branch/printUtils';
 import PackingTransferInTab from './PackingTransferInTab';
 import PackingDailyClosureTab from './PackingDailyClosureTab';
 import { exportToExcel } from '@/lib/exportExcel';
@@ -81,6 +83,47 @@ export function computeMergedSummary(orders: BakeryOrder[]): MergedRow[] {
   return Array.from(rows.values()).sort((a, b) => b.totalRequested - a.totalRequested);
 }
 
+// Category lookup (Sweets / Savouries / Bakery / Cookies / Other) by item name.
+const ITEM_CATEGORY_BY_NAME = new Map(BAKERY_ITEMS.map(i => [i.name.trim().toLowerCase(), i.category]));
+export function categoryForItem(itemName: string): string {
+  return ITEM_CATEGORY_BY_NAME.get(itemName.trim().toLowerCase()) || 'Other';
+}
+const CATEGORY_ORDER = ['Sweets', 'Savouries', 'Bakery', 'Cookies', 'Other'];
+
+export interface ProductionRow extends MergedRow {
+  category: string;
+  preparedTotal: number;
+  /** 'not_started' = planner hasn't entered anything yet · 'pending' = partially entered, more coming ·
+   *  'completed' = baker fully produced this item, ready to dispatch. */
+  itemStatus: 'not_started' | 'pending' | 'completed';
+}
+
+// Builds merged rows (same shape as computeMergedSummary) but enriched with the
+// planner's per-item production status, read from each contributing order's
+// producedItems[].status (no schema change needed — reuses the existing jsonb field).
+export function computeProductionRows(orders: BakeryOrder[]): ProductionRow[] {
+  const merged = computeMergedSummary(orders);
+  return merged.map(row => {
+    const contributing = orders.filter(o => row.contributingOrderIds.includes(o.id));
+    let preparedTotal = 0;
+    let anyRecorded = false;
+    let allCompleted = contributing.length > 0;
+    for (const order of contributing) {
+      const item = order.items.find(i => i.itemName === row.itemName);
+      const prod = item ? order.producedItems?.find(p => p.itemId === item.itemId) : undefined;
+      if (prod) {
+        anyRecorded = true;
+        preparedTotal += prod.quantityPrepared;
+        if (prod.status !== 'completed') allCompleted = false;
+      } else {
+        allCompleted = false;
+      }
+    }
+    const itemStatus: ProductionRow['itemStatus'] = allCompleted ? 'completed' : anyRecorded ? 'pending' : 'not_started';
+    return { ...row, category: categoryForItem(row.itemName), preparedTotal, itemStatus };
+  });
+}
+
 // Proportional auto-split of a produced total across the contributing orders,
 // weighted by each order's original requested share for that item.
 export function autoSplitForItem(orders: BakeryOrder[], itemName: string, totalProduced: number): Record<string, number> {
@@ -117,6 +160,10 @@ export default function PlannerDashboard() {
   const mergeableOrders    = useMemo(() => orders.filter(o => o.status === 'pending' || o.status === 'accepted'), [orders]);
   const readyForProduction = useMemo(() => orders.filter(o => o.status === 'store_confirmed'), [orders]);
   const producedOrders    = useMemo(() => orders.filter(o => o.status === 'produced'), [orders]);
+  // Union used by Production Entry + Dispatch: an order flips to 'produced' as soon as any
+  // one item is recorded, but individual items may still be pending — both tabs need the
+  // full set and decide per-item (per-row) visibility themselves.
+  const productionSourceOrders = useMemo(() => orders.filter(o => o.status === 'store_confirmed' || o.status === 'produced'), [orders]);
   const activeLeftovers    = useMemo(() => orders.filter(o => (o.leftoverStatus ?? 'pending') === 'pending' && o.status === 'dispatched'), [orders]);
   const doneOrders         = useMemo(() => orders.filter(o => o.leftoverStatus === 'done'), [orders]);
 
@@ -130,8 +177,8 @@ export default function PlannerDashboard() {
             {tab === 'incoming' && <IncomingOrdersTab orders={incomingOrders} onAdd={submitOrder} />}
             {tab === 'sent' && <SentOrdersTab orders={sentOrders} />}
             {tab === 'merged' && <MergedSummaryTab orders={mergeableOrders} />}
-            {tab === 'production' && <ProductionEntryTab orders={readyForProduction} />}
-            {tab === 'dispatch' && <DispatchTab orders={producedOrders} allOrders={orders} />}
+            {tab === 'production' && <ProductionEntryTab orders={productionSourceOrders} />}
+            {tab === 'dispatch' && <DispatchTab orders={productionSourceOrders} allOrders={orders} />}
             {tab === 'hosur' && <HosurUnifiedSection />}
             {tab === 'cake' && <PackingCakeOrdersTab />}
             {tab === 'transfer-in' && <PackingTransferInTab />}
@@ -283,25 +330,75 @@ function DayGroupedOrderList({ orders, badgeLabel, badgeTone }: { orders: Bakery
 
 // ─── Tab: Sent ──────────────────────────────────────────────────────────────
 function SentOrdersTab({ orders }: { orders: BakeryOrder[] }) {
-  const stageLabel = (o: BakeryOrder) => o.status === 'produced' ? 'Produced' : o.status === 'dispatched' ? 'Dispatched' : 'Store';
-  const stageTone = (o: BakeryOrder) => o.status === 'produced' ? 'bg-purple-100 text-purple-700' : o.status === 'dispatched' ? 'bg-emerald-100 text-emerald-700' : 'bg-blue-100 text-blue-700';
+  const [date, setDate] = useState(''); // '' = all dates
+
+  const dateFiltered = useMemo(() => {
+    if (!date) return orders;
+    return orders.filter(o => {
+      const d = new Date(o.createdAt);
+      const local = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      return local === date;
+    });
+  }, [orders, date]);
+
+  const merged = useMemo(() => computeMergedSummary(dateFiltered), [dateFiltered]);
+
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h2 className="text-sm font-black text-slate-700">Sent to Store ({orders.length})</h2>
-        <ExportButton
-          disabled={orders.length === 0}
-          onClick={() => exportToExcel({
-            filename: 'sent-orders', sheetName: 'Sent', title: 'Planner — Sent to Store',
-            columns: [{ header: 'Order #', key: 'orderNumber' }, { header: 'Branch', key: 'branch' }, { header: 'Stage', key: 'stage' }, { header: 'Item', key: 'item' }, { header: 'Qty', key: 'qty' }, { header: 'Unit', key: 'unit' }],
-            rows: orders.flatMap(o => o.items.map(item => ({
-              orderNumber: o.orderNumber, branch: o.targetBranch, stage: stageLabel(o), item: item.itemName,
-              qty: item.dispatchUnit === 'pcs' ? item.originalPcs ?? item.quantity : item.quantity, unit: item.dispatchUnit || 'kg',
-            }))),
-          })}
-        />
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-sm font-black text-slate-700">Sent — Merged Summary ({merged.length} items)</h2>
+        <div className="flex items-center gap-2">
+          <input
+            type="date"
+            value={date}
+            onChange={e => setDate(e.target.value)}
+            className="rounded-xl border border-border px-3 py-2 text-xs font-bold text-slate-600"
+          />
+          {date && (
+            <button onClick={() => setDate('')} className="text-[11px] font-bold text-slate-400 hover:text-slate-600">Clear</button>
+          )}
+          <ExportButton
+            disabled={merged.length === 0}
+            onClick={() => exportToExcel({
+              filename: 'sent-merged-summary', sheetName: 'Sent', title: 'Planner — Sent (Merged Summary)',
+              columns: [
+                { header: 'Item', key: 'item' },
+                ...BRANCHES.map(b => ({ header: b, key: b })),
+                { header: 'Total', key: 'total' },
+                { header: 'Unit', key: 'unit' },
+              ],
+              rows: merged.map(row => ({
+                item: row.itemName, VRSNB: row.perBranch.VRSNB ?? '', SNB: row.perBranch.SNB ?? '', Hosur: row.perBranch.Hosur ?? '',
+                total: row.totalRequested, unit: row.unit,
+              })),
+            })}
+          />
+        </div>
       </div>
-      <DayGroupedOrderList orders={orders} badgeLabel={stageLabel} badgeTone={stageTone} />
+      {merged.length === 0 ? <EmptyState text="Nothing sent for this date yet." /> : (
+        <div className="overflow-x-auto rounded-2xl border border-border bg-white shadow-sm">
+          <table className="w-full text-sm">
+            <thead className="bg-slate-50 text-left text-xs font-black uppercase text-slate-500">
+              <tr>
+                <th className="px-4 py-3">Item</th>
+                {BRANCHES.map(b => <th key={b} className="px-4 py-3 text-right">{b}</th>)}
+                <th className="px-4 py-3 text-right">Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              {merged.map(row => (
+                <tr key={`${row.itemName}-${row.unit}`} className="border-t border-border">
+                  <td className="px-4 py-3 font-bold text-slate-800">{row.itemName}</td>
+                  {BRANCHES.map(b => (
+                    <td key={b} className="px-4 py-3 text-right text-slate-600">{row.perBranch[b] ? `${row.perBranch[b]} ${row.unit}` : '—'}</td>
+                  ))}
+                  <td className="px-4 py-3 text-right font-black text-slate-900">{row.totalRequested} {row.unit}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }
@@ -391,106 +488,124 @@ function MergedSummaryTab({ orders }: { orders: BakeryOrder[] }) {
 // ─── Tab: Production Entry ──────────────────────────────────────────────────
 function ProductionEntryTab({ orders }: { orders: BakeryOrder[] }) {
   const { recordProduction } = useBakeryStore();
-  const merged = useMemo(() => computeMergedSummary(orders), [orders]);
+  const rows = useMemo(() => computeProductionRows(orders).filter(r => r.itemStatus !== 'completed'), [orders]);
   const [qty, setQty] = useState<Record<string, string>>({});
-  const [itemStatus, setItemStatus] = useState<Record<string, 'pending' | 'completed'>>({});
+  const [search, setSearch] = useState('');
   const [saving, setSaving] = useState<string | null>(null);
+  // Single unified flow: Save -> ask Completed/Pending -> if Completed, ask again to confirm.
+  const [askItem, setAskItem] = useState<ProductionRow | null>(null);
+  const [confirmItem, setConfirmItem] = useState<ProductionRow | null>(null);
 
-  const producedSoFar = (row: MergedRow) => {
-    // Sum what's already recorded across contributing orders for this item.
-    let sum = 0;
-    for (const order of orders) {
-      if (!row.contributingOrderIds.includes(order.id)) continue;
-      const item = order.items.find(i => i.itemName === row.itemName);
-      const prod = item ? order.producedItems?.find(p => p.itemId === item.itemId) : undefined;
-      if (prod) sum += prod.quantityPrepared;
-    }
-    return sum;
-  };
+  const filtered = useMemo(() => rows.filter(r => r.itemName.toLowerCase().includes(search.trim().toLowerCase())), [rows, search]);
+  const grouped = useMemo(() => {
+    const map = new Map<string, ProductionRow[]>();
+    for (const r of filtered) { if (!map.has(r.category)) map.set(r.category, []); map.get(r.category)!.push(r); }
+    return CATEGORY_ORDER.filter(c => map.has(c)).map(c => [c, map.get(c)!] as const);
+  }, [filtered]);
 
-  const handleMark = async (row: MergedRow, status: 'pending' | 'completed') => {
-    const enteredQty = status === 'completed'
-      ? (qty[row.itemName] ? Number(qty[row.itemName]) : row.totalRequested)
-      : Number(qty[row.itemName] || 0);
-    if (status === 'pending' && enteredQty <= 0) return;
-
+  const doSave = async (row: ProductionRow, status: 'pending' | 'completed') => {
+    const enteredQty = qty[row.itemName] ? Number(qty[row.itemName]) : (status === 'completed' ? row.totalRequested : 0);
+    if (enteredQty <= 0) return;
     setSaving(row.itemName);
     try {
       const split = autoSplitForItem(orders, row.itemName, enteredQty);
       for (const orderId of row.contributingOrderIds) {
         const order = orders.find(o => o.id === orderId);
-        if (!order) continue;
-        const item = order.items.find(i => i.itemName === row.itemName);
-        if (!item) continue;
+        const item = order?.items.find(i => i.itemName === row.itemName);
+        if (!order || !item) continue;
         const others = (order.producedItems || []).filter(p => p.itemId !== item.itemId);
-        const merged: PreparedItem[] = [
-          ...others,
-          { itemId: item.itemId, itemName: item.itemName, quantityPrepared: split[orderId] ?? 0, preparedAt: new Date().toISOString(), dispatchUnit: item.dispatchUnit },
-        ];
+        const merged: PreparedItem[] = [...others, { itemId: item.itemId, itemName: item.itemName, quantityPrepared: split[orderId] ?? 0, preparedAt: new Date().toISOString(), dispatchUnit: item.dispatchUnit, status }];
         await recordProduction(order.id, merged);
       }
-      setItemStatus(s => ({ ...s, [row.itemName]: status }));
+      setQty(v => ({ ...v, [row.itemName]: '' }));
     } finally {
       setSaving(null);
+      setAskItem(null);
+      setConfirmItem(null);
     }
   };
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h2 className="text-sm font-black text-slate-700">Production Entry ({merged.length} items)</h2>
-        <ExportButton
-          disabled={merged.length === 0}
-          onClick={() => exportToExcel({
-            filename: 'production-entry', sheetName: 'Production', title: 'Planner — Production Entry',
-            columns: [{ header: 'Item', key: 'item' }, { header: 'Ordered Qty', key: 'ordered' }, { header: 'Produced So Far', key: 'produced' }, { header: 'Unit', key: 'unit' }, { header: 'Status', key: 'status' }],
-            rows: merged.map(row => ({ item: row.itemName, ordered: row.totalRequested, produced: producedSoFar(row), unit: row.unit, status: itemStatus[row.itemName] ?? '—' })),
-          })}
-        />
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-sm font-black text-slate-700">Production Entry ({rows.length} items)</h2>
+        <div className="flex items-center gap-2">
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-slate-400" />
+            <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search item..." className="rounded-xl border border-border py-1.5 pl-8 pr-3 text-xs font-bold" />
+          </div>
+          <ExportButton
+            disabled={rows.length === 0}
+            onClick={() => exportToExcel({
+              filename: 'production-entry', sheetName: 'Production', title: 'Planner — Production Entry',
+              columns: [{ header: 'Category', key: 'category' }, { header: 'Item', key: 'item' }, { header: 'Ordered Qty', key: 'ordered' }, { header: 'Produced So Far', key: 'produced' }, { header: 'Unit', key: 'unit' }, { header: 'Status', key: 'status' }],
+              rows: rows.map(row => ({ category: row.category, item: row.itemName, ordered: row.totalRequested, produced: row.preparedTotal, unit: row.unit, status: row.itemStatus })),
+            })}
+          />
+        </div>
       </div>
-      {merged.length === 0 && <EmptyState text="No items waiting on production entry." />}
-      <div className="space-y-2">
-        {merged.map(row => {
-          const already = producedSoFar(row);
-          const status = itemStatus[row.itemName];
-          return (
-            <div key={row.itemName} className="flex items-center justify-between gap-3 rounded-2xl border border-border bg-white p-3 shadow-sm">
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-black text-slate-800">{row.itemName}</p>
-                <p className="text-xs font-bold text-slate-400">Ordered {row.totalRequested} {row.unit}{already > 0 ? ` · Produced so far ${already} ${row.unit}` : ''}</p>
+      {rows.length === 0 && <EmptyState text="No items waiting on production entry." />}
+      {grouped.map(([category, items]) => (
+        <div key={category}>
+          <p className="mb-2 text-xs font-black uppercase tracking-wide text-slate-400">{category} ({items.length})</p>
+          <div className="space-y-2">
+            {items.map(row => (
+              <div key={row.itemName} className="flex items-center justify-between gap-3 rounded-2xl border border-border bg-white p-3 shadow-sm">
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-black text-slate-800">{row.itemName}</p>
+                  <p className="text-xs font-bold text-slate-400">
+                    Ordered {row.totalRequested} {row.unit}{row.preparedTotal > 0 ? ` · Produced so far ${row.preparedTotal} ${row.unit}` : ''}
+                    {row.itemStatus === 'pending' && <span className="ml-1 rounded-full bg-amber-100 px-1.5 py-0.5 text-amber-700">More to come</span>}
+                  </p>
+                </div>
+                <input type="number" placeholder="Qty produced" value={qty[row.itemName] ?? ''} onChange={e => setQty(v => ({ ...v, [row.itemName]: e.target.value }))}
+                  className="w-28 rounded-lg border border-border px-2 py-1.5 text-right text-xs font-bold" />
+                <button onClick={() => setAskItem(row)} disabled={saving === row.itemName || !qty[row.itemName]}
+                  className="flex items-center gap-1.5 rounded-xl bg-slate-900 px-4 py-2 text-xs font-bold text-white hover:bg-slate-800 disabled:opacity-40">
+                  {saving === row.itemName ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />} Save
+                </button>
               </div>
-              <input
-                type="number"
-                placeholder={status === 'completed' ? String(row.totalRequested) : 'Qty produced'}
-                value={qty[row.itemName] ?? ''}
-                onChange={e => setQty(v => ({ ...v, [row.itemName]: e.target.value }))}
-                className="w-28 rounded-lg border border-border px-2 py-1.5 text-right text-xs font-bold"
-              />
-              <button
-                title="Completed — baker fully produced this item"
-                onClick={() => handleMark(row, 'completed')}
-                disabled={saving === row.itemName}
-                className={cn('flex size-8 shrink-0 items-center justify-center rounded-lg', status === 'completed' ? 'bg-emerald-600 text-white' : 'bg-emerald-50 text-emerald-600 hover:bg-emerald-100')}
-              >
-                {saving === row.itemName ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
+            ))}
+          </div>
+        </div>
+      ))}
+
+      {/* Step 1: after Save, ask Completed or Pending. */}
+      {askItem && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-sm rounded-2xl bg-white p-5 shadow-xl">
+            <p className="text-sm font-black text-slate-800">"{askItem.itemName}" — {qty[askItem.itemName]} {askItem.unit} entered</p>
+            <p className="mt-1 text-xs font-semibold text-slate-500">Is the baker completely done with this item, or still baking more?</p>
+            <div className="mt-4 flex justify-end gap-2">
+              <button onClick={() => setAskItem(null)} className="rounded-xl bg-slate-100 px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-200">Cancel</button>
+              <button onClick={() => { doSave(askItem, 'pending'); }} className="flex items-center gap-1.5 rounded-xl bg-amber-500 px-4 py-2 text-xs font-bold text-white hover:bg-amber-600">
+                <Clock3 className="size-3.5" /> Pending — more coming
               </button>
-              <button
-                title="Pending — baker sent some, more still baking"
-                onClick={() => handleMark(row, 'pending')}
-                disabled={saving === row.itemName}
-                className={cn('flex size-8 shrink-0 items-center justify-center rounded-lg', status === 'pending' ? 'bg-amber-500 text-white' : 'bg-amber-50 text-amber-600 hover:bg-amber-100')}
-              >
-                <Clock3 className="size-4" />
+              <button onClick={() => { setConfirmItem(askItem); setAskItem(null); }} className="flex items-center gap-1.5 rounded-xl bg-emerald-600 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-700">
+                <CheckCircle2 className="size-3.5" /> Completed
               </button>
             </div>
-          );
-        })}
-      </div>
+          </div>
+        </div>
+      )}
+
+      {/* Step 2: Completed needs a second confirmation before it moves to Dispatch. */}
+      {confirmItem && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-sm rounded-2xl bg-white p-5 shadow-xl">
+            <p className="text-sm font-black text-slate-800">Confirm: mark "{confirmItem.itemName}" as Completed?</p>
+            <p className="mt-1 text-xs font-semibold text-slate-500">This sends {qty[confirmItem.itemName] || confirmItem.totalRequested} {confirmItem.unit} to Dispatch and removes it from Production Entry. This can't be undone from here.</p>
+            <div className="mt-4 flex justify-end gap-2">
+              <button onClick={() => setConfirmItem(null)} className="rounded-xl bg-slate-100 px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-200">Go back</button>
+              <button onClick={() => doSave(confirmItem, 'completed')} className="rounded-xl bg-emerald-600 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-700">Yes, Confirm Completed</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-// ─── Tab: Dispatch ──────────────────────────────────────────────────────────
 // ─── Tab: Hosur — one unified, grouped sub-tab bar controlling shop
 // ordering/dispatch (this component) and the embedded billing/credit/
 // reports panel (HosurDashboard), instead of two separate stacked tab bars.
@@ -525,7 +640,6 @@ function HosurUnifiedSection() {
   const selectTab = (key: HosurSubTab) => {
     const params = new URLSearchParams(searchParams);
     params.set('hosurTab', key);
-    // HosurDashboard reads its own tab from the plain `tab` param — keep both in sync.
     if (!HOSUR_SUB_TAB_GROUPS.find(g => g.tabs.find(t => t.key === key))?.tabs.find(t => t.key === key)?.ownedByPanel) {
       params.set('tab', key);
     }
@@ -563,8 +677,6 @@ function HosurUnifiedSection() {
         </div>
       </div>
 
-      {/* HosurShopOrderPanel owns 'place'/'dispatch'; hidden (not unmounted) for the
-          others so its data stays loaded and switching back is instant. */}
       <div className={panelSection ? '' : 'hidden'}>
         <HosurShopOrderPanel section={panelSection ?? 'place'} onPendingCountChange={setPendingDispatchCount} />
       </div>
@@ -576,116 +688,184 @@ function HosurUnifiedSection() {
 }
 
 function DispatchTab({ orders, allOrders }: { orders: BakeryOrder[]; allOrders: BakeryOrder[] }) {
-  const { setDispatchSplit, submitDispatch } = useBakeryStore();
-  return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h2 className="text-sm font-black text-slate-700">Dispatch ({orders.length})</h2>
-        <ExportButton
-          disabled={orders.length === 0}
-          onClick={() => exportToExcel({
-            filename: 'dispatch',
-            sheetName: 'Dispatch',
-            title: 'Planner — Dispatch',
-            columns: [
-              { header: 'Order #', key: 'orderNumber' },
-              { header: 'Branch', key: 'branch' },
-              { header: 'Item', key: 'item' },
-              { header: 'Dispatched Qty', key: 'qty' },
-              { header: 'Unit', key: 'unit' },
-              { header: 'Dispatched At', key: 'at' },
-            ],
-            rows: orders.flatMap(o => (o.dispatchLog || []).map(d => ({
-              orderNumber: o.orderNumber, branch: o.targetBranch, item: d.itemName,
-              qty: d.quantity, unit: d.unit || 'kg', at: d.dispatchedAt,
-            }))),
-          })}
-        />
-      </div>
-      {orders.length === 0 && <EmptyState text="No produced orders waiting on dispatch." />}
-      {orders.map(order => (
-        <DispatchOrderCard key={order.id} order={order} allOrders={allOrders} onSplit={setDispatchSplit} onDispatch={submitDispatch} />
-      ))}
-    </div>
-  );
-}
-
-function DispatchOrderCard({
-  order, allOrders, onSplit, onDispatch,
-}: {
-  order: BakeryOrder;
-  allOrders: BakeryOrder[];
-  onSplit: (id: string, split: Record<string, Record<string, number>>) => Promise<void>;
-  onDispatch: ReturnType<typeof useBakeryStore.getState>['submitDispatch'];
-}) {
+  const { submitDispatch } = useBakeryStore();
   const currentUser = useAuthStore(s => s.currentUser);
-  const [sending, setSending] = useState<string | null>(null);
+  const rows = useMemo(() => computeProductionRows(orders).filter(r => r.itemStatus !== 'not_started'), [orders]);
+  const [search, setSearch] = useState('');
+  const [subTab, setSubTab] = useState<'active' | 'completed'>('active');
+  const [checklistItem, setChecklistItem] = useState<ProductionRow | null>(null);
 
-  // Auto-calc: this order's share of each item's total production, by default.
-  const autoQty = useMemo(() => {
-    const result: Record<string, number> = {};
-    for (const item of order.items) {
-      const produced = order.producedItems?.find(p => p.itemId === item.itemId)?.quantityPrepared ?? 0;
-      const split = autoSplitForItem(allOrders, item.itemName, produced);
-      result[item.itemId] = split[order.id] ?? produced;
+  const dispatchedQtyForItem = (row: ProductionRow) => {
+    let sum = 0;
+    for (const order of orders) {
+      if (!row.contributingOrderIds.includes(order.id)) continue;
+      sum += (order.dispatchLog || []).filter(d => d.itemName === row.itemName).reduce((s, d) => s + d.quantity, 0);
     }
-    return result;
-  }, [order, allOrders]);
-
-  const [overrides, setOverrides] = useState<Record<string, string>>({});
-
-  const effectiveQty = (itemId: string) => overrides[itemId] !== undefined ? Number(overrides[itemId] || 0) : autoQty[itemId];
-
-  const handleDispatchItem = async (item: BakeryOrderItem) => {
-    if (!order.targetBranch) return;
-    setSending(item.itemId);
-    try {
-      await onSplit(order.id, { ...(order.dispatchSplit || {}), [order.targetBranch]: { ...(order.dispatchSplit?.[order.targetBranch] || {}), [item.itemId]: effectiveQty(item.itemId) } });
-      await onDispatch(order.id, {
-        itemName: item.itemName,
-        quantity: effectiveQty(item.itemId),
-        unit: item.dispatchUnit || 'kg',
-        branch: order.targetBranch,
-        dispatchedBy: currentUser?.displayName || 'Planner',
-        dispatchedAt: new Date().toISOString(),
-      });
-    } finally {
-      setSending(null);
-    }
+    return sum;
   };
 
+  const filtered = rows.filter(r => r.itemName.toLowerCase().includes(search.trim().toLowerCase()));
+  const fullyDispatched = (row: ProductionRow) => dispatchedQtyForItem(row) >= row.preparedTotal - 0.01 && row.preparedTotal > 0;
+  const activeRows = filtered.filter(r => !fullyDispatched(r))
+    .sort((a, b) => (dispatchedQtyForItem(b) > 0 ? 1 : 0) - (dispatchedQtyForItem(a) > 0 ? 1 : 0));
+  const completedRows = filtered.filter(r => fullyDispatched(r));
+  const shown = subTab === 'active' ? activeRows : completedRows;
+
   return (
-    <div className="rounded-2xl border border-border bg-white p-4 shadow-sm">
-      <div className="mb-3 flex items-center justify-between">
-        <span className="text-sm font-black text-slate-800">{order.targetBranch} · Order #{order.orderNumber}</span>
-        <span className="rounded-full bg-slate-100 px-2 py-1 text-[10px] font-bold text-slate-500">Auto-split, editable</span>
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-sm font-black text-slate-700">Dispatch</h2>
+        <div className="flex items-center gap-2">
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-slate-400" />
+            <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search item..." className="rounded-xl border border-border py-1.5 pl-8 pr-3 text-xs font-bold" />
+          </div>
+          <ExportButton
+            disabled={rows.length === 0}
+            onClick={() => exportToExcel({
+              filename: 'dispatch', sheetName: 'Dispatch', title: 'Planner — Dispatch',
+              columns: [{ header: 'Item', key: 'item' }, ...BRANCHES.map(b => ({ header: `${b} Req`, key: b })), { header: 'Produced', key: 'produced' }, { header: 'Dispatched', key: 'dispatched' }, { header: 'Status', key: 'status' }],
+              rows: rows.map(row => ({ item: row.itemName, VRSNB: row.perBranch.VRSNB ?? '', SNB: row.perBranch.SNB ?? '', Hosur: row.perBranch.Hosur ?? '', produced: row.preparedTotal, dispatched: dispatchedQtyForItem(row), status: row.itemStatus })),
+            })}
+          />
+        </div>
       </div>
+
+      <div className="flex gap-2">
+        <button onClick={() => setSubTab('active')} className={cn('rounded-xl px-3 py-1.5 text-xs font-bold', subTab === 'active' ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600')}>To Dispatch ({activeRows.length})</button>
+        <button onClick={() => setSubTab('completed')} className={cn('rounded-xl px-3 py-1.5 text-xs font-bold', subTab === 'completed' ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600')}>Dispatched ({completedRows.length})</button>
+      </div>
+
+      {shown.length === 0 && <EmptyState text={subTab === 'active' ? 'Nothing waiting on dispatch.' : 'Nothing dispatched yet.'} />}
       <div className="space-y-2">
-        {order.items.map(item => {
-          const alreadyDispatched = (order.dispatchLog || []).some(d => d.itemName === item.itemName);
+        {shown.map(row => {
+          const dispatched = dispatchedQtyForItem(row);
           return (
-            <div key={item.itemId} className="flex items-center justify-between gap-3 rounded-xl bg-slate-50 px-3 py-2">
-              <span className="text-xs font-bold text-slate-600">{item.itemName}</span>
-              <div className="flex items-center gap-2">
-                <input
-                  type="number"
-                  value={overrides[item.itemId] ?? autoQty[item.itemId] ?? ''}
-                  onChange={e => setOverrides(v => ({ ...v, [item.itemId]: e.target.value }))}
-                  className="w-24 rounded-lg border border-border px-2 py-1 text-right text-xs font-bold"
-                />
-                <span className="text-[10px] font-bold text-slate-400">{item.dispatchUnit || 'kg'}</span>
-                <button
-                  onClick={() => handleDispatchItem(item)}
-                  disabled={sending === item.itemId || alreadyDispatched}
-                  className="flex items-center gap-1 rounded-lg bg-emerald-600 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-emerald-700 disabled:opacity-50"
-                >
-                  {sending === item.itemId ? <Loader2 className="size-3 animate-spin" /> : <Truck className="size-3" />}
-                  {alreadyDispatched ? 'Dispatched' : 'Dispatch'}
-                </button>
+            <div key={row.itemName} className="rounded-2xl border border-border bg-white p-3 shadow-sm">
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-black text-slate-800">{row.itemName} <span className={cn('ml-1 rounded-full px-1.5 py-0.5 text-[10px] font-black', row.itemStatus === 'completed' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700')}>{row.itemStatus === 'completed' ? 'Completed' : 'More to come'}</span></p>
+                  <p className="text-xs font-bold text-slate-400">Produced {row.preparedTotal} {row.unit}{dispatched > 0 ? ` · Dispatched ${dispatched} ${row.unit}` : ''}</p>
+                </div>
+                {subTab === 'active' && (
+                  <button onClick={() => setChecklistItem(row)} className="flex items-center gap-1.5 rounded-xl bg-emerald-600 px-3 py-2 text-xs font-bold text-white hover:bg-emerald-700">
+                    <Truck className="size-3.5" /> Dispatch
+                  </button>
+                )}
+              </div>
+              <div className="mt-2 flex flex-wrap gap-2 text-[11px] font-bold text-slate-500">
+                {BRANCHES.filter(b => row.perBranch[b]).map(b => <span key={b} className="rounded-lg bg-slate-50 px-2 py-1">{b} requested {row.perBranch[b]} {row.unit}</span>)}
               </div>
             </div>
           );
         })}
+      </div>
+
+      {checklistItem && (
+        <DispatchChecklistModal
+          row={checklistItem}
+          orders={orders}
+          onClose={() => setChecklistItem(null)}
+          onDispatch={submitDispatch}
+          dispatchedBy={currentUser?.displayName || 'Planner'}
+        />
+      )}
+    </div>
+  );
+}
+
+function DispatchChecklistModal({ row, orders, onClose, onDispatch, dispatchedBy }: {
+  row: ProductionRow; orders: BakeryOrder[]; onClose: () => void;
+  onDispatch: ReturnType<typeof useBakeryStore.getState>['submitDispatch']; dispatchedBy: string;
+}) {
+  const branchOrders = useMemo(() => {
+    const map = new Map<string, { order: BakeryOrder; item: BakeryOrderItem }[]>();
+    for (const orderId of row.contributingOrderIds) {
+      const order = orders.find(o => o.id === orderId);
+      const item = order?.items.find(i => i.itemName === row.itemName);
+      if (!order || !item || !order.targetBranch) continue;
+      if (!map.has(order.targetBranch)) map.set(order.targetBranch, []);
+      map.get(order.targetBranch)!.push({ order, item });
+    }
+    return map;
+  }, [row, orders]);
+
+  const autoSplit = useMemo(() => autoSplitForItem(orders, row.itemName, row.preparedTotal), [orders, row]);
+  const [qty, setQty] = useState<Record<string, string>>({});
+  const [sending, setSending] = useState(false);
+  const [done, setDone] = useState(false);
+
+  const qtyFor = (orderId: string) => qty[orderId] !== undefined ? Number(qty[orderId] || 0) : Math.round((autoSplit[orderId] ?? 0) * 100) / 100;
+
+  const CHECKLIST_BY_BRANCH: Record<string, string[]> = {
+    SNB: ['Verify SNB quantity matches this checklist', 'Cross-check SNB boxes/kg/pcs before loading', 'Load onto SNB delivery vehicle', 'Hand over and get SNB counter sign-off'],
+    VRSNB: ['Verify VRSNB quantity matches this checklist', 'Pack VRSNB items in labeled crates', 'Load onto VRSNB delivery vehicle', 'Hand over and get VRSNB counter sign-off'],
+    Hosur: ['Verify Hosur shop-wise split matches this checklist', 'Pack per-shop bags separately for Hosur', 'Load onto Hosur delivery vehicle', 'Hand over and get Hosur receiver sign-off'],
+  };
+  const checklistFor = (branch: string) => CHECKLIST_BY_BRANCH[branch] || CHECKLIST_BY_BRANCH.SNB;
+
+  const confirmDispatch = async () => {
+    setSending(true);
+    try {
+      for (const [branch, entries] of branchOrders) {
+        for (const { order, item } of entries) {
+          const q = qtyFor(order.id);
+          if (q <= 0) continue;
+          await onDispatch(order.id, { itemName: item.itemName, quantity: q, unit: item.dispatchUnit || 'kg', branch: branch as Branch, dispatchedBy, dispatchedAt: new Date().toISOString() });
+        }
+      }
+      setDone(true);
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const printChecklist = () => {
+    const win = window.open('', '_blank'); if (!win) return;
+    const sections = Array.from(branchOrders.entries()).map(([branch, entries]) => {
+      const qtyTotal = entries.reduce((s, { order }) => s + qtyFor(order.id), 0);
+      return `<h2>${branch} — ${row.itemName}: ${qtyTotal} ${row.unit}</h2><ol>${checklistFor(branch).map(s => `<li>${s}</li>`).join('')}</ol>`;
+    }).join('<hr/>');
+    win.document.write(`<html><body style="font-family:sans-serif;padding:24px">${sections}</body></html>`);
+    win.document.close(); win.print();
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="w-full max-w-lg rounded-2xl bg-white p-5 shadow-xl">
+        <p className="text-sm font-black text-slate-800">Dispatch Checklist — {row.itemName}</p>
+        {!done ? (
+          <>
+            <div className="mt-3 space-y-3">
+              {Array.from(branchOrders.entries()).map(([branch, entries]) => (
+                <div key={branch} className="rounded-xl border border-border p-3">
+                  <p className="mb-1.5 text-xs font-black text-slate-700">{branch} (requested {row.perBranch[branch as Branch] ?? 0} {row.unit})</p>
+                  {entries.map(({ order }) => (
+                    <div key={order.id} className="flex items-center justify-between gap-2 py-1">
+                      <span className="text-xs font-bold text-slate-500">Order #{order.orderNumber}</span>
+                      <input type="number" value={qty[order.id] ?? qtyFor(order.id)} onChange={e => setQty(v => ({ ...v, [order.id]: e.target.value }))} className="w-24 rounded-lg border border-border px-2 py-1 text-right text-xs font-bold" />
+                    </div>
+                  ))}
+                  <ul className="mt-2 space-y-1 text-[11px] font-semibold text-slate-500">
+                    {checklistFor(branch).map(s => <li key={s}>☐ {s}</li>)}
+                  </ul>
+                </div>
+              ))}
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
+              <button onClick={printChecklist} className="flex items-center gap-1.5 rounded-xl bg-slate-100 px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-200"><Printer className="size-3.5" /> Print</button>
+              <button onClick={onClose} className="rounded-xl bg-slate-100 px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-200">Cancel</button>
+              <button onClick={confirmDispatch} disabled={sending} className="flex items-center gap-1.5 rounded-xl bg-emerald-600 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-700 disabled:opacity-50">
+                {sending ? <Loader2 className="size-4 animate-spin" /> : <Truck className="size-4" />} Confirm Dispatch
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <p className="mt-2 text-xs font-semibold text-emerald-600">Dispatched. This item now shows in the Dispatched sub-tab{row.itemStatus === 'pending' ? ' — still marked pending, more expected from the baker.' : '.'}</p>
+            <div className="mt-4 flex justify-end"><button onClick={onClose} className="rounded-xl bg-slate-900 px-4 py-2 text-xs font-bold text-white">Close</button></div>
+          </>
+        )}
       </div>
     </div>
   );
