@@ -1014,7 +1014,7 @@ export default function AdminSNBDashboard() {
 
   return (
     <main className="min-w-0 space-y-4 px-4 py-5 sm:px-6 xl:px-8">
-      {!["stock", "update-stock", "suppliers", "quotations", "salespersons"].includes(tab) && (
+      {!["stock", "update-stock", "suppliers", "quotations", "salespersons", "bank", "current-cash"].includes(tab) && (
         <DateFilters
           fromDate={fromDate}
           toDate={toDate}
@@ -1022,7 +1022,7 @@ export default function AdminSNBDashboard() {
           setToDate={setToDate}
         />
       )}
-      {dbReports.error && !["stock", "update-stock", "suppliers", "quotations", "salespersons"].includes(tab) && (
+      {dbReports.error && !["stock", "update-stock", "suppliers", "quotations", "salespersons", "bank", "current-cash"].includes(tab) && (
         <div className="rounded-2xl bg-amber-50 px-4 py-3 text-sm font-bold text-amber-900 ring-1 ring-amber-100">
           Some live report data could not load. No browser-stored historical data will be substituted. {dbReports.error}
         </div>
@@ -1081,16 +1081,8 @@ export default function AdminSNBDashboard() {
         />
       )}
       {tab === "payments" && <SupplierPaymentsTab userName={userName} dbReports={dbReports} setNotice={setNotice} />}
-      {tab === "bank" && (
-        <BankDepositsTab
-          userName={userName}
-          cashBalance={cashBalance}
-          upiBalance={upiBalance}
-          cardBalance={cardBalance}
-          bankBalance={bankBalance}
-        />
-      )}
-      {tab === "current-cash" && <CurrentCashTab {...commonProps} />}
+      {tab === "bank" && <BankDepositsTab userName={userName} />}
+      {tab === "current-cash" && <CurrentCashTab userName={userName} />}
       {tab === "salespersons" && (
         <SalespersonManagementTab userName={userName} />
       )}
@@ -3055,73 +3047,185 @@ function CashierManagementTab({ userName }: { userName: string }) {
   );
 }
 
-function CurrentCashTab(props: any) {
-  const openingCash = (props.dbReports.counterSessions || [])
-    .filter((row: any) => row.branch === BRANCH || !row.branch)
-    .reduce((sum: number, row: any) => sum + asNumber(row.opening_cash), 0);
-  const creditCash = props.creditPaymentsInRange
-    .filter((payment: any) => payment.paymentMode === "cash")
-    .reduce((sum: number, payment: any) => sum + payment.amount, 0);
-  const advanceCash = props.movementInRange
-    .filter((m: any) => m.paymentMode === "cash" && m.direction === "in" && /advance/i.test(m.purpose || ""))
-    .reduce((sum: number, m: any) => sum + m.amount, 0);
-  const cashRefunds = props.branchReturns
-    .filter((row: any) => (row.returnPayMode || row.originalPaymentMode || "cash") === "cash")
-    .reduce((sum: number, row: any) => sum + Number(row.refundAmount ?? row.total ?? 0), 0);
-  const cashExpenses = props.movementInRange
-    .filter((m: any) => m.paymentMode === "cash" && m.direction === "out" && /expense/i.test(m.purpose || ""))
-    .reduce((sum: number, m: any) => sum + m.amount, 0);
-  const cashAdjustIn = props.movementInRange
-    .filter((m: any) => m.paymentMode === "cash" && m.direction === "in" && !/advance|credit/i.test(m.purpose || ""))
-    .reduce((sum: number, m: any) => sum + m.amount, 0);
-  const cashAdjustOut = props.movementInRange
-    .filter((m: any) => m.paymentMode === "cash" && m.direction === "out" && !/expense|purchase|supplier|bank/i.test(m.purpose || ""))
-    .reduce((sum: number, m: any) => sum + m.amount, 0);
-  const expectedPhysicalCash = openingCash + props.cashSales + creditCash + advanceCash + cashAdjustIn - cashRefunds - cashExpenses - props.purchaseCashPaid - props.depositAmount - cashAdjustOut;
-  const rows = [
-    { label: "Opening cash", amount: openingCash, kind: "in" },
-    { label: "Cash sales", amount: props.cashSales, kind: "in" },
-    { label: "Cash credit collections", amount: creditCash, kind: "in" },
-    { label: "Cash advance collections", amount: advanceCash, kind: "in" },
-    { label: "Other approved cash in", amount: cashAdjustIn, kind: "in" },
-    { label: "Cash refunds", amount: cashRefunds, kind: "out" },
-    { label: "Expenses paid by cash", amount: cashExpenses, kind: "out" },
-    { label: "Cash purchase / supplier payments", amount: props.purchaseCashPaid, kind: "out" },
-    { label: "Cash bank deposits", amount: props.depositAmount, kind: "out" },
-    { label: "Other approved cash out", amount: cashAdjustOut, kind: "out" },
-  ];
+function CurrentCashTab({ userName }: { userName: string }) {
+  const { cashMovements } = useBranchOpsStore();
+
+  // Entire branch history, unfiltered by any date range - this tab is
+  // meant to answer "what is our cash position from day one till now".
+  const allMovements = useMemo(
+    () =>
+      cashMovements
+        .filter((m) => m.branch === BRANCH)
+        .slice()
+        .sort((a, b) => new Date(a.dateTime).getTime() - new Date(b.dateTime).getTime()),
+    [cashMovements],
+  );
+
+  const totalsByMode = (mode: "cash" | "upi" | "card" | "bank") => {
+    const inAmt = allMovements
+      .filter((m) => m.paymentMode === mode && m.direction === "in")
+      .reduce((sum, m) => sum + m.amount, 0);
+    const outAmt = allMovements
+      .filter((m) => m.paymentMode === mode && m.direction === "out")
+      .reduce((sum, m) => sum + m.amount, 0);
+    return { inAmt, outAmt, net: inAmt - outAmt };
+  };
+  const cash = totalsByMode("cash");
+  const upi = totalsByMode("upi");
+  const card = totalsByMode("card");
+
+  const outByPurpose = (regex: RegExp) =>
+    allMovements
+      .filter((m) => m.direction === "out" && regex.test(m.purpose || ""))
+      .reduce((sum, m) => sum + m.amount, 0);
+  const inByPurpose = (regex: RegExp) =>
+    allMovements
+      .filter((m) => m.direction === "in" && regex.test(m.purpose || ""))
+      .reduce((sum, m) => sum + m.amount, 0);
+
+  const salesCollected = inByPurpose(/bill collection|credit upfront|credit collection|advance/i);
+  const expensesTotal = outByPurpose(/^expense/i);
+  const supplierPaymentsTotal = outByPurpose(/purchase payment/i);
+  const bankDepositsTotal = outByPurpose(/bank deposit/i);
+  const refundsTotal = outByPurpose(/refund/i);
+  const totalIn = allMovements.filter((m) => m.direction === "in").reduce((s, m) => s + m.amount, 0);
+  const totalOut = allMovements.filter((m) => m.direction === "out").reduce((s, m) => s + m.amount, 0);
+
+  // Group by purpose for the "what did we spend / receive on" summary.
+  const byPurpose = useMemo(() => {
+    const map = new Map<string, { purpose: string; inAmt: number; outAmt: number }>();
+    allMovements.forEach((m) => {
+      const key = m.purpose || "Other";
+      const row = map.get(key) || { purpose: key, inAmt: 0, outAmt: 0 };
+      if (m.direction === "in") row.inAmt += m.amount;
+      else row.outAmt += m.amount;
+      map.set(key, row);
+    });
+    return [...map.values()].sort((a, b) => (b.inAmt + b.outAmt) - (a.inAmt + a.outAmt));
+  }, [allMovements]);
+
+  // Full chronological ledger with a running cash-in-hand balance,
+  // newest first for easy reading.
+  const ledgerRows = useMemo(() => {
+    let running = 0;
+    return allMovements.map((m) => {
+      if (m.paymentMode === "cash") running += m.direction === "in" ? m.amount : -m.amount;
+      return { ...m, runningCash: running };
+    });
+  }, [allMovements]);
+  const ledgerRowsDesc = [...ledgerRows].reverse();
+
+  const printDetailReport = () => {
+    const body = `
+      <h1>Current Cash - Detailed Cash Flow Report (All-time)</h1>
+      <p class="muted">Generated ${fmtDateTime(new Date().toISOString())} by ${userName}</p>
+      <div class="section">
+        <div class="row"><span>Cash In Hand</span><b>${money(cash.net)}</b></div>
+        <div class="row"><span>UPI Balance</span><b>${money(upi.net)}</b></div>
+        <div class="row"><span>Card Balance</span><b>${money(card.net)}</b></div>
+        <div class="row"><span>Total Bank Deposits</span><b>${money(bankDepositsTotal)}</b></div>
+        <div class="row"><span>Total Sales / Collections In</span><b>${money(totalIn)}</b></div>
+        <div class="row"><span>Total Expenses Paid</span><b>${money(expensesTotal)}</b></div>
+        <div class="row"><span>Total Supplier Payments</span><b>${money(supplierPaymentsTotal)}</b></div>
+        <div class="row"><span>Total Refunds Paid</span><b>${money(refundsTotal)}</b></div>
+        <div class="row"><span>Net Position</span><b>${money(totalIn - totalOut)}</b></div>
+      </div>
+      <h3>Category Breakdown</h3>
+      <table><thead><tr><th>Category</th><th>Money In</th><th>Money Out</th><th>Net</th></tr></thead>
+      <tbody>${byPurpose.map((row) => `<tr><td>${row.purpose}</td><td>${money(row.inAmt)}</td><td>${money(row.outAmt)}</td><td>${money(row.inAmt - row.outAmt)}</td></tr>`).join("")}</tbody></table>
+      <h3>Detailed Cash Flow Ledger (newest first)</h3>
+      <table><thead><tr><th>Date &amp; Time</th><th>Description</th><th>Mode</th><th>Direction</th><th>Amount</th><th>Running Cash</th></tr></thead>
+      <tbody>${ledgerRowsDesc.map((m) => `<tr><td>${fmtDateTime(m.dateTime)}</td><td>${m.purpose}</td><td>${m.paymentMode.toUpperCase()}</td><td>${m.direction === "in" ? "In" : "Out"}</td><td>${m.direction === "out" ? "-" : "+"}${money(m.amount)}</td><td>${m.paymentMode === "cash" ? money(m.runningCash) : "-"}</td></tr>`).join("")}</tbody></table>
+    `;
+    printHtml("Current Cash Report", body);
+  };
+
   return (
     <div className="space-y-4">
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <Kpi label="Expected Physical Cash" value={money(expectedPhysicalCash)} icon={<Banknote className="size-5" />} tone={expectedPhysicalCash >= 0 ? "green" : "red"} />
-        <Kpi label="Bank Balance" value={money(props.bankBalance)} icon={<Landmark className="size-5" />} tone="blue" />
-        <Kpi label="Expenses" value={money(props.expenseAmount)} icon={<WalletCards className="size-5" />} tone="red" />
-        <Kpi label="Bank Deposits" value={money(props.depositAmount)} icon={<ShieldCheck className="size-5" />} tone="purple" />
+      <div className="rounded-2xl bg-indigo-50 px-3 py-2 text-xs font-bold text-indigo-700 ring-1 ring-indigo-100">
+        Showing complete cash flow from the first recorded sale till now - no date filter applies to this tab.
       </div>
-      <Panel title="Cash Position Breakdown" icon={<IndianRupee className="size-4" />}>
-        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
-          <ResponsiveContainer width="100%" height={280}>
-            <BarChart data={rows}><CartesianGrid strokeDasharray="3 3" vertical={false} /><XAxis dataKey="label" hide /><YAxis /><Tooltip formatter={(value: number) => money(value)} /><Bar dataKey="amount" radius={[8,8,0,0]} /></BarChart>
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <Kpi label="Cash In Hand" value={money(cash.net)} icon={<Banknote className="size-5" />} tone={cash.net >= 0 ? "green" : "red"} />
+        <Kpi label="UPI Balance" value={money(upi.net)} icon={<Smartphone className="size-5" />} tone="blue" />
+        <Kpi label="Card Balance" value={money(card.net)} icon={<CreditCard className="size-5" />} tone="purple" />
+        <Kpi label="Total Bank Deposits" value={money(bankDepositsTotal)} icon={<Landmark className="size-5" />} tone="slate" />
+        <Kpi label="Total Sales / Collections In" value={money(totalIn)} icon={<IndianRupee className="size-5" />} tone="green" />
+        <Kpi label="Total Expenses Paid" value={money(expensesTotal)} icon={<WalletCards className="size-5" />} tone="red" />
+        <Kpi label="Total Supplier Payments" value={money(supplierPaymentsTotal)} icon={<Receipt className="size-5" />} tone="amber" />
+        <Kpi label="Total Refunds Paid" value={money(refundsTotal)} icon={<ShieldCheck className="size-5" />} tone="red" />
+      </div>
+
+      <Panel title="Cash Flow Summary - What Came In vs What Went Out" icon={<BarChart3 className="size-4" />}>
+        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
+          <ResponsiveContainer width="100%" height={260}>
+            <BarChart data={[
+              { label: "Sales/Collections In", amount: totalIn },
+              { label: "Expenses", amount: expensesTotal },
+              { label: "Supplier Payments", amount: supplierPaymentsTotal },
+              { label: "Bank Deposits", amount: bankDepositsTotal },
+              { label: "Refunds", amount: refundsTotal },
+            ]}>
+              <CartesianGrid strokeDasharray="3 3" vertical={false} />
+              <XAxis dataKey="label" hide />
+              <YAxis />
+              <Tooltip formatter={(value: number) => money(value)} />
+              <Bar dataKey="amount" radius={[8, 8, 0, 0]} />
+            </BarChart>
           </ResponsiveContainer>
-          <div className="space-y-2">{rows.map((row) => <div key={row.label} className="flex items-center justify-between rounded-2xl bg-slate-50 p-3"><span className="text-sm font-bold text-slate-600">{row.label}</span><span className={cn("font-black", row.kind === "out" ? "text-red-600" : "text-emerald-700")}>{row.kind === "out" ? "−" : "+"}{money(row.amount)}</span></div>)}</div>
+          <div className="space-y-2">
+            <div className="flex items-center justify-between rounded-2xl bg-emerald-50 p-3">
+              <span className="text-sm font-bold text-emerald-700">Total Cash In (all modes)</span>
+              <span className="font-black text-emerald-700">+{money(totalIn)}</span>
+            </div>
+            <div className="flex items-center justify-between rounded-2xl bg-red-50 p-3">
+              <span className="text-sm font-bold text-red-600">Total Cash Out (all modes)</span>
+              <span className="font-black text-red-600">-{money(totalOut)}</span>
+            </div>
+            <div className="flex items-center justify-between rounded-2xl bg-slate-950 p-3">
+              <span className="text-sm font-bold text-white">Net Position</span>
+              <span className="font-black text-white">{money(totalIn - totalOut)}</span>
+            </div>
+          </div>
         </div>
       </Panel>
-      <Panel title="Source Transactions" icon={<History className="size-4" />}>
+
+      <Panel title="Spent For / Paid For - Category Breakdown" icon={<WalletCards className="size-4" />} action={<div className="flex gap-2">
+        <button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={printDetailReport}><Printer className="size-4" /> Print Detail</button>
+        <button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Cash_Flow_Categories.xls", byPurpose.map((row) => ({ Category: row.purpose, In: row.inAmt, Out: row.outAmt, Net: row.inAmt - row.outAmt })))}><Download className="size-4" /> Export</button>
+      </div>}>
         <DataTable
-          headers={["Source", "Direction", "Amount", "Meaning"]}
-          rows={rows.map((row) => [
-            row.label,
-            row.kind === "in" ? "In" : "Out",
-            <span key="amount" className={cn("font-black", row.kind === "out" ? "text-red-600" : "text-emerald-700")}>{money(row.amount)}</span>,
-            row.kind === "in" ? "Adds to expected physical cash" : "Reduces expected physical cash",
+          headers={["Category", "Money In", "Money Out", "Net"]}
+          rows={byPurpose.map((row) => [
+            row.purpose,
+            row.inAmt ? <span key="in" className="font-black text-emerald-700">+{money(row.inAmt)}</span> : "-",
+            row.outAmt ? <span key="out" className="font-black text-red-600">-{money(row.outAmt)}</span> : "-",
+            money(row.inAmt - row.outAmt),
           ])}
-          empty="No cash source rows found."
+          empty="No cash movements recorded yet."
+        />
+      </Panel>
+
+      <Panel title="Detailed Cash Flow Ledger (All-time, newest first)" icon={<History className="size-4" />} action={<div className="flex gap-2">
+        <button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={printDetailReport}><Printer className="size-4" /> Print Detail</button>
+        <button className={cn(btnCls, "bg-slate-950 text-white")} onClick={() => csvDownload("SNB_Cash_Flow_Ledger.xls", ledgerRowsDesc.map((m) => ({ DateTime: m.dateTime, Purpose: m.purpose, Mode: m.paymentMode, Direction: m.direction, Amount: m.amount, RunningCashBalance: m.runningCash })))}><Download className="size-4" /> Export</button>
+      </div>}>
+        <DataTable
+          headers={["Date & Time", "Description", "Mode", "Direction", "Amount", "Running Cash Balance"]}
+          rows={ledgerRowsDesc.map((m, index) => [
+            fmtDateTime(m.dateTime),
+            m.purpose,
+            m.paymentMode.toUpperCase(),
+            m.direction === "in" ? <StatusBadge key={`dir-${index}`} tone="green">In</StatusBadge> : <StatusBadge key={`dir-${index}`} tone="red">Out</StatusBadge>,
+            <span key="amt" className={cn("font-black", m.direction === "out" ? "text-red-600" : "text-emerald-700")}>{m.direction === "out" ? "-" : "+"}{money(m.amount)}</span>,
+            m.paymentMode === "cash" ? money(m.runningCash) : "-",
+          ])}
+          empty="No cash movements recorded yet."
         />
       </Panel>
     </div>
   );
 }
-
 function CashierReportTab(props: any) {
   const rows = useMemo(() => {
     const map = new Map<string, any>();
@@ -5370,20 +5474,80 @@ function SupplierPaymentsTab({
   );
 }
 
-function BankDepositsTab({
-  userName,
-  cashBalance,
-  upiBalance,
-  cardBalance,
-  bankBalance,
-}: {
-  userName: string;
-  cashBalance: number;
-  upiBalance: number;
-  cardBalance: number;
-  bankBalance: number;
-}) {
-  const { bankDeposits, addBankDeposit } = useBranchOpsStore();
+function BankDepositsTab({ userName }: { userName: string }) {
+  const { bankDeposits, addBankDeposit, cashMovements } = useBranchOpsStore();
+
+  // All-time, unfiltered by any date range: every cash movement ever
+  // recorded for this branch, oldest first, used to compute running
+  // balances. This is intentionally independent of the page-level
+  // date filter - Bank Deposits must always reflect the full history
+  // of the branch from the first sale till now.
+  const allMovements = useMemo(
+    () =>
+      cashMovements
+        .filter((m) => m.branch === BRANCH)
+        .slice()
+        .sort((a, b) => new Date(a.dateTime).getTime() - new Date(b.dateTime).getTime()),
+    [cashMovements],
+  );
+  const balanceByMode = (mode: "cash" | "upi" | "card") =>
+    allMovements
+      .filter((m) => m.paymentMode === mode)
+      .reduce((sum, m) => sum + (m.direction === "in" ? m.amount : -m.amount), 0);
+  const cashBalance = balanceByMode("cash");
+  const upiBalance = balanceByMode("upi");
+  const cardBalance = balanceByMode("card");
+  const supplierPaymentsTotal = allMovements
+    .filter((m) => m.direction === "out" && /purchase payment/i.test(m.purpose || ""))
+    .reduce((sum, m) => sum + m.amount, 0);
+
+  const depositRows = useMemo(
+    () =>
+      bankDeposits
+        .filter((d) => d.branch === BRANCH)
+        .slice()
+        .sort(
+          (a, b) =>
+            new Date(a.createdAt || a.depositDate).getTime() -
+            new Date(b.createdAt || b.depositDate).getTime(),
+        ),
+    [bankDeposits],
+  );
+  const bankBalance = depositRows.reduce((sum, d) => sum + d.amount, 0);
+
+  // Enrich each deposit with: running total deposited so far, and the
+  // cash-in-hand right after that deposit (all cash movements up to
+  // and including that point, which already nets out every supplier
+  // payment made in cash before/at that time).
+  let cumulativeDeposited = 0;
+  const enrichedDeposits = depositRows.map((d) => {
+    const asOf = new Date(d.createdAt || d.depositDate).getTime();
+    const cashAfter = allMovements
+      .filter((m) => m.paymentMode === "cash" && new Date(m.dateTime).getTime() <= asOf)
+      .reduce((sum, m) => sum + (m.direction === "in" ? m.amount : -m.amount), 0);
+    cumulativeDeposited += d.amount;
+    return { ...d, cumulativeDeposited, cashAfter };
+  });
+  const rows = [...enrichedDeposits].reverse(); // newest first for display
+
+  const printDetailReport = () => {
+    const body = `
+      <h1>Bank Deposits - Detailed Report (All-time)</h1>
+      <p class="muted">Generated ${fmtDateTime(new Date().toISOString())} by ${userName}</p>
+      <div class="section">
+        <div class="row"><span>Cash Balance (All-time)</span><b>${money(cashBalance)}</b></div>
+        <div class="row"><span>UPI Balance (All-time)</span><b>${money(upiBalance)}</b></div>
+        <div class="row"><span>Card Balance (All-time)</span><b>${money(cardBalance)}</b></div>
+        <div class="row"><span>Supplier Payments Paid</span><b>${money(supplierPaymentsTotal)}</b></div>
+        <div class="row"><span>Total Deposited to Owner</span><b>${money(bankBalance)}</b></div>
+      </div>
+      <h3>Bank Deposit History</h3>
+      <table><thead><tr><th>Date</th><th>Amount</th><th>Method</th><th>Bank</th><th>Slip</th><th>Ref</th><th>Entered By</th><th>Remarks</th><th>Total Deposited</th><th>Cash After</th></tr></thead>
+      <tbody>${rows.map((d) => `<tr><td>${fmtDate(d.depositDate)}</td><td>${money(d.amount)}</td><td>${d.paymentMode}</td><td>${d.bankAccount}</td><td>${d.slipNo || "-"}</td><td>${d.transactionRef || "-"}</td><td>${d.enteredBy}</td><td>${d.remarks || "-"}</td><td>${money(d.cumulativeDeposited)}</td><td>${money(d.cashAfter)}</td></tr>`).join("")}</tbody></table>
+    `;
+    printHtml("Bank Deposits Report", body);
+  };
+
   const [form, setForm] = useState({
     depositDate: dateInput(),
     amount: "",
@@ -5415,27 +5579,35 @@ function BankDepositsTab({
       remarks: "",
     });
   };
-  const rows = bankDeposits.filter((d) => d.branch === BRANCH);
   return (
     <div className="space-y-4">
-      <div className="grid gap-3 sm:grid-cols-4">
+      <div className="rounded-2xl bg-indigo-50 px-3 py-2 text-xs font-bold text-indigo-700 ring-1 ring-indigo-100">
+        Showing complete history from the first recorded sale till now - no date filter applies to this tab.
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
         <Kpi
-          label="Cash Balance"
+          label="Cash Balance (All-time)"
           value={money(cashBalance)}
           icon={<Banknote className="size-5" />}
           tone="green"
         />
         <Kpi
-          label="UPI Balance"
+          label="UPI Balance (All-time)"
           value={money(upiBalance)}
           icon={<Smartphone className="size-5" />}
           tone="blue"
         />
         <Kpi
-          label="Card Balance"
+          label="Card Balance (All-time)"
           value={money(cardBalance)}
           icon={<CreditCard className="size-5" />}
           tone="purple"
+        />
+        <Kpi
+          label="Supplier Payments Paid"
+          value={money(supplierPaymentsTotal)}
+          icon={<WalletCards className="size-5" />}
+          tone="red"
         />
         <Kpi
           label="Total Deposited to Owner"
@@ -5531,9 +5703,12 @@ function BankDepositsTab({
           </div>
         </Panel>
         <Panel
-          title="Bank Deposit History"
+          title="Bank Deposit History (All-time)"
           icon={<History className="size-4" />}
-          action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Bank_Deposits.xls", rows.map((d) => ({ Date: d.depositDate, Amount: d.amount, Method: d.paymentMode, BankAccount: d.bankAccount, Slip: d.slipNo, Ref: d.transactionRef, EnteredBy: d.enteredBy, Remarks: d.remarks })))}><Download className="size-4" /> Excel</button>}
+          action={<div className="flex gap-2">
+            <button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={printDetailReport}><Printer className="size-4" /> Print Detail</button>
+            <button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Bank_Deposits.xls", rows.map((d) => ({ Date: d.depositDate, Amount: d.amount, Method: d.paymentMode, BankAccount: d.bankAccount, Slip: d.slipNo, Ref: d.transactionRef, EnteredBy: d.enteredBy, Remarks: d.remarks, TotalDepositedSoFar: d.cumulativeDeposited, CashInHandAfter: d.cashAfter })))}><Download className="size-4" /> Export</button>
+          </div>}
         >
           <DataTable
             headers={[
@@ -5545,6 +5720,8 @@ function BankDepositsTab({
               "Ref",
               "Entered By",
               "Remarks",
+              "Bank Deposited (Total)",
+              "Cash In Hand After",
             ]}
             rows={rows.map((d) => [
               fmtDate(d.depositDate),
@@ -5555,6 +5732,8 @@ function BankDepositsTab({
               d.transactionRef,
               d.enteredBy,
               d.remarks,
+              <span key="cum" className="font-black text-purple-700">{money(d.cumulativeDeposited)}</span>,
+              <span key="cash" className={cn("font-black", d.cashAfter >= 0 ? "text-emerald-700" : "text-red-600")}>{money(d.cashAfter)}</span>,
             ])}
             empty="No bank deposits saved."
           />
