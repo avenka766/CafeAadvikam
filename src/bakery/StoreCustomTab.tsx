@@ -19,7 +19,7 @@
 import { useState, useMemo, useEffect } from 'react';
 import {
   Scissors, Search, Plus, Loader2, CheckCircle2,
-  AlertCircle, History, X, ChevronDown, Trash2, Package,
+  AlertCircle, History, X, ChevronDown, Trash2, Package, Printer,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { supabase } from '@/lib/supabase';
@@ -55,6 +55,13 @@ const REASON_PRESETS = [
   'Sampling / testing',
   'Expired stock',
   'Cleaning / maintenance',
+  'BAKERY',
+  'SEVOURIES',
+  'SWEETS',
+  'BENGALI',
+  'KITCHEN',
+  'CAFE',
+  'SNB BAKERY',
 ];
 
 // ─── DB helpers ────────────────────────────────────────────────────────────────
@@ -130,7 +137,7 @@ function BatchConfirmDialog({
   rows: DeductionRow[];
   reason: string;
   stockItems: StockItem[];
-  onConfirm: () => void;
+  onConfirm: (withPrint: boolean) => void;
   onCancel: () => void;
   saving: boolean;
 }) {
@@ -197,20 +204,28 @@ function BatchConfirmDialog({
         </div>
 
         {/* Actions */}
-        <div className="px-5 pb-5 flex gap-2">
+        <div className="px-5 pb-5 space-y-2">
           <button
-            onClick={onCancel}
-            className="flex-1 h-11 rounded-xl border border-border text-sm font-body font-semibold hover:bg-muted transition-colors"
+            onClick={() => onConfirm(true)}
+            disabled={saving}
+            className="w-full h-11 rounded-xl bg-destructive text-destructive-foreground text-sm font-body font-semibold flex items-center justify-center gap-2 disabled:opacity-50 active:scale-95 transition-all"
           >
-            Cancel
+            {saving ? <Loader2 className="size-4 animate-spin" /> : <Printer className="size-4" />}
+            Print & Sync + Deduct
           </button>
           <button
-            onClick={onConfirm}
+            onClick={() => onConfirm(false)}
             disabled={saving}
-            className="flex-1 h-11 rounded-xl bg-destructive text-destructive-foreground text-sm font-body font-semibold flex items-center justify-center gap-2 disabled:opacity-50 active:scale-95 transition-all"
+            className="w-full h-11 rounded-xl bg-muted text-foreground border border-border text-sm font-body font-semibold flex items-center justify-center gap-2 disabled:opacity-50 active:scale-95 transition-all"
           >
             {saving ? <Loader2 className="size-4 animate-spin" /> : <Scissors className="size-4" />}
-            Sync & Deduct All
+            Sync & Deduct Only
+          </button>
+          <button
+            onClick={onCancel}
+            className="w-full h-9 rounded-xl text-xs font-body font-semibold text-muted-foreground hover:bg-muted transition-colors"
+          >
+            Cancel
           </button>
         </div>
       </div>
@@ -377,6 +392,15 @@ function HistoryRow({ record }: { record: CustomDeduction }) {
   );
 }
 
+function printDeductionSlip(rows: DeductionRow[], reason: string) {
+  const validRows = rows.filter(r => r.item && Number(r.quantity) > 0);
+  const itemRows = validRows.map(r => `<tr><td>${r.item!.name}</td><td style="text-align:right">${r.quantity} ${r.item!.unit}</td></tr>`).join('');
+  const win = window.open('', '_blank', 'width=420,height=600');
+  if (!win) return;
+  win.document.write(`<!doctype html><html><head><title>Deduction Slip</title><style>body{font-family:Arial;padding:16px;color:#111}h2,p{margin:0 0 6px}table{width:100%;border-collapse:collapse;margin-top:10px}th,td{border-bottom:1px solid #ddd;padding:6px;text-align:left;font-size:12px}</style></head><body><h2>Cafe Aadvikam</h2><p>Custom Stock Deduction</p><p style="font-size:12px;color:#555">${new Date().toLocaleString('en-IN')}</p><p style="font-size:12px"><b>Reason:</b> ${reason}</p><table><thead><tr><th>Item</th><th style="text-align:right">Qty</th></tr></thead><tbody>${itemRows}</tbody></table><script>window.onload=()=>window.print()</script></body></html>`);
+  win.document.close();
+}
+
 function blankRow(): DeductionRow {
   return { item: null, itemSearch: '', showDD: false, quantity: '' };
 }
@@ -426,8 +450,9 @@ export default function StoreCustomTab() {
     setRows(prev => [...prev.map(r => ({ ...r, showDD: false })), blankRow()]);
   };
 
-  const handleConfirm = async () => {
+  const handleConfirm = async (withPrint: boolean) => {
     if (!canSubmit) return;
+    if (withPrint) printDeductionSlip(validRows, finalReason);
     setSaving(true); setError('');
 
     const results: string[] = [];
