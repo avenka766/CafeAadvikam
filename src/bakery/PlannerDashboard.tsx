@@ -6,10 +6,12 @@
 // dispatching to branches, tracking leftovers, and cake dispatch — plus the
 // migrated Transfer-In and Daily Closure tools from Packing.
 import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   ClipboardList, Layers, Factory, Truck, Cake, PackageCheck,
   ArrowRightLeft, Calendar, Plus, Send, CheckCircle2, Loader2,
-  ChevronDown, ChevronUp, X, RefreshCw, AlertTriangle, FileSpreadsheet,
+  ChevronDown, ChevronUp, X, RefreshCw, AlertTriangle, FileSpreadsheet, Clock3,
+  Store, CreditCard, WalletCards, MessageCircle, Bell, CalendarDays, ShieldCheck,
 } from 'lucide-react';
 import { useBakeryStore } from './bakeryStore';
 import { useAuthStore } from '@/stores/authStore';
@@ -23,9 +25,10 @@ import HosurDashboard from '@/pages/HosurDashboard';
 import HosurShopOrderPanel from './HosurShopOrderPanel';
 import PackingCakeOrdersTab from './PackingCakeOrdersTab';
 
-type PlannerTab = 'incoming' | 'merged' | 'production' | 'dispatch' | 'hosur' | 'cake' | 'transfer-in' | 'closure' | 'done';
+type PlannerTab = 'incoming' | 'sent' | 'merged' | 'production' | 'dispatch' | 'hosur' | 'cake' | 'transfer-in' | 'closure' | 'done';
 const TABS: { key: PlannerTab; label: string; icon: React.ReactNode }[] = [
   { key: 'incoming',    label: 'Incoming Orders',  icon: <ClipboardList className="size-4" /> },
+  { key: 'sent',        label: 'Sent',             icon: <Send className="size-4" /> },
   { key: 'merged',      label: 'Merged Summary',   icon: <Layers className="size-4" /> },
   { key: 'production',  label: 'Production Entry', icon: <Factory className="size-4" /> },
   { key: 'dispatch',    label: 'Dispatch',         icon: <Truck className="size-4" /> },
@@ -113,7 +116,9 @@ export default function PlannerDashboard() {
     try { await fetchOrders(true, true); } finally { setRefreshing(false); }
   };
 
-  const incomingOrders   = useMemo(() => orders.filter(o => o.status === 'pending' || o.status === 'accepted'), [orders]);
+  const incomingOrders   = useMemo(() => orders.filter(o => o.status === 'pending'), [orders]);
+  const sentOrders        = useMemo(() => orders.filter(o => o.status === 'accepted' || o.status === 'store_confirmed' || o.status === 'produced' || o.status === 'dispatched'), [orders]);
+  const mergeableOrders    = useMemo(() => orders.filter(o => o.status === 'pending' || o.status === 'accepted'), [orders]);
   const readyForProduction = useMemo(() => orders.filter(o => o.status === 'store_confirmed'), [orders]);
   const producedOrders    = useMemo(() => orders.filter(o => o.status === 'produced'), [orders]);
   const activeLeftovers    = useMemo(() => orders.filter(o => (o.leftoverStatus ?? 'pending') === 'pending' && o.status === 'dispatched'), [orders]);
@@ -168,25 +173,11 @@ export default function PlannerDashboard() {
         ) : (
           <>
             {tab === 'incoming' && <IncomingOrdersTab orders={incomingOrders} onAdd={submitOrder} />}
-            {tab === 'merged' && <MergedSummaryTab orders={incomingOrders} />}
+            {tab === 'sent' && <SentOrdersTab orders={sentOrders} />}
+            {tab === 'merged' && <MergedSummaryTab orders={mergeableOrders} />}
             {tab === 'production' && <ProductionEntryTab orders={readyForProduction} />}
             {tab === 'dispatch' && <DispatchTab orders={producedOrders} allOrders={orders} />}
-            {tab === 'hosur' && (
-              <div className="space-y-6">
-                <div>
-                  <h2 className="mb-1 text-sm font-black text-slate-700">Shop Orders &amp; Dispatch</h2>
-                  <p className="mb-3 text-xs font-semibold text-slate-500">Place shop orders, then dispatch — billing, payment capture, and the WhatsApp bill all happen in one click.</p>
-                  <HosurShopOrderPanel />
-                </div>
-                <div className="rounded-2xl border border-border bg-white p-4 shadow-sm">
-                  <h2 className="mb-1 text-sm font-black text-slate-700">Shops, Credit &amp; Reports</h2>
-                  <p className="mb-3 text-xs font-semibold text-slate-500">Shop master, credit ledger, collection, WhatsApp logs, reminders, closure, and reports.</p>
-                  <div className="rounded-2xl bg-slate-50/50">
-                    <HosurDashboard />
-                  </div>
-                </div>
-              </div>
-            )}
+            {tab === 'hosur' && <HosurUnifiedSection />}
             {tab === 'cake' && <PackingCakeOrdersTab />}
             {tab === 'transfer-in' && <PackingTransferInTab />}
             {tab === 'closure' && <PackingDailyClosureTab />}
@@ -280,24 +271,82 @@ function IncomingOrdersTab({ orders, onAdd }: { orders: BakeryOrder[]; onAdd: Re
         </div>
       )}
 
-      <div className="space-y-2">
-        {orders.length === 0 && <EmptyState text="No incoming orders right now." />}
-        {orders.map(order => (
-          <div key={order.id} className={cn('rounded-2xl border p-4 shadow-sm', BRANCH_META[order.targetBranch || 'SNB'].bg)}>
-            <div className="flex items-center justify-between">
-              <span className={cn('text-sm font-black', BRANCH_META[order.targetBranch || 'SNB'].text)}>
-                {BRANCH_META[order.targetBranch || 'SNB'].icon} {order.targetBranch} — Order #{order.orderNumber}
-              </span>
-              <span className="rounded-full bg-white px-2 py-1 text-[10px] font-bold text-slate-500">{order.status}</span>
-            </div>
-            <ul className="mt-2 space-y-1 text-xs font-semibold text-slate-600">
-              {order.items.map((item, i) => (
-                <li key={i}>{item.itemName} — {item.dispatchUnit === 'pcs' ? item.originalPcs ?? item.quantity : item.quantity} {item.dispatchUnit || 'kg'}</li>
-              ))}
-            </ul>
+      <DayGroupedOrderList orders={orders} badgeLabel="Pending" badgeTone="bg-amber-100 text-amber-700" />
+    </div>
+  );
+}
+
+// Groups orders by calendar day (newest day first), each with a day header
+// and a running count — used by both Incoming and Sent tabs.
+function DayGroupedOrderList({ orders, badgeLabel, badgeTone }: { orders: BakeryOrder[]; badgeLabel: string | ((o: BakeryOrder) => string); badgeTone: string | ((o: BakeryOrder) => string) }) {
+  const groups = useMemo(() => {
+    const map = new Map<string, BakeryOrder[]>();
+    for (const order of orders) {
+      const day = new Date(order.createdAt).toLocaleDateString('en-IN', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' });
+      if (!map.has(day)) map.set(day, []);
+      map.get(day)!.push(order);
+    }
+    return Array.from(map.entries()).sort((a, b) => new Date(b[1][0].createdAt).getTime() - new Date(a[1][0].createdAt).getTime());
+  }, [orders]);
+
+  if (orders.length === 0) return <EmptyState text="Nothing here right now." />;
+
+  return (
+    <div className="space-y-5">
+      {groups.map(([day, dayOrders]) => (
+        <div key={day}>
+          <div className="mb-2 flex items-center gap-2">
+            <h3 className="text-xs font-black uppercase tracking-wide text-slate-400">{day}</h3>
+            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-500">{dayOrders.length}</span>
           </div>
-        ))}
+          <div className="space-y-2">
+            {dayOrders.map(order => {
+              const label = typeof badgeLabel === 'function' ? badgeLabel(order) : badgeLabel;
+              const tone = typeof badgeTone === 'function' ? badgeTone(order) : badgeTone;
+              return (
+                <div key={order.id} className={cn('rounded-2xl border p-4 shadow-sm', BRANCH_META[order.targetBranch || 'SNB'].bg)}>
+                  <div className="flex items-center justify-between">
+                    <span className={cn('text-sm font-black', BRANCH_META[order.targetBranch || 'SNB'].text)}>
+                      {BRANCH_META[order.targetBranch || 'SNB'].icon} {order.targetBranch} — Order #{order.orderNumber}
+                    </span>
+                    <span className={cn('rounded-full px-2 py-1 text-[10px] font-black', tone)}>{label}</span>
+                  </div>
+                  <ul className="mt-2 space-y-1 text-xs font-semibold text-slate-600">
+                    {order.items.map((item, i) => (
+                      <li key={i}>{item.itemName} — {item.dispatchUnit === 'pcs' ? item.originalPcs ?? item.quantity : item.quantity} {item.dispatchUnit || 'kg'}</li>
+                    ))}
+                  </ul>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ─── Tab: Sent ──────────────────────────────────────────────────────────────
+function SentOrdersTab({ orders }: { orders: BakeryOrder[] }) {
+  const stageLabel = (o: BakeryOrder) => o.status === 'produced' ? 'Produced' : o.status === 'dispatched' ? 'Dispatched' : 'Store';
+  const stageTone = (o: BakeryOrder) => o.status === 'produced' ? 'bg-purple-100 text-purple-700' : o.status === 'dispatched' ? 'bg-emerald-100 text-emerald-700' : 'bg-blue-100 text-blue-700';
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h2 className="text-sm font-black text-slate-700">Sent to Store ({orders.length})</h2>
+        <ExportButton
+          disabled={orders.length === 0}
+          onClick={() => exportToExcel({
+            filename: 'sent-orders', sheetName: 'Sent', title: 'Planner — Sent to Store',
+            columns: [{ header: 'Order #', key: 'orderNumber' }, { header: 'Branch', key: 'branch' }, { header: 'Stage', key: 'stage' }, { header: 'Item', key: 'item' }, { header: 'Qty', key: 'qty' }, { header: 'Unit', key: 'unit' }],
+            rows: orders.flatMap(o => o.items.map(item => ({
+              orderNumber: o.orderNumber, branch: o.targetBranch, stage: stageLabel(o), item: item.itemName,
+              qty: item.dispatchUnit === 'pcs' ? item.originalPcs ?? item.quantity : item.quantity, unit: item.dispatchUnit || 'kg',
+            }))),
+          })}
+        />
       </div>
+      <DayGroupedOrderList orders={orders} badgeLabel={stageLabel} badgeTone={stageTone} />
     </div>
   );
 }
@@ -387,92 +436,190 @@ function MergedSummaryTab({ orders }: { orders: BakeryOrder[] }) {
 // ─── Tab: Production Entry ──────────────────────────────────────────────────
 function ProductionEntryTab({ orders }: { orders: BakeryOrder[] }) {
   const { recordProduction } = useBakeryStore();
-  return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h2 className="text-sm font-black text-slate-700">Production Entry ({orders.length})</h2>
-        <ExportButton
-          disabled={orders.length === 0}
-          onClick={() => exportToExcel({
-            filename: 'production-entry',
-            sheetName: 'Production',
-            title: 'Planner — Production Entry',
-            columns: [
-              { header: 'Order #', key: 'orderNumber' },
-              { header: 'Branch', key: 'branch' },
-              { header: 'Item', key: 'item' },
-              { header: 'Ordered Qty', key: 'ordered' },
-              { header: 'Produced Qty', key: 'produced' },
-              { header: 'Unit', key: 'unit' },
-            ],
-            rows: orders.flatMap(o => o.items.map(item => ({
-              orderNumber: o.orderNumber, branch: o.targetBranch, item: item.itemName,
-              ordered: item.dispatchUnit === 'pcs' ? item.originalPcs ?? item.quantity : item.quantity,
-              produced: o.producedItems?.find(p => p.itemId === item.itemId)?.quantityPrepared ?? '',
-              unit: item.dispatchUnit || 'kg',
-            }))),
-          })}
-        />
-      </div>
-      {orders.length === 0 && <EmptyState text="No orders waiting on production entry." />}
-      {orders.map(order => <ProductionOrderCard key={order.id} order={order} onSave={recordProduction} />)}
-    </div>
-  );
-}
+  const merged = useMemo(() => computeMergedSummary(orders), [orders]);
+  const [qty, setQty] = useState<Record<string, string>>({});
+  const [itemStatus, setItemStatus] = useState<Record<string, 'pending' | 'completed'>>({});
+  const [saving, setSaving] = useState<string | null>(null);
 
-function ProductionOrderCard({ order, onSave }: { order: BakeryOrder; onSave: (id: string, items: PreparedItem[]) => Promise<void> }) {
-  const [values, setValues] = useState<Record<string, string>>(() =>
-    Object.fromEntries(order.items.map(i => [i.itemId, String(order.producedItems?.find(p => p.itemId === i.itemId)?.quantityPrepared ?? '')]))
-  );
-  const [saving, setSaving] = useState(false);
-  const [expanded, setExpanded] = useState(true);
+  const producedSoFar = (row: MergedRow) => {
+    // Sum what's already recorded across contributing orders for this item.
+    let sum = 0;
+    for (const order of orders) {
+      if (!row.contributingOrderIds.includes(order.id)) continue;
+      const item = order.items.find(i => i.itemName === row.itemName);
+      const prod = item ? order.producedItems?.find(p => p.itemId === item.itemId) : undefined;
+      if (prod) sum += prod.quantityPrepared;
+    }
+    return sum;
+  };
 
-  const handleSave = async () => {
-    setSaving(true);
+  const handleMark = async (row: MergedRow, status: 'pending' | 'completed') => {
+    const enteredQty = status === 'completed'
+      ? (qty[row.itemName] ? Number(qty[row.itemName]) : row.totalRequested)
+      : Number(qty[row.itemName] || 0);
+    if (status === 'pending' && enteredQty <= 0) return;
+
+    setSaving(row.itemName);
     try {
-      const items: PreparedItem[] = order.items.map(item => ({
-        itemId: item.itemId,
-        itemName: item.itemName,
-        quantityPrepared: Number(values[item.itemId] || 0),
-        preparedAt: new Date().toISOString(),
-        dispatchUnit: item.dispatchUnit,
-      }));
-      await onSave(order.id, items);
+      const split = autoSplitForItem(orders, row.itemName, enteredQty);
+      for (const orderId of row.contributingOrderIds) {
+        const order = orders.find(o => o.id === orderId);
+        if (!order) continue;
+        const item = order.items.find(i => i.itemName === row.itemName);
+        if (!item) continue;
+        const others = (order.producedItems || []).filter(p => p.itemId !== item.itemId);
+        const merged: PreparedItem[] = [
+          ...others,
+          { itemId: item.itemId, itemName: item.itemName, quantityPrepared: split[orderId] ?? 0, preparedAt: new Date().toISOString(), dispatchUnit: item.dispatchUnit },
+        ];
+        await recordProduction(order.id, merged);
+      }
+      setItemStatus(s => ({ ...s, [row.itemName]: status }));
     } finally {
-      setSaving(false);
+      setSaving(null);
     }
   };
 
   return (
-    <div className="rounded-2xl border border-border bg-white p-4 shadow-sm">
-      <button onClick={() => setExpanded(v => !v)} className="flex w-full items-center justify-between text-left">
-        <span className="text-sm font-black text-slate-800">{order.targetBranch} · Order #{order.orderNumber}</span>
-        {expanded ? <ChevronUp className="size-4" /> : <ChevronDown className="size-4" />}
-      </button>
-      {expanded && (
-        <div className="mt-3 space-y-2">
-          {order.items.map(item => (
-            <div key={item.itemId} className="flex items-center justify-between gap-3 rounded-xl bg-slate-50 px-3 py-2">
-              <span className="text-xs font-bold text-slate-600">{item.itemName} <span className="text-slate-400">(ordered {item.dispatchUnit === 'pcs' ? item.originalPcs ?? item.quantity : item.quantity} {item.dispatchUnit || 'kg'})</span></span>
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h2 className="text-sm font-black text-slate-700">Production Entry ({merged.length} items)</h2>
+        <ExportButton
+          disabled={merged.length === 0}
+          onClick={() => exportToExcel({
+            filename: 'production-entry', sheetName: 'Production', title: 'Planner — Production Entry',
+            columns: [{ header: 'Item', key: 'item' }, { header: 'Ordered Qty', key: 'ordered' }, { header: 'Produced So Far', key: 'produced' }, { header: 'Unit', key: 'unit' }, { header: 'Status', key: 'status' }],
+            rows: merged.map(row => ({ item: row.itemName, ordered: row.totalRequested, produced: producedSoFar(row), unit: row.unit, status: itemStatus[row.itemName] ?? '—' })),
+          })}
+        />
+      </div>
+      {merged.length === 0 && <EmptyState text="No items waiting on production entry." />}
+      <div className="space-y-2">
+        {merged.map(row => {
+          const already = producedSoFar(row);
+          const status = itemStatus[row.itemName];
+          return (
+            <div key={row.itemName} className="flex items-center justify-between gap-3 rounded-2xl border border-border bg-white p-3 shadow-sm">
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-black text-slate-800">{row.itemName}</p>
+                <p className="text-xs font-bold text-slate-400">Ordered {row.totalRequested} {row.unit}{already > 0 ? ` · Produced so far ${already} ${row.unit}` : ''}</p>
+              </div>
               <input
                 type="number"
-                value={values[item.itemId] ?? ''}
-                onChange={e => setValues(v => ({ ...v, [item.itemId]: e.target.value }))}
-                placeholder="Produced qty"
-                className="w-28 rounded-lg border border-border px-2 py-1 text-right text-xs font-bold"
+                placeholder={status === 'completed' ? String(row.totalRequested) : 'Qty produced'}
+                value={qty[row.itemName] ?? ''}
+                onChange={e => setQty(v => ({ ...v, [row.itemName]: e.target.value }))}
+                className="w-28 rounded-lg border border-border px-2 py-1.5 text-right text-xs font-bold"
               />
+              <button
+                title="Completed — baker fully produced this item"
+                onClick={() => handleMark(row, 'completed')}
+                disabled={saving === row.itemName}
+                className={cn('flex size-8 shrink-0 items-center justify-center rounded-lg', status === 'completed' ? 'bg-emerald-600 text-white' : 'bg-emerald-50 text-emerald-600 hover:bg-emerald-100')}
+              >
+                {saving === row.itemName ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
+              </button>
+              <button
+                title="Pending — baker sent some, more still baking"
+                onClick={() => handleMark(row, 'pending')}
+                disabled={saving === row.itemName}
+                className={cn('flex size-8 shrink-0 items-center justify-center rounded-lg', status === 'pending' ? 'bg-amber-500 text-white' : 'bg-amber-50 text-amber-600 hover:bg-amber-100')}
+              >
+                <Clock3 className="size-4" />
+              </button>
             </div>
-          ))}
-          <button onClick={handleSave} disabled={saving} className="mt-2 flex items-center gap-1.5 rounded-xl bg-slate-900 px-4 py-2 text-xs font-bold text-white hover:bg-slate-800 disabled:opacity-50">
-            {saving ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />} Save Production
-          </button>
-        </div>
-      )}
+          );
+        })}
+      </div>
     </div>
   );
 }
 
 // ─── Tab: Dispatch ──────────────────────────────────────────────────────────
+// ─── Tab: Hosur — one unified, grouped sub-tab bar controlling shop
+// ordering/dispatch (this component) and the embedded billing/credit/
+// reports panel (HosurDashboard), instead of two separate stacked tab bars.
+type HosurSubTab = 'place' | 'dispatch' | 'shops' | 'credit' | 'collection' | 'whatsapp' | 'reminders' | 'closure' | 'reports' | 'notifications';
+const HOSUR_SUB_TAB_GROUPS: { label: string; tabs: { key: HosurSubTab; label: string; icon: React.ReactNode; ownedByPanel: boolean }[] }[] = [
+  { label: 'Orders', tabs: [
+    { key: 'place',    label: 'Place Order', icon: <Store className="size-3.5" />, ownedByPanel: true },
+    { key: 'dispatch', label: 'Dispatch',    icon: <Truck className="size-3.5" />, ownedByPanel: true },
+  ] },
+  { label: 'Money', tabs: [
+    { key: 'credit',     label: 'Credit Ledger',      icon: <CreditCard className="size-3.5" />, ownedByPanel: false },
+    { key: 'collection', label: 'Payment Collection', icon: <WalletCards className="size-3.5" />, ownedByPanel: false },
+  ] },
+  { label: 'Communication', tabs: [
+    { key: 'whatsapp',  label: 'WhatsApp Logs',    icon: <MessageCircle className="size-3.5" />, ownedByPanel: false },
+    { key: 'reminders', label: 'Reminder History', icon: <Bell className="size-3.5" />, ownedByPanel: false },
+  ] },
+  { label: 'Admin', tabs: [
+    { key: 'shops',         label: 'Shop Master',   icon: <Store className="size-3.5" />, ownedByPanel: false },
+    { key: 'closure',       label: 'Daily Closure', icon: <CalendarDays className="size-3.5" />, ownedByPanel: false },
+    { key: 'reports',       label: 'Reports',       icon: <FileSpreadsheet className="size-3.5" />, ownedByPanel: false },
+    { key: 'notifications', label: 'Notifications', icon: <ShieldCheck className="size-3.5" />, ownedByPanel: false },
+  ] },
+];
+
+function HosurUnifiedSection() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const urlTab = searchParams.get('hosurTab') as HosurSubTab | null;
+  const activeTab: HosurSubTab = urlTab && HOSUR_SUB_TAB_GROUPS.some(g => g.tabs.some(t => t.key === urlTab)) ? urlTab : 'place';
+  const [pendingDispatchCount, setPendingDispatchCount] = useState(0);
+
+  const selectTab = (key: HosurSubTab) => {
+    const params = new URLSearchParams(searchParams);
+    params.set('hosurTab', key);
+    // HosurDashboard reads its own tab from the plain `tab` param — keep both in sync.
+    if (!HOSUR_SUB_TAB_GROUPS.find(g => g.tabs.find(t => t.key === key))?.tabs.find(t => t.key === key)?.ownedByPanel) {
+      params.set('tab', key);
+    }
+    setSearchParams(params, { replace: true });
+  };
+
+  const panelSection: 'place' | 'dispatch' | undefined = activeTab === 'place' || activeTab === 'dispatch' ? activeTab : undefined;
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-2xl border border-border bg-white p-3 shadow-sm">
+        <div className="flex flex-wrap gap-x-6 gap-y-3">
+          {HOSUR_SUB_TAB_GROUPS.map(group => (
+            <div key={group.label}>
+              <p className="mb-1.5 text-[10px] font-black uppercase tracking-wide text-slate-400">{group.label}</p>
+              <div className="flex flex-wrap gap-1.5">
+                {group.tabs.map(t => (
+                  <button
+                    key={t.key}
+                    onClick={() => selectTab(t.key)}
+                    className={cn(
+                      'flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-bold transition',
+                      activeTab === t.key ? 'bg-emerald-600 text-white shadow' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                    )}
+                  >
+                    {t.icon} {t.label}
+                    {t.key === 'dispatch' && pendingDispatchCount > 0 && (
+                      <span className={cn('rounded-full px-1.5 py-0.5 text-[10px] font-black', activeTab === t.key ? 'bg-white text-emerald-700' : 'bg-red-100 text-red-700')}>{pendingDispatchCount}</span>
+                    )}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* HosurShopOrderPanel owns 'place'/'dispatch'; hidden (not unmounted) for the
+          others so its data stays loaded and switching back is instant. */}
+      <div className={panelSection ? '' : 'hidden'}>
+        <HosurShopOrderPanel section={panelSection ?? 'place'} onPendingCountChange={setPendingDispatchCount} />
+      </div>
+      <div className={panelSection ? 'hidden' : ''}>
+        <HosurDashboard hideNav />
+      </div>
+    </div>
+  );
+}
+
 function DispatchTab({ orders, allOrders }: { orders: BakeryOrder[]; allOrders: BakeryOrder[] }) {
   const { setDispatchSplit, submitDispatch } = useBakeryStore();
   return (

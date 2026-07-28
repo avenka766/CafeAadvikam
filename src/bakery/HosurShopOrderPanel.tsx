@@ -34,14 +34,15 @@ function mapItem(r: Record<string, unknown>): HosurOrderItem {
   return { id: r.id as string, orderId: r.order_id as string, itemName: String(r.item_name ?? ''), unit: r.unit === 'kg' ? 'kg' : 'pcs', quantity: Number(r.quantity ?? 0), unitPrice: Number(r.unit_price ?? 0), lineTotal: Number(r.line_total ?? 0), dispatchedQuantity: Number(r.dispatched_quantity ?? 0), receivedQuantity: Number(r.received_quantity ?? 0) };
 }
 
-export default function HosurShopOrderPanel() {
+export default function HosurShopOrderPanel({ section: controlledSection, onPendingCountChange }: { section?: 'place' | 'dispatch'; onPendingCountChange?: (n: number) => void } = {}) {
   const currentUser = useAuthStore(s => s.currentUser);
   const [shops, setShops] = useState<HosurShop[]>([]);
   const [prices, setPrices] = useState<HosurShopPrice[]>([]);
   const [orders, setOrders] = useState<HosurOrder[]>([]);
   const [items, setItems] = useState<HosurOrderItem[]>([]);
   const [loading, setLoading] = useState(true);
-  const [section, setSection] = useState<'place' | 'dispatch'>('place');
+  const [localSection, setLocalSection] = useState<'place' | 'dispatch'>('place');
+  const section = controlledSection ?? localSection;
 
   const load = useCallback(async () => {
     const [shopsRes, pricesRes, ordersRes, itemsRes] = await Promise.all([
@@ -60,17 +61,20 @@ export default function HosurShopOrderPanel() {
   useEffect(() => { load(); }, [load]);
 
   const pendingOrders = useMemo(() => orders.filter(o => o.status === 'pending_packing'), [orders]);
+  useEffect(() => { onPendingCountChange?.(pendingOrders.length); }, [pendingOrders.length, onPendingCountChange]);
 
   return (
     <div className="space-y-4">
-      <div className="flex gap-2">
-        <button onClick={() => setSection('place')} className={cn('rounded-xl px-3 py-2 text-xs font-bold', section === 'place' ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600')}>
-          <Store className="mr-1 inline size-3.5" /> Place Order
-        </button>
-        <button onClick={() => setSection('dispatch')} className={cn('rounded-xl px-3 py-2 text-xs font-bold', section === 'dispatch' ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600')}>
-          <Truck className="mr-1 inline size-3.5" /> Dispatch ({pendingOrders.length})
-        </button>
-      </div>
+      {controlledSection === undefined && (
+        <div className="flex gap-2">
+          <button onClick={() => setLocalSection('place')} className={cn('rounded-xl px-3 py-2 text-xs font-bold', section === 'place' ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600')}>
+            <Store className="mr-1 inline size-3.5" /> Place Order
+          </button>
+          <button onClick={() => setLocalSection('dispatch')} className={cn('rounded-xl px-3 py-2 text-xs font-bold', section === 'dispatch' ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600')}>
+            <Truck className="mr-1 inline size-3.5" /> Dispatch ({pendingOrders.length})
+          </button>
+        </div>
+      )}
 
       {loading ? (
         <div className="py-10 text-center text-xs font-bold text-slate-400">Loading shop data...</div>
