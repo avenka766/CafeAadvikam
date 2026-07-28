@@ -12,7 +12,7 @@ import {
 import { useSearchParams } from "react-router-dom";
 import { cn } from "@/lib/utils";
 import { useBranchLedger } from "@/hooks/useBranchLedger";
-import { asNumber, useSnbAdminReports } from "@/hooks/useSnbAdminReports";
+import { asNumber, useSnbAdminReports, useSnbCashSummary } from "@/hooks/useSnbAdminReports";
 import { supabase } from "@/lib/supabase";
 import { useAuthStore } from "@/stores/authStore";
 import { useBranchStore } from "@/branch/branchStore";
@@ -3054,7 +3054,7 @@ function CurrentCashTab({ userName }: { userName: string }) {
   // recorded for this branch (no date filter, not scoped to the page-level
   // date filter). Same source the Overview tab's breakdown uses, so these
   // numbers line up with the rest of the app.
-  const allTimeReports = useSnbAdminReports("2000-01-01", dateInput());
+  const allTimeReports = useSnbCashSummary(BRANCH);
   const sessions = useMemo(
     () => allTimeReports.counterSessions.filter((row: any) => !row.branch || row.branch === BRANCH),
     [allTimeReports.counterSessions],
@@ -5504,7 +5504,7 @@ function BankDepositsTab({ userName }: { userName: string }) {
   // recorded for this branch (no date filter). This is the same source
   // the Overview tab's Rupee Source Breakdown uses, so the numbers here
   // line up with the rest of the app.
-  const allTimeReports = useSnbAdminReports("2000-01-01", dateInput());
+  const allTimeReports = useSnbCashSummary(BRANCH);
   const sessions = useMemo(
     () => allTimeReports.counterSessions.filter((row: any) => !row.branch || row.branch === BRANCH),
     [allTimeReports.counterSessions],
