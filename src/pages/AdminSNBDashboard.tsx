@@ -16,6 +16,7 @@ import { asNumber, useSnbAdminReports } from "@/hooks/useSnbAdminReports";
 import { supabase } from "@/lib/supabase";
 import { useAuthStore } from "@/stores/authStore";
 import { useBranchStore } from "@/branch/branchStore";
+import AdvanceClosingReportTab from "@/components/admin/AdvanceClosingReportTab";
 import {
   money,
   useBranchOpsStore,
@@ -110,6 +111,7 @@ type TabId =
   | "reports"
   | "audit-stock"
   | "history"
+  | "advance-closing"
   | "notifications";
 
 const TABS: Array<{
@@ -191,10 +193,11 @@ const TABS: Array<{
     icon: PackageCheck,
     adminOnly: true,
   },
+  { id: "history", label: "History", icon: History, adminOnly: true },
   {
-    id: "history",
-    label: "History",
-    icon: History,
+    id: "advance-closing",
+    label: "Advance Order Closing Report",
+    icon: FileSpreadsheet,
     adminOnly: true,
   },
   {
@@ -1110,6 +1113,7 @@ export default function AdminSNBDashboard() {
         />
       )}
       {tab === "history" && <HistoryTab {...commonProps} />}
+      {tab === "advance-closing" && <AdvanceClosingReportTab fromDate={fromDate} toDate={toDate} />}
       {tab === "notifications" && <NotificationsTab userName={userName} />}
     </main>
   );
@@ -2743,6 +2747,25 @@ function CreditTab({ userName, role, fromDate, toDate }: { userName: string; rol
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   const selected = pending.find((credit) => credit.id === selectedId);
+  const [creditSortField, setCreditSortField] = useState<
+    "billNo" | "customerName" | "customerPhone" | "subtotal" | "amountPaid" | "creditAmount" | "dueDate" | "status"
+  >("billNo");
+  const [creditSortDir, setCreditSortDir] = useState<"asc" | "desc">("desc");
+  const sortedCredits = useMemo(() => {
+    const dir = creditSortDir === "asc" ? 1 : -1;
+    return [...credits].sort((a, b) => {
+      const av = a[creditSortField];
+      const bv = b[creditSortField];
+      if (typeof av === "number" && typeof bv === "number") return (av - bv) * dir;
+      return String(av ?? "").localeCompare(String(bv ?? "")) * dir;
+    });
+  }, [credits, creditSortField, creditSortDir]);
+  const toggleCreditSort = (field: typeof creditSortField) => {
+    if (creditSortField === field) setCreditSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    else { setCreditSortField(field); setCreditSortDir("asc"); }
+  };
+  const creditSortArrow = (field: typeof creditSortField) =>
+    creditSortField === field ? (creditSortDir === "asc" ? " ▲" : " ▼") : "";
 
   const [discountAmount, setDiscountAmount] = useState("");
   const [discountReason, setDiscountReason] = useState("");
@@ -2982,10 +3005,10 @@ function CreditTab({ userName, role, fromDate, toDate }: { userName: string; rol
             <p className="text-[11px] text-slate-500">This writes off the balance directly — it is not counted as cash/UPI/card collected.</p>
           </div>
         </Panel>
-        <Panel className="xl:col-span-2" title="SNB Branch Credit Register" icon={<WalletCards className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Credit_Register.xls", credits.map((credit) => ({ Bill: credit.billNo, Customer: credit.customerName, Mobile: credit.customerPhone || "-", Total: credit.subtotal, Paid: credit.amountPaid, Balance: credit.creditAmount, Due: credit.dueDate || "-", Status: credit.status })))}><Download className="size-4" /> Excel</button>}>
+        <Panel className="xl:col-span-2" title="SNB Branch Credit Register" icon={<WalletCards className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Credit_Register.xls", sortedCredits.map((credit) => ({ Bill: credit.billNo, Customer: credit.customerName, Mobile: credit.customerPhone || "-", Total: credit.subtotal, Paid: credit.amountPaid, Balance: credit.creditAmount, Due: credit.dueDate || "-", Status: credit.status })))}><Download className="size-4" /> Excel</button>}>
           <div className="grid min-h-[420px] gap-3 lg:grid-cols-[minmax(0,1.35fr)_minmax(280px,.65fr)]">
             <div className="overflow-auto rounded-2xl border border-slate-200">
-              <table className="w-full min-w-[720px] text-left text-xs"><thead className="sticky top-0 bg-slate-950 text-white"><tr>{["Bill","Customer","Mobile","Total","Paid","Balance","Due","Status"].map((label) => <th key={label} className="px-3 py-2.5 font-black uppercase tracking-wide">{label}</th>)}</tr></thead><tbody>{credits.map((credit) => <tr key={credit.id} onClick={() => setDetailId(credit.id)} className={cn("cursor-pointer border-t border-slate-100 hover:bg-amber-50", detailId === credit.id && "bg-amber-100")}><td className="px-3 py-2.5 font-black text-blue-700 underline">{credit.billNo}</td><td className="px-3 py-2.5 font-bold">{credit.customerName}</td><td className="px-3 py-2.5">{credit.customerPhone || "-"}</td><td className="px-3 py-2.5 font-bold">{money(credit.subtotal)}</td><td className="px-3 py-2.5">{money(credit.amountPaid)}</td><td className="px-3 py-2.5 font-black text-red-600">{money(credit.creditAmount)}</td><td className="px-3 py-2.5">{credit.dueDate || "-"}</td><td className="px-3 py-2.5"><StatusBadge tone={credit.status === "settled" ? "green" : credit.status === "partial" ? "amber" : "red"}>{credit.status}</StatusBadge></td></tr>)}</tbody></table>
+              <table className="w-full min-w-[720px] text-left text-xs"><thead className="sticky top-0 bg-slate-950 text-white"><tr>{([["Bill","billNo"],["Customer","customerName"],["Mobile","customerPhone"],["Total","subtotal"],["Paid","amountPaid"],["Balance","creditAmount"],["Due","dueDate"],["Status","status"]] as const).map(([label, field]) => <th key={label} onClick={() => toggleCreditSort(field)} className="cursor-pointer select-none px-3 py-2.5 font-black uppercase tracking-wide hover:bg-slate-800">{label}{creditSortArrow(field)}</th>)}</tr></thead><tbody>{sortedCredits.map((credit) => <tr key={credit.id} onClick={() => setDetailId(credit.id)} className={cn("cursor-pointer border-t border-slate-100 hover:bg-amber-50", detailId === credit.id && "bg-amber-100")}><td className="px-3 py-2.5 font-black text-blue-700 underline">{credit.billNo}</td><td className="px-3 py-2.5 font-bold">{credit.customerName}</td><td className="px-3 py-2.5">{credit.customerPhone || "-"}</td><td className="px-3 py-2.5 font-bold">{money(credit.subtotal)}</td><td className="px-3 py-2.5">{money(credit.amountPaid)}</td><td className="px-3 py-2.5 font-black text-red-600">{money(credit.creditAmount)}</td><td className="px-3 py-2.5">{credit.dueDate || "-"}</td><td className="px-3 py-2.5"><StatusBadge tone={credit.status === "settled" ? "green" : credit.status === "partial" ? "amber" : "red"}>{credit.status}</StatusBadge></td></tr>)}</tbody></table>
               {credits.length === 0 && <p className="p-8 text-center text-sm font-bold text-slate-500">No SNB credit sales found.</p>}
             </div>
             <aside className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
