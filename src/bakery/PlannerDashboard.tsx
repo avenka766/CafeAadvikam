@@ -101,8 +101,9 @@ export function autoSplitForItem(orders: BakeryOrder[], itemName: string, totalP
 
 export default function PlannerDashboard() {
   const { orders, loading, fetchOrders, subscribe, submitOrder } = useBakeryStore();
-  const [tab, setTab] = useState<PlannerTab>('incoming');
-  const [refreshing, setRefreshing] = useState(false);
+  const [searchParams] = useSearchParams();
+  const urlTab = searchParams.get('tab') as PlannerTab | null;
+  const tab: PlannerTab = urlTab && TABS.some(t => t.key === urlTab) ? urlTab : 'incoming';
 
   useEffect(() => {
     fetchOrders().catch(() => {});
@@ -110,11 +111,6 @@ export default function PlannerDashboard() {
     const interval = setInterval(() => { if (!document.hidden) fetchOrders(true); }, 15_000);
     return () => { unsubscribe(); clearInterval(interval); };
   }, [fetchOrders, subscribe]);
-
-  const handleRefresh = async () => {
-    setRefreshing(true);
-    try { await fetchOrders(true, true); } finally { setRefreshing(false); }
-  };
 
   const incomingOrders   = useMemo(() => orders.filter(o => o.status === 'pending'), [orders]);
   const sentOrders        = useMemo(() => orders.filter(o => o.status === 'accepted' || o.status === 'store_confirmed' || o.status === 'produced' || o.status === 'dispatched'), [orders]);
@@ -126,47 +122,6 @@ export default function PlannerDashboard() {
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-slate-50 to-white">
-      <header className="sticky top-0 z-10 border-b border-border bg-white/95 backdrop-blur px-4 py-3 shadow-sm">
-        <div className="mx-auto flex max-w-7xl items-center justify-between gap-3">
-          <div>
-            <h1 className="text-lg font-black text-slate-900">Planner</h1>
-            <p className="text-xs font-semibold text-slate-500">Merge orders · production · dispatch · cake · closure</p>
-          </div>
-          <button
-            onClick={handleRefresh}
-            disabled={refreshing || loading}
-            className="flex items-center gap-2 rounded-xl border border-border bg-white px-3 py-2 text-xs font-bold text-slate-600 hover:bg-slate-50 disabled:opacity-50"
-          >
-            <RefreshCw className={cn('size-3.5', (refreshing || loading) && 'animate-spin')} />
-            Refresh
-          </button>
-        </div>
-        <nav className="mx-auto mt-3 flex max-w-7xl gap-1 overflow-x-auto pb-1">
-          {TABS.map(t => (
-            <button
-              key={t.key}
-              onClick={() => setTab(t.key)}
-              className={cn(
-                'flex shrink-0 items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-bold transition',
-                tab === t.key ? 'bg-slate-900 text-white shadow' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-              )}
-            >
-              {t.icon}
-              {t.label}
-              {t.key === 'incoming' && incomingOrders.length > 0 && (
-                <span className="ml-1 rounded-full bg-white/20 px-1.5 py-0.5 text-[10px]">{incomingOrders.length}</span>
-              )}
-              {t.key === 'production' && readyForProduction.length > 0 && (
-                <span className="ml-1 rounded-full bg-white/20 px-1.5 py-0.5 text-[10px]">{readyForProduction.length}</span>
-              )}
-              {t.key === 'dispatch' && producedOrders.length > 0 && (
-                <span className="ml-1 rounded-full bg-white/20 px-1.5 py-0.5 text-[10px]">{producedOrders.length}</span>
-              )}
-            </button>
-          ))}
-        </nav>
-      </header>
-
       <main className="mx-auto max-w-7xl px-4 py-6">
         {loading && orders.length === 0 ? (
           <div className="flex justify-center py-20"><Loader2 className="size-6 animate-spin text-slate-400" /></div>
