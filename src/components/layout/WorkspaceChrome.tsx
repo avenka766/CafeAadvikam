@@ -41,6 +41,7 @@ import {
 import { useAuthStore } from '@/stores/authStore';
 import { cn } from '@/lib/utils';
 import CafeBillerTopNav from '@/components/layout/CafeBillerTopNav';
+import { useSnbTabStripStore } from '@/stores/snbTabStripStore';
 
 interface WorkspaceChromeProps {
   children: React.ReactNode;
@@ -310,6 +311,7 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
   const isBranchBillingRoute = /^\/branch\/(snb|vrsnb)/.test(location.pathname);
   const isReceiverOrderRole = currentUser?.role === 'receiver_snb' || currentUser?.role === 'receiver_vrsnb';
   const isCafeBillerRoute = currentUser?.role === 'billing' && /^\/(billing|daily-closure|order-history)/.test(location.pathname);
+  const snbTabStripExpanded = useSnbTabStripStore((s) => s.expanded);
   const isFullscreenBillingRoute = isBranchBillingRoute || isCafeBillerRoute;
   // CHANGE 1: also hide workspace hero for /admin-dashboard
   const hideWorkspaceHero = /^\/(order-pad|kitchen|billing)/.test(location.pathname)
@@ -466,7 +468,7 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
           </section>
         )}
 
-        {isCafeBillerRoute && <CafeBillerTopNav />}
+        {isCafeBillerRoute && snbTabStripExpanded && <CafeBillerTopNav />}
 
         <div className={cn('workspace-content-frame', isFullscreenBillingRoute && 'branch-billing-content-frame min-h-0 flex-1 overflow-hidden')}>
           {children}

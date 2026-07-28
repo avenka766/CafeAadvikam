@@ -133,7 +133,7 @@ export default function Header() {
               <RefreshCw className={cn('size-3.5', branchRefreshing && 'animate-spin')} />
             </button>
           )}
-          {isBranchCounterRoute && (
+          {(isBranchCounterRoute || isCafeBillerRoute) && (
             <button
               type="button"
               onClick={toggleSnbTabStrip}
