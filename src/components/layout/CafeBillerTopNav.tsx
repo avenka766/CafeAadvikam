@@ -82,7 +82,7 @@ export default function CafeBillerTopNav() {
             <button
               key={item.path}
               type="button"
-              onClick={() => navigate(item.path)}
+              onClick={() => navigate(item.path, { replace: item.path === '/billing' })}
               className={cn(
                 'cafe-biller-top-nav-button inline-flex min-h-8 shrink-0 items-center justify-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-black transition active:scale-[0.97]',
                 isActive ? item.activeTone : item.tone,
