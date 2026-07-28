@@ -9,9 +9,10 @@ import { supabase } from '@/lib/supabase';
 import {
   BRANCH, cleanPhone, notifyAdmin, buildBillMessage, nextBillNo,
   createWhatsappQrMedia, createWhatsappBillDocument, createWhatsappBillImage, uploadWhatsappMedia,
-  getHosurCounterStatus, mapBill, mapBillItem, safeMediaFileName, base64MediaBlob,
+  mapBill, mapBillItem, safeMediaFileName, base64MediaBlob,
   type PaymentType, type BillStatus, type HosurBill, type HosurBillItem, type HosurWhatsappLog,
 } from '@/pages/HosurDashboard';
+import { getPackingCounterStatus } from './packingCounter';
 
 export interface HosurOrderForBilling {
   id: string;
@@ -144,9 +145,9 @@ export async function dispatchReceiveAndBill(params: {
 }): Promise<{ billId: string; billNo: string; whatsappStatus: 'sent' | 'failed'; whatsappError: string | null }> {
   const { order, items, payment, userName } = params;
 
-  const counter = await getHosurCounterStatus();
+  const counter = await getPackingCounterStatus();
   if (!counter.isOpen) {
-    throw new Error("Hosur cashier counter is closed. Open today's counter in Daily Closure before billing.");
+    throw new Error("Planner's counter is closed. Open today's counter in Daily Closure before billing.");
   }
 
   // 1. Mark items received == what was dispatched (Planner is both sender and

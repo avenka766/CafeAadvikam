@@ -1229,7 +1229,7 @@ function OrdersTab() {
     return () => { unsubOrders(); unsubStock(); unsubBakeryItems(); };
   }, [fetchOrders, loadStock, loadAllItems, subscribeOrders, subscribeStock, subscribeBakeryItems]);
 
-  const pending = orders.filter(o => o.status === 'pending' || o.status === 'accepted');
+  const pending: typeof orders = [];
 
   const refreshNow = async () => {
     if (refreshing) return;
@@ -2065,7 +2065,7 @@ export default function StoreDashboard() {
 
   const requestedTab = searchParams.get('tab') as StoreDashboardTab | null;
   const tab: StoreDashboardTab = requestedTab && STORE_TABS.includes(requestedTab) ? requestedTab : 'orders';
-  const pending    = orders.filter(o => o.status === 'pending' || o.status === 'accepted');
+  const pending: typeof orders = [];
   const sentOrders = orders.filter(o => ['store_confirmed','produced','dispatched'].includes(o.status));
   const uniqueStockItems = useMemo(() => {
     const byName = new Map<string, typeof stockItems[number]>();
