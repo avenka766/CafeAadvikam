@@ -2078,8 +2078,8 @@ export default function StoreDashboard() {
   }, [stockItems]);
   const lowStock   = uniqueStockItems.filter(i => i.quantity <= i.minThreshold);
   const tabs = [
-    { id: 'orders',    label: 'Orders',             description: 'Baker queue',        icon: Package,     badge: pending.length > 0 ? String(pending.length) : null, badgeColor: 'bg-amber-500' },
-    { id: 'history',   label: 'History',            description: 'Sent to production', icon: History,     badge: sentOrders.length > 0 ? String(sentOrders.length) : null, badgeColor: 'bg-emerald-500' },
+    { id: 'orders',    label: 'Orders',             description: 'Handled by Planner',  icon: Package,     badge: null, badgeColor: 'bg-amber-500' },
+    { id: 'history',   label: 'Sent by Planner',    description: 'Ready to confirm stock', icon: History,     badge: sentOrders.length > 0 ? String(sentOrders.length) : null, badgeColor: 'bg-emerald-500' },
     { id: 'inventory', label: 'Inventory',          description: 'Raw stock control',  icon: Warehouse,   badge: lowStock.length > 0 ? String(lowStock.length) : null, badgeColor: 'bg-red-500' },
     { id: 'suppliers', label: 'Suppliers',          description: 'Vendor directory',   icon: Truck,       badge: suppliers.length > 0 ? String(suppliers.length) : null, badgeColor: 'bg-primary' },
     { id: 'invoices',  label: 'Invoices',           description: 'Purchase records',   icon: FileText,    badge: null, badgeColor: '' },
