@@ -559,3 +559,67 @@ export function useSnbAdminReports(fromDate: string, toDate: string) {
 
   return { ...data, loading, error, refreshedAt, refresh, hasDatabaseReports };
 }
+
+// ─── Lightweight, all-time cash summary (Bank Deposits / Current Cash tabs) ────
+// Deliberately queries only the two small tables these tabs actually need
+// (one row per counter session, one row per supplier payment) instead of the
+// full 15-table admin report set. The full useSnbAdminReports() hook fetches
+// large per-bill / per-item tables which, when queried across the entire
+// history with no date bound, can hit the database statement timeout.
+export type SnbCashSummaryRow = {
+  business_date: string;
+  branch?: string | null;
+  cash_sales: number | string | null;
+  upi_sales: number | string | null;
+  card_sales: number | string | null;
+  gross_sales: number | string | null;
+  net_sales: number | string | null;
+  credit_collected: number | string | null;
+  advance_collected: number | string | null;
+  expenses: number | string | null;
+  supplier_payments: number | string | null;
+};
+
+export function useSnbCashSummary(branch: string) {
+  const [counterSessions, setCounterSessions] = useState<SnbCashSummaryRow[]>([]);
+  const [supplierPayments, setSupplierPayments] = useState<SnbSupplierPaymentRow[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [refreshedAt, setRefreshedAt] = useState<string | null>(null);
+  const requestIdRef = useRef(0);
+
+  const refresh = useCallback(async () => {
+    const requestId = ++requestIdRef.current;
+    setLoading(true);
+    setError("");
+    const results = await Promise.allSettled([
+      fetchPaged("branch_counter_sessions", {
+        branchColumn: "branch",
+        orderColumn: "business_date",
+        columns: "business_date,branch,cash_sales,upi_sales,card_sales,gross_sales,net_sales,credit_collected,advance_collected,expenses,supplier_payments",
+      }),
+      fetchPaged("snb_supplier_payments", {
+        orderColumn: "payment_date",
+        columns: "id,supplier_name,payment_date,amount,payment_method",
+      }),
+    ]);
+    if (requestId !== requestIdRef.current) return;
+
+    const errors: string[] = [];
+    if (results[0].status === "fulfilled") setCounterSessions(results[0].value as SnbCashSummaryRow[]);
+    else errors.push(results[0].reason instanceof Error ? results[0].reason.message : String(results[0].reason));
+
+    if (results[1].status === "fulfilled") setSupplierPayments(results[1].value as SnbSupplierPaymentRow[]);
+    else errors.push(results[1].reason instanceof Error ? results[1].reason.message : String(results[1].reason));
+
+    setError(errors.join(" | "));
+    setRefreshedAt(new Date().toISOString());
+    setLoading(false);
+  }, [branch]);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  return { counterSessions, supplierPayments, loading, error, refreshedAt, refresh };
+}
