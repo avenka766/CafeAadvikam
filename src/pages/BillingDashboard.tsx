@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
-import { useOrderStore } from '@/stores/orderStore';
+import { useOrderStore, dbRowToOrder } from '@/stores/orderStore';
 import { useShallow } from 'zustand/react/shallow'; // STORE-01 FIX: granular selectors
 import { useMenuStore } from '@/stores/menuStore';
 import { useAuthStore } from '@/stores/authStore';
@@ -391,13 +391,26 @@ function safeHtml(value: unknown): string {
 
 function printCounterSlip(title: string, bodyHtml: string) {
   const win = window.open('', '_blank', 'width=420,height=720');
-  if (!win) return;
+  if (!win) return Promise.resolve();
   win.document.write(`<!DOCTYPE html><html><head><title>${safeHtml(title)}</title>
 <style>
-@page{margin:4mm;size:80mm auto}*{box-sizing:border-box}body{margin:0;width:76mm;font-family:'Courier New',monospace;color:#000;font-size:12px;line-height:1.22}.c{text-align:center}.r{text-align:right}.b{font-weight:900}.muted{color:#444}.big{font-size:16px}.shop{font-size:17px;font-weight:900}.dash{border-top:1px dashed #000;margin:6px 0}.solid{border-top:2px solid #000;margin:6px 0}.row{display:flex;justify-content:space-between;gap:8px}.mt{margin-top:6px}.paid{font-size:15px;font-weight:900;text-align:center;margin-bottom:3px}.meta{display:grid;grid-template-columns:1fr 1fr;gap:2px 8px}.meta .wide{grid-column:1/-1}.pick{text-align:center;font-size:16px;font-weight:900}table{width:100%;border-collapse:collapse}td,th{padding:3px 1px;vertical-align:top}th{text-align:left;border-bottom:1px solid #000}tbody tr.item-row td{border-bottom:1px solid #ddd}.num{text-align:right}.grand{display:flex;justify-content:space-between;align-items:center;font-size:18px;font-weight:900;padding:6px 0}.thanks{text-align:center;font-size:14px;margin-top:8px}.small{font-size:10px}
+@page{margin:4mm;size:80mm auto}*{box-sizing:border-box}body{margin:0;width:76mm;font-family:'Courier New',monospace;color:#000;font-size:12px;line-height:1.3}.c{text-align:center}.r{text-align:right}.b{font-weight:900}.muted{color:#444}.big{font-size:16px}.shop{font-size:17px;font-weight:900}.dash{border-top:1px dashed #000;margin:6px 0}.solid{border-top:2px solid #000;margin:6px 0}.kv{width:100%;border-collapse:collapse}.kv td{padding:1px 0;vertical-align:top}.mt{margin-top:6px}.paid{font-size:15px;font-weight:900;text-align:center;margin-bottom:3px}.pick{text-align:right;font-size:16px;font-weight:900}table{width:100%;border-collapse:collapse}td,th{padding:3px 1px;vertical-align:top}th{text-align:left;border-bottom:1px solid #000}tbody tr.item-row td{border-bottom:1px solid #ddd}.num{text-align:right}.grand td{font-size:18px;font-weight:900;padding:6px 0}.thanks{text-align:center;font-size:14px;margin-top:8px}.small{font-size:10px}
 </style></head><body>${bodyHtml}</body></html>`);
   win.document.close();
-  setTimeout(() => { win.focus(); win.print(); win.close(); }, 350);
+  return new Promise<void>((resolve) => {
+    const finish = () => { try { win.close(); } catch { /* already closed */ } resolve(); };
+    win.onafterprint = finish;
+    setTimeout(() => { win.focus(); win.print(); setTimeout(finish, 800); }, 350);
+  });
+}
+
+// Two/three-column receipt rows MUST use a <table> (not flex/grid divs) — on
+// this printer pipeline, plain divs with flex/grid collapse and run text
+// together (e.g. "Date: 29/07/26Table 1"), while <table> layout reliably
+// stays aligned, exactly like the item table already does.
+function kvRow(cells: string[], opts: { bold?: boolean; big?: boolean } = {}): string {
+  const tds = cells.map((c, i) => `<td class="${i === cells.length - 1 && cells.length > 1 ? 'r' : ''}">${c}</td>`).join('');
+  return `<table class="kv${opts.big ? ' grand' : ''}"><tr class="${opts.bold ? 'b' : ''}">${tds}</tr></table>`;
 }
 
 function moneyHtml(value: number): string {
@@ -478,14 +491,14 @@ function receiptTotals(order: Order, payable: number, extraRows = ''): string {
   const parcelCharges = order.parcelCharges ?? 0;
   return `
     <div class="solid"></div>
-    <div class="row"><span>Total Qty: ${totalQty}</span><span>Sub Total</span><span>${taxableTotal.toFixed(2)}</span></div>
-    <div class="row"><span></span><span>CGST@2.5 2.5%</span><span>${gst.cgst.toFixed(2)}</span></div>
-    <div class="row"><span></span><span>SGST@2.5 2.5%</span><span>${gst.sgst.toFixed(2)}</span></div>
-    ${parcelCharges > 0 ? `<div class="row"><span></span><span>Parcel</span><span>${parcelCharges.toFixed(2)}</span></div>` : ''}
-    ${Number(order.discount || 0) > 0 ? `<div class="row"><span></span><span>Promotion</span><span>-${Number(order.discount).toFixed(2)}</span></div>` : ''}
+    ${kvRow([`Total Qty: ${totalQty}`, 'Sub Total', taxableTotal.toFixed(2)])}
+    ${kvRow(['', 'CGST@2.5 2.5%', gst.cgst.toFixed(2)])}
+    ${kvRow(['', 'SGST@2.5 2.5%', gst.sgst.toFixed(2)])}
+    ${parcelCharges > 0 ? kvRow(['', 'Parcel', parcelCharges.toFixed(2)]) : ''}
+    ${Number(order.discount || 0) > 0 ? kvRow(['', 'Promotion', `-${Number(order.discount).toFixed(2)}`]) : ''}
     ${extraRows}
     <div class="solid"></div>
-    <div class="grand"><span>Grand Total</span><span>${moneyHtml(payable)}</span></div>
+    ${kvRow(['Grand Total', moneyHtml(payable)], { big: true })}
   `;
 }
 
@@ -496,53 +509,65 @@ function dateTimeLabel(value?: string): string {
   return d.toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
-function printKotSlip(order: Order) {
+function kotBody(order: Order): string {
   const dt = receiptDate(order.createdAt);
   const rows = order.items.map(ci => `
-    <div class="row"><span>${safeHtml(ci.menuItem.name)}${ci.notes ? ` <span style="color:#666">(${safeHtml(ci.notes)})</span>` : ''}</span><span class="b">x${ci.quantity}</span></div>
+    ${kvRow([`${safeHtml(ci.menuItem.name)}${ci.notes ? ` (${safeHtml(ci.notes)})` : ''}`, `x${ci.quantity}`], { bold: true })}
   `).join('');
-  printCounterSlip(`KOT ${order.orderNumber}`, `
+  return `
     <div class="thanks" style="font-size:14px">KOT - ${safeHtml(billNo(order))}</div>
-    <div class="meta">
-      <div>Date: ${safeHtml(dt.date)}</div><div class="pick">${order.orderType === 'dine_in' ? `TABLE ${order.tableNumber ?? '-'}` : 'Pick UP'}</div>
-      <div>${safeHtml(dt.time)}</div><div></div>
-    </div>
+    ${kvRow([`Date: ${safeHtml(dt.date)}`, order.orderType === 'dine_in' ? `TABLE ${order.tableNumber ?? '-'}` : 'Pick UP'])}
+    ${kvRow([safeHtml(dt.time), ''])}
     <div class="dash"></div>
     ${rows}
     <div class="dash"></div>
-  `);
+  `;
 }
 
-function printPaidBill(order: Order, copyType: 'original' | 'duplicate' = 'original') {
+function printKotSlip(order: Order) {
+  return printCounterSlip(`KOT ${order.orderNumber}`, kotBody(order));
+}
+
+function billBody(order: Order, copyType: 'original' | 'duplicate' = 'original'): string {
   const paidBy = PAYMENT_LABELS_PRINT[order.paymentType] || order.paymentType;
   const breakdownRows = order.paymentBreakdown ? `
-    <div class="row"><span>Cash</span><span class="b">${moneyHtml(order.paymentBreakdown.cash || 0)}</span></div>
-    <div class="row"><span>UPI</span><span class="b">${moneyHtml(order.paymentBreakdown.upi || 0)}</span></div>
-    <div class="row"><span>Card</span><span class="b">${moneyHtml(order.paymentBreakdown.card || 0)}</span></div>
-    ${Number(order.paymentBreakdown.wallet || 0) > 0 ? `<div class="row"><span>Wallet</span><span class="b">${moneyHtml(order.paymentBreakdown.wallet || 0)}</span></div>` : ''}
-    ${Number(order.paymentBreakdown.credit || 0) > 0 ? `<div class="row"><span>Credit</span><span class="b">${moneyHtml(order.paymentBreakdown.credit || 0)}</span></div>` : ''}
+    ${kvRow(['Cash', moneyHtml(order.paymentBreakdown.cash || 0)], { bold: true })}
+    ${kvRow(['UPI', moneyHtml(order.paymentBreakdown.upi || 0)], { bold: true })}
+    ${kvRow(['Card', moneyHtml(order.paymentBreakdown.card || 0)], { bold: true })}
+    ${Number(order.paymentBreakdown.wallet || 0) > 0 ? kvRow(['Wallet', moneyHtml(order.paymentBreakdown.wallet || 0)], { bold: true }) : ''}
+    ${Number(order.paymentBreakdown.credit || 0) > 0 ? kvRow(['Credit', moneyHtml(order.paymentBreakdown.credit || 0)], { bold: true }) : ''}
   ` : '';
   const dt = receiptDate(order.createdAt);
-  printCounterSlip(`Bill ${order.orderNumber}`, `
+  return `
     ${cafeHeader('PAID', copyType === 'duplicate' ? 'DUPLICATE BILL' : 'TAX INVOICE')}
-    <div class="row"><span>Name:</span><span>${safeHtml(order.customerName || '')}</span></div>
+    ${kvRow(['Name:', safeHtml(order.customerName || '')])}
     <div class="solid"></div>
-    <div class="meta">
-      <div>Date: ${safeHtml(dt.date)}</div><div class="pick">${order.orderType === 'dine_in' ? `TABLE ${order.tableNumber ?? '-'}` : 'Pick UP'}</div>
-      <div>${safeHtml(dt.time)}</div><div>Bill No.: ${safeHtml(billNo(order))}</div>
-      <div class="wide">Cashier: ${safeHtml(order.billedBy || order.createdBy)}</div>
-    </div>
+    ${kvRow([`Date: ${safeHtml(dt.date)}`, order.orderType === 'dine_in' ? `TABLE ${order.tableNumber ?? '-'}` : 'Pick UP'])}
+    ${kvRow([safeHtml(dt.time), `Bill No.: ${safeHtml(billNo(order))}`])}
+    ${kvRow([`Cashier: ${safeHtml(order.billedBy || order.createdBy)}`, ''])}
     <div class="dash"></div>
     ${receiptItemTable(order)}
     ${receiptTotals(order, order.total)}
-    <div>Paid via ${safeHtml(paidBy)}</div>
+    ${kvRow([`Paid via ${safeHtml(paidBy)}`, ''])}
     ${breakdownRows}
-    ${order.walletTransactionId ? `<div class="row"><span>Wallet Txn</span><span>${safeHtml(order.walletTransactionId)}</span></div>` : ''}
-    ${order.walletBalanceRemaining !== undefined ? `<div class="row"><span>Wallet Balance</span><span class="b">${moneyHtml(order.walletBalanceRemaining)}</span></div>` : ''}
-    ${Number(order.walletCashback || 0) > 0 ? `<div class="row"><span>Wallet Cashback</span><span class="b">${moneyHtml(order.walletCashback || 0)}</span></div>` : ''}
+    ${order.walletTransactionId ? kvRow(['Wallet Txn', safeHtml(order.walletTransactionId)]) : ''}
+    ${order.walletBalanceRemaining !== undefined ? kvRow(['Wallet Balance', moneyHtml(order.walletBalanceRemaining)], { bold: true }) : ''}
+    ${Number(order.walletCashback || 0) > 0 ? kvRow(['Wallet Cashback', moneyHtml(order.walletCashback || 0)], { bold: true }) : ''}
     <div class="solid"></div>
     <div class="thanks">Thank You & Visit Again...!!!</div>
-  `);
+  `;
+}
+
+function printPaidBill(order: Order, copyType: 'original' | 'duplicate' = 'original') {
+  return printCounterSlip(`Bill ${order.orderNumber}`, billBody(order, copyType));
+}
+
+// Prints the KOT and the paid bill as ONE print job (KOT section first, bill
+// immediately after, on the same slip) instead of two separate popups/print
+// jobs — this is what removes the risk of the two prints racing or arriving
+// out of order.
+function printKotThenBill(order: Order, copyType: 'original' | 'duplicate' = 'original') {
+  return printCounterSlip(`Bill ${order.orderNumber}`, `${kotBody(order)}<div class="solid"></div>${billBody(order, copyType)}`);
 }
 
 function printAdvanceSalesSlip(order: Order, mobile: string, orderDate: string, billPerson: string) {
@@ -552,20 +577,18 @@ function printAdvanceSalesSlip(order: Order, mobile: string, orderDate: string, 
   const dt = receiptDate(order.createdAt);
   printCounterSlip(`Sales Order ${order.orderNumber}`, `
     ${cafeHeader(balance <= 0 ? 'PAID' : 'ADVANCE PAID', 'SALES ORDER SLIP')}
-    <div class="row"><span>Name:</span><span>${safeHtml(order.customerName || '-')}</span></div>
-    <div class="row"><span>Mobile:</span><span>${safeHtml(mobile || '-')}</span></div>
+    ${kvRow(['Name:', safeHtml(order.customerName || '-')])}
+    ${kvRow(['Mobile:', safeHtml(mobile || '-')])}
     <div class="solid"></div>
-    <div class="meta">
-      <div>Date: ${safeHtml(orderDate || dt.date)}</div><div class="pick">Pick UP</div>
-      <div>${safeHtml(dt.time)}</div><div>Bill No.: SO-${safeHtml(billNo(order))}</div>
-      <div class="wide">Cashier: ${safeHtml(billPerson || order.billedBy || order.createdBy)}</div>
-      <div class="wide">Delivery: ${safeHtml(dateTimeLabel(order.deliveryDate))}</div>
-    </div>
+    ${kvRow([`Date: ${safeHtml(orderDate || dt.date)}`, 'Pick UP'])}
+    ${kvRow([safeHtml(dt.time), `Bill No.: SO-${safeHtml(billNo(order))}`])}
+    ${kvRow([`Cashier: ${safeHtml(billPerson || order.billedBy || order.createdBy)}`, ''])}
+    ${kvRow([`Delivery: ${safeHtml(dateTimeLabel(order.deliveryDate))}`, ''])}
     <div class="dash"></div>
     ${receiptItemTable(order)}
     ${receiptTotals(order, fullAmount, `
-      <div class="row"><span></span><span>Tender Amount</span><span>${advance.toFixed(2)}</span></div>
-      <div class="row"><span></span><span>Change Due</span><span>${balance.toFixed(2)}</span></div>
+      ${kvRow(['', 'Tender Amount', advance.toFixed(2)])}
+      ${kvRow(['', 'Change Due', balance.toFixed(2)])}
     `)}
     <div>Paid via ${safeHtml(PAYMENT_LABELS_PRINT[order.advancePaidBy || ''] || order.advancePaidBy || '-')}</div>
     <div>Advances from Sales Order: ${moneyHtml(advance)}</div>
@@ -581,19 +604,17 @@ function printAdvanceClosureBill(order: Order, balancePaymentType: string, balan
   const dt = receiptDate(new Date().toISOString());
   printCounterSlip(`Advance Closure ${order.orderNumber}`, `
     ${cafeHeader('PAID', 'ADVANCE FINAL BILL')}
-    <div class="row"><span>Name:</span><span>${safeHtml(order.customerName || '-')}</span></div>
+    ${kvRow(['Name:', safeHtml(order.customerName || '-')])}
     <div class="solid"></div>
-    <div class="meta">
-      <div>Date: ${safeHtml(dt.date)}</div><div class="pick">Pick UP</div>
-      <div>${safeHtml(dt.time)}</div><div>Bill No.: ${safeHtml(billNo(order))}</div>
-      <div class="wide">Cashier: ${safeHtml(balancePaidBy)}</div>
-      <div class="wide">Delivery: ${safeHtml(dateTimeLabel(order.deliveryDate))}</div>
-    </div>
+    ${kvRow([`Date: ${safeHtml(dt.date)}`, 'Pick UP'])}
+    ${kvRow([safeHtml(dt.time), `Bill No.: ${safeHtml(billNo(order))}`])}
+    ${kvRow([`Cashier: ${safeHtml(balancePaidBy)}`, ''])}
+    ${kvRow([`Delivery: ${safeHtml(dateTimeLabel(order.deliveryDate))}`, ''])}
     <div class="dash"></div>
     ${receiptItemTable(order)}
     ${receiptTotals(order, fullAmount, `
-      <div class="row"><span></span><span>Advance Paid</span><span>${advance.toFixed(2)}</span></div>
-      <div class="row"><span></span><span>Paid Now</span><span>${paidNow.toFixed(2)}</span></div>
+      ${kvRow(['', 'Advance Paid', advance.toFixed(2)])}
+      ${kvRow(['', 'Paid Now', paidNow.toFixed(2)])}
     `)}
     <div>Paid via ${safeHtml(PAYMENT_LABELS_PRINT[balancePaymentType] || balancePaymentType)}</div>
     <div class="solid"></div>
@@ -605,15 +626,13 @@ function printCreditBill(order: Order, phone: string, dueDate: string) {
   const dt = receiptDate(order.createdAt);
   printCounterSlip(`Credit Bill ${order.orderNumber}`, `
     ${cafeHeader('CREDIT', 'CREDIT BILL')}
-    <div class="row"><span>Name:</span><span>${safeHtml(order.customerName || '-')}</span></div>
-    <div class="row"><span>Mobile:</span><span>${safeHtml(phone || '-')}</span></div>
-    <div class="row"><span>Due Date:</span><span>${safeHtml(dueDate || '-')}</span></div>
+    ${kvRow(['Name:', safeHtml(order.customerName || '-')])}
+    ${kvRow(['Mobile:', safeHtml(phone || '-')])}
+    ${kvRow(['Due Date:', safeHtml(dueDate || '-')])}
     <div class="solid"></div>
-    <div class="meta">
-      <div>Date: ${safeHtml(dt.date)}</div><div class="pick">${order.orderType === 'dine_in' ? `TABLE ${order.tableNumber ?? '-'}` : 'Pick UP'}</div>
-      <div>${safeHtml(dt.time)}</div><div>Bill No.: CR-${safeHtml(billNo(order))}</div>
-      <div class="wide">Cashier: ${safeHtml(order.billedBy || order.createdBy)}</div>
-    </div>
+    ${kvRow([`Date: ${safeHtml(dt.date)}`, order.orderType === 'dine_in' ? `TABLE ${order.tableNumber ?? '-'}` : 'Pick UP'])}
+    ${kvRow([safeHtml(dt.time), `Bill No.: CR-${safeHtml(billNo(order))}`])}
+    ${kvRow([`Cashier: ${safeHtml(order.billedBy || order.createdBy)}`, ''])}
     <div class="dash"></div>
     ${receiptItemTable(order)}
     ${receiptTotals(order, order.total)}
@@ -1499,7 +1518,6 @@ function NewBillPanel() {
   const [tableNumber, setTableNumber] = useState<number | null>(null);
   const [customerName, setCustomerName] = useState('');
   const [notes, setNotes] = useState('');
-  const [showTableSelect, setShowTableSelect] = useState(false);
   const [tableError, setTableError] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [showSuccess, setShowSuccess] = useState(false);
@@ -1527,6 +1545,131 @@ function NewBillPanel() {
   const [customQty, setCustomQty]     = useState('1');
   const [customError, setCustomError] = useState('');
   const [submitError, setSubmitError] = useState('');
+
+  // -- Running table order (KOT) state ----------------------------------------
+  // A dine-in table can accumulate items across several "Send to Kitchen"
+  // actions (each prints a KOT) before one final "Bill & Print" closes it out.
+  const [runningOrder, setRunningOrder] = useState<Order | null>(null);
+  const [runningOrderLoading, setRunningOrderLoading] = useState(false);
+  const [sendingKot, setSendingKot] = useState(false);
+  const [kotSuccess, setKotSuccess] = useState<number | null>(null);
+
+  const refreshRunningOrder = useCallback(async (table: number | null) => {
+    if (!table) { setRunningOrder(null); return; }
+    setRunningOrderLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from('orders')
+        .select('*')
+        .eq('table_number', table)
+        .eq('order_type', 'dine_in')
+        .eq('status', 'running')
+        .maybeSingle();
+      if (error) throw error;
+      setRunningOrder(data ? dbRowToOrder(data as Record<string, unknown>) : null);
+    } catch {
+      // Table view still usable even if this lookup fails; the button below
+      // will surface a clear error if the table really is already running.
+      setRunningOrder(null);
+    } finally {
+      setRunningOrderLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (orderType === 'dine_in') void refreshRunningOrder(tableNumber);
+    else setRunningOrder(null);
+  }, [orderType, tableNumber, refreshRunningOrder]);
+
+  const runningItemCount = runningOrder?.items.reduce((s, i) => s + i.quantity, 0) ?? 0;
+
+  // -- Table Board: live status of every table (Free / Running + item count) --
+  const [tableBoard, setTableBoard] = useState<Record<number, number>>({});
+  const loadTableBoard = useCallback(async () => {
+    try {
+      const { data, error } = await supabase.rpc('get_running_table_orders_v1');
+      if (error) throw error;
+      const board: Record<number, number> = {};
+      (data as Record<string, unknown>[] ?? []).forEach((row) => {
+        const t = row.table_number as number | null;
+        if (!t) return;
+        const items = (row.items as { quantity: number }[] | null) ?? [];
+        board[t] = items.reduce((s, i) => s + (i.quantity || 0), 0);
+      });
+      setTableBoard(board);
+    } catch {
+      setTableBoard({});
+    }
+  }, []);
+  useEffect(() => { void loadTableBoard(); }, [loadTableBoard]);
+
+  const handleSendToKitchen = async () => {
+    if (!currentUser) return;
+    if (!tableNumber) { setTableError(true); setSubmitError('Select a table first.'); return; }
+    if (allEmpty) { setSubmitError('Add at least one item before sending to the kitchen.'); return; }
+    setSubmitError('');
+    setSendingKot(true);
+    try {
+      const newItems = [
+        ...cart.map((c) => ({ menuItem: c.menuItem, quantity: c.quantity, notes: c.notes })),
+        ...customItems.map((ci) => ({
+          menuItem: { id: ci.id, name: ci.name, price: ci.price, category: 'custom', timing: 'all', enabled: true },
+          quantity: ci.qty,
+        })),
+      ];
+      const billedBy = currentUser.displayName || currentUser.username;
+      let kotNumber: number;
+      let orderId: string;
+      let allItems: Order['items'];
+
+      if (runningOrder) {
+        const { data, error } = await supabase.rpc('add_items_to_table_order_v1', {
+          p_order_id: runningOrder.id,
+          p_items: newItems,
+          p_created_by: billedBy,
+        });
+        if (error) throw new Error(error.message);
+        kotNumber = data.kotNumber;
+        orderId = runningOrder.id;
+        allItems = data.items as Order['items'];
+      } else {
+        const { data, error } = await supabase.rpc('start_table_order_v1', {
+          p_table_number: tableNumber,
+          p_items: newItems,
+          p_created_by: billedBy,
+          p_notes: notes || null,
+        });
+        if (error) throw new Error(error.message);
+        kotNumber = data.kotNumber;
+        orderId = data.orderId;
+        allItems = newItems as Order['items'];
+      }
+
+      printKotSlip({
+        id: orderId,
+        orderNumber: kotNumber,
+        tableNumber,
+        orderType: 'dine_in',
+        items: newItems as Order['items'],
+        subtotal: 0, discount: 0, discountType: 'flat', discountValue: 0, total: 0,
+        status: 'running',
+        createdBy: billedBy,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+
+      clearCart();
+      setCustomItems([]); setCustomName(''); setCustomPrice(''); setCustomQty('1');
+      await refreshRunningOrder(tableNumber);
+      void loadTableBoard();
+      setKotSuccess(kotNumber);
+      setTimeout(() => setKotSuccess(null), 2500);
+    } catch (err) {
+      setSubmitError(err instanceof Error ? err.message : 'Failed to send order to kitchen.');
+    } finally {
+      setSendingKot(false);
+    }
+  };
 
   useEffect(() => {
     void loadMenu();
@@ -1625,6 +1768,10 @@ function NewBillPanel() {
       setSubmitError('Select table before billing.');
       return;
     }
+    if (orderType === 'dine_in' && !runningOrder && allEmpty) {
+      setSubmitError('Send items to the kitchen first, then bill the table.');
+      return;
+    }
     setTableError(false);
     setSubmitError('');
     setBillMethod(paymentMode === 'wallet' ? 'wallet' : billMethod === 'wallet' ? 'cash' : billMethod);
@@ -1632,11 +1779,118 @@ function NewBillPanel() {
   };
 
   const handleSubmit = async () => {
-    if (allEmpty) return;
+    if (allEmpty && !(orderType === 'dine_in' && runningOrder)) return;
     if (!currentUser) return;
     if (!counterOpenedToday) { setSubmitError('Counter is not opened. Open Cashier Counter, then Counter Open before billing.'); return; }
     if (orderType === 'dine_in' && !tableNumber) { setTableError(true); return; }
     setTableError(false);
+
+    // -- Table order finalize path (dine-in with a running/KOT'd order) --------
+    // Wallet payments aren't supported for running tables yet — use Takeaway
+    // billing (or a table with no KOTs sent yet) for wallet transactions.
+    if (orderType === 'dine_in' && runningOrder) {
+      if (paymentMode === 'wallet') {
+        setSubmitError('Wallet payment is not available for table orders yet. Bill this table with cash/UPI/card/split/credit instead.');
+        return;
+      }
+      if (paymentMode === 'credit') {
+        const phoneDigits = creditCustomerPhone.replace(/\D/g, '');
+        if (!customerName.trim()) { setCreditError('Customer name is required for credit sale'); return; }
+        if (!creditCustomerPhone.trim()) { setCreditError('Phone number is required for credit sale'); return; }
+        if (phoneDigits.length < 10) { setCreditError('Enter a valid phone number for credit sale'); return; }
+        if (!creditDueDate) { setCreditError('Due date is required for credit sale'); return; }
+        setCreditError('');
+      } else if (billMethod === 'part_payment') {
+        const values = Object.values(splitBreakdown);
+        if (values.some((value) => Number.isNaN(value) || value < 0)) { setSubmitError('Enter valid split payment amounts.'); return; }
+        if (splitTotal <= 0) { setSubmitError('Enter at least one split payment amount.'); return; }
+      }
+
+      setSubmitting(true);
+      setSubmitError('');
+      try {
+        const billedBy = currentUser.displayName || currentUser.username;
+        const orderId = runningOrder.id;
+
+        // Anything still sitting in the cart gets sent to the kitchen as one
+        // last KOT automatically, so nothing is ever billed without a KOT.
+        if (!allEmpty) {
+          const pendingItems = [
+            ...cart.map((c) => ({ menuItem: c.menuItem, quantity: c.quantity, notes: c.notes })),
+            ...customItems.map((ci) => ({
+              menuItem: { id: ci.id, name: ci.name, price: ci.price, category: 'custom', timing: 'all', enabled: true },
+              quantity: ci.qty,
+            })),
+          ];
+          const { data: kotData, error: kotError } = await supabase.rpc('add_items_to_table_order_v1', {
+            p_order_id: orderId,
+            p_items: pendingItems,
+            p_created_by: billedBy,
+          });
+          if (kotError) throw new Error(kotError.message);
+          await printKotSlip({
+            id: orderId, orderNumber: kotData.kotNumber, tableNumber, orderType: 'dine_in',
+            items: pendingItems as Order['items'], subtotal: 0, discount: 0, discountType: 'flat', discountValue: 0,
+            total: 0, status: 'running', createdBy: billedBy,
+            createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+          });
+        }
+
+        const finalPaymentType: PaymentType = paymentMode === 'credit' ? 'credit' : billMethod;
+        const finalBreakdown = billMethod === 'part_payment' && paymentMode !== 'credit' ? splitBreakdown : null;
+        const { data, error } = await supabase.rpc('finalize_table_bill_v1', {
+          p_order_id: orderId,
+          p_payment_type: finalPaymentType,
+          p_payment_breakdown: finalBreakdown,
+          p_billed_by: billedBy,
+          p_customer_name: customerName.trim() || null,
+        });
+        if (error) throw new Error(error.message);
+        const finalized = dbRowToOrder(data as Record<string, unknown>);
+
+        if (paymentMode === 'credit') {
+          const { recordCreditSale } = useBranchStore.getState();
+          const creditItems = finalized.items.map((c) => ({
+            itemName: c.menuItem.name, quantity: c.quantity, sellUnit: 'pcs' as const,
+            price: c.menuItem.price, lineTotal: c.menuItem.price * c.quantity,
+          }));
+          const err = await recordCreditSale('Cafe', {
+            billNo: `CREDIT-Cafe-${finalized.orderNumber}`,
+            branch: 'Cafe',
+            customerName: customerName.trim(),
+            customerPhone: creditCustomerPhone.trim(),
+            items: creditItems,
+            subtotal: finalized.total,
+            amountPaid: 0,
+            creditAmount: finalized.total,
+            dueDate: creditDueDate,
+            soldBy: billedBy,
+            notes: notes || undefined,
+          });
+          if (err) throw new Error(err);
+          printCreditBill(finalized, creditCustomerPhone.trim(), creditDueDate);
+        } else {
+          printPaidBill(finalized, 'original');
+        }
+
+        await loadOrders(60);
+        setRunningOrder(null);
+        void loadTableBoard();
+        clearCart();
+        setShowBillModal(false);
+        setShowSuccess(true);
+        setNotes(''); setCustomerName(''); setTableNumber(null);
+        setCustomItems([]); setCustomName(''); setCustomPrice(''); setCustomQty('1');
+        setBillMethod('cash'); setSplitPayment({ cash: '', upi: '', card: '' });
+        setCreditCustomerPhone(''); setCreditDueDate(''); setPaymentMode('regular');
+        setTimeout(() => setShowSuccess(false), 2200);
+      } catch (err) {
+        setSubmitError(err instanceof Error ? err.message : 'Failed to bill this table. Refresh and try again.');
+      } finally {
+        setSubmitting(false);
+      }
+      return;
+    }
 
     // -- Credit sale path ------------------------------------------------------
     if (paymentMode === 'credit') {
@@ -1834,8 +2088,7 @@ function NewBillPanel() {
           promotionIds: result.promotionIds || [],
           walletCashback: Number(result.cashback || 0),
         };
-        printKotSlip(printable);
-        printPaidBill({ ...printable, walletBalanceRemaining: Number(result.walletBalanceRemaining || printable.walletBalanceRemaining || 0) }, 'original');
+        printKotThenBill({ ...printable, walletBalanceRemaining: Number(result.walletBalanceRemaining || printable.walletBalanceRemaining || 0) }, 'original');
         checkoutIdempotencyRef.current = null;
         clearCart();
         setShowBillModal(false);
@@ -1922,8 +2175,7 @@ function NewBillPanel() {
         promotionIds: result.promotionIds || [],
         walletCashback: Number(result.cashback || 0),
       };
-      printKotSlip(printable);
-      printPaidBill(printable, 'original');
+      printKotThenBill(printable, 'original');
       checkoutIdempotencyRef.current = null;
       clearCart();
       setShowBillModal(false);
@@ -1983,15 +2235,20 @@ function NewBillPanel() {
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 px-4" onClick={() => !submitting && setShowBillModal(false)}>
         <div className="w-full max-w-md rounded-3xl bg-background border border-border shadow-2xl overflow-hidden" onClick={e => e.stopPropagation()}>
           <div className="px-5 py-4 border-b border-border bg-emerald-50">
-            <p className="text-[10px] font-black uppercase tracking-widest text-emerald-700">Final billing</p>
+            <div className="flex items-center justify-between">
+              <p className="text-[10px] font-black uppercase tracking-widest text-emerald-700">Final billing</p>
+              <span className="flex items-center gap-1 text-[10px] font-black uppercase tracking-widest text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-full">
+                {orderType === 'dine_in' ? <><UtensilsCrossed className="size-3" />Table {tableNumber}</> : <><ShoppingBag className="size-3" />Takeaway</>}
+              </span>
+            </div>
             <h2 className="font-display text-2xl font-black text-foreground">Bill & Print</h2>
             <p className="text-sm text-muted-foreground">Confirm payment mode. This saves the bill as paid and opens the print slip.</p>
           </div>
           <div className="p-5 space-y-4">
             <div className="rounded-2xl border border-border bg-muted/30 p-4 space-y-2">
-              <div className="flex justify-between text-sm"><span>Items</span><span className="font-black">{totalItemQty}</span></div>
-              {promotionDiscount > 0 && <div className="flex justify-between text-sm text-emerald-700"><span>Promotion</span><span className="font-black">-{formatCurrency(promotionDiscount)}</span></div>}
-              {parcelCharges > 0 && <div className="flex justify-between text-sm text-amber-700"><span>Parcel charges</span><span className="font-black">{formatCurrency(parcelCharges)}</span></div>}
+              <div className="flex justify-between text-sm text-muted-foreground"><span>Items ({totalItemQty})</span><span className="tabular-nums">{formatCurrency(itemsSubtotal)}</span></div>
+              {parcelCharges > 0 && <div className="flex justify-between text-sm text-amber-700"><span>Parcel charges</span><span className="font-black tabular-nums">+{formatCurrency(parcelCharges)}</span></div>}
+              {promotionDiscount > 0 && <div className="flex justify-between text-sm text-emerald-700"><span>Promotion</span><span className="font-black tabular-nums">-{formatCurrency(promotionDiscount)}</span></div>}
               <div className="flex justify-between items-center pt-2 border-t border-border"><span className="font-bold">Payable</span><span className="font-display text-3xl font-black tabular-nums">{formatCurrency(total)}</span></div>
             </div>
             <div>
@@ -2265,6 +2522,26 @@ function NewBillPanel() {
             </button>
           )}
         </div>
+        <div className="biller-cart-context flex items-center gap-1.5 px-4 py-2 border-b border-border bg-background/60 shrink-0 text-[11px] font-body font-semibold overflow-x-auto">
+          <span className={cn('flex items-center gap-1 px-2 py-1 rounded-full shrink-0',
+            orderType === 'dine_in' ? 'bg-primary/10 text-primary' : 'bg-blue-100 text-blue-700')}>
+            {orderType === 'dine_in' ? <UtensilsCrossed className="size-3" /> : <ShoppingBag className="size-3" />}
+            {orderType === 'dine_in' ? 'Dine In' : 'Takeaway'}
+          </span>
+          {orderType === 'dine_in' && (
+            tableNumber ? (
+              <span className={cn('flex items-center gap-1 px-2 py-1 rounded-full shrink-0',
+                runningOrder ? 'bg-amber-100 text-amber-700' : 'bg-muted text-muted-foreground')}>
+                <MapPin className="size-3" />Table {tableNumber}
+                {runningOrder ? ` · Running (${runningItemCount})` : ' · New'}
+              </span>
+            ) : (
+              <span className="flex items-center gap-1 px-2 py-1 rounded-full bg-destructive/10 text-destructive shrink-0">
+                <AlertCircle className="size-3" />No table selected
+              </span>
+            )
+          )}
+        </div>
 
         <div className="biller-cart-items flex-1 overflow-y-auto min-h-0 px-4 py-3 space-y-2">
           {allEmpty ? (
@@ -2422,29 +2699,66 @@ function NewBillPanel() {
               </div>
             )}
             {orderType === 'dine_in' ? (
-              <div className="relative">
-                <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
-                <button onClick={() => setShowTableSelect(!showTableSelect)}
-                  className={cn('w-full pl-9 pr-9 py-3 bg-card border rounded-xl text-left text-sm font-body transition-all',
-                    tableError ? 'border-destructive ring-1 ring-destructive/30' : 'border-border')}>
-                  {tableNumber ? `Table ${tableNumber}` : 'Select Table *'}
-                </button>
-                <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
-                {showTableSelect && (
-                  <div className="absolute top-full left-0 right-0 mt-1 bg-card border border-border rounded-2xl shadow-lifted z-50 p-2.5 grid grid-cols-5 gap-1 max-h-48 overflow-y-auto">
-                    {TABLE_NUMBERS.map(num => (
-                      <button key={num} onClick={() => { setTableNumber(num); setShowTableSelect(false); setTableError(false); }}
-                        className={cn('py-2 rounded-xl text-xs font-body font-semibold transition-all active:scale-90',
-                          tableNumber === num ? 'text-primary-foreground shadow-teal' : 'hover:bg-muted text-foreground')}
-                        style={tableNumber === num ? { background: 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))' } : {}}>
-                        {num}
-                      </button>
-                    ))}
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest flex items-center gap-1">
+                    <MapPin className="size-3" />Select Table
+                  </label>
+                  <div className="flex items-center gap-2 text-[10px] font-body text-muted-foreground">
+                    <span className="flex items-center gap-1"><span className="size-2 rounded-full bg-muted-foreground/30" />Free</span>
+                    <span className="flex items-center gap-1"><span className="size-2 rounded-full bg-amber-500" />Running</span>
                   </div>
-                )}
+                </div>
+                <div className={cn('grid grid-cols-5 gap-1.5 p-1 rounded-2xl',
+                  tableError ? 'ring-1 ring-destructive/40' : '')}>
+                  {TABLE_NUMBERS.map(num => {
+                    const isSelected = tableNumber === num;
+                    const isRunning = tableBoard[num] !== undefined;
+                    return (
+                      <button key={num}
+                        onClick={() => { setTableNumber(num); setTableError(false); }}
+                        className={cn('relative py-2.5 rounded-xl text-xs font-body font-bold transition-all active:scale-90 flex flex-col items-center gap-0.5',
+                          isSelected ? 'text-primary-foreground shadow-teal ring-2 ring-offset-1 ring-emerald-500'
+                            : isRunning ? 'bg-amber-100 border border-amber-300 text-amber-800 hover:bg-amber-200'
+                            : 'bg-muted/60 border border-border text-foreground hover:bg-muted')}
+                        style={isSelected ? { background: 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))' } : {}}>
+                        {num}
+                        {isRunning && <span className="text-[9px] font-semibold opacity-80">{tableBoard[num]} item{tableBoard[num] === 1 ? '' : 's'}</span>}
+                      </button>
+                    );
+                  })}
+                </div>
                 {tableError && (
                   <div className="flex items-center gap-1 mt-1.5 text-destructive">
                     <AlertCircle className="size-3" /><span className="text-[11px] font-body">Table required for Dine In</span>
+                  </div>
+                )}
+                {tableNumber && (
+                  <div className="mt-2 flex items-center justify-between gap-2 rounded-xl border border-border bg-muted/40 px-3 py-2">
+                    <div className="flex items-center gap-1.5 text-xs font-body">
+                      {runningOrderLoading ? (
+                        <span className="text-muted-foreground flex items-center gap-1"><Loader2 className="size-3 animate-spin" />Checking table…</span>
+                      ) : runningOrder ? (
+                        <span className="font-bold text-amber-600 flex items-center gap-1">
+                          <UtensilsCrossed className="size-3.5" />Running · {runningItemCount} item{runningItemCount === 1 ? '' : 's'} sent
+                        </span>
+                      ) : (
+                        <span className="text-muted-foreground">Table is free — first KOT opens it</span>
+                      )}
+                    </div>
+                    <button
+                      onClick={handleSendToKitchen}
+                      disabled={sendingKot || allEmpty}
+                      className={cn('flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[11px] font-bold transition-all active:scale-95',
+                        allEmpty ? 'bg-muted text-muted-foreground cursor-not-allowed' : 'bg-orange-500 text-white hover:bg-orange-600')}>
+                      {sendingKot ? <Loader2 className="size-3.5 animate-spin" /> : <Printer className="size-3.5" />}
+                      {sendingKot ? 'Sending…' : 'Send to Kitchen'}
+                    </button>
+                  </div>
+                )}
+                {kotSuccess !== null && (
+                  <div className="mt-1.5 flex items-center gap-1 text-emerald-600">
+                    <CheckCircle2 className="size-3" /><span className="text-[11px] font-body font-semibold">KOT #{kotSuccess} printed &amp; sent to kitchen</span>
                   </div>
                 )}
               </div>
@@ -2495,7 +2809,8 @@ function NewBillPanel() {
                 <span className="font-display text-3xl font-bold text-foreground tabular-nums">{formatCurrency(total)}</span>
               </div>
               {submitError && <p className="text-xs font-body text-destructive text-center">{submitError}</p>}
-              <button onClick={() => paymentMode === 'credit' ? handleSubmit() : openBillModal()} disabled={submitting}
+              <button onClick={() => paymentMode === 'credit' ? handleSubmit() : openBillModal()}
+                disabled={submitting || (orderType === 'dine_in' && !runningOrder && allEmpty)}
                 className={cn(
                   'w-full py-3.5 rounded-xl font-body font-bold text-sm active:scale-[0.97] transition-all disabled:opacity-60 flex items-center justify-center gap-2 text-white',
                   paymentMode === 'credit' ? 'shadow-md' : 'shadow-teal'
