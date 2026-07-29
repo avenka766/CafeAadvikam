@@ -388,6 +388,43 @@ function exportExcel(
   ];
   XLSX.utils.book_append_sheet(wb, ws2, 'Attendance Detail');
 
+  // ── Sheet 3: BANK(SALARY) ──
+  // Bank transfer statement — SL.NO, EMP.NO, NAME, BANK, ACCOUNT NUMBER, IFSC CODE, AMOUNT (Net Payable)
+  const bankHeaders = ['SL.NO', 'EMP.NO', 'NAME', 'BANK', 'ACCOUNT NUMBER', 'IFSC CODE', 'AMOUNT'];
+  const bankRows = employees.map((e, i) => {
+    const d = getDecision(e.id);
+    const c = calcSalary(e, att, daysInMonth, d);
+    return [
+      i + 1,
+      String(i + 1).padStart(3, '0'),
+      e.name,
+      e.bankName || '',
+      e.accountNumber || '',
+      e.ifscCode || '',
+      c.net,
+    ];
+  });
+
+  const bankTotal = ['', '', '', '', '', 'TOTAL',
+    employees.reduce((s, e) => s + calcSalary(e, att, daysInMonth, getDecision(e.id)).net, 0),
+  ];
+
+  const ws3 = XLSX.utils.aoa_to_sheet([
+    [`BANK SALARY TRANSFER STATEMENT — ${monthLabel.toUpperCase()}`],
+    [`Cafe Aadvikam Group | Generated on ${new Date().toLocaleDateString('en-IN')} | Confidential`],
+    [],
+    bankHeaders,
+    ...bankRows,
+    bankTotal,
+  ]);
+
+  ws3['!cols'] = [8, 10, 22, 16, 18, 14, 14].map(w => ({ wch: w }));
+  ws3['!merges'] = [
+    { s: { r: 0, c: 0 }, e: { r: 0, c: 6 } },
+    { s: { r: 1, c: 0 }, e: { r: 1, c: 6 } },
+  ];
+  XLSX.utils.book_append_sheet(wb, ws3, 'BANK(SALARY)');
+
   // Save
   XLSX.writeFile(wb, `CafeAadvikam_SalaryReport_${monthLabel.replace(' ', '_')}.xlsx`);
 }
