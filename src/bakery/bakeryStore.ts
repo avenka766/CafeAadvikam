@@ -12,6 +12,10 @@ interface BakeryState {
   fetchOrders: (silent?: boolean, force?: boolean) => Promise<void>;
   submitOrder: (items: BakeryOrderItem[], createdBy: string, targetBranch: Branch, notes?: string) => Promise<void>;
   acceptOrder: (orderId: string) => Promise<void>;
+  // Combines several branch orders (same target branch) into a single
+  // order before handing it to Store, so Store sees one combined order
+  // instead of several separate ones.
+  mergeOrdersForStore: (orderIds: string[]) => Promise<void>;
   updateExpectedOutput: (orderId: string, qty: number) => Promise<void>;
   confirmStock: (orderId: string) => Promise<void>;
   // Store selects a subset of items to confirm/send; the rest stays behind
@@ -172,6 +176,56 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
       const orderNo = order.notes.split('|')[0]?.trim();
       if (orderNo) useBranchOpsStore.getState().updateAdvanceStoreStatusByOrderNo(orderNo, 'store', acceptedBy);
     }
+  },
+
+  mergeOrdersForStore: async (orderIds) => {
+    const group = orderIds
+      .map(id => get().orders.find(o => o.id === id))
+      .filter((o): o is BakeryOrder => Boolean(o));
+    if (group.length === 0) return;
+
+    if (group.length === 1) {
+      await get().acceptOrder(group[0].id);
+      return;
+    }
+
+    // Combine items with the same name + unit across all orders in the group.
+    const combined: BakeryOrderItem[] = [];
+    for (const o of group) {
+      for (const item of o.items) {
+        const unit = item.dispatchUnit === 'pcs' ? 'pcs' : 'kg';
+        const existing = combined.find(c =>
+          c.itemName.trim().toLowerCase() === item.itemName.trim().toLowerCase() &&
+          (c.dispatchUnit === 'pcs' ? 'pcs' : 'kg') === unit);
+        if (existing) {
+          existing.quantity += item.quantity;
+          if (item.originalPcs != null) existing.originalPcs = (existing.originalPcs ?? 0) + item.originalPcs;
+        } else {
+          combined.push({ ...item });
+        }
+      }
+    }
+
+    const [primary, ...others] = group;
+    const { error: updateError } = await supabase
+      .from('bakery_orders')
+      .update({ items: combined, status: 'accepted' })
+      .eq('id', primary.id);
+    if (updateError) throw new Error('Failed to merge orders for Store — please try again.');
+
+    if (others.length > 0) {
+      const { error: deleteError } = await supabase
+        .from('bakery_orders')
+        .delete()
+        .in('id', others.map(o => o.id));
+      if (deleteError) throw new Error('Merged order saved, but the old separate entries could not be cleaned up.');
+    }
+
+    set(s => ({
+      orders: s.orders
+        .filter(o => !others.some(x => x.id === o.id))
+        .map(o => o.id === primary.id ? { ...o, items: combined, status: 'accepted' as WorkflowStatus } : o),
+    }));
   },
 
   updateExpectedOutput: async (orderId, qty) => {

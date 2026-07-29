@@ -157,7 +157,7 @@ export default function PlannerDashboard() {
 
   const incomingOrders   = useMemo(() => orders.filter(o => o.status === 'pending'), [orders]);
   const sentOrders        = useMemo(() => orders.filter(o => o.status === 'accepted' || o.status === 'store_confirmed' || o.status === 'produced' || o.status === 'dispatched'), [orders]);
-  const mergeableOrders    = useMemo(() => orders.filter(o => o.status === 'pending' || o.status === 'accepted'), [orders]);
+  const mergeableOrders    = useMemo(() => orders.filter(o => o.status === 'pending'), [orders]);
   const readyForProduction = useMemo(() => orders.filter(o => o.status === 'store_confirmed'), [orders]);
   const producedOrders    = useMemo(() => orders.filter(o => o.status === 'produced'), [orders]);
   // Union used by Production Entry + Dispatch: an order flips to 'produced' as soon as any
@@ -405,7 +405,7 @@ function SentOrdersTab({ orders }: { orders: BakeryOrder[] }) {
 
 // ─── Tab: Merged Summary ────────────────────────────────────────────────────
 function MergedSummaryTab({ orders }: { orders: BakeryOrder[] }) {
-  const { acceptOrder } = useBakeryStore();
+  const { mergeOrdersForStore } = useBakeryStore();
   const merged = useMemo(() => computeMergedSummary(orders), [orders]);
   const [sendingAll, setSendingAll] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -414,13 +414,18 @@ function MergedSummaryTab({ orders }: { orders: BakeryOrder[] }) {
     setSendingAll(true); setNotice(null);
     try {
       const ids = Array.from(new Set(merged.flatMap(r => r.contributingOrderIds)));
-      for (const id of ids) {
-        const order = orders.find(o => o.id === id);
-        // Hand the order to Store's Orders queue - Store then picks which
-        // items to confirm/send, and the rest stays there for later.
-        if (order && order.status === 'pending') await acceptOrder(id);
+      const contributing = orders.filter(o => ids.includes(o.id) && o.status === 'pending');
+      const byBranch = new Map<string, string[]>();
+      for (const o of contributing) {
+        if (!o.targetBranch) continue;
+        const list = byBranch.get(o.targetBranch) ?? [];
+        list.push(o.id);
+        byBranch.set(o.targetBranch, list);
       }
-      setNotice(`Merged order sent to Store for ${ids.length} order(s).`);
+      for (const branchOrderIds of byBranch.values()) {
+        await mergeOrdersForStore(branchOrderIds);
+      }
+      setNotice(`Combined order sent to Store for ${byBranch.size} branch${byBranch.size === 1 ? '' : 'es'}.`);
     } finally {
       setSendingAll(false);
     }
