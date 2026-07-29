@@ -1717,7 +1717,9 @@ function NewBillPanel() {
 
   const menuTotal     = getCartTotal();
   const customTotal   = customItems.reduce((s, c) => s + c.price * c.qty, 0);
-  const itemsSubtotal = menuTotal + customTotal;
+  const runningSubtotal = (orderType === 'dine_in' && runningOrder)
+    ? runningOrder.items.reduce((s, ci) => s + ci.menuItem.price * ci.quantity, 0) : 0;
+  const itemsSubtotal = menuTotal + customTotal + runningSubtotal;
   // Parcel charges: Rs 10 per item quantity for takeaway
   const PARCEL_CHARGE_PER_ITEM = 10;
   const totalItemQty  = cart.reduce((s, c) => s + c.quantity, 0)
@@ -1790,8 +1792,14 @@ function NewBillPanel() {
     // billing (or a table with no KOTs sent yet) for wallet transactions.
     if (orderType === 'dine_in' && runningOrder) {
       if (paymentMode === 'wallet') {
-        setSubmitError('Wallet payment is not available for table orders yet. Bill this table with cash/UPI/card/split/credit instead.');
-        return;
+        if (!selectedWallet) { setSubmitError('Select a wallet customer.'); return; }
+        if (selectedWallet.status !== 'active') { setSubmitError('The selected wallet is not active.'); return; }
+        if (walletAmount <= 0) { setSubmitError('Enter the wallet amount to use.'); return; }
+        if (walletAmount > selectedWallet.totalBalance) { setSubmitError(`Wallet has only ${formatCurrency(selectedWallet.totalBalance)} available.`); return; }
+        if (walletAmount > total) { setSubmitError('Wallet amount cannot exceed the bill total.'); return; }
+        if (walletRemainder > 0 && !walletOtherMode) { setSubmitError('Select a payment mode for the remaining amount.'); return; }
+        if (walletRemainder > 0 && walletOtherMode === 'credit' && !creditDueDate) { setSubmitError('Due date is required for Wallet + Credit.'); return; }
+        if (selectedWallet.highValueAuthorizationLimit != null && selectedWallet.highValueAuthorizationLimit > 0 && walletAmount >= selectedWallet.highValueAuthorizationLimit && !walletAuthorizationSecret.trim()) { setSubmitError('Admin or Owner authorization is required for this high-value wallet payment.'); return; }
       }
       if (paymentMode === 'credit') {
         const phoneDigits = creditCustomerPhone.replace(/\D/g, '');
@@ -1834,6 +1842,55 @@ function NewBillPanel() {
             total: 0, status: 'running', createdBy: billedBy,
             createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
           });
+        }
+
+        if (paymentMode === 'wallet') {
+          if (!selectedWallet) throw new Error('Select a wallet customer.');
+          const idempotencyKey = checkoutIdempotencyRef.current
+            ?? `cafe-table-wallet:${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`}`;
+          checkoutIdempotencyRef.current = idempotencyKey;
+          const { data, error } = await supabase.rpc('finalize_table_bill_wallet_v1', {
+            p_order_id: orderId,
+            p_wallet_id: selectedWallet.id,
+            p_wallet_amount: walletAmount,
+            p_other_mode: walletOtherMode,
+            p_billed_by: billedBy,
+            p_customer_name: selectedWallet.customerName,
+            p_coupon_code: couponCode || null,
+            p_selected_campaign_ids: promotionEvaluation.applied.map((item) => item.campaignId),
+            p_wallet_authorization_secret: walletAuthorizationSecret || null,
+            p_idempotency_key: idempotencyKey,
+          });
+          if (error) throw new Error(error.message);
+          const result = data as { orderNumber: number; total: number; walletBalanceRemaining?: number | string; cashback?: number; items: Order['items'] };
+          if (walletOtherMode === 'credit' && walletRemainder > 0) {
+            const { recordCreditSale } = useBranchStore.getState();
+            const creditItems = result.items.map((c) => ({ itemName: c.menuItem.name, quantity: c.quantity, sellUnit: 'pcs' as const, price: c.menuItem.price, lineTotal: c.menuItem.price * c.quantity }));
+            const creditErr = await recordCreditSale('Cafe', {
+              billNo: `WALLET-Cafe-${result.orderNumber}`, branch: 'Cafe', customerName: selectedWallet.customerName,
+              customerPhone: selectedWallet.mobile, items: creditItems, subtotal: Number(result.total),
+              amountPaid: walletAmount, creditAmount: walletRemainder, dueDate: creditDueDate, soldBy: billedBy, notes: notes || undefined,
+            });
+            if (creditErr) throw new Error(creditErr);
+          }
+          await loadOrders(60);
+          const loaded = useOrderStore.getState().orders.find((o) => o.orderNumber === result.orderNumber);
+          if (loaded) printKotThenBill({ ...loaded, walletBalanceRemaining: Number(result.walletBalanceRemaining || 0) }, 'original');
+          checkoutIdempotencyRef.current = null;
+          setSelectedWallet(null); setWalletAmount(0); setWalletOtherMode(null); setWalletAuthorizationSecret(''); setCouponCode('');
+          await loadOrders(60);
+          setRunningOrder(null);
+          void loadTableBoard();
+          clearCart();
+          setShowBillModal(false);
+          setShowSuccess(true);
+          setNotes(''); setCustomerName(''); setTableNumber(null);
+          setCustomItems([]); setCustomName(''); setCustomPrice(''); setCustomQty('1');
+          setBillMethod('cash'); setSplitPayment({ cash: '', upi: '', card: '' });
+          setCreditCustomerPhone(''); setCreditDueDate(''); setPaymentMode('regular');
+          setTimeout(() => setShowSuccess(false), 2200);
+          setSubmitting(false);
+          return;
         }
 
         const finalPaymentType: PaymentType = paymentMode === 'credit' ? 'credit' : billMethod;
