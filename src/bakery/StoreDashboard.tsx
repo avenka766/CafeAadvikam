@@ -9,6 +9,7 @@ import {
   Printer, Truck, Mail, MapPin, ShoppingBag, BarChart2, MinusCircle,
   History, WalletCards, Download, FileText,
 } from 'lucide-react';
+import { Layers } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useBakeryStore } from './bakeryStore';
 import { BAKERY_ITEMS } from './types';
@@ -1217,11 +1218,13 @@ function StoreInventoryTab() {
 
 // ─── Orders Tab ───────────────────────────────────────────────────────────────
 function OrdersTab() {
-  const { orders, fetchOrders, subscribe: subscribeOrders } = useBakeryStore();
+  const { orders, fetchOrders, subscribe: subscribeOrders, mergeOrdersForStore } = useBakeryStore();
   const { load: loadStock, subscribe: subscribeStock } = useStoreStockStore();
   const { loadAllItems, subscribe: subscribeBakeryItems } = useBakeryItemsStore();
   const [initialLoading, setInitialLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [merging, setMerging] = useState(false);
+  const [mergeError, setMergeError] = useState<string | null>(null);
   useEffect(() => {
     fetchOrders().finally(() => setInitialLoading(false));
     loadStock();
@@ -1233,6 +1236,28 @@ function OrdersTab() {
   }, [fetchOrders, loadStock, loadAllItems, subscribeOrders, subscribeStock, subscribeBakeryItems]);
 
   const pending = orders.filter(o => o.status === 'accepted');
+
+  const handleMergeAll = async () => {
+    if (pending.length < 2 || merging) return;
+    setMerging(true); setMergeError(null);
+    try {
+      const byBranch = new Map<string, string[]>();
+      for (const o of pending) {
+        if (!o.targetBranch) continue;
+        const list = byBranch.get(o.targetBranch) ?? [];
+        list.push(o.id);
+        byBranch.set(o.targetBranch, list);
+      }
+      for (const ids of byBranch.values()) {
+        if (ids.length > 1) await mergeOrdersForStore(ids);
+      }
+    } catch (err) {
+      setMergeError(err instanceof Error ? err.message : 'Failed to combine orders — please try again.');
+    } finally {
+      setMerging(false);
+    }
+  };
+
 
   const refreshNow = async () => {
     if (refreshing) return;
@@ -1345,7 +1370,17 @@ function OrdersTab() {
         >
           <Printer className="size-3.5 text-primary" /> Print All
         </button>
+        {pending.length > 1 && (
+          <button
+            onClick={() => void handleMergeAll()}
+            disabled={merging}
+            className="h-8 px-3 rounded-xl bg-primary text-primary-foreground text-xs font-body font-bold flex items-center gap-1.5 disabled:opacity-60 hover:opacity-90 transition-colors active:scale-95"
+          >
+            {merging ? <Loader2 className="size-3.5 animate-spin" /> : <Layers className="size-3.5" />} Combine Into One
+          </button>
+        )}
       </div>
+      {mergeError && <p className="mb-3 text-xs font-bold text-destructive">{mergeError}</p>}
 
       {pending.length > 0 && (
         <div className="mb-4 space-y-3">
