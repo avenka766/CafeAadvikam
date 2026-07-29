@@ -12,7 +12,7 @@ import {
   ArrowRightLeft, Calendar, Plus, Send, CheckCircle2, Loader2,
   ChevronDown, ChevronUp, X, RefreshCw, AlertTriangle, FileSpreadsheet, Clock3,
   Store, CreditCard, WalletCards, MessageCircle, Bell, CalendarDays, ShieldCheck,
-  Search, Printer,
+  Search, Printer, Receipt,
 } from 'lucide-react';
 import { useBakeryStore } from './bakeryStore';
 import { useAuthStore } from '@/stores/authStore';
@@ -26,8 +26,10 @@ import { exportToExcel } from '@/lib/exportExcel';
 import HosurDashboard from '@/pages/HosurDashboard';
 import HosurShopOrderPanel from './HosurShopOrderPanel';
 import PackingCakeOrdersTab from './PackingCakeOrdersTab';
+import { useBranchCatalogStore } from '@/stores/branchCatalogStore';
+import { supabase } from '@/lib/supabase';
 
-type PlannerTab = 'incoming' | 'sent' | 'merged' | 'production' | 'dispatch' | 'hosur' | 'cake' | 'transfer-in' | 'closure' | 'done';
+type PlannerTab = 'incoming' | 'sent' | 'merged' | 'production' | 'dispatch' | 'hosur' | 'cake' | 'transfer-in' | 'closure' | 'invoice' | 'done';
 const TABS: { key: PlannerTab; label: string; icon: React.ReactNode }[] = [
   { key: 'incoming',    label: 'Incoming Orders',  icon: <ClipboardList className="size-4" /> },
   { key: 'sent',        label: 'Sent',             icon: <Send className="size-4" /> },
@@ -38,6 +40,7 @@ const TABS: { key: PlannerTab; label: string; icon: React.ReactNode }[] = [
   { key: 'cake',        label: 'Cake Dispatch',    icon: <Cake className="size-4" /> },
   { key: 'transfer-in', label: 'Transfer In',      icon: <ArrowRightLeft className="size-4" /> },
   { key: 'closure',     label: 'Daily Closure',    icon: <Calendar className="size-4" /> },
+  { key: 'invoice',     label: 'Invoice',          icon: <Receipt className="size-4" /> },
   { key: 'done',        label: 'Leftover / Done',  icon: <PackageCheck className="size-4" /> },
 ];
 
@@ -183,6 +186,7 @@ export default function PlannerDashboard() {
             {tab === 'cake' && <PackingCakeOrdersTab />}
             {tab === 'transfer-in' && <PackingTransferInTab />}
             {tab === 'closure' && <PackingDailyClosureTab />}
+            {tab === 'invoice' && <InvoiceTab orders={orders} />}
             {tab === 'done' && <LeftoverDoneTab active={activeLeftovers} done={doneOrders} />}
           </>
         )}
@@ -330,53 +334,77 @@ function DayGroupedOrderList({ orders, badgeLabel, badgeTone }: { orders: Bakery
 
 // ─── Tab: Sent ──────────────────────────────────────────────────────────────
 function SentOrdersTab({ orders }: { orders: BakeryOrder[] }) {
-  const [date, setDate] = useState(''); // '' = all dates
+  // Group sent orders by the calendar day they were sent, newest first.
+  const dayGroups = useMemo(() => {
+    const map = new Map<string, { label: string; orders: BakeryOrder[] }>();
+    for (const order of orders) {
+      const d = new Date(order.createdAt);
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      const label = d.toLocaleDateString('en-IN', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' });
+      if (!map.has(key)) map.set(key, { label, orders: [] });
+      map.get(key)!.orders.push(order);
+    }
+    return Array.from(map.entries()).map(([key, v]) => ({ key, ...v })).sort((a, b) => b.key.localeCompare(a.key));
+  }, [orders]);
 
-  const dateFiltered = useMemo(() => {
-    if (!date) return orders;
-    return orders.filter(o => {
-      const d = new Date(o.createdAt);
-      const local = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-      return local === date;
-    });
-  }, [orders, date]);
-
-  const merged = useMemo(() => computeMergedSummary(dateFiltered), [dateFiltered]);
+  const [openKey, setOpenKey] = useState<string>('');
+  const activeKey = openKey || dayGroups[0]?.key || '';
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-sm font-black text-slate-700">Sent — Merged Summary ({merged.length} items)</h2>
-        <div className="flex items-center gap-2">
-          <input
-            type="date"
-            value={date}
-            onChange={e => setDate(e.target.value)}
-            className="rounded-xl border border-border px-3 py-2 text-xs font-bold text-slate-600"
-          />
-          {date && (
-            <button onClick={() => setDate('')} className="text-[11px] font-bold text-slate-400 hover:text-slate-600">Clear</button>
-          )}
-          <ExportButton
-            disabled={merged.length === 0}
-            onClick={() => exportToExcel({
-              filename: 'sent-merged-summary', sheetName: 'Sent', title: 'Planner — Sent (Merged Summary)',
-              columns: [
-                { header: 'Item', key: 'item' },
-                ...BRANCHES.map(b => ({ header: b, key: b })),
-                { header: 'Total', key: 'total' },
-                { header: 'Unit', key: 'unit' },
-              ],
-              rows: merged.map(row => ({
-                item: row.itemName, VRSNB: row.perBranch.VRSNB ?? '', SNB: row.perBranch.SNB ?? '', Hosur: row.perBranch.Hosur ?? '',
-                total: row.totalRequested, unit: row.unit,
-              })),
-            })}
-          />
+      <h2 className="text-sm font-black text-slate-700">Sent — By Date ({dayGroups.length} day{dayGroups.length === 1 ? '' : 's'})</h2>
+      {dayGroups.length === 0 ? <EmptyState text="Nothing sent yet." /> : (
+        <div className="space-y-3">
+          {dayGroups.map(group => (
+            <SentDayGroup
+              key={group.key}
+              dayKey={group.key}
+              label={group.label}
+              orders={group.orders}
+              open={activeKey === group.key}
+              onToggle={() => setOpenKey(activeKey === group.key ? 'none' : group.key)}
+            />
+          ))}
         </div>
-      </div>
-      {merged.length === 0 ? <EmptyState text="Nothing sent for this date yet." /> : (
-        <div className="overflow-x-auto rounded-2xl border border-border bg-white shadow-sm">
+      )}
+    </div>
+  );
+}
+
+// One collapsible "sent date" entry — expands to show only items sent to store that day.
+function SentDayGroup({ dayKey, label, orders, open, onToggle }: { dayKey: string; label: string; orders: BakeryOrder[]; open: boolean; onToggle: () => void }) {
+  const merged = useMemo(() => computeMergedSummary(orders), [orders]);
+
+  return (
+    <div className="overflow-hidden rounded-2xl border border-border bg-white shadow-sm">
+      <button type="button" onClick={onToggle} className="flex w-full items-center justify-between px-4 py-3 text-left hover:bg-slate-50">
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-black text-slate-700">{label}</span>
+          <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-500">{orders.length} order{orders.length === 1 ? '' : 's'}</span>
+        </div>
+        <ChevronDown className={cn('size-4 text-slate-400 transition-transform', open && 'rotate-180')} />
+      </button>
+      {open && (
+        merged.length === 0 ? <div className="px-4 pb-4"><EmptyState text="Nothing sent for this date." /></div> : (
+        <div className="overflow-x-auto border-t border-border">
+          <div className="flex justify-end px-4 pt-3">
+            <ExportButton
+              disabled={merged.length === 0}
+              onClick={() => exportToExcel({
+                filename: `sent-${dayKey}`, sheetName: 'Sent', title: `Planner — Sent (${label})`,
+                columns: [
+                  { header: 'Item', key: 'item' },
+                  ...BRANCHES.map(b => ({ header: b, key: b })),
+                  { header: 'Total', key: 'total' },
+                  { header: 'Unit', key: 'unit' },
+                ],
+                rows: merged.map(row => ({
+                  item: row.itemName, VRSNB: row.perBranch.VRSNB ?? '', SNB: row.perBranch.SNB ?? '', Hosur: row.perBranch.Hosur ?? '',
+                  total: row.totalRequested, unit: row.unit,
+                })),
+              })}
+            />
+          </div>
           <table className="w-full text-sm">
             <thead className="bg-slate-50 text-left text-xs font-black uppercase text-slate-500">
               <tr>
@@ -398,6 +426,7 @@ function SentOrdersTab({ orders }: { orders: BakeryOrder[] }) {
             </tbody>
           </table>
         </div>
+        )
       )}
     </div>
   );
@@ -632,7 +661,6 @@ const HOSUR_SUB_TAB_GROUPS: { label: string; tabs: { key: HosurSubTab; label: st
   ] },
   { label: 'Admin', tabs: [
     { key: 'shops',         label: 'Shop Master',   icon: <Store className="size-3.5" />, ownedByPanel: false },
-    { key: 'closure',       label: 'Daily Closure', icon: <CalendarDays className="size-3.5" />, ownedByPanel: false },
     { key: 'reports',       label: 'Reports',       icon: <FileSpreadsheet className="size-3.5" />, ownedByPanel: false },
     { key: 'notifications', label: 'Notifications', icon: <ShieldCheck className="size-3.5" />, ownedByPanel: false },
   ] },
@@ -647,9 +675,11 @@ function HosurUnifiedSection() {
   const selectTab = (key: HosurSubTab) => {
     const params = new URLSearchParams(searchParams);
     params.set('hosurTab', key);
-    if (!HOSUR_SUB_TAB_GROUPS.find(g => g.tabs.find(t => t.key === key))?.tabs.find(t => t.key === key)?.ownedByPanel) {
-      params.set('tab', key);
-    }
+    // The outer tab must always stay 'hosur' — these sub-tab keys (credit,
+    // whatsapp, reports, etc.) are not valid top-level PlannerTab values, so
+    // writing them to 'tab' used to make the outer tab fall back to
+    // 'incoming', kicking the user back to the Incoming Orders tab.
+    params.set('tab', 'hosur');
     setSearchParams(params, { replace: true });
   };
 
@@ -690,6 +720,231 @@ function HosurUnifiedSection() {
       <div className={panelSection ? 'hidden' : ''}>
         <HosurDashboard hideNav />
       </div>
+    </div>
+  );
+}
+
+// ─── Tab: Invoice ───────────────────────────────────────────────────────────
+// Tracks everything actually dispatched to a branch (VRSNB / SNB / Hosur) on
+// a given date, prices it using that branch's catalog, and produces a
+// printable invoice with a flat 10% discount.
+const invoiceMoney = (v: number) => 'Rs. ' + (Math.round(v * 100) / 100).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const normalizeItemName = (s: string) => s.trim().toLowerCase();
+const kolkataDateKey = (iso: string) =>
+  new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(iso));
+
+interface InvoiceRow { itemName: string; unit: string; quantity: number; unitPrice: number; lineTotal: number; }
+
+function InvoiceTab({ orders }: { orders: BakeryOrder[] }) {
+  const { items: catalogItems, loadCatalog } = useBranchCatalogStore();
+  const [date, setDate] = useState(() => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date()));
+  const [branch, setBranch] = useState<Branch | null>(null);
+  const [hosurPrices, setHosurPrices] = useState<Record<string, number>>({});
+  const [loadingPrices, setLoadingPrices] = useState(true);
+
+  useEffect(() => {
+    loadCatalog('SNB').catch(() => {});
+    loadCatalog('VRSNB').catch(() => {});
+  }, [loadCatalog]);
+
+  // Hosur bakery orders don't have their own item catalog like SNB/VRSNB —
+  // price them off the shop price lists (average unit price per item name
+  // across shops) since that's the only price source available for Hosur.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoadingPrices(true);
+      const { data, error } = await supabase
+        .from('hosur_shop_price_lists')
+        .select('item_name, unit_price')
+        .eq('is_active', true);
+      if (!cancelled) {
+        if (!error && data) {
+          const sums = new Map<string, { total: number; count: number }>();
+          for (const row of data as { item_name: string; unit_price: number }[]) {
+            const key = normalizeItemName(row.item_name);
+            const cur = sums.get(key) ?? { total: 0, count: 0 };
+            cur.total += Number(row.unit_price) || 0;
+            cur.count += 1;
+            sums.set(key, cur);
+          }
+          const avg: Record<string, number> = {};
+          for (const [key, { total, count }] of sums) avg[key] = count > 0 ? total / count : 0;
+          setHosurPrices(avg);
+        }
+        setLoadingPrices(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const priceFor = useCallback((br: Branch, itemName: string): number => {
+    if (br === 'Hosur') return hosurPrices[normalizeItemName(itemName)] ?? 0;
+    const list = catalogItems[br] ?? [];
+    const match = list.find(i => normalizeItemName(i.name) === normalizeItemName(itemName));
+    return match ? match.price : 0;
+  }, [catalogItems, hosurPrices]);
+
+  // For every branch, tally what was actually dispatched (from dispatch_log,
+  // not what was merely ordered) on the selected date.
+  const perBranchRows = useMemo(() => {
+    const result: Record<Branch, InvoiceRow[]> = { VRSNB: [], SNB: [], Hosur: [] };
+    const totals: Record<Branch, Map<string, { quantity: number; unit: string }>> = {
+      VRSNB: new Map(), SNB: new Map(), Hosur: new Map(),
+    };
+    for (const order of orders) {
+      for (const entry of order.dispatchLog || []) {
+        if (kolkataDateKey(entry.dispatchedAt) !== date) continue;
+        const b = entry.branch;
+        const key = `${entry.itemName}__${entry.unit || 'kg'}`;
+        const cur = totals[b].get(key) ?? { quantity: 0, unit: entry.unit || 'kg' };
+        cur.quantity += entry.quantity;
+        totals[b].set(key, cur);
+      }
+    }
+    for (const b of BRANCHES) {
+      const rows: InvoiceRow[] = [];
+      for (const [key, { quantity, unit }] of totals[b]) {
+        const itemName = key.slice(0, key.lastIndexOf('__'));
+        const unitPrice = priceFor(b, itemName);
+        rows.push({ itemName, unit, quantity: Math.round(quantity * 1000) / 1000, unitPrice, lineTotal: Math.round(quantity * unitPrice * 100) / 100 });
+      }
+      result[b] = rows.sort((a, c) => a.itemName.localeCompare(c.itemName));
+    }
+    return result;
+  }, [orders, date, priceFor]);
+
+  const subtotalFor = (b: Branch) => perBranchRows[b].reduce((s, r) => s + r.lineTotal, 0);
+  const DISCOUNT_RATE = 0.10;
+
+  const printInvoice = (b: Branch) => {
+    const win = window.open('', '_blank'); if (!win) return;
+    const rows = perBranchRows[b];
+    const subtotal = subtotalFor(b);
+    const discount = Math.round(subtotal * DISCOUNT_RATE * 100) / 100;
+    const total = Math.round((subtotal - discount) * 100) / 100;
+    const rowsHtml = rows.map(r => `
+      <tr>
+        <td>${r.itemName}</td>
+        <td style="text-align:right">${r.quantity} ${r.unit}</td>
+        <td style="text-align:right">${invoiceMoney(r.unitPrice)}</td>
+        <td style="text-align:right">${invoiceMoney(r.lineTotal)}</td>
+      </tr>`).join('');
+    win.document.write(`
+      <html><head><title>Invoice — ${b} — ${date}</title>
+      <style>
+        @page { size: A4; margin: 16mm; }
+        body { font-family: sans-serif; padding: 16px; color: #111; }
+        h1 { font-size: 20px; margin-bottom: 2px; }
+        .meta { font-size: 12px; color: #555; margin-bottom: 16px; }
+        table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        th, td { padding: 6px 8px; border-bottom: 1px solid #ddd; }
+        th { text-align: left; background: #f5f5f5; }
+        .totals { margin-top: 12px; width: 280px; margin-left: auto; font-size: 14px; }
+        .totals div { display: flex; justify-content: space-between; padding: 3px 0; }
+        .grand { font-weight: 800; font-size: 16px; border-top: 2px solid #111; margin-top: 4px; padding-top: 6px; }
+        .discount { color: #b91c1c; }
+      </style></head>
+      <body>
+        <h1>Cafe Aadvikam — Invoice</h1>
+        <div class="meta">Branch: <b>${b}</b> &nbsp;·&nbsp; Date: <b>${date}</b> &nbsp;·&nbsp; Generated: ${new Date().toLocaleString('en-IN')}</div>
+        <table>
+          <thead><tr><th>Item</th><th style="text-align:right">Qty</th><th style="text-align:right">Unit Price</th><th style="text-align:right">Line Total</th></tr></thead>
+          <tbody>${rowsHtml || '<tr><td colspan="4" style="text-align:center;color:#888">No items dispatched on this date</td></tr>'}</tbody>
+        </table>
+        <div class="totals">
+          <div><span>Subtotal</span><span>${invoiceMoney(subtotal)}</span></div>
+          <div class="discount"><span>Discount (10%)</span><span>- ${invoiceMoney(discount)}</span></div>
+          <div class="grand"><span>Total Payable</span><span>${invoiceMoney(total)}</span></div>
+        </div>
+      </body></html>`);
+    win.document.close(); win.print();
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-sm font-black text-slate-700">Invoice</h2>
+        <input
+          type="date"
+          value={date}
+          onChange={e => setDate(e.target.value)}
+          className="rounded-xl border border-border px-3 py-2 text-xs font-bold text-slate-600"
+        />
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-3">
+        {BRANCHES.map(b => {
+          const rows = perBranchRows[b];
+          const subtotal = subtotalFor(b);
+          const discount = subtotal * DISCOUNT_RATE;
+          const total = subtotal - discount;
+          return (
+            <button
+              key={b}
+              onClick={() => setBranch(b)}
+              className={cn(
+                'rounded-2xl border p-4 text-left shadow-sm transition',
+                branch === b ? 'border-emerald-400 bg-emerald-50 ring-2 ring-emerald-200' : 'border-border bg-white hover:bg-slate-50'
+              )}
+            >
+              <p className={cn('text-sm font-black', BRANCH_META[b].text)}>{BRANCH_META[b].icon} {b}</p>
+              <p className="mt-1 text-[11px] font-bold text-slate-500">{rows.length} item{rows.length === 1 ? '' : 's'} dispatched</p>
+              <p className="mt-2 text-lg font-black text-slate-900">{invoiceMoney(total)}</p>
+              <p className="text-[10px] font-bold text-slate-400">after 10% discount · subtotal {invoiceMoney(subtotal)}</p>
+            </button>
+          );
+        })}
+      </div>
+
+      {loadingPrices && <p className="text-[11px] font-bold text-slate-400">Loading branch prices…</p>}
+
+      {branch && (
+        <div className="rounded-2xl border border-border bg-white p-4 shadow-sm">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3 className={cn('text-sm font-black', BRANCH_META[branch].text)}>{BRANCH_META[branch].icon} {branch} — Invoice for {date}</h3>
+            <button
+              onClick={() => printInvoice(branch)}
+              className="flex items-center gap-1.5 rounded-xl bg-slate-100 px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-200"
+            >
+              <Printer className="size-3.5" /> Print Invoice
+            </button>
+          </div>
+
+          {perBranchRows[branch].length === 0 ? (
+            <div className="mt-3"><EmptyState text="Nothing dispatched to this branch on this date." /></div>
+          ) : (
+            <div className="mt-3 overflow-x-auto rounded-xl border border-border">
+              <table className="w-full text-sm">
+                <thead className="bg-slate-50 text-left text-xs font-black uppercase text-slate-500">
+                  <tr>
+                    <th className="px-4 py-2">Item</th>
+                    <th className="px-4 py-2 text-right">Qty</th>
+                    <th className="px-4 py-2 text-right">Unit Price</th>
+                    <th className="px-4 py-2 text-right">Line Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {perBranchRows[branch].map(r => (
+                    <tr key={`${r.itemName}-${r.unit}`} className="border-t border-border">
+                      <td className="px-4 py-2 font-bold text-slate-800">{r.itemName}{r.unitPrice === 0 && <span className="ml-1 text-[10px] font-bold text-amber-600">(no price found)</span>}</td>
+                      <td className="px-4 py-2 text-right text-slate-600">{r.quantity} {r.unit}</td>
+                      <td className="px-4 py-2 text-right text-slate-600">{invoiceMoney(r.unitPrice)}</td>
+                      <td className="px-4 py-2 text-right font-black text-slate-900">{invoiceMoney(r.lineTotal)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          <div className="mt-4 ml-auto w-full max-w-xs space-y-1 text-sm">
+            <div className="flex justify-between font-bold text-slate-600"><span>Subtotal</span><span>{invoiceMoney(subtotalFor(branch))}</span></div>
+            <div className="flex justify-between font-bold text-red-600"><span>Discount (10%)</span><span>- {invoiceMoney(subtotalFor(branch) * DISCOUNT_RATE)}</span></div>
+            <div className="flex justify-between border-t border-border pt-1.5 text-base font-black text-slate-900"><span>Total Payable</span><span>{invoiceMoney(subtotalFor(branch) * (1 - DISCOUNT_RATE))}</span></div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -851,13 +1106,39 @@ function DispatchChecklistModal({ row, orders, onClose, onDispatch, dispatchedBy
     }
   };
 
-  const printChecklist = () => {
+  const printChecklist = (mode: 'thermal' | 'a4') => {
     const win = window.open('', '_blank'); if (!win) return;
     const sections = Array.from(branchOrders.entries()).map(([branch, entries]) => {
       const qtyTotal = entries.reduce((s, { order }) => s + qtyFor(order.id), 0);
-      return `<h2>${branch} — ${row.itemName}: ${qtyTotal} ${row.unit}</h2><ol>${checklistFor(branch).map(s => `<li>${s}</li>`).join('')}</ol>`;
+      const orderLines = entries.map(({ order }) =>
+        `<div class="order-line">Order #${order.orderNumber} — ${qtyFor(order.id)} ${row.unit}</div>`
+      ).join('');
+      const checks = checklistFor(branch).map(s => `<label class="check"><input type="checkbox" /> ${s}</label>`).join('');
+      return `
+        <div class="section">
+          <h2>${branch} — ${row.itemName}: ${qtyTotal} ${row.unit}</h2>
+          <div class="orders">${orderLines}</div>
+          <div class="checklist">${checks}</div>
+          <div class="sign">
+            <div class="sign-box">Dispatched By: ______________________</div>
+            <div class="sign-box">Received By (Sign): ______________________</div>
+            <div class="sign-box">Date/Time: ${new Date().toLocaleString('en-IN')}</div>
+          </div>
+        </div>`;
     }).join('<hr/>');
-    win.document.write(`<html><body style="font-family:sans-serif;padding:24px">${sections}</body></html>`);
+
+    const style = mode === 'thermal'
+      ? `@page { size: 80mm auto; margin: 4mm; } body { font-family: monospace; font-size: 11px; width: 72mm; }
+         h2 { font-size: 12px; } .order-line { font-size: 11px; } .check { display:block; font-size: 11px; margin: 2px 0; }
+         .sign-box { font-size: 10px; margin-top: 6px; }`
+      : `@page { size: A4; margin: 16mm; } body { font-family: sans-serif; font-size: 14px; }
+         h2 { font-size: 16px; } .order-line { font-size: 13px; } .check { display:block; font-size: 13px; margin: 4px 0; }
+         .sign-box { font-size: 12px; margin-top: 10px; }`;
+
+    win.document.write(`<html><head><title>Dispatch Checklist — ${row.itemName}</title><style>${style}
+      body { padding: 12px; } .checklist { margin: 8px 0; } .check input { margin-right: 6px; }
+      .sign { margin-top: 12px; border-top: 1px dashed #999; padding-top: 8px; }
+    </style></head><body>${sections}</body></html>`);
     win.document.close(); win.print();
   };
 
@@ -878,13 +1159,19 @@ function DispatchChecklistModal({ row, orders, onClose, onDispatch, dispatchedBy
                     </div>
                   ))}
                   <ul className="mt-2 space-y-1 text-[11px] font-semibold text-slate-500">
-                    {checklistFor(branch).map(s => <li key={s}>☐ {s}</li>)}
+                    {checklistFor(branch).map(s => (
+                      <li key={s} className="flex items-center gap-1.5">
+                        <input type="checkbox" className="size-3.5 rounded border-slate-300" />
+                        {s}
+                      </li>
+                    ))}
                   </ul>
                 </div>
               ))}
             </div>
             <div className="mt-4 flex justify-end gap-2">
-              <button onClick={printChecklist} className="flex items-center gap-1.5 rounded-xl bg-slate-100 px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-200"><Printer className="size-3.5" /> Print</button>
+              <button onClick={() => printChecklist('thermal')} className="flex items-center gap-1.5 rounded-xl bg-slate-100 px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-200"><Printer className="size-3.5" /> Print Thermal</button>
+              <button onClick={() => printChecklist('a4')} className="flex items-center gap-1.5 rounded-xl bg-slate-100 px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-200"><Printer className="size-3.5" /> Print A4</button>
               <button onClick={onClose} className="rounded-xl bg-slate-100 px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-200">Cancel</button>
               <button onClick={confirmDispatch} disabled={sending} className="flex items-center gap-1.5 rounded-xl bg-emerald-600 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-700 disabled:opacity-50">
                 {sending ? <Loader2 className="size-4 animate-spin" /> : <Truck className="size-4" />} Confirm Dispatch

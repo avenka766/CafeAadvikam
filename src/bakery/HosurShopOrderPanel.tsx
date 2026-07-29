@@ -91,7 +91,9 @@ function PlaceOrderSection({ shops, prices, userName, onSaved }: { shops: HosurS
   const activeShops = shops.filter(s => s.isActive);
   const [shopId, setShopId] = useState(activeShops[0]?.id || '');
   const [search, setSearch] = useState('');
-  const [cart, setCart] = useState<Record<string, DraftItem>>({});
+  // Cart is keyed by shopId so switching shops does NOT clear items already
+  // added for other shops — each shop keeps its own running cart.
+  const [cartByShop, setCartByShop] = useState<Record<string, Record<string, DraftItem>>>({});
   const [showCustom, setShowCustom] = useState(false);
   const [customName, setCustomName] = useState('');
   const [customUnit, setCustomUnit] = useState<'pcs' | 'kg'>('kg');
@@ -111,60 +113,86 @@ function PlaceOrderSection({ shops, prices, userName, onSaved }: { shops: HosurS
 
   const filteredItems = useMemo(() => shopItems.filter(i => !search.trim() || normalize(i.itemName).includes(normalize(search))), [shopItems, search]);
 
+  const cart = selectedShop ? (cartByShop[selectedShop.id] ?? {}) : {};
   const cartItems = Object.values(cart);
   const subtotal = cartItems.reduce((s, i) => s + i.lineTotal, 0);
 
+  // Total items across ALL shops, so the person can see everything they've queued before sending.
+  const shopsWithItems = Object.entries(cartByShop).filter(([, items]) => Object.keys(items).length > 0);
+  const grandTotal = shopsWithItems.reduce((sum, [, items]) => sum + Object.values(items).reduce((s, i) => s + i.lineTotal, 0), 0);
+
   const setQty = (item: { itemName: string; itemUnit: 'pcs' | 'kg'; unitPrice: number }, qty: number) => {
+    if (!selectedShop) return;
     const safeQty = Math.max(0, Math.round(qty * 1000) / 1000);
-    setCart(prev => {
-      const next = { ...prev };
-      if (safeQty <= 0) delete next[item.itemName];
-      else next[item.itemName] = { itemName: item.itemName, unit: item.itemUnit, quantity: safeQty, unitPrice: item.unitPrice, lineTotal: Math.round(safeQty * item.unitPrice * 100) / 100 };
-      return next;
+    setCartByShop(prev => {
+      const shopCart = { ...(prev[selectedShop.id] ?? {}) };
+      if (safeQty <= 0) delete shopCart[item.itemName];
+      else shopCart[item.itemName] = { itemName: item.itemName, unit: item.itemUnit, quantity: safeQty, unitPrice: item.unitPrice, lineTotal: Math.round(safeQty * item.unitPrice * 100) / 100 };
+      return { ...prev, [selectedShop.id]: shopCart };
     });
   };
 
   const addCustomItem = () => {
+    if (!selectedShop) return;
     if (!customName.trim() || !customQty || Number(customQty) <= 0 || !customPrice || Number(customPrice) < 0) {
       setError('Enter a valid custom item name, quantity, and price.');
       return;
     }
     const qty = Number(customQty);
     const price = Number(customPrice);
-    setCart(prev => ({
+    setCartByShop(prev => ({
       ...prev,
-      [customName.trim()]: { itemName: customName.trim(), unit: customUnit, quantity: qty, unitPrice: price, lineTotal: Math.round(qty * price * 100) / 100, isCustom: true },
+      [selectedShop.id]: {
+        ...(prev[selectedShop.id] ?? {}),
+        [customName.trim()]: { itemName: customName.trim(), unit: customUnit, quantity: qty, unitPrice: price, lineTotal: Math.round(qty * price * 100) / 100, isCustom: true },
+      },
     }));
     setCustomName(''); setCustomQty(''); setCustomPrice(''); setShowCustom(false); setError('');
   };
 
+  const removeItem = (itemName: string) => {
+    if (!selectedShop) return;
+    setCartByShop(prev => {
+      const shopCart = { ...(prev[selectedShop.id] ?? {}) };
+      delete shopCart[itemName];
+      return { ...prev, [selectedShop.id]: shopCart };
+    });
+  };
+
+  // Saves ONE order per shop that currently has items in its cart.
   const saveOrder = async () => {
-    if (!selectedShop) { setError('Select a shop first.'); return; }
-    if (cartItems.length === 0) { setError('Add at least one item.'); return; }
+    if (shopsWithItems.length === 0) { setError('Add at least one item.'); return; }
     setSaving(true); setError('');
     try {
-      const orderDate = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: '2-digit', month: '2-digit', day: '2-digit' }).format(new Date()).replace(/-/g, '');
-      const orderNumber = 'HSR-ORD-' + orderDate + '-' + crypto.randomUUID().slice(0, 4).toUpperCase();
-      const { data: order, error: orderError } = await supabase.from('hosur_orders').insert({
-        order_number: orderNumber, shop_id: selectedShop.id, shop_name: selectedShop.shopName,
-        shop_whatsapp: selectedShop.whatsappNumber, shop_address: selectedShop.address,
-        status: 'pending_packing', subtotal, created_by: userName, notes: notes.trim() || null,
-      }).select('id').single();
-      if (orderError) throw orderError;
+      for (const [sId, items] of shopsWithItems) {
+        const shop = activeShops.find(s => s.id === sId);
+        if (!shop) continue;
+        const items_ = Object.values(items);
+        const shopSubtotal = items_.reduce((s, i) => s + i.lineTotal, 0);
 
-      const rows = cartItems.map(item => ({
-        order_id: order.id, item_name: item.itemName, unit: item.unit, quantity: item.quantity,
-        unit_price: item.unitPrice, line_total: item.lineTotal, dispatched_quantity: 0, received_quantity: 0,
-      }));
-      const { error: itemsError } = await supabase.from('hosur_order_items').insert(rows);
-      if (itemsError) { await supabase.from('hosur_orders').delete().eq('id', order.id); throw itemsError; }
+        const orderDate = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: '2-digit', month: '2-digit', day: '2-digit' }).format(new Date()).replace(/-/g, '');
+        const orderNumber = 'HSR-ORD-' + orderDate + '-' + crypto.randomUUID().slice(0, 4).toUpperCase();
+        const { data: order, error: orderError } = await supabase.from('hosur_orders').insert({
+          order_number: orderNumber, shop_id: shop.id, shop_name: shop.shopName,
+          shop_whatsapp: shop.whatsappNumber, shop_address: shop.address,
+          status: 'pending_packing', subtotal: shopSubtotal, created_by: userName, notes: notes.trim() || null,
+        }).select('id').single();
+        if (orderError) throw orderError;
 
-      const customRows = cartItems.filter(i => i.isCustom).map(i => ({
-        shop_id: selectedShop.id, item_name: i.itemName, item_unit: i.unit, unit_price: i.unitPrice, is_active: true,
-      }));
-      if (customRows.length > 0) await supabase.from('hosur_shop_price_lists').upsert(customRows, { onConflict: 'shop_id,item_name' });
+        const rows = items_.map(item => ({
+          order_id: order.id, item_name: item.itemName, unit: item.unit, quantity: item.quantity,
+          unit_price: item.unitPrice, line_total: item.lineTotal, dispatched_quantity: 0, received_quantity: 0,
+        }));
+        const { error: itemsError } = await supabase.from('hosur_order_items').insert(rows);
+        if (itemsError) { await supabase.from('hosur_orders').delete().eq('id', order.id); throw itemsError; }
 
-      setCart({}); setNotes(''); onSaved();
+        const customRows = items_.filter(i => i.isCustom).map(i => ({
+          shop_id: shop.id, item_name: i.itemName, item_unit: i.unit, unit_price: i.unitPrice, is_active: true,
+        }));
+        if (customRows.length > 0) await supabase.from('hosur_shop_price_lists').upsert(customRows, { onConflict: 'shop_id,item_name' });
+      }
+
+      setCartByShop({}); setNotes(''); onSaved();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to send order.');
     } finally {
@@ -178,7 +206,7 @@ function PlaceOrderSection({ shops, prices, userName, onSaved }: { shops: HosurS
         <div className="grid gap-3 sm:grid-cols-2">
           <label className="space-y-1">
             <span className="text-[11px] font-black uppercase text-slate-500">Shop</span>
-            <select value={selectedShop?.id ?? ''} onChange={e => { setShopId(e.target.value); setCart({}); }} className="h-11 w-full rounded-xl border border-border px-3 text-sm font-bold">
+            <select value={selectedShop?.id ?? ''} onChange={e => setShopId(e.target.value)} className="h-11 w-full rounded-xl border border-border px-3 text-sm font-bold">
               {activeShops.map(s => <option key={s.id} value={s.id}>{s.shopName}</option>)}
             </select>
           </label>
@@ -246,7 +274,7 @@ function PlaceOrderSection({ shops, prices, userName, onSaved }: { shops: HosurS
               <div key={item.itemName} className="rounded-xl bg-slate-50 p-2.5">
                 <div className="flex justify-between gap-2">
                   <p className="text-xs font-black text-slate-800">{item.itemName} {item.isCustom && <span className="text-indigo-500">(custom)</span>}</p>
-                  <button onClick={() => setCart(prev => { const n = { ...prev }; delete n[item.itemName]; return n; })}><X className="size-3.5 text-red-500" /></button>
+                  <button onClick={() => removeItem(item.itemName)}><X className="size-3.5 text-red-500" /></button>
                 </div>
                 <p className="text-[11px] font-bold text-slate-500">{num(item.quantity)} {item.unit} x {money(item.unitPrice)} = {money(item.lineTotal)}</p>
               </div>
@@ -254,12 +282,18 @@ function PlaceOrderSection({ shops, prices, userName, onSaved }: { shops: HosurS
           </div>
         )}
         <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={2} placeholder="Notes (optional)" className="w-full rounded-xl border border-border px-3 py-2 text-xs font-bold" />
+        {shopsWithItems.length > 1 && (
+          <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-2.5 text-[11px] font-bold text-emerald-800">
+            {shopsWithItems.length} shops queued: {shopsWithItems.map(([sId]) => activeShops.find(s => s.id === sId)?.shopName).filter(Boolean).join(', ')}
+          </div>
+        )}
         <div className="flex items-center justify-between rounded-xl bg-emerald-700 px-4 py-2.5 text-white">
-          <span className="text-xs font-black">Total</span><span className="text-lg font-black">{money(subtotal)}</span>
+          <span className="text-xs font-black">{shopsWithItems.length > 1 ? 'Grand Total (all shops)' : 'Total'}</span>
+          <span className="text-lg font-black">{money(shopsWithItems.length > 1 ? grandTotal : subtotal)}</span>
         </div>
         {error && <p className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700">{error}</p>}
-        <button onClick={saveOrder} disabled={saving || cartItems.length === 0} className="flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 text-sm font-black text-white disabled:opacity-40">
-          {saving ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />} Send Order
+        <button onClick={saveOrder} disabled={saving || shopsWithItems.length === 0} className="flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 text-sm font-black text-white disabled:opacity-40">
+          {saving ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />} Send Order{shopsWithItems.length > 1 ? `s (${shopsWithItems.length} shops)` : ''}
         </button>
       </aside>
     </div>
