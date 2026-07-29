@@ -711,6 +711,8 @@ function DispatchTab({ orders, allOrders }: { orders: BakeryOrder[]; allOrders: 
   const completedRows = filtered.filter(r => fullyDispatched(r));
   const shown = subTab === 'active' ? activeRows : completedRows;
 
+  const inProgressRows = filtered.filter(r => !fullyDispatched(r) && dispatchedQtyForItem(r) > 0);
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -730,6 +732,28 @@ function DispatchTab({ orders, allOrders }: { orders: BakeryOrder[]; allOrders: 
           />
         </div>
       </div>
+
+      {/* Pinned summary — partially dispatched items with more still coming from the baker,
+          always at the top regardless of sub-tab, with each branch's required vs dispatched. */}
+      {inProgressRows.length > 0 && (
+        <div className="rounded-2xl border border-amber-300 bg-amber-50 p-3 shadow-sm">
+          <p className="mb-2 text-xs font-black uppercase tracking-wide text-amber-700">Still In Progress — More To Come ({inProgressRows.length})</p>
+          <div className="space-y-2">
+            {inProgressRows.map(row => (
+              <div key={row.itemName} className="rounded-xl bg-white p-2.5">
+                <p className="text-sm font-black text-slate-800">{row.itemName}</p>
+                <div className="mt-1 flex flex-wrap gap-2 text-[11px] font-bold text-slate-600">
+                  {BRANCHES.filter(b => row.perBranch[b]).map(b => {
+                    const branchDispatched = orders.filter(o => o.targetBranch === b && row.contributingOrderIds.includes(o.id))
+                      .reduce((s, o) => s + (o.dispatchLog || []).filter(d => d.itemName === row.itemName).reduce((s2, d) => s2 + d.quantity, 0), 0);
+                    return <span key={b} className="rounded-lg bg-amber-100 px-2 py-1">{b}: required {row.perBranch[b]} {row.unit} · dispatched {branchDispatched} {row.unit}</span>;
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="flex gap-2">
         <button onClick={() => setSubTab('active')} className={cn('rounded-xl px-3 py-1.5 text-xs font-bold', subTab === 'active' ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600')}>To Dispatch ({activeRows.length})</button>
