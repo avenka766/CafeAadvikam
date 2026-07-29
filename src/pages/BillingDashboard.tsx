@@ -79,7 +79,7 @@ function todayIso(value = new Date()) {
 function useCafeCounterOpened() {
   const counterOpenings = useBranchOpsStore((s) => s.counterOpenings);
   const cashierClosures = useBranchOpsStore((s) => s.cashierClosures);
-  const [remoteCounter, setRemoteCounter] = useState({ opened: false, closed: false });
+  const [remoteCounter, setRemoteCounter] = useState({ opened: false, closed: false, loaded: false });
   const today = todayIso();
   const localClosed = cashierClosures.some(
     (record) => record.branch === 'Cafe' && todayIso(new Date(record.createdAt)) === today,
@@ -115,7 +115,7 @@ function useCafeCounterOpened() {
       const opened =
         latestStatus === 'draft' ||
         (!closed && !opError && Array.isArray(opRows) && opRows.length > 0);
-      setRemoteCounter({ opened, closed });
+      setRemoteCounter({ opened, closed, loaded: true });
     };
     void checkCounterOpening();
     return () => {
@@ -124,6 +124,7 @@ function useCafeCounterOpened() {
   }, [today]);
 
   const localOpened = counterOpenings.some((record) => record.branch === 'Cafe' && record.date === today);
+  if (!remoteCounter.loaded) return true;
   if (remoteCounter.closed) return false;
   if (localClosed && !remoteCounter.opened) return false;
   return remoteCounter.opened || localOpened;
