@@ -172,10 +172,16 @@ function PlaceOrderSection({ shops, prices, userName, onSaved }: { shops: HosurS
 
         const orderDate = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: '2-digit', month: '2-digit', day: '2-digit' }).format(new Date()).replace(/-/g, '');
         const orderNumber = 'HSR-ORD-' + orderDate + '-' + crypto.randomUUID().slice(0, 4).toUpperCase();
+        // 'draft' — NOT yet ready to pack. This shop order first needs to go
+        // through Planner's Incoming → Merged → Production → Dispatch pipeline
+        // (as a bakery_orders row below). bakeryStore's dispatch sync flips
+        // this to 'pending_packing'/'dispatched' once Planner actually dispatches
+        // it — this record should never jump straight into the Hosur "To
+        // Dispatch" queue on creation.
         const { data: order, error: orderError } = await supabase.from('hosur_orders').insert({
           order_number: orderNumber, shop_id: shop.id, shop_name: shop.shopName,
           shop_whatsapp: shop.whatsappNumber, shop_address: shop.address,
-          status: 'pending_packing', subtotal: shopSubtotal, created_by: userName, notes: notes.trim() || null,
+          status: 'draft', subtotal: shopSubtotal, created_by: userName, notes: notes.trim() || null,
         }).select('id').single();
         if (orderError) throw orderError;
 
@@ -190,6 +196,22 @@ function PlaceOrderSection({ shops, prices, userName, onSaved }: { shops: HosurS
           shop_id: shop.id, item_name: i.itemName, item_unit: i.unit, unit_price: i.unitPrice, is_active: true,
         }));
         if (customRows.length > 0) await supabase.from('hosur_shop_price_lists').upsert(customRows, { onConflict: 'shop_id,item_name' });
+
+        // Push this shop's requirement into the central bakery workflow so
+        // Planner sees it in Incoming Orders, just like a VRSNB/SNB requirement.
+        // bakeryStore's submitDispatch matches on the HOSUR_ORDER_ID tag in
+        // notes to sync status back onto the hosur_orders row above.
+        const bakeryItems = items_.map(item => ({
+          itemId: `hosur-${normalize(item.itemName)}`,
+          itemName: item.itemName,
+          quantity: item.quantity,
+          dispatchUnit: item.unit,
+        }));
+        const { error: bakeryOrderError } = await supabase.from('bakery_orders').insert({
+          items: bakeryItems, status: 'pending', created_by: userName, target_branch: 'Hosur',
+          notes: `HOSUR_ORDER_ID:${order.id}${notes.trim() ? ` | ${notes.trim()}` : ''}`,
+        });
+        if (bakeryOrderError) throw bakeryOrderError;
       }
 
       setCartByShop({}); setNotes(''); onSaved();
@@ -265,7 +287,7 @@ function PlaceOrderSection({ shops, prices, userName, onSaved }: { shops: HosurS
       </section>
 
       <aside className="space-y-3 rounded-2xl border border-border bg-white p-4 shadow-sm">
-        <div className="flex items-center gap-2"><ShoppingCart className="size-4 text-emerald-700" /><h3 className="text-sm font-black">Requirement</h3></div>
+        <div className="flex items-center gap-2"><ShoppingCart className="size-4 text-emerald-700" /><h3 className="text-sm font-black">Requirement{selectedShop ? ` — ${selectedShop.shopName}` : ''}</h3></div>
         {cartItems.length === 0 ? (
           <div className="rounded-xl border border-dashed border-border p-6 text-center text-xs font-bold text-slate-400">No items selected</div>
         ) : (
@@ -283,8 +305,20 @@ function PlaceOrderSection({ shops, prices, userName, onSaved }: { shops: HosurS
         )}
         <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={2} placeholder="Notes (optional)" className="w-full rounded-xl border border-border px-3 py-2 text-xs font-bold" />
         {shopsWithItems.length > 1 && (
-          <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-2.5 text-[11px] font-bold text-emerald-800">
-            {shopsWithItems.length} shops queued: {shopsWithItems.map(([sId]) => activeShops.find(s => s.id === sId)?.shopName).filter(Boolean).join(', ')}
+          <div className="space-y-2 rounded-xl border border-emerald-200 bg-emerald-50 p-2.5">
+            <p className="text-[11px] font-black text-emerald-800">{shopsWithItems.length} shops queued</p>
+            {shopsWithItems.map(([sId, items]) => {
+              const shopName = activeShops.find(s => s.id === sId)?.shopName ?? sId;
+              const itemList = Object.values(items);
+              return (
+                <div key={sId} className="rounded-lg bg-white/70 p-2">
+                  <p className="text-[11px] font-black text-emerald-900">{shopName}</p>
+                  <p className="text-[10px] font-bold text-emerald-700">
+                    {itemList.map(i => `${i.itemName} (${num(i.quantity)} ${i.unit})`).join(', ')}
+                  </p>
+                </div>
+              );
+            })}
           </div>
         )}
         <div className="flex items-center justify-between rounded-xl bg-emerald-700 px-4 py-2.5 text-white">

@@ -59,6 +59,13 @@ interface MergedRow {
   contributingOrderIds: string[];
 }
 
+// Item names can differ in case/spacing between orders placed by different
+// branches (e.g. "Dilpasand" vs "DILPASAND"). computeMergedSummary already
+// groups by a normalized key, but several call sites below used to compare
+// with exact `===`, silently dropping branches/dispatches whose casing
+// differed. sameItem() is the one place that comparison happens now.
+const sameItem = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
+
 export function computeMergedSummary(orders: BakeryOrder[]): MergedRow[] {
   const rows = new Map<string, MergedRow>();
   for (const order of orders) {
@@ -112,7 +119,7 @@ export function computeProductionRows(orders: BakeryOrder[]): ProductionRow[] {
     let anyRecorded = false;
     let allCompleted = contributing.length > 0;
     for (const order of contributing) {
-      const item = order.items.find(i => i.itemName === row.itemName);
+      const item = order.items.find(i => sameItem(i.itemName, row.itemName));
       const prod = item ? order.producedItems?.find(p => p.itemId === item.itemId) : undefined;
       if (prod) {
         anyRecorded = true;
@@ -130,9 +137,9 @@ export function computeProductionRows(orders: BakeryOrder[]): ProductionRow[] {
 // Proportional auto-split of a produced total across the contributing orders,
 // weighted by each order's original requested share for that item.
 export function autoSplitForItem(orders: BakeryOrder[], itemName: string, totalProduced: number): Record<string, number> {
-  const contributing = orders.filter(o => o.items.some(i => i.itemName === itemName));
+  const contributing = orders.filter(o => o.items.some(i => sameItem(i.itemName, itemName)));
   const shares = contributing.map(o => {
-    const item = o.items.find(i => i.itemName === itemName)!;
+    const item = o.items.find(i => sameItem(i.itemName, itemName))!;
     const isPcs = item.dispatchUnit === 'pcs';
     const requested = isPcs && item.originalPcs != null ? item.originalPcs : item.quantity;
     return { orderId: o.id, requested };
@@ -547,7 +554,7 @@ function ProductionEntryTab({ orders }: { orders: BakeryOrder[] }) {
       const split = autoSplitForItem(orders, row.itemName, enteredQty);
       for (const orderId of row.contributingOrderIds) {
         const order = orders.find(o => o.id === orderId);
-        const item = order?.items.find(i => i.itemName === row.itemName);
+        const item = order?.items.find(i => sameItem(i.itemName, row.itemName));
         if (!order || !item) continue;
         const others = (order.producedItems || []).filter(p => p.itemId !== item.itemId);
         const merged: PreparedItem[] = [...others, { itemId: item.itemId, itemName: item.itemName, quantityPrepared: split[orderId] ?? 0, preparedAt: new Date().toISOString(), dispatchUnit: item.dispatchUnit, status }];
@@ -961,7 +968,7 @@ function DispatchTab({ orders, allOrders }: { orders: BakeryOrder[]; allOrders: 
     let sum = 0;
     for (const order of orders) {
       if (!row.contributingOrderIds.includes(order.id)) continue;
-      sum += (order.dispatchLog || []).filter(d => d.itemName === row.itemName).reduce((s, d) => s + d.quantity, 0);
+      sum += (order.dispatchLog || []).filter(d => sameItem(d.itemName, row.itemName)).reduce((s, d) => s + d.quantity, 0);
     }
     return sum;
   };
@@ -1007,7 +1014,7 @@ function DispatchTab({ orders, allOrders }: { orders: BakeryOrder[]; allOrders: 
                 <div className="mt-1 flex flex-wrap gap-2 text-[11px] font-bold text-slate-600">
                   {BRANCHES.filter(b => row.perBranch[b]).map(b => {
                     const branchDispatched = orders.filter(o => o.targetBranch === b && row.contributingOrderIds.includes(o.id))
-                      .reduce((s, o) => s + (o.dispatchLog || []).filter(d => d.itemName === row.itemName).reduce((s2, d) => s2 + d.quantity, 0), 0);
+                      .reduce((s, o) => s + (o.dispatchLog || []).filter(d => sameItem(d.itemName, row.itemName)).reduce((s2, d) => s2 + d.quantity, 0), 0);
                     return <span key={b} className="rounded-lg bg-amber-100 px-2 py-1">{b}: required {row.perBranch[b]} {row.unit} · dispatched {branchDispatched} {row.unit}</span>;
                   })}
                 </div>
@@ -1068,7 +1075,7 @@ function DispatchChecklistModal({ row, orders, onClose, onDispatch, dispatchedBy
     const map = new Map<string, { order: BakeryOrder; item: BakeryOrderItem }[]>();
     for (const orderId of row.contributingOrderIds) {
       const order = orders.find(o => o.id === orderId);
-      const item = order?.items.find(i => i.itemName === row.itemName);
+      const item = order?.items.find(i => sameItem(i.itemName, row.itemName));
       if (!order || !item || !order.targetBranch) continue;
       if (!map.has(order.targetBranch)) map.set(order.targetBranch, []);
       map.get(order.targetBranch)!.push({ order, item });
@@ -1080,13 +1087,19 @@ function DispatchChecklistModal({ row, orders, onClose, onDispatch, dispatchedBy
   const [qty, setQty] = useState<Record<string, string>>({});
   const [sending, setSending] = useState(false);
   const [done, setDone] = useState(false);
+  const branchKeys = useMemo(() => Array.from(branchOrders.keys()), [branchOrders]);
+  // Which branches to actually dispatch right now — defaults to all, but the
+  // planner can dispatch just VRSNB, just SNB, or both together.
+  const [selectedBranches, setSelectedBranches] = useState<string[]>(branchKeys);
+  useEffect(() => { setSelectedBranches(branchKeys); }, [branchKeys.join(',')]);
+  const toggleBranch = (b: string) => setSelectedBranches(prev => prev.includes(b) ? prev.filter(x => x !== b) : [...prev, b]);
 
   const qtyFor = (orderId: string) => qty[orderId] !== undefined ? Number(qty[orderId] || 0) : Math.round((autoSplit[orderId] ?? 0) * 100) / 100;
 
   const CHECKLIST_BY_BRANCH: Record<string, string[]> = {
-    SNB: ['Verify SNB quantity matches this checklist', 'Cross-check SNB boxes/kg/pcs before loading', 'Load onto SNB delivery vehicle', 'Hand over and get SNB counter sign-off'],
-    VRSNB: ['Verify VRSNB quantity matches this checklist', 'Pack VRSNB items in labeled crates', 'Load onto VRSNB delivery vehicle', 'Hand over and get VRSNB counter sign-off'],
-    Hosur: ['Verify Hosur shop-wise split matches this checklist', 'Pack per-shop bags separately for Hosur', 'Load onto Hosur delivery vehicle', 'Hand over and get Hosur receiver sign-off'],
+    SNB: ['Verify SNB quantity matches this checklist', 'Cross-check SNB boxes/kg/pcs before loading', 'Check packaging is intact and labeled', 'Load onto SNB delivery vehicle', 'Hand over and get SNB counter sign-off'],
+    VRSNB: ['Verify VRSNB quantity matches this checklist', 'Pack VRSNB items in labeled crates', 'Check packaging is intact and labeled', 'Load onto VRSNB delivery vehicle', 'Hand over and get VRSNB counter sign-off'],
+    Hosur: ['Verify Hosur shop-wise split matches this checklist', 'Pack per-shop bags separately for Hosur', 'Check packaging is intact and labeled', 'Load onto Hosur delivery vehicle', 'Hand over and get Hosur receiver sign-off'],
   };
   const checklistFor = (branch: string) => CHECKLIST_BY_BRANCH[branch] || CHECKLIST_BY_BRANCH.SNB;
 
@@ -1094,6 +1107,7 @@ function DispatchChecklistModal({ row, orders, onClose, onDispatch, dispatchedBy
     setSending(true);
     try {
       for (const [branch, entries] of branchOrders) {
+        if (!selectedBranches.includes(branch)) continue;
         for (const { order, item } of entries) {
           const q = qtyFor(order.id);
           if (q <= 0) continue;
@@ -1108,19 +1122,21 @@ function DispatchChecklistModal({ row, orders, onClose, onDispatch, dispatchedBy
 
   const printChecklist = (mode: 'thermal' | 'a4') => {
     const win = window.open('', '_blank'); if (!win) return;
-    const sections = Array.from(branchOrders.entries()).map(([branch, entries]) => {
+    const sections = Array.from(branchOrders.entries()).filter(([branch]) => selectedBranches.includes(branch)).map(([branch, entries]) => {
       const qtyTotal = entries.reduce((s, { order }) => s + qtyFor(order.id), 0);
+      const requested = row.perBranch[branch as Branch] ?? 0;
       const orderLines = entries.map(({ order }) =>
-        `<div class="order-line">Order #${order.orderNumber} — ${qtyFor(order.id)} ${row.unit}</div>`
+        `<div class="order-line">Order #${order.orderNumber} — requested ${order.items.find(i => sameItem(i.itemName, row.itemName))?.quantity ?? '-'} ${row.unit}, dispatching ${qtyFor(order.id)} ${row.unit}</div>`
       ).join('');
       const checks = checklistFor(branch).map(s => `<label class="check"><input type="checkbox" /> ${s}</label>`).join('');
       return `
         <div class="section">
-          <h2>${branch} — ${row.itemName}: ${qtyTotal} ${row.unit}</h2>
+          <h2>${branch} — ${row.itemName}</h2>
+          <div class="meta">Requested: ${requested} ${row.unit} &nbsp;·&nbsp; Dispatching now: ${qtyTotal} ${row.unit} &nbsp;·&nbsp; Produced total: ${row.preparedTotal} ${row.unit}</div>
           <div class="orders">${orderLines}</div>
           <div class="checklist">${checks}</div>
           <div class="sign">
-            <div class="sign-box">Dispatched By: ______________________</div>
+            <div class="sign-box">Dispatched By: ${dispatchedBy} ______________________</div>
             <div class="sign-box">Received By (Sign): ______________________</div>
             <div class="sign-box">Date/Time: ${new Date().toLocaleString('en-IN')}</div>
           </div>
@@ -1129,14 +1145,14 @@ function DispatchChecklistModal({ row, orders, onClose, onDispatch, dispatchedBy
 
     const style = mode === 'thermal'
       ? `@page { size: 80mm auto; margin: 4mm; } body { font-family: monospace; font-size: 11px; width: 72mm; }
-         h2 { font-size: 12px; } .order-line { font-size: 11px; } .check { display:block; font-size: 11px; margin: 2px 0; }
+         h2 { font-size: 12px; } .meta { font-size: 10px; } .order-line { font-size: 11px; } .check { display:block; font-size: 11px; margin: 2px 0; }
          .sign-box { font-size: 10px; margin-top: 6px; }`
       : `@page { size: A4; margin: 16mm; } body { font-family: sans-serif; font-size: 14px; }
-         h2 { font-size: 16px; } .order-line { font-size: 13px; } .check { display:block; font-size: 13px; margin: 4px 0; }
+         h2 { font-size: 16px; } .meta { font-size: 12px; color: #555; } .order-line { font-size: 13px; } .check { display:block; font-size: 13px; margin: 4px 0; }
          .sign-box { font-size: 12px; margin-top: 10px; }`;
 
     win.document.write(`<html><head><title>Dispatch Checklist — ${row.itemName}</title><style>${style}
-      body { padding: 12px; } .checklist { margin: 8px 0; } .check input { margin-right: 6px; }
+      body { padding: 12px; } .checklist { margin: 8px 0; } .check input { margin-right: 6px; } .meta { margin-bottom: 6px; }
       .sign { margin-top: 12px; border-top: 1px dashed #999; padding-top: 8px; }
     </style></head><body>${sections}</body></html>`);
     win.document.close(); win.print();
@@ -1148,13 +1164,28 @@ function DispatchChecklistModal({ row, orders, onClose, onDispatch, dispatchedBy
         <p className="text-sm font-black text-slate-800">Dispatch Checklist — {row.itemName}</p>
         {!done ? (
           <>
+            {branchKeys.length > 1 && (
+              <div className="mt-2 flex flex-wrap gap-2">
+                <span className="text-[11px] font-black text-slate-500">Dispatch for:</span>
+                {branchKeys.map(b => (
+                  <button
+                    key={b}
+                    type="button"
+                    onClick={() => toggleBranch(b)}
+                    className={cn('rounded-full border px-3 py-1 text-[11px] font-black', selectedBranches.includes(b) ? 'border-emerald-400 bg-emerald-50 text-emerald-700' : 'border-border bg-white text-slate-400')}
+                  >
+                    {b}
+                  </button>
+                ))}
+              </div>
+            )}
             <div className="mt-3 space-y-3">
-              {Array.from(branchOrders.entries()).map(([branch, entries]) => (
+              {Array.from(branchOrders.entries()).filter(([branch]) => selectedBranches.includes(branch)).map(([branch, entries]) => (
                 <div key={branch} className="rounded-xl border border-border p-3">
                   <p className="mb-1.5 text-xs font-black text-slate-700">{branch} (requested {row.perBranch[branch as Branch] ?? 0} {row.unit})</p>
-                  {entries.map(({ order }) => (
+                  {entries.map(({ order, item }) => (
                     <div key={order.id} className="flex items-center justify-between gap-2 py-1">
-                      <span className="text-xs font-bold text-slate-500">Order #{order.orderNumber}</span>
+                      <span className="text-xs font-bold text-slate-500">Order #{order.orderNumber} · requested {item.quantity} {row.unit}</span>
                       <input type="number" value={qty[order.id] ?? qtyFor(order.id)} onChange={e => setQty(v => ({ ...v, [order.id]: e.target.value }))} className="w-24 rounded-lg border border-border px-2 py-1 text-right text-xs font-bold" />
                     </div>
                   ))}
@@ -1173,8 +1204,8 @@ function DispatchChecklistModal({ row, orders, onClose, onDispatch, dispatchedBy
               <button onClick={() => printChecklist('thermal')} className="flex items-center gap-1.5 rounded-xl bg-slate-100 px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-200"><Printer className="size-3.5" /> Print Thermal</button>
               <button onClick={() => printChecklist('a4')} className="flex items-center gap-1.5 rounded-xl bg-slate-100 px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-200"><Printer className="size-3.5" /> Print A4</button>
               <button onClick={onClose} className="rounded-xl bg-slate-100 px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-200">Cancel</button>
-              <button onClick={confirmDispatch} disabled={sending} className="flex items-center gap-1.5 rounded-xl bg-emerald-600 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-700 disabled:opacity-50">
-                {sending ? <Loader2 className="size-4 animate-spin" /> : <Truck className="size-4" />} Confirm Dispatch
+              <button onClick={confirmDispatch} disabled={sending || selectedBranches.length === 0} className="flex items-center gap-1.5 rounded-xl bg-emerald-600 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-700 disabled:opacity-50">
+                {sending ? <Loader2 className="size-4 animate-spin" /> : <Truck className="size-4" />} Confirm Dispatch{selectedBranches.length > 1 ? ` (${selectedBranches.join(' + ')})` : ''}
               </button>
             </div>
           </>
