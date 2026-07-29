@@ -69,7 +69,7 @@ interface OrderState {
   stopPolling: () => void;
 }
 
-function dbRowToOrder(row: Record<string, unknown>): Order {
+export function dbRowToOrder(row: Record<string, unknown>): Order {
   return {
     id: row.id as string,
     orderNumber: row.order_number as number,
