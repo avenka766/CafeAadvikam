@@ -225,8 +225,16 @@ export default function DailyClosure() {
         return;
       }
       const rows = Array.isArray(data) ? data : [];
-      setRemoteClosureFinalized(rows.some((row) => String(row.status || '').toLowerCase() === 'finalized'));
-      const openRow = rows.find((row) => String(row.status || '').toLowerCase() === 'draft');
+      // Determine open/closed from the MOST RECENT event only — a same-day
+      // reopen after a closure must be recognized as open again, not stuck
+      // "closed" forever just because some earlier row today was finalized.
+      const sortedRows = [...rows].sort(
+        (a, b) => new Date(b.created_at as string).getTime() - new Date(a.created_at as string).getTime(),
+      );
+      const latestRow = sortedRows[0];
+      const latestStatus = String(latestRow?.status || '').toLowerCase();
+      setRemoteClosureFinalized(latestStatus === 'finalized');
+      const openRow = latestStatus === 'draft' ? latestRow : undefined;
       setRemoteCounterOpenRecord(
         openRow
           ? {

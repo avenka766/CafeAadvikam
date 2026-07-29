@@ -94,7 +94,7 @@ function useCafeCounterOpened() {
       const [{ data: closureRows, error: closureError }, { data: opRows, error: opError }] = await Promise.all([
         supabase
           .from('branch_daily_closures')
-          .select('status')
+          .select('status, created_at')
           .eq('branch', 'Cafe')
           .eq('closure_date', today),
         supabase
@@ -107,10 +107,14 @@ function useCafeCounterOpened() {
       ]);
       if (!alive) return;
       const formalRows = !closureError && Array.isArray(closureRows) ? closureRows : [];
-      const closed = formalRows.some((row) => String(row.status || '').toLowerCase() === 'finalized');
+      const latestRow = [...formalRows].sort(
+        (a, b) => new Date(b.created_at as string).getTime() - new Date(a.created_at as string).getTime(),
+      )[0];
+      const latestStatus = String(latestRow?.status || '').toLowerCase();
+      const closed = latestStatus === 'finalized';
       const opened =
-        formalRows.some((row) => String(row.status || '').toLowerCase() === 'draft') ||
-        (!opError && Array.isArray(opRows) && opRows.length > 0);
+        latestStatus === 'draft' ||
+        (!closed && !opError && Array.isArray(opRows) && opRows.length > 0);
       setRemoteCounter({ opened, closed });
     };
     void checkCounterOpening();
@@ -120,7 +124,8 @@ function useCafeCounterOpened() {
   }, [today]);
 
   const localOpened = counterOpenings.some((record) => record.branch === 'Cafe' && record.date === today);
-  if (localClosed || remoteCounter.closed) return false;
+  if (remoteCounter.closed) return false;
+  if (localClosed && !remoteCounter.opened) return false;
   return remoteCounter.opened || localOpened;
 }
 
