@@ -1011,9 +1011,9 @@ export default function HosurDashboard({ hideNav = false }: { hideNav?: boolean 
   } = useBranchStore();
 
   const [searchParams, setSearchParams] = useSearchParams();
-  const [tab, setTabState] = useState<HosurTab>(() => parseHosurTab(searchParams.get('tab')));
+  const [tab, setTabState] = useState<HosurTab>(() => parseHosurTab(searchParams.get('hosurTab')));
   useEffect(() => {
-    const urlTab = parseHosurTab(searchParams.get('tab'));
+    const urlTab = parseHosurTab(searchParams.get('hosurTab'));
     if (urlTab !== tab) setTabState(urlTab);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
@@ -1172,7 +1172,7 @@ export default function HosurDashboard({ hideNav = false }: { hideNav?: boolean 
   }, []);
 
   useEffect(() => {
-    const nextTab = parseHosurTab(searchParams.get('tab'));
+    const nextTab = parseHosurTab(searchParams.get('hosurTab'));
     setTabState((current) => current === nextTab ? current : nextTab);
   }, [searchParams]);
 
@@ -1188,7 +1188,12 @@ export default function HosurDashboard({ hideNav = false }: { hideNav?: boolean 
 
   const setTab = (nextTab: HosurTab) => {
     setTabState(nextTab);
-    setSearchParams(nextTab === 'newOrder' ? {} : { tab: nextTab });
+    // Merge into existing params (don't replace) so the outer Planner 'tab'
+    // param and anything else in the URL survives this navigation.
+    const params = new URLSearchParams(searchParams);
+    if (nextTab === 'newOrder') params.delete('hosurTab');
+    else params.set('hosurTab', nextTab);
+    setSearchParams(params, { replace: true });
   };
 
   const activeShops = shops.filter((shop) => shop.isActive);
@@ -1218,7 +1223,6 @@ export default function HosurDashboard({ hideNav = false }: { hideNav?: boolean 
     { id: 'collection', label: 'Payment Collection', icon: WalletCards },
     { id: 'whatsapp', label: 'WhatsApp Logs', icon: MessageCircle, badge: failedWhatsapp.length },
     { id: 'reminders', label: 'Reminder History', icon: Bell, badge: overdueCredits.length },
-    { id: 'closure', label: 'Daily Closure', icon: CalendarDays },
     { id: 'reports', label: 'Reports', icon: FileSpreadsheet },
     { id: 'notifications', label: 'Notifications', icon: ShieldCheck, badge: unreadNotifications },
   ];
