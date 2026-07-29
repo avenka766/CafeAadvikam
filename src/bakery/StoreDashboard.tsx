@@ -463,7 +463,7 @@ function ItemRow({ order, item, category, selectionEnabled = false, selected = f
 
 // ─── Order Card ──────────────────────────────────────────────────────────────
 function OrderCard({ order }: { order: BakeryOrder }) {
-  const { confirmStock, acceptOrder } = useBakeryStore();
+  const { confirmStockSelected, acceptOrder } = useBakeryStore();
   const { deductMaterials } = useStoreStockStore();
   const bakeryItems = useBakeryItemsStore(s => s.items);
   const currentUser = useAuthStore(s => s.currentUser);
@@ -560,10 +560,13 @@ function OrderCard({ order }: { order: BakeryOrder }) {
         );
         if (warn) console.warn('Stock deduction note:', warn);
       }
-      await confirmStock(order.id);
-      setSent(true);
+      await confirmStockSelected(order.id, selectedIndexes, currentUser?.displayName ?? 'Store');
+      const remainingCount = order.items.length - selectedEntries.length;
+      if (remainingCount === 0) setSent(true);
       setSelectedIndexes([]);
-      setSendNotice(`${selectedEntries.length} item${selectedEntries.length === 1 ? '' : 's'} confirmed and sent to Planner for production.`);
+      setSendNotice(remainingCount === 0
+        ? `${selectedEntries.length} item${selectedEntries.length === 1 ? '' : 's'} confirmed and sent to Planner for production.`
+        : `${selectedEntries.length} item${selectedEntries.length === 1 ? '' : 's'} sent to Planner. ${remainingCount} item${remainingCount === 1 ? '' : 's'} still pending here.`);
     } catch (sendFailure) {
       setSendError(sendFailure instanceof Error ? sendFailure.message : 'Failed to confirm stock. Please try again.');
     } finally {
@@ -1229,7 +1232,7 @@ function OrdersTab() {
     return () => { unsubOrders(); unsubStock(); unsubBakeryItems(); };
   }, [fetchOrders, loadStock, loadAllItems, subscribeOrders, subscribeStock, subscribeBakeryItems]);
 
-  const pending: typeof orders = [];
+  const pending = orders.filter(o => !['store_confirmed', 'produced', 'dispatched'].includes(o.status));
 
   const refreshNow = async () => {
     if (refreshing) return;
@@ -2065,7 +2068,7 @@ export default function StoreDashboard() {
 
   const requestedTab = searchParams.get('tab') as StoreDashboardTab | null;
   const tab: StoreDashboardTab = requestedTab && STORE_TABS.includes(requestedTab) ? requestedTab : 'orders';
-  const pending: typeof orders = [];
+  const pending = orders.filter(o => !['store_confirmed', 'produced', 'dispatched'].includes(o.status));
   const sentOrders = orders.filter(o => ['store_confirmed','produced','dispatched'].includes(o.status));
   const uniqueStockItems = useMemo(() => {
     const byName = new Map<string, typeof stockItems[number]>();

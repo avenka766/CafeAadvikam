@@ -14,6 +14,9 @@ interface BakeryState {
   acceptOrder: (orderId: string) => Promise<void>;
   updateExpectedOutput: (orderId: string, qty: number) => Promise<void>;
   confirmStock: (orderId: string) => Promise<void>;
+  // Store selects a subset of items to confirm/send; the rest stays behind
+  // in the order (still 'pending'/'accepted') so it keeps showing in Orders.
+  confirmStockSelected: (orderId: string, selectedIndexes: number[], sentBy?: string) => Promise<void>;
   recordProduction: (orderId: string, producedItems: PreparedItem[]) => Promise<void>;
   setDispatchSplit: (orderId: string, split: Record<string, Record<string, number>>) => Promise<void>;
   submitDispatch: (orderId: string, entry: Omit<DispatchEntry, 'id'>) => Promise<void>;
@@ -211,6 +214,61 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
 
   // Planner enters the actual produced quantity per item, next to the order.
   // Replaces the old baker "submitPrepared"/staging flow.
+  confirmStockSelected: async (orderId, selectedIndexes, sentBy) => {
+    const order = get().orders.find(o => o.id === orderId);
+    if (!order) throw new Error('Order was not found — please refresh.');
+    const selectedSet = new Set(selectedIndexes);
+    const selectedItems = order.items.filter((_, i) => selectedSet.has(i));
+    const remainingItems = order.items.filter((_, i) => !selectedSet.has(i));
+    if (selectedItems.length === 0) return;
+
+    // Nothing left behind — same as confirming the whole order.
+    if (remainingItems.length === 0) {
+      await get().confirmStock(orderId);
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const { data, error: insertError } = await supabase
+      .from('bakery_orders')
+      .insert({
+        items: selectedItems,
+        status: 'store_confirmed',
+        created_by: order.createdBy,
+        target_branch: order.targetBranch,
+        notes: `Store batch from order #${order.orderNumber}`,
+        store_confirmed_at: now,
+        store_source_order_number: order.orderNumber,
+      })
+      .select()
+      .single();
+    if (insertError || !data) throw new Error('Failed to send selected items — please try again.');
+    const sentOrder = rowToOrder(data as Record<string, unknown>);
+
+    const { error: updateError } = await supabase
+      .from('bakery_orders')
+      .update({ items: remainingItems })
+      .eq('id', orderId);
+    if (updateError) throw new Error('Items were sent, but the remaining order could not be updated — please refresh.');
+
+    set(s => ({
+      orders: [sentOrder, ...s.orders.map(o => o.id === orderId ? { ...o, items: remainingItems } : o)],
+    }));
+
+    const { useAuthStore } = await import('@/stores/authStore');
+    const user = useAuthStore.getState().currentUser;
+    if (user) {
+      const { useActivityLogStore } = await import('./activityLogStore');
+      void useActivityLogStore.getState().log({
+        staffId: user.id, staffName: user.displayName, role: user.role,
+        action: 'Confirmed Stock (Partial)',
+        detail: `Order #${order.orderNumber} — ${selectedItems.length} item(s) sent as Order #${sentOrder.orderNumber}, ${remainingItems.length} left in Orders`,
+        branch: order.targetBranch,
+      });
+    }
+    void sentBy;
+  },
+
   recordProduction: async (orderId, producedItems) => {
     const { error } = await supabase
       .from('bakery_orders')
