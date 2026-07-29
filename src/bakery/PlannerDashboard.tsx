@@ -405,7 +405,7 @@ function SentOrdersTab({ orders }: { orders: BakeryOrder[] }) {
 
 // ─── Tab: Merged Summary ────────────────────────────────────────────────────
 function MergedSummaryTab({ orders }: { orders: BakeryOrder[] }) {
-  const { confirmStock } = useBakeryStore();
+  const { acceptOrder } = useBakeryStore();
   const merged = useMemo(() => computeMergedSummary(orders), [orders]);
   const [sendingAll, setSendingAll] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -416,7 +416,9 @@ function MergedSummaryTab({ orders }: { orders: BakeryOrder[] }) {
       const ids = Array.from(new Set(merged.flatMap(r => r.contributingOrderIds)));
       for (const id of ids) {
         const order = orders.find(o => o.id === id);
-        if (order && order.status !== 'store_confirmed') await confirmStock(id);
+        // Hand the order to Store's Orders queue - Store then picks which
+        // items to confirm/send, and the rest stays there for later.
+        if (order && order.status === 'pending') await acceptOrder(id);
       }
       setNotice(`Merged order sent to Store for ${ids.length} order(s).`);
     } finally {
