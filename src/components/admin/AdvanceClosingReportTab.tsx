@@ -37,6 +37,17 @@ export default function AdvanceClosingReportTab({ fromDate, toDate }: Props) {
 
   const orders = advanceOrders[BRANCH] || [];
 
+  // Stable, unique Advance No. for every order, based on the order it was
+  // placed across the branch's full history - independent of whichever
+  // date range is currently selected, so the same order always shows the
+  // same number.
+  const advanceNoById = useMemo(() => {
+    const sorted = [...orders].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+    const map = new Map<string, string>();
+    sorted.forEach((o, i) => map.set(o.id, `ADV-${String(i + 1).padStart(4, '0')}`));
+    return map;
+  }, [orders]);
+
   // Group by the day the order was PLACED (advance collected that day).
   // Orders whose balance was collected on a different day (fullyPaidAt) still show
   // their advance leg here; the day their balance closes shows up as that day's
@@ -65,6 +76,7 @@ export default function AdvanceClosingReportTab({ fromDate, toDate }: Props) {
         const balance = Math.max(0, o.subtotal - o.advanceAmount);
         return {
           'Sl No': i + 1,
+          'Advance No': advanceNoById.get(o.id) ?? '-',
           'Order': o.customerName ?? o.id,
           'Total Bill Value': o.subtotal,
           'Advance': o.advanceAmount,
@@ -122,6 +134,7 @@ export default function AdvanceClosingReportTab({ fromDate, toDate }: Props) {
                   <thead>
                     <tr className="bg-slate-50 text-left text-[10px] uppercase tracking-wide text-slate-500">
                       <th className="p-2">Sl No</th>
+                      <th className="p-2">Advance No</th>
                       <th className="p-2">Order</th>
                       <th className="p-2 text-right">Total Bill Value</th>
                       <th className="p-2 text-right">Advance</th>
@@ -136,6 +149,7 @@ export default function AdvanceClosingReportTab({ fromDate, toDate }: Props) {
                       return (
                         <tr key={o.id} className="border-t border-border">
                           <td className="p-2 font-bold">{i + 1}</td>
+                          <td className="p-2 font-bold text-indigo-700">{advanceNoById.get(o.id) ?? '-'}</td>
                           <td className="p-2">{o.customerName ?? o.id}</td>
                           <td className="p-2 text-right tabular-nums">{money(o.subtotal)}</td>
                           <td className="p-2 text-right tabular-nums">{o.advanceAmount > 0 ? money(o.advanceAmount) : '-'}</td>
@@ -146,7 +160,7 @@ export default function AdvanceClosingReportTab({ fromDate, toDate }: Props) {
                       );
                     })}
                     <tr className="border-t-2 border-slate-300 font-bold bg-slate-50">
-                      <td className="p-2" colSpan={2}>Total</td>
+                      <td className="p-2" colSpan={3}>Total</td>
                       <td className="p-2 text-right tabular-nums">{money(dayOrders.reduce((s, o) => s + o.subtotal, 0))}</td>
                       <td className="p-2 text-right tabular-nums">{money(advancesFromSalesOrder)}</td>
                       <td className="p-2 text-right tabular-nums">{money(dayOrders.reduce((s, o) => s + Math.max(0, o.subtotal - o.advanceAmount), 0))}</td>
