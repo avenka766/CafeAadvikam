@@ -3073,7 +3073,7 @@ function CurrentCashTab({ userName }: { userName: string }) {
   const allDeposits = useMemo(() => bankDeposits.filter((d) => d.branch === BRANCH), [bankDeposits]);
   const bankDepositsTotal = allDeposits.reduce((sum, d) => sum + d.amount, 0);
 
-  const cashInHand = cashSalesTotal - sessionExpensesTotal - sessionSupplierPaymentsTotal - bankDepositsTotal;
+  const cashInHand = cashSalesTotal - sessionExpensesTotal - bankDepositsTotal;
 
   // Expenses breakdown - the actual expense entries (branch-wide, all
   // time, not date-filtered), grouped by category so it's easy to see
@@ -3172,6 +3172,30 @@ function CurrentCashTab({ userName }: { userName: string }) {
         <Kpi label="Net Sales" value={money(netSalesTotal)} icon={<IndianRupee className="size-5" />} tone="green" />
       </div>
 
+      <Panel title="Cash Position - Step by Step" icon={<Banknote className="size-4" />}>
+        <div className="space-y-2">
+          <div className="flex items-center justify-between rounded-2xl bg-emerald-50 p-3">
+            <span className="text-sm font-bold text-emerald-700">Cash Sales Collected</span>
+            <span className="font-black text-emerald-700">+{money(cashSalesTotal)}</span>
+          </div>
+          <div className="flex items-center justify-between rounded-2xl bg-red-50 p-3">
+            <span className="text-sm font-bold text-red-600">− Expenses Paid (auto-deducted)</span>
+            <span className="font-black text-red-600">−{money(expensesTotal)}</span>
+          </div>
+          <div className="flex items-center justify-between rounded-2xl bg-red-50 p-3">
+            <span className="text-sm font-bold text-red-600">− Deposited to Bank (auto-deducted)</span>
+            <span className="font-black text-red-600">−{money(bankDepositsTotal)}</span>
+          </div>
+          <div className="flex items-center justify-between rounded-2xl bg-slate-950 p-4">
+            <span className="text-sm font-black text-white">= Cash In Hand (Remaining)</span>
+            <span className="text-lg font-black text-white">{money(cashInHand)}</span>
+          </div>
+        </div>
+        <p className="mt-3 text-xs font-bold text-slate-500">
+          Expenses are auto-deducted from Cash Sales to arrive at Cash In Hand above. Supplier Payments are shown separately below and reduce cash only as each payment is made.
+        </p>
+      </Panel>
+
       <Panel title="Cash Flow Summary - What Came In vs What Went Out" icon={<BarChart3 className="size-4" />}>
         <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
           <ResponsiveContainer width="100%" height={260}>
@@ -3226,6 +3250,9 @@ function CurrentCashTab({ userName }: { userName: string }) {
           <span className="text-sm font-bold text-white">Total Expenses Paid</span>
           <span className="font-black text-white">{money(expensesTotal)}</span>
         </div>
+        <p className="mt-2 text-xs font-bold text-emerald-700">
+          ✓ This amount has already been subtracted from Cash In Hand above.
+        </p>
       </Panel>
 
       <Panel title="Supplier Payments - How Much, To Whom (All-time)" icon={<Receipt className="size-4" />} action={<div className="flex gap-2">
@@ -5537,13 +5564,13 @@ function BankDepositsTab({ userName }: { userName: string }) {
   // till, minus supplier payments paid from the till, minus everything
   // already deposited to the owner. This is an operating estimate, not a
   // penny-perfect audit figure.
-  const cashBalance = cashSalesTotal - expensesTotal - supplierPaymentsTotal - bankBalance;
+  const cashBalance = cashSalesTotal - expensesTotal - bankBalance;
 
   const cumulativeCashPositionAsOf = (dateStr: string) => {
     let cash = 0;
     for (const r of sessionsSorted) {
       if (String(r.business_date) > dateStr) break;
-      cash += asNumber(r.cash_sales) - asNumber(r.expenses) - asNumber(r.supplier_payments);
+      cash += asNumber(r.cash_sales) - asNumber(r.expenses);
     }
     return cash;
   };
@@ -5664,6 +5691,29 @@ function BankDepositsTab({ userName }: { userName: string }) {
       <div className="rounded-2xl bg-slate-50 p-3 text-xs font-bold text-slate-600 ring-1 ring-slate-100">
         Money deposited here has been handed over to the Owner's bank account - it is no longer with the branch. Cash Balance above already reduces automatically by expenses, supplier payments, and the deposited amount.
       </div>
+      <Panel title="Cash Balance - Step by Step" icon={<Banknote className="size-4" />}>
+        <div className="space-y-2">
+          <div className="flex items-center justify-between rounded-2xl bg-emerald-50 p-3">
+            <span className="text-sm font-bold text-emerald-700">Cash Sales Collected</span>
+            <span className="font-black text-emerald-700">+{money(cashSalesTotal)}</span>
+          </div>
+          <div className="flex items-center justify-between rounded-2xl bg-red-50 p-3">
+            <span className="text-sm font-bold text-red-600">− Expenses Paid (auto-deducted)</span>
+            <span className="font-black text-red-600">−{money(expensesTotal)}</span>
+          </div>
+          <div className="flex items-center justify-between rounded-2xl bg-red-50 p-3">
+            <span className="text-sm font-bold text-red-600">− Deposited to Bank (auto-deducted)</span>
+            <span className="font-black text-red-600">−{money(bankBalance)}</span>
+          </div>
+          <div className="flex items-center justify-between rounded-2xl bg-slate-950 p-4">
+            <span className="text-sm font-black text-white">= Cash Balance (Remaining)</span>
+            <span className="text-lg font-black text-white">{money(cashBalance)}</span>
+          </div>
+        </div>
+        <p className="mt-3 text-xs font-bold text-slate-500">
+          Expenses are auto-deducted from Cash Sales to arrive at the Cash Balance above. Supplier Payments are shown separately and reduce cash only as each payment is made.
+        </p>
+      </Panel>
       <div className="grid gap-4 xl:grid-cols-[430px_minmax(0,1fr)]">
         <Panel
           title="Bank Deposit Entry"
