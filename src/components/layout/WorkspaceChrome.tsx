@@ -74,6 +74,7 @@ const PAGE_META: Array<{ match: RegExp; meta: PageMeta }> = [
   { match: /^\/order-history/, meta: { title: 'Order History', eyebrow: 'Past orders', description: 'Search, inspect and audit completed orders from billing, kitchen and admin workflows.', accent: 'History • Search • Receipts' } },
   { match: /^\/daily-closure/, meta: { title: 'Cashier Counter Open & Closure', eyebrow: 'Counter handover', description: 'Open and close the cashier counter with payment-wise collection, credit, advance and cash difference.', accent: 'Open • Count • Close' } },
   { match: /^\/qr-menu/, meta: { title: 'QR Menu Manager', eyebrow: 'Digital menu', description: 'Generate and manage QR menu access for modern table ordering.', accent: 'QR • Tables • Share' } },
+  { match: /^\/bakery\/planner/, meta: { title: 'Planner Dashboard', eyebrow: 'Bakery planning', description: 'Merge branch orders, track production, dispatch to branches, run Hosur shop billing and generate branch invoices in one workspace.', accent: 'Merge • Dispatch • Invoice' } },
   { match: /^\/bakery\/store/, meta: { title: 'Store Dashboard', eyebrow: 'Store room', description: 'Stock, purchase orders, invoices, custom requirements and bakery reports in a store-first layout.', accent: 'Stock • PO • Invoice' } },
   { match: /^\/bakery\/baker/, meta: { title: 'Baker Dashboard', eyebrow: 'Baking team', description: 'Active baking orders, completed work and daily closure in one clean workspace.', accent: 'Orders • Completed • Closure' } },
   { match: /^\/bakery\/cake-master/, meta: { title: 'Cake Master Dashboard', eyebrow: 'Custom cakes', description: "Advance cake orders from both branches, today's deliveries first, through to Packing.", accent: 'Accept • Bake • Send to Packing' } },
@@ -83,7 +84,6 @@ const PAGE_META: Array<{ match: RegExp; meta: PageMeta }> = [
   { match: /^\/bakery\/recipes/, meta: { title: 'Recipe Management', eyebrow: 'Production data', description: 'Recipe ingredients, output quantities and bakery item formulas in a readable editing surface.', accent: 'Ingredients • Output • Costing' } },
   { match: /^\/branch\/vrsnb/, meta: { title: 'VRSNB Branch Dashboard', eyebrow: 'Branch POS', description: 'VRSNB branch billing, credit, stock and cashier closure redesigned for counter speed.', accent: 'Billing • Credit • Stock' } },
   { match: /^\/branch\/snb/, meta: { title: 'SNB Branch Dashboard', eyebrow: 'Branch POS', description: 'SNB branch sales, cashier closure and stock operations in a cleaner workflow.', accent: 'Sales • Stock • Cash' } },
-  { match: /^\/branch\/hosur/, meta: { title: 'Hosur Branch', eyebrow: 'Branch operations', description: 'Shop-wise ordering, receiving, billing, credit, WhatsApp reminders and reports for Hosur city supply workflow.', accent: 'Shops • Credit • WhatsApp' } },
   { match: /^\/admin-vrsnb/, meta: { title: 'VRSNB Admin Dashboard', eyebrow: 'Branch admin', description: 'VRSNB purchase, reports, stock and payment oversight with premium dashboard navigation.', accent: 'PO • Reports • Stock' } },
   { match: /^\/admin-snb/, meta: { title: 'SNB Admin Dashboard', eyebrow: 'Branch admin', description: 'SNB purchase, cashier closure, salesperson reports and bank/cash oversight in one place.', accent: 'Cash • Bank • Purchase' } },
   { match: /^\/admin\/invoices/, meta: { title: 'Invoice Review Desk', eyebrow: 'Finance', description: 'Review submitted invoices, supplier bills and pending finance actions with clean status cards.', accent: 'Invoices • Review • Approve' } },
@@ -178,6 +178,7 @@ function navForRole(role?: string): NavItem[] {
         { label: 'Cake Dispatch', path: '/bakery/planner?tab=cake', icon: <Cake className="size-4" />, group: 'Operations' },
         { label: 'Transfer In', path: '/bakery/planner?tab=transfer-in', icon: <Truck className="size-4" />, group: 'Operations' },
         { label: 'Daily Closure', path: '/bakery/planner?tab=closure', icon: <ClipboardList className="size-4" />, group: 'Reports' },
+        { label: 'Invoice', path: '/bakery/planner?tab=invoice', icon: <Receipt className="size-4" />, group: 'Reports' },
         { label: 'Leftover / Done', path: '/bakery/planner?tab=done', icon: <AlertTriangle className="size-4" />, group: 'Stock' },
       ];
     case 'cake_master':
@@ -230,18 +231,20 @@ function navForRole(role?: string): NavItem[] {
         { label: 'Alerts', path: '/branch/snb?tab=alerts', icon: <Bell className="size-4" />, group: 'Reports' },
       ];
     case 'branch_hosur':
+      // /branch/hosur was retired — Hosur shops, billing, credit, WhatsApp,
+      // reminders, reports and notifications are now embedded inside the
+      // Planner's "Hosur Shops & Billing" tab. Route there with the matching
+      // hosurTab so each link lands on the right screen instead of a dead page.
       return [
-        { label: 'Shop Master', path: '/branch/hosur?tab=shops', icon: <Store className="size-4" />, group: 'Main' },
-        { label: 'New Order', path: '/branch/hosur?tab=newOrder', icon: <ShoppingCart className="size-4" />, group: 'Main' },
-        { label: 'Received From Packing', path: '/branch/hosur?tab=receiving', icon: <Package className="size-4" />, group: 'Main' },
-        { label: 'Billing', path: '/branch/hosur?tab=billing', icon: <Receipt className="size-4" />, group: 'Main' },
-        { label: 'Credit Ledger', path: '/branch/hosur?tab=credit', icon: <CreditCard className="size-4" />, group: 'Operations' },
-        { label: 'Payment Collection', path: '/branch/hosur?tab=collection', icon: <WalletCards className="size-4" />, group: 'Operations' },
-        { label: 'WhatsApp Logs', path: '/branch/hosur?tab=whatsapp', icon: <QrCode className="size-4" />, group: 'Operations' },
-        { label: 'Reminder History', path: '/branch/hosur?tab=reminders', icon: <Bell className="size-4" />, group: 'Operations' },
-        { label: 'Daily Closure', path: '/branch/hosur?tab=closure', icon: <ClipboardCheck className="size-4" />, group: 'Reports' },
-        { label: 'Reports', path: '/branch/hosur?tab=reports', icon: <BarChart3 className="size-4" />, group: 'Reports' },
-        { label: 'Notifications', path: '/branch/hosur?tab=notifications', icon: <Bell className="size-4" />, group: 'Reports' },
+        { label: 'Place Order', path: '/bakery/planner?tab=hosur&hosurTab=place', icon: <ShoppingCart className="size-4" />, group: 'Main' },
+        { label: 'Dispatch', path: '/bakery/planner?tab=hosur&hosurTab=dispatch', icon: <Truck className="size-4" />, group: 'Main' },
+        { label: 'Shop Master', path: '/bakery/planner?tab=hosur&hosurTab=shops', icon: <Store className="size-4" />, group: 'Main' },
+        { label: 'Credit Ledger', path: '/bakery/planner?tab=hosur&hosurTab=credit', icon: <CreditCard className="size-4" />, group: 'Operations' },
+        { label: 'Payment Collection', path: '/bakery/planner?tab=hosur&hosurTab=collection', icon: <WalletCards className="size-4" />, group: 'Operations' },
+        { label: 'WhatsApp Logs', path: '/bakery/planner?tab=hosur&hosurTab=whatsapp', icon: <QrCode className="size-4" />, group: 'Operations' },
+        { label: 'Reminder History', path: '/bakery/planner?tab=hosur&hosurTab=reminders', icon: <Bell className="size-4" />, group: 'Operations' },
+        { label: 'Reports', path: '/bakery/planner?tab=hosur&hosurTab=reports', icon: <BarChart3 className="size-4" />, group: 'Reports' },
+        { label: 'Notifications', path: '/bakery/planner?tab=hosur&hosurTab=notifications', icon: <Bell className="size-4" />, group: 'Reports' },
       ];
     case 'admin_vrsnb':
       return [
