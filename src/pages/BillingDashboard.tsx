@@ -496,6 +496,23 @@ function dateTimeLabel(value?: string): string {
   return d.toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
+function printKotSlip(order: Order) {
+  const dt = receiptDate(order.createdAt);
+  const rows = order.items.map(ci => `
+    <div class="row"><span>${safeHtml(ci.menuItem.name)}${ci.notes ? ` <span style="color:#666">(${safeHtml(ci.notes)})</span>` : ''}</span><span class="b">x${ci.quantity}</span></div>
+  `).join('');
+  printCounterSlip(`KOT ${order.orderNumber}`, `
+    <div class="thanks" style="font-size:14px">KOT - ${safeHtml(billNo(order))}</div>
+    <div class="meta">
+      <div>Date: ${safeHtml(dt.date)}</div><div class="pick">${order.orderType === 'dine_in' ? `TABLE ${order.tableNumber ?? '-'}` : 'Pick UP'}</div>
+      <div>${safeHtml(dt.time)}</div><div></div>
+    </div>
+    <div class="dash"></div>
+    ${rows}
+    <div class="dash"></div>
+  `);
+}
+
 function printPaidBill(order: Order, copyType: 'original' | 'duplicate' = 'original') {
   const paidBy = PAYMENT_LABELS_PRINT[order.paymentType] || order.paymentType;
   const breakdownRows = order.paymentBreakdown ? `
@@ -1817,6 +1834,7 @@ function NewBillPanel() {
           promotionIds: result.promotionIds || [],
           walletCashback: Number(result.cashback || 0),
         };
+        printKotSlip(printable);
         printPaidBill({ ...printable, walletBalanceRemaining: Number(result.walletBalanceRemaining || printable.walletBalanceRemaining || 0) }, 'original');
         checkoutIdempotencyRef.current = null;
         clearCart();
@@ -1904,6 +1922,7 @@ function NewBillPanel() {
         promotionIds: result.promotionIds || [],
         walletCashback: Number(result.cashback || 0),
       };
+      printKotSlip(printable);
       printPaidBill(printable, 'original');
       checkoutIdempotencyRef.current = null;
       clearCart();
