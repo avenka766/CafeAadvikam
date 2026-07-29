@@ -410,17 +410,15 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       : Number(order.total || 0);
     const audit = `[REFUND ${now}] mode=${refundMode}; amount=${refundAmount.toFixed(2)}; by=${refundedBy}; reason=${cancelReason}`;
     const notes = [order.notes, audit].filter(Boolean).join('\n');
-    const { data, error } = await supabase.rpc('refund_and_cancel_order_with_wallet_v1', {
+    const { data, error } = await supabase.rpc('refund_and_cancel_order', {
       p_order_id: orderId,
       p_expected_updated_at: order.updatedAt,
       p_username: refundedBy,
       p_password: password,
       p_cancel_reason: cancelReason,
       p_refund_audit: audit,
-      p_idempotency_key: `cafe-wallet-refund:${orderId}`,
     });
-    const refundResult = data as { ok?: boolean } | null;
-    if (error || refundResult?.ok !== true) {
+    if (error || !data) {
       set({ orders: prev });
       throw new Error(error?.message || 'Refund was not saved. Refresh and try again.');
     }
