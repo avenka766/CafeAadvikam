@@ -3067,17 +3067,16 @@ function CurrentCashTab({ userName }: { userName: string }) {
   const netSalesTotal = sumSessions("net_sales");
   const creditCollectedTotal = sumSessions("credit_collected");
   const advanceCollectedTotal = sumSessions("advance_collected");
-  const sessionExpensesTotal = sumSessions("expenses");
   const sessionSupplierPaymentsTotal = sumSessions("supplier_payments");
 
   const allDeposits = useMemo(() => bankDeposits.filter((d) => d.branch === BRANCH), [bankDeposits]);
   const bankDepositsTotal = allDeposits.reduce((sum, d) => sum + d.amount, 0);
 
-  const cashInHand = cashSalesTotal - sessionExpensesTotal - bankDepositsTotal;
-
   // Expenses breakdown - the actual expense entries (branch-wide, all
   // time, not date-filtered), grouped by category so it's easy to see
-  // where the money went.
+  // where the money went. The counter-session "expenses" column is not
+  // reliably populated, so the real logged entries are the source of
+  // truth here (and this is what Cash In Hand below is based on too).
   const allExpenses = useMemo(() => expenses.filter((e) => e.branch === BRANCH), [expenses]);
   const expensesByCategory = useMemo(() => {
     const map = new Map<string, { category: string; amount: number; count: number }>();
@@ -3089,10 +3088,9 @@ function CurrentCashTab({ userName }: { userName: string }) {
     });
     return [...map.values()].sort((a, b) => b.amount - a.amount);
   }, [allExpenses]);
-  const localExpensesTotal = allExpenses.reduce((sum, e) => sum + e.amount, 0);
-  // Prefer the session-ledger total (matches the rest of the app); fall
-  // back to the locally logged expense entries if no sessions loaded yet.
-  const expensesTotal = sessions.length ? sessionExpensesTotal : localExpensesTotal;
+  const expensesTotal = allExpenses.reduce((sum, e) => sum + e.amount, 0);
+
+  const cashInHand = cashSalesTotal - expensesTotal - bankDepositsTotal;
 
   // Supplier payments breakdown - prefer live database records (matches
   // the Payments/Invoices tabs), falling back to locally logged payments.
@@ -5525,7 +5523,7 @@ function SupplierPaymentsTab({
 }
 
 function BankDepositsTab({ userName }: { userName: string }) {
-  const { bankDeposits, addBankDeposit } = useBranchOpsStore();
+  const { bankDeposits, addBankDeposit, expenses } = useBranchOpsStore();
 
   // Authoritative all-time source: every closed/open counter session ever
   // recorded for this branch (no date filter). This is the same source
@@ -5543,7 +5541,10 @@ function BankDepositsTab({ userName }: { userName: string }) {
   const cashSalesTotal = sessions.reduce((sum: number, r: any) => sum + asNumber(r.cash_sales), 0);
   const upiBalance = sessions.reduce((sum: number, r: any) => sum + asNumber(r.upi_sales), 0);
   const cardBalance = sessions.reduce((sum: number, r: any) => sum + asNumber(r.card_sales), 0);
-  const expensesTotal = sessions.reduce((sum: number, r: any) => sum + asNumber(r.expenses), 0);
+  // The counter-session "expenses" column is not reliably populated, so use
+  // the actual logged expense entries (branch-wide, all time) instead -
+  // this matches the Expenses breakdown table shown to the user.
+  const expensesTotal = expenses.filter((e) => e.branch === BRANCH).reduce((sum, e) => sum + e.amount, 0);
   const supplierPaymentsTotal = sessions.reduce((sum: number, r: any) => sum + asNumber(r.supplier_payments), 0);
 
   const depositRows = useMemo(
@@ -5566,11 +5567,19 @@ function BankDepositsTab({ userName }: { userName: string }) {
   // penny-perfect audit figure.
   const cashBalance = cashSalesTotal - expensesTotal - bankBalance;
 
+  const expensesSorted = useMemo(
+    () => expenses.filter((e) => e.branch === BRANCH).slice().sort((a, b) => a.expenseDate.localeCompare(b.expenseDate)),
+    [expenses],
+  );
   const cumulativeCashPositionAsOf = (dateStr: string) => {
     let cash = 0;
     for (const r of sessionsSorted) {
       if (String(r.business_date) > dateStr) break;
-      cash += asNumber(r.cash_sales) - asNumber(r.expenses);
+      cash += asNumber(r.cash_sales);
+    }
+    for (const e of expensesSorted) {
+      if (e.expenseDate > dateStr) break;
+      cash -= e.amount;
     }
     return cash;
   };
