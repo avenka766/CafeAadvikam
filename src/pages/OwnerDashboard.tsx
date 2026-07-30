@@ -164,7 +164,8 @@ function ownerPrintSection(title: string, html: string) {
   win.document.write(`
     <html><head><title>${title}</title>
       <style>
-        @page{size:A4 landscape;margin:9mm}
+        @page{size:landscape;margin:9mm}
+        @media print{html,body{height:auto !important}}
         *{box-sizing:border-box}
         body{margin:0;background:#f8fafc;color:#111827;font-family:Inter,Arial,sans-serif;font-size:12px}
         body:before{content:"";display:block;height:12px;background:linear-gradient(90deg,#f97316,#059669,#111827)}

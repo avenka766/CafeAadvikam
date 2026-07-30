@@ -688,7 +688,8 @@ export default function DailyClosure() {
     if (!win) return;
     win.document.write(`<!DOCTYPE html><html><head><title>${safeHtml(printableTitle)}</title>
       <style>
-        @page { size: A4; margin: 7mm; }
+        @page { size: auto; margin: 7mm; }
+        @media print { html, body { height: auto !important; } }
         * { box-sizing: border-box; }
         html, body { margin: 0; padding: 0; background: #fff; color: #111827; font-family: Arial, Helvetica, sans-serif; }
         body { font-size: 11px; line-height: 1.35; }
