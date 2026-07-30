@@ -6838,7 +6838,7 @@ function StockAuditTab({
           Difference: line.difference,
           "Difference Value": differenceValue,
           "Absolute Difference Value": Math.abs(differenceValue),
-          Status: line.difference > 0 ? "Short" : line.difference < 0 ? "Excess" : "Matched",
+          Status: line.difference > 0 ? "Excess" : line.difference < 0 ? "Short" : "Matched",
           "Admin Edited": line.editedAt ? "Yes" : "No",
           "Original Physical Qty": line.originalPhysicalQty ?? line.physicalQty,
           "Edited By": line.editedBy || "",
@@ -7056,16 +7056,16 @@ function StockAuditTab({
                           )}
                         </td>
                         <td className="px-4 py-3 text-right">
-                          <StatusBadge tone={line.difference === 0 ? "green" : line.difference > 0 ? "red" : "blue"}>
+                          <StatusBadge tone={line.difference === 0 ? "green" : line.difference > 0 ? "blue" : "red"}>
                             {line.difference > 0 ? `+${line.difference}` : line.difference}
                           </StatusBadge>
                         </td>
-                        <td className={cn("px-4 py-3 text-right font-black tabular-nums", differenceValue > 0 ? "text-red-600" : differenceValue < 0 ? "text-blue-600" : "text-emerald-700")}>
+                        <td className={cn("px-4 py-3 text-right font-black tabular-nums", differenceValue > 0 ? "text-blue-600" : differenceValue < 0 ? "text-red-600" : "text-emerald-700")}>
                           {money(differenceValue)}
                         </td>
                         <td className="px-4 py-3">
-                          <StatusBadge tone={line.difference === 0 ? "green" : line.difference > 0 ? "red" : "blue"}>
-                            {line.difference > 0 ? "Short" : line.difference < 0 ? "Excess" : "Matched"}
+                          <StatusBadge tone={line.difference === 0 ? "green" : line.difference > 0 ? "blue" : "red"}>
+                            {line.difference > 0 ? "Excess" : line.difference < 0 ? "Short" : "Matched"}
                           </StatusBadge>
                         </td>
                         <td className="px-4 py-3 text-xs font-semibold text-slate-500">

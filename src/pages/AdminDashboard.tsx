@@ -1291,7 +1291,7 @@ function AdminDashboard() {
                     <td className="p-3 font-semibold">{row.itemName}</td>
                     <td className="p-3 text-right tabular-nums">{row.systemQty} {row.unit}</td>
                     <td className="p-3 text-right tabular-nums">{row.physicalQty} {row.unit}</td>
-                    <td className="p-3 text-right"><Badge tone={row.difference > 0 ? 'red' : row.difference < 0 ? 'blue' : 'slate'}>{row.difference > 0 ? `+${row.difference}` : row.difference}</Badge></td>
+                    <td className="p-3 text-right"><Badge tone={row.difference > 0 ? 'blue' : row.difference < 0 ? 'red' : 'slate'}>{row.difference > 0 ? `+${row.difference}` : row.difference}</Badge></td>
                     <td className="p-3 text-slate-500">{row.reportedBy}</td>
                     <td className="p-3 text-slate-500">{row.confirmedBy}</td>
                   </tr>

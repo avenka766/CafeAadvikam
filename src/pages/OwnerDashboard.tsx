@@ -2307,8 +2307,8 @@ function OwnerStockVarianceTab() {
   const rows = stockVarianceRecords
     .slice()
     .sort((a, b) => Number(new Date(b.createdAt)) - Number(new Date(a.createdAt)));
-  const shortCount = rows.filter(row => row.difference > 0).length;
-  const excessCount = rows.filter(row => row.difference < 0).length;
+  const shortCount = rows.filter(row => row.difference < 0).length;
+  const excessCount = rows.filter(row => row.difference > 0).length;
 
   return (
     <section className="owner-section">
@@ -2371,7 +2371,7 @@ function OwnerStockVarianceTab() {
                 <td>{row.itemName}</td>
                 <td>{row.systemQty} {row.unit}</td>
                 <td>{row.physicalQty} {row.unit}</td>
-                <td><em className={cn('owner-status', row.difference === 0 ? 'ok' : row.difference > 0 ? 'danger' : 'warn')}>{row.difference}</em></td>
+                <td><em className={cn('owner-status', row.difference === 0 ? 'ok' : row.difference < 0 ? 'danger' : 'warn')}>{row.difference}</em></td>
                 <td>{row.reportedBy}</td>
                 <td>{row.confirmedBy}</td>
               </tr>
