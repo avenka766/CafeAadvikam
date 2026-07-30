@@ -52,6 +52,7 @@ interface OrderState {
   updateCartQuantity: (itemId: string, quantity: number) => void;
   setCartItemNotes: (itemId: string, notes: string) => void;
   clearCart: () => void;
+  setCart: (items: CartItem[]) => void;
   getCartTotal: () => number;
   getCartCount: () => number;
 
@@ -140,6 +141,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     set((state) => ({ cart: state.cart.map((c) => c.menuItem.id === itemId ? { ...c, notes } : c) })),
 
   clearCart: () => set({ cart: [] }),
+  setCart: (items: CartItem[]) => set({ cart: items }),
   getCartTotal: () => get().cart.reduce((sum, c) => sum + c.menuItem.price * c.quantity, 0),
   getCartCount: () => get().cart.reduce((sum, c) => sum + c.quantity, 0),
 
