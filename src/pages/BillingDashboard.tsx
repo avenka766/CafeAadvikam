@@ -19,7 +19,7 @@ import {
 import OrderCard from '@/components/features/OrderCard';
 import CategoryFilter from '@/components/features/CategoryFilter';
 import MenuItemCard from '@/components/features/MenuItemCard';
-import type { OrderStatus, OrderType, PaymentType, PaymentBreakdown, Order } from '@/types';
+import type { OrderStatus, OrderType, PaymentType, PaymentBreakdown, Order, CartItem } from '@/types';
 import { TABLE_NUMBERS, MENU_CATEGORIES } from '@/constants/config';
 import EmptyState from '@/components/ui/EmptyState';
 import { supabase } from '@/lib/supabase';
@@ -1496,26 +1496,35 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
 
 function NewBillPanel() {
   const { items, loadMenu } = useMenuStore();
-  const { cart, addToCart, updateCartQuantity, clearCart, getCartTotal, getCartCount, submitOrder, loadOrders } = useOrderStore(
+  const { cart, addToCart, updateCartQuantity, clearCart, setCart, getCartTotal, getCartCount, submitOrder, loadOrders } = useOrderStore(
     useShallow(s => ({
       cart: s.cart,
       addToCart: s.addToCart,
       updateCartQuantity: s.updateCartQuantity,
       clearCart: s.clearCart,
+      setCart: s.setCart,
       getCartTotal: s.getCartTotal,
       getCartCount: s.getCartCount,
       submitOrder: s.submitOrder,
       loadOrders: s.loadOrders,
     }))
   );
-  const { currentUser } = useAuthStore();
-  const counterOpenedToday = useCafeCounterOpened();
 
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [search, setSearch] = useState('');
   const [itemMode, setItemMode] = useState<'menu' | 'custom'>('menu');
   const [orderType, setOrderType] = useState<OrderType>('dine_in');
   const [tableNumber, setTableNumber] = useState<number | null>(null);
+
+  // -- Multi-order drafts ------------------------------------------------------
+  // Dine-in: each table keeps its own unsent cart while staff hops between
+  // tables. Takeaway: each "ticket" is an independent unsent order so a new
+  // walk-in doesn't wipe out one already being entered.
+  type Draft = { cart: CartItem[]; customItems: CustomLineItem[] };
+  const [tableDrafts, setTableDrafts] = useState<Record<number, Draft>>({});
+  const [takeawayTickets, setTakeawayTickets] = useState<{ id: string; label: string; cart: CartItem[]; customItems: CustomLineItem[] }[]>([]);
+  const [activeTakeawayId, setActiveTakeawayId] = useState<string | null>(null);
+  const nextTakeawayNo = useRef(1);
   const [customerName, setCustomerName] = useState('');
   const [notes, setNotes] = useState('');
   const [tableError, setTableError] = useState(false);
@@ -1603,6 +1612,117 @@ function NewBillPanel() {
   }, []);
   useEffect(() => { void loadTableBoard(); }, [loadTableBoard]);
 
+  const captureDraft = (): Draft => ({ cart, customItems });
+
+  const clearTableDraft = (num: number) => {
+    setTableDrafts((prev) => {
+      if (!(num in prev)) return prev;
+      const next = { ...prev };
+      delete next[num];
+      return next;
+    });
+  };
+
+  const switchTable = useCallback((num: number) => {
+    setTableDrafts((prev) => ({ ...prev, ...(tableNumber != null ? { [tableNumber]: captureDraft() } : {}) }));
+    const incoming = tableNumber === num ? captureDraft() : (tableDrafts[num] ?? { cart: [], customItems: [] });
+    setCart(incoming.cart);
+    setCustomItems(incoming.customItems);
+    setTableNumber(num);
+    setTableError(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tableNumber, tableDrafts, cart, customItems]);
+
+  const switchTakeawayTicket = useCallback((id: string) => {
+    setTakeawayTickets((prev) => prev.map((t) => t.id === activeTakeawayId ? { ...t, cart, customItems } : t));
+    const incoming = activeTakeawayId === id ? { cart, customItems } : takeawayTickets.find((t) => t.id === id);
+    setCart(incoming?.cart ?? []);
+    setCustomItems(incoming?.customItems ?? []);
+    setActiveTakeawayId(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTakeawayId, takeawayTickets, cart, customItems]);
+
+  // Any items sitting in the cart with no ticket yet (staff added items
+  // before tapping "New") get promoted into their own ticket instead of
+  // being silently dropped when a second ticket is started.
+  const newTakeawayTicket = useCallback(() => {
+    const newId = globalThis.crypto?.randomUUID?.() ?? `tw-${Date.now()}`;
+    setTakeawayTickets((prev) => {
+      let next = prev;
+      if (activeTakeawayId) {
+        next = next.map((t) => t.id === activeTakeawayId ? { ...t, cart, customItems } : t);
+      } else if (cart.length > 0 || customItems.length > 0) {
+        next = [...next, { id: `tw-carry-${Date.now()}`, label: `Order ${nextTakeawayNo.current++}`, cart, customItems }];
+      }
+      return [...next, { id: newId, label: `Order ${nextTakeawayNo.current++}`, cart: [], customItems: [] }];
+    });
+    setCart([]); setCustomItems([]);
+    setActiveTakeawayId(newId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTakeawayId, cart, customItems]);
+
+  const switchOrderType = useCallback((type: OrderType) => {
+    if (type === orderType) return;
+    if (orderType === 'dine_in' && tableNumber != null) {
+      setTableDrafts((prev) => ({ ...prev, [tableNumber]: captureDraft() }));
+    } else if (orderType === 'takeaway') {
+      if (activeTakeawayId) {
+        setTakeawayTickets((prev) => prev.map((t) => t.id === activeTakeawayId ? { ...t, cart, customItems } : t));
+      } else if (cart.length > 0 || customItems.length > 0) {
+        // Leaving takeaway with unticketed items in progress — keep them
+        // as a ticket rather than losing them.
+        setTakeawayTickets((prev) => [...prev, { id: `tw-carry-${Date.now()}`, label: `Order ${nextTakeawayNo.current++}`, cart, customItems }]);
+      }
+    }
+    if (type === 'takeaway') {
+      if (activeTakeawayId) {
+        const t = takeawayTickets.find((x) => x.id === activeTakeawayId);
+        setCart(t?.cart ?? []); setCustomItems(t?.customItems ?? []);
+      } else {
+        setCart([]); setCustomItems([]);
+      }
+    } else if (tableNumber != null) {
+      const d = tableDrafts[tableNumber];
+      setCart(d?.cart ?? []); setCustomItems(d?.customItems ?? []);
+    } else {
+      setCart([]); setCustomItems([]);
+    }
+    setOrderType(type);
+    setTableError(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orderType, tableNumber, activeTakeawayId, takeawayTickets, tableDrafts, cart, customItems]);
+
+  const closeActiveTakeawayTicket = () => {
+    if (orderType !== 'takeaway' || !activeTakeawayId) return;
+    setTakeawayTickets((prev) => prev.filter((t) => t.id !== activeTakeawayId));
+    setActiveTakeawayId(null);
+  };
+
+  const [cancellingTable, setCancellingTable] = useState(false);
+  const handleCancelTable = async () => {
+    if (!runningOrder || !tableNumber || !currentUser) return;
+    if (!window.confirm(`Cancel this table's order? All ${runningItemCount} item(s) already sent to the kitchen will be voided. This cannot be undone.`)) return;
+    setCancellingTable(true);
+    try {
+      const billedBy = currentUser.displayName || currentUser.username;
+      const { error } = await supabase.rpc('cancel_running_table_order_v1', {
+        p_order_id: runningOrder.id,
+        p_cancelled_by: billedBy,
+        p_reason: 'Cancelled from billing dashboard',
+      });
+      if (error) throw new Error(error.message);
+      clearTableDraft(tableNumber);
+      setRunningOrder(null);
+      clearCart();
+      setCustomItems([]); setCustomName(''); setCustomPrice(''); setCustomQty('1');
+      void loadTableBoard();
+    } catch (err) {
+      setSubmitError(err instanceof Error ? err.message : 'Failed to cancel this table.');
+    } finally {
+      setCancellingTable(false);
+    }
+  };
+
   const handleSendToKitchen = async () => {
     if (!currentUser) return;
     if (!tableNumber) { setTableError(true); setSubmitError('Select a table first.'); return; }
@@ -1660,12 +1780,20 @@ function NewBillPanel() {
 
       clearCart();
       setCustomItems([]); setCustomName(''); setCustomPrice(''); setCustomQty('1');
+      if (tableNumber != null) clearTableDraft(tableNumber);
       await refreshRunningOrder(tableNumber);
       void loadTableBoard();
       setKotSuccess(kotNumber);
       setTimeout(() => setKotSuccess(null), 2500);
     } catch (err) {
-      setSubmitError(err instanceof Error ? err.message : 'Failed to send order to kitchen.');
+      const msg = err instanceof Error ? err.message : '';
+      if (msg.includes('TABLE_ALREADY_RUNNING') || msg.includes('duplicate key') || msg.includes('23505')) {
+        setSubmitError('Another biller just opened this table. Refreshing its current order…');
+        await refreshRunningOrder(tableNumber);
+        void loadTableBoard();
+      } else {
+        setSubmitError(msg || 'Failed to send order to kitchen.');
+      }
     } finally {
       setSendingKot(false);
     }
@@ -1684,14 +1812,28 @@ function NewBillPanel() {
   }, [enabledItems, selectedCategory, search]);
 
   const promotionLines = useMemo<PromotionCartLine[]>(() => {
-    const selected = new Set(cart.map((line) => line.menuItem.id));
-    const cartLines = cart.map((line) => ({
-      id: line.menuItem.id,
-      name: line.menuItem.name,
-      category: line.menuItem.category,
-      quantity: line.quantity,
-      unitPrice: line.menuItem.price,
-      inStock: true,
+    const runningItems = (orderType === 'dine_in' && runningOrder) ? runningOrder.items : [];
+    const menuQty = new Map<string, { name: string; category: string; unitPrice: number; quantity: number }>();
+    const customFromRunning: PromotionCartLine[] = [];
+    for (const line of [...cart, ...runningItems]) {
+      if (line.menuItem.id.startsWith('custom-')) {
+        // Custom items already sent to the kitchen (not currently in the
+        // editable customItems list) still count toward promotion eligibility.
+        if (!cart.some((c) => c.menuItem.id === line.menuItem.id)) {
+          customFromRunning.push({
+            id: line.menuItem.id, name: line.menuItem.name, category: 'custom',
+            quantity: line.quantity, unitPrice: line.menuItem.price, inStock: true, isCustom: true,
+          });
+        }
+        continue;
+      }
+      const existing = menuQty.get(line.menuItem.id);
+      if (existing) existing.quantity += line.quantity;
+      else menuQty.set(line.menuItem.id, { name: line.menuItem.name, category: line.menuItem.category, unitPrice: line.menuItem.price, quantity: line.quantity });
+    }
+    const selected = new Set(menuQty.keys());
+    const cartLines = Array.from(menuQty.entries()).map(([id, v]) => ({
+      id, name: v.name, category: v.category, quantity: v.quantity, unitPrice: v.unitPrice, inStock: true,
     }));
     const customLines = customItems.map((line) => ({
       id: line.id,
@@ -1710,8 +1852,8 @@ function NewBillPanel() {
       unitPrice: item.price,
       inStock: true,
     }));
-    return [...cartLines, ...customLines, ...suggestions];
-  }, [cart, customItems, enabledItems]);
+    return [...cartLines, ...customFromRunning, ...customLines, ...suggestions];
+  }, [cart, customItems, enabledItems, orderType, runningOrder]);
   const handlePromotionChange = useCallback((evaluation: PromotionEvaluation) => setPromotionEvaluation(evaluation), []);
   const handleCouponChange = useCallback((value: string) => setCouponCode(value), []);
 
@@ -1880,6 +2022,7 @@ function NewBillPanel() {
           setSelectedWallet(null); setWalletAmount(0); setWalletOtherMode(null); setWalletAuthorizationSecret(''); setCouponCode('');
           await loadOrders(60);
           setRunningOrder(null);
+          if (tableNumber != null) clearTableDraft(tableNumber);
           void loadTableBoard();
           clearCart();
           setShowBillModal(false);
@@ -1932,6 +2075,7 @@ function NewBillPanel() {
 
         await loadOrders(60);
         setRunningOrder(null);
+        if (tableNumber != null) clearTableDraft(tableNumber);
         void loadTableBoard();
         clearCart();
         setShowBillModal(false);
@@ -2024,6 +2168,7 @@ function NewBillPanel() {
 
         if (savedOrder) printCreditBill(savedOrder, creditCustomerPhone.trim(), creditDueDate);
         clearCart();
+        closeActiveTakeawayTicket();
         setShowSuccess(true);
         setNotes(''); setCustomerName(''); setTableNumber(null);
         setCustomItems([]); setCustomName(''); setCustomPrice(''); setCustomQty('1');
@@ -2148,6 +2293,7 @@ function NewBillPanel() {
         printKotThenBill({ ...printable, walletBalanceRemaining: Number(result.walletBalanceRemaining || printable.walletBalanceRemaining || 0) }, 'original');
         checkoutIdempotencyRef.current = null;
         clearCart();
+        closeActiveTakeawayTicket();
         setShowBillModal(false);
         setShowSuccess(true);
         setNotes(''); setCustomerName(''); setTableNumber(null);
@@ -2235,6 +2381,7 @@ function NewBillPanel() {
       printKotThenBill(printable, 'original');
       checkoutIdempotencyRef.current = null;
       clearCart();
+      closeActiveTakeawayTicket();
       setShowBillModal(false);
       setShowSuccess(true);
       setNotes(''); setCustomerName(''); setTableNumber(null);
@@ -2600,6 +2747,127 @@ function NewBillPanel() {
           )}
         </div>
 
+        {/* -- Order type + Table Board / Takeaway tickets: ALWAYS visible -- */}
+        <div className="border-b border-border px-4 py-3 space-y-2.5 shrink-0 bg-background/40">
+          <div className="flex gap-2">
+            <button onClick={() => switchOrderType('dine_in')}
+              className={cn('flex-1 py-2.5 rounded-xl text-sm font-body font-semibold transition-all active:scale-95',
+                orderType === 'dine_in' ? 'text-primary-foreground shadow-teal' : 'bg-card border border-border text-foreground')}
+              style={orderType === 'dine_in' ? { background: 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))' } : {}}>
+              Dine In
+            </button>
+            <button onClick={() => switchOrderType('takeaway')}
+              className={cn('flex-1 py-2.5 rounded-xl text-sm font-body font-semibold transition-all active:scale-95',
+                orderType === 'takeaway' ? 'text-primary-foreground shadow-teal' : 'bg-card border border-border text-foreground')}
+              style={orderType === 'takeaway' ? { background: 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))' } : {}}>
+              Takeaway
+            </button>
+          </div>
+
+          {orderType === 'dine_in' ? (
+            <div>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest flex items-center gap-1">
+                  <MapPin className="size-3" />Select Table
+                </label>
+                <div className="flex items-center gap-2 text-[10px] font-body text-muted-foreground">
+                  <span className="flex items-center gap-1"><span className="size-2 rounded-full bg-muted-foreground/30" />Free</span>
+                  <span className="flex items-center gap-1"><span className="size-2 rounded-full bg-amber-500" />Running</span>
+                  <span className="flex items-center gap-1"><span className="size-2 rounded-full bg-blue-400" />Draft</span>
+                </div>
+              </div>
+              <div className={cn('grid grid-cols-5 gap-1.5 p-1 rounded-2xl', tableError ? 'ring-1 ring-destructive/40' : '')}>
+                {TABLE_NUMBERS.map(num => {
+                  const isSelected = tableNumber === num;
+                  const isRunning = tableBoard[num] !== undefined;
+                  const hasDraft = !isSelected && !isRunning && Boolean(tableDrafts[num]?.cart.length || tableDrafts[num]?.customItems.length);
+                  return (
+                    <button key={num}
+                      onClick={() => switchTable(num)}
+                      className={cn('relative py-2.5 rounded-xl text-xs font-body font-bold transition-all active:scale-90 flex flex-col items-center gap-0.5',
+                        isSelected ? 'text-primary-foreground shadow-teal ring-2 ring-offset-1 ring-emerald-500'
+                          : isRunning ? 'bg-amber-100 border border-amber-300 text-amber-800 hover:bg-amber-200'
+                          : hasDraft ? 'bg-blue-50 border border-blue-300 text-blue-700 hover:bg-blue-100'
+                          : 'bg-muted/60 border border-border text-foreground hover:bg-muted')}
+                      style={isSelected ? { background: 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))' } : {}}>
+                      {num}
+                      {isRunning && <span className="text-[9px] font-semibold opacity-80">{tableBoard[num]} item{tableBoard[num] === 1 ? '' : 's'}</span>}
+                      {hasDraft && <span className="text-[9px] font-semibold opacity-80">draft</span>}
+                    </button>
+                  );
+                })}
+              </div>
+              {tableError && (
+                <div className="flex items-center gap-1 mt-1.5 text-destructive">
+                  <AlertCircle className="size-3" /><span className="text-[11px] font-body">Table required for Dine In</span>
+                </div>
+              )}
+              {tableNumber && (
+                <div className="mt-2 flex items-center justify-between gap-2 rounded-xl border border-border bg-muted/40 px-3 py-2">
+                  <div className="flex items-center gap-1.5 text-xs font-body">
+                    {runningOrderLoading ? (
+                      <span className="text-muted-foreground flex items-center gap-1"><Loader2 className="size-3 animate-spin" />Checking table…</span>
+                    ) : runningOrder ? (
+                      <span className="font-bold text-amber-600 flex items-center gap-1">
+                        <UtensilsCrossed className="size-3.5" />Running · {runningItemCount} item{runningItemCount === 1 ? '' : 's'} sent
+                      </span>
+                    ) : (
+                      <span className="text-muted-foreground">Table is free — first KOT opens it</span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    {runningOrder && (
+                      <button
+                        onClick={handleCancelTable}
+                        disabled={cancellingTable}
+                        className="flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-[11px] font-bold text-destructive bg-destructive/10 border border-destructive/20 transition-all active:scale-95">
+                        {cancellingTable ? <Loader2 className="size-3.5 animate-spin" /> : <X className="size-3.5" />}
+                        Cancel
+                      </button>
+                    )}
+                    <button
+                      onClick={handleSendToKitchen}
+                      disabled={sendingKot || allEmpty}
+                      className={cn('flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[11px] font-bold transition-all active:scale-95',
+                        allEmpty ? 'bg-muted text-muted-foreground cursor-not-allowed' : 'bg-orange-500 text-white hover:bg-orange-600')}>
+                      {sendingKot ? <Loader2 className="size-3.5 animate-spin" /> : <Printer className="size-3.5" />}
+                      {sendingKot ? 'Sending…' : 'Send to Kitchen'}
+                    </button>
+                  </div>
+                </div>
+              )}
+              {kotSuccess !== null && (
+                <div className="mt-1.5 flex items-center gap-1 text-emerald-600">
+                  <CheckCircle2 className="size-3" /><span className="text-[11px] font-body font-semibold">KOT #{kotSuccess} printed &amp; sent to kitchen</span>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest">Takeaway Orders</label>
+                <button onClick={newTakeawayTicket} className="flex items-center gap-1 text-[11px] font-bold text-primary bg-primary/10 px-2 py-1 rounded-lg active:scale-95">
+                  <Plus className="size-3" />New
+                </button>
+              </div>
+              {takeawayTickets.length === 0 ? (
+                <p className="text-[11px] font-body text-muted-foreground">No open takeaway orders — add items below to start one, or tap New.</p>
+              ) : (
+                <div className="flex gap-1.5 overflow-x-auto pb-1">
+                  {takeawayTickets.map((t) => (
+                    <button key={t.id} onClick={() => switchTakeawayTicket(t.id)}
+                      className={cn('shrink-0 px-3 py-2 rounded-xl text-xs font-body font-bold transition-all active:scale-95 whitespace-nowrap',
+                        activeTakeawayId === t.id ? 'text-primary-foreground shadow-teal' : 'bg-muted border border-border text-foreground')}
+                      style={activeTakeawayId === t.id ? { background: 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))' } : {}}>
+                      {t.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
         <div className="biller-cart-items flex-1 overflow-y-auto min-h-0 px-4 py-3 space-y-2">
           {allEmpty ? (
             <div className="flex flex-col items-center justify-center h-full py-8 text-muted-foreground gap-2 text-center">
@@ -2654,21 +2922,6 @@ function NewBillPanel() {
 
         {!allEmpty && (
           <div className="biller-cart-footer border-t border-border px-4 py-3 space-y-3 bg-muted/20 shrink-0 overflow-y-auto">
-            <div className="flex gap-2">
-              <button onClick={() => { setOrderType('dine_in'); setTableError(false); }}
-                className={cn('flex-1 py-3 rounded-xl text-sm font-body font-semibold transition-all active:scale-95',
-                  orderType === 'dine_in' ? 'text-primary-foreground shadow-teal' : 'bg-card border border-border text-foreground')}
-                style={orderType === 'dine_in' ? { background: 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))' } : {}}>
-                Dine In
-              </button>
-              <button onClick={() => { setOrderType('takeaway'); setTableError(false); }}
-                className={cn('flex-1 py-3 rounded-xl text-sm font-body font-semibold transition-all active:scale-95',
-                  orderType === 'takeaway' ? 'text-primary-foreground shadow-teal' : 'bg-card border border-border text-foreground')}
-                style={orderType === 'takeaway' ? { background: 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))' } : {}}>
-                Takeaway
-              </button>
-            </div>
-
             {/* -- Payment Mode -- */}
             <div className="grid grid-cols-3 gap-2">
               <button onClick={() => { setPaymentMode('regular'); setBillMethod('cash'); setCreditError(''); }}
@@ -2755,71 +3008,7 @@ function NewBillPanel() {
                 )}
               </div>
             )}
-            {orderType === 'dine_in' ? (
-              <div>
-                <div className="flex items-center justify-between mb-1.5">
-                  <label className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest flex items-center gap-1">
-                    <MapPin className="size-3" />Select Table
-                  </label>
-                  <div className="flex items-center gap-2 text-[10px] font-body text-muted-foreground">
-                    <span className="flex items-center gap-1"><span className="size-2 rounded-full bg-muted-foreground/30" />Free</span>
-                    <span className="flex items-center gap-1"><span className="size-2 rounded-full bg-amber-500" />Running</span>
-                  </div>
-                </div>
-                <div className={cn('grid grid-cols-5 gap-1.5 p-1 rounded-2xl',
-                  tableError ? 'ring-1 ring-destructive/40' : '')}>
-                  {TABLE_NUMBERS.map(num => {
-                    const isSelected = tableNumber === num;
-                    const isRunning = tableBoard[num] !== undefined;
-                    return (
-                      <button key={num}
-                        onClick={() => { setTableNumber(num); setTableError(false); }}
-                        className={cn('relative py-2.5 rounded-xl text-xs font-body font-bold transition-all active:scale-90 flex flex-col items-center gap-0.5',
-                          isSelected ? 'text-primary-foreground shadow-teal ring-2 ring-offset-1 ring-emerald-500'
-                            : isRunning ? 'bg-amber-100 border border-amber-300 text-amber-800 hover:bg-amber-200'
-                            : 'bg-muted/60 border border-border text-foreground hover:bg-muted')}
-                        style={isSelected ? { background: 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))' } : {}}>
-                        {num}
-                        {isRunning && <span className="text-[9px] font-semibold opacity-80">{tableBoard[num]} item{tableBoard[num] === 1 ? '' : 's'}</span>}
-                      </button>
-                    );
-                  })}
-                </div>
-                {tableError && (
-                  <div className="flex items-center gap-1 mt-1.5 text-destructive">
-                    <AlertCircle className="size-3" /><span className="text-[11px] font-body">Table required for Dine In</span>
-                  </div>
-                )}
-                {tableNumber && (
-                  <div className="mt-2 flex items-center justify-between gap-2 rounded-xl border border-border bg-muted/40 px-3 py-2">
-                    <div className="flex items-center gap-1.5 text-xs font-body">
-                      {runningOrderLoading ? (
-                        <span className="text-muted-foreground flex items-center gap-1"><Loader2 className="size-3 animate-spin" />Checking table…</span>
-                      ) : runningOrder ? (
-                        <span className="font-bold text-amber-600 flex items-center gap-1">
-                          <UtensilsCrossed className="size-3.5" />Running · {runningItemCount} item{runningItemCount === 1 ? '' : 's'} sent
-                        </span>
-                      ) : (
-                        <span className="text-muted-foreground">Table is free — first KOT opens it</span>
-                      )}
-                    </div>
-                    <button
-                      onClick={handleSendToKitchen}
-                      disabled={sendingKot || allEmpty}
-                      className={cn('flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[11px] font-bold transition-all active:scale-95',
-                        allEmpty ? 'bg-muted text-muted-foreground cursor-not-allowed' : 'bg-orange-500 text-white hover:bg-orange-600')}>
-                      {sendingKot ? <Loader2 className="size-3.5 animate-spin" /> : <Printer className="size-3.5" />}
-                      {sendingKot ? 'Sending…' : 'Send to Kitchen'}
-                    </button>
-                  </div>
-                )}
-                {kotSuccess !== null && (
-                  <div className="mt-1.5 flex items-center gap-1 text-emerald-600">
-                    <CheckCircle2 className="size-3" /><span className="text-[11px] font-body font-semibold">KOT #{kotSuccess} printed &amp; sent to kitchen</span>
-                  </div>
-                )}
-              </div>
-            ) : paymentMode !== 'credit' ? (
+            {orderType === 'takeaway' && paymentMode !== 'credit' ? (
               <div className="relative">
                 <UserIcon className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
                 <input type="text" placeholder="Customer name (optional)" value={customerName} onChange={e => setCustomerName(e.target.value)}
