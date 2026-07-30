@@ -10,7 +10,7 @@ import { formatCurrency } from '@/lib/utils';
 import { BRANCHES } from '@/branch/types';
 import type { Branch } from '@/branch/types';
 import type {
-  WalletCustomer, WalletDeductionPriority, WalletPaymentMode,
+  WalletCustomer, WalletCustomerType, WalletDeductionPriority, WalletPaymentMode,
   WalletStatus, WalletTransaction,
 } from '@/features/commerce/types';
 import { useWalletPromotionStore } from '@/stores/walletPromotionStore';
@@ -28,6 +28,12 @@ const priorities: Array<{ value: WalletDeductionPriority; label: string }> = [
 ];
 const today = () => new Date().toISOString().slice(0, 10);
 const dateText = (value?: string | null) => value ? new Date(value).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
+const VIP_SPEND_THRESHOLD = 50000;
+const suggestedTier = (wallet: WalletCustomer): WalletCustomerType | null => {
+  if (wallet.customerType === 'VIP' || wallet.customerType === 'Staff' || wallet.customerType === 'Wholesale' || wallet.customerType === 'Corporate') return null;
+  if (wallet.lifetimeSpend >= VIP_SPEND_THRESHOLD || wallet.totalPurchases >= 60) return 'VIP';
+  return null;
+};
 const escapeHtml = (value: unknown) => String(value ?? '').replace(/[&<>'"]/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[character] || character));
 
 function downloadCsv(filename: string, rows: Array<Record<string, string | number>>) {
@@ -58,11 +64,18 @@ function Kpi({ label, value, icon, note }: { label: string; value: string; icon:
   </div>;
 }
 
+const customerTypes: WalletCustomerType[] = ['Regular', 'VIP', 'Wholesale', 'Corporate', 'Staff', 'Other'];
 const emptyCustomerForm = () => ({
-  customerName: '', mobile: '', address: '', openingBalance: '', notes: '', status: 'active' as WalletStatus,
+  customerName: '', mobile: '', alternateMobile: '', email: '', dateOfBirth: '', anniversaryDate: '',
+  address: '', customerType: 'Regular' as WalletCustomerType, preferredBranch: '' as Branch | '',
+  openingBalance: '', notes: '', status: 'active' as WalletStatus,
+  transactionLimit: '', dailyLimit: '', highValueAuthorizationLimit: '', deductionPriority: 'promotional_first' as WalletDeductionPriority,
 });
 const customerFormFromWallet = (wallet: WalletCustomer) => ({
-  customerName: wallet.customerName, mobile: wallet.mobile, address: wallet.address || '', openingBalance: '', notes: wallet.notes || '', status: wallet.status,
+  customerName: wallet.customerName, mobile: wallet.mobile, alternateMobile: wallet.alternateMobile || '', email: wallet.email || '',
+  dateOfBirth: wallet.dateOfBirth || '', anniversaryDate: wallet.anniversaryDate || '', address: wallet.address || '',
+  customerType: wallet.customerType, preferredBranch: wallet.preferredBranch || '', openingBalance: '', notes: wallet.notes || '', status: wallet.status,
+  transactionLimit: wallet.transactionLimit?.toString() || '', dailyLimit: wallet.dailyLimit?.toString() || '', highValueAuthorizationLimit: wallet.highValueAuthorizationLimit?.toString() || '', deductionPriority: wallet.deductionPriority,
 });
 
 export default function AdminWalletTab() {
@@ -137,7 +150,14 @@ export default function AdminWalletTab() {
   const submitWallet = async (event: React.FormEvent) => {
     event.preventDefault(); setSaving(true); setFormError('');
     try {
-      const created = await createWallet({ ...walletForm, openingBalance: Number(walletForm.openingBalance || 0) });
+      const created = await createWallet({
+        ...walletForm,
+        preferredBranch: walletForm.preferredBranch || undefined,
+        openingBalance: Number(walletForm.openingBalance || 0),
+        transactionLimit: walletForm.transactionLimit ? Number(walletForm.transactionLimit) : undefined,
+        dailyLimit: walletForm.dailyLimit ? Number(walletForm.dailyLimit) : undefined,
+        highValueAuthorizationLimit: walletForm.highValueAuthorizationLimit ? Number(walletForm.highValueAuthorizationLimit) : undefined,
+      });
       setShowCreate(false); setMessage(`Wallet ${created.walletNumber} created for ${created.customerName}.`); setWalletForm(emptyCustomerForm());
     } catch (failure) { setFormError(failure instanceof Error ? failure.message : 'Could not create wallet.'); }
     finally { setSaving(false); }
@@ -264,6 +284,14 @@ export default function AdminWalletTab() {
   };
 
   const openEdit = (wallet: WalletCustomer) => { setProfile(null); resetFeedback(); setWalletForm(customerFormFromWallet(wallet)); setEditReason('Customer profile updated by Admin'); setEditTarget(wallet); };
+  const applyTierUpgrade = async (wallet: WalletCustomer, tier: WalletCustomerType) => {
+    setSaving(true); setFormError('');
+    try {
+      const updated = await updateWalletCustomer(wallet.id, { ...customerFormFromWallet(wallet), customerType: tier, reason: `Tier upgraded to ${tier} based on lifetime spend/visits` });
+      setProfile(updated); setMessage(`${updated.customerName} upgraded to ${tier}.`);
+    } catch (failure) { setFormError(failure instanceof Error ? failure.message : 'Could not upgrade tier.'); }
+    finally { setSaving(false); }
+  };
   const openCredit = (wallet: WalletCustomer, promotionalOnly = false) => { setProfile(null); resetFeedback(); setCreditStep(1); setCreditForm({ amount: promotionalOnly ? '0' : '', paymentMode: promotionalOnly ? 'promotional_credit' : 'cash', referenceNumber: '', description: promotionalOnly ? 'Promotional credit' : '', promotionalBonus: '', promotionalExpiryDate: '', branch: 'Cafe' as Branch, notes: '' }); setCreditTarget(wallet); };
   const openLimits = (wallet: WalletCustomer) => { setProfile(null); resetFeedback(); setLimitForm({ transactionLimit: wallet.transactionLimit?.toString() || '', dailyLimit: wallet.dailyLimit?.toString() || '', highValueAuthorizationLimit: wallet.highValueAuthorizationLimit?.toString() || '', deductionPriority: wallet.deductionPriority }); setLimitsTarget(wallet); };
 
@@ -309,7 +337,7 @@ export default function AdminWalletTab() {
     </section>
 
     {showCreate && <Modal title="Create customer wallet" subtitle="Only customer name and mobile are required. Every wallet works at all branches." onClose={() => setShowCreate(false)}>
-      <CustomerForm form={walletForm} setForm={setWalletForm} includeOpeningBalance includeStatus />
+      <CustomerForm form={walletForm} setForm={setWalletForm} includeOpeningBalance includeStatus includeLimits />
       <form onSubmit={submitWallet} className="mt-3"><FormError text={formError} /><div className="flex justify-end gap-2"><button type="button" onClick={() => setShowCreate(false)} className="rounded-xl border px-4 py-2 text-sm font-bold">Cancel</button><button disabled={saving || !walletForm.customerName.trim() || !walletForm.mobile.trim()} className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-black text-white disabled:opacity-50">{saving ? 'Creating…' : 'Create wallet'}</button></div></form>
     </Modal>}
 
@@ -355,7 +383,8 @@ export default function AdminWalletTab() {
     </Modal>}
 
     {profile && <Modal title={profile.customerName} subtitle={`${profile.walletNumber} · ${profile.mobile}`} onClose={() => setProfile(null)} wide>
-      <div className="grid gap-4 lg:grid-cols-[1fr_220px]"><div><div className="grid gap-3 sm:grid-cols-3"><Kpi label="Paid balance" value={formatCurrency(profile.paidBalance)} icon={<Banknote className="size-5" />} /><Kpi label="Promotional balance" value={formatCurrency(profile.promotionalBalance)} icon={<Gift className="size-5" />} /><Kpi label="Total available" value={formatCurrency(profile.totalBalance)} icon={<WalletCards className="size-5" />} /></div><div className="mt-4 grid gap-3 rounded-2xl bg-slate-50 p-4 text-sm sm:grid-cols-2 lg:grid-cols-3"><p><b>Branch access:</b> All branches</p><p><b>Status:</b> {profile.status}</p><p><b>Lifetime credits:</b> {formatCurrency(profile.lifetimeCredits)}</p><p><b>Lifetime spending:</b> {formatCurrency(profile.lifetimeSpend)}</p><p><b>Total purchases:</b> {profile.totalPurchases}</p><p><b>Average bill:</b> {formatCurrency(profile.totalPurchases ? profile.lifetimeSpend / profile.totalPurchases : 0)}</p><p><b>Last purchase:</b> {dateText(profile.lastPurchaseAt)}</p><p><b>Last recharge:</b> {dateText(profile.lastRechargeAt)}</p><p><b>Single limit:</b> {profile.transactionLimit == null ? 'No limit' : formatCurrency(profile.transactionLimit)}</p><p><b>Daily limit:</b> {profile.dailyLimit == null ? 'No limit' : formatCurrency(profile.dailyLimit)}</p><p><b>Supervisor authorization:</b> {profile.highValueAuthorizationLimit == null ? 'Not required' : `From ${formatCurrency(profile.highValueAuthorizationLimit)}`}</p><p><b>Deduction:</b> {priorities.find((item) => item.value === profile.deductionPriority)?.label}</p><p><b>Expiring promo:</b> {formatCurrency(profile.expiringPromotionalAmount || 0)}</p><p><b>Next expiry:</b> {dateText(profile.promotionalExpiryDate)}</p><p><b>Created:</b> {dateText(profile.createdAt)}</p></div></div><div className="flex flex-col items-center justify-center rounded-2xl border bg-white p-4">{qrDataUrl ? <img src={qrDataUrl} alt={`QR code for ${profile.walletNumber}`} className="size-44" /> : <QrCode className="size-20 text-slate-300" />}<p className="mt-2 text-center font-mono text-xs font-black">{profile.walletNumber}</p><p className="mt-1 text-center text-[10px] text-slate-500">Cashiers can scan this wallet identifier.</p></div></div>
+      {suggestedTier(profile) && <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-purple-200 bg-purple-50 p-3 text-sm font-bold text-purple-900"><span>This customer qualifies for {suggestedTier(profile)} status based on lifetime spend/visits.</span><button onClick={() => void applyTierUpgrade(profile, suggestedTier(profile)!)} disabled={saving} className="rounded-xl bg-purple-700 px-3 py-1.5 text-xs font-black text-white disabled:opacity-50">Upgrade to {suggestedTier(profile)}</button></div>}
+      <div className="grid gap-4 lg:grid-cols-[1fr_220px]"><div><div className="grid gap-3 sm:grid-cols-3"><Kpi label="Paid balance" value={formatCurrency(profile.paidBalance)} icon={<Banknote className="size-5" />} /><Kpi label="Promotional balance" value={formatCurrency(profile.promotionalBalance)} icon={<Gift className="size-5" />} /><Kpi label="Total available" value={formatCurrency(profile.totalBalance)} icon={<WalletCards className="size-5" />} /></div><div className="mt-4 grid gap-3 rounded-2xl bg-slate-50 p-4 text-sm sm:grid-cols-2 lg:grid-cols-3"><p><b>Customer type:</b> {profile.customerType}</p><p><b>Preferred branch:</b> {profile.preferredBranch || 'None'}</p><p><b>Branch access:</b> All branches</p><p><b>Status:</b> {profile.status}</p><p><b>Lifetime credits:</b> {formatCurrency(profile.lifetimeCredits)}</p><p><b>Lifetime spending:</b> {formatCurrency(profile.lifetimeSpend)}</p><p><b>Total purchases:</b> {profile.totalPurchases}</p><p><b>Average bill:</b> {formatCurrency(profile.totalPurchases ? profile.lifetimeSpend / profile.totalPurchases : 0)}</p><p><b>Last purchase:</b> {dateText(profile.lastPurchaseAt)}</p><p><b>Last recharge:</b> {dateText(profile.lastRechargeAt)}</p><p><b>Single limit:</b> {profile.transactionLimit == null ? 'No limit' : formatCurrency(profile.transactionLimit)}</p><p><b>Daily limit:</b> {profile.dailyLimit == null ? 'No limit' : formatCurrency(profile.dailyLimit)}</p><p><b>Supervisor authorization:</b> {profile.highValueAuthorizationLimit == null ? 'Not required' : `From ${formatCurrency(profile.highValueAuthorizationLimit)}`}</p><p><b>Deduction:</b> {priorities.find((item) => item.value === profile.deductionPriority)?.label}</p><p><b>Expiring promo:</b> {formatCurrency(profile.expiringPromotionalAmount || 0)}</p><p><b>Next expiry:</b> {dateText(profile.promotionalExpiryDate)}</p><p><b>Created:</b> {dateText(profile.createdAt)}</p></div></div><div className="flex flex-col items-center justify-center rounded-2xl border bg-white p-4">{qrDataUrl ? <img src={qrDataUrl} alt={`QR code for ${profile.walletNumber}`} className="size-44" /> : <QrCode className="size-20 text-slate-300" />}<p className="mt-2 text-center font-mono text-xs font-black">{profile.walletNumber}</p><p className="mt-1 text-center text-[10px] text-slate-500">Cashiers can scan this wallet identifier.</p></div></div>
       <div className="mt-4 flex flex-wrap gap-2"><button onClick={() => openCredit(profile)} disabled={profile.status === 'closed'} className="rounded-xl bg-slate-950 px-3 py-2 text-xs font-black text-white disabled:opacity-40"><Plus className="mr-1 inline size-3.5" />Add money</button><button onClick={() => openCredit(profile, true)} disabled={profile.status === 'closed'} className="rounded-xl bg-purple-600 px-3 py-2 text-xs font-black text-white disabled:opacity-40"><Gift className="mr-1 inline size-3.5" />Promo credit</button><button onClick={() => { setAdjustForm({ mode: 'deduct', paidAmount: '', promotionalAmount: '', promotionalExpiryDate: '', branch: 'Cafe' as Branch, reason: '', adminPin: '' }); setProfile(null); setAdjustTarget(profile); }} disabled={profile.status === 'closed'} className="rounded-xl border px-3 py-2 text-xs font-black disabled:opacity-40"><IndianRupee className="mr-1 inline size-3.5" />Adjustment / refund</button><button onClick={() => openEdit(profile)} disabled={profile.status === 'closed'} className="rounded-xl border px-3 py-2 text-xs font-black disabled:opacity-40"><Edit3 className="mr-1 inline size-3.5" />Edit customer</button><button onClick={() => openLimits(profile)} disabled={profile.status === 'closed'} className="rounded-xl border px-3 py-2 text-xs font-black disabled:opacity-40"><Settings2 className="mr-1 inline size-3.5" />Limits</button><button onClick={() => { setProfile(null); setMergeTarget(profile); setMergeForm({ targetWalletId: '', reason: '', adminPin: '' }); }} disabled={profile.status === 'closed'} className="rounded-xl border px-3 py-2 text-xs font-black disabled:opacity-40"><Merge className="mr-1 inline size-3.5" />Merge duplicate</button><button onClick={() => printStatement(profile)} className="rounded-xl border px-3 py-2 text-xs font-black"><Printer className="mr-1 inline size-3.5" />Print statement</button><button onClick={() => exportStatement(profile)} className="rounded-xl border px-3 py-2 text-xs font-black"><Download className="mr-1 inline size-3.5" />Export statement</button></div>
       <div className="mt-4"><h4 className="mb-2 flex items-center gap-2 font-black"><History className="size-4" />Transaction, purchase, refund and reversal history</h4><div className="max-h-80 overflow-auto rounded-2xl border"><table className="w-full min-w-[900px] text-left text-xs"><thead className="sticky top-0 bg-slate-50"><tr><th className="p-3">Transaction</th><th className="p-3">Bill / reference</th><th className="p-3">Branch</th><th className="p-3">Bucket split</th><th className="p-3">Previous → new</th><th className="p-3 text-right">Amount</th><th className="p-3">Action</th></tr></thead><tbody className="divide-y">{transactionsFor(profile).slice(0, 200).map((row) => { const negative = row.transactionType === 'debit' || row.transactionType === 'expiry' || (row.transactionType === 'adjustment' && row.newPaidBalance + row.newPromotionalBalance < row.previousPaidBalance + row.previousPromotionalBalance); return <tr key={row.id}><td className="p-3"><p className="font-black capitalize">{row.transactionType}</p><p className="text-slate-500">{dateText(row.createdAt)}</p><p className="font-mono text-[10px] text-slate-400">{row.id.slice(0, 8).toUpperCase()}</p></td><td className="p-3">{row.billNumber || row.referenceNumber || '—'}</td><td className="p-3">{row.branch || '—'}</td><td className="p-3">Paid {formatCurrency(row.paidAmount)}<br />Promo {formatCurrency(row.promotionalAmount)}</td><td className="p-3">{formatCurrency(row.previousPaidBalance + row.previousPromotionalBalance)} → <b>{formatCurrency(row.newPaidBalance + row.newPromotionalBalance)}</b></td><td className={`p-3 text-right font-black ${negative ? 'text-red-600' : 'text-emerald-700'}`}>{negative ? '-' : '+'}{formatCurrency(row.amount)}</td><td className="p-3">{row.status === 'completed' && !['expiry', 'refund', 'reversal'].includes(row.transactionType) ? <button onClick={() => { setReverseForm({ reason: '', adminPin: '' }); setProfile(null); setReverseTarget(row); }} className="rounded-lg border p-2" title="Reverse transaction"><RotateCcw className="size-3.5" /></button> : <span className="text-[10px] font-bold uppercase text-slate-400">{row.status}</span>}</td></tr>; })}</tbody></table>{transactionsFor(profile).length === 0 && <div className="p-8 text-center text-sm text-slate-500">No wallet transactions yet.</div>}</div></div>
       <div className="mt-4 flex justify-end"><button onClick={() => { setFormError(''); setProfile(null); setStatusForm({ target: profile, reason: profile.status === 'active' ? 'Suspended by Admin' : 'Reactivated by Admin', adminPin: '' }); }} disabled={profile.status === 'closed'} className={`rounded-xl px-4 py-2 text-sm font-black text-white disabled:opacity-40 ${profile.status === 'active' ? 'bg-red-600' : 'bg-emerald-600'}`}>{profile.status === 'active' ? 'Suspend wallet' : 'Reactivate wallet'}</button></div>
@@ -368,10 +397,34 @@ export default function AdminWalletTab() {
 }
 
 type CustomerFormValue = ReturnType<typeof emptyCustomerForm>;
-function CustomerForm({ form, setForm, includeOpeningBalance = false, includeStatus = false }: { form: CustomerFormValue; setForm: React.Dispatch<React.SetStateAction<CustomerFormValue>>; includeOpeningBalance?: boolean; includeStatus?: boolean }) {
-  return <div className="grid gap-3 sm:grid-cols-2"><input required value={form.customerName} onChange={(event) => setForm({ ...form, customerName: event.target.value })} placeholder="Customer name *" className="rounded-xl border p-3" /><input required inputMode="numeric" value={form.mobile} onChange={(event) => setForm({ ...form, mobile: event.target.value })} placeholder="Primary mobile number *" className="rounded-xl border p-3" />{includeOpeningBalance && <input type="number" min="0" step="0.01" value={form.openingBalance} onChange={(event) => setForm({ ...form, openingBalance: event.target.value })} placeholder="Opening paid balance" className="rounded-xl border p-3" />}{includeStatus && <select value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value as WalletStatus })} className="rounded-xl border p-3"><option value="active">Active</option><option value="suspended">Suspended</option></select>}<div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-bold text-emerald-800 sm:col-span-2">This wallet is automatically eligible at Cafe, SNB, VRSNB, Hosur and every other supported branch.</div><textarea value={form.address} onChange={(event) => setForm({ ...form, address: event.target.value })} placeholder="Address" className="rounded-xl border p-3 sm:col-span-2" /><textarea value={form.notes} onChange={(event) => setForm({ ...form, notes: event.target.value })} placeholder="Notes" className="rounded-xl border p-3 sm:col-span-2" /></div>;
+function CustomerForm({ form, setForm, includeOpeningBalance = false, includeStatus = false, includeLimits = false }: { form: CustomerFormValue; setForm: React.Dispatch<React.SetStateAction<CustomerFormValue>>; includeOpeningBalance?: boolean; includeStatus?: boolean; includeLimits?: boolean }) {
+  return <div className="grid gap-3 sm:grid-cols-2">
+    <input required value={form.customerName} onChange={(event) => setForm({ ...form, customerName: event.target.value })} placeholder="Customer name *" className="rounded-xl border p-3" />
+    <input required inputMode="numeric" value={form.mobile} onChange={(event) => setForm({ ...form, mobile: event.target.value })} placeholder="Primary mobile number *" className="rounded-xl border p-3" />
+    <input inputMode="numeric" value={form.alternateMobile} onChange={(event) => setForm({ ...form, alternateMobile: event.target.value })} placeholder="Alternate mobile number" className="rounded-xl border p-3" />
+    <input type="email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} placeholder="Email address" className="rounded-xl border p-3" />
+    <LabeledInput label="Date of birth" type="date" value={form.dateOfBirth} onChange={(value) => setForm({ ...form, dateOfBirth: value })} />
+    <LabeledInput label="Anniversary date" type="date" value={form.anniversaryDate} onChange={(value) => setForm({ ...form, anniversaryDate: value })} />
+    <select value={form.customerType} onChange={(event) => setForm({ ...form, customerType: event.target.value as WalletCustomerType })} className="rounded-xl border p-3">{customerTypes.map((item) => <option key={item} value={item}>{item}</option>)}</select>
+    <select value={form.preferredBranch} onChange={(event) => setForm({ ...form, preferredBranch: event.target.value as Branch | '' })} className="rounded-xl border p-3"><option value="">No preferred branch</option>{BRANCHES.map((item) => <option key={item} value={item}>{item}</option>)}</select>
+    {includeOpeningBalance && <input type="number" min="0" step="0.01" value={form.openingBalance} onChange={(event) => setForm({ ...form, openingBalance: event.target.value })} placeholder="Opening paid balance" className="rounded-xl border p-3" />}
+    {includeStatus && <select value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value as WalletStatus })} className="rounded-xl border p-3"><option value="active">Active</option><option value="suspended">Suspended</option></select>}
+    <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-bold text-emerald-800 sm:col-span-2">This wallet is automatically eligible at Cafe, SNB, VRSNB, Hosur and every other supported branch.</div>
+    <textarea value={form.address} onChange={(event) => setForm({ ...form, address: event.target.value })} placeholder="Address" className="rounded-xl border p-3 sm:col-span-2" />
+    <textarea value={form.notes} onChange={(event) => setForm({ ...form, notes: event.target.value })} placeholder="Notes" className="rounded-xl border p-3 sm:col-span-2" />
+    {includeLimits && <>
+      <p className="text-xs font-bold text-slate-600 sm:col-span-2">Spending limits &amp; approvals</p>
+      <input type="number" min="0" step="0.01" value={form.transactionLimit} onChange={(event) => setForm({ ...form, transactionLimit: event.target.value })} placeholder="Single transaction limit" className="rounded-xl border p-3" />
+      <input type="number" min="0" step="0.01" value={form.dailyLimit} onChange={(event) => setForm({ ...form, dailyLimit: event.target.value })} placeholder="Daily wallet limit" className="rounded-xl border p-3" />
+      <input type="number" min="0" step="0.01" value={form.highValueAuthorizationLimit} onChange={(event) => setForm({ ...form, highValueAuthorizationLimit: event.target.value })} placeholder="Require Admin/Owner password from amount" className="rounded-xl border p-3" />
+      <select value={form.deductionPriority} onChange={(event) => setForm({ ...form, deductionPriority: event.target.value as WalletDeductionPriority })} className="rounded-xl border p-3">{priorities.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select>
+    </>}
+  </div>;
 }
 
 function FormError({ text, className = '' }: { text: string; className?: string }) {
   return text ? <p className={`mt-3 text-sm font-bold text-red-600 ${className}`}>{text}</p> : null;
+}
+function LabeledInput({ label, type, value, onChange }: { label: string; type: string; value: string; onChange: (value: string) => void }) {
+  return <label className="text-xs font-bold text-slate-600">{label}<input type={type} value={value} onChange={(event) => onChange(event.target.value)} className="mt-1 w-full rounded-xl border bg-white p-3" /></label>;
 }
