@@ -1315,7 +1315,9 @@ function OrdersTab() {
     win.document.write(`<!DOCTYPE html><html><head>
       <title>Pending Orders — ${new Date().toLocaleDateString('en-IN')}</title>
       <style>
-        body { font-family: sans-serif; font-size: 13px; margin: 24px; color: #111; }
+        @page { size: auto; margin: 6mm; }
+        @media print { html, body { height: auto !important; } }
+        body { font-family: sans-serif; font-size: 13px; margin: 16px; color: #111; }
         h2 { margin: 0 0 8px; }
         p.sub { color: #666; font-size: 11px; margin: 0 0 16px; }
         table { width: 100%; border-collapse: collapse; }

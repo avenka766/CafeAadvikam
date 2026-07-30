@@ -27,8 +27,11 @@ function printInvoice(invoice: StoreInvoice) {
   win.document.write(`<!DOCTYPE html><html><head>
     <title>Invoice ${invoice.invoiceNumber}</title>
     <style>
+      @page{size:auto;margin:6mm;}
+      @media print{html,body{height:auto !important;}}
       *{margin:0;padding:0;box-sizing:border-box;}
-      body{font-family:'Segoe UI',Arial,sans-serif;font-size:13px;color:#1a1a1a;padding:28px;}
+      html,body{width:fit-content;height:fit-content;}
+      body{font-family:'Segoe UI',Arial,sans-serif;font-size:13px;color:#1a1a1a;padding:16px;}
       .logo{font-size:20px;font-weight:800;color:#2D7D6F;}
       .sub{font-size:11px;color:#888;margin-top:2px;margin-bottom:16px;}
       .status{display:inline-block;padding:3px 10px;border-radius:100px;font-size:11px;font-weight:700;background:${statusColor}22;color:${statusColor};border:1px solid ${statusColor}44;}

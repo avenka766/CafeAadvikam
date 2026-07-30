@@ -19,7 +19,7 @@
 import { useState, useMemo, useEffect } from 'react';
 import {
   Scissors, Search, Plus, Loader2, CheckCircle2,
-  AlertCircle, History, X, ChevronDown, Trash2, Package, Printer,
+  AlertCircle, History, X, Trash2, Package, Printer,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { supabase } from '@/lib/supabase';
@@ -240,6 +240,7 @@ function DeductionRowEditor({
   stockItems,
   onUpdate,
   onRemove,
+  onAddRow,
   canRemove,
 }: {
   row: DeductionRow;
@@ -247,57 +248,77 @@ function DeductionRowEditor({
   stockItems: StockItem[];
   onUpdate: (index: number, patch: Partial<DeductionRow>) => void;
   onRemove: (index: number) => void;
+  onAddRow: () => void;
   canRemove: boolean;
 }) {
+  const [activeIndex, setActiveIndex] = useState(0);
+
   const filtered = useMemo(() => {
     const q = row.itemSearch.toLowerCase();
     return q ? stockItems.filter(i => i.name.toLowerCase().includes(q)) : stockItems;
   }, [stockItems, row.itemSearch]);
 
+  useEffect(() => { setActiveIndex(0); }, [row.itemSearch, row.showDD]);
+
   const qty = Number(row.quantity);
   const newStock = row.item ? row.item.quantity - qty : null;
   const goesNegative = newStock !== null && newStock < 0;
+
+  const selectItem = (item: StockItem) => {
+    onUpdate(index, { item, showDD: false, itemSearch: '', quantity: '' });
+    requestAnimationFrame(() => document.getElementById(`ded-qty-${index}`)?.focus());
+  };
 
   return (
     <div className="p-3 bg-muted/20 rounded-xl border border-border space-y-2">
       <div className="flex items-start gap-2">
         <div className="flex-1 relative">
-          <button
-            onClick={() => onUpdate(index, { showDD: !row.showDD })}
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3 text-muted-foreground pointer-events-none z-10" />
+          <input
+            id={`ded-item-${index}`}
+            value={row.showDD ? row.itemSearch : (row.item ? row.item.name : row.itemSearch)}
+            onFocus={() => onUpdate(index, { showDD: true, itemSearch: '' })}
+            onChange={e => onUpdate(index, { itemSearch: e.target.value, item: null, showDD: true })}
+            onBlur={() => window.setTimeout(() => onUpdate(index, { showDD: false }), 120)}
+            onKeyDown={e => {
+              if (e.key === 'ArrowDown' && filtered.length > 0) {
+                e.preventDefault();
+                onUpdate(index, { showDD: true });
+                setActiveIndex(i => Math.min(i + 1, filtered.length - 1));
+              } else if (e.key === 'ArrowUp' && filtered.length > 0) {
+                e.preventDefault();
+                setActiveIndex(i => Math.max(i - 1, 0));
+              } else if (e.key === 'Enter') {
+                e.preventDefault();
+                if (row.showDD && filtered[activeIndex]) selectItem(filtered[activeIndex]);
+              } else if (e.key === 'Escape') {
+                onUpdate(index, { showDD: false });
+              }
+            }}
+            placeholder="Type to search item…"
+            autoComplete="off"
             className={cn(
-              'w-full h-10 px-3 rounded-xl border bg-background text-xs font-body flex items-center justify-between focus:outline-none focus:ring-2 focus:ring-primary/30',
+              'w-full h-10 pl-7 pr-3 rounded-xl border bg-background text-xs font-body focus:outline-none focus:ring-2 focus:ring-primary/30',
               row.item ? 'border-primary/40 text-foreground' : 'border-border text-muted-foreground'
             )}
-          >
-            <span className="truncate">
-              {row.item ? row.item.name : 'Select item…'}
-            </span>
-            <ChevronDown className={cn('size-3.5 text-muted-foreground shrink-0 ml-2 transition-transform', row.showDD && 'rotate-180')} />
-          </button>
+          />
 
           {row.showDD && (
             <div className="absolute top-full left-0 right-0 mt-1 bg-card border border-border rounded-xl shadow-xl z-30 overflow-hidden">
-              <div className="p-2 border-b border-border">
-                <div className="relative">
-                  <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3 text-muted-foreground" />
-                  <input
-                    autoFocus
-                    value={row.itemSearch}
-                    onChange={e => onUpdate(index, { itemSearch: e.target.value })}
-                    placeholder="Search items…"
-                    className="w-full h-8 pl-7 pr-3 rounded-lg border border-border bg-background text-xs font-body focus:outline-none focus:ring-2 focus:ring-primary/30"
-                  />
-                </div>
-              </div>
               <div className="max-h-44 overflow-y-auto divide-y divide-border/40">
                 {filtered.length === 0 && (
                   <p className="px-3 py-3 text-xs font-body text-muted-foreground text-center">No items found</p>
                 )}
-                {filtered.map(item => (
+                {filtered.map((item, i) => (
                   <button
                     key={item.id}
-                    onClick={() => onUpdate(index, { item, showDD: false, itemSearch: '', quantity: '' })}
-                    className="w-full px-3 py-2.5 flex items-center justify-between text-left hover:bg-muted transition-colors"
+                    type="button"
+                    onMouseDown={e => e.preventDefault()}
+                    onClick={() => selectItem(item)}
+                    className={cn(
+                      'w-full px-3 py-2.5 flex items-center justify-between text-left transition-colors',
+                      i === activeIndex ? 'bg-primary/5' : 'hover:bg-muted'
+                    )}
                   >
                     <div>
                       <p className="text-xs font-body font-semibold text-foreground">{item.name}</p>
@@ -321,11 +342,19 @@ function DeductionRowEditor({
         {/* Qty */}
         <div className="flex items-center gap-1 shrink-0">
           <input
+            id={`ded-qty-${index}`}
             type="number"
             min={0.01}
             step={0.01}
             value={row.quantity}
             onChange={e => onUpdate(index, { quantity: e.target.value })}
+            onKeyDown={e => {
+              if (e.key === 'Enter' && row.item && Number(row.quantity) > 0) {
+                e.preventDefault();
+                onAddRow();
+                requestAnimationFrame(() => document.getElementById(`ded-item-${index + 1}`)?.focus());
+              }
+            }}
             placeholder="Qty"
             className="w-20 h-10 px-2 rounded-xl border border-border bg-background text-sm font-body text-center focus:outline-none focus:ring-2 focus:ring-primary/30"
           />
@@ -397,7 +426,7 @@ function printDeductionSlip(rows: DeductionRow[], reason: string) {
   const itemRows = validRows.map(r => `<tr><td>${r.item!.name}</td><td style="text-align:right">${r.quantity} ${r.item!.unit}</td></tr>`).join('');
   const win = window.open('', '_blank', 'width=420,height=600');
   if (!win) return;
-  win.document.write(`<!doctype html><html><head><title>Deduction Slip</title><style>body{font-family:Arial;padding:16px;color:#111}h2,p{margin:0 0 6px}table{width:100%;border-collapse:collapse;margin-top:10px}th,td{border-bottom:1px solid #ddd;padding:6px;text-align:left;font-size:12px}</style></head><body><h2>Cafe Aadvikam</h2><p>Custom Stock Deduction</p><p style="font-size:12px;color:#555">${new Date().toLocaleString('en-IN')}</p><p style="font-size:12px"><b>Reason:</b> ${reason}</p><table><thead><tr><th>Item</th><th style="text-align:right">Qty</th></tr></thead><tbody>${itemRows}</tbody></table><script>window.onload=()=>window.print()</script></body></html>`);
+  win.document.write(`<!doctype html><html><head><title>Deduction Slip</title><style>@page{size:auto;margin:6mm}@media print{html,body{height:auto !important}}html,body{width:fit-content;height:fit-content}body{font-family:Arial;padding:16px;color:#111}h2,p{margin:0 0 6px}table{width:100%;border-collapse:collapse;margin-top:10px}th,td{border-bottom:1px solid #ddd;padding:6px;text-align:left;font-size:12px}</style></head><body><h2>Cafe Aadvikam</h2><p>Custom Stock Deduction</p><p style="font-size:12px;color:#555">${new Date().toLocaleString('en-IN')}</p><p style="font-size:12px"><b>Reason:</b> ${reason}</p><table><thead><tr><th>Item</th><th style="text-align:right">Qty</th></tr></thead><tbody>${itemRows}</tbody></table><script>window.onload=()=>window.print()</script></body></html>`);
   win.document.close();
 }
 
@@ -552,6 +581,7 @@ export default function StoreCustomTab() {
                 stockItems={stockItems}
                 onUpdate={updateRow}
                 onRemove={removeRow}
+                onAddRow={addRow}
                 canRemove={rows.length > 1}
               />
             ))}

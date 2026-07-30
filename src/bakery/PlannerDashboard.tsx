@@ -840,7 +840,8 @@ function InvoiceTab({ orders }: { orders: BakeryOrder[] }) {
     win.document.write(`
       <html><head><title>Invoice — ${b} — ${date}</title>
       <style>
-        @page { size: A4; margin: 16mm; }
+        @page { size: auto; margin: 10mm; }
+        @media print { html, body { height: auto !important; } }
         body { font-family: sans-serif; padding: 16px; color: #111; }
         h1 { font-size: 20px; margin-bottom: 2px; }
         .meta { font-size: 12px; color: #555; margin-bottom: 16px; }
@@ -1147,7 +1148,7 @@ function DispatchChecklistModal({ row, orders, onClose, onDispatch, dispatchedBy
       ? `@page { size: 80mm auto; margin: 4mm; } body { font-family: monospace; font-size: 11px; width: 72mm; }
          h2 { font-size: 12px; } .meta { font-size: 10px; } .order-line { font-size: 11px; } .check { display:block; font-size: 11px; margin: 2px 0; }
          .sign-box { font-size: 10px; margin-top: 6px; }`
-      : `@page { size: A4; margin: 16mm; } body { font-family: sans-serif; font-size: 14px; }
+      : `@page { size: auto; margin: 12mm; } body { font-family: sans-serif; font-size: 14px; }
          h2 { font-size: 16px; } .meta { font-size: 12px; color: #555; } .order-line { font-size: 13px; } .check { display:block; font-size: 13px; margin: 4px 0; }
          .sign-box { font-size: 12px; margin-top: 10px; }`;
 

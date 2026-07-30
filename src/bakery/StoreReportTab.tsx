@@ -86,6 +86,7 @@ function StatCard({ icon: Icon, label, value, sub }: { icon: ComponentType<{ cla
 
 export default function StoreReportTab() {
   const { invoices, loaded: invoicesLoaded, load: loadInvoices } = useInvoiceStore();
+  const [view, setView] = useState<'overview' | 'price'>('overview');
   const [period, setPeriod] = useState<PeriodKey>('7d');
   const [customFrom, setCustomFrom] = useState(toInputDate(new Date()));
   const [customTo, setCustomTo] = useState(toInputDate(new Date()));
@@ -148,6 +149,40 @@ export default function StoreReportTab() {
   });
   const invoiceTotal = reportInvoices.reduce((sum, inv) => sum + Number(inv.grandTotal || 0), 0);
 
+  // Latest known price per item name, taken from all invoices (not just the selected range).
+  const priceMap = useMemo(() => {
+    const map = new Map<string, { price: number; at: number }>();
+    for (const inv of invoices) {
+      const at = new Date(inv.createdAt).getTime();
+      for (const li of inv.lineItems) {
+        const key = li.itemName.trim().toLowerCase();
+        const existing = map.get(key);
+        if (!existing || at > existing.at) map.set(key, { price: li.pricePerUnit, at });
+      }
+    }
+    return map;
+  }, [invoices]);
+
+  const [priceSource, setPriceSource] = useState<'all' | 'recipe' | 'custom'>('all');
+
+  const priceRows = useMemo(() => {
+    type Row = { id: string; itemName: string; quantity: number; unit: string; source: 'Recipe' | 'Custom'; date: string; price: number | null; value: number };
+    const rows: Row[] = [];
+    for (const m of materials) {
+      const price = priceMap.get(m.materialName.trim().toLowerCase())?.price ?? null;
+      rows.push({ id: `m-${m.id}`, itemName: m.materialName, quantity: m.quantity, unit: m.unit, source: 'Recipe', date: m.deductedAt, price, value: price !== null ? price * m.quantity : 0 });
+    }
+    for (const c of custom) {
+      const price = priceMap.get(c.itemName.trim().toLowerCase())?.price ?? null;
+      rows.push({ id: `c-${c.id}`, itemName: c.itemName, quantity: c.quantity, unit: c.unit, source: 'Custom', date: c.createdAt, price, value: price !== null ? price * c.quantity : 0 });
+    }
+    const filtered = priceSource === 'all' ? rows : rows.filter(r => r.source.toLowerCase() === priceSource);
+    return filtered.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  }, [materials, custom, priceMap, priceSource]);
+
+  const priceTotal = priceRows.reduce((sum, r) => sum + r.value, 0);
+  const priceMissing = priceRows.filter(r => r.price === null).length;
+
   const downloadExcel = () => {
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(materials.map(row => ({
@@ -176,11 +211,33 @@ export default function StoreReportTab() {
       Amount: inv.grandTotal,
       Status: inv.status.replace('_', ' '),
     }))), 'Invoices');
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(priceRows.map(r => ({
+      Date: prettyDate(r.date),
+      Item: r.itemName,
+      Source: r.source,
+      Quantity: r.quantity,
+      Unit: r.unit,
+      'Price/Unit': r.price ?? '',
+      Value: r.value,
+    }))), 'Price Consumption');
     XLSX.writeFile(wb, `store-report-${range.fromDate}-to-${range.toDate}.xlsx`);
   };
 
   return (
     <div className="space-y-4 pb-8">
+      <div className="flex gap-1.5">
+        {(['overview', 'price'] as const).map(v => (
+          <button
+            key={v}
+            type="button"
+            onClick={() => setView(v)}
+            className={cn('h-9 rounded-xl border px-4 text-xs font-body font-bold capitalize', view === v ? 'border-primary bg-primary text-primary-foreground' : 'border-border bg-background text-muted-foreground hover:bg-muted')}
+          >
+            {v === 'price' ? 'Price' : 'Overview'}
+          </button>
+        ))}
+      </div>
+
       <div className="rounded-3xl border border-border bg-card p-4 shadow-soft">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div>
@@ -235,6 +292,45 @@ export default function StoreReportTab() {
 
       {loading ? (
         <div className="rounded-3xl border border-border bg-card py-16 flex justify-center"><Loader2 className="size-6 animate-spin text-primary" /></div>
+      ) : view === 'price' ? (
+        <div className="space-y-4">
+          <div className="grid gap-3 sm:grid-cols-3">
+            <StatCard icon={Calendar} label="Stock Value Consumed" value={money(priceTotal)} sub={`${range.fromDate} to ${range.toDate}`} />
+            <StatCard icon={Package} label="Line Items" value={priceRows.length} sub="Recipe + custom deductions" />
+            <StatCard icon={MinusCircle} label="Missing Price" value={priceMissing} sub="No invoice rate found yet" />
+          </div>
+
+          <div className="flex gap-1.5">
+            {(['all', 'recipe', 'custom'] as const).map(s => (
+              <button
+                key={s}
+                type="button"
+                onClick={() => setPriceSource(s)}
+                className={cn('h-8 rounded-lg border px-3 text-[11px] font-body font-bold capitalize', priceSource === s ? 'border-primary bg-primary text-primary-foreground' : 'border-border bg-background text-muted-foreground hover:bg-muted')}
+              >
+                {s}
+              </button>
+            ))}
+          </div>
+
+          <section className="rounded-3xl border border-border bg-card p-4 shadow-soft">
+            <h4 className="text-sm font-body font-bold text-foreground mb-3">Amount consumed from stock</h4>
+            {priceRows.length === 0 ? (
+              <p className="py-10 text-center text-xs font-body text-muted-foreground">No stock consumption found for this range.</p>
+            ) : (
+              <div className="space-y-2">
+                {priceRows.map(r => (
+                  <ReportRow
+                    key={r.id}
+                    title={r.itemName}
+                    right={r.price !== null ? money(r.value) : 'No price'}
+                    lines={[`${r.source} · ${r.quantity} ${r.unit}${r.price !== null ? ` @ Rs ${r.price.toFixed(2)}` : ''}`, prettyDate(r.date)]}
+                  />
+                ))}
+              </div>
+            )}
+          </section>
+        </div>
       ) : (
         <div className="grid gap-4 xl:grid-cols-3">
           <ReportSection title="Deductions" empty="No recipe deductions found.">

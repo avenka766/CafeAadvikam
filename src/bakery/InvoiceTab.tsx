@@ -39,8 +39,11 @@ function printInvoice(invoice: StoreInvoice) {
     <!DOCTYPE html><html><head>
     <title>Invoice ${invoice.invoiceNumber}</title>
     <style>
+      @page { size: auto; margin: 6mm; }
+      @media print { html, body { height: auto !important; } }
       * { margin:0; padding:0; box-sizing:border-box; }
-      body { font-family:'Segoe UI',Arial,sans-serif; font-size:13px; color:#1a1a1a; padding:28px; }
+      html, body { width: fit-content; height: fit-content; }
+      body { font-family:'Segoe UI',Arial,sans-serif; font-size:13px; color:#1a1a1a; padding:16px; }
       .header { border-bottom:2px solid #e5e7eb; padding-bottom:16px; margin-bottom:20px; }
       .logo { font-size:20px; font-weight:800; color:#2D7D6F; }
       .sub { font-size:11px; color:#888; margin-top:2px; }
@@ -279,12 +282,14 @@ function formatStockQuantity(value: number): string {
 
 function InvoiceItemPicker({
   value,
+  rowId,
   stockItems,
   selectedItemNames,
   onChange,
   onSelect,
 }: {
   value: string;
+  rowId: string;
   stockItems: ReturnType<typeof useStoreStockStore.getState>['items'];
   selectedItemNames: string[];
   onChange: (value: string) => void;
@@ -333,6 +338,7 @@ function InvoiceItemPicker({
     <div className="relative">
       <Search className="pointer-events-none absolute left-3 top-1/2 z-10 size-3.5 -translate-y-1/2 text-muted-foreground" />
       <input
+        id={`inv-item-${rowId}`}
         value={value}
         onChange={event => { onChange(event.target.value); setOpen(true); }}
         onFocus={() => setOpen(true)}
@@ -348,6 +354,7 @@ function InvoiceItemPicker({
             event.preventDefault();
             onSelect(suggestions[activeIndex]);
             setOpen(false);
+            requestAnimationFrame(() => document.getElementById(`inv-qty-${rowId}`)?.focus());
           } else if (event.key === 'Escape') {
             setOpen(false);
           }
@@ -364,7 +371,7 @@ function InvoiceItemPicker({
               type="button"
               key={normalizeItemName(item.name)}
               onMouseDown={event => event.preventDefault()}
-              onClick={() => { onSelect(item); setOpen(false); }}
+              onClick={() => { onSelect(item); setOpen(false); requestAnimationFrame(() => document.getElementById(`inv-qty-${rowId}`)?.focus()); }}
               className={cn(
                 'flex w-full items-center justify-between gap-3 border-b border-border/50 px-3 py-2.5 text-left last:border-0',
                 activeIndex === index ? 'bg-primary/5' : 'hover:bg-muted/60',
@@ -395,6 +402,7 @@ function InvoiceItemPicker({
 function InvoiceLineEditor({
   line,
   index,
+  isLast,
   stockItems,
   selectedItemNames,
   errors,
@@ -402,9 +410,11 @@ function InvoiceLineEditor({
   onUpdate,
   onSelectItem,
   onRemove,
+  onAddLine,
 }: {
   line: InvoiceLineDraft;
   index: number;
+  isLast: boolean;
   stockItems: ReturnType<typeof useStoreStockStore.getState>['items'];
   selectedItemNames: string[];
   errors: string[];
@@ -412,6 +422,7 @@ function InvoiceLineEditor({
   onUpdate: (patch: Partial<InvoiceLineDraft>) => void;
   onSelectItem: (suggestion: InvoiceItemSuggestion) => void;
   onRemove: () => void;
+  onAddLine: () => void;
 }) {
   const quantity = draftNumber(line.quantity);
   const rate = draftNumber(line.pricePerUnit);
@@ -426,6 +437,7 @@ function InvoiceLineEditor({
         <label className="mb-1 block text-[9px] font-body font-bold uppercase text-muted-foreground md:hidden">Item {index + 1}</label>
         <InvoiceItemPicker
           value={line.itemName}
+          rowId={line.rowId}
           stockItems={stockItems}
           selectedItemNames={selectedItemNames}
           onChange={itemName => onUpdate({ itemName })}
@@ -436,11 +448,18 @@ function InvoiceLineEditor({
       <div className="mt-2 md:mt-0">
         <label className="mb-1 block text-[9px] font-body font-bold uppercase text-muted-foreground md:hidden">Quantity</label>
         <input
+          id={`inv-qty-${line.rowId}`}
           type="number"
           min="0"
           step="any"
           value={line.quantity}
           onChange={event => onUpdate({ quantity: event.target.value })}
+          onKeyDown={event => {
+            if (event.key === 'Enter') {
+              event.preventDefault();
+              document.getElementById(`inv-unit-${line.rowId}`)?.focus();
+            }
+          }}
           placeholder="0"
           inputMode="decimal"
           className="h-10 w-full rounded-xl border border-border bg-background px-2 text-right text-sm font-body tabular-nums focus:outline-none focus:ring-2 focus:ring-primary/30"
@@ -450,8 +469,15 @@ function InvoiceLineEditor({
       <div className="mt-2 md:mt-0">
         <label className="mb-1 block text-[9px] font-body font-bold uppercase text-muted-foreground md:hidden">Unit</label>
         <select
+          id={`inv-unit-${line.rowId}`}
           value={line.unit}
           onChange={event => onUpdate({ unit: event.target.value as StockUnit })}
+          onKeyDown={event => {
+            if (event.key === 'Enter') {
+              event.preventDefault();
+              document.getElementById(`inv-rate-${line.rowId}`)?.focus();
+            }
+          }}
           className="h-10 w-full rounded-xl border border-border bg-background px-2 text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30"
         >
           {INVOICE_UNIT_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
@@ -463,11 +489,22 @@ function InvoiceLineEditor({
         <div className="relative">
           <span className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-xs font-body text-muted-foreground">₹</span>
           <input
+            id={`inv-rate-${line.rowId}`}
             type="number"
             min="0"
             step="any"
             value={line.pricePerUnit}
             onChange={event => onUpdate({ pricePerUnit: event.target.value })}
+            onKeyDown={event => {
+              if (event.key === 'Enter') {
+                event.preventDefault();
+                if (isLast) {
+                  onAddLine();
+                } else {
+                  requestAnimationFrame(() => document.getElementById(`inv-item-${index + 1}`)?.focus());
+                }
+              }
+            }}
             placeholder="0.00"
             inputMode="decimal"
             className="h-10 w-full rounded-xl border border-border bg-background pl-6 pr-2 text-right text-sm font-body tabular-nums focus:outline-none focus:ring-2 focus:ring-primary/30"
@@ -572,7 +609,11 @@ function CreateInvoiceModal({
   };
 
   const addLine = () => {
-    setLines(current => [...current, createLineDraft()]);
+    setLines(current => {
+      const next = [...current, createLineDraft()];
+      requestAnimationFrame(() => document.getElementById(`inv-item-${next[next.length - 1].rowId}`)?.focus());
+      return next;
+    });
     setInfo('');
   };
 
@@ -786,6 +827,7 @@ function CreateInvoiceModal({
                   key={line.rowId}
                   line={line}
                   index={index}
+                  isLast={index === lines.length - 1}
                   stockItems={stockItems}
                   selectedItemNames={selectedItemNames.filter(name => normalizeItemName(name) !== normalizeItemName(line.itemName))}
                   errors={lineErrors[line.rowId] ?? []}
@@ -793,6 +835,7 @@ function CreateInvoiceModal({
                   onUpdate={patch => updateLine(line.rowId, patch)}
                   onSelectItem={suggestion => selectItem(line.rowId, suggestion)}
                   onRemove={() => removeLine(line.rowId)}
+                  onAddLine={addLine}
                 />
               ))}
             </div>
