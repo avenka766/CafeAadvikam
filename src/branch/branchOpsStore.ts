@@ -2659,7 +2659,7 @@ export const useBranchOpsStore = create<BranchOpsState>()(
           systemQty: Math.round(Number(line.systemQty || 0) * 1000) / 1000,
           physicalQty: Math.round(Number(line.physicalQty || 0) * 1000) / 1000,
           difference:
-            Math.round((Number(line.systemQty || 0) - Number(line.physicalQty || 0)) * 1000) / 1000,
+            Math.round((Number(line.physicalQty || 0) - Number(line.systemQty || 0)) * 1000) / 1000,
         }));
         const newReport: BranchStockCountReport = {
           ...report,
@@ -2745,7 +2745,7 @@ export const useBranchOpsStore = create<BranchOpsState>()(
           return {
             ...row,
             physicalQty: quantity,
-            difference: Math.round((Number(row.systemQty || 0) - quantity) * 1000) / 1000,
+            difference: Math.round((quantity - Number(row.systemQty || 0)) * 1000) / 1000,
             originalPhysicalQty: row.originalPhysicalQty ?? previousQty,
             editedBy: updatedBy,
             editedAt: now,
@@ -2851,7 +2851,7 @@ export const useBranchOpsStore = create<BranchOpsState>()(
           mirrorOperationRecord(row.branch, "stock_variance", row.id, row, {
             recordNo: row.reportNo,
             amount: row.difference,
-            status: row.difference > 0 ? "Short" : "Excess",
+            status: row.difference > 0 ? "Excess" : "Short",
             actor: confirmedBy,
           });
         });
