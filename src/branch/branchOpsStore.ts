@@ -941,7 +941,7 @@ const branchOpsSupabaseStorage: PersistStorage<BranchOpsState> = {
       .from("branch_operation_records")
       .select("record_type, record_id, payload, created_at")
       .order("created_at", { ascending: false })
-      .limit(sessionBranch ? 1000 : 2000); // EGRESS FIX: reduced from 5000
+      .limit(sessionBranch ? 300 : 2000); // Reduced further: app_state no longer duplicates history, branches just need recent activity
 
     let stockCountQuery = supabase
       .from("branch_stock_count_reports")
@@ -1091,33 +1091,17 @@ const branchOpsSupabaseStorage: PersistStorage<BranchOpsState> = {
   },
 };
 
-function persistedBranchOps(state: BranchOpsState) {
-  return {
-    bills: state.bills,
-    creditSales: state.creditSales,
-    holds: state.holds,
-    salespeople: state.salespeople,
-    advanceCakeOrders: state.advanceCakeOrders,
-    quotations: state.quotations,
-    returns: state.returns,
-    purchases: state.purchases,
-    purchasePayments: state.purchasePayments,
-    purchaseOrders: state.purchaseOrders,
-    cashMovements: state.cashMovements,
-    counterOpenings: state.counterOpenings,
-    bankDeposits: state.bankDeposits,
-    cashierClosures: state.cashierClosures,
-    notifications: state.notifications,
-    storeOrders: state.storeOrders,
-    suppliers: state.suppliers,
-    expenses: state.expenses,
-    complaints: state.complaints,
-    wasteLogs: state.wasteLogs,
-    cashiers: state.cashiers,
-    stockCountReports: state.stockCountReports,
-    stockVarianceRecords: state.stockVarianceRecords,
-    auditLogs: state.auditLogs,
-  };
+function persistedBranchOps(_state: BranchOpsState) {
+  // Every field that used to be listed here (bills, purchases, advance orders,
+  // closures, logs, etc.) is already mirrored into branch_operation_records /
+  // its own dedicated table via mirrorOperationRecord() on every mutation, and
+  // is fully reconstructed on load by mergeOperationRecordsIntoState's bucket
+  // map above. Persisting a second full copy into this JSON blob served no
+  // purpose except letting it grow unbounded (past 5MB), which made old/slow
+  // branch devices hang on "Loading saved branch records" and lag heavily
+  // while billing. Nothing is lost: today's bills, daily closures, and
+  // advance orders all still load — from the proper table, fast and scoped.
+  return {} as Partial<BranchOpsState>;
 }
 
 const uid = (prefix: string) =>
