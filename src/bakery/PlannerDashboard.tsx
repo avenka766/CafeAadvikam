@@ -957,6 +957,14 @@ function InvoiceTab({ orders }: { orders: BakeryOrder[] }) {
   );
 }
 
+// Sum of everything already dispatched to one specific branch for one row,
+// so per-branch progress can be shown/checked independently of other branches.
+function branchDispatchedForRow(row: ProductionRow, branch: Branch, orders: BakeryOrder[]): number {
+  return orders
+    .filter(o => o.targetBranch === branch && row.contributingOrderIds.includes(o.id))
+    .reduce((s, o) => s + (o.dispatchLog || []).filter(d => sameItem(d.itemName, row.itemName)).reduce((s2, d) => s2 + d.quantity, 0), 0);
+}
+
 function DispatchTab({ orders, allOrders }: { orders: BakeryOrder[]; allOrders: BakeryOrder[] }) {
   const { submitDispatch } = useBakeryStore();
   const currentUser = useAuthStore(s => s.currentUser);
@@ -964,6 +972,13 @@ function DispatchTab({ orders, allOrders }: { orders: BakeryOrder[]; allOrders: 
   const [search, setSearch] = useState('');
   const [subTab, setSubTab] = useState<'active' | 'completed'>('active');
   const [checklistItem, setChecklistItem] = useState<ProductionRow | null>(null);
+  // 'All' shows every item like before. Picking a branch filters to only items
+  // that branch actually ordered, and turns on multi-select + bulk dispatch.
+  const [branchFilter, setBranchFilter] = useState<'All' | Branch>('All');
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkOpen, setBulkOpen] = useState(false);
+
+  useEffect(() => { setSelected(new Set()); }, [branchFilter]);
 
   const dispatchedQtyForItem = (row: ProductionRow) => {
     let sum = 0;
@@ -974,14 +989,30 @@ function DispatchTab({ orders, allOrders }: { orders: BakeryOrder[]; allOrders: 
     return sum;
   };
 
-  const filtered = rows.filter(r => r.itemName.toLowerCase().includes(search.trim().toLowerCase()));
-  const fullyDispatched = (row: ProductionRow) => dispatchedQtyForItem(row) >= row.preparedTotal - 0.01 && row.preparedTotal > 0;
+  const filtered = rows
+    .filter(r => r.itemName.toLowerCase().includes(search.trim().toLowerCase()))
+    .filter(r => branchFilter === 'All' || !!r.perBranch[branchFilter]);
+
+  const fullyDispatched = (row: ProductionRow) => {
+    if (branchFilter !== 'All') {
+      const requested = row.perBranch[branchFilter] ?? 0;
+      return requested > 0 && branchDispatchedForRow(row, branchFilter, orders) >= requested - 0.01;
+    }
+    return dispatchedQtyForItem(row) >= row.preparedTotal - 0.01 && row.preparedTotal > 0;
+  };
   const activeRows = filtered.filter(r => !fullyDispatched(r))
     .sort((a, b) => (dispatchedQtyForItem(b) > 0 ? 1 : 0) - (dispatchedQtyForItem(a) > 0 ? 1 : 0));
   const completedRows = filtered.filter(r => fullyDispatched(r));
   const shown = subTab === 'active' ? activeRows : completedRows;
 
   const inProgressRows = filtered.filter(r => !fullyDispatched(r) && dispatchedQtyForItem(r) > 0);
+
+  const toggleSelect = (itemName: string) => setSelected(prev => {
+    const next = new Set(prev);
+    if (next.has(itemName)) next.delete(itemName); else next.add(itemName);
+    return next;
+  });
+  const selectedRows = activeRows.filter(r => selected.has(r.itemName));
 
   return (
     <div className="space-y-4">
@@ -1003,6 +1034,20 @@ function DispatchTab({ orders, allOrders }: { orders: BakeryOrder[]; allOrders: 
         </div>
       </div>
 
+      {/* Branch view — click a branch to see only what that branch ordered,
+          with a checkbox on each card to bulk-dispatch several items at once. */}
+      <div className="flex flex-wrap gap-2">
+        {(['All', ...BRANCHES] as const).map(b => (
+          <button
+            key={b}
+            onClick={() => setBranchFilter(b)}
+            className={cn('rounded-xl px-3 py-1.5 text-xs font-black', branchFilter === b ? 'bg-emerald-600 text-white' : 'bg-slate-100 text-slate-600')}
+          >
+            {b}
+          </button>
+        ))}
+      </div>
+
       {/* Pinned summary — partially dispatched items with more still coming from the baker,
           always at the top regardless of sub-tab, with each branch's required vs dispatched. */}
       {inProgressRows.length > 0 && (
@@ -1014,8 +1059,7 @@ function DispatchTab({ orders, allOrders }: { orders: BakeryOrder[]; allOrders: 
                 <p className="text-sm font-black text-slate-800">{row.itemName}</p>
                 <div className="mt-1 flex flex-wrap gap-2 text-[11px] font-bold text-slate-600">
                   {BRANCHES.filter(b => row.perBranch[b]).map(b => {
-                    const branchDispatched = orders.filter(o => o.targetBranch === b && row.contributingOrderIds.includes(o.id))
-                      .reduce((s, o) => s + (o.dispatchLog || []).filter(d => sameItem(d.itemName, row.itemName)).reduce((s2, d) => s2 + d.quantity, 0), 0);
+                    const branchDispatched = branchDispatchedForRow(row, b, orders);
                     return <span key={b} className="rounded-lg bg-amber-100 px-2 py-1">{b}: required {row.perBranch[b]} {row.unit} · dispatched {branchDispatched} {row.unit}</span>;
                   })}
                 </div>
@@ -1031,29 +1075,59 @@ function DispatchTab({ orders, allOrders }: { orders: BakeryOrder[]; allOrders: 
       </div>
 
       {shown.length === 0 && <EmptyState text={subTab === 'active' ? 'Nothing waiting on dispatch.' : 'Nothing dispatched yet.'} />}
-      <div className="space-y-2">
+      <div className="space-y-2 pb-16">
         {shown.map(row => {
           const dispatched = dispatchedQtyForItem(row);
+          const canSelect = subTab === 'active' && branchFilter !== 'All';
           return (
-            <div key={row.itemName} className="rounded-2xl border border-border bg-white p-3 shadow-sm">
+            <div key={row.itemName} className={cn('rounded-2xl border bg-white p-3 shadow-sm', selected.has(row.itemName) ? 'border-emerald-400 ring-1 ring-emerald-300' : 'border-border')}>
               <div className="flex items-center justify-between gap-3">
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-black text-slate-800">{row.itemName} <span className={cn('ml-1 rounded-full px-1.5 py-0.5 text-[10px] font-black', row.itemStatus === 'completed' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700')}>{row.itemStatus === 'completed' ? 'Completed' : 'More to come'}</span></p>
-                  <p className="text-xs font-bold text-slate-400">Produced {row.preparedTotal} {row.unit}{dispatched > 0 ? ` · Dispatched ${dispatched} ${row.unit}` : ''}</p>
+                <div className="flex min-w-0 flex-1 items-center gap-2">
+                  {canSelect && (
+                    <input type="checkbox" className="size-4 accent-emerald-600" checked={selected.has(row.itemName)} onChange={() => toggleSelect(row.itemName)} />
+                  )}
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-black text-slate-800">{row.itemName} <span className={cn('ml-1 rounded-full px-1.5 py-0.5 text-[10px] font-black', row.itemStatus === 'completed' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700')}>{row.itemStatus === 'completed' ? 'Completed' : 'More to come'}</span></p>
+                    <p className="text-xs font-bold text-slate-400">Produced {row.preparedTotal} {row.unit}{dispatched > 0 ? ` · Dispatched ${dispatched} ${row.unit}` : ''}</p>
+                  </div>
                 </div>
                 {subTab === 'active' && (
-                  <button onClick={() => setChecklistItem(row)} className="flex items-center gap-1.5 rounded-xl bg-emerald-600 px-3 py-2 text-xs font-bold text-white hover:bg-emerald-700">
+                  <button onClick={() => setChecklistItem(row)} className="flex shrink-0 items-center gap-1.5 rounded-xl bg-emerald-600 px-3 py-2 text-xs font-bold text-white hover:bg-emerald-700">
                     <Truck className="size-3.5" /> Dispatch
                   </button>
                 )}
               </div>
+              {/* Every branch that actually ordered this item — only shown if they
+                  really requested it — so a combined item shows its full picture. */}
               <div className="mt-2 flex flex-wrap gap-2 text-[11px] font-bold text-slate-500">
-                {BRANCHES.filter(b => row.perBranch[b]).map(b => <span key={b} className="rounded-lg bg-slate-50 px-2 py-1">{b} requested {row.perBranch[b]} {row.unit}</span>)}
+                {BRANCHES.filter(b => row.perBranch[b]).map(b => {
+                  const bDispatched = branchDispatchedForRow(row, b, orders);
+                  const bDone = (row.perBranch[b] ?? 0) > 0 && bDispatched >= (row.perBranch[b] ?? 0) - 0.01;
+                  return (
+                    <span key={b} className={cn('rounded-lg px-2 py-1', b === branchFilter ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-50', bDone && 'line-through opacity-60')}>
+                      {b} requested {row.perBranch[b]} {row.unit}{bDispatched > 0 ? ` · sent ${bDispatched} ${row.unit}` : ''}
+                    </span>
+                  );
+                })}
               </div>
             </div>
           );
         })}
       </div>
+
+      {/* Floating bulk-dispatch bar — appears once the planner has ticked one or
+          more items for the currently selected branch, so several items can go
+          out to that branch in a single dispatch action. */}
+      {branchFilter !== 'All' && selected.size > 0 && (
+        <div className="fixed inset-x-0 bottom-0 z-40 flex justify-center p-3">
+          <button
+            onClick={() => setBulkOpen(true)}
+            className="flex items-center gap-2 rounded-2xl bg-slate-900 px-5 py-3 text-sm font-black text-white shadow-xl"
+          >
+            <Truck className="size-4" /> Dispatch {selected.size} item{selected.size > 1 ? 's' : ''} to {branchFilter}
+          </button>
+        </div>
+      )}
 
       {checklistItem && (
         <DispatchChecklistModal
@@ -1064,6 +1138,92 @@ function DispatchTab({ orders, allOrders }: { orders: BakeryOrder[]; allOrders: 
           dispatchedBy={currentUser?.displayName || 'Planner'}
         />
       )}
+
+      {bulkOpen && branchFilter !== 'All' && (
+        <BulkDispatchModal
+          branch={branchFilter}
+          rows={selectedRows}
+          orders={orders}
+          onClose={() => setBulkOpen(false)}
+          onDispatch={submitDispatch}
+          dispatchedBy={currentUser?.displayName || 'Planner'}
+          onDone={() => { setSelected(new Set()); setBulkOpen(false); }}
+        />
+      )}
+    </div>
+  );
+}
+
+// Lets the planner dispatch several selected items to one branch in a single
+// step, instead of opening the per-item checklist modal one at a time.
+function BulkDispatchModal({ branch, rows, orders, onClose, onDispatch, dispatchedBy, onDone }: {
+  branch: Branch; rows: ProductionRow[]; orders: BakeryOrder[]; onClose: () => void;
+  onDispatch: ReturnType<typeof useBakeryStore.getState>['submitDispatch']; dispatchedBy: string; onDone: () => void;
+}) {
+  const lines = useMemo(() => rows.map(row => {
+    const requested = row.perBranch[branch] ?? 0;
+    const alreadySent = branchDispatchedForRow(row, branch, orders);
+    const remainingRequested = Math.max(requested - alreadySent, 0);
+    const defaultQty = Math.round(Math.min(remainingRequested, row.preparedTotal) * 100) / 100;
+    return { row, requested, alreadySent, defaultQty };
+  }), [rows, branch, orders]);
+
+  const [qty, setQty] = useState<Record<string, string>>(() => Object.fromEntries(lines.map(l => [l.row.itemName, String(l.defaultQty)])));
+  const [sending, setSending] = useState(false);
+
+  const qtyFor = (itemName: string) => Number(qty[itemName] || 0);
+
+  const confirmAll = async () => {
+    setSending(true);
+    try {
+      for (const { row } of lines) {
+        const q = qtyFor(row.itemName);
+        if (q <= 0) continue;
+        const entries = orders.filter(o => o.targetBranch === branch && row.contributingOrderIds.includes(o.id));
+        const split = autoSplitForItem(entries, row.itemName, q);
+        for (const order of entries) {
+          const item = order.items.find(i => sameItem(i.itemName, row.itemName));
+          const orderQty = split[order.id] ?? 0;
+          if (!item || orderQty <= 0) continue;
+          await onDispatch(order.id, { itemName: item.itemName, quantity: orderQty, unit: item.dispatchUnit || 'kg', branch, dispatchedBy, dispatchedAt: new Date().toISOString() });
+        }
+      }
+      onDone();
+    } finally {
+      setSending(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="w-full max-w-lg rounded-2xl bg-white p-5 shadow-xl">
+        <p className="text-sm font-black text-slate-800">Dispatch {lines.length} item{lines.length > 1 ? 's' : ''} to {branch}</p>
+        <div className="mt-3 max-h-[50vh] space-y-2 overflow-auto pr-1">
+          {lines.map(({ row, requested, alreadySent }) => (
+            <div key={row.itemName} className="rounded-xl border border-border p-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-sm font-black text-slate-800">{row.itemName}</p>
+                <div className="flex items-center gap-1">
+                  <input
+                    type="number"
+                    value={qty[row.itemName] ?? ''}
+                    onChange={e => setQty(prev => ({ ...prev, [row.itemName]: e.target.value }))}
+                    className="w-20 rounded-lg border border-border px-2 py-1 text-right text-xs font-bold"
+                  />
+                  <span className="text-[11px] font-bold text-slate-400">{row.unit}</span>
+                </div>
+              </div>
+              <p className="mt-1 text-[11px] font-bold text-slate-400">Requested {requested} {row.unit}{alreadySent > 0 ? ` · already sent ${alreadySent} ${row.unit}` : ''} · Produced {row.preparedTotal} {row.unit}</p>
+            </div>
+          ))}
+        </div>
+        <div className="mt-4 flex justify-end gap-2">
+          <button onClick={onClose} disabled={sending} className="rounded-xl bg-slate-100 px-4 py-2 text-xs font-bold text-slate-600">Cancel</button>
+          <button onClick={confirmAll} disabled={sending} className="flex items-center gap-1.5 rounded-xl bg-emerald-600 px-4 py-2 text-xs font-bold text-white">
+            {sending ? <Loader2 className="size-3.5 animate-spin" /> : <Truck className="size-3.5" />} Confirm Dispatch
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

@@ -93,6 +93,15 @@ export function LiveOrderStatusPanel({ orders, loading, onRefresh }: { orders: B
           <div className="grid gap-3 xl:grid-cols-2">
             {active.map((order) => {
               const stageIndex = stages.indexOf(order.status);
+              // Split items into "already dispatched" vs "still waiting" so a
+              // partially dispatched order shows real progress instead of
+              // sitting stuck on the "produced" stage until every item ships.
+              const dispatchedNames = new Set(
+                (order.dispatchLog || []).map((d) => d.itemName.trim().toLowerCase()),
+              );
+              const dispatchedItems = order.items.filter((item) => dispatchedNames.has(item.itemName.trim().toLowerCase()));
+              const pendingItems = order.items.filter((item) => !dispatchedNames.has(item.itemName.trim().toLowerCase()));
+              const hasPartialDispatch = dispatchedItems.length > 0 && order.status !== "dispatched";
               return (
                 <article key={order.id} className={cn(panelClass, "p-3")}>
                   <div className="flex items-start justify-between gap-3">
@@ -100,20 +109,41 @@ export function LiveOrderStatusPanel({ orders, loading, onRefresh }: { orders: B
                       <p className="text-sm font-black">Order #{order.orderNumber}</p>
                       <p className="text-[11px] font-semibold text-muted-foreground">{new Date(order.createdAt).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" })}</p>
                     </div>
-                    <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-[10px] font-black uppercase text-emerald-700">{order.status}</span>
+                    <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-[10px] font-black uppercase text-emerald-700">
+                      {hasPartialDispatch ? "partially dispatched" : order.status}
+                    </span>
                   </div>
                   <div className="mt-3 grid grid-cols-5 gap-1">
-                    {stages.map((stage, index) => (
-                      <div key={stage} className="min-w-0 text-center">
-                        <div className={cn("mx-auto h-2 w-full rounded-full", index <= stageIndex ? "bg-emerald-500" : "bg-slate-200")} />
-                        <p className="mt-1 truncate text-[8px] font-black uppercase text-muted-foreground">{stage}</p>
+                    {stages.map((stage, index) => {
+                      const half = stage === "dispatched" && hasPartialDispatch;
+                      const filled = index <= stageIndex || half;
+                      return (
+                        <div key={stage} className="min-w-0 text-center">
+                          <div className={cn("mx-auto h-2 w-full rounded-full", filled ? (half ? "bg-emerald-300" : "bg-emerald-500") : "bg-slate-200")} />
+                          <p className="mt-1 truncate text-[8px] font-black uppercase text-muted-foreground">{stage}</p>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  {hasPartialDispatch ? (
+                    <div className="mt-3 space-y-2">
+                      <div className="rounded-xl bg-emerald-50 p-2.5">
+                        <p className="text-[9px] font-black uppercase tracking-wide text-emerald-700">Dispatched</p>
+                        <p className="mt-1 text-[11px] font-bold text-emerald-800">{dispatchedItems.map((item) => `${item.itemName} × ${item.originalPcs ?? item.quantity} ${item.dispatchUnit || "kg"}`).join(", ")}</p>
                       </div>
-                    ))}
-                  </div>
-                  <div className="mt-3 rounded-xl bg-slate-50 p-2.5">
-                    <p className="text-[11px] font-bold text-slate-700">{order.items.map((item) => `${item.itemName} × ${item.originalPcs ?? item.quantity} ${item.dispatchUnit || "kg"}`).join(", ")}</p>
-                    {order.notes ? <p className="mt-1 text-[10px] font-semibold text-muted-foreground">Note: {order.notes}</p> : null}
-                  </div>
+                      {pendingItems.length > 0 && (
+                        <div className="rounded-xl bg-slate-50 p-2.5">
+                          <p className="text-[9px] font-black uppercase tracking-wide text-muted-foreground">Still waiting</p>
+                          <p className="mt-1 text-[11px] font-bold text-slate-700">{pendingItems.map((item) => `${item.itemName} × ${item.originalPcs ?? item.quantity} ${item.dispatchUnit || "kg"}`).join(", ")}</p>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="mt-3 rounded-xl bg-slate-50 p-2.5">
+                      <p className="text-[11px] font-bold text-slate-700">{order.items.map((item) => `${item.itemName} × ${item.originalPcs ?? item.quantity} ${item.dispatchUnit || "kg"}`).join(", ")}</p>
+                      {order.notes ? <p className="mt-1 text-[10px] font-semibold text-muted-foreground">Note: {order.notes}</p> : null}
+                    </div>
+                  )}
                   <div className="mt-2 flex flex-wrap gap-2 text-[10px] font-bold text-muted-foreground">
                     <span>Accepted by: {order.acceptedBy || order.approvedBy || "Pending"}</span>
                     <span>•</span>
