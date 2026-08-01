@@ -211,9 +211,14 @@ export default function BranchBillingProTab({
 }: Props) {
   const { currentUser } = useAuthStore();
   const { fetchBranchData } = useBranchStore();
-  const {
-    bills, holds, salespeople, counterOpenings, addBill, addHold, removeHold, addNotification,
-  } = useBranchOpsStore();
+  const bills = useBranchOpsStore((s) => s.bills);
+  const holds = useBranchOpsStore((s) => s.holds);
+  const salespeople = useBranchOpsStore((s) => s.salespeople);
+  const counterOpenings = useBranchOpsStore((s) => s.counterOpenings);
+  const addBill = useBranchOpsStore((s) => s.addBill);
+  const addHold = useBranchOpsStore((s) => s.addHold);
+  const removeHold = useBranchOpsStore((s) => s.removeHold);
+  const addNotification = useBranchOpsStore((s) => s.addNotification);
 
   const userName = currentUser?.username || currentUser?.displayName || 'Branch Staff';
   const isAdmin = ['admin', 'admin_snb', 'admin_vrsnb', 'owner'].includes(currentUser?.role || '');

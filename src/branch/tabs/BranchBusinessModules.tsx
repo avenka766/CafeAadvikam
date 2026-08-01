@@ -523,17 +523,9 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch' }:
   }), [cake.cakeKg, cake.cakeTypeId, cake.designType, cake.drawingWork, cake.photoWork]);
 
   const updateCommon = (k: string, v: string) => { setCommon((f)=>({...f,[k]:v})); setError(''); };
-  const handleAttachment = (file: File | undefined, target: 'custom' | 'cake') => {
-    if (!file) return;
-    if (file.size > 750_000) { setError('Attachment should be below 750 KB to avoid using too much browser storage.'); return; }
-    const reader = new FileReader();
-    reader.onload = () => {
-      const payload = { attachmentName: file.name, attachmentDataUrl: String(reader.result || '') };
-      if (target === 'custom') setCustom((f)=>({...f,...payload}));
-      else setCake((f)=>({...f,...payload}));
-    };
-    reader.readAsDataURL(file);
-  };
+  // Photo attachments are no longer captured on orders — embedding images as
+  // base64 inside the saved state blob was the main cause of it growing to
+  // several MB and making the branch page hang on "Loading saved branch records".
   const addStoreLine = () => {
     const item = items.find((i)=>i.name===storePick.itemName);
     const qty = Number(storePick.quantity || 0);
@@ -1026,8 +1018,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch' }:
           <div className="max-h-52 space-y-2 overflow-y-auto rounded-2xl bg-slate-50 p-2">{customLines.length === 0 ? <p className="p-3 text-sm font-bold text-slate-500">No custom items added.</p> : customLines.map((line, idx)=><div key={`${line.itemName}-${idx}`} className="flex items-center justify-between gap-2 rounded-xl bg-white p-3 text-sm font-bold"><span>{line.itemName} - {line.quantity} {line.unit} x {money(line.price)}</span><span>{money(line.lineTotal)}</span><button onClick={()=>removeCustomLine(idx)} className="rounded-lg bg-red-50 p-2 text-red-600"><XCircle className="size-4"/></button></div>)}</div>
           <div className="rounded-2xl bg-emerald-50 p-3 font-black text-emerald-800">Order Value: {money(customValue || customDraftTotal)}</div>
           <Field label="Custom Notes"><Textarea value={custom.notes} onChange={(e)=>setCustom({...custom,notes:e.target.value})}/></Field>
-          <Field label="Attachment/Image"><Input type="file" accept="image/*" onChange={(e)=>handleAttachment(e.target.files?.[0], 'custom')}/></Field>
-          {custom.attachmentName && <p className="text-sm font-bold text-emerald-700">Attached: {custom.attachmentName}</p>}
+
           {/* Fully Paid toggle */}
           <div className="flex items-center gap-3 rounded-2xl bg-emerald-50 p-3 ring-1 ring-emerald-100">
             <label className="flex-1 text-sm font-black text-emerald-800">Fully Paid (no balance)</label>
@@ -1088,8 +1079,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch' }:
           </div>
           <Field label="Message on cake"><Input value={cake.messageOnCake} onChange={(e)=>setCake({...cake,messageOnCake:e.target.value})}/></Field>
           <Field label="Design notes"><Textarea value={cake.designNotes} onChange={(e)=>setCake({...cake,designNotes:e.target.value})}/></Field>
-          <Field label="Attachment/Image"><Input type="file" accept="image/*" onChange={(e)=>handleAttachment(e.target.files?.[0], 'cake')}/></Field>
-          {cake.attachmentName && <p className="text-sm font-bold text-emerald-700">Attached: {cake.attachmentName}</p>}
+
         </>}
         <div className="grid gap-3 sm:grid-cols-2">
           {requiresSalesperson && <Field label="Salesperson *"><Select value={common.salesperson} onChange={(e)=>updateCommon('salesperson',e.target.value)}><option value="">Select</option>{people.map(p=><option key={p}>{p}</option>)}</Select></Field>}
