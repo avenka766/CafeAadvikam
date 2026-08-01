@@ -693,6 +693,11 @@ interface BranchOpsState {
   addBankDeposit: (
     deposit: Omit<BankDeposit, "id" | "createdAt">,
   ) => BankDeposit;
+  // For admin/owner report screens: guarantees ALL bills in a chosen date
+  // range are present in state, regardless of the general hydration cap
+  // (see getItem's opQuery limit). Call this whenever an admin picks/changes
+  // a report date range so totals are never silently clipped.
+  fetchBillsInRange: (startDate: string, endDate: string, branch?: Branch) => Promise<void>;
   addCashierClosure: (
     closure: Omit<CashierClosure, "id" | "createdAt">,
   ) => CashierClosure;
@@ -941,7 +946,7 @@ const branchOpsSupabaseStorage: PersistStorage<BranchOpsState> = {
       .from("branch_operation_records")
       .select("record_type, record_id, payload, created_at")
       .order("created_at", { ascending: false })
-      .limit(sessionBranch ? 300 : 2000); // Reduced further: app_state no longer duplicates history, branches just need recent activity
+      .limit(sessionBranch ? 300 : 8000); // Branch POS stays fast (300, today's activity). Admin/Owner/SNB Admin/VRSNB Admin need a full month across all branches combined for reports, so that path gets a much higher ceiling.
 
     let stockCountQuery = supabase
       .from("branch_stock_count_reports")
@@ -2880,6 +2885,33 @@ export const useBranchOpsStore = create<BranchOpsState>()(
           );
         }
         return confirmedReport;
+      },
+      fetchBillsInRange: async (startDate, endDate, branch) => {
+        // Direct, uncapped query for a specific range — used by admin/owner
+        // report screens so a wide date range can never come back clipped by
+        // the general hydration limit used on normal app load.
+        let q = supabase
+          .from("branch_operation_records")
+          .select("record_type, record_id, payload, created_at")
+          .in("record_type", ["bill", "advance_final_bill"])
+          .gte("created_at", `${startDate}T00:00:00`)
+          .lte("created_at", `${endDate}T23:59:59`);
+        if (branch) q = q.eq("branch", branch);
+        const { data, error } = await q;
+        if (error) {
+          console.error("[branchOpsStore] fetchBillsInRange failed:", error.message);
+          return;
+        }
+        const fetched = (data || [])
+          .map((row) => row.payload as { id?: string; createdAt?: string })
+          .filter((p) => p?.id);
+        if (fetched.length === 0) return;
+        set((state) => {
+          const existingIds = new Set(state.bills.map((b: { id?: string }) => b.id));
+          const toAdd = fetched.filter((b) => !existingIds.has(b.id));
+          if (toAdd.length === 0) return state;
+          return { ...state, bills: [...state.bills, ...(toAdd as unknown as typeof state.bills)] };
+        });
       },
       addNotification: (notification) => {
         const newNotification = {
