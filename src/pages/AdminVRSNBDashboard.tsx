@@ -449,6 +449,7 @@ export default function AdminVRSNBDashboard() {
     addCashierClosure,
     updateNotificationStatus,
     addAuditLog,
+    fetchBillsInRange,
   } = useBranchOpsStore();
 
   const today = dateInput();
@@ -457,6 +458,13 @@ export default function AdminVRSNBDashboard() {
   const [tab, setTab] = useState<TabId>(initialTab);
   const [fromDate, setFromDate] = useState(today);
   const [toDate, setToDate] = useState(today);
+  // The in-memory `bills` array is capped for performance (see
+  // branchOpsStore's hydration limit). Whenever the admin picks/changes a
+  // report date range, fetch that exact range directly so totals are never
+  // silently clipped by the cap.
+  useEffect(() => {
+    void fetchBillsInRange(fromDate, toDate, "VRSNB");
+  }, [fromDate, toDate, fetchBillsInRange]);
   const [lowStockOpen, setLowStockOpen] = useState(true);
   const [lowSearch, setLowSearch] = useState("");
   const [notice, setNotice] = useState("");

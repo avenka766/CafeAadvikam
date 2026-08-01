@@ -1491,7 +1491,7 @@ function OwnerComplaintsTab() {
 function BranchOverviewTab() {
   const { orders, startPolling, stopPolling } = useOrderStore();
   const { sales, incoming, advanceOrders, creditSales, stockMismatches, fetchBranchData, fetchStockMismatches } = useBranchStore();
-  const { bills, returns, purchases, cashMovements, bankDeposits, cashierClosures, storeOrders } = useBranchOpsStore();
+  const { bills, returns, purchases, cashMovements, bankDeposits, cashierClosures, storeOrders, fetchBillsInRange } = useBranchOpsStore();
   const [preset, setPreset] = useState<OwnerDatePreset>('today');
   const SALES_UNITS = ['Cafe', 'SNB Branch', 'VRSNB Branch', 'Hosur Branch'];
 
@@ -1530,6 +1530,12 @@ function BranchOverviewTab() {
   const fromKey = useMemo(() => ownerDateInput(from), [from]);
   const toKey = useMemo(() => ownerDateInput(to), [to]);
   const ownerLedger = useBranchLedger(fromKey, toKey, ['VRSNB', 'SNB', 'Hosur']);
+  // The in-memory `bills` array is capped for performance. Fetch the exact
+  // selected preset range directly (across all branches) so this owner
+  // overview is never silently clipped by that cap.
+  useEffect(() => {
+    void fetchBillsInRange(fromKey, toKey);
+  }, [fromKey, toKey, fetchBillsInRange]);
 
   const branchStockAlertCount = useCallback((branch: Branch) => {
     if (branch === 'Hosur') return 0;
@@ -1808,9 +1814,14 @@ function BranchOverviewTab() {
 // ── Daily Closure Tab ────────────────────────────────────────────────────────
 function OwnerDailyClosureTab() {
   const { orders, startPolling, stopPolling } = useOrderStore();
-  const { bills, returns, purchasePayments, bankDeposits, cashierClosures, cashMovements } = useBranchOpsStore();
+  const { bills, returns, purchasePayments, bankDeposits, cashierClosures, cashMovements, fetchBillsInRange } = useBranchOpsStore();
   const [date, setDate] = useState(ownerDateInput());
   const [branch, setBranch] = useState<'all' | Branch>('all');
+  // The in-memory `bills` array is capped for performance. Fetch the exact
+  // selected day directly so this closure report is never silently clipped.
+  useEffect(() => {
+    void fetchBillsInRange(date, date);
+  }, [date, fetchBillsInRange]);
   const ownerLedger = useBranchLedger(date, date, ['VRSNB', 'SNB', 'Hosur']);
 
   useEffect(() => { startPolling(60); return () => stopPolling(); }, [startPolling, stopPolling]);
