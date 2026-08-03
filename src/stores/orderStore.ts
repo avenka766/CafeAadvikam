@@ -153,11 +153,15 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     cutoff.setDate(cutoff.getDate() - days);
 
     try {
+      // EGRESS FIX: defensive cap alongside the date cutoff — callers have
+      // passed as much as 3650 days here, so this stops a single fetch from
+      // ever being truly unbounded regardless of the `days` argument used.
       const { data, error } = await supabase
         .from('orders')
         .select('id, order_number, table_number, order_type, items, subtotal, discount, discount_type, discount_value, total, status, created_by, created_at, updated_at, notes, customer_name, payment_type, payment_breakdown, billed_by, cancel_reason, order_source, advance_amount, advance_paid_by, balance_due, full_amount, fully_paid_at, balance_payment_type, balance_paid_by, balance_order_id, parcel_charges, delivery_date, wallet_id, wallet_amount, wallet_transaction_id, promotion_discount, promotion_ids, wallet_cashback')
         .gte('created_at', cutoff.toISOString())
-        .order('created_at', { ascending: false });
+        .order('created_at', { ascending: false })
+        .limit(8000);
 
       if (error) throw error;
       if (data) set({ orders: data.map(dbRowToOrder), _pollFailCount: 0 });
