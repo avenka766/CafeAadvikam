@@ -784,22 +784,30 @@ export default function BranchBillingProTab({
       }
       const result = data as CheckoutRpcResult;
       if (!result?.billNo || !result.invoiceNo) throw new Error('Checkout committed but bill number was not returned.');
+      // PERF FIX: this backfill (which cashier/counter session a bill belongs
+      // to, for reporting) used to be `await`ed — and its failure `throw`n —
+      // right here, before the bill could be printed. That meant (a) every
+      // finished bill waited on a 4th sequential network round trip before
+      // printing could even start, and (b) if this non-critical backfill
+      // failed for any reason, the cashier saw an error and the ALREADY-SOLD
+      // bill never printed at all. The sale is already committed by this
+      // point (the checkout RPC above succeeded); this is best-effort and
+      // must never block or fail the bill.
       if (result.billId && currentUser?.id && counterSessionId) {
         const cashierPatch = {
           cashier_user_id: currentUser.id,
           cashier_username: userName,
           counter_session_id: counterSessionId,
         };
-        const attributionResults = await Promise.all([
+        void Promise.all([
           supabase.from('branch_bill_headers').update({ ...cashierPatch, biller: userName }).eq('id', result.billId),
           supabase.from('branch_sale_payments').update(cashierPatch).eq('bill_id', result.billId),
           supabase.from('branch_credit_sales').update(cashierPatch).eq('source_id', result.billId),
           supabase.from('branch_credit_payments').update({ collector_user_id: currentUser.id, collector_username: userName, counter_session_id: counterSessionId }).eq('bill_no', result.billNo),
-        ]);
-        const attributionError = attributionResults.map((entry) => entry.error).find(Boolean);
-        if (attributionError) {
-          throw new Error(`Bill saved but cashier attribution failed: ${attributionError.message}`);
-        }
+        ]).then((attributionResults) => {
+          const attributionError = attributionResults.map((entry) => entry.error).find(Boolean);
+          if (attributionError) console.error('[checkout] cashier attribution backfill failed:', attributionError.message);
+        }).catch((attributionErr) => console.error('[checkout] cashier attribution backfill failed:', attributionErr));
       }
       // FIX (MD Bug #2): guard against dual-write desync. If the RPC succeeds but addBill()
       // fails (network drop, tab close), a retry would call addBill() again. By checking
@@ -851,18 +859,26 @@ export default function BranchBillingProTab({
         counterSessionId: counterSessionId || undefined,
       });
       setLastBill(saved);
-      let printWarning = '';
-      try {
-        await printCounterBill(saved, false);
-      } catch (printError) {
-        printWarning = `Bill ${saved.billNo} was saved, but direct printing failed: ${printError instanceof Error ? printError.message : 'Unknown print error'}. Print it from History.`;
-      }
+
+      // PERF FIX: the sale is already committed (checkout RPC above
+      // succeeded) — everything from here on is a side effect, not part of
+      // the sale itself. This used to `await printCounterBill(...)` (which
+      // itself makes a network call before printing — see printUtils.ts)
+      // and only THEN clear the cart/reset the form, so the touchscreen
+      // appeared frozen on the just-finished bill for as long as the print
+      // pipeline's network round trip took. Resetting the screen first lets
+      // the cashier start the next bill immediately; printing and the
+      // background branch refresh continue independently and any print
+      // failure is still surfaced (just asynchronously, without blocking).
       checkoutIdempotencyRef.current = null;
       setCart([]); setCartQuantityDrafts({}); setSalesperson(''); setCashTendered(''); setSplit({ cash: '', upi: '', card: '' }); setCreditCustomerName(''); setCreditCustomerMobile(''); setCreditDueDate(''); setCreditAmountPaid(''); setCreditPaidMode('cash'); setCreditRemarks(''); setSelectedWallet(null); setWalletAmount(0); setWalletOtherMode(null); setWalletAuthorizationSecret(''); setCouponCode(''); setDiscount('');
       focusSearch(true);
-      await fetchBranchData(branch);
       window.setTimeout(() => focusSearch(false), 150);
-      if (printWarning) setError(printWarning);
+
+      void printCounterBill(saved, false).catch((printError) => {
+        setError(`Bill ${saved.billNo} was saved, but direct printing failed: ${printError instanceof Error ? printError.message : 'Unknown print error'}. Print it from History.`);
+      });
+      void fetchBranchData(branch);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Billing failed.');
       addNotification({ branch, type: 'Stock Dispute', title: 'Bill blocked during stock validation', details: String(e), raisedBy: userName });
@@ -1450,7 +1466,11 @@ function ShoppingCartIcon() { return <ClipboardList className="size-5 text-amber
 function Modal({ title, children, onClose, stopGlobalKeys = false }: { title: string; children: ReactNode; onClose: () => void; stopGlobalKeys?: boolean }) {
   return (
     <div
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm"
+      // PERF FIX: this modal backdrop appears constantly during billing on the
+      // same Windows-7 touchscreen terminals as the rest of this screen —
+      // backdrop-blur is expensive to composite on their old integrated
+      // GPUs. A darker flat scrim reads the same visually at zero cost.
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/75 p-4"
       onKeyDown={stopGlobalKeys ? (event) => event.stopPropagation() : undefined}
     >
       <div className="max-h-[85dvh] w-full max-w-3xl overflow-hidden rounded-[2rem] bg-white shadow-2xl">

@@ -1,5 +1,5 @@
 // src/branch/tabs/ReportsTab.tsx
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useCallback } from 'react';
 import { Download, Filter, Wallet, ClipboardCheck, Package, Truck, ShoppingCart, AlertTriangle } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { downloadCSV, fmtDate, EmptyState } from '../components';
@@ -359,7 +359,7 @@ function BranchDailyClosureTab({
 }
 
 export function ReportsTab({ branch, branchSales, advanceOrders = [] }: Props) {
-  const { creditSales, fetchCreditSales, stock, incoming } = useBranchStore();
+  const { creditSales, fetchCreditSales, fetchBranchSalesRange, stock, incoming } = useBranchStore();
   const [reportView, setReportView] = useState<'sales' | 'closure' | 'advance'>('sales');
   const [reportType, setReportType] = useState<'item' | 'branch'>('item');
 
@@ -373,16 +373,41 @@ export function ReportsTab({ branch, branchSales, advanceOrders = [] }: Props) {
   // Fetch credit sales on mount
   useEffect(() => { fetchCreditSales(branch); }, [branch, fetchCreditSales]);
 
+  // EGRESS FIX: this tab is Owner/Admin-only (gated by the caller in
+  // BranchDashboard via `canViewReports`), so a custom date range is allowed —
+  // but per the "only fetch when explicitly requested" rule, picking a range
+  // beyond today must NOT silently trigger a query. `branchSales` (today only,
+  // already loaded for free) covers the default case; anything wider is only
+  // fetched once the admin explicitly clicks "Load report" below.
+  const isTodayOnly = dateFrom === todayISO && dateTo === todayISO;
+  const [extendedRangeSales, setExtendedRangeSales] = useState<SaleRecord[]>([]);
+  const [extendedRangeKey, setExtendedRangeKey] = useState('');
+  const [loadingRange, setLoadingRange] = useState(false);
+  const requestedRangeKey = `${dateFrom}_${dateTo}`;
+  const rangeNeedsLoad = !isTodayOnly && extendedRangeKey !== requestedRangeKey;
+
+  const loadExtendedRange = useCallback(async () => {
+    setLoadingRange(true);
+    try {
+      const rows = await fetchBranchSalesRange(branch, `${dateFrom}T00:00:00+05:30`, `${dateTo}T23:59:59+05:30`);
+      setExtendedRangeSales(rows);
+      setExtendedRangeKey(requestedRangeKey);
+    } finally {
+      setLoadingRange(false);
+    }
+  }, [branch, dateFrom, dateTo, fetchBranchSalesRange, requestedRangeKey]);
+
   // FIX #8 — compare using local date strings instead of epoch milliseconds
   const rangeSales = useMemo(() => {
-    return branchSales.filter(s => {
+    const source = isTodayOnly ? branchSales : (rangeNeedsLoad ? [] : extendedRangeSales);
+    return source.filter(s => {
       const localDate = toLocalDateString(s.soldAt);
       if (localDate < dateFrom || localDate > dateTo) return false;
       // Exclude credit_collection rows — they are cash receipts, not new sales
       if ((s.paymentMethod ?? '') === 'credit_collection') return false;
       return true;
     });
-  }, [branchSales, dateFrom, dateTo]);
+  }, [branchSales, extendedRangeSales, isTodayOnly, rangeNeedsLoad, dateFrom, dateTo]);
 
   // Credit sales in range
   const rangeCreditSales = useMemo(() => {
@@ -607,10 +632,25 @@ export function ReportsTab({ branch, branchSales, advanceOrders = [] }: Props) {
           </div>
         </div>
 
-        <p className="text-xs text-muted-foreground">
-          Showing: <span className="font-semibold text-foreground">{rangeLabel}</span>
-          {' · '}{rangeSales.length} transactions · {totalQty} units · {formatCurrency(totalRevenue)}
-        </p>
+        {rangeNeedsLoad ? (
+          <div className="flex items-center justify-between gap-2 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2">
+            <p className="text-xs font-semibold text-amber-800">
+              {rangeLabel} isn't loaded yet — today's data is shown for free, but a custom range is fetched only when you ask for it.
+            </p>
+            <button
+              onClick={() => void loadExtendedRange()}
+              disabled={loadingRange}
+              className="shrink-0 text-xs font-bold px-3 py-1.5 rounded-lg bg-amber-600 text-white disabled:opacity-60"
+            >
+              {loadingRange ? 'Loading…' : 'Load report'}
+            </button>
+          </div>
+        ) : (
+          <p className="text-xs text-muted-foreground">
+            Showing: <span className="font-semibold text-foreground">{rangeLabel}</span>
+            {' · '}{rangeSales.length} transactions · {totalQty} units · {formatCurrency(totalRevenue)}
+          </p>
+        )}
       </div>
 
       {/* ── Item / Branch toggle + summary table ────────────────────────── */}

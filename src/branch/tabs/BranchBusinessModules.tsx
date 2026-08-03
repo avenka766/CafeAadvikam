@@ -217,11 +217,24 @@ export function BranchBillHistoryProTab({ branch }: ModuleProps) {
       setLedgerMessage('');
       const allRows: LedgerBillRow[] = [];
       let loadError: { message: string } | null = null;
-      for (let from = 0; from < 30000; from += 1000) {
+      // PERF FIX: this used to page through up to 30 000 bill headers — each
+      // one joined against its own branch_bill_items AND branch_sale_payments
+      // rows — completely unbounded by date, every single time this tab
+      // mounted. As a branch's bill history grew, that ballooned into a
+      // multi-hundred-thousand-row join fetched on every visit and was a
+      // direct cause of the "57014 statement timeout" errors seen in
+      // production on /branch/snb. Bounded to the last 18 months (far more
+      // than anyone needs for day-to-day bill lookup) and cut the page
+      // ceiling from 30 to 8, which is still a generous 8 000 bills.
+      const historyCutoff = new Date();
+      historyCutoff.setMonth(historyCutoff.getMonth() - 18);
+      const historyCutoffIso = historyCutoff.toISOString();
+      for (let from = 0; from < 8000; from += 1000) {
         const { data, error } = await supabase
           .from('branch_bill_headers')
           .select('id, bill_no, invoice_no, bill_type, customer_name, customer_phone, salesperson, biller, subtotal, discount, discount_percent, tax, round_off, total, tendered, balance, status, created_at, branch_bill_items(item_name, quantity, unit, unit_price, discount, tax, line_total), branch_sale_payments(payment_mode, amount)')
           .eq('branch', branch)
+          .gte('created_at', historyCutoffIso)
           .order('created_at', { ascending: false })
           .range(from, from + 999);
         if (error) { loadError = error; break; }
@@ -2111,7 +2124,10 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
   ];
 
   return <div className="daily-closure-page flex h-full min-h-0 flex-col overflow-hidden bg-background">
-    <div className="border-b border-border bg-background/95 px-4 py-3 backdrop-blur">
+    // PERF FIX: sticky bar, always on screen during billing — backdrop-blur
+    // removed (expensive on the Windows-7 touch terminals), background was
+    // already 95% opaque so the visual difference is negligible.
+    <div className="border-b border-border bg-background/95 px-4 py-3">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <div className="flex items-center gap-2">
