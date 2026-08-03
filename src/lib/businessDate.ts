@@ -17,6 +17,14 @@ export function isBusinessDate(value: Date | string | number, dateKey = business
   return businessDate(value) === dateKey;
 }
 
+// EGRESS FIX: shared helper so every "today only" query across the app uses the
+// exact same IST business-day boundary instead of each file re-deriving its own
+// (buggy/UTC-based) midnight, which used to cause over-fetching of prior-day rows.
+export function startOfBusinessDayISO(value: Date | string | number = new Date()): string {
+  const dateKey = businessDate(value);
+  return new Date(`${dateKey}T00:00:00+05:30`).toISOString();
+}
+
 export function businessDateTime(value: Date | string | number = new Date()): string {
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) return '';
