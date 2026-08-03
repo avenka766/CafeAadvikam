@@ -329,9 +329,11 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
   const snbTabStripExpanded = useSnbTabStripStore((s) => s.expanded);
   const isFullscreenBillingRoute = isBranchBillingRoute || isCafeBillerRoute;
   // CHANGE 1: also hide workspace hero for /admin-dashboard
+  // CHANGE 2: hide for /bakery/planner too — the "Planner Dashboard" hero card
+  // was requested to be removed, but this route was missing from the list.
   const hideWorkspaceHero = /^\/(order-pad|kitchen|billing)/.test(location.pathname)
     || /^\/(daily-closure|order-history)/.test(location.pathname)
-    || /^\/bakery\/(store|baker|packing|receive)/.test(location.pathname)
+    || /^\/bakery\/(store|baker|packing|receive|planner)/.test(location.pathname)
     || /^\/branch\//.test(location.pathname)
     || /^\/admin-dashboard/.test(location.pathname)
     || /^\/admin-(snb|vrsnb)/.test(location.pathname)
