@@ -57,6 +57,11 @@ export default function OrderCard({ order, showActions = false, counterOpenedTod
   const [cancelSubmitting, setCancelSubmitting] = useState(false); // C-01
   const [showAdvance, setShowAdvance] = useState(false);
   const [discountError, setDiscountError] = useState(''); // U-02
+  // DOUBLE-BILL FIX: single/split payment buttons had no in-flight guard, so a
+  // double-tap on a touchscreen terminal could fire setPaymentType twice
+  // concurrently (double-charge / race on order status). Mirrors the
+  // cancelSubmitting guard already used above for cancel-order.
+  const [paymentSubmitting, setPaymentSubmitting] = useState(false);
 
   const [splitMode, setSplitMode] = useState(false);
   const [splitMethods, setSplitMethods] = useState<SplitMethod[]>([]);
@@ -144,11 +149,14 @@ export default function OrderCard({ order, showActions = false, counterOpenedTod
   };
 
   const handleSinglePayment = async (pt: PaymentType) => {
+    // DOUBLE-BILL FIX: ignore re-entrant taps while a payment is already in flight.
+    if (paymentSubmitting) return;
     setPaymentError('');
     if (!counterOpenedToday) {
       setPaymentError('Counter is not opened. Open Cafe Daily Closure, then Counter Open before collecting payment.');
       return;
     }
+    setPaymentSubmitting(true);
     try {
       await setPaymentType(order.id, pt, billerName);
       // Only move to 'served' if the kitchen has already finished (status === 'ready').
@@ -160,6 +168,8 @@ export default function OrderCard({ order, showActions = false, counterOpenedTod
       setShowPayment(false);
     } catch (err) {
       setPaymentError(err instanceof Error ? err.message : 'Payment failed — please try again.');
+    } finally {
+      setPaymentSubmitting(false);
     }
   };
 
@@ -209,6 +219,8 @@ export default function OrderCard({ order, showActions = false, counterOpenedTod
   };
 
   const handleSplitPayment = async () => {
+    // DOUBLE-BILL FIX: ignore re-entrant taps while a payment is already in flight.
+    if (paymentSubmitting) return;
     if (!counterOpenedToday) {
       setSplitError('Counter is not opened. Open Cafe Daily Closure, then Counter Open before collecting payment.');
       return;
@@ -230,6 +242,7 @@ export default function OrderCard({ order, showActions = false, counterOpenedTod
     setSplitError('');
     setPaymentError('');
     const breakdown: PaymentBreakdown = { cash: cashAmt, upi: upiAmt, card: cardAmt };
+    setPaymentSubmitting(true);
     try {
       await setPaymentType(order.id, 'part_payment', billerName, breakdown);
       // Only mark served once the kitchen is done — same logic as handleSinglePayment.
@@ -239,6 +252,8 @@ export default function OrderCard({ order, showActions = false, counterOpenedTod
       resetPaymentState();
     } catch (err) {
       setPaymentError(err instanceof Error ? err.message : 'Payment failed — please try again.');
+    } finally {
+      setPaymentSubmitting(false);
     }
   };
 
@@ -584,16 +599,22 @@ export default function OrderCard({ order, showActions = false, counterOpenedTod
                 <p className="text-lg font-display font-bold text-primary tabular-nums">{formatCurrency(order.total)}</p>
                 <div className="grid grid-cols-2 gap-2">
                   {(['cash', 'upi', 'card'] as PaymentType[]).map((pt) => (
-                    <button key={pt} onClick={() => handleSinglePayment(pt)} className="py-2.5 rounded-lg bg-card border border-border text-sm font-body font-semibold active:scale-95 transition-transform hover:border-primary">
+                    <button
+                      key={pt}
+                      onClick={() => handleSinglePayment(pt)}
+                      disabled={paymentSubmitting}
+                      className="py-2.5 rounded-lg bg-card border border-border text-sm font-body font-semibold active:scale-95 transition-transform hover:border-primary disabled:opacity-40 disabled:pointer-events-none flex items-center justify-center gap-1.5"
+                    >
+                      {paymentSubmitting ? <Loader2 className="size-3.5 animate-spin" /> : null}
                       {PAYMENT_LABELS[pt]}
                     </button>
                   ))}
-                  <button onClick={() => setSplitMode(true)} className="py-2.5 rounded-lg bg-card border border-border text-sm font-body font-semibold active:scale-95 transition-transform hover:border-primary">
+                  <button onClick={() => setSplitMode(true)} disabled={paymentSubmitting} className="py-2.5 rounded-lg bg-card border border-border text-sm font-body font-semibold active:scale-95 transition-transform hover:border-primary disabled:opacity-40 disabled:pointer-events-none">
                     🔀 Split Payment
                   </button>
                 </div>
                 {paymentError && <p className="text-xs font-body text-destructive text-center">{paymentError}</p>}
-                <button onClick={resetPaymentState} className="w-full py-2 text-xs font-body text-muted-foreground active:opacity-70">Cancel</button>
+                <button onClick={resetPaymentState} disabled={paymentSubmitting} className="w-full py-2 text-xs font-body text-muted-foreground active:opacity-70 disabled:opacity-40">Cancel</button>
               </>
             ) : (
               <>
@@ -674,12 +695,13 @@ export default function OrderCard({ order, showActions = false, counterOpenedTod
                 <div className="flex gap-2">
                   <button
                     onClick={handleSplitPayment}
-                    disabled={splitMethods.length < 2}
-                    className="flex-1 py-2.5 rounded-lg cafe-gradient text-primary-foreground text-sm font-body font-bold active:scale-95 disabled:opacity-40 disabled:pointer-events-none"
+                    disabled={splitMethods.length < 2 || paymentSubmitting}
+                    className="flex-1 py-2.5 rounded-lg cafe-gradient text-primary-foreground text-sm font-body font-bold active:scale-95 disabled:opacity-40 disabled:pointer-events-none flex items-center justify-center gap-1.5"
                   >
+                    {paymentSubmitting ? <Loader2 className="size-3.5 animate-spin" /> : null}
                     Confirm Split
                   </button>
-                  <button onClick={() => { setSplitMode(false); setSplitMethods([]); setSplitError(''); }} className="px-4 py-2.5 rounded-lg bg-muted text-foreground text-sm font-body font-semibold active:scale-95">Back</button>
+                  <button onClick={() => { setSplitMode(false); setSplitMethods([]); setSplitError(''); }} disabled={paymentSubmitting} className="px-4 py-2.5 rounded-lg bg-muted text-foreground text-sm font-body font-semibold active:scale-95 disabled:opacity-40">Back</button>
                 </div>
               </>
             )}
