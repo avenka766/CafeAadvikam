@@ -345,10 +345,11 @@ async function fetchPaged(
     orderColumn?: string;
     branchColumn?: string;
     columns?: string;
+    maxRows?: number;
   } = {},
 ) {
   const pageSize = 1000;
-  const maxRows = 30000;
+  const maxRows = options.maxRows ?? 30000;
   const rows: Record<string, unknown>[] = [];
   for (let from = 0; from < maxRows; from += pageSize) {
     let query = supabase.from(table).select(options.columns ?? "*");
@@ -448,8 +449,14 @@ export function useSnbAdminReports(fromDate: string, toDate: string) {
       fetchPaged("snb_item_wise_sales_report", { ...range, dateColumn: "business_date", orderColumn: "business_date", columns: "business_date,item_name,unit,quantity_sold,gross_sales,item_discount,tax,net_item_sales,bill_count" }),
       fetchPaged("snb_category_wise_sales_report", { ...range, dateColumn: "business_date", orderColumn: "business_date", columns: "business_date,category,quantity_sold,gross_sales,item_discount,net_item_sales,bill_count" }),
       fetchPaged("snb_bill_discount_report", { ...range, dateColumn: "business_date", orderColumn: "bill_datetime", columns: "bill_id,bill_no,business_date,bill_datetime,cashier,salesperson,customer_name,subtotal,discount,discount_percent,tax,round_off,total,effective_discount_percent" }),
-      fetchPaged("snb_supplier_outstanding_report", { orderColumn: "created_at", columns: "purchase_invoice_id,supplier_name,invoice_number,invoice_date,total_amount,paid_amount,balance_amount,payment_method,sync_status,created_at,updated_at" }),
-      fetchPaged("snb_purchase_invoices", { orderColumn: "created_at", columns: "id,supplier_name,invoice_number,invoice_date,total_amount,paid_amount,balance_amount,return_amount,payment_method,sync_status,synced_at,synced_by,remarks,created_by,created_at,updated_at,revision_number,revision_pending,last_edit_reason" }),
+      // EGRESS FIX: these two are deliberately NOT scoped to the selected date
+      // range — an invoice from months ago that's still unpaid must keep
+      // showing up as outstanding even when the admin is only looking at
+      // "today". They previously had no bound at all though (up to 30,000
+      // rows paginated, unconditionally, every refresh); capped instead so a
+      // growing multi-year history can't balloon this call indefinitely.
+      fetchPaged("snb_supplier_outstanding_report", { orderColumn: "created_at", columns: "purchase_invoice_id,supplier_name,invoice_number,invoice_date,total_amount,paid_amount,balance_amount,payment_method,sync_status,created_at,updated_at", maxRows: 4000 }),
+      fetchPaged("snb_purchase_invoices", { orderColumn: "created_at", columns: "id,supplier_name,invoice_number,invoice_date,total_amount,paid_amount,balance_amount,return_amount,payment_method,sync_status,synced_at,synced_by,remarks,created_by,created_at,updated_at,revision_number,revision_pending,last_edit_reason", maxRows: 4000 }),
       fetchPaged("snb_supplier_payments", { ...range, dateColumn: "payment_date", orderColumn: "payment_date", columns: "id,purchase_invoice_id,supplier_name,payment_date,amount,payment_method,reference_no,remarks,paid_by,paid_by_user_id,counter_session_id,payment_batch_id,batch_total,allocation_order,created_at" }),
       fetchPaged("snb_purchase_returns", { ...range, dateColumn: "return_date", orderColumn: "created_at", columns: "id,return_no,purchase_invoice_id,supplier_name,invoice_number,return_date,reason_type,settlement_type,credit_note_no,reference_no,remarks,total_amount,entered_by,status,created_at" }),
       fetchPaged("snb_purchase_return_items", { orderColumn: "created_at", columns: "id,purchase_return_id,purchase_invoice_item_id,item_name,quantity,unit,rate,tax,discount,line_total,item_reason,batch_no,expiry_date,stock_before,stock_after,created_at" }),
@@ -592,14 +599,20 @@ export function useSnbCashSummary(branch: string) {
     const requestId = ++requestIdRef.current;
     setLoading(true);
     setError("");
+    // EGRESS FIX: these two intentionally stay all-time (a cash/bank position
+    // is a cumulative running total, so bounding it by date would silently
+    // understate the balance) — but they're now capped so a multi-year
+    // history can't turn into an unbounded, ever-growing download.
     const results = await Promise.allSettled([
       fetchPaged("branch_counter_sessions", {
         branchColumn: "branch",
         orderColumn: "business_date",
         columns: "business_date,branch,cash_sales,upi_sales,card_sales,gross_sales,net_sales,credit_collected,advance_collected,expenses,supplier_payments",
+        maxRows: 5000,
       }),
       fetchPaged("snb_supplier_payments", {
         orderColumn: "payment_date",
+        maxRows: 5000,
         columns: "id,supplier_name,payment_date,amount,payment_method",
       }),
     ]);
