@@ -1513,6 +1513,12 @@ function NewBillPanel() {
     }))
   );
 
+  const [selectedCategory, setSelectedCategory] = useState('all');
+  const [search, setSearch] = useState('');
+  const [itemMode, setItemMode] = useState<'menu' | 'custom'>('menu');
+  const [orderType, setOrderType] = useState<OrderType>('dine_in');
+  const [tableNumber, setTableNumber] = useState<number | null>(null);
+
   // TABLE-SYNC FIX: orders placed by the Order Pad (order-taker staff) or by a
   // customer scanning the table's QR code go through submitOrder() and land in
   // the shared `orders` table with status pending/preparing/ready — a totally
@@ -1521,6 +1527,13 @@ function NewBillPanel() {
   // no way to see these here at all (Table N looked "free" even though the
   // kitchen already had an order for it). We now surface them directly inside
   // the table/takeaway views below so they can't be missed or double-entered.
+  // BUG FIX: these three useMemo blocks must come AFTER orderType/tableNumber
+  // are declared above — an earlier version placed them directly below the
+  // store selector (before the useState calls), which is a temporal-dead-zone
+  // violation ("Cannot access 'orderType' before initialization", minified to
+  // "Cannot access 'b' before initialization" in production). The dependency
+  // array `[orders, orderType, tableNumber]` is evaluated synchronously as
+  // this line runs, so both variables must already be initialized by then.
   const incomingByTable = useMemo(() => {
     const map: Record<number, number> = {};
     for (const o of orders) {
@@ -1547,12 +1560,6 @@ function NewBillPanel() {
     (o.orderSource === 'staff' || o.orderSource === 'qr') &&
     (o.status === 'pending' || o.status === 'preparing' || o.status === 'ready')
   ), [orders]);
-
-  const [selectedCategory, setSelectedCategory] = useState('all');
-  const [search, setSearch] = useState('');
-  const [itemMode, setItemMode] = useState<'menu' | 'custom'>('menu');
-  const [orderType, setOrderType] = useState<OrderType>('dine_in');
-  const [tableNumber, setTableNumber] = useState<number | null>(null);
 
   // -- Multi-order drafts ------------------------------------------------------
   // Dine-in: each table keeps its own unsent cart while staff hops between
