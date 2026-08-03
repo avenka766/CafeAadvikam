@@ -475,9 +475,11 @@ export default function BottomNav() {
         <div
           className="rounded-2xl overflow-hidden"
           style={{
-            background: "rgba(18,12,6,0.88)",
-            backdropFilter: "blur(24px)",
-            WebkitBackdropFilter: "blur(24px)",
+            // PERF FIX: this nav is on screen throughout billing on the
+            // Windows 7 touchscreen terminals; backdrop-filter blur was
+            // forcing an expensive recomposite on old integrated GPUs on
+            // every render. Bumped opacity up to compensate visually.
+            background: "rgba(18,12,6,0.97)",
             border: "1px solid rgba(255,255,255,0.10)",
             boxShadow: "0 8px 32px rgba(0,0,0,0.35), 0 2px 8px rgba(0,0,0,0.2)",
           }}

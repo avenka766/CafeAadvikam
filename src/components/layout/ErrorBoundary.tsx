@@ -17,6 +17,24 @@ export default class ErrorBoundary extends Component<Props, State> {
 
   componentDidCatch(error: Error, info: ErrorInfo) {
     console.error('[ErrorBoundary]', error, info);
+    // BUG FIX: a React.lazy()/dynamic import() failure (stale hashed chunk
+    // after a new deploy — the old JS file 404s) throws synchronously during
+    // render, so it lands here, NOT in window's 'unhandledrejection' handler
+    // in main.tsx. Previously this showed the generic "Something went wrong"
+    // card, whose only actions were "Try again" (re-renders the same lazy
+    // import, which 404s again identically — a dead end) and "Refresh page"
+    // (works, but the user has to notice and click it). Auto-reload once,
+    // same as the two other stale-chunk handlers already in main.tsx, so
+    // this resolves itself instead of stranding the user on a broken screen.
+    const isStaleChunkError =
+      /Failed to fetch dynamically imported module/i.test(error.message) ||
+      /Importing a module script failed/i.test(error.message) ||
+      /Loading chunk [\w-]+ failed/i.test(error.message);
+    if (isStaleChunkError && !sessionStorage.getItem('cafe:chunk-reload-attempted')) {
+      sessionStorage.setItem('cafe:chunk-reload-attempted', '1');
+      window.location.reload();
+      return;
+    }
     const diagnostic = createClientDiagnostic({
       message: error.message,
       details: info.componentStack || undefined,

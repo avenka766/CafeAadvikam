@@ -3,7 +3,9 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import {
   BarChart3,
   AlertTriangle,
+  ArrowRightLeft,
   Bell,
+  Calendar,
   CalendarCheck,
   ChefHat,
   CheckCircle2,
@@ -16,6 +18,8 @@ import {
   Flame,
   History,
   Inbox,
+  Layers,
+  ListPlus,
   LayoutDashboard,
   LogOut,
   Package,
@@ -24,6 +28,7 @@ import {
   Receipt,
   RotateCcw,
   CreditCard,
+  Send,
   Settings2,
   ShoppingCart,
   Trash2,
@@ -169,17 +174,23 @@ function navForRole(role?: string): NavItem[] {
       ];
     case 'planner':
       return [
+        // Order pipeline, in the order orders actually flow: raised → sent to
+        // kitchen → merged into one production summary → cooked → dispatched.
         { label: 'Incoming Orders', path: '/bakery/planner?tab=incoming', icon: <Inbox className="size-4" />, group: 'Main' },
-        { label: 'Sent', path: '/bakery/planner?tab=sent', icon: <ClipboardList className="size-4" />, group: 'Main' },
-        { label: 'Merged Summary', path: '/bakery/planner?tab=merged', icon: <ClipboardList className="size-4" />, group: 'Main' },
+        { label: 'Sent', path: '/bakery/planner?tab=sent', icon: <Send className="size-4" />, group: 'Main' },
+        { label: 'Merged Summary', path: '/bakery/planner?tab=merged', icon: <Layers className="size-4" />, group: 'Main' },
+        { label: 'Planning', path: '/bakery/planner?tab=planning', icon: <ListPlus className="size-4" />, group: 'Main' },
         { label: 'Production Entry', path: '/bakery/planner?tab=production', icon: <Flame className="size-4" />, group: 'Main' },
         { label: 'Dispatch', path: '/bakery/planner?tab=dispatch', icon: <Truck className="size-4" />, group: 'Main' },
+        // Order-taking + billing channels, grouped by destination.
         { label: 'Hosur Shops & Billing', path: '/bakery/planner?tab=hosur', icon: <ShoppingCart className="size-4" />, group: 'Operations' },
         { label: 'Cake Dispatch', path: '/bakery/planner?tab=cake', icon: <Cake className="size-4" />, group: 'Operations' },
-        { label: 'Transfer In', path: '/bakery/planner?tab=transfer-in', icon: <Truck className="size-4" />, group: 'Operations' },
-        { label: 'Daily Closure', path: '/bakery/planner?tab=closure', icon: <ClipboardList className="size-4" />, group: 'Reports' },
+        // Stock movement + reconciliation, grouped together.
+        { label: 'Transfer In', path: '/bakery/planner?tab=transfer-in', icon: <ArrowRightLeft className="size-4" />, group: 'Stock' },
+        { label: 'Leftover / Done', path: '/bakery/planner?tab=done', icon: <PackageCheck className="size-4" />, group: 'Stock' },
+        // End-of-day financial close-out.
+        { label: 'Daily Closure', path: '/bakery/planner?tab=closure', icon: <Calendar className="size-4" />, group: 'Reports' },
         { label: 'Invoice', path: '/bakery/planner?tab=invoice', icon: <Receipt className="size-4" />, group: 'Reports' },
-        { label: 'Leftover / Done', path: '/bakery/planner?tab=done', icon: <AlertTriangle className="size-4" />, group: 'Stock' },
       ];
     case 'cake_master':
       return [
@@ -242,7 +253,7 @@ function navForRole(role?: string): NavItem[] {
         { label: 'Credit Ledger', path: '/bakery/planner?tab=hosur&hosurTab=credit', icon: <CreditCard className="size-4" />, group: 'Operations' },
         { label: 'Payment Collection', path: '/bakery/planner?tab=hosur&hosurTab=collection', icon: <WalletCards className="size-4" />, group: 'Operations' },
         { label: 'WhatsApp Logs', path: '/bakery/planner?tab=hosur&hosurTab=whatsapp', icon: <QrCode className="size-4" />, group: 'Operations' },
-        { label: 'Reminder History', path: '/bakery/planner?tab=hosur&hosurTab=reminders', icon: <Bell className="size-4" />, group: 'Operations' },
+        { label: 'Reminder History', path: '/bakery/planner?tab=hosur&hosurTab=reminders', icon: <History className="size-4" />, group: 'Operations' },
         { label: 'Reports', path: '/bakery/planner?tab=hosur&hosurTab=reports', icon: <BarChart3 className="size-4" />, group: 'Reports' },
         { label: 'Notifications', path: '/bakery/planner?tab=hosur&hosurTab=notifications', icon: <Bell className="size-4" />, group: 'Reports' },
       ];

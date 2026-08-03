@@ -68,6 +68,10 @@ export default function Header() {
   const isVrsnbRoute = location.pathname.startsWith('/admin-vrsnb') || location.pathname.startsWith('/branch/vrsnb');
   const isSnbRoute = location.pathname.startsWith('/admin-snb') || location.pathname.startsWith('/branch/snb') || location.pathname.startsWith('/bakery');
   const isBranchCounterRoute = /^\/branch\/(snb|vrsnb)/.test(location.pathname);
+  // EGRESS FIX: the SNB/VRSNB Order Receiver dashboards used to auto-poll every
+  // 30 seconds to stay fresh. That poll is now much less frequent — this
+  // button lets receivers pull a fresh snapshot on demand instead.
+  const isReceiverRoute = /^\/bakery\/receive\/(snb|vrsnb)/.test(location.pathname);
   const isCafeBillerRoute = currentUser?.role === 'billing' && /^\/(billing|daily-closure|order-history)/.test(location.pathname);
   const isCompactCounterRoute = isBranchCounterRoute || isCafeBillerRoute;
   const isBakeryRoute = isVrsnbRoute || isSnbRoute;
@@ -104,9 +108,14 @@ export default function Header() {
       isCompactCounterRoute ? 'branch-counter-header lg:left-0' : 'lg:left-[288px]',
     )}
       style={{
-        background: 'linear-gradient(135deg, rgba(28,16,8,0.96), rgba(14,57,46,0.96))',
-        backdropFilter: 'blur(22px)',
-        WebkitBackdropFilter: 'blur(22px)',
+        // PERF FIX: this header is fixed and always on screen, including
+        // during billing. backdrop-filter blur forced a GPU recomposite on
+        // every repaint underneath it (every keystroke, every screen update)
+        // — brutal on the old integrated graphics in the Windows 7 touch
+        // terminals this runs on. The background was already 96% opaque, so
+        // the blur was doing almost nothing visually; dropping it removes
+        // the cost for free.
+        background: 'linear-gradient(135deg, rgba(28,16,8,0.98), rgba(14,57,46,0.98))',
         boxShadow: '0 12px 40px rgba(30,18,6,0.18)',
       }}>
       <div className={cn('flex items-center justify-between', isCompactCounterRoute ? 'h-11 px-3 sm:px-4' : 'h-14 px-4 sm:px-6')}>
@@ -121,7 +130,7 @@ export default function Header() {
 
         {/* Right — status + user + logout */}
         <div className="flex items-center gap-2">
-          {isBranchCounterRoute && (
+          {(isBranchCounterRoute || isReceiverRoute) && (
             <button
               type="button"
               onClick={refreshBranchDashboard}
