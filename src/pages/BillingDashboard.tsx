@@ -1498,8 +1498,9 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
 
 function NewBillPanel() {
   const { items, loadMenu } = useMenuStore();
-  const { cart, addToCart, updateCartQuantity, clearCart, setCart, getCartTotal, getCartCount, submitOrder, loadOrders } = useOrderStore(
+  const { orders, cart, addToCart, updateCartQuantity, clearCart, setCart, getCartTotal, getCartCount, submitOrder, loadOrders } = useOrderStore(
     useShallow(s => ({
+      orders: s.orders,
       cart: s.cart,
       addToCart: s.addToCart,
       updateCartQuantity: s.updateCartQuantity,
@@ -1511,6 +1512,41 @@ function NewBillPanel() {
       loadOrders: s.loadOrders,
     }))
   );
+
+  // TABLE-SYNC FIX: orders placed by the Order Pad (order-taker staff) or by a
+  // customer scanning the table's QR code go through submitOrder() and land in
+  // the shared `orders` table with status pending/preparing/ready — a totally
+  // separate row from the "running" table-tab this screen builds via
+  // start_table_order_v1/add_items_to_table_order_v1. Previously the biller had
+  // no way to see these here at all (Table N looked "free" even though the
+  // kitchen already had an order for it). We now surface them directly inside
+  // the table/takeaway views below so they can't be missed or double-entered.
+  const incomingByTable = useMemo(() => {
+    const map: Record<number, number> = {};
+    for (const o of orders) {
+      if (o.orderType !== 'dine_in' || o.tableNumber == null) continue;
+      if (o.orderSource !== 'staff' && o.orderSource !== 'qr') continue;
+      if (o.status !== 'pending' && o.status !== 'preparing' && o.status !== 'ready') continue;
+      map[o.tableNumber] = (map[o.tableNumber] || 0) + o.items.reduce((s, i) => s + i.quantity, 0);
+    }
+    return map;
+  }, [orders]);
+
+  const incomingTableOrders = useMemo(() => {
+    if (orderType !== 'dine_in' || tableNumber == null) return [];
+    return orders.filter(o =>
+      o.orderType === 'dine_in' &&
+      o.tableNumber === tableNumber &&
+      (o.orderSource === 'staff' || o.orderSource === 'qr') &&
+      (o.status === 'pending' || o.status === 'preparing' || o.status === 'ready')
+    );
+  }, [orders, orderType, tableNumber]);
+
+  const incomingTakeawayOrders = useMemo(() => orders.filter(o =>
+    o.orderType === 'takeaway' &&
+    (o.orderSource === 'staff' || o.orderSource === 'qr') &&
+    (o.status === 'pending' || o.status === 'preparing' || o.status === 'ready')
+  ), [orders]);
 
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [search, setSearch] = useState('');
@@ -1530,6 +1566,15 @@ function NewBillPanel() {
   const [customerName, setCustomerName] = useState('');
   const [notes, setNotes] = useState('');
   const [tableError, setTableError] = useState(false);
+  // CART-VISIBILITY FIX: the table grid used to always render fully expanded
+  // (30 buttons), pushing the actual cart items off-screen below it on
+  // narrower/stacked layouts — staff had no way to see what was in the bill
+  // without scrolling past the entire table board first. Collapsed to a
+  // dropdown-style picker (closed by default) to match the pattern already
+  // used for table selection in the staff Order Pad (OrderCart.tsx) and the
+  // customer QR ordering page (QROrderPage.tsx), so the cart is visible
+  // immediately.
+  const [tablePickerOpen, setTablePickerOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [showSuccess, setShowSuccess] = useState(false);
   const [showBillModal, setShowBillModal] = useState(false);
@@ -1672,6 +1717,7 @@ function NewBillPanel() {
 
   const switchOrderType = useCallback((type: OrderType) => {
     if (type === orderType) return;
+    setTablePickerOpen(false);
     if (orderType === 'dine_in' && tableNumber != null) {
       setTableDrafts((prev) => ({ ...prev, [tableNumber]: captureDraft() }));
     } else if (orderType === 'takeaway') {
@@ -2781,7 +2827,7 @@ function NewBillPanel() {
           </div>
 
           {orderType === 'dine_in' ? (
-            <div>
+            <div className="relative">
               <div className="flex items-center justify-between mb-1.5">
                 <label className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest flex items-center gap-1">
                   <MapPin className="size-3" />Select Table
@@ -2790,34 +2836,105 @@ function NewBillPanel() {
                   <span className="flex items-center gap-1"><span className="size-2 rounded-full bg-muted-foreground/30" />Free</span>
                   <span className="flex items-center gap-1"><span className="size-2 rounded-full bg-amber-500" />Running</span>
                   <span className="flex items-center gap-1"><span className="size-2 rounded-full bg-blue-400" />Draft</span>
+                  <span className="flex items-center gap-1"><span className="size-2 rounded-full bg-fuchsia-500" />New order</span>
                 </div>
               </div>
-              <div className={cn('grid grid-cols-5 gap-1.5 p-1 rounded-2xl', tableError ? 'ring-1 ring-destructive/40' : '')}>
-                {TABLE_NUMBERS.map(num => {
-                  const isSelected = tableNumber === num;
-                  const isRunning = tableBoard[num] !== undefined;
-                  const hasDraft = !isSelected && !isRunning && Boolean(tableDrafts[num]?.cart.length || tableDrafts[num]?.customItems.length);
-                  return (
-                    <button key={num}
-                      onClick={() => switchTable(num)}
-                      className={cn('relative py-2.5 rounded-xl text-xs font-body font-bold transition-all active:scale-90 flex flex-col items-center gap-0.5',
-                        isSelected ? 'text-primary-foreground shadow-teal ring-2 ring-offset-1 ring-emerald-500'
-                          : isRunning ? 'bg-amber-100 border border-amber-300 text-amber-800 hover:bg-amber-200'
-                          : hasDraft ? 'bg-blue-50 border border-blue-300 text-blue-700 hover:bg-blue-100'
-                          : 'bg-muted/60 border border-border text-foreground hover:bg-muted')}
-                      style={isSelected ? { background: 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))' } : {}}>
-                      {num}
-                      {isRunning && <span className="text-[9px] font-semibold opacity-80">{tableBoard[num]} item{tableBoard[num] === 1 ? '' : 's'}</span>}
-                      {hasDraft && <span className="text-[9px] font-semibold opacity-80">draft</span>}
-                    </button>
-                  );
-                })}
-              </div>
+
+              {/* Collapsed picker button — the cart below is always visible now;
+                  the full table board only opens as a dropdown on demand. */}
+              <button
+                type="button"
+                onClick={() => setTablePickerOpen((open) => !open)}
+                className={cn('w-full flex items-center justify-between gap-2 rounded-xl border px-3 py-2.5 text-sm font-body font-bold transition-all active:scale-[0.98]',
+                  tableError ? 'border-destructive/50 ring-1 ring-destructive/40' : 'border-border bg-muted/60')}>
+                <span className="flex items-center gap-1.5 truncate">
+                  {tableNumber ? (
+                    <>
+                      <span className={cn('size-2 rounded-full shrink-0',
+                        tableBoard[tableNumber] !== undefined ? 'bg-amber-500'
+                          : (tableDrafts[tableNumber]?.cart.length || tableDrafts[tableNumber]?.customItems.length) ? 'bg-blue-400'
+                          : 'bg-muted-foreground/30')} />
+                      Table {tableNumber}
+                      {tableBoard[tableNumber] !== undefined && ` · Running (${tableBoard[tableNumber]} item${tableBoard[tableNumber] === 1 ? '' : 's'})`}
+                      {incomingByTable[tableNumber] ? ` · ${incomingByTable[tableNumber]} new item${incomingByTable[tableNumber] === 1 ? '' : 's'} waiting` : ''}
+                    </>
+                  ) : 'Tap to select a table'}
+                </span>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  {tableNumber && incomingByTable[tableNumber] ? (
+                    <span className="flex items-center justify-center rounded-full bg-fuchsia-500 text-white text-[10px] font-black size-5 animate-pulse">!</span>
+                  ) : null}
+                  <ChevronDown className={cn('size-4 transition-transform', tablePickerOpen && 'rotate-180')} />
+                </div>
+              </button>
+
+              {tablePickerOpen && (
+                <>
+                  <button
+                    type="button"
+                    aria-label="Close table selector"
+                    className="fixed inset-0 z-40 cursor-default"
+                    onClick={() => setTablePickerOpen(false)}
+                  />
+                  <div className="absolute left-0 right-0 top-full mt-1.5 z-50 rounded-2xl border border-border bg-card p-2 shadow-2xl">
+                    <div className="grid grid-cols-5 gap-1.5 p-1 rounded-2xl max-h-64 overflow-y-auto">
+                      {TABLE_NUMBERS.map(num => {
+                        const isSelected = tableNumber === num;
+                        const isRunning = tableBoard[num] !== undefined;
+                        const hasDraft = !isSelected && !isRunning && Boolean(tableDrafts[num]?.cart.length || tableDrafts[num]?.customItems.length);
+                        return (
+                          <button key={num}
+                            onClick={() => { switchTable(num); setTablePickerOpen(false); }}
+                            className={cn('relative py-2.5 rounded-xl text-xs font-body font-bold transition-all active:scale-90 flex flex-col items-center gap-0.5',
+                              isSelected ? 'text-primary-foreground shadow-teal ring-2 ring-offset-1 ring-emerald-500'
+                                : isRunning ? 'bg-amber-100 border border-amber-300 text-amber-800 hover:bg-amber-200'
+                                : hasDraft ? 'bg-blue-50 border border-blue-300 text-blue-700 hover:bg-blue-100'
+                                : 'bg-muted/60 border border-border text-foreground hover:bg-muted')}
+                            style={isSelected ? { background: 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))' } : {}}>
+                            {incomingByTable[num] ? (
+                              <span className="absolute -top-1.5 -right-1.5 flex size-4 items-center justify-center rounded-full bg-fuchsia-500 text-white text-[8px] font-black ring-2 ring-white">
+                                {incomingByTable[num]}
+                              </span>
+                            ) : null}
+                            {num}
+                            {isRunning && <span className="text-[9px] font-semibold opacity-80">{tableBoard[num]} item{tableBoard[num] === 1 ? '' : 's'}</span>}
+                            {hasDraft && <span className="text-[9px] font-semibold opacity-80">draft</span>}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </>
+              )}
+
               {tableError && (
                 <div className="flex items-center gap-1 mt-1.5 text-destructive">
                   <AlertCircle className="size-3" /><span className="text-[11px] font-body">Table required for Dine In</span>
                 </div>
               )}
+
+              {/* TABLE-SYNC FIX: orders placed for this table by the Order Pad
+                  (order-taker) or by a customer via QR code — shown right here,
+                  automatically, the moment the biller opens this table. Payment
+                  can be collected directly on each card without re-entering
+                  anything into the POS cart below. */}
+              {incomingTableOrders.length > 0 && (
+                <div className="mt-2">
+                  <p className="flex items-center gap-1 text-[10px] font-body font-black text-fuchsia-700 uppercase tracking-widest mb-1.5">
+                    <Bell className="size-3" />
+                    {incomingTableOrders.length === 1 ? 'Order received for this table' : `${incomingTableOrders.length} orders received for this table`}
+                  </p>
+                  {/* Height-capped + independently scrollable — must never push
+                      the draft cart below out of view, which was the exact bug
+                      just fixed for the table picker itself. */}
+                  <div className="max-h-72 overflow-y-auto space-y-2 rounded-2xl ring-1 ring-fuchsia-200/60 p-1.5 bg-fuchsia-50/30">
+                    {incomingTableOrders.map(o => (
+                      <OrderCard key={o.id} order={o} showActions counterOpenedToday={counterOpenedToday} />
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {tableNumber && (
                 <div className="mt-2 flex items-center justify-between gap-2 rounded-xl border border-border bg-muted/40 px-3 py-2">
                   <div className="flex items-center gap-1.5 text-xs font-body">
@@ -2878,6 +2995,25 @@ function NewBillPanel() {
                       {t.label}
                     </button>
                   ))}
+                </div>
+              )}
+
+              {/* TABLE-SYNC FIX: takeaway orders placed by the Order Pad
+                  (order-taker) or QR ordering land here automatically as soon
+                  as they're submitted — no separate tab to hunt through. */}
+              {incomingTakeawayOrders.length > 0 && (
+                <div className="mt-3">
+                  <p className="flex items-center gap-1 text-[10px] font-body font-black text-fuchsia-700 uppercase tracking-widest mb-1.5">
+                    <Bell className="size-3" />
+                    {incomingTakeawayOrders.length === 1 ? 'New takeaway order' : `${incomingTakeawayOrders.length} new takeaway orders`}
+                  </p>
+                  {/* Height-capped + independently scrollable — can't be
+                      allowed to push the draft cart below out of view. */}
+                  <div className="max-h-72 overflow-y-auto space-y-2 rounded-2xl ring-1 ring-fuchsia-200/60 p-1.5 bg-fuchsia-50/30">
+                    {incomingTakeawayOrders.map(o => (
+                      <OrderCard key={o.id} order={o} showActions counterOpenedToday={counterOpenedToday} />
+                    ))}
+                  </div>
                 </div>
               )}
             </div>
