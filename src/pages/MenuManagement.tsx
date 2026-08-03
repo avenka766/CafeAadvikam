@@ -54,7 +54,7 @@ function AddItemSheet({ open, onClose }: { open: boolean; onClose: () => void })
     <>
       {/* Backdrop */}
       <div
-        className="fixed inset-0 z-40 bg-black/40 backdrop-blur-sm"
+        className="fixed inset-0 z-40 bg-black/55"
         onClick={onClose}
       />
 

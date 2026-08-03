@@ -93,11 +93,18 @@ export default function Login() {
         <div className="absolute inset-0" style={{
           background: 'linear-gradient(160deg, rgba(6,20,14,0.85) 0%, rgba(20,10,4,0.78) 50%, rgba(6,20,14,0.92) 100%)'
         }} />
-        {/* Decorative blur orbs */}
+        {/* Decorative glow orbs.
+            PERF FIX: these used `filter: blur(...)` AND `animate-float`
+            together — an animated blur filter forces the browser to
+            re-rasterize the blur every single frame, which is very heavy on
+            the old integrated GPUs in the Windows 7 terminals this login
+            screen runs on every shift. A radial-gradient with a soft,
+            fully-transparent edge already looks blurred without needing an
+            actual (and animated) blur filter, so the visual is unchanged. */}
         <div className="absolute top-1/4 left-1/4 w-64 h-64 rounded-full opacity-20 animate-float"
-          style={{ background: 'radial-gradient(circle, hsl(164 52% 38%), transparent)', filter: 'blur(60px)' }} />
+          style={{ background: 'radial-gradient(circle, hsl(164 52% 38%) 0%, transparent 70%)' }} />
         <div className="absolute bottom-1/3 right-1/4 w-48 h-48 rounded-full opacity-15 animate-float delay-300"
-          style={{ background: 'radial-gradient(circle, hsl(34 80% 52%), transparent)', filter: 'blur(50px)' }} />
+          style={{ background: 'radial-gradient(circle, hsl(34 80% 52%) 0%, transparent 70%)' }} />
       </div>
 
       {/* ── Login card ── */}
@@ -105,9 +112,11 @@ export default function Login() {
         <div
           className="rounded-3xl p-8"
           style={{
-            background: 'rgba(255,255,255,0.10)',
-            backdropFilter: 'blur(32px) saturate(1.5)',
-            WebkitBackdropFilter: 'blur(32px) saturate(1.5)',
+            // PERF FIX: dropped backdrop-filter blur(32px) saturate(1.5) —
+            // very expensive to composite, and staff hit this screen on the
+            // same old touchscreen terminals every shift. A slightly more
+            // opaque solid card keeps the same layered look for free.
+            background: 'rgba(24,20,16,0.55)',
             border: '1px solid rgba(255,255,255,0.18)',
             boxShadow: '0 32px 80px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.15)',
           }}

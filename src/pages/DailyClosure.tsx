@@ -199,7 +199,11 @@ export default function DailyClosure() {
   const activeCashierName = cafeCounterOpenRecord?.cashier || openCashier || cashierName;
 
   useEffect(() => {
-    startPolling(60);
+    // EGRESS FIX: `selectedDate` on this screen is always today (there's no
+    // control that changes it), so a 60-day background poll was pulling 59
+    // days of orders this page never displays. Daily closure only ever needs
+    // today.
+    startPolling(1);
     fetchCreditSales('Cafe');
     fetchCreditPayments('Cafe');
     if (!useBranchOpsStore.persist.hasHydrated()) void useBranchOpsStore.persist.rehydrate();
@@ -772,14 +776,17 @@ export default function DailyClosure() {
   };
 
   const refresh = () => {
-    loadOrders(60);
+    // EGRESS FIX: matches the today-only poll above (was 60).
+    loadOrders(1);
   };
 
   const paymentRows: PaymentKey[] = ['cash', 'upi', 'card'];
 
   return (
     <div className="daily-closure-page flex h-full min-h-0 flex-col overflow-hidden bg-background">
-      <div className="print:hidden shrink-0 border-b border-border bg-background/95 backdrop-blur px-4 py-3 sticky top-0 z-10">
+      {/* PERF FIX: dropped backdrop-blur — this bar is sticky and always
+          visible during billing on old touchscreen terminal GPUs. */}
+      <div className="print:hidden shrink-0 border-b border-border bg-background px-4 py-3 sticky top-0 z-10">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <div className="flex items-center gap-2">

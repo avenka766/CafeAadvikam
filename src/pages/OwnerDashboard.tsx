@@ -2124,9 +2124,19 @@ function OwnerPurchasesTab() {
 
   useEffect(() => { load(); loadOrders(); }, [load, loadOrders]);
   const storeInvoicesRequestId = useRef(0);
+  // EGRESS FIX: this used to fetch every store_invoices row ever created
+  // (including the line_items JSONB blob per invoice) with no date bound and
+  // no limit, regardless of the fromDate/toDate the owner had selected above.
+  // Now scoped to the selected range (Owner already controls that range) and
+  // capped defensively.
   const fetchStoreInvoiceLines = useCallback(async () => {
     const requestId = ++storeInvoicesRequestId.current;
-    const { data } = await supabase.from('store_invoices').select('id, line_items, paid_amount, grand_total, supplier_name, invoice_number, delivery_date, created_at, payment_method, purchase_status, status, synced_to_stock, stock_sync_status, remarks, notes').order('created_at', { ascending: false });
+    const { data } = await supabase.from('store_invoices')
+      .select('id, line_items, paid_amount, grand_total, supplier_name, invoice_number, delivery_date, created_at, payment_method, purchase_status, status, synced_to_stock, stock_sync_status, remarks, notes')
+      .gte('created_at', `${fromDate}T00:00:00+05:30`)
+      .lte('created_at', `${toDate}T23:59:59+05:30`)
+      .order('created_at', { ascending: false })
+      .limit(2000);
     if (requestId !== storeInvoicesRequestId.current || !data) return;
     const rows: OwnerStorePurchaseLine[] = (data as Array<Record<string, unknown>>).flatMap((invoice) => {
       const lineItems = (invoice.line_items as Array<Record<string, unknown>> | null) || [];
@@ -2154,7 +2164,7 @@ function OwnerPurchasesTab() {
       }));
     });
     setDbLines(rows);
-  }, []);
+  }, [fromDate, toDate]);
 
   useEffect(() => { void fetchStoreInvoiceLines(); }, [fetchStoreInvoiceLines, invoices.length]);
 

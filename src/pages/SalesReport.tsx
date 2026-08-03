@@ -436,7 +436,9 @@ export default function SalesReport() {
       </div>
 
       {/* ── Filter toolbar ── */}
-      <div className="sticky top-14 z-30 bg-background/95 backdrop-blur-md border-b border-border px-4 py-3 space-y-3">
+      {/* PERF FIX: dropped backdrop-blur-md — sticky bar, expensive on old
+          touchscreen terminal GPUs. */}
+      <div className="sticky top-14 z-30 bg-background border-b border-border px-4 py-3 space-y-3">
         <div className="flex gap-2">
           <button
             onClick={() => { setFilterMode('today'); setStartDate(toInputDate(new Date())); setEndDate(toInputDate(new Date())); }}

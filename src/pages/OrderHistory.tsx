@@ -79,7 +79,13 @@ function printDuplicateBill(order: Order) {
 export default function OrderHistory() {
   const { orders, startPolling, stopPolling } = useOrderStore();
   const { currentUser } = useAuthStore();
-  const [filter, setFilter] = useState<'all' | 'today' | 'served' | 'cancelled'>('all');
+  // EGRESS FIX: this page is also reachable by order_taker/billing/kitchen
+  // staff (see App.tsx route roles), not just admin/owner. Per the "only
+  // Owner/Admin get a custom date range" rule, non-admin staff only ever need
+  // today's orders here — everyone else used to pull a rolling 60-day window
+  // with a free-text date search over the top of it.
+  const isAdminOrOwner = currentUser?.role === 'admin' || currentUser?.role === 'owner';
+  const [filter, setFilter] = useState<'all' | 'today' | 'served' | 'cancelled'>(isAdminOrOwner ? 'all' : 'today');
   // U-09 FIX: date search and pagination state
   const [dateSearch, setDateSearch] = useState('');
   const [page, setPage] = useState(1);
@@ -88,9 +94,9 @@ export default function OrderHistory() {
   useEffect(() => { setPage(1); }, [filter, dateSearch]);
 
   useEffect(() => {
-    startPolling();
+    startPolling(isAdminOrOwner ? 60 : 1);
     return () => stopPolling();
-  }, [startPolling, stopPolling]);
+  }, [startPolling, stopPolling, isAdminOrOwner]);
 
   const isToday = (d: string) => new Date(d).toDateString() === new Date().toDateString();
 
@@ -154,33 +160,40 @@ export default function OrderHistory() {
           )}
         </div>
 
-        {/* U-09 FIX: date picker for searching a specific day */}
-        <div className="mt-3">
-          <label className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest mb-1 block">
-            Search by date
-          </label>
-          <div className="flex gap-2 items-center">
-            <input
-              type="date"
-              value={dateSearch}
-              onChange={e => setDateSearch(e.target.value)}
-              max={businessDate()}
-              className="flex-1 px-3 py-2 bg-card border border-border rounded-xl text-sm font-body"
-            />
-            {dateSearch && (
-              <button
-                onClick={() => setDateSearch('')}
-                className="text-xs font-body font-semibold text-primary underline underline-offset-2 whitespace-nowrap active:opacity-70"
-              >
-                Clear
-              </button>
-            )}
+        {/* U-09 FIX: date picker for searching a specific day.
+            EGRESS FIX: only Owner/Admin get a custom date range — other
+            roles only ever have today's orders loaded, so a date search
+            beyond today would just show empty results. */}
+        {isAdminOrOwner && (
+          <div className="mt-3">
+            <label className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest mb-1 block">
+              Search by date
+            </label>
+            <div className="flex gap-2 items-center">
+              <input
+                type="date"
+                value={dateSearch}
+                onChange={e => setDateSearch(e.target.value)}
+                max={businessDate()}
+                className="flex-1 px-3 py-2 bg-card border border-border rounded-xl text-sm font-body"
+              />
+              {dateSearch && (
+                <button
+                  onClick={() => setDateSearch('')}
+                  className="text-xs font-body font-semibold text-primary underline underline-offset-2 whitespace-nowrap active:opacity-70"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
           </div>
-        </div>
+        )}
       </div>
 
       {/* ── Filter chips ── */}
-      <div className="sticky top-14 z-30 bg-background/95 backdrop-blur-md border-b border-border px-4 py-2.5 flex gap-2 overflow-x-auto scrollbar-hide">
+      {/* PERF FIX: dropped backdrop-blur-md — sticky bar, expensive on old
+          touchscreen terminal GPUs. */}
+      <div className="sticky top-14 z-30 bg-background border-b border-border px-4 py-2.5 flex gap-2 overflow-x-auto scrollbar-hide">
         {FILTERS.map(f => (
           <button
             key={f.key}

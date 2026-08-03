@@ -1102,9 +1102,20 @@ export default function HosurDashboard({ hideNav = false }: { hideNav?: boolean 
         supabase.from('hosur_shops').select('id, shop_name, whatsapp_number, address, is_active, created_at, updated_at, discount_percent').eq('is_active', true).order('shop_name', { ascending: true }),
         supabase.from('hosur_shop_price_lists').select('id, shop_id, item_name, item_unit, unit_price, is_active, updated_at').eq('is_active', true),
         supabase.from('hosur_orders').select('id, order_number, shop_id, shop_name, shop_whatsapp, shop_address, status, subtotal, created_by, created_at, received_at, bill_id, notes').order('created_at', { ascending: false }).limit(250),
-        supabase.from('hosur_order_items').select('id, order_id, item_name, unit, quantity, unit_price, line_total, dispatched_quantity, received_quantity').order('created_at', { ascending: true }).limit(10000),
+        // EGRESS FIX: was ordered ascending with a 10,000 cap and no date bound
+        // — that returned the OLDEST 10,000 line items ever recorded (a
+        // correctness bug: the newest ones could be silently excluded once the
+        // table passed 10k rows), and this whole `refresh()` re-runs after
+        // every single mutation on this dashboard. Newest-first + a date
+        // window matching the 250 recent orders fetched above fixes both.
+        supabase.from('hosur_order_items').select('id, order_id, item_name, unit, quantity, unit_price, line_total, dispatched_quantity, received_quantity')
+          .gte('created_at', new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString())
+          .order('created_at', { ascending: false }).limit(8000),
         supabase.from('hosur_bills').select('id, bill_no, order_id, shop_id, shop_name, shop_whatsapp, subtotal, paid_amount, credit_amount, payment_type, payment_mode, due_date, status, confirmed_by, confirmed_at, created_at, whatsapp_status').order('created_at', { ascending: false }).limit(250),
-        supabase.from('hosur_bill_items').select('id, bill_id, item_name, unit, quantity, unit_price, line_total').order('created_at', { ascending: true }).limit(10000),
+        // EGRESS FIX: same fix as hosur_order_items above.
+        supabase.from('hosur_bill_items').select('id, bill_id, item_name, unit, quantity, unit_price, line_total')
+          .gte('created_at', new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString())
+          .order('created_at', { ascending: false }).limit(8000),
         // FIX (MD Bug #21): now that branch_credit_sales has a credit_type column
         // (added by migration 20260613_0004_hosur_credit_type.sql), fetch all rows.
         // The HosurCreditTab already shows wholesale (shop-supply) and retail separately

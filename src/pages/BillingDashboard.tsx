@@ -859,7 +859,9 @@ export function AdvancePaymentPanel({ order, onClose }: { order: Order; onClose:
 
   return (
     <div className="fixed inset-0 z-50 flex items-end" onClick={onClose}>
-      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" />
+      {/* PERF FIX: dropped backdrop-blur-sm — expensive to composite on the
+          old touchscreen terminal GPUs this modal opens on. */}
+      <div className="absolute inset-0 bg-black/60" />
       <div className="relative w-full bg-background rounded-t-3xl shadow-2xl px-5 pt-5 pb-8" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-4">
           <div>
@@ -1555,6 +1557,13 @@ function NewBillPanel() {
   const [customError, setCustomError] = useState('');
   const [submitError, setSubmitError] = useState('');
 
+  // BUG FIX: this panel reads `counterOpenedToday` (openBillModal, handleSubmit,
+  // and the "counter not opened" banner below) but never actually called the
+  // hook itself — every other panel in this file (BillerCreditTab,
+  // AdvanceOrderPanel, BillingDashboard) does. Confirmed in production error
+  // logs as a "counterOpenedToday is not defined" ReferenceError on /billing.
+  const counterOpenedToday = useCafeCounterOpened();
+
   // -- Running table order (KOT) state ----------------------------------------
   // A dine-in table can accumulate items across several "Send to Kitchen"
   // actions (each prints a KOT) before one final "Bill & Print" closes it out.
@@ -1873,6 +1882,13 @@ function NewBillPanel() {
   const walletRemainder = Math.max(0, total - walletAmount);
   const cartCount     = getCartCount();
   const allEmpty      = cartCount === 0 && customItems.length === 0;
+  // BUG FIX: a dine-in table with a running order (items already "Sent to
+  // Kitchen" across one or more KOTs) has an EMPTY draft cart by design —
+  // clearCart() runs right after each send. `allEmpty` alone can't tell that
+  // apart from a genuinely untouched table, so callers that need to know
+  // "is there actually a bill to create" must also check runningOrder.
+  const hasRunningItems = orderType === 'dine_in' && Boolean(runningOrder) && runningOrder!.items.length > 0;
+  const showBillFooter  = !allEmpty || hasRunningItems;
   const getQty = (id: string) => cart.find(c => c.menuItem.id === id)?.quantity ?? 0;
   const splitBreakdown: PaymentBreakdown = {
     cash: Number(splitPayment.cash || 0),
@@ -2869,7 +2885,7 @@ function NewBillPanel() {
         </div>
 
         <div className="biller-cart-items flex-1 overflow-y-auto min-h-0 px-4 py-3 space-y-2">
-          {allEmpty ? (
+          {allEmpty && !hasRunningItems ? (
             <div className="flex flex-col items-center justify-center h-full py-8 text-muted-foreground gap-2 text-center">
               <ShoppingBag className="size-8 opacity-25" />
               <p className="text-sm font-body font-bold">Cart is empty</p>
@@ -2877,6 +2893,25 @@ function NewBillPanel() {
             </div>
           ) : (
             <>
+              {/* Already-confirmed items for this table's running order. These were
+                  sent to the kitchen on a previous KOT and can no longer be edited
+                  here — they're shown read-only so staff can see the full running
+                  tally before hitting Create Bill, even when the draft cart below
+                  is currently empty. */}
+              {hasRunningItems && runningOrder!.items.map((ci, idx) => (
+                <div key={`running-${idx}-${ci.menuItem.id}`} className="biller-cart-line rounded-2xl border border-amber-200 bg-amber-50/60 p-2.5 shadow-sm">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <p className="text-sm font-body font-black truncate leading-tight text-foreground">{ci.menuItem.name}</p>
+                      <span className="text-[9px] font-black px-1.5 py-0.5 rounded-full bg-amber-200 text-amber-800 shrink-0">SENT</span>
+                    </div>
+                    <p className="text-[11px] text-muted-foreground tabular-nums">{ci.quantity} x {formatCurrency(ci.menuItem.price)}</p>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <p className="text-sm text-amber-700 font-black tabular-nums">{formatCurrency(ci.menuItem.price * ci.quantity)}</p>
+                  </div>
+                </div>
+              ))}
               {cart.map(ci => (
                 <div key={ci.menuItem.id} className="biller-cart-line rounded-2xl border border-border bg-background p-2.5 shadow-sm">
                   <div className="min-w-0 flex-1">
@@ -2920,7 +2955,7 @@ function NewBillPanel() {
           )}
         </div>
 
-        {!allEmpty && (
+        {showBillFooter && (
           <div className="biller-cart-footer border-t border-border px-4 py-3 space-y-3 bg-muted/20 shrink-0 overflow-y-auto">
             {/* -- Payment Mode -- */}
             <div className="grid grid-cols-3 gap-2">
@@ -3121,7 +3156,10 @@ function CafePaymentModeEditTab({ orders }: { orders: Order[] }) {
   }, []);
 
   useEffect(() => {
-    void loadOrders(3650);
+    // EGRESS FIX: was 3650 (10 years). This tab is for correcting the payment
+    // mode on a recent bill, opened on demand — 365 days is a generous window
+    // for that without re-downloading the store's entire order history.
+    void loadOrders(365);
     void loadAuditRows();
   }, [loadAuditRows, loadOrders]);
 
@@ -3176,7 +3214,7 @@ function CafePaymentModeEditTab({ orders }: { orders: Order[] }) {
       setSaving(false);
       return;
     }
-    await Promise.all([loadOrders(3650), loadAuditRows()]);
+    await Promise.all([loadOrders(365), loadAuditRows()]);
     setEditingId(null);
     setReason('');
     setSaving(false);
@@ -3307,14 +3345,23 @@ export default function BillingDashboard() {
     if (refreshing) return;
     setRefreshing(true);
     try {
-      await loadOrders(3650);
+      // EGRESS FIX: matches the 90-day background poll window above (was 3650).
+      await loadOrders(90);
     } finally {
       setRefreshing(false);
     }
   }, [loadOrders, refreshing]);
 
   useEffect(() => {
-    startPolling(3650); // Cafe history and payment-mode corrections need the complete retained bill history.
+    // EGRESS FIX: this was polling the ENTIRE 10-year order history (including
+    // the items/payment_breakdown JSONB per row) every 15 minutes, for as long
+    // as the Cafe billing screen stayed open — regardless of which tab
+    // (New Bill / Advance / Payment Edit) was actually active. 90 days is more
+    // than enough to cover any realistic still-open advance booking while
+    // cutting this poll's payload by roughly two orders of magnitude. The
+    // Payment Mode Edit tab below does its own on-demand deep-history fetch
+    // only when a cashier explicitly opens it.
+    startPolling(90);
     return () => stopPolling();
   }, [startPolling, stopPolling]);
 

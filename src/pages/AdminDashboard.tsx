@@ -228,7 +228,11 @@ function AdminDashboard() {
   const [publicOrders, setPublicOrders] = useState<PublicOrder[]>([]);
   const [publicOrdersLoading, setPublicOrdersLoading] = useState(false);
   const [publicOrderUpdating, setPublicOrderUpdating] = useState<string | null>(null);
-  const [fromDate, setFromDate] = useState(lastWeekInput());
+  // EGRESS FIX: default to today only — this dashboard used to load a full
+  // rolling week of bills across every branch on every mount, even before the
+  // admin touched the date filter. Admin can still widen the range with the
+  // preset buttons (7d/30d/etc.) below, which is an explicit, on-demand fetch.
+  const [fromDate, setFromDate] = useState(todayInput());
   const [toDate, setToDate] = useState(todayInput());
   const [closureDate, setClosureDate] = useState(todayInput());
   const [branchFilter, setBranchFilter] = useState<Branch | 'all'>('all');
@@ -265,6 +269,13 @@ function AdminDashboard() {
     quantity: number; unit: string; reason: string; verifiedBy: string; createdAt: string;
   }>>([]);
   useEffect(() => {
+    // BUG FIX: a date <input> can be cleared to an empty string (select-all
+    // + delete, or some mobile date pickers) which propagated straight into
+    // `${fromDate}T00:00:00` here, producing the literal string "T00:00:00"
+    // — invalid timestamptz syntax that Postgres rejected on every keystroke
+    // until a new valid date was picked. Skip the query entirely until both
+    // dates are actually set rather than sending a malformed filter.
+    if (!fromDate || !toDate) return;
     let cancelled = false;
     (async () => {
       const { data, error } = await supabase
