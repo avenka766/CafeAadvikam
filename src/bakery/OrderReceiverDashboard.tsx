@@ -1933,7 +1933,10 @@ function PhysicalStockCalculator({
 
   return (
     <div
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/45 p-3 backdrop-blur-sm"
+      // PERF FIX: dropped backdrop-blur — this modal opens constantly on the
+      // same Windows-7 touchscreen terminals used for billing; blur is
+      // expensive to composite on their old GPUs. A darker flat scrim.
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/65 p-3"
       role="dialog"
       aria-modal="true"
       aria-labelledby="physical-stock-calculator-title"
@@ -2405,7 +2408,14 @@ export default function OrderReceiverDashboard() {
         supabase.from("hosur_shops").select("id, shop_name, whatsapp_number, address, is_active").eq("is_active", true).order("shop_name", { ascending: true }),
         supabase.from("hosur_shop_price_lists").select("id, shop_id, item_name, item_unit, unit_price, is_active").eq("is_active", true),
         supabase.from("hosur_orders").select("id, order_number, shop_id, shop_name, status, subtotal, created_by, created_at, notes").order("created_at", { ascending: false }).limit(250),
-        supabase.from("hosur_order_items").select("id, order_id, item_name, unit, quantity, unit_price, line_total, dispatched_quantity, received_quantity").order("created_at", { ascending: true }).limit(3000),
+        // EGRESS FIX: was ordered ascending with a 3000 cap, which returned the
+        // OLDEST 3000 line items ever recorded (a correctness bug, and it also
+        // meant this table's entire early history was re-downloaded every 10
+        // minutes). Newest-first + a recent date bound now matches the 250
+        // most-recent orders fetched above.
+        supabase.from("hosur_order_items").select("id, order_id, item_name, unit, quantity, unit_price, line_total, dispatched_quantity, received_quantity")
+          .gte('created_at', new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString())
+          .order("created_at", { ascending: false }).limit(3000),
       ]);
       if (shopsRes.error) throw shopsRes.error;
       if (pricesRes.error) throw pricesRes.error;
@@ -2435,13 +2445,28 @@ export default function OrderReceiverDashboard() {
 
     void refreshStock(true);
     const unsubscribe = subscribeToStock(branch);
+    // EGRESS FIX: this used to poll every 30 seconds and, in the old
+    // implementation, unconditionally re-downloaded the entire branch
+    // dashboard payload (stock, sales, advance/credit orders) each time —
+    // ~2,880 full re-fetches/day just from this one interval. Realtime
+    // (subscribeToStock) now handles live updates, so this is purely a
+    // dropped-connection recovery poll and can run far less often. The header
+    // "Refresh" button (see Header.tsx isReceiverRoute) covers on-demand
+    // refresh for anything this poll would otherwise catch sooner.
     const refreshId = window.setInterval(() => {
       if (!document.hidden) void refreshStock(false);
-    }, 30_000);
+    }, 5 * 60_000);
+
+    const handleHeaderRefresh = (event: Event) => {
+      const complete = (event as CustomEvent<{ complete?: () => void }>).detail?.complete;
+      void refreshStock(true).finally(() => complete?.());
+    };
+    window.addEventListener('cafe:refresh-branch-dashboard', handleHeaderRefresh);
 
     return () => {
       cancelled = true;
       window.clearInterval(refreshId);
+      window.removeEventListener('cafe:refresh-branch-dashboard', handleHeaderRefresh);
       unsubscribe();
     };
   }, [branch, fetchStockMismatches, subscribeToStock]);

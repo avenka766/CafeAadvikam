@@ -746,7 +746,9 @@ function CreateInvoiceModal({
         className="max-h-[94vh] w-full overflow-y-auto rounded-t-3xl bg-background md:max-w-6xl md:rounded-3xl"
         onClick={event => event.stopPropagation()}
       >
-        <div className="sticky top-0 z-20 border-b border-border bg-background/95 px-4 py-4 backdrop-blur md:px-6">
+        {/* PERF FIX: sticky bar visible for the whole invoice session — dropped
+            backdrop-blur (expensive on the branch terminals' old GPUs). */}
+        <div className="sticky top-0 z-20 border-b border-border bg-background/95 px-4 py-4 md:px-6">
           <div className="mx-auto mb-3 h-1 w-10 rounded-full bg-border md:hidden" />
           <div className="flex items-start justify-between gap-3">
             <div>
@@ -880,7 +882,7 @@ function CreateInvoiceModal({
           )}
         </div>
 
-        <div className="sticky bottom-0 z-20 border-t border-border bg-background/95 px-4 py-4 backdrop-blur md:px-6">
+        <div className="sticky bottom-0 z-20 border-t border-border bg-background/95 px-4 py-4 md:px-6">
           <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
             <button type="button" onClick={onClose} disabled={saving} className="h-11 rounded-xl border border-border px-5 text-sm font-body font-semibold text-foreground hover:bg-muted disabled:opacity-50">Cancel</button>
             <button

@@ -4,6 +4,15 @@ import { makeSingletonSubscriber } from '@/lib/realtimeChannel';
 import type { BakeryOrder, BakeryOrderItem, PreparedItem, DispatchEntry, WorkflowStatus, Branch } from './types';
 import { useNotificationStore } from './notificationStore'; // BUG #16 FIX: needed to fire baker shortage notifications
 
+// Planner's "Planning" tab tags a proactive/extra-production batch with this
+// marker in `notes` (target_branch stays null since the destination branch
+// isn't decided until Dispatch). Exported so PlannerDashboard.tsx can both
+// write it and recognize it consistently everywhere it groups/filters orders.
+export const PLANNED_STOCK_TAG = 'PLANNER_PLANNED_STOCK';
+export function isPlannedOrder(order: { notes?: string | null; targetBranch?: string | null }): boolean {
+  return !order.targetBranch && String(order.notes ?? '').includes(PLANNED_STOCK_TAG);
+}
+
 interface BakeryState {
   orders: BakeryOrder[];
   loading: boolean;
@@ -11,6 +20,11 @@ interface BakeryState {
   // preventing the StoreDashboard list from unmounting and resetting card state.
   fetchOrders: (silent?: boolean, force?: boolean) => Promise<void>;
   submitOrder: (items: BakeryOrderItem[], createdBy: string, targetBranch: Branch, notes?: string) => Promise<void>;
+  // Planner's "Planning" tab: proactive extra-production batches that are NOT
+  // tied to any actual VRSNB/SNB/Hosur order yet. target_branch stays null —
+  // the destination branch is chosen later, per item, at actual Dispatch time
+  // (see the Dispatch tab's "Planned" sub-tab).
+  submitPlannedOrder: (items: BakeryOrderItem[], createdBy: string, notes?: string) => Promise<void>;
   acceptOrder: (orderId: string) => Promise<void>;
   // Combines several branch orders (same target branch) into a single
   // order before handing it to Store, so Store sees one combined order
@@ -160,6 +174,27 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     }
   },
 
+  submitPlannedOrder: async (items, createdBy, notes) => {
+    const taggedNotes = `${PLANNED_STOCK_TAG}${notes?.trim() ? `|${notes.trim()}` : ''}`;
+    const { data, error } = await supabase
+      .from('bakery_orders')
+      .insert({ items, status: 'pending', created_by: createdBy, target_branch: null, notes: taggedNotes })
+      .select()
+      .single();
+    if (error || !data) throw new Error('Failed to submit the production plan. Please try again.');
+    const order = rowToOrder(data as Record<string, unknown>);
+    set(s => ({ orders: [order, ...s.orders] }));
+    const { useAuthStore } = await import('@/stores/authStore');
+    const user = useAuthStore.getState().currentUser;
+    if (user) {
+      const { useActivityLogStore } = await import('./activityLogStore');
+      void useActivityLogStore.getState().log({
+        staffId: user.id, staffName: user.displayName, role: user.role,
+        action: 'Submitted Production Plan', detail: `Plan #${order.orderNumber} — ${items.length} item(s), extra production`,
+      });
+    }
+  },
+
   acceptOrder: async (orderId) => {
     const order = get().orders.find(o => o.id === orderId);
     const { error } = await supabase
@@ -207,9 +242,42 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     }
 
     const [primary, ...others] = group;
+
+    // BUG FIX: every order in this merge group may carry its own Hosur
+    // shop-order tag (HOSUR_ORDER_ID:<id>, written by HosurShopOrderPanel/
+    // HosurDashboard when the shop order was placed). The old code below
+    // deletes every order in `others`, keeping only `primary`'s row and its
+    // single tag — so as soon as 2+ Hosur shop orders were merged together
+    // in one "Send Merged Order to Store" action, every shop except the
+    // primary one permanently lost its HOSUR_ORDER_ID tag. submitDispatch's
+    // Hosur-sync block (further below) can then never find those shops
+    // again, so their hosur_orders row stays stuck at 'draft' forever even
+    // though the item was actually produced and dispatched — exactly the
+    // "dispatch doesn't reflect in the Hosur Dispatch tab" bug. Fix: collect
+    // every contributing order's tag (old singular or already-merged
+    // plural form) and write them all back as one HOSUR_ORDER_IDS:id1,id2
+    // tag on the surviving primary row.
+    const collectHosurIds = (notes: string | undefined | null): string[] => {
+      const text = notes ?? '';
+      const plural = text.match(/HOSUR_ORDER_IDS:([^|]+)/);
+      if (plural?.[1]) return plural[1].split(',').map(s => s.trim()).filter(Boolean);
+      const singular = text.match(/HOSUR_ORDER_ID:([^|]+)/);
+      return singular?.[1] ? [singular[1].trim()] : [];
+    };
+    const hosurIds = Array.from(new Set(group.flatMap(o => collectHosurIds(o.notes))));
+    // Planned-stock batches (Planning tab, target_branch null) need the same
+    // tag preserved across a merge, or they'd silently fall out of the
+    // "Planned" bucket in Merged Summary / Production Entry / Dispatch.
+    const anyPlanned = group.some(o => isPlannedOrder(o));
+    const mergedNotes = hosurIds.length > 0
+      ? `HOSUR_ORDER_IDS:${hosurIds.join(',')}`
+      : anyPlanned
+        ? (primary.notes?.includes(PLANNED_STOCK_TAG) ? primary.notes : PLANNED_STOCK_TAG)
+        : (primary.notes ?? null);
+
     const { error: updateError } = await supabase
       .from('bakery_orders')
-      .update({ items: combined, status: 'accepted' })
+      .update({ items: combined, status: 'accepted', notes: mergedNotes })
       .eq('id', primary.id);
     if (updateError) throw new Error('Failed to merge orders for Store — please try again.');
 
@@ -224,7 +292,7 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     set(s => ({
       orders: s.orders
         .filter(o => !others.some(x => x.id === o.id))
-        .map(o => o.id === primary.id ? { ...o, items: combined, status: 'accepted' as WorkflowStatus } : o),
+        .map(o => o.id === primary.id ? { ...o, items: combined, status: 'accepted' as WorkflowStatus, notes: mergedNotes ?? undefined } : o),
     }));
   },
 
@@ -283,6 +351,15 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     }
 
     const now = new Date().toISOString();
+    // BUG FIX: this used to overwrite notes with a plain "Store batch from
+    // order #N" string, discarding any HOSUR_ORDER_ID(S) tag the original
+    // order carried. That silently broke the Hosur dispatch-tab sync for
+    // any Hosur shop order that Store only partially confirmed (a very
+    // common case — Store rarely has every ingredient for every item at
+    // once). Carry the tag forward so submitDispatch can still find it.
+    const hosurTagMatch = String(order.notes ?? '').match(/HOSUR_ORDER_IDS?:[^|]+/);
+    const tagPrefix = hosurTagMatch ? `${hosurTagMatch[0]}|` : isPlannedOrder(order) ? `${PLANNED_STOCK_TAG}|` : '';
+    const carriedNotes = `${tagPrefix}Store batch from order #${order.orderNumber}`;
     const { data, error: insertError } = await supabase
       .from('bakery_orders')
       .insert({
@@ -290,7 +367,7 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
         status: 'store_confirmed',
         created_by: order.createdBy,
         target_branch: order.targetBranch,
-        notes: `Store batch from order #${order.orderNumber}`,
+        notes: carriedNotes,
         store_confirmed_at: now,
         store_source_order_number: order.orderNumber,
       })
@@ -464,26 +541,68 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
       throw new Error(error.message || 'Dispatch failed while saving the dispatch log.');
     }
 
-    // Keep the Hosur shop-order record behind the bakery workflow. It becomes
-    // visible in "Received From Packing" only after Packing has dispatched it.
-    const hosurOrderMatch = String(freshOrder.notes ?? '').match(/HOSUR_ORDER_ID:([^|]+)/);
-    if (entry.branch === 'Hosur' && hosurOrderMatch?.[1]) {
-      const hosurOrderId = hosurOrderMatch[1];
+    // Keep the Hosur shop-order record(s) behind the bakery workflow. It
+    // becomes visible in the Hosur "Dispatch" sub-tab only after Packing has
+    // actually dispatched it.
+    //
+    // BUG FIX: a bakery_orders row dispatched here can represent MORE than
+    // one original Hosur shop order — mergeOrdersForStore now writes a
+    // plural HOSUR_ORDER_IDS:id1,id2,... tag when several shops' pending
+    // orders were combined into one production batch (previously only a
+    // single shop's tag survived that merge, silently orphaning every other
+    // shop at 'draft' forever). Support both the plural tag and the
+    // original singular HOSUR_ORDER_ID:<id> tag for orders that were never
+    // merged with anything else.
+    const hosurIdsMatch = String(freshOrder.notes ?? '').match(/HOSUR_ORDER_IDS?:([^|]+)/);
+    const hosurOrderIds = hosurIdsMatch?.[1]
+      ? hosurIdsMatch[1].split(',').map(s => s.trim()).filter(Boolean)
+      : [];
+    if (entry.branch === 'Hosur' && hosurOrderIds.length > 0) {
       const itemDispatchTotal = updatedLog
         .filter(d => d.branch === 'Hosur' && d.itemName === entry.itemName)
         .reduce((sum, d) => sum + Number(d.quantity || 0), 0);
-      const { error: hosurItemError } = await supabase
-        .from('hosur_order_items')
-        .update({ dispatched_quantity: itemDispatchTotal })
-        .eq('order_id', hosurOrderId)
-        .eq('item_name', entry.itemName);
-      if (hosurItemError) throw new Error(`Hosur dispatch sync failed: ${hosurItemError.message}`);
 
-      const { error: hosurOrderError } = await supabase
-        .from('hosur_orders')
-        .update({ status: allFullyDispatched ? 'dispatched' : 'pending_packing' })
-        .eq('id', hosurOrderId);
-      if (hosurOrderError) throw new Error(`Hosur order status sync failed: ${hosurOrderError.message}`);
+      // Split this item's total dispatched quantity across every
+      // contributing shop, weighted by that shop's own originally-ordered
+      // quantity — same proportional-split idea used for VRSNB/SNB
+      // (autoSplitForItem), so a merged multi-shop batch still attributes
+      // dispatch correctly to each shop instead of dumping it all on one.
+      const { data: itemRows, error: itemRowsError } = await supabase
+        .from('hosur_order_items')
+        .select('order_id, quantity')
+        .in('order_id', hosurOrderIds)
+        .eq('item_name', entry.itemName);
+      if (itemRowsError) throw new Error(`Hosur dispatch sync failed: ${itemRowsError.message}`);
+      const rows = itemRows ?? [];
+      const totalRequested = rows.reduce((s, r) => s + Number(r.quantity || 0), 0) || 1;
+
+      for (const row of rows) {
+        const share = Math.round(itemDispatchTotal * (Number(row.quantity || 0) / totalRequested) * 100) / 100;
+        const { error: hosurItemError } = await supabase
+          .from('hosur_order_items')
+          .update({ dispatched_quantity: share })
+          .eq('order_id', row.order_id as string)
+          .eq('item_name', entry.itemName);
+        if (hosurItemError) throw new Error(`Hosur dispatch sync failed: ${hosurItemError.message}`);
+      }
+
+      // Each shop's hosur_orders row only flips to 'dispatched' once every
+      // ONE of its own items is fully covered — not just the item that was
+      // just dispatched (a merged batch's other items may still be pending).
+      for (const hosurOrderId of hosurOrderIds) {
+        const { data: allItems, error: allItemsError } = await supabase
+          .from('hosur_order_items')
+          .select('quantity, dispatched_quantity')
+          .eq('order_id', hosurOrderId);
+        if (allItemsError) throw new Error(`Hosur order status sync failed: ${allItemsError.message}`);
+        const fullyDone = (allItems ?? []).length > 0 &&
+          (allItems ?? []).every(r => Number(r.dispatched_quantity || 0) >= Number(r.quantity || 0) - 0.01);
+        const { error: hosurOrderError } = await supabase
+          .from('hosur_orders')
+          .update({ status: fullyDone ? 'dispatched' : 'pending_packing' })
+          .eq('id', hosurOrderId);
+        if (hosurOrderError) throw new Error(`Hosur order status sync failed: ${hosurOrderError.message}`);
+      }
     }
 
     // ── DISCREPANCY CHECK: collect ALL items' discrepancies each time we dispatch ──

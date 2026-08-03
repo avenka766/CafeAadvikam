@@ -154,7 +154,7 @@ export default function PackingCakeOrdersTab() {
           <h3 className="text-sm font-black text-foreground">Cake Packing</h3>
           <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-black text-muted-foreground">{visibleOrders.length}</span>
         </div>
-        <div className="flex items-center gap-2"><div className="flex rounded-xl bg-slate-100 p-1"><button type="button" onClick={() => setView('ready')} className={cn('rounded-lg px-3 py-1.5 text-[11px] font-black', view === 'ready' ? 'bg-white text-slate-950 shadow-sm' : 'text-slate-500')}>Ready</button><button type="button" onClick={() => setView('corrections')} className={cn('rounded-lg px-3 py-1.5 text-[11px] font-black', view === 'corrections' ? 'bg-white text-amber-800 shadow-sm' : 'text-slate-500')}>Corrections ({orders.filter(order => order.status === 'Correction Required').length})</button></div><button type="button" title="Refresh cake orders" onClick={() => void load()} disabled={loading} className="grid size-9 place-items-center rounded-lg border border-border text-muted-foreground disabled:cursor-wait disabled:opacity-60"><RefreshCcw className={cn('size-3.5', loading && 'animate-spin')} /></button></div>
+        <div className="flex items-center gap-2"><div className="flex rounded-xl bg-muted p-1"><button type="button" onClick={() => setView('ready')} className={cn('rounded-lg px-3 py-1.5 text-[11px] font-black', view === 'ready' ? 'bg-white text-slate-950 shadow-sm' : 'text-muted-foreground')}>Ready</button><button type="button" onClick={() => setView('corrections')} className={cn('rounded-lg px-3 py-1.5 text-[11px] font-black', view === 'corrections' ? 'bg-white text-amber-800 shadow-sm' : 'text-muted-foreground')}>Corrections ({orders.filter(order => order.status === 'Correction Required').length})</button></div><button type="button" title="Refresh cake orders" onClick={() => void load()} disabled={loading} className="grid size-9 place-items-center rounded-lg border border-border text-muted-foreground disabled:cursor-wait disabled:opacity-60"><RefreshCcw className={cn('size-3.5', loading && 'animate-spin')} /></button></div>
       </div>
 
       {error && (
@@ -179,9 +179,9 @@ export default function PackingCakeOrdersTab() {
               </div>
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-1.5">
-                  <span className="rounded-md bg-slate-950 px-1.5 py-0.5 text-[10px] font-black text-white">{order.branch}</span>
-                  {order.slip_number && <span className="rounded-md bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold text-slate-600">Slip {order.slip_number}</span>}
-                  <span className="flex items-center gap-1 rounded-md bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold text-slate-600"><Receipt className="size-3" />{order.order_no}</span>
+                  <span className="rounded-md bg-foreground px-1.5 py-0.5 text-[10px] font-black text-white">{order.branch}</span>
+                  {order.slip_number && <span className="rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-bold text-muted-foreground">Slip {order.slip_number}</span>}
+                  <span className="flex items-center gap-1 rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-bold text-muted-foreground"><Receipt className="size-3" />{order.order_no}</span>
                 </div>
                 <p className="mt-0.5 truncate text-sm font-black text-foreground">{order.customer_name || 'Customer'}</p>
                 <p className="truncate text-[11px] font-bold text-muted-foreground">
@@ -200,7 +200,7 @@ export default function PackingCakeOrdersTab() {
                 type="button"
                 disabled={busyId === order.id}
                 onClick={() => void dispatch(order)}
-                className="flex items-center gap-2 rounded-xl bg-slate-950 px-4 py-2.5 text-sm font-black text-white active:scale-95 disabled:opacity-50"
+                className="flex items-center gap-2 rounded-xl bg-foreground px-4 py-2.5 text-sm font-black text-white active:scale-95 disabled:opacity-50"
               >
                 {busyId === order.id ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
                 Dispatch to {order.branch}

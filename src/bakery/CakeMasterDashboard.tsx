@@ -274,11 +274,24 @@ export default function CakeMasterDashboard() {
   useEffect(() => { void load(); }, [load]);
 
   useEffect(() => {
+    // EGRESS FIX: this channel has no `filter`, so ANY insert/update/delete on
+    // cake_master_orders from ANY branch re-triggers a full 500-row reload.
+    // That's intentional (the Cake Master view is cross-branch by design),
+    // but a burst of several changes in quick succession used to cause that
+    // many full reloads back-to-back. Debounce collapses a burst into one.
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    const scheduleReload = () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => { void load(); }, 2000);
+    };
     const channel = supabase
       .channel('cake_master_orders_live')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'cake_master_orders' }, () => { void load(); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'cake_master_orders' }, scheduleReload)
       .subscribe();
-    return () => { void supabase.removeChannel(channel); };
+    return () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      void supabase.removeChannel(channel);
+    };
   }, [load]);
 
   const today = todayStr();

@@ -3,13 +3,19 @@
 // and the Dispatch step that was previously missing entirely -- this is what
 // moves a shop order from 'pending_packing' to 'dispatched', after which the
 // embedded Hosur receiving/billing/WhatsApp flow (in HosurDashboard) takes over.
+//
+// UI/UX NOTE: restyled to the app's premium brand system (cafe-teal / gold,
+// font-display headings, card-base/shadow-teal/shadow-gold conventions) in
+// place of the previous generic slate/emerald/indigo Tailwind palette. No
+// business logic, data fetching, or handler behaviour was changed below.
 import { useState, useEffect, useMemo, useCallback } from 'react';
-import { Store, Search, X, ShoppingCart, Send, Loader2, Plus, Truck, CheckCircle2 } from 'lucide-react';
+import { Store, Search, X, ShoppingCart, Send, Loader2, Plus, Truck, CheckCircle2, AlertTriangle } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/stores/authStore';
 import { cn } from '@/lib/utils';
 import { exportToExcel } from '@/lib/exportExcel';
 import { dispatchReceiveAndBill } from './hosurBillingBridge';
+import { getPackingCounterStatus } from './packingCounter';
 
 const money = (v: number | null | undefined) => 'Rs.' + (v ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
 const num = (v: number | null | undefined) => (v ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
@@ -67,17 +73,36 @@ export default function HosurShopOrderPanel({ section: controlledSection, onPend
     <div className="space-y-4">
       {controlledSection === undefined && (
         <div className="flex gap-2">
-          <button onClick={() => setLocalSection('place')} className={cn('rounded-xl px-3 py-2 text-xs font-bold', section === 'place' ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600')}>
+          <button
+            onClick={() => setLocalSection('place')}
+            className={cn(
+              'rounded-xl px-4 py-2.5 text-xs font-bold font-body transition-all duration-150',
+              section === 'place' ? 'cafe-gradient text-white shadow-teal' : 'bg-secondary text-secondary-foreground hover:bg-muted',
+            )}
+          >
             <Store className="mr-1 inline size-3.5" /> Place Order
           </button>
-          <button onClick={() => setLocalSection('dispatch')} className={cn('rounded-xl px-3 py-2 text-xs font-bold', section === 'dispatch' ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600')}>
-            <Truck className="mr-1 inline size-3.5" /> Dispatch ({pendingOrders.length})
+          <button
+            onClick={() => setLocalSection('dispatch')}
+            className={cn(
+              'rounded-xl px-4 py-2.5 text-xs font-bold font-body transition-all duration-150',
+              section === 'dispatch' ? 'cafe-gradient text-white shadow-teal' : 'bg-secondary text-secondary-foreground hover:bg-muted',
+            )}
+          >
+            <Truck className="mr-1 inline size-3.5" /> Dispatch
+            {pendingOrders.length > 0 && (
+              <span className="ml-1.5 inline-flex min-w-[1.1rem] items-center justify-center rounded-full bg-accent px-1.5 py-0.5 text-[10px] font-black text-accent-foreground">
+                {pendingOrders.length}
+              </span>
+            )}
           </button>
         </div>
       )}
 
       {loading ? (
-        <div className="py-10 text-center text-xs font-bold text-slate-400">Loading shop data...</div>
+        <div className="flex items-center justify-center gap-2 py-14 text-xs font-bold text-muted-foreground font-body">
+          <Loader2 className="size-4 animate-spin" /> Loading shop data...
+        </div>
       ) : section === 'place' ? (
         <PlaceOrderSection shops={shops} prices={prices} userName={currentUser?.displayName || 'Planner'} onSaved={load} />
       ) : (
@@ -224,45 +249,54 @@ function PlaceOrderSection({ shops, prices, userName, onSaved }: { shops: HosurS
 
   return (
     <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_22rem]">
-      <section className="space-y-3 rounded-2xl border border-border bg-white p-4 shadow-sm">
+      <section className="space-y-3 card-base p-5">
+        <div className="flex items-center gap-3 pb-1">
+          <span className="flex size-10 shrink-0 items-center justify-center rounded-xl cafe-gradient text-white shadow-teal">
+            <Store className="size-5" />
+          </span>
+          <div>
+            <h3 className="font-display text-xl font-bold text-foreground">Place Shop Order</h3>
+            <p className="text-xs font-bold text-muted-foreground font-body">Pick a shop, add priced or custom items, then send.</p>
+          </div>
+        </div>
         <div className="grid gap-3 sm:grid-cols-2">
           <label className="space-y-1">
-            <span className="text-[11px] font-black uppercase text-slate-500">Shop</span>
-            <select value={selectedShop?.id ?? ''} onChange={e => setShopId(e.target.value)} className="h-11 w-full rounded-xl border border-border px-3 text-sm font-bold">
+            <span className="text-[11px] font-black uppercase tracking-wide text-muted-foreground">Shop</span>
+            <select value={selectedShop?.id ?? ''} onChange={e => setShopId(e.target.value)} className="h-11 w-full rounded-xl border border-border bg-background px-3 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-primary/30">
               {activeShops.map(s => <option key={s.id} value={s.id}>{s.shopName}</option>)}
             </select>
           </label>
           <label className="space-y-1">
-            <span className="text-[11px] font-black uppercase text-slate-500">Search item</span>
+            <span className="text-[11px] font-black uppercase tracking-wide text-muted-foreground">Search item</span>
             <div className="relative">
-              <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
-              <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search price list..." className="h-11 w-full rounded-xl border border-border pl-9 pr-3 text-sm font-bold" />
+              <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+              <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search price list..." className="h-11 w-full rounded-xl border border-border bg-background pl-9 pr-3 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-primary/30" />
             </div>
           </label>
         </div>
 
         {selectedShop && (
-          <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm">
-            <p className="font-black text-emerald-800">{selectedShop.shopName}</p>
-            <p className="text-xs font-bold text-emerald-700">{selectedShop.whatsappNumber}</p>
+          <div className="rounded-xl border border-teal bg-primary/5 p-3 text-sm">
+            <p className="font-black text-primary">{selectedShop.shopName}</p>
+            <p className="text-xs font-bold text-primary/80">{selectedShop.whatsappNumber}</p>
           </div>
         )}
 
         {filteredItems.length === 0 ? (
-          <div className="rounded-2xl border border-dashed border-border p-8 text-center text-xs font-bold text-slate-400">No priced items match -- add as custom below.</div>
+          <div className="rounded-2xl border border-dashed border-border p-8 text-center text-xs font-bold text-muted-foreground">No priced items match -- add as custom below.</div>
         ) : (
           <div className="grid gap-2 sm:grid-cols-2">
             {filteredItems.map(item => {
               const current = cart[item.itemName]?.quantity ?? 0;
               const step = item.itemUnit === 'kg' ? 0.25 : 1;
               return (
-                <article key={item.id} className={cn('rounded-xl border p-3', current > 0 ? 'border-emerald-300 bg-emerald-50' : 'border-border bg-slate-50')}>
-                  <p className="text-sm font-black text-slate-800">{item.itemName}</p>
-                  <p className="text-xs font-bold text-slate-500">{item.itemUnit} - {money(item.unitPrice)}</p>
+                <article key={item.id} className={cn('rounded-xl border p-3 transition-colors', current > 0 ? 'border-teal bg-primary/5' : 'border-border bg-muted/40')}>
+                  <p className="text-sm font-black text-foreground">{item.itemName}</p>
+                  <p className="text-xs font-bold text-muted-foreground">{item.itemUnit} - {money(item.unitPrice)}</p>
                   <div className="mt-2 flex items-center gap-2">
-                    <button onClick={() => setQty(item, current - step)} className="size-8 rounded-lg border border-border bg-white font-black">-</button>
-                    <input type="number" value={current || ''} onChange={e => setQty(item, Number(e.target.value))} placeholder="0" className="h-8 w-full rounded-lg border border-border text-center text-sm font-black" />
-                    <button onClick={() => setQty(item, current + step)} className="size-8 rounded-lg bg-emerald-600 font-black text-white">+</button>
+                    <button onClick={() => setQty(item, current - step)} className="size-8 rounded-lg border border-border bg-card font-black text-foreground hover:bg-muted">-</button>
+                    <input type="number" value={current || ''} onChange={e => setQty(item, Number(e.target.value))} placeholder="0" className="h-8 w-full rounded-lg border border-border bg-background text-center text-sm font-black" />
+                    <button onClick={() => setQty(item, current + step)} className="size-8 rounded-lg bg-primary font-black text-primary-foreground hover:opacity-90">+</button>
                   </div>
                 </article>
               );
@@ -270,50 +304,50 @@ function PlaceOrderSection({ shops, prices, userName, onSaved }: { shops: HosurS
           </div>
         )}
 
-        <button onClick={() => setShowCustom(v => !v)} className="flex items-center gap-1.5 text-xs font-bold text-indigo-600 hover:underline">
+        <button onClick={() => setShowCustom(v => !v)} className="flex items-center gap-1.5 text-xs font-bold text-accent hover:underline">
           <Plus className="size-3.5" /> Add custom item (not in price list)
         </button>
         {showCustom && (
-          <div className="grid gap-2 rounded-xl border border-indigo-200 bg-indigo-50 p-3 sm:grid-cols-5">
-            <input value={customName} onChange={e => setCustomName(e.target.value)} placeholder="Item name" className="rounded-lg border border-border px-2 py-1.5 text-xs font-bold sm:col-span-2" />
-            <input value={customQty} onChange={e => setCustomQty(e.target.value)} type="number" placeholder="Qty" className="rounded-lg border border-border px-2 py-1.5 text-xs font-bold" />
-            <select value={customUnit} onChange={e => setCustomUnit(e.target.value as 'pcs' | 'kg')} className="rounded-lg border border-border px-2 py-1.5 text-xs font-bold">
+          <div className="grid gap-2 rounded-xl border border-gold bg-accent/10 p-3 sm:grid-cols-5">
+            <input value={customName} onChange={e => setCustomName(e.target.value)} placeholder="Item name" className="rounded-lg border border-border bg-background px-2 py-1.5 text-xs font-bold sm:col-span-2" />
+            <input value={customQty} onChange={e => setCustomQty(e.target.value)} type="number" placeholder="Qty" className="rounded-lg border border-border bg-background px-2 py-1.5 text-xs font-bold" />
+            <select value={customUnit} onChange={e => setCustomUnit(e.target.value as 'pcs' | 'kg')} className="rounded-lg border border-border bg-background px-2 py-1.5 text-xs font-bold">
               <option value="kg">kg</option><option value="pcs">pcs</option>
             </select>
-            <input value={customPrice} onChange={e => setCustomPrice(e.target.value)} type="number" placeholder="Price/unit" className="rounded-lg border border-border px-2 py-1.5 text-xs font-bold" />
-            <button onClick={addCustomItem} className="sm:col-span-5 rounded-lg bg-indigo-600 py-1.5 text-xs font-bold text-white">Add to Order</button>
+            <input value={customPrice} onChange={e => setCustomPrice(e.target.value)} type="number" placeholder="Price/unit" className="rounded-lg border border-border bg-background px-2 py-1.5 text-xs font-bold" />
+            <button onClick={addCustomItem} className="sm:col-span-5 rounded-lg gold-gradient py-1.5 text-xs font-bold text-white shadow-gold">Add to Order</button>
           </div>
         )}
       </section>
 
-      <aside className="space-y-3 rounded-2xl border border-border bg-white p-4 shadow-sm">
-        <div className="flex items-center gap-2"><ShoppingCart className="size-4 text-emerald-700" /><h3 className="text-sm font-black">Requirement{selectedShop ? ` — ${selectedShop.shopName}` : ''}</h3></div>
+      <aside className="space-y-3 card-base p-5">
+        <div className="flex items-center gap-2"><ShoppingCart className="size-4 text-primary" /><h3 className="font-display text-lg font-bold text-foreground">Requirement{selectedShop ? ` — ${selectedShop.shopName}` : ''}</h3></div>
         {cartItems.length === 0 ? (
-          <div className="rounded-xl border border-dashed border-border p-6 text-center text-xs font-bold text-slate-400">No items selected</div>
+          <div className="rounded-xl border border-dashed border-border p-6 text-center text-xs font-bold text-muted-foreground">No items selected</div>
         ) : (
           <div className="max-h-80 space-y-2 overflow-auto">
             {cartItems.map(item => (
-              <div key={item.itemName} className="rounded-xl bg-slate-50 p-2.5">
+              <div key={item.itemName} className="rounded-xl bg-muted/40 p-2.5">
                 <div className="flex justify-between gap-2">
-                  <p className="text-xs font-black text-slate-800">{item.itemName} {item.isCustom && <span className="text-indigo-500">(custom)</span>}</p>
-                  <button onClick={() => removeItem(item.itemName)}><X className="size-3.5 text-red-500" /></button>
+                  <p className="text-xs font-black text-foreground">{item.itemName} {item.isCustom && <span className="text-accent">(custom)</span>}</p>
+                  <button onClick={() => removeItem(item.itemName)}><X className="size-3.5 text-destructive" /></button>
                 </div>
-                <p className="text-[11px] font-bold text-slate-500">{num(item.quantity)} {item.unit} x {money(item.unitPrice)} = {money(item.lineTotal)}</p>
+                <p className="text-[11px] font-bold text-muted-foreground">{num(item.quantity)} {item.unit} x {money(item.unitPrice)} = {money(item.lineTotal)}</p>
               </div>
             ))}
           </div>
         )}
-        <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={2} placeholder="Notes (optional)" className="w-full rounded-xl border border-border px-3 py-2 text-xs font-bold" />
+        <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={2} placeholder="Notes (optional)" className="w-full rounded-xl border border-border bg-background px-3 py-2 text-xs font-bold" />
         {shopsWithItems.length > 1 && (
-          <div className="space-y-2 rounded-xl border border-emerald-200 bg-emerald-50 p-2.5">
-            <p className="text-[11px] font-black text-emerald-800">{shopsWithItems.length} shops queued</p>
+          <div className="space-y-2 rounded-xl border border-teal bg-primary/5 p-2.5">
+            <p className="text-[11px] font-black text-primary">{shopsWithItems.length} shops queued</p>
             {shopsWithItems.map(([sId, items]) => {
               const shopName = activeShops.find(s => s.id === sId)?.shopName ?? sId;
               const itemList = Object.values(items);
               return (
-                <div key={sId} className="rounded-lg bg-white/70 p-2">
-                  <p className="text-[11px] font-black text-emerald-900">{shopName}</p>
-                  <p className="text-[10px] font-bold text-emerald-700">
+                <div key={sId} className="rounded-lg bg-card/70 p-2">
+                  <p className="text-[11px] font-black text-primary">{shopName}</p>
+                  <p className="text-[10px] font-bold text-primary/80">
                     {itemList.map(i => `${i.itemName} (${num(i.quantity)} ${i.unit})`).join(', ')}
                   </p>
                 </div>
@@ -321,12 +355,12 @@ function PlaceOrderSection({ shops, prices, userName, onSaved }: { shops: HosurS
             })}
           </div>
         )}
-        <div className="flex items-center justify-between rounded-xl bg-emerald-700 px-4 py-2.5 text-white">
+        <div className="flex items-center justify-between rounded-xl cafe-gradient px-4 py-2.5 text-primary-foreground shadow-teal">
           <span className="text-xs font-black">{shopsWithItems.length > 1 ? 'Grand Total (all shops)' : 'Total'}</span>
           <span className="text-lg font-black">{money(shopsWithItems.length > 1 ? grandTotal : subtotal)}</span>
         </div>
-        {error && <p className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700">{error}</p>}
-        <button onClick={saveOrder} disabled={saving || shopsWithItems.length === 0} className="flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 text-sm font-black text-white disabled:opacity-40">
+        {error && <p className="rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs font-bold text-destructive">{error}</p>}
+        <button onClick={saveOrder} disabled={saving || shopsWithItems.length === 0} className="flex h-11 w-full items-center justify-center gap-2 rounded-xl cafe-gradient text-sm font-black text-white shadow-teal disabled:opacity-40">
           {saving ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />} Send Order{shopsWithItems.length > 1 ? `s (${shopsWithItems.length} shops)` : ''}
         </button>
       </aside>
@@ -334,15 +368,35 @@ function PlaceOrderSection({ shops, prices, userName, onSaved }: { shops: HosurS
   );
 }
 
+const PAYMENT_MODES = [
+  { key: 'cash', label: 'Cash' },
+  { key: 'upi', label: 'UPI' },
+  { key: 'card', label: 'Card' },
+  { key: 'cheque', label: 'Cheque' },
+] as const;
+
 function DispatchSection({ orders, items, onDone }: { orders: HosurOrder[]; items: HosurOrderItem[]; onDone: () => void }) {
   const currentUser = useAuthStore(s => s.currentUser);
   const [overrides, setOverrides] = useState<Record<string, string>>({});
   const [expanded, setExpanded] = useState<string | null>(null);
   const [paymentType, setPaymentType] = useState<Record<string, 'full' | 'partial' | 'credit'>>({});
+  const [paymentMode, setPaymentMode] = useState<Record<string, string>>({});
   const [paidAmount, setPaidAmount] = useState<Record<string, string>>({});
   const [dueDate, setDueDate] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [result, setResult] = useState<Record<string, { ok: boolean; message: string }>>({});
+  // BUG FIX: dispatchReceiveAndBill already refuses to bill when Planner's
+  // counter is closed, but it only surfaced that as an error AFTER the
+  // planner filled in the whole payment form and clicked Dispatch. Check
+  // proactively so it's clear upfront, before any billing details are
+  // entered — matches "should only be able to bill once the counter is
+  // opened".
+  const [counterOpen, setCounterOpen] = useState<boolean | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    getPackingCounterStatus().then(s => { if (!cancelled) setCounterOpen(s.isOpen); }).catch(() => { if (!cancelled) setCounterOpen(null); });
+    return () => { cancelled = true; };
+  }, []);
 
   const orderTotal = (order: HosurOrder) => {
     const orderItems = items.filter(i => i.orderId === order.id);
@@ -368,6 +422,7 @@ function DispatchSection({ orders, items, onDone }: { orders: HosurOrder[]; item
         payment: {
           paymentType: pType,
           paidAmount: pType === 'partial' ? Number(paidAmount[order.id] || 0) : undefined,
+          paymentMode: pType === 'credit' ? null : (paymentMode[order.id] || 'cash'),
           dueDate: pType !== 'full' ? (dueDate[order.id] || null) : null,
         },
         userName: currentUser?.displayName || 'Planner',
@@ -388,70 +443,142 @@ function DispatchSection({ orders, items, onDone }: { orders: HosurOrder[]; item
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-between">
-        <p className="text-xs font-bold text-slate-500">Auto-filled from ordered quantity. Dispatching also creates the bill, captures payment, and sends the WhatsApp bill — one click.</p>
+      <div className="card-base flex flex-wrap items-center justify-between gap-3 p-4">
+        <div className="flex items-center gap-3">
+          <span className="flex size-10 shrink-0 items-center justify-center rounded-xl cafe-gradient text-white shadow-teal">
+            <Truck className="size-5" />
+          </span>
+          <div>
+            <h3 className="font-display text-xl font-bold text-foreground">Dispatch Queue</h3>
+            <p className="text-xs font-bold text-muted-foreground font-body">Auto-filled from ordered quantity. Dispatching also creates the bill, captures payment, and sends the WhatsApp bill — one click.</p>
+          </div>
+        </div>
         <button
           onClick={() => exportToExcel({
             filename: 'hosur-dispatch-queue', sheetName: 'Dispatch Queue', title: 'Hosur - Pending Dispatch',
             columns: [{ header: 'Order #', key: 'orderNumber' }, { header: 'Shop', key: 'shop' }, { header: 'Item', key: 'item' }, { header: 'Qty', key: 'qty' }, { header: 'Unit', key: 'unit' }],
             rows: orders.flatMap(o => items.filter(i => i.orderId === o.id).map(i => ({ orderNumber: o.orderNumber, shop: o.shopName, item: i.itemName, qty: i.quantity, unit: i.unit }))),
           })}
-          className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-bold text-emerald-700 hover:bg-emerald-100"
+          className="rounded-xl border border-teal bg-primary/5 px-3 py-1.5 text-xs font-bold text-primary hover:bg-primary/10"
         >Export Excel</button>
       </div>
-      {orders.length === 0 && <div className="rounded-2xl border border-dashed border-border p-10 text-center text-xs font-bold text-slate-400">No orders waiting on dispatch.</div>}
+      {counterOpen === false && (
+        <div className="flex items-center gap-2 rounded-2xl border border-destructive/30 bg-destructive/10 p-4 text-sm font-bold text-destructive">
+          <AlertTriangle className="size-4 shrink-0" /> Planner's counter is closed — open today's counter in Daily Closure before billing any Hosur order.
+        </div>
+      )}
+      {orders.length === 0 && <div className="rounded-2xl border border-dashed border-border p-10 text-center text-xs font-bold text-muted-foreground">No orders waiting on dispatch.</div>}
       {orders.map(order => {
         const orderItems = items.filter(i => i.orderId === order.id);
         const pType = paymentType[order.id] ?? 'full';
         const total = orderTotal(order);
         const res = result[order.id];
         return (
-          <div key={order.id} className="rounded-2xl border border-border bg-white p-4 shadow-sm">
+          <div key={order.id} className="card-base p-4">
             <button onClick={() => setExpanded(v => v === order.id ? null : order.id)} className="flex w-full items-center justify-between text-left">
-              <span className="text-sm font-black text-slate-800">{order.shopName} - #{order.orderNumber} <span className="ml-2 text-xs font-bold text-slate-400">₹{total.toFixed(2)}</span></span>
-              <span className="text-xs font-bold text-slate-400">{expanded === order.id ? 'Hide' : 'Open'}</span>
+              <span className="text-sm font-black text-foreground">{order.shopName} - #{order.orderNumber} <span className="ml-2 text-xs font-bold text-muted-foreground">{money(total)}</span></span>
+              <span className="rounded-full bg-muted px-2.5 py-1 text-[11px] font-bold text-muted-foreground">{expanded === order.id ? 'Hide' : 'Open'}</span>
             </button>
 
             {expanded === order.id && (
               <div className="mt-3 space-y-3">
                 <div className="space-y-1.5">
                   {orderItems.map(item => (
-                    <div key={item.id} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-1.5 text-xs font-bold">
-                      <span>{item.itemName} <span className="text-slate-400">(ordered {num(item.quantity)} {item.unit})</span></span>
-                      <input type="number" value={overrides[item.id] ?? item.quantity} onChange={e => setOverrides(v => ({ ...v, [item.id]: e.target.value }))} className="w-24 rounded-lg border border-border px-2 py-1 text-right" />
+                    <div key={item.id} className="flex items-center justify-between rounded-lg bg-muted/40 px-3 py-1.5 text-xs font-bold">
+                      <span>{item.itemName} <span className="text-muted-foreground">(ordered {num(item.quantity)} {item.unit})</span></span>
+                      <input type="number" value={overrides[item.id] ?? item.quantity} onChange={e => setOverrides(v => ({ ...v, [item.id]: e.target.value }))} className="w-24 rounded-lg border border-border bg-background px-2 py-1 text-right" />
                     </div>
                   ))}
                 </div>
 
-                <div className="rounded-xl border border-indigo-200 bg-indigo-50 p-3">
-                  <p className="mb-2 text-[11px] font-black uppercase text-indigo-700">Payment</p>
-                  <div className="flex gap-2">
-                    {(['full', 'partial', 'credit'] as const).map(t => (
-                      <button key={t} onClick={() => setPaymentType(v => ({ ...v, [order.id]: t }))} className={cn('rounded-lg px-3 py-1.5 text-xs font-bold capitalize', pType === t ? 'bg-indigo-600 text-white' : 'bg-white text-indigo-700 border border-indigo-200')}>
-                        {t}
+                {(() => {
+                  const mode = paymentMode[order.id] ?? 'cash';
+                  const modeLabel = PAYMENT_MODES.find(m => m.key === mode)?.label ?? 'Cash';
+                  const paidNow = pType === 'partial' ? Number(paidAmount[order.id] || 0) : pType === 'full' ? total : 0;
+                  const balance = pType === 'credit' ? total : Math.max(0, Math.round((total - paidNow) * 100) / 100);
+                  const needsDueDate = pType !== 'full';
+                  const dueDateMissing = needsDueDate && !dueDate[order.id];
+                  const partialInvalid = pType === 'partial' && (!paidAmount[order.id] || paidNow <= 0 || paidNow >= total);
+                  const canDispatch = !dueDateMissing && !partialInvalid && counterOpen !== false;
+                  return (
+                    <>
+                      <div className="rounded-xl border border-gold bg-accent/10 p-3 space-y-3">
+                        <p className="text-[11px] font-black uppercase tracking-wide text-amber-800">Payment Collection</p>
+                        <div className="flex gap-2">
+                          {(['full', 'partial', 'credit'] as const).map(t => (
+                            <button key={t} onClick={() => setPaymentType(v => ({ ...v, [order.id]: t }))} className={cn('rounded-lg px-3 py-1.5 text-xs font-bold capitalize', pType === t ? 'gold-gradient text-white shadow-gold' : 'bg-card text-amber-800 border border-gold')}>
+                              {t === 'full' ? 'Full Payment' : t === 'partial' ? 'Partial Payment' : 'Full Credit'}
+                            </button>
+                          ))}
+                        </div>
+
+                        {pType !== 'credit' && (
+                          <div>
+                            <p className="mb-1.5 text-[10px] font-black uppercase tracking-wide text-muted-foreground">Payment Mode</p>
+                            <div className="flex flex-wrap gap-1.5">
+                              {PAYMENT_MODES.map(m => (
+                                <button
+                                  key={m.key}
+                                  onClick={() => setPaymentMode(v => ({ ...v, [order.id]: m.key }))}
+                                  className={cn('rounded-lg px-3 py-1.5 text-xs font-bold', mode === m.key ? 'bg-primary text-primary-foreground shadow-teal' : 'border border-border bg-card text-foreground')}
+                                >
+                                  {m.label}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {pType === 'partial' && (
+                          <div className="grid grid-cols-2 gap-2">
+                            <label className="space-y-1">
+                              <span className="text-[10px] font-black uppercase tracking-wide text-muted-foreground">Amount Paid Now</span>
+                              <input type="number" placeholder="0" value={paidAmount[order.id] ?? ''} onChange={e => setPaidAmount(v => ({ ...v, [order.id]: e.target.value }))} className="w-full rounded-lg border border-border bg-background px-2 py-1.5 text-xs font-bold" />
+                            </label>
+                            <label className="space-y-1">
+                              <span className="text-[10px] font-black uppercase tracking-wide text-muted-foreground">Due Date *</span>
+                              <input type="date" value={dueDate[order.id] ?? ''} onChange={e => setDueDate(v => ({ ...v, [order.id]: e.target.value }))} className="w-full rounded-lg border border-border bg-background px-2 py-1.5 text-xs font-bold" />
+                            </label>
+                          </div>
+                        )}
+                        {pType === 'credit' && (
+                          <label className="block space-y-1">
+                            <span className="text-[10px] font-black uppercase tracking-wide text-muted-foreground">Due Date *</span>
+                            <input type="date" value={dueDate[order.id] ?? ''} onChange={e => setDueDate(v => ({ ...v, [order.id]: e.target.value }))} className="w-full rounded-lg border border-border bg-background px-2 py-1.5 text-xs font-bold" />
+                          </label>
+                        )}
+
+                        {/* Complete, at-a-glance breakdown of exactly what's owed and what's being collected. */}
+                        <div className="space-y-1 rounded-lg bg-card/70 p-2.5 text-xs font-bold">
+                          <div className="flex justify-between"><span className="text-muted-foreground">Bill Total</span><span className="text-foreground">{money(total)}</span></div>
+                          {pType === 'full' && (
+                            <div className="flex justify-between text-primary"><span>Collecting Now ({modeLabel})</span><span>{money(total)}</span></div>
+                          )}
+                          {pType === 'partial' && (
+                            <>
+                              <div className="flex justify-between text-primary"><span>Collecting Now ({modeLabel})</span><span>{money(paidNow)}</span></div>
+                              <div className="flex justify-between text-destructive"><span>Balance Due{dueDate[order.id] ? ` by ${dueDate[order.id]}` : ''}</span><span>{money(balance)}</span></div>
+                            </>
+                          )}
+                          {pType === 'credit' && (
+                            <div className="flex justify-between text-destructive"><span>Full Amount on Credit{dueDate[order.id] ? ` — due ${dueDate[order.id]}` : ''}</span><span>{money(total)}</span></div>
+                          )}
+                        </div>
+
+                        {dueDateMissing && <p className="text-[10px] font-bold text-destructive">Due date is required for {pType} payment.</p>}
+                        {partialInvalid && !dueDateMissing && <p className="text-[10px] font-bold text-destructive">Enter a paid amount less than the bill total.</p>}
+                      </div>
+
+                      {res && (
+                        <p className={cn('rounded-xl px-3 py-2 text-xs font-bold', res.ok ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-red-50 text-red-700 border border-red-200')}>{res.message}</p>
+                      )}
+
+                      <button onClick={() => dispatchAndBill(order)} disabled={busy === order.id || !canDispatch} className="flex w-full items-center justify-center gap-2 rounded-xl cafe-gradient py-2.5 text-sm font-black text-white shadow-teal hover:opacity-90 disabled:opacity-50">
+                        {busy === order.id ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />} Dispatch, Bill &amp; Send WhatsApp
                       </button>
-                    ))}
-                  </div>
-                  {pType === 'partial' && (
-                    <div className="mt-2 grid grid-cols-2 gap-2">
-                      <input type="number" placeholder="Paid amount" value={paidAmount[order.id] ?? ''} onChange={e => setPaidAmount(v => ({ ...v, [order.id]: e.target.value }))} className="rounded-lg border border-border px-2 py-1.5 text-xs font-bold" />
-                      <input type="date" value={dueDate[order.id] ?? ''} onChange={e => setDueDate(v => ({ ...v, [order.id]: e.target.value }))} className="rounded-lg border border-border px-2 py-1.5 text-xs font-bold" />
-                    </div>
-                  )}
-                  {pType === 'credit' && (
-                    <div className="mt-2">
-                      <input type="date" placeholder="Due date" value={dueDate[order.id] ?? ''} onChange={e => setDueDate(v => ({ ...v, [order.id]: e.target.value }))} className="w-full rounded-lg border border-border px-2 py-1.5 text-xs font-bold" />
-                    </div>
-                  )}
-                </div>
-
-                {res && (
-                  <p className={cn('rounded-xl px-3 py-2 text-xs font-bold', res.ok ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-red-50 text-red-700 border border-red-200')}>{res.message}</p>
-                )}
-
-                <button onClick={() => dispatchAndBill(order)} disabled={busy === order.id} className="flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 py-2.5 text-sm font-black text-white hover:bg-emerald-700 disabled:opacity-50">
-                  {busy === order.id ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />} Dispatch, Bill &amp; Send WhatsApp
-                </button>
+                    </>
+                  );
+                })()}
               </div>
             )}
           </div>

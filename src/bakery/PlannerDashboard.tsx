@@ -12,9 +12,9 @@ import {
   ArrowRightLeft, Calendar, Plus, Send, CheckCircle2, Loader2,
   ChevronDown, ChevronUp, X, RefreshCw, AlertTriangle, FileSpreadsheet, Clock3,
   Store, CreditCard, WalletCards, MessageCircle, Bell, CalendarDays, ShieldCheck,
-  Search, Printer, Receipt,
+  Search, Printer, Receipt, ListPlus,
 } from 'lucide-react';
-import { useBakeryStore } from './bakeryStore';
+import { useBakeryStore, isPlannedOrder } from './bakeryStore';
 import { useAuthStore } from '@/stores/authStore';
 import { cn } from '@/lib/utils';
 import type { BakeryOrder, BakeryOrderItem, PreparedItem, Branch } from './types';
@@ -29,11 +29,12 @@ import PackingCakeOrdersTab from './PackingCakeOrdersTab';
 import { useBranchCatalogStore } from '@/stores/branchCatalogStore';
 import { supabase } from '@/lib/supabase';
 
-type PlannerTab = 'incoming' | 'sent' | 'merged' | 'production' | 'dispatch' | 'hosur' | 'cake' | 'transfer-in' | 'closure' | 'invoice' | 'done';
+type PlannerTab = 'incoming' | 'sent' | 'merged' | 'planning' | 'production' | 'dispatch' | 'hosur' | 'cake' | 'transfer-in' | 'closure' | 'invoice' | 'done';
 const TABS: { key: PlannerTab; label: string; icon: React.ReactNode }[] = [
   { key: 'incoming',    label: 'Incoming Orders',  icon: <ClipboardList className="size-4" /> },
   { key: 'sent',        label: 'Sent',             icon: <Send className="size-4" /> },
   { key: 'merged',      label: 'Merged Summary',   icon: <Layers className="size-4" /> },
+  { key: 'planning',    label: 'Planning',         icon: <ListPlus className="size-4" /> },
   { key: 'production',  label: 'Production Entry', icon: <Factory className="size-4" /> },
   { key: 'dispatch',    label: 'Dispatch',         icon: <Truck className="size-4" /> },
   { key: 'hosur',       label: 'Hosur Shops & Billing', icon: <PackageCheck className="size-4" /> },
@@ -44,18 +45,31 @@ const TABS: { key: PlannerTab; label: string; icon: React.ReactNode }[] = [
   { key: 'done',        label: 'Leftover / Done',  icon: <PackageCheck className="size-4" /> },
 ];
 
-const BRANCH_META: Record<Branch, { bg: string; text: string; icon: string }> = {
-  VRSNB: { bg: 'bg-blue-50 border-blue-200',    text: 'text-blue-700',    icon: '🏙️' },
-  SNB:   { bg: 'bg-amber-50 border-amber-200',  text: 'text-amber-700',  icon: '🏪' },
-  Hosur: { bg: 'bg-emerald-50 border-emerald-200', text: 'text-emerald-700', icon: '🌿' },
+// 'Planned' is a synthetic bucket alongside the three real branches — proactive
+// extra-production batches from the Planning tab aren't tied to a branch until
+// Dispatch time, but still need to flow through Merged Summary/Production Entry
+// like any other bucket, so every place that used to key strictly on `Branch`
+// now also accepts this string.
+type MergeBucket = Branch | 'Planned';
+const DISPLAY_BUCKETS: readonly MergeBucket[] = [...BRANCHES, 'Planned'];
+
+const BRANCH_META: Record<MergeBucket, { bg: string; text: string; icon: string }> = {
+  VRSNB:   { bg: 'bg-blue-50 border-blue-200',    text: 'text-blue-700',    icon: '🏙️' },
+  SNB:     { bg: 'bg-amber-50 border-amber-200',  text: 'text-amber-700',  icon: '🏪' },
+  Hosur:   { bg: 'bg-teal-50 border-teal-200', text: 'text-teal-700', icon: '🌿' },
+  Planned: { bg: 'bg-primary/5 border-teal',      text: 'text-primary',    icon: '📋' },
 };
+// Every order (including Planning-tab batches) resolves to one bucket for
+// grouping — never null, so nothing here can be silently mislabeled as SNB.
+const bucketFor = (order: Pick<BakeryOrder, 'targetBranch' | 'notes'>): MergeBucket =>
+  order.targetBranch ?? (isPlannedOrder(order) ? 'Planned' : 'SNB');
 
 // ─── Merge helper ────────────────────────────────────────────────────────────
 interface MergedRow {
   itemName: string;
   unit: 'pcs' | 'kg';
   totalRequested: number;
-  perBranch: Partial<Record<Branch, number>>;
+  perBranch: Partial<Record<MergeBucket, number>>;
   contributingOrderIds: string[];
 }
 
@@ -69,7 +83,8 @@ const sameItem = (a: string, b: string) => a.trim().toLowerCase() === b.trim().t
 export function computeMergedSummary(orders: BakeryOrder[]): MergedRow[] {
   const rows = new Map<string, MergedRow>();
   for (const order of orders) {
-    if (!order.targetBranch) continue;
+    const bucket: MergeBucket | null = order.targetBranch ?? (isPlannedOrder(order) ? 'Planned' : null);
+    if (!bucket) continue;
     for (const item of order.items) {
       const unit = item.dispatchUnit === 'pcs' ? 'pcs' : 'kg';
       const qty = unit === 'pcs' && item.originalPcs != null ? item.originalPcs : item.quantity;
@@ -77,14 +92,14 @@ export function computeMergedSummary(orders: BakeryOrder[]): MergedRow[] {
       const existing = rows.get(key);
       if (existing) {
         existing.totalRequested += qty;
-        existing.perBranch[order.targetBranch] = (existing.perBranch[order.targetBranch] || 0) + qty;
+        existing.perBranch[bucket] = (existing.perBranch[bucket] || 0) + qty;
         if (!existing.contributingOrderIds.includes(order.id)) existing.contributingOrderIds.push(order.id);
       } else {
         rows.set(key, {
           itemName: item.itemName,
           unit,
           totalRequested: qty,
-          perBranch: { [order.targetBranch]: qty },
+          perBranch: { [bucket]: qty },
           contributingOrderIds: [order.id],
         });
       }
@@ -178,15 +193,16 @@ export default function PlannerDashboard() {
   const doneOrders         = useMemo(() => orders.filter(o => o.leftoverStatus === 'done'), [orders]);
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-slate-50 to-white">
+    <div className="min-h-screen warm-gradient">
       <main className="mx-auto max-w-7xl px-4 py-6">
         {loading && orders.length === 0 ? (
-          <div className="flex justify-center py-20"><Loader2 className="size-6 animate-spin text-slate-400" /></div>
+          <div className="flex justify-center py-20"><Loader2 className="size-6 animate-spin text-muted-foreground" /></div>
         ) : (
           <>
             {tab === 'incoming' && <IncomingOrdersTab orders={incomingOrders} onAdd={submitOrder} />}
             {tab === 'sent' && <SentOrdersTab orders={sentOrders} />}
             {tab === 'merged' && <MergedSummaryTab orders={mergeableOrders} />}
+            {tab === 'planning' && <PlanningTab orders={orders} />}
             {tab === 'production' && <ProductionEntryTab orders={productionSourceOrders} />}
             {tab === 'dispatch' && <DispatchTab orders={productionSourceOrders} allOrders={orders} />}
             {tab === 'hosur' && <HosurUnifiedSection />}
@@ -233,7 +249,7 @@ function IncomingOrdersTab({ orders, onAdd }: { orders: BakeryOrder[]; onAdd: Re
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h2 className="text-sm font-black text-slate-700">Incoming Orders ({orders.length})</h2>
+        <h2 className="text-sm font-black text-foreground">Incoming Orders ({orders.length})</h2>
         <div className="flex gap-2">
           <ExportButton
             disabled={orders.length === 0}
@@ -257,7 +273,7 @@ function IncomingOrdersTab({ orders, onAdd }: { orders: BakeryOrder[]; onAdd: Re
               }))),
             })}
           />
-          <button onClick={() => setShowAdd(v => !v)} className="flex items-center gap-1.5 rounded-xl bg-slate-900 px-3 py-2 text-xs font-bold text-white hover:bg-slate-800">
+          <button onClick={() => setShowAdd(v => !v)} className="flex items-center gap-1.5 rounded-xl bg-foreground px-3 py-2 text-xs font-bold text-white hover:opacity-90">
             <Plus className="size-4" /> Add Order
           </button>
         </div>
@@ -278,7 +294,7 @@ function IncomingOrdersTab({ orders, onAdd }: { orders: BakeryOrder[]; onAdd: Re
               </select>
             </div>
           </div>
-          <button onClick={handleAdd} disabled={saving} className="mt-3 flex items-center gap-1.5 rounded-xl bg-emerald-600 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-700 disabled:opacity-50">
+          <button onClick={handleAdd} disabled={saving} className="mt-3 flex items-center gap-1.5 rounded-xl bg-teal-600 px-4 py-2 text-xs font-bold text-white hover:bg-teal-700 disabled:opacity-50">
             {saving ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />} Submit Order
           </button>
         </div>
@@ -309,22 +325,23 @@ function DayGroupedOrderList({ orders, badgeLabel, badgeTone }: { orders: Bakery
       {groups.map(([day, dayOrders]) => (
         <div key={day}>
           <div className="mb-2 flex items-center gap-2">
-            <h3 className="text-xs font-black uppercase tracking-wide text-slate-400">{day}</h3>
-            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-500">{dayOrders.length}</span>
+            <h3 className="text-xs font-black uppercase tracking-wide text-muted-foreground">{day}</h3>
+            <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-bold text-muted-foreground">{dayOrders.length}</span>
           </div>
           <div className="space-y-2">
             {dayOrders.map(order => {
               const label = typeof badgeLabel === 'function' ? badgeLabel(order) : badgeLabel;
               const tone = typeof badgeTone === 'function' ? badgeTone(order) : badgeTone;
+              const bucket = bucketFor(order);
               return (
-                <div key={order.id} className={cn('rounded-2xl border p-4 shadow-sm', BRANCH_META[order.targetBranch || 'SNB'].bg)}>
+                <div key={order.id} className={cn('rounded-2xl border p-4 shadow-sm', BRANCH_META[bucket].bg)}>
                   <div className="flex items-center justify-between">
-                    <span className={cn('text-sm font-black', BRANCH_META[order.targetBranch || 'SNB'].text)}>
-                      {BRANCH_META[order.targetBranch || 'SNB'].icon} {order.targetBranch} — Order #{order.orderNumber}
+                    <span className={cn('text-sm font-black', BRANCH_META[bucket].text)}>
+                      {BRANCH_META[bucket].icon} {bucket === 'Planned' ? 'Planned Stock' : bucket} — Order #{order.orderNumber}
                     </span>
                     <span className={cn('rounded-full px-2 py-1 text-[10px] font-black', tone)}>{label}</span>
                   </div>
-                  <ul className="mt-2 space-y-1 text-xs font-semibold text-slate-600">
+                  <ul className="mt-2 space-y-1 text-xs font-semibold text-muted-foreground">
                     {order.items.map((item, i) => (
                       <li key={i}>{item.itemName} — {item.dispatchUnit === 'pcs' ? item.originalPcs ?? item.quantity : item.quantity} {item.dispatchUnit || 'kg'}</li>
                     ))}
@@ -359,7 +376,7 @@ function SentOrdersTab({ orders }: { orders: BakeryOrder[] }) {
 
   return (
     <div className="space-y-4">
-      <h2 className="text-sm font-black text-slate-700">Sent — By Date ({dayGroups.length} day{dayGroups.length === 1 ? '' : 's'})</h2>
+      <h2 className="text-sm font-black text-foreground">Sent — By Date ({dayGroups.length} day{dayGroups.length === 1 ? '' : 's'})</h2>
       {dayGroups.length === 0 ? <EmptyState text="Nothing sent yet." /> : (
         <div className="space-y-3">
           {dayGroups.map(group => (
@@ -384,12 +401,12 @@ function SentDayGroup({ dayKey, label, orders, open, onToggle }: { dayKey: strin
 
   return (
     <div className="overflow-hidden rounded-2xl border border-border bg-white shadow-sm">
-      <button type="button" onClick={onToggle} className="flex w-full items-center justify-between px-4 py-3 text-left hover:bg-slate-50">
+      <button type="button" onClick={onToggle} className="flex w-full items-center justify-between px-4 py-3 text-left hover:bg-muted/40">
         <div className="flex items-center gap-2">
-          <span className="text-sm font-black text-slate-700">{label}</span>
-          <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-500">{orders.length} order{orders.length === 1 ? '' : 's'}</span>
+          <span className="text-sm font-black text-foreground">{label}</span>
+          <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-bold text-muted-foreground">{orders.length} order{orders.length === 1 ? '' : 's'}</span>
         </div>
-        <ChevronDown className={cn('size-4 text-slate-400 transition-transform', open && 'rotate-180')} />
+        <ChevronDown className={cn('size-4 text-muted-foreground transition-transform', open && 'rotate-180')} />
       </button>
       {open && (
         merged.length === 0 ? <div className="px-4 pb-4"><EmptyState text="Nothing sent for this date." /></div> : (
@@ -401,33 +418,34 @@ function SentDayGroup({ dayKey, label, orders, open, onToggle }: { dayKey: strin
                 filename: `sent-${dayKey}`, sheetName: 'Sent', title: `Planner — Sent (${label})`,
                 columns: [
                   { header: 'Item', key: 'item' },
-                  ...BRANCHES.map(b => ({ header: b, key: b })),
+                  ...DISPLAY_BUCKETS.map(b => ({ header: b, key: b })),
                   { header: 'Total', key: 'total' },
                   { header: 'Unit', key: 'unit' },
                 ],
-                rows: merged.map(row => ({
-                  item: row.itemName, VRSNB: row.perBranch.VRSNB ?? '', SNB: row.perBranch.SNB ?? '', Hosur: row.perBranch.Hosur ?? '',
-                  total: row.totalRequested, unit: row.unit,
-                })),
+                rows: merged.map(row => Object.fromEntries([
+                  ['item', row.itemName],
+                  ...DISPLAY_BUCKETS.map(b => [b, row.perBranch[b] ?? '']),
+                  ['total', row.totalRequested], ['unit', row.unit],
+                ])),
               })}
             />
           </div>
           <table className="w-full text-sm">
-            <thead className="bg-slate-50 text-left text-xs font-black uppercase text-slate-500">
+            <thead className="bg-muted/40 text-left text-xs font-black uppercase text-muted-foreground">
               <tr>
                 <th className="px-4 py-3">Item</th>
-                {BRANCHES.map(b => <th key={b} className="px-4 py-3 text-right">{b}</th>)}
+                {DISPLAY_BUCKETS.map(b => <th key={b} className="px-4 py-3 text-right">{b}</th>)}
                 <th className="px-4 py-3 text-right">Total</th>
               </tr>
             </thead>
             <tbody>
               {merged.map(row => (
                 <tr key={`${row.itemName}-${row.unit}`} className="border-t border-border">
-                  <td className="px-4 py-3 font-bold text-slate-800">{row.itemName}</td>
-                  {BRANCHES.map(b => (
-                    <td key={b} className="px-4 py-3 text-right text-slate-600">{row.perBranch[b] ? `${row.perBranch[b]} ${row.unit}` : '—'}</td>
+                  <td className="px-4 py-3 font-bold text-foreground">{row.itemName}</td>
+                  {DISPLAY_BUCKETS.map(b => (
+                    <td key={b} className="px-4 py-3 text-right text-muted-foreground">{row.perBranch[b] ? `${row.perBranch[b]} ${row.unit}` : '—'}</td>
                   ))}
-                  <td className="px-4 py-3 text-right font-black text-slate-900">{row.totalRequested} {row.unit}</td>
+                  <td className="px-4 py-3 text-right font-black text-foreground">{row.totalRequested} {row.unit}</td>
                 </tr>
               ))}
             </tbody>
@@ -451,12 +469,14 @@ function MergedSummaryTab({ orders }: { orders: BakeryOrder[] }) {
     try {
       const ids = Array.from(new Set(merged.flatMap(r => r.contributingOrderIds)));
       const contributing = orders.filter(o => ids.includes(o.id) && o.status === 'pending');
+      // Grouped by bucket (VRSNB/SNB/Hosur, or the synthetic 'Planned' bucket
+      // for Planning-tab batches) so each gets its own combined Store order.
       const byBranch = new Map<string, string[]>();
       for (const o of contributing) {
-        if (!o.targetBranch) continue;
-        const list = byBranch.get(o.targetBranch) ?? [];
+        const bucket = bucketFor(o);
+        const list = byBranch.get(bucket) ?? [];
         list.push(o.id);
-        byBranch.set(o.targetBranch, list);
+        byBranch.set(bucket, list);
       }
       for (const branchOrderIds of byBranch.values()) {
         await mergeOrdersForStore(branchOrderIds);
@@ -470,7 +490,7 @@ function MergedSummaryTab({ orders }: { orders: BakeryOrder[] }) {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h2 className="text-sm font-black text-slate-700">Merged Summary</h2>
+        <h2 className="text-sm font-black text-foreground">Merged Summary</h2>
         <div className="flex gap-2">
           <ExportButton
             disabled={merged.length === 0}
@@ -480,50 +500,209 @@ function MergedSummaryTab({ orders }: { orders: BakeryOrder[] }) {
               title: 'Planner — Merged Order Summary',
               columns: [
                 { header: 'Item', key: 'item' },
-                ...BRANCHES.map(b => ({ header: b, key: b })),
+                ...DISPLAY_BUCKETS.map(b => ({ header: b, key: b })),
                 { header: 'Total', key: 'total' },
                 { header: 'Unit', key: 'unit' },
               ],
-              rows: merged.map(row => ({
-                item: row.itemName,
-                VRSNB: row.perBranch.VRSNB ?? '',
-                SNB: row.perBranch.SNB ?? '',
-                Hosur: row.perBranch.Hosur ?? '',
-                total: row.totalRequested,
-                unit: row.unit,
-              })),
+              rows: merged.map(row => Object.fromEntries([
+                ['item', row.itemName],
+                ...DISPLAY_BUCKETS.map(b => [b, row.perBranch[b] ?? '']),
+                ['total', row.totalRequested], ['unit', row.unit],
+              ])),
             })}
           />
-          <button onClick={handleSendToStore} disabled={sendingAll || merged.length === 0} className="flex items-center gap-1.5 rounded-xl bg-indigo-600 px-4 py-2 text-xs font-bold text-white hover:bg-indigo-700 disabled:opacity-50">
+          <button onClick={handleSendToStore} disabled={sendingAll || merged.length === 0} className="flex items-center gap-1.5 rounded-xl cafe-gradient px-4 py-2 text-xs font-bold text-white shadow-teal disabled:opacity-50">
             {sendingAll ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />} Send Merged Order to Store
           </button>
         </div>
       </div>
-      {notice && <div className="rounded-xl bg-emerald-50 border border-emerald-200 px-3 py-2 text-xs font-bold text-emerald-700">{notice}</div>}
+      {notice && <div className="rounded-xl bg-teal-50 border border-teal-200 px-3 py-2 text-xs font-bold text-teal-700">{notice}</div>}
       {merged.length === 0 ? <EmptyState text="No pending orders to merge yet." /> : (
         <div className="overflow-x-auto rounded-2xl border border-border bg-white shadow-sm">
           <table className="w-full text-sm">
-            <thead className="bg-slate-50 text-left text-xs font-black uppercase text-slate-500">
+            <thead className="bg-muted/40 text-left text-xs font-black uppercase text-muted-foreground">
               <tr>
                 <th className="px-4 py-3">Item</th>
-                {BRANCHES.map(b => <th key={b} className="px-4 py-3 text-right">{b}</th>)}
+                {DISPLAY_BUCKETS.map(b => <th key={b} className="px-4 py-3 text-right">{b}</th>)}
                 <th className="px-4 py-3 text-right">Total</th>
               </tr>
             </thead>
             <tbody>
               {merged.map(row => (
                 <tr key={`${row.itemName}-${row.unit}`} className="border-t border-border">
-                  <td className="px-4 py-3 font-bold text-slate-800">{row.itemName}</td>
-                  {BRANCHES.map(b => (
-                    <td key={b} className="px-4 py-3 text-right text-slate-600">{row.perBranch[b] ? `${row.perBranch[b]} ${row.unit}` : '—'}</td>
+                  <td className="px-4 py-3 font-bold text-foreground">{row.itemName}</td>
+                  {DISPLAY_BUCKETS.map(b => (
+                    <td key={b} className="px-4 py-3 text-right text-muted-foreground">{row.perBranch[b] ? `${row.perBranch[b]} ${row.unit}` : '—'}</td>
                   ))}
-                  <td className="px-4 py-3 text-right font-black text-slate-900">{row.totalRequested} {row.unit}</td>
+                  <td className="px-4 py-3 text-right font-black text-foreground">{row.totalRequested} {row.unit}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
       )}
+    </div>
+  );
+}
+
+// ─── Tab: Planning ───────────────────────────────────────────────────────────
+// Proactive, "produce more than what's actually been ordered" planning: the
+// planner picks from the combined VRSNB + SNB item catalog (deduped), queues
+// quantities, and submits one plan batch. It flows through the exact same
+// pipeline as a real order (Merged Summary -> Production Entry) but with no
+// branch attached — the branch and quantity are chosen per item at Dispatch
+// time, in the "Planned" sub-tab there.
+function PlanningTab({ orders }: { orders: BakeryOrder[] }) {
+  const { items: catalogItems, loadCatalog } = useBranchCatalogStore();
+  const { submitPlannedOrder } = useBakeryStore();
+  const currentUser = useAuthStore(s => s.currentUser);
+  const [search, setSearch] = useState('');
+  const [cart, setCart] = useState<Record<string, { itemName: string; unit: 'pcs' | 'kg'; quantity: number }>>({});
+  const [notes, setNotes] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    loadCatalog('SNB').catch(() => {});
+    loadCatalog('VRSNB').catch(() => {});
+  }, [loadCatalog]);
+
+  // Combined VRSNB + SNB catalog, active items only, deduplicated by
+  // normalized name (case/spacing-insensitive) so an item listed in both
+  // branch catalogs only shows once.
+  const uniqueItems = useMemo(() => {
+    const map = new Map<string, { name: string; unit: 'pcs' | 'kg'; category: string }>();
+    for (const branch of ['VRSNB', 'SNB'] as const) {
+      for (const item of catalogItems[branch] ?? []) {
+        if (!item.active) continue;
+        const key = item.name.trim().toLowerCase();
+        if (!map.has(key)) map.set(key, { name: item.name, unit: item.uom === 'Kgs' ? 'kg' : 'pcs', category: item.category });
+      }
+    }
+    return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
+  }, [catalogItems]);
+
+  const filtered = useMemo(
+    () => uniqueItems.filter(i => !search.trim() || i.name.toLowerCase().includes(search.trim().toLowerCase())),
+    [uniqueItems, search],
+  );
+
+  const setQty = (item: { name: string; unit: 'pcs' | 'kg' }, value: number) => {
+    const safe = Math.max(0, Math.round(value * 1000) / 1000);
+    setCart(prev => {
+      const next = { ...prev };
+      if (safe <= 0) delete next[item.name];
+      else next[item.name] = { itemName: item.name, unit: item.unit, quantity: safe };
+      return next;
+    });
+  };
+
+  const cartItems = Object.values(cart);
+
+  // Already-submitted plans still sitting as their own 'pending' entry —
+  // once merged/sent to Store they move on into Merged Summary/Production
+  // Entry like everything else and drop out of this list.
+  const plannedOrders = useMemo(() => orders.filter(o => isPlannedOrder(o) && o.status === 'pending'), [orders]);
+
+  const submitPlan = async () => {
+    if (cartItems.length === 0) { setError('Add at least one item to the plan.'); return; }
+    setSaving(true); setError(''); setNotice(null);
+    try {
+      const items: BakeryOrderItem[] = cartItems.map((i, idx) => ({
+        itemId: `plan-${Date.now()}-${idx}`,
+        itemName: i.itemName,
+        quantity: i.quantity,
+        dispatchUnit: i.unit,
+        originalPcs: i.unit === 'pcs' ? i.quantity : undefined,
+      }));
+      await submitPlannedOrder(items, currentUser?.displayName || 'Planner', notes.trim() || undefined);
+      setCart({}); setNotes('');
+      setNotice('Production plan submitted. It will show up in Merged Summary, ready to send to Store.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to submit the plan.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="card-base flex flex-wrap items-center justify-between gap-3 p-4">
+        <div className="flex items-center gap-3">
+          <span className="flex size-10 shrink-0 items-center justify-center rounded-xl cafe-gradient text-white shadow-teal">
+            <ListPlus className="size-5" />
+          </span>
+          <div>
+            <h2 className="font-display text-xl font-bold text-foreground">Planning</h2>
+            <p className="text-xs font-bold text-muted-foreground font-body">Plan extra production ahead of actual orders. Pick a branch and quantity for each item only when you dispatch it.</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_22rem]">
+        <section className="space-y-3 card-base p-5">
+          <label className="space-y-1">
+            <span className="text-[11px] font-black uppercase tracking-wide text-muted-foreground">Search VRSNB + SNB items</span>
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+              <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search item..." className="h-11 w-full rounded-xl border border-border bg-background pl-9 pr-3 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-primary/30" />
+            </div>
+          </label>
+
+          {filtered.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-border p-8 text-center text-xs font-bold text-muted-foreground">No items match.</div>
+          ) : (
+            <div className="grid gap-2 sm:grid-cols-2 max-h-[60vh] overflow-y-auto pr-1">
+              {filtered.map(item => {
+                const current = cart[item.name]?.quantity ?? 0;
+                const step = item.unit === 'kg' ? 0.25 : 1;
+                return (
+                  <article key={item.name} className={cn('rounded-xl border p-3 transition-colors', current > 0 ? 'border-teal bg-primary/5' : 'border-border bg-muted/40')}>
+                    <p className="text-sm font-black text-foreground">{item.name}</p>
+                    <p className="text-xs font-bold text-muted-foreground">{item.unit} · {item.category}</p>
+                    <div className="mt-2 flex items-center gap-2">
+                      <button onClick={() => setQty(item, current - step)} className="size-8 rounded-lg border border-border bg-card font-black text-foreground hover:bg-muted">-</button>
+                      <input type="number" value={current || ''} onChange={e => setQty(item, Number(e.target.value))} placeholder="0" className="h-8 w-full rounded-lg border border-border bg-background text-center text-sm font-black" />
+                      <button onClick={() => setQty(item, current + step)} className="size-8 rounded-lg bg-primary font-black text-primary-foreground hover:opacity-90">+</button>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          )}
+        </section>
+
+        <aside className="space-y-3 card-base p-5">
+          <div className="flex items-center gap-2"><ListPlus className="size-4 text-primary" /><h3 className="font-display text-lg font-bold text-foreground">Plan Cart</h3></div>
+          {cartItems.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-border p-6 text-center text-xs font-bold text-muted-foreground">No items queued</div>
+          ) : (
+            <div className="max-h-80 space-y-2 overflow-auto">
+              {cartItems.map(item => (
+                <div key={item.itemName} className="flex items-center justify-between rounded-xl bg-muted/40 p-2.5">
+                  <div>
+                    <p className="text-xs font-black text-foreground">{item.itemName}</p>
+                    <p className="text-[11px] font-bold text-muted-foreground">{item.quantity} {item.unit}</p>
+                  </div>
+                  <button onClick={() => setQty({ name: item.itemName, unit: item.unit }, 0)}><X className="size-3.5 text-destructive" /></button>
+                </div>
+              ))}
+            </div>
+          )}
+          <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={2} placeholder="Notes (optional)" className="w-full rounded-xl border border-border bg-background px-3 py-2 text-xs font-bold" />
+          {error && <p className="rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs font-bold text-destructive">{error}</p>}
+          {notice && <p className="rounded-xl border border-teal-200 bg-teal-50 px-3 py-2 text-xs font-bold text-teal-700">{notice}</p>}
+          <button onClick={submitPlan} disabled={saving || cartItems.length === 0} className="flex h-11 w-full items-center justify-center gap-2 rounded-xl cafe-gradient text-sm font-black text-white shadow-teal disabled:opacity-40">
+            {saving ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />} Submit Plan{cartItems.length > 0 ? ` (${cartItems.length} items)` : ''}
+          </button>
+        </aside>
+      </div>
+
+      <div>
+        <h3 className="mb-2 text-sm font-black text-foreground">Already Planned ({plannedOrders.length})</h3>
+        <DayGroupedOrderList orders={plannedOrders} badgeLabel="Planned" badgeTone="bg-primary/10 text-primary" />
+      </div>
     </div>
   );
 }
@@ -538,6 +717,27 @@ function ProductionEntryTab({ orders }: { orders: BakeryOrder[] }) {
   // Single unified flow: Save -> ask Completed/Pending -> if Completed, ask again to confirm.
   const [askItem, setAskItem] = useState<ProductionRow | null>(null);
   const [confirmItem, setConfirmItem] = useState<ProductionRow | null>(null);
+  // BUG FIX (planner confusion): a merged item row hides which date's / which
+  // branch's order(s) actually contributed to it. Expanding "Sources" shows
+  // every contributing order's date, branch/plan bucket, and its own
+  // requested quantity, so the planner always knows exactly what they're
+  // producing and for whom before entering a quantity.
+  const [expandedSources, setExpandedSources] = useState<string | null>(null);
+  const sourcesFor = (row: ProductionRow) => row.contributingOrderIds
+    .map(id => orders.find(o => o.id === id))
+    .filter((o): o is BakeryOrder => Boolean(o))
+    .map(o => {
+      const item = o.items.find(i => sameItem(i.itemName, row.itemName));
+      const requested = item ? (item.dispatchUnit === 'pcs' && item.originalPcs != null ? item.originalPcs : item.quantity) : 0;
+      return {
+        orderId: o.id,
+        orderNumber: o.orderNumber,
+        bucket: bucketFor(o),
+        date: new Date(o.createdAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }),
+        requested,
+      };
+    })
+    .sort((a, b) => a.date.localeCompare(b.date));
 
   const filtered = useMemo(() => rows.filter(r => r.itemName.toLowerCase().includes(search.trim().toLowerCase())), [rows, search]);
   const grouped = useMemo(() => {
@@ -571,10 +771,10 @@ function ProductionEntryTab({ orders }: { orders: BakeryOrder[] }) {
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-sm font-black text-slate-700">Production Entry ({rows.length} items)</h2>
+        <h2 className="font-display text-lg font-bold text-foreground">Production Entry <span className="text-sm font-bold text-muted-foreground">({rows.length} items)</span></h2>
         <div className="flex items-center gap-2">
           <div className="relative">
-            <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-slate-400" />
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
             <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search item..." className="rounded-xl border border-border py-1.5 pl-8 pr-3 text-xs font-bold" />
           </div>
           <ExportButton
@@ -590,25 +790,53 @@ function ProductionEntryTab({ orders }: { orders: BakeryOrder[] }) {
       {rows.length === 0 && <EmptyState text="No items waiting on production entry." />}
       {grouped.map(([category, items]) => (
         <div key={category}>
-          <p className="mb-2 text-xs font-black uppercase tracking-wide text-slate-400">{category} ({items.length})</p>
+          <p className="mb-2 text-xs font-black uppercase tracking-wide text-muted-foreground">{category} ({items.length})</p>
           <div className="space-y-2">
-            {items.map(row => (
-              <div key={row.itemName} className="flex items-center justify-between gap-3 rounded-2xl border border-border bg-white p-3 shadow-sm">
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-black text-slate-800">{row.itemName}</p>
-                  <p className="text-xs font-bold text-slate-400">
-                    Ordered {row.totalRequested} {row.unit}{row.preparedTotal > 0 ? ` · Produced so far ${row.preparedTotal} ${row.unit}` : ''}
-                    {row.itemStatus === 'pending' && <span className="ml-1 rounded-full bg-amber-100 px-1.5 py-0.5 text-amber-700">More to come</span>}
-                  </p>
+            {items.map(row => {
+              const sources = sourcesFor(row);
+              const sourcesOpen = expandedSources === row.itemName;
+              return (
+                <div key={row.itemName} className="rounded-2xl border border-border bg-card p-3 shadow-sm">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-black text-foreground">{row.itemName}</p>
+                      <p className="text-xs font-bold text-muted-foreground">
+                        Ordered {row.totalRequested} {row.unit}{row.preparedTotal > 0 ? ` · Produced so far ${row.preparedTotal} ${row.unit}` : ''}
+                        {row.itemStatus === 'pending' && <span className="ml-1 rounded-full bg-amber-100 px-1.5 py-0.5 text-amber-700">More to come</span>}
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => setExpandedSources(v => v === row.itemName ? null : row.itemName)}
+                        className="mt-1 text-[10px] font-black uppercase tracking-wide text-primary hover:underline"
+                      >
+                        {sourcesOpen ? 'Hide' : 'Show'} sources ({sources.length} order{sources.length === 1 ? '' : 's'})
+                      </button>
+                    </div>
+                    <input type="number" placeholder="Qty produced" value={qty[row.itemName] ?? ''} onChange={e => setQty(v => ({ ...v, [row.itemName]: e.target.value }))}
+                      className="w-28 rounded-lg border border-border bg-background px-2 py-1.5 text-right text-xs font-bold" />
+                    <button onClick={() => setAskItem(row)} disabled={saving === row.itemName || !qty[row.itemName]}
+                      className="flex items-center gap-1.5 rounded-xl cafe-gradient px-4 py-2 text-xs font-bold text-white shadow-teal disabled:opacity-40">
+                      {saving === row.itemName ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />} Save
+                    </button>
+                  </div>
+                  {sourcesOpen && (
+                    <div className="mt-2.5 space-y-1 border-t border-border pt-2.5">
+                      {sources.map(s => (
+                        <div key={s.orderId} className="flex items-center justify-between gap-2 rounded-lg bg-muted/40 px-2.5 py-1.5 text-[11px] font-bold">
+                          <span className="flex items-center gap-1.5">
+                            <span className={cn('rounded-full px-1.5 py-0.5 text-[10px] font-black', BRANCH_META[s.bucket].bg, BRANCH_META[s.bucket].text)}>
+                              {BRANCH_META[s.bucket].icon} {s.bucket === 'Planned' ? 'Planned' : s.bucket}
+                            </span>
+                            <span className="text-muted-foreground">Order #{s.orderNumber} · {s.date}</span>
+                          </span>
+                          <span className="text-foreground">{s.requested} {row.unit}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
-                <input type="number" placeholder="Qty produced" value={qty[row.itemName] ?? ''} onChange={e => setQty(v => ({ ...v, [row.itemName]: e.target.value }))}
-                  className="w-28 rounded-lg border border-border px-2 py-1.5 text-right text-xs font-bold" />
-                <button onClick={() => setAskItem(row)} disabled={saving === row.itemName || !qty[row.itemName]}
-                  className="flex items-center gap-1.5 rounded-xl bg-slate-900 px-4 py-2 text-xs font-bold text-white hover:bg-slate-800 disabled:opacity-40">
-                  {saving === row.itemName ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />} Save
-                </button>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       ))}
@@ -617,14 +845,14 @@ function ProductionEntryTab({ orders }: { orders: BakeryOrder[] }) {
       {askItem && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
           <div className="w-full max-w-sm rounded-2xl bg-white p-5 shadow-xl">
-            <p className="text-sm font-black text-slate-800">"{askItem.itemName}" — {qty[askItem.itemName]} {askItem.unit} entered</p>
-            <p className="mt-1 text-xs font-semibold text-slate-500">Is the baker completely done with this item, or still baking more?</p>
+            <p className="text-sm font-black text-foreground">"{askItem.itemName}" — {qty[askItem.itemName]} {askItem.unit} entered</p>
+            <p className="mt-1 text-xs font-semibold text-muted-foreground">Is the baker completely done with this item, or still baking more?</p>
             <div className="mt-4 flex justify-end gap-2">
-              <button onClick={() => setAskItem(null)} className="rounded-xl bg-slate-100 px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-200">Cancel</button>
+              <button onClick={() => setAskItem(null)} className="rounded-xl bg-muted px-4 py-2 text-xs font-bold text-muted-foreground hover:bg-slate-200">Cancel</button>
               <button onClick={() => { doSave(askItem, 'pending'); }} className="flex items-center gap-1.5 rounded-xl bg-amber-500 px-4 py-2 text-xs font-bold text-white hover:bg-amber-600">
                 <Clock3 className="size-3.5" /> Pending — more coming
               </button>
-              <button onClick={() => { setConfirmItem(askItem); setAskItem(null); }} className="flex items-center gap-1.5 rounded-xl bg-emerald-600 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-700">
+              <button onClick={() => { setConfirmItem(askItem); setAskItem(null); }} className="flex items-center gap-1.5 rounded-xl bg-teal-600 px-4 py-2 text-xs font-bold text-white hover:bg-teal-700">
                 <CheckCircle2 className="size-3.5" /> Completed
               </button>
             </div>
@@ -636,11 +864,11 @@ function ProductionEntryTab({ orders }: { orders: BakeryOrder[] }) {
       {confirmItem && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
           <div className="w-full max-w-sm rounded-2xl bg-white p-5 shadow-xl">
-            <p className="text-sm font-black text-slate-800">Confirm: mark "{confirmItem.itemName}" as Completed?</p>
-            <p className="mt-1 text-xs font-semibold text-slate-500">This sends {qty[confirmItem.itemName] || confirmItem.totalRequested} {confirmItem.unit} to Dispatch and removes it from Production Entry. This can't be undone from here.</p>
+            <p className="text-sm font-black text-foreground">Confirm: mark "{confirmItem.itemName}" as Completed?</p>
+            <p className="mt-1 text-xs font-semibold text-muted-foreground">This sends {qty[confirmItem.itemName] || confirmItem.totalRequested} {confirmItem.unit} to Dispatch and removes it from Production Entry. This can't be undone from here.</p>
             <div className="mt-4 flex justify-end gap-2">
-              <button onClick={() => setConfirmItem(null)} className="rounded-xl bg-slate-100 px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-200">Go back</button>
-              <button onClick={() => doSave(confirmItem, 'completed')} className="rounded-xl bg-emerald-600 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-700">Yes, Confirm Completed</button>
+              <button onClick={() => setConfirmItem(null)} className="rounded-xl bg-muted px-4 py-2 text-xs font-bold text-muted-foreground hover:bg-slate-200">Go back</button>
+              <button onClick={() => doSave(confirmItem, 'completed')} className="rounded-xl bg-teal-600 px-4 py-2 text-xs font-bold text-white hover:bg-teal-700">Yes, Confirm Completed</button>
             </div>
           </div>
         </div>
@@ -698,7 +926,7 @@ function HosurUnifiedSection() {
         <div className="flex flex-wrap gap-x-6 gap-y-3">
           {HOSUR_SUB_TAB_GROUPS.map(group => (
             <div key={group.label}>
-              <p className="mb-1.5 text-[10px] font-black uppercase tracking-wide text-slate-400">{group.label}</p>
+              <p className="mb-1.5 text-[10px] font-black uppercase tracking-wide text-muted-foreground">{group.label}</p>
               <div className="flex flex-wrap gap-1.5">
                 {group.tabs.map(t => (
                   <button
@@ -706,12 +934,12 @@ function HosurUnifiedSection() {
                     onClick={() => selectTab(t.key)}
                     className={cn(
                       'flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-bold transition',
-                      activeTab === t.key ? 'bg-emerald-600 text-white shadow' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                      activeTab === t.key ? 'bg-teal-600 text-white shadow' : 'bg-muted text-muted-foreground hover:bg-slate-200'
                     )}
                   >
                     {t.icon} {t.label}
                     {t.key === 'dispatch' && pendingDispatchCount > 0 && (
-                      <span className={cn('rounded-full px-1.5 py-0.5 text-[10px] font-black', activeTab === t.key ? 'bg-white text-emerald-700' : 'bg-red-100 text-red-700')}>{pendingDispatchCount}</span>
+                      <span className={cn('rounded-full px-1.5 py-0.5 text-[10px] font-black', activeTab === t.key ? 'bg-white text-teal-700' : 'bg-red-100 text-red-700')}>{pendingDispatchCount}</span>
                     )}
                   </button>
                 ))}
@@ -872,12 +1100,12 @@ function InvoiceTab({ orders }: { orders: BakeryOrder[] }) {
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-sm font-black text-slate-700">Invoice</h2>
+        <h2 className="text-sm font-black text-foreground">Invoice</h2>
         <input
           type="date"
           value={date}
           onChange={e => setDate(e.target.value)}
-          className="rounded-xl border border-border px-3 py-2 text-xs font-bold text-slate-600"
+          className="rounded-xl border border-border px-3 py-2 text-xs font-bold text-muted-foreground"
         />
       </div>
 
@@ -893,19 +1121,19 @@ function InvoiceTab({ orders }: { orders: BakeryOrder[] }) {
               onClick={() => setBranch(b)}
               className={cn(
                 'rounded-2xl border p-4 text-left shadow-sm transition',
-                branch === b ? 'border-emerald-400 bg-emerald-50 ring-2 ring-emerald-200' : 'border-border bg-white hover:bg-slate-50'
+                branch === b ? 'border-teal-400 bg-teal-50 ring-2 ring-teal-200' : 'border-border bg-white hover:bg-muted/40'
               )}
             >
               <p className={cn('text-sm font-black', BRANCH_META[b].text)}>{BRANCH_META[b].icon} {b}</p>
-              <p className="mt-1 text-[11px] font-bold text-slate-500">{rows.length} item{rows.length === 1 ? '' : 's'} dispatched</p>
-              <p className="mt-2 text-lg font-black text-slate-900">{invoiceMoney(total)}</p>
-              <p className="text-[10px] font-bold text-slate-400">after 10% discount · subtotal {invoiceMoney(subtotal)}</p>
+              <p className="mt-1 text-[11px] font-bold text-muted-foreground">{rows.length} item{rows.length === 1 ? '' : 's'} dispatched</p>
+              <p className="mt-2 text-lg font-black text-foreground">{invoiceMoney(total)}</p>
+              <p className="text-[10px] font-bold text-muted-foreground">after 10% discount · subtotal {invoiceMoney(subtotal)}</p>
             </button>
           );
         })}
       </div>
 
-      {loadingPrices && <p className="text-[11px] font-bold text-slate-400">Loading branch prices…</p>}
+      {loadingPrices && <p className="text-[11px] font-bold text-muted-foreground">Loading branch prices…</p>}
 
       {branch && (
         <div className="rounded-2xl border border-border bg-white p-4 shadow-sm">
@@ -913,7 +1141,7 @@ function InvoiceTab({ orders }: { orders: BakeryOrder[] }) {
             <h3 className={cn('text-sm font-black', BRANCH_META[branch].text)}>{BRANCH_META[branch].icon} {branch} — Invoice for {date}</h3>
             <button
               onClick={() => printInvoice(branch)}
-              className="flex items-center gap-1.5 rounded-xl bg-slate-100 px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-200"
+              className="flex items-center gap-1.5 rounded-xl bg-muted px-4 py-2 text-xs font-bold text-muted-foreground hover:bg-slate-200"
             >
               <Printer className="size-3.5" /> Print Invoice
             </button>
@@ -924,7 +1152,7 @@ function InvoiceTab({ orders }: { orders: BakeryOrder[] }) {
           ) : (
             <div className="mt-3 overflow-x-auto rounded-xl border border-border">
               <table className="w-full text-sm">
-                <thead className="bg-slate-50 text-left text-xs font-black uppercase text-slate-500">
+                <thead className="bg-muted/40 text-left text-xs font-black uppercase text-muted-foreground">
                   <tr>
                     <th className="px-4 py-2">Item</th>
                     <th className="px-4 py-2 text-right">Qty</th>
@@ -935,10 +1163,10 @@ function InvoiceTab({ orders }: { orders: BakeryOrder[] }) {
                 <tbody>
                   {perBranchRows[branch].map(r => (
                     <tr key={`${r.itemName}-${r.unit}`} className="border-t border-border">
-                      <td className="px-4 py-2 font-bold text-slate-800">{r.itemName}{r.unitPrice === 0 && <span className="ml-1 text-[10px] font-bold text-amber-600">(no price found)</span>}</td>
-                      <td className="px-4 py-2 text-right text-slate-600">{r.quantity} {r.unit}</td>
-                      <td className="px-4 py-2 text-right text-slate-600">{invoiceMoney(r.unitPrice)}</td>
-                      <td className="px-4 py-2 text-right font-black text-slate-900">{invoiceMoney(r.lineTotal)}</td>
+                      <td className="px-4 py-2 font-bold text-foreground">{r.itemName}{r.unitPrice === 0 && <span className="ml-1 text-[10px] font-bold text-amber-600">(no price found)</span>}</td>
+                      <td className="px-4 py-2 text-right text-muted-foreground">{r.quantity} {r.unit}</td>
+                      <td className="px-4 py-2 text-right text-muted-foreground">{invoiceMoney(r.unitPrice)}</td>
+                      <td className="px-4 py-2 text-right font-black text-foreground">{invoiceMoney(r.lineTotal)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -947,9 +1175,9 @@ function InvoiceTab({ orders }: { orders: BakeryOrder[] }) {
           )}
 
           <div className="mt-4 ml-auto w-full max-w-xs space-y-1 text-sm">
-            <div className="flex justify-between font-bold text-slate-600"><span>Subtotal</span><span>{invoiceMoney(subtotalFor(branch))}</span></div>
+            <div className="flex justify-between font-bold text-muted-foreground"><span>Subtotal</span><span>{invoiceMoney(subtotalFor(branch))}</span></div>
             <div className="flex justify-between font-bold text-red-600"><span>Discount (10%)</span><span>- {invoiceMoney(subtotalFor(branch) * DISCOUNT_RATE)}</span></div>
-            <div className="flex justify-between border-t border-border pt-1.5 text-base font-black text-slate-900"><span>Total Payable</span><span>{invoiceMoney(subtotalFor(branch) * (1 - DISCOUNT_RATE))}</span></div>
+            <div className="flex justify-between border-t border-border pt-1.5 text-base font-black text-foreground"><span>Total Payable</span><span>{invoiceMoney(subtotalFor(branch) * (1 - DISCOUNT_RATE))}</span></div>
           </div>
         </div>
       )}
@@ -965,12 +1193,23 @@ function branchDispatchedForRow(row: ProductionRow, branch: Branch, orders: Bake
     .reduce((s, o) => s + (o.dispatchLog || []).filter(d => sameItem(d.itemName, row.itemName)).reduce((s2, d) => s2 + d.quantity, 0), 0);
 }
 
+// Same idea as branchDispatchedForRow, but for the "Planned" bucket (Planning
+// tab batches) — these orders have no fixed branch, so we track their
+// dispatch progress by order id instead of by targetBranch.
+function plannedContributingOrders(row: ProductionRow, orders: BakeryOrder[]): BakeryOrder[] {
+  return orders.filter(o => bucketFor(o) === 'Planned' && row.contributingOrderIds.includes(o.id));
+}
+function plannedDispatchedForRow(row: ProductionRow, orders: BakeryOrder[]): number {
+  return plannedContributingOrders(row, orders)
+    .reduce((s, o) => s + (o.dispatchLog || []).filter(d => sameItem(d.itemName, row.itemName)).reduce((s2, d) => s2 + d.quantity, 0), 0);
+}
+
 function DispatchTab({ orders, allOrders }: { orders: BakeryOrder[]; allOrders: BakeryOrder[] }) {
   const { submitDispatch } = useBakeryStore();
   const currentUser = useAuthStore(s => s.currentUser);
   const rows = useMemo(() => computeProductionRows(orders).filter(r => r.itemStatus !== 'not_started'), [orders]);
   const [search, setSearch] = useState('');
-  const [subTab, setSubTab] = useState<'active' | 'completed'>('active');
+  const [subTab, setSubTab] = useState<'active' | 'completed' | 'planned'>('active');
   const [checklistItem, setChecklistItem] = useState<ProductionRow | null>(null);
   // 'All' shows every item like before. Picking a branch filters to only items
   // that branch actually ordered, and turns on multi-select + bulk dispatch.
@@ -1004,6 +1243,12 @@ function DispatchTab({ orders, allOrders }: { orders: BakeryOrder[]; allOrders: 
     .sort((a, b) => (dispatchedQtyForItem(b) > 0 ? 1 : 0) - (dispatchedQtyForItem(a) > 0 ? 1 : 0));
   const completedRows = filtered.filter(r => fullyDispatched(r));
   const shown = subTab === 'active' ? activeRows : completedRows;
+  // Items with a "Planned" (Planning-tab) component still awaiting a
+  // branch + quantity decision at dispatch time.
+  const plannedRows = useMemo(
+    () => rows.filter(r => (r.perBranch.Planned ?? 0) > 0 && plannedDispatchedForRow(r, orders) < (r.perBranch.Planned ?? 0) - 0.01),
+    [rows, orders],
+  );
 
   const inProgressRows = filtered.filter(r => !fullyDispatched(r) && dispatchedQtyForItem(r) > 0);
 
@@ -1017,10 +1262,10 @@ function DispatchTab({ orders, allOrders }: { orders: BakeryOrder[]; allOrders: 
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-sm font-black text-slate-700">Dispatch</h2>
+        <h2 className="text-sm font-black text-foreground">Dispatch</h2>
         <div className="flex items-center gap-2">
           <div className="relative">
-            <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-slate-400" />
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
             <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search item..." className="rounded-xl border border-border py-1.5 pl-8 pr-3 text-xs font-bold" />
           </div>
           <ExportButton
@@ -1041,7 +1286,7 @@ function DispatchTab({ orders, allOrders }: { orders: BakeryOrder[]; allOrders: 
           <button
             key={b}
             onClick={() => setBranchFilter(b)}
-            className={cn('rounded-xl px-3 py-1.5 text-xs font-black', branchFilter === b ? 'bg-emerald-600 text-white' : 'bg-slate-100 text-slate-600')}
+            className={cn('rounded-xl px-3 py-1.5 text-xs font-black', branchFilter === b ? 'bg-teal-600 text-white' : 'bg-muted text-muted-foreground')}
           >
             {b}
           </button>
@@ -1056,8 +1301,8 @@ function DispatchTab({ orders, allOrders }: { orders: BakeryOrder[]; allOrders: 
           <div className="space-y-2">
             {inProgressRows.map(row => (
               <div key={row.itemName} className="rounded-xl bg-white p-2.5">
-                <p className="text-sm font-black text-slate-800">{row.itemName}</p>
-                <div className="mt-1 flex flex-wrap gap-2 text-[11px] font-bold text-slate-600">
+                <p className="text-sm font-black text-foreground">{row.itemName}</p>
+                <div className="mt-1 flex flex-wrap gap-2 text-[11px] font-bold text-muted-foreground">
                   {BRANCHES.filter(b => row.perBranch[b]).map(b => {
                     const branchDispatched = branchDispatchedForRow(row, b, orders);
                     return <span key={b} className="rounded-lg bg-amber-100 px-2 py-1">{b}: required {row.perBranch[b]} {row.unit} · dispatched {branchDispatched} {row.unit}</span>;
@@ -1070,41 +1315,46 @@ function DispatchTab({ orders, allOrders }: { orders: BakeryOrder[]; allOrders: 
       )}
 
       <div className="flex gap-2">
-        <button onClick={() => setSubTab('active')} className={cn('rounded-xl px-3 py-1.5 text-xs font-bold', subTab === 'active' ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600')}>To Dispatch ({activeRows.length})</button>
-        <button onClick={() => setSubTab('completed')} className={cn('rounded-xl px-3 py-1.5 text-xs font-bold', subTab === 'completed' ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600')}>Dispatched ({completedRows.length})</button>
+        <button onClick={() => setSubTab('active')} className={cn('rounded-xl px-3 py-1.5 text-xs font-bold', subTab === 'active' ? 'bg-foreground text-white' : 'bg-muted text-muted-foreground')}>To Dispatch ({activeRows.length})</button>
+        <button onClick={() => setSubTab('completed')} className={cn('rounded-xl px-3 py-1.5 text-xs font-bold', subTab === 'completed' ? 'bg-foreground text-white' : 'bg-muted text-muted-foreground')}>Dispatched ({completedRows.length})</button>
+        <button onClick={() => setSubTab('planned')} className={cn('rounded-xl px-3 py-1.5 text-xs font-bold', subTab === 'planned' ? 'cafe-gradient text-white shadow-teal' : 'bg-primary/10 text-primary')}>Planned ({plannedRows.length})</button>
       </div>
 
+      {subTab === 'planned' ? (
+        <PlannedDispatchPanel rows={plannedRows} orders={orders} onDispatch={submitDispatch} dispatchedBy={currentUser?.displayName || 'Planner'} />
+      ) : (
+      <>
       {shown.length === 0 && <EmptyState text={subTab === 'active' ? 'Nothing waiting on dispatch.' : 'Nothing dispatched yet.'} />}
       <div className="space-y-2 pb-16">
         {shown.map(row => {
           const dispatched = dispatchedQtyForItem(row);
           const canSelect = subTab === 'active' && branchFilter !== 'All';
           return (
-            <div key={row.itemName} className={cn('rounded-2xl border bg-white p-3 shadow-sm', selected.has(row.itemName) ? 'border-emerald-400 ring-1 ring-emerald-300' : 'border-border')}>
+            <div key={row.itemName} className={cn('rounded-2xl border bg-white p-3 shadow-sm', selected.has(row.itemName) ? 'border-teal-400 ring-1 ring-teal-300' : 'border-border')}>
               <div className="flex items-center justify-between gap-3">
                 <div className="flex min-w-0 flex-1 items-center gap-2">
                   {canSelect && (
-                    <input type="checkbox" className="size-4 accent-emerald-600" checked={selected.has(row.itemName)} onChange={() => toggleSelect(row.itemName)} />
+                    <input type="checkbox" className="size-4 accent-teal-600" checked={selected.has(row.itemName)} onChange={() => toggleSelect(row.itemName)} />
                   )}
                   <div className="min-w-0">
-                    <p className="truncate text-sm font-black text-slate-800">{row.itemName} <span className={cn('ml-1 rounded-full px-1.5 py-0.5 text-[10px] font-black', row.itemStatus === 'completed' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700')}>{row.itemStatus === 'completed' ? 'Completed' : 'More to come'}</span></p>
-                    <p className="text-xs font-bold text-slate-400">Produced {row.preparedTotal} {row.unit}{dispatched > 0 ? ` · Dispatched ${dispatched} ${row.unit}` : ''}</p>
+                    <p className="truncate text-sm font-black text-foreground">{row.itemName} <span className={cn('ml-1 rounded-full px-1.5 py-0.5 text-[10px] font-black', row.itemStatus === 'completed' ? 'bg-teal-100 text-teal-700' : 'bg-amber-100 text-amber-700')}>{row.itemStatus === 'completed' ? 'Completed' : 'More to come'}</span></p>
+                    <p className="text-xs font-bold text-muted-foreground">Produced {row.preparedTotal} {row.unit}{dispatched > 0 ? ` · Dispatched ${dispatched} ${row.unit}` : ''}</p>
                   </div>
                 </div>
                 {subTab === 'active' && (
-                  <button onClick={() => setChecklistItem(row)} className="flex shrink-0 items-center gap-1.5 rounded-xl bg-emerald-600 px-3 py-2 text-xs font-bold text-white hover:bg-emerald-700">
+                  <button onClick={() => setChecklistItem(row)} className="flex shrink-0 items-center gap-1.5 rounded-xl bg-teal-600 px-3 py-2 text-xs font-bold text-white hover:bg-teal-700">
                     <Truck className="size-3.5" /> Dispatch
                   </button>
                 )}
               </div>
               {/* Every branch that actually ordered this item — only shown if they
                   really requested it — so a combined item shows its full picture. */}
-              <div className="mt-2 flex flex-wrap gap-2 text-[11px] font-bold text-slate-500">
+              <div className="mt-2 flex flex-wrap gap-2 text-[11px] font-bold text-muted-foreground">
                 {BRANCHES.filter(b => row.perBranch[b]).map(b => {
                   const bDispatched = branchDispatchedForRow(row, b, orders);
                   const bDone = (row.perBranch[b] ?? 0) > 0 && bDispatched >= (row.perBranch[b] ?? 0) - 0.01;
                   return (
-                    <span key={b} className={cn('rounded-lg px-2 py-1', b === branchFilter ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-50', bDone && 'line-through opacity-60')}>
+                    <span key={b} className={cn('rounded-lg px-2 py-1', b === branchFilter ? 'bg-teal-100 text-teal-700' : 'bg-muted/40', bDone && 'line-through opacity-60')}>
                       {b} requested {row.perBranch[b]} {row.unit}{bDispatched > 0 ? ` · sent ${bDispatched} ${row.unit}` : ''}
                     </span>
                   );
@@ -1114,6 +1364,8 @@ function DispatchTab({ orders, allOrders }: { orders: BakeryOrder[]; allOrders: 
           );
         })}
       </div>
+      </>
+      )}
 
       {/* Floating bulk-dispatch bar — appears once the planner has ticked one or
           more items for the currently selected branch, so several items can go
@@ -1122,7 +1374,7 @@ function DispatchTab({ orders, allOrders }: { orders: BakeryOrder[]; allOrders: 
         <div className="fixed inset-x-0 bottom-0 z-40 flex justify-center p-3">
           <button
             onClick={() => setBulkOpen(true)}
-            className="flex items-center gap-2 rounded-2xl bg-slate-900 px-5 py-3 text-sm font-black text-white shadow-xl"
+            className="flex items-center gap-2 rounded-2xl bg-foreground px-5 py-3 text-sm font-black text-white shadow-xl"
           >
             <Truck className="size-4" /> Dispatch {selected.size} item{selected.size > 1 ? 's' : ''} to {branchFilter}
           </button>
@@ -1150,6 +1402,96 @@ function DispatchTab({ orders, allOrders }: { orders: BakeryOrder[]; allOrders: 
           onDone={() => { setSelected(new Set()); setBulkOpen(false); }}
         />
       )}
+    </div>
+  );
+}
+
+// "Planned" dispatch — items with a Planning-tab (no fixed branch) component
+// that's been produced but not yet sent anywhere. Unlike every other item
+// here, the destination branch isn't known in advance: the planner picks it
+// (and how much to send) right here, per dispatch action.
+function PlannedDispatchPanel({ rows, orders, onDispatch, dispatchedBy }: {
+  rows: ProductionRow[]; orders: BakeryOrder[];
+  onDispatch: ReturnType<typeof useBakeryStore.getState>['submitDispatch']; dispatchedBy: string;
+}) {
+  const [branchFor, setBranchFor] = useState<Record<string, Branch>>({});
+  const [qtyFor, setQtyFor] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState<string | null>(null);
+  const [result, setResult] = useState<Record<string, { ok: boolean; message: string }>>({});
+
+  if (rows.length === 0) return <EmptyState text="No planned-stock items waiting on a dispatch decision." />;
+
+  const dispatchRow = async (row: ProductionRow) => {
+    const branch = branchFor[row.itemName] ?? 'SNB';
+    const plannedRequested = row.perBranch.Planned ?? 0;
+    const alreadySent = plannedDispatchedForRow(row, orders);
+    const remainingPlanned = Math.max(0, plannedRequested - alreadySent);
+    const defaultQty = Math.round(Math.min(remainingPlanned, row.preparedTotal) * 100) / 100;
+    const q = qtyFor[row.itemName] !== undefined ? Number(qtyFor[row.itemName] || 0) : defaultQty;
+    if (q <= 0) return;
+    setBusy(row.itemName);
+    setResult(r => ({ ...r, [row.itemName]: undefined as any }));
+    try {
+      const entries = plannedContributingOrders(row, orders);
+      const split = autoSplitForItem(entries, row.itemName, q);
+      for (const order of entries) {
+        const item = order.items.find(i => sameItem(i.itemName, row.itemName));
+        const orderQty = split[order.id] ?? 0;
+        if (!item || orderQty <= 0) continue;
+        await onDispatch(order.id, { itemName: item.itemName, quantity: orderQty, unit: item.dispatchUnit || 'kg', branch, dispatchedBy, dispatchedAt: new Date().toISOString() });
+      }
+      setResult(r => ({ ...r, [row.itemName]: { ok: true, message: `Dispatched ${q} ${row.unit} of ${row.itemName} to ${branch}.` } }));
+      setQtyFor(v => ({ ...v, [row.itemName]: '' }));
+    } catch (err) {
+      setResult(r => ({ ...r, [row.itemName]: { ok: false, message: err instanceof Error ? err.message : 'Failed to dispatch this item.' } }));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div className="space-y-2 pb-16">
+      {rows.map(row => {
+        const plannedRequested = row.perBranch.Planned ?? 0;
+        const alreadySent = plannedDispatchedForRow(row, orders);
+        const remainingPlanned = Math.max(0, plannedRequested - alreadySent);
+        const defaultQty = Math.round(Math.min(remainingPlanned, row.preparedTotal) * 100) / 100;
+        const branch = branchFor[row.itemName] ?? 'SNB';
+        const res = result[row.itemName];
+        return (
+          <div key={row.itemName} className="card-base p-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-sm font-black text-foreground">{row.itemName}</p>
+                <p className="text-xs font-bold text-muted-foreground">Planned {plannedRequested} {row.unit} · Produced {row.preparedTotal} {row.unit}{alreadySent > 0 ? ` · Already sent ${alreadySent} ${row.unit}` : ''}</p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="flex gap-1">
+                  {BRANCHES.map(b => (
+                    <button key={b} onClick={() => setBranchFor(v => ({ ...v, [row.itemName]: b }))} className={cn('rounded-lg px-2.5 py-1.5 text-xs font-bold', branch === b ? 'bg-primary text-primary-foreground' : 'border border-border bg-card text-foreground')}>
+                      {b}
+                    </button>
+                  ))}
+                </div>
+                <input
+                  type="number"
+                  placeholder={String(defaultQty)}
+                  value={qtyFor[row.itemName] ?? ''}
+                  onChange={e => setQtyFor(v => ({ ...v, [row.itemName]: e.target.value }))}
+                  className="w-24 rounded-lg border border-border bg-background px-2 py-1.5 text-right text-xs font-bold"
+                />
+                <span className="text-[11px] font-bold text-muted-foreground">{row.unit}</span>
+                <button onClick={() => dispatchRow(row)} disabled={busy === row.itemName} className="flex items-center gap-1.5 rounded-xl cafe-gradient px-3 py-2 text-xs font-bold text-white shadow-teal disabled:opacity-50">
+                  {busy === row.itemName ? <Loader2 className="size-3.5 animate-spin" /> : <Truck className="size-3.5" />} Dispatch to {branch}
+                </button>
+              </div>
+            </div>
+            {res && (
+              <p className={cn('mt-2 rounded-lg px-3 py-1.5 text-xs font-bold', res.ok ? 'bg-teal-50 text-teal-700 border border-teal-200' : 'bg-red-50 text-red-700 border border-red-200')}>{res.message}</p>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -1197,12 +1539,12 @@ function BulkDispatchModal({ branch, rows, orders, onClose, onDispatch, dispatch
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
       <div className="w-full max-w-lg rounded-2xl bg-white p-5 shadow-xl">
-        <p className="text-sm font-black text-slate-800">Dispatch {lines.length} item{lines.length > 1 ? 's' : ''} to {branch}</p>
+        <p className="text-sm font-black text-foreground">Dispatch {lines.length} item{lines.length > 1 ? 's' : ''} to {branch}</p>
         <div className="mt-3 max-h-[50vh] space-y-2 overflow-auto pr-1">
           {lines.map(({ row, requested, alreadySent }) => (
             <div key={row.itemName} className="rounded-xl border border-border p-2.5">
               <div className="flex items-center justify-between gap-2">
-                <p className="text-sm font-black text-slate-800">{row.itemName}</p>
+                <p className="text-sm font-black text-foreground">{row.itemName}</p>
                 <div className="flex items-center gap-1">
                   <input
                     type="number"
@@ -1210,16 +1552,16 @@ function BulkDispatchModal({ branch, rows, orders, onClose, onDispatch, dispatch
                     onChange={e => setQty(prev => ({ ...prev, [row.itemName]: e.target.value }))}
                     className="w-20 rounded-lg border border-border px-2 py-1 text-right text-xs font-bold"
                   />
-                  <span className="text-[11px] font-bold text-slate-400">{row.unit}</span>
+                  <span className="text-[11px] font-bold text-muted-foreground">{row.unit}</span>
                 </div>
               </div>
-              <p className="mt-1 text-[11px] font-bold text-slate-400">Requested {requested} {row.unit}{alreadySent > 0 ? ` · already sent ${alreadySent} ${row.unit}` : ''} · Produced {row.preparedTotal} {row.unit}</p>
+              <p className="mt-1 text-[11px] font-bold text-muted-foreground">Requested {requested} {row.unit}{alreadySent > 0 ? ` · already sent ${alreadySent} ${row.unit}` : ''} · Produced {row.preparedTotal} {row.unit}</p>
             </div>
           ))}
         </div>
         <div className="mt-4 flex justify-end gap-2">
-          <button onClick={onClose} disabled={sending} className="rounded-xl bg-slate-100 px-4 py-2 text-xs font-bold text-slate-600">Cancel</button>
-          <button onClick={confirmAll} disabled={sending} className="flex items-center gap-1.5 rounded-xl bg-emerald-600 px-4 py-2 text-xs font-bold text-white">
+          <button onClick={onClose} disabled={sending} className="rounded-xl bg-muted px-4 py-2 text-xs font-bold text-muted-foreground">Cancel</button>
+          <button onClick={confirmAll} disabled={sending} className="flex items-center gap-1.5 rounded-xl bg-teal-600 px-4 py-2 text-xs font-bold text-white">
             {sending ? <Loader2 className="size-3.5 animate-spin" /> : <Truck className="size-3.5" />} Confirm Dispatch
           </button>
         </div>
@@ -1322,18 +1664,18 @@ function DispatchChecklistModal({ row, orders, onClose, onDispatch, dispatchedBy
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
       <div className="w-full max-w-lg rounded-2xl bg-white p-5 shadow-xl">
-        <p className="text-sm font-black text-slate-800">Dispatch Checklist — {row.itemName}</p>
+        <p className="text-sm font-black text-foreground">Dispatch Checklist — {row.itemName}</p>
         {!done ? (
           <>
             {branchKeys.length > 1 && (
               <div className="mt-2 flex flex-wrap gap-2">
-                <span className="text-[11px] font-black text-slate-500">Dispatch for:</span>
+                <span className="text-[11px] font-black text-muted-foreground">Dispatch for:</span>
                 {branchKeys.map(b => (
                   <button
                     key={b}
                     type="button"
                     onClick={() => toggleBranch(b)}
-                    className={cn('rounded-full border px-3 py-1 text-[11px] font-black', selectedBranches.includes(b) ? 'border-emerald-400 bg-emerald-50 text-emerald-700' : 'border-border bg-white text-slate-400')}
+                    className={cn('rounded-full border px-3 py-1 text-[11px] font-black', selectedBranches.includes(b) ? 'border-teal-400 bg-teal-50 text-teal-700' : 'border-border bg-white text-muted-foreground')}
                   >
                     {b}
                   </button>
@@ -1343,14 +1685,14 @@ function DispatchChecklistModal({ row, orders, onClose, onDispatch, dispatchedBy
             <div className="mt-3 space-y-3">
               {Array.from(branchOrders.entries()).filter(([branch]) => selectedBranches.includes(branch)).map(([branch, entries]) => (
                 <div key={branch} className="rounded-xl border border-border p-3">
-                  <p className="mb-1.5 text-xs font-black text-slate-700">{branch} (requested {row.perBranch[branch as Branch] ?? 0} {row.unit})</p>
+                  <p className="mb-1.5 text-xs font-black text-foreground">{branch} (requested {row.perBranch[branch as Branch] ?? 0} {row.unit})</p>
                   {entries.map(({ order, item }) => (
                     <div key={order.id} className="flex items-center justify-between gap-2 py-1">
-                      <span className="text-xs font-bold text-slate-500">Order #{order.orderNumber} · requested {item.quantity} {row.unit}</span>
+                      <span className="text-xs font-bold text-muted-foreground">Order #{order.orderNumber} · requested {item.quantity} {row.unit}</span>
                       <input type="number" value={qty[order.id] ?? qtyFor(order.id)} onChange={e => setQty(v => ({ ...v, [order.id]: e.target.value }))} className="w-24 rounded-lg border border-border px-2 py-1 text-right text-xs font-bold" />
                     </div>
                   ))}
-                  <ul className="mt-2 space-y-1 text-[11px] font-semibold text-slate-500">
+                  <ul className="mt-2 space-y-1 text-[11px] font-semibold text-muted-foreground">
                     {checklistFor(branch).map(s => (
                       <li key={s} className="flex items-center gap-1.5">
                         <input type="checkbox" className="size-3.5 rounded border-slate-300" />
@@ -1362,18 +1704,18 @@ function DispatchChecklistModal({ row, orders, onClose, onDispatch, dispatchedBy
               ))}
             </div>
             <div className="mt-4 flex justify-end gap-2">
-              <button onClick={() => printChecklist('thermal')} className="flex items-center gap-1.5 rounded-xl bg-slate-100 px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-200"><Printer className="size-3.5" /> Print Thermal</button>
-              <button onClick={() => printChecklist('a4')} className="flex items-center gap-1.5 rounded-xl bg-slate-100 px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-200"><Printer className="size-3.5" /> Print A4</button>
-              <button onClick={onClose} className="rounded-xl bg-slate-100 px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-200">Cancel</button>
-              <button onClick={confirmDispatch} disabled={sending || selectedBranches.length === 0} className="flex items-center gap-1.5 rounded-xl bg-emerald-600 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-700 disabled:opacity-50">
+              <button onClick={() => printChecklist('thermal')} className="flex items-center gap-1.5 rounded-xl bg-muted px-4 py-2 text-xs font-bold text-muted-foreground hover:bg-slate-200"><Printer className="size-3.5" /> Print Thermal</button>
+              <button onClick={() => printChecklist('a4')} className="flex items-center gap-1.5 rounded-xl bg-muted px-4 py-2 text-xs font-bold text-muted-foreground hover:bg-slate-200"><Printer className="size-3.5" /> Print A4</button>
+              <button onClick={onClose} className="rounded-xl bg-muted px-4 py-2 text-xs font-bold text-muted-foreground hover:bg-slate-200">Cancel</button>
+              <button onClick={confirmDispatch} disabled={sending || selectedBranches.length === 0} className="flex items-center gap-1.5 rounded-xl bg-teal-600 px-4 py-2 text-xs font-bold text-white hover:bg-teal-700 disabled:opacity-50">
                 {sending ? <Loader2 className="size-4 animate-spin" /> : <Truck className="size-4" />} Confirm Dispatch{selectedBranches.length > 1 ? ` (${selectedBranches.join(' + ')})` : ''}
               </button>
             </div>
           </>
         ) : (
           <>
-            <p className="mt-2 text-xs font-semibold text-emerald-600">Dispatched. This item now shows in the Dispatched sub-tab{row.itemStatus === 'pending' ? ' — still marked pending, more expected from the baker.' : '.'}</p>
-            <div className="mt-4 flex justify-end"><button onClick={onClose} className="rounded-xl bg-slate-900 px-4 py-2 text-xs font-bold text-white">Close</button></div>
+            <p className="mt-2 text-xs font-semibold text-teal-600">Dispatched. This item now shows in the Dispatched sub-tab{row.itemStatus === 'pending' ? ' — still marked pending, more expected from the baker.' : '.'}</p>
+            <div className="mt-4 flex justify-end"><button onClick={onClose} className="rounded-xl bg-foreground px-4 py-2 text-xs font-bold text-white">Close</button></div>
           </>
         )}
       </div>
@@ -1388,7 +1730,7 @@ function LeftoverDoneTab({ active, done }: { active: BakeryOrder[]; done: Bakery
     <div className="space-y-6">
       <div>
         <div className="mb-2 flex items-center justify-between">
-          <h2 className="text-sm font-black text-slate-700">Active Leftovers ({active.length})</h2>
+          <h2 className="text-sm font-black text-foreground">Active Leftovers ({active.length})</h2>
           <ExportButton
             disabled={active.length === 0 && done.length === 0}
             onClick={() => exportToExcel({
@@ -1418,12 +1760,12 @@ function LeftoverDoneTab({ active, done }: { active: BakeryOrder[]; done: Bakery
         )}
       </div>
       <div>
-        <h2 className="mb-2 text-sm font-black text-slate-700">Done ({done.length})</h2>
+        <h2 className="mb-2 text-sm font-black text-foreground">Done ({done.length})</h2>
         {done.length === 0 ? <EmptyState text="Nothing marked done yet." /> : (
           <div className="space-y-2">
             {done.map(order => (
-              <div key={order.id} className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
-                <p className="text-sm font-black text-emerald-800">{order.targetBranch} · Order #{order.orderNumber} — Done</p>
+              <div key={order.id} className="rounded-2xl border border-teal-200 bg-teal-50 p-4">
+                <p className="text-sm font-black text-teal-800">{order.targetBranch} · Order #{order.orderNumber} — Done</p>
               </div>
             ))}
           </div>
@@ -1438,7 +1780,7 @@ function ExportButton({ onClick, disabled }: { onClick: () => void; disabled?: b
     <button
       onClick={onClick}
       disabled={disabled}
-      className="flex items-center gap-1.5 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-700 hover:bg-emerald-100 disabled:opacity-40"
+      className="flex items-center gap-1.5 rounded-xl border border-teal-200 bg-teal-50 px-3 py-2 text-xs font-bold text-teal-700 hover:bg-teal-100 disabled:opacity-40"
     >
       <FileSpreadsheet className="size-4" /> Export Excel
     </button>
@@ -1449,7 +1791,7 @@ function EmptyState({ text }: { text: string }) {
   return (
     <div className="flex flex-col items-center gap-2 rounded-2xl border border-dashed border-border py-12 text-center">
       <AlertTriangle className="size-6 text-slate-300" />
-      <p className="text-xs font-bold text-slate-400">{text}</p>
+      <p className="text-xs font-bold text-muted-foreground">{text}</p>
     </div>
   );
 }

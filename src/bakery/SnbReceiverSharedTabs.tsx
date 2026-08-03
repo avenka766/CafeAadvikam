@@ -212,7 +212,17 @@ export function SnbPurchaseInvoicePanel() {
   const fetchBranchData = useBranchStore((state) => state.fetchBranchData);
   const [notice, setNotice] = useState("");
   const today = todayInput();
-  const fromDate = `${today.slice(0, 4)}-01-01`;
+  // EGRESS FIX: this used to default to Jan 1st of the current year — up to
+  // ~7 months of 13 report tables (paginated to 30,000 rows each) reloaded
+  // automatically every time an SNB Order Receiver opened this tab. Purchase
+  // invoice management only needs a recent operational window; anything
+  // older is already settled and belongs in the Owner/Admin Reports screen,
+  // which supports an explicit custom range.
+  const fromDate = (() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 45);
+    return d.toISOString().slice(0, 10);
+  })();
   const dbReports = useSnbAdminReports(fromDate, today);
   const actorName = `SNB Order - ${user?.displayName || user?.username || "SNB Order"}`;
 
