@@ -94,23 +94,25 @@
   .espresso-gradient { background: linear-gradient(160deg, #1a0d05 0%, #2d1a08 50%, #1a0d05 100%); }
   .warm-gradient   { background: linear-gradient(135deg, hsl(28 40% 97%) 0%, hsl(36 30% 92%) 100%); }
 
-  /* ── Glass morphism ── */
+  /* ── Glass morphism ──
+     PERF FIX: `backdrop-filter: blur(...)` is used throughout the app's
+     always-visible chrome (header, nav). It's one of the most expensive CSS
+     effects to composite, and on the old integrated GPUs typical of the
+     Windows 7 touchscreen billing terminals these run on, it forces a slow
+     software-rendered recomposite on every repaint underneath it — including
+     every keystroke and every screen redraw during billing. Dropped in
+     favour of a slightly more opaque flat background, which keeps the same
+     layered look at effectively zero compositing cost. */
   .glass {
-    background: rgba(255,255,255,0.72);
-    backdrop-filter: blur(20px) saturate(1.8);
-    -webkit-backdrop-filter: blur(20px) saturate(1.8);
+    background: rgba(255,255,255,0.94);
     border: 1px solid rgba(255,255,255,0.45);
   }
   .glass-dark {
-    background: rgba(18,12,6,0.75);
-    backdrop-filter: blur(20px) saturate(1.4);
-    -webkit-backdrop-filter: blur(20px) saturate(1.4);
+    background: rgba(18,12,6,0.92);
     border: 1px solid rgba(255,255,255,0.08);
   }
   .glass-card {
-    background: rgba(255,255,255,0.85);
-    backdrop-filter: blur(16px);
-    -webkit-backdrop-filter: blur(16px);
+    background: rgba(255,255,255,0.97);
     border: 1px solid rgba(255,255,255,0.6);
     box-shadow: 0 4px 24px rgba(0,0,0,0.06), 0 1px 4px rgba(0,0,0,0.04);
   }
@@ -276,9 +278,13 @@
     @apply inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-body font-semibold;
   }
 
-  /* ── Frosted modal overlay ── */
+  /* ── Modal overlay ──
+     PERF FIX: dropped backdrop-blur-sm — shared by every modal sheet in the
+     app, so this ran on the billing terminals constantly. A darker flat
+     scrim (bg-black/50 → /65) reads the same as "frosted" without the
+     compositing cost. */
   .modal-overlay {
-    @apply fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-end justify-center;
+    @apply fixed inset-0 z-50 bg-black/65 flex items-end justify-center;
   }
   .modal-sheet {
     @apply w-full bg-card rounded-t-3xl shadow-deep animate-slide-up;
@@ -911,9 +917,16 @@
     }
   }
 
-  .workspace-redesign .workspace-content-frame [class*="sticky"] {
-    backdrop-filter: blur(18px);
-  }
+  /* PERF FIX: this used to apply an 18px backdrop blur to EVERY sticky
+     element in the app's main content frame — a catch-all `[class*="sticky"]`
+     selector matches any element carrying Tailwind's `sticky` class, which is
+     most sticky headers/toolbars/footers across billing and the dashboards.
+     It was silently re-applying blur to screens whose own components had
+     already had backdrop-blur removed for the exact same reason (GPU cost on
+     the Windows-7 touch terminals), undoing that work. Every sticky bar this
+     targeted already sits on a near-opaque background (92-98%), so the blur
+     was contributing very little visually — removed instead of patched
+     per-selector so a future new sticky bar doesn't quietly reintroduce it. */
 
   /* Dark kitchen screen stays high contrast but receives the new card polish. */
   .workspace-redesign .workspace-content-frame [style*="#0E0A06"] {
@@ -1080,9 +1093,11 @@
     gap: .85rem;
     align-items: center;
     padding: .8rem;
+    /* PERF FIX: dropped backdrop-filter: blur(18px) — sticky toolbar, always
+       visible during order-taking; background is already 92% opaque so the
+       blur added GPU compositing cost for almost no visual difference. */
     background: rgba(255,255,255,.92);
     border-bottom: 1px solid rgba(107,72,29,.10);
-    backdrop-filter: blur(18px);
   }
   .workspace-redesign .orderpad-toolbar-heading { display: flex; align-items: center; gap: .85rem; min-width: 0; }
   .workspace-redesign .orderpad-toolbar-icon {
@@ -1458,7 +1473,9 @@
 
   /* Order review drawer */
   .workspace-redesign .order-cart-overlay { position: fixed; inset: 0; z-index: 70; display: flex; justify-content: flex-end; align-items: stretch; }
-  .workspace-redesign .order-cart-backdrop { position: absolute; inset: 0; background: rgba(12,8,4,.58) !important; border: 0 !important; backdrop-filter: blur(8px); }
+  /* PERF FIX: raised opacity and dropped backdrop-filter: blur(8px) so the
+     scrim reads the same without the compositing cost on the touch terminals. */
+  .workspace-redesign .order-cart-backdrop { position: absolute; inset: 0; background: rgba(12,8,4,.72) !important; border: 0 !important; }
   .workspace-redesign .order-cart-sheet {
     position: relative;
     width: min(100%, 560px);
@@ -3171,14 +3188,16 @@
   z-index: 90;
 }
 
+/* PERF FIX: raised opacity and dropped backdrop-filter: blur(5px) — this
+   drawer backdrop opens every time staff use the mobile/compact nav on the
+   touch terminals; the flat scrim looks effectively identical without the
+   compositing cost. */
 .workspace-mobile-nav-backdrop {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
-  background: rgba(6, 9, 8, .62);
-  backdrop-filter: blur(5px);
-  -webkit-backdrop-filter: blur(5px);
+  background: rgba(6, 9, 8, .75);
 }
 
 .workspace-mobile-drawer {

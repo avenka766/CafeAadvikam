@@ -42,6 +42,11 @@ try {
       <App />
     </React.StrictMode>,
   );
+  // Mount succeeded — clear the one-shot stale-chunk reload guard (see
+  // ErrorBoundary.tsx) so a future deploy's stale-chunk error can trigger
+  // one more auto-reload instead of silently giving up because a flag from
+  // a previous session/incident was still sitting in sessionStorage.
+  window.setTimeout(() => sessionStorage.removeItem('cafe:chunk-reload-attempted'), 5000);
 } catch (err) {
   // If React fails to mount (e.g. module-level crash in a dependency),
   // show a visible error instead of a blank white page.
