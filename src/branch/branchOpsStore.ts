@@ -807,15 +807,29 @@ const SPARSE_OPERATION_HISTORY_TYPES = [
   'supplier', 'expense', 'waste_log', 'cashier_profile', 'salesperson', 'audit_log',
 ];
 
+// PERF FIX: this used to paginate up to 10 sequential round trips (pageSize
+// 1000 x maxRows 10000) with NO date bound at all, run on every single
+// hydration of the branch ops store (i.e. every page load/refresh of any
+// branch dashboard). As branch_operation_records grew, those 10 chained
+// awaits compounded into multi-second loads and were the single biggest
+// contributor to the "57014 statement timeout" errors seen in production on
+// /bakery/receive/snb and /branch/snb. These record types are genuinely
+// sparse (expenses, purchase orders, suppliers, etc.), so there is no
+// legitimate need to ever scan more than a couple of years of history here —
+// capped to 2 round trips and bounded to the last 24 months as a hard safety
+// net regardless of how large the table grows.
 async function loadSparseOperationHistory(branch: Branch | null) {
-  const pageSize = 1000;
-  const maxRows = 10000;
+  const pageSize = 2500;
+  const maxRows = 5000;
+  const cutoff = new Date();
+  cutoff.setMonth(cutoff.getMonth() - 24);
   const rows: BranchOperationRecordRow[] = [];
   for (let from = 0; from < maxRows; from += pageSize) {
     let query = supabase
       .from('branch_operation_records')
       .select('record_type, record_id, payload, created_at')
       .in('record_type', SPARSE_OPERATION_HISTORY_TYPES)
+      .gte('created_at', cutoff.toISOString())
       .order('created_at', { ascending: false });
     if (branch) query = query.eq('branch', branch);
     const { data, error } = await query.range(from, from + pageSize - 1);

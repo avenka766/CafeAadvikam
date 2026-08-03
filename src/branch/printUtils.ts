@@ -641,17 +641,34 @@ export function printCounterCloseSlip(input: {
 export async function printCounterBill(bill: BranchBillRecord, duplicate = false) {
   // Allocate the controlled copy first, then print through an off-screen iframe.
   // This avoids opening or leaving a visible "Preparing print" browser page.
-  const { data, error } = await supabase.rpc('allocate_document_print', {
-    p_document_type: 'branch_bill',
-    p_document_id: bill.id || bill.billNo,
-    p_branch: bill.branch,
-    p_reason: duplicate ? 'User-requested duplicate print' : null,
-    p_device_info: navigator.userAgent,
-  });
-  if (error || !data) throw new Error(error?.message || 'Unable to allocate controlled print copy.');
-
-  const row = Array.isArray(data) ? data[0] : data;
-  const isDuplicate = String((row as { copy_type?: string }).copy_type) === 'duplicate';
+  //
+  // PERF FIX: on a slow or flaky branch connection this RPC round trip is the
+  // single biggest source of the delay between "Finish Bill" and paper coming
+  // out of the printer. It must stay in the loop (it's what stamps a re-print
+  // as DUPLICATE for tax/audit compliance), but it must never hang the
+  // counter indefinitely — a 4-second budget keeps a bad connection from
+  // blocking the cashier. If it times out or errors, we fall back to the
+  // copy type the cashier explicitly asked for (Finish Bill = original,
+  // "Print duplicate" button = duplicate) rather than leaving the till stuck.
+  let isDuplicate = duplicate;
+  try {
+    const allocation = await Promise.race([
+      supabase.rpc('allocate_document_print', {
+        p_document_type: 'branch_bill',
+        p_document_id: bill.id || bill.billNo,
+        p_branch: bill.branch,
+        p_reason: duplicate ? 'User-requested duplicate print' : null,
+        p_device_info: navigator.userAgent,
+      }),
+      new Promise<never>((_, reject) => window.setTimeout(() => reject(new Error('print-allocation-timeout')), 4000)),
+    ]);
+    const { data, error } = allocation;
+    if (error || !data) throw new Error(error?.message || 'Unable to allocate controlled print copy.');
+    const row = Array.isArray(data) ? data[0] : data;
+    isDuplicate = String((row as { copy_type?: string }).copy_type) === 'duplicate';
+  } catch (allocationError) {
+    console.error('[printCounterBill] allocate_document_print unavailable, printing with requested copy type:', allocationError);
+  }
   const frame = document.createElement('iframe');
   frame.setAttribute('aria-hidden', 'true');
   frame.style.position = 'fixed';

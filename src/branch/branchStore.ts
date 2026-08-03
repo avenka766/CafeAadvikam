@@ -6,6 +6,7 @@ import { BAKERY_ITEMS } from '@/bakery/types';
 import { useBranchCatalogStore } from '@/stores/branchCatalogStore';
 import { useAuthStore } from '@/stores/authStore';
 import { cakeIncomingDispatchId, ensureCakeDispatchIncoming, type CakeDispatchSource } from './cakeDispatchSync';
+import { startOfBusinessDayISO } from '@/lib/businessDate';
 
 const normalizeStockName = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
@@ -229,6 +230,12 @@ interface BranchState {
   // B5-FIX: per-branch sync timestamps so one branch's sync doesn't block another.
   lastSyncedAt:    Record<Branch, number | null>;
   fetchBranchData: (branch: Branch, force?: boolean) => Promise<void>;
+  // EGRESS FIX: explicit, on-demand fetch for a historical date range — used
+  // only by Owner/Admin Reports screens when they pick a range beyond today.
+  // Returns data directly rather than writing into the always-on `sales`
+  // cache, so it never gets pulled in by the frequent branch-dashboard fetch
+  // path above.
+  fetchBranchSalesRange: (branch: Branch, fromDateISO: string, toDateISO: string) => Promise<SaleRecord[]>;
   fetchAllBranches: () => Promise<void>;
   recordSale: (branch: Branch, itemName: string, qty: number, soldBy: string, paymentMethod: string, billNo?: string, unitPrice?: number, itemBarcode?: number) => Promise<string | null>;
   recordSnbSale: (
@@ -477,13 +484,18 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     branchFetchesInFlight.add(branch);
     set({ loading: true });
     try {
-      const twoMonthsAgo = new Date();
-      twoMonthsAgo.setMonth(twoMonthsAgo.getMonth() - 2);
-
-      // PERF-04 FIX: sales history capped to 30 days for the live dashboard.
-      // Older records can still be accessed via a dedicated Reports query.
-      const thirtyDaysAgo = new Date();
-      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+      // EGRESS FIX: the live branch dashboard only ever needs to show *today's*
+      // sales bills, today's supplies-in, and *currently open* advance/credit
+      // orders (whenever they were created — those are still-owed money /
+      // still-due deliveries, not history). A rolling 30-day window here was
+      // the single largest contributor to PostgREST egress: this query used to
+      // run on every mutation, every 30s background sync, and every dashboard
+      // mount, each time re-downloading up to a month of sales/advance/credit
+      // rows. Historical ranges beyond today are now only fetched on demand by
+      // Owner/Admin from the Reports tab, via fetchBranchSalesRange() (see
+      // below) — a separate, explicitly-triggered call that never touches this
+      // always-on cache.
+      const startOfToday = startOfBusinessDayISO();
 
       const catalogBranch = branch === 'VRSNB' ? 'VRSNB' : branch === 'SNB' || branch === 'Hosur' ? 'SNB' : null;
       if (catalogBranch) await useBranchCatalogStore.getState().loadCatalog(catalogBranch);
@@ -499,53 +511,73 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         { data: creditData },
         { data: openAdvanceData },
         { data: openCreditData },
+        { data: openIncomingData },
       ] = await Promise.all([
         supabase.from('branch_stock')
           .select('item_barcode,item_name,quantity,reserved_quantity,updated_at,last_updated_at,unit,min_threshold')
           .eq('branch', branch).order('updated_at', { ascending: false }).limit(2000),
+        // EGRESS FIX: today only (was a 30-day unbounded window).
         supabase.from('branch_sales')
           .select('id,item_barcode,item_name,quantity_sold,sold_at,sold_by,branch,payment_method,unit_price,bill_no')
           .eq('branch', branch)
-          .gte('sold_at', thirtyDaysAgo.toISOString())
-          .order('sold_at', { ascending: false }),
+          .gte('sold_at', startOfToday)
+          .order('sold_at', { ascending: false })
+          .limit(3000),
+        // EGRESS FIX: today's supplies-in only. Anything still unconfirmed from
+        // an earlier day still needs to surface for action, so that's merged in
+        // separately below with its own small cap.
         supabase.from('branch_incoming')
           .select('id,item_barcode,item_name,quantity,unit,received_at,dispatched_by,confirmed,disputed,dispute_reason,disputed_by,disputed_at')
           .eq('branch', branch)
-          .order('received_at', { ascending: false }).limit(500),
+          .gte('received_at', startOfToday)
+          .order('received_at', { ascending: false }).limit(1000),
         supabase.from('branch_thresholds').select('item_name,threshold').eq('branch', branch),
         // SNB/VRSNB/Hosur prices already come from the cached live branch
         // catalogue. Only Cafe still needs the legacy bakery price fallback.
         catalogBranch
           ? Promise.resolve({ data: [] as Array<{ name: string; price: number | null }> })
           : supabase.from('bakery_items').select('name, price'),
+        // EGRESS FIX: "recent" advance orders now means *today's* advance
+        // orders (was: last 1000 rows regardless of age).
         supabase.from('branch_advance_orders')
           .select('id,branch,customer_name,items,subtotal,advance_amount,advance_method,balance_due,sold_by,created_at,fully_paid_at,balance_method,status,delivery_date,notes,reservation_status')
           .eq('branch', branch)
+          .gte('created_at', startOfToday)
           .order('created_at', { ascending: false })
           .limit(1000),
+        // EGRESS FIX: "recent" credit sales now means *today's* credit sales
+        // (was: last 1000 rows regardless of age).
         supabase.from('branch_credit_sales')
           .select('id,branch,source,source_id,customer_ref,customer_name,customer_phone,items,subtotal,amount_paid,credit_amount,sold_by,created_at,due_date,settled_at,status,notes,bill_no,discount_amount')
           .eq('branch', branch)
+          .gte('created_at', startOfToday)
           .order('created_at', { ascending: false })
           .limit(1000),
-        // BUG FIX: same class of bug as the salesperson roster — an old
-        // advance order or credit sale that's still unsettled represents
-        // money owed / a delivery still due, and must not disappear just
-        // because 1000 *newer* orders/sales have piled up since it was
-        // created. Fetch open ones separately, unbounded by recency, and
-        // merge below.
+        // An old advance order that's still unsettled represents money owed /
+        // a delivery still due, and must not disappear just because it wasn't
+        // created today. Fetch open ones separately, unbounded by recency
+        // (still capped defensively), and merge below.
         supabase.from('branch_advance_orders')
           .select('id,branch,customer_name,items,subtotal,advance_amount,advance_method,balance_due,sold_by,created_at,fully_paid_at,balance_method,status,delivery_date,notes,reservation_status')
           .eq('branch', branch)
           .eq('status', 'pending')
           .order('created_at', { ascending: false })
-          .limit(2000),
+          .limit(1000),
         supabase.from('branch_credit_sales')
           .select('id,branch,source,source_id,customer_ref,customer_name,customer_phone,items,subtotal,amount_paid,credit_amount,sold_by,created_at,due_date,settled_at,status,notes,bill_no,discount_amount')
           .eq('branch', branch)
           .neq('status', 'settled')
           .order('created_at', { ascending: false })
-          .limit(2000),
+          .limit(1000),
+        // An unconfirmed delivery from an earlier day still needs action, so
+        // pull those regardless of date too (small cap — this should normally
+        // be empty or tiny).
+        supabase.from('branch_incoming')
+          .select('id,item_barcode,item_name,quantity,unit,received_at,dispatched_by,confirmed,disputed,dispute_reason,disputed_by,disputed_at')
+          .eq('branch', branch)
+          .eq('confirmed', false)
+          .order('received_at', { ascending: false })
+          .limit(300),
       ]);
 
       // Build a name → price lookup from bakery_items
@@ -597,7 +629,10 @@ export const useBranchStore = create<BranchState>((set, get) => ({
           billNo:        d.bill_no ?? null,
         }));
 
-        incoming[branch] = (incomingData || []).map((d) => ({
+        incoming[branch] = [
+          ...(incomingData || []),
+          ...((openIncomingData || []).filter((o) => !(incomingData || []).some((i) => i.id === o.id))),
+        ].map((d) => ({
           id:            d.id,
           itemBarcode:   d.item_barcode != null ? Number(d.item_barcode) : undefined,
           itemName:      d.item_name,
@@ -679,6 +714,36 @@ export const useBranchStore = create<BranchState>((set, get) => ({
 
   fetchAllBranches: async () => {
     await Promise.all((['VRSNB', 'SNB', 'Hosur'] as Branch[]).map((b) => get().fetchBranchData(b)));
+  },
+
+  // EGRESS FIX: Owner/Admin-only, explicitly-triggered historical range fetch
+  // for the Reports screen. Callers are responsible for only invoking this
+  // for admin/owner roles and only when the user picks a range beyond today —
+  // it intentionally does NOT write into the `sales` cache used by the
+  // always-on branch dashboard, so it can never leak into the frequent
+  // fetchBranchData path above.
+  fetchBranchSalesRange: async (branch, fromDateISO, toDateISO) => {
+    const { data, error } = await supabase
+      .from('branch_sales')
+      .select('id,item_barcode,item_name,quantity_sold,sold_at,sold_by,branch,payment_method,unit_price,bill_no')
+      .eq('branch', branch)
+      .gte('sold_at', fromDateISO)
+      .lte('sold_at', toDateISO)
+      .order('sold_at', { ascending: false })
+      .limit(10000);
+    if (error) { console.error('[fetchBranchSalesRange]', error.message); return []; }
+    return (data || []).map((d): SaleRecord => ({
+      id:            d.id,
+      itemBarcode:   d.item_barcode != null ? Number(d.item_barcode) : undefined,
+      itemName:      d.item_name,
+      quantitySold:  d.quantity_sold,
+      soldAt:        d.sold_at,
+      soldBy:        d.sold_by,
+      branch:        d.branch as Branch,
+      paymentMethod: d.payment_method ?? null,
+      unitPrice:     d.unit_price != null ? Number(d.unit_price) : 0,
+      billNo:        d.bill_no ?? null,
+    }));
   },
 
   // B1 FIX: atomic stock decrement via stored procedure.
@@ -924,37 +989,50 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     const catalogBranch = branch === 'VRSNB' ? 'VRSNB' : branch === 'SNB' || branch === 'Hosur' ? 'SNB' : null;
     if (catalogBranch) await useBranchCatalogStore.getState().loadCatalog(catalogBranch);
     const catalogItems = catalogBranch ? useBranchCatalogStore.getState().getActiveItems(catalogBranch) : [];
-    const sixMonthsAgo = new Date();
-    sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+    // EGRESS FIX: this used to scan 6 months of `bakery_orders` (every branch's
+    // dispatch_log, no branch filter, no row cap) on every 30-second poll —
+    // the single largest source of PostgREST egress in the app. This is only a
+    // recovery path for dispatches that failed to write to branch_incoming, so
+    // a short recent window is enough; anything older is already reconciled.
+    const recoveryWindowStart = new Date();
+    recoveryWindowStart.setDate(recoveryWindowStart.getDate() - 3);
+    const recoveryWindowStartISO = recoveryWindowStart.toISOString();
 
-    const { data: orders } = await supabase
+    const { data: orders, error: ordersError } = await supabase
       .from('bakery_orders')
       .select('id, dispatch_log')
       .not('dispatch_log', 'is', null)
-      .gte('created_at', sixMonthsAgo.toISOString());
+      .gte('created_at', recoveryWindowStartISO)
+      .order('created_at', { ascending: false })
+      .limit(300);
+    if (ordersError) console.error('[syncIncoming] bakery_orders load failed:', ordersError.message);
 
     const { data: dispatchedCakeOrders, error: cakeDispatchError } = await supabase
       .from('cake_master_orders')
       .select('id,branch,order_no,source_order_id,cake_kg,prepared_quantity,flavor,cream_type,updated_at,created_at')
       .eq('branch', branch)
       .eq('status', 'Dispatched')
-      .gte('created_at', sixMonthsAgo.toISOString());
+      .gte('created_at', recoveryWindowStartISO)
+      .limit(200);
     if (cakeDispatchError && !/cake_master_orders|does not exist|schema cache/i.test(cakeDispatchError.message)) {
       console.error('[syncIncoming] dispatched cake load failed:', cakeDispatchError.message);
     }
 
     if (!orders) {
-      // Even if dispatch_log sync finds nothing, re-fetch branch_incoming directly
-      // to pick up any records written by submitDispatch that may have been missed
-      await get().fetchBranchData(branch);
+      // Query errored — nothing to reconcile this cycle. Realtime + the next
+      // scheduled sync will pick it back up; no need for a full branch refetch.
       return;
     }
 
     // FIXED: use dispatch_id column (the dispatch_log entry id) as the dedup key.
+    // EGRESS FIX: scoped to the same recovery window as the orders query above —
+    // this used to pull every dispatch_id ever recorded for the branch.
     const { data: existingIncoming } = await supabase
       .from('branch_incoming')
       .select('dispatch_id')
-      .eq('branch', branch);
+      .eq('branch', branch)
+      .gte('received_at', recoveryWindowStartISO)
+      .limit(2000);
     const existingDispatchIds = new Set(
       (existingIncoming || []).map((d) => d.dispatch_id).filter(Boolean),
     );
@@ -1013,8 +1091,12 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       }
     }
 
-    // Always re-fetch branch data after sync to ensure UI reflects latest DB state
-    await get().fetchBranchData(branch);
+    // EGRESS FIX: only re-fetch branch data when this sync actually wrote
+    // something new. This used to run unconditionally, meaning every 30-second
+    // background poll re-downloaded the full branch dashboard payload (stock,
+    // today's sales, advance/credit orders) even when nothing had changed.
+    // Realtime + the manual refresh button cover the rest.
+    if (newEntries.length > 0) await get().fetchBranchData(branch, true);
   },
 
   // B4 FIX: confirmIncoming — stock update comes BEFORE marking confirmed.
@@ -1337,11 +1419,16 @@ export const useBranchStore = create<BranchState>((set, get) => ({
   // ── Credit sales ────────────────────────────────────────────────────────────
 
   fetchCreditSales: async (branch) => {
+    // EGRESS FIX: safety cap — this previously had no limit at all, so a
+    // branch's entire lifetime credit-sales history was re-downloaded every
+    // time this ran. Unsettled/pending credit (the part that actually matters
+    // operationally) is always well within this cap in practice.
     const { data, error } = await supabase
       .from('branch_credit_sales')
       .select('id, branch, source, source_id, customer_ref, customer_name, customer_phone, items, subtotal, amount_paid, credit_amount, sold_by, created_at, due_date, settled_at, status, notes, bill_no, discount_amount')
       .eq('branch', branch)
-      .order('created_at', { ascending: false });
+      .order('created_at', { ascending: false })
+      .limit(3000);
     if (error) { console.error('[fetchCreditSales]', error.message); return; }
     set((s) => {
       const creditSales = { ...s.creditSales };
@@ -1373,11 +1460,13 @@ export const useBranchStore = create<BranchState>((set, get) => ({
   },
 
   fetchCreditPayments: async (branch) => {
+    // EGRESS FIX: same safety cap as fetchCreditSales above — was unbounded.
     const { data, error } = await supabase
       .from('branch_credit_payments')
       .select('id, credit_sale_id, branch, bill_no, amount, payment_mode, reference, remarks, collected_by, collected_role, created_at')
       .eq('branch', branch)
-      .order('created_at', { ascending: false });
+      .order('created_at', { ascending: false })
+      .limit(3000);
     if (error) { console.error('[fetchCreditPayments]', error.message); return; }
     set((s) => {
       const creditPayments = { ...s.creditPayments };
