@@ -333,7 +333,12 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
   // was requested to be removed, but this route was missing from the list.
   const hideWorkspaceHero = /^\/(order-pad|kitchen|billing)/.test(location.pathname)
     || /^\/(daily-closure|order-history)/.test(location.pathname)
-    || /^\/bakery\/(store|baker|packing|receive|planner)/.test(location.pathname)
+    // BUG FIX: /bakery/cake-master was missing from this list despite
+    // CakeMasterDashboard.tsx rendering its own compact in-page header (same
+    // pattern as store/baker/packing/receive/planner) — same class of bug as
+    // the earlier /bakery/planner fix in this file (see git history on this
+    // line). Cake Master users were getting a redundant duplicate header.
+    || /^\/bakery\/(store|baker|packing|receive|planner|cake-master)/.test(location.pathname)
     || /^\/branch\//.test(location.pathname)
     || /^\/admin-dashboard/.test(location.pathname)
     || /^\/admin-(snb|vrsnb)/.test(location.pathname)

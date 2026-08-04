@@ -270,12 +270,22 @@ export default function BottomNav() {
       { label: "Alerts", icon: <Bell className="size-5" />, path: "/branch/snb?tab=alerts" },
     );
   } else if (currentUser.role === "branch_hosur") {
+    // BUG FIX: /branch/hosur was retired — Hosur billing/shops/dispatch are
+    // now embedded in the Planner dashboard (see WorkspaceChrome's
+    // navForRole('branch_hosur') and PlannerDashboard's HosurUnifiedSection).
+    // These five links still pointed at the dead route, so any Hosur user on
+    // mobile (where this bottom nav is the primary navigation) tapped a
+    // 404/blank page. Mapped to the unified sub-tabs PlannerDashboard's own
+    // tab bar actually exposes today: "Receive" → dispatch (packing/receipt
+    // now lives under the Dispatch sub-tab) and "Billing" → collection
+    // (billing was folded into Payment Collection; there is no longer a
+    // standalone "billing" sub-tab in the unified nav).
     navItems.push(
-      { label: "Shops", icon: <Store className="size-5" />, path: "/branch/hosur?tab=shops" },
-      { label: "Order", icon: <ShoppingCart className="size-5" />, path: "/branch/hosur?tab=newOrder" },
-      { label: "Receive", icon: <Package className="size-5" />, path: "/branch/hosur?tab=receiving" },
-      { label: "Billing", icon: <FileText className="size-5" />, path: "/branch/hosur?tab=billing" },
-      { label: "Reports", icon: <History className="size-5" />, path: "/branch/hosur?tab=reports" },
+      { label: "Shops", icon: <Store className="size-5" />, path: "/bakery/planner?tab=hosur&hosurTab=shops" },
+      { label: "Order", icon: <ShoppingCart className="size-5" />, path: "/bakery/planner?tab=hosur&hosurTab=place" },
+      { label: "Receive", icon: <Package className="size-5" />, path: "/bakery/planner?tab=hosur&hosurTab=dispatch" },
+      { label: "Billing", icon: <FileText className="size-5" />, path: "/bakery/planner?tab=hosur&hosurTab=collection" },
+      { label: "Reports", icon: <History className="size-5" />, path: "/bakery/planner?tab=hosur&hosurTab=reports" },
     );
   } else if (currentUser.role === "admin_vrsnb") {
     navItems.push(
