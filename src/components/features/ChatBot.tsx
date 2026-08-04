@@ -30,12 +30,22 @@ const SNB_WEBSITE = 'https://www.snbbakery.in';
 // PERF-03: Menu dataset moved to a separate JSON file so it's only loaded when
 // the chatbot first opens, instead of bloating the main bundle for all users.
 // Use the lazily-loaded cache (falls back to empty objects before load completes)
-const MENU: Record<string, { timing: string; items: [string, number][] }> = new Proxy({} as Record<string, { timing: string; items: [string, number][] }>, {
-  get(_t, key) { return getMenuData()?.menu[key as string]; }
-});
-const BAKERY: Record<string, string[]> = new Proxy({} as Record<string, string[]>, {
-  get(_t, key) { return getMenuData()?.bakery[key as string]; }
-});
+//
+// BUG FIX: these used to be `new Proxy({}, { get(...) {...} })` objects —
+// only a `get` trap was defined, no `ownKeys`/`getOwnPropertyDescriptor`
+// traps. `Object.entries()`/`Object.keys()` enumerate via ownKeys, which
+// falls through to the (permanently empty) `{}` target regardless of the
+// get trap, so "show full menu" / "tell me about bakery items" always
+// returned an empty list, and the final fallback category-matching loop
+// never matched anything. Only direct MENU[cat]-style lookups worked. Now
+// plain getter functions returning the live data (or {} while it's still
+// loading) — Object.entries/keys work correctly against a real object.
+function getMenu(): Record<string, { timing: string; items: [string, number][] }> {
+  return getMenuData()?.menu ?? {};
+}
+function getBakery(): Record<string, string[]> {
+  return getMenuData()?.bakery ?? {};
+}
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface Message {
@@ -68,7 +78,12 @@ function getResponse(q: string): string {
   const ql = q.toLowerCase();
 
   const menuSection = (cat: string, max?: number) => {
-    const v = MENU[cat];
+    const v = getMenu()[cat];
+    // BUG FIX: no null-check before this — if the dynamic import('./chatBotMenuData.json')
+    // hasn't resolved yet (slow network/device) or `cat` doesn't exist, `v` is
+    // undefined and `v.items` throws inside the setTimeout in sendMsg,
+    // silently dropping the bot's reply with an uncaught exception in console.
+    if (!v) return 'Menu is still loading — please try again in a second.';
     const items = max ? v.items.slice(0, max) : v.items;
     const rows = items.map(([n, p]) => `• ${n} — ₹${p}`).join('\n');
     const extra = max && v.items.length > max ? `\n  ...and ${v.items.length - max} more` : '';
@@ -128,13 +143,13 @@ function getResponse(q: string): string {
     return menuSection('Chats');
 
   if (/full menu|entire menu|all menu|complete menu|what.*serve|what food/i.test(ql)) {
-    return Object.entries(MENU).map(([cat, v]) =>
+    return Object.entries(getMenu()).map(([cat, v]) =>
       `${cat} (${v.timing}) — ${v.items.length} items · ₹${Math.min(...v.items.map(x => x[1]))}–₹${Math.max(...v.items.map(x => x[1]))}`
     ).join('\n') + '\n\nAsk about any category for the full list!';
   }
 
   if (/bakery|sweet|muruk|mixture|nippat|chikki|halwa|laadu|burfi|mysore pak|savouri|cookie|biscuit|cake|muffin|brownie/i.test(ql)) {
-    return Object.entries(BAKERY).map(([cat, items]) =>
+    return Object.entries(getBakery()).map(([cat, items]) =>
       `🏷️ ${cat}\n${items.slice(0, 8).join(', ')}${items.length > 8 ? ` +${items.length - 8} more` : ''}`
     ).join('\n\n') + '\n\nPrices per kg. WhatsApp for current rates & advance orders!';
   }
@@ -151,7 +166,7 @@ function getResponse(q: string): string {
   if (/thank|thanks|great|awesome|helpful/i.test(ql))
     return 'You\'re welcome! 😊 Hope to see you at Cafe Aadvikam soon.\n\n📍 109 Bagalur Main Road, Berikai · ⏰ 6AM–10PM daily';
 
-  for (const cat of Object.keys(MENU)) {
+  for (const cat of Object.keys(getMenu())) {
     if (ql.includes(cat.toLowerCase().split(' ')[0]) || ql.includes(cat.toLowerCase()))
       return menuSection(cat);
   }
