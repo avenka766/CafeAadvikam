@@ -785,6 +785,69 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
       await supabase.from('branch_incoming')
         .delete()
         .eq('dispatch_id', entryId);
+
+      // BUG FIX: submitDispatch mirrors a Hosur dispatch into
+      // hosur_order_items.dispatched_quantity and flips hosur_orders.status
+      // to 'dispatched'/'pending_packing' — but this undo path never
+      // reversed either write. Deleting a mis-dispatched entry correctly
+      // reverted the bakery order to 'produced', while the corresponding
+      // Hosur shop order(s) stayed stuck showing 'dispatched' with a stale
+      // dispatched_quantity, so Hosur Receiving could show an order as ready
+      // to receive when it actually wasn't. Recompute both from the
+      // post-removal updatedLog, using the same proportional-split-by-share
+      // logic submitDispatch uses when one bakery order covers several
+      // merged Hosur shop orders.
+      if (removedEntry.branch === 'Hosur') {
+        const hosurIdsMatch = String(order.notes ?? '').match(/HOSUR_ORDER_IDS?:([^|]+)/);
+        const hosurOrderIds = hosurIdsMatch?.[1]
+          ? hosurIdsMatch[1].split(',').map(s => s.trim()).filter(Boolean)
+          : [];
+        if (hosurOrderIds.length > 0) {
+          const itemDispatchTotal = updatedLog
+            .filter(d => d.branch === 'Hosur' && d.itemName === removedEntry.itemName)
+            .reduce((sum, d) => sum + Number(d.quantity || 0), 0);
+
+          const { data: itemRows, error: itemRowsError } = await supabase
+            .from('hosur_order_items')
+            .select('order_id, quantity')
+            .in('order_id', hosurOrderIds)
+            .eq('item_name', removedEntry.itemName);
+
+          if (itemRowsError) {
+            console.error('[deleteDispatchEntry] Hosur item reversal sync failed:', itemRowsError);
+          } else {
+            const rows = itemRows ?? [];
+            const totalRequested = rows.reduce((s, r) => s + Number(r.quantity || 0), 0) || 1;
+            for (const row of rows) {
+              const share = Math.round(itemDispatchTotal * (Number(row.quantity || 0) / totalRequested) * 100) / 100;
+              const { error: hosurItemError } = await supabase
+                .from('hosur_order_items')
+                .update({ dispatched_quantity: share })
+                .eq('order_id', row.order_id as string)
+                .eq('item_name', removedEntry.itemName);
+              if (hosurItemError) console.error('[deleteDispatchEntry] Hosur item reversal write failed:', hosurItemError);
+            }
+
+            for (const hosurOrderId of hosurOrderIds) {
+              const { data: allItems, error: allItemsError } = await supabase
+                .from('hosur_order_items')
+                .select('quantity, dispatched_quantity')
+                .eq('order_id', hosurOrderId);
+              if (allItemsError) {
+                console.error('[deleteDispatchEntry] Hosur order status reversal sync failed:', allItemsError);
+                continue;
+              }
+              const fullyDone = (allItems ?? []).length > 0 &&
+                (allItems ?? []).every(r => Number(r.dispatched_quantity || 0) >= Number(r.quantity || 0) - 0.01);
+              const { error: hosurOrderError } = await supabase
+                .from('hosur_orders')
+                .update({ status: fullyDone ? 'dispatched' : 'pending_packing' })
+                .eq('id', hosurOrderId);
+              if (hosurOrderError) console.error('[deleteDispatchEntry] Hosur order status reversal write failed:', hosurOrderError);
+            }
+          }
+        }
+      }
     }
 
     set(s => ({

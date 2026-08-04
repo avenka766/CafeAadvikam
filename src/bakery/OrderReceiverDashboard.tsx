@@ -855,16 +855,36 @@ function PlacedOrdersPanel({
     const item = order.items[itemIndex];
     const tableName = branch === "Hosur" ? "hosur_orders" : "bakery_orders";
 
-    // Fetch current removed_items
+    // BUG FIX: this used to only append to removed_items (an audit-only
+    // column nothing downstream reads) without ever touching the order's
+    // actual `items` column. The UI showed the item struck through as
+    // "(removed)", giving the receiver the impression it was cancelled, but
+    // Store/Baker/Packing all iterate `order.items` directly with no
+    // removed_items filtering — so production and dispatch proceeded on the
+    // full original quantity regardless. Now the item is actually spliced
+    // out of `items` too, alongside the same audit trail entry. Fetching
+    // `items` fresh here (not from the possibly-stale `order` closure)
+    // avoids clobbering a concurrent edit to this order.
     const { data: current } = await supabase
       .from(tableName)
-      .select("removed_items")
+      .select("removed_items, items")
       .eq("id", order.id)
       .single();
 
     const existing = Array.isArray((current as Record<string,unknown>)?.removed_items)
       ? (current as Record<string,unknown>).removed_items as unknown[]
       : [];
+
+    const freshItems = Array.isArray((current as Record<string, unknown>)?.items)
+      ? ((current as Record<string, unknown>).items as typeof order.items)
+      : order.items;
+
+    if (itemIndex < 0 || itemIndex >= freshItems.length || freshItems[itemIndex]?.itemName !== item.itemName) {
+      setRemoveError("This order changed before the removal could be saved. Please reopen it and try again.");
+      setRemoving(false);
+      return;
+    }
+    const remainingItems = freshItems.filter((_, idx) => idx !== itemIndex);
 
     const removedEntry = {
       itemName: item.itemName,
@@ -876,7 +896,7 @@ function PlacedOrdersPanel({
 
     const { error } = await supabase
       .from(tableName)
-      .update({ removed_items: [...existing, removedEntry] })
+      .update({ items: remainingItems, removed_items: [...existing, removedEntry] })
       .eq("id", order.id);
 
     if (error) {
@@ -1329,6 +1349,16 @@ function PlacedOrdersPanel({
   );
 }
 
+// DEAD CODE WARNING: HosurOrderPanel/HosurHistoryPanel/HosurAlertsPanel below
+// (and loadHosurReceiverData further down) are unreachable. BRANCH_META only
+// defines `receiver_vrsnb`/`receiver_snb` keys, App.tsx only routes those two
+// roles to this dashboard, and no `receiver_hosur` role exists anywhere in
+// the codebase — so `branch` here can never equal 'Hosur' and these
+// components never render. The real, live Hosur workflow is entirely in
+// src/pages/HosurDashboard.tsx (embedded in the Planner dashboard). Do not
+// fix bugs here expecting them to affect production Hosur behavior — fix
+// HosurDashboard.tsx instead. Left in place rather than deleted to avoid a
+// larger, riskier diff; safe to remove entirely in a future cleanup pass.
 function HosurOrderPanel({
   shops,
   prices,

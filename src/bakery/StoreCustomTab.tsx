@@ -25,6 +25,7 @@ import { cn } from '@/lib/utils';
 import { supabase } from '@/lib/supabase';
 import { useStoreStockStore } from './storeStockStore';
 import type { StockItem } from './storeStockStore';
+import { useAuthStore } from '@/stores/authStore';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface CustomDeduction {
@@ -95,6 +96,7 @@ async function insertDeduction(
   item: StockItem,
   quantity: number,
   reason: string,
+  deductedBy: string,
 ): Promise<CustomDeduction | null> {
   const { data, error } = await supabase
     .from('store_custom_deductions')
@@ -104,6 +106,13 @@ async function insertDeduction(
       quantity,
       unit: item.unit,
       reason: reason.trim(),
+      // BUG FIX: this never set deducted_by even though the interface/DB
+      // support it and the component's own header comment claims every
+      // deduction is logged with an audit trail. Every custom deduction was
+      // silently attributed to nobody (blank in history and in the Excel
+      // export's "By" column), unlike the recipe-based deduction path
+      // (storeStockStore.deductMaterials), which does thread this through.
+      deducted_by: deductedBy || null,
     })
     .select()
     .single();
@@ -437,6 +446,8 @@ function blankRow(): DeductionRow {
 // ─── Main Component ────────────────────────────────────────────────────────────
 export default function StoreCustomTab() {
   const { items: stockItems, loaded: stockLoaded, load: loadStock, deductMaterials } = useStoreStockStore();
+  const currentUser = useAuthStore((s) => s.currentUser);
+  const actorName = currentUser?.displayName || currentUser?.username || '';
 
   const [deductions, setDeductions] = useState<CustomDeduction[]>([]);
   const [tableReady, setTableReady]     = useState(true);
@@ -498,7 +509,7 @@ export default function StoreCustomTab() {
       }
 
       // Log to DB
-      const record = await insertDeduction(r.item!, qty, finalReason);
+      const record = await insertDeduction(r.item!, qty, finalReason, actorName);
       if (record) newRecords.push(record);
     }
 
