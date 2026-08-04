@@ -5,6 +5,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { MessageCircle, X, Send, Phone, ShoppingBag, CalendarDays, ChevronRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import cafeLogo from '@/assets/cafe-logo.png';
 // PERF-03: menu dataset lazy-loaded via dynamic import so it's excluded from the
 // main bundle and only fetched when the chatbot first mounts.
 import { useState as _useState, useEffect as _useEffect } from 'react';
@@ -185,7 +186,7 @@ function MessageBubble({ msg }: { msg: Message }) {
           'px-3 py-2.5 rounded-2xl text-sm leading-relaxed whitespace-pre-line',
           isBot
             ? 'bg-orange-50 text-gray-800 rounded-bl-sm border border-orange-100'
-            : 'bg-[#8B4513] text-white rounded-br-sm',
+            : 'cafe-gradient text-white rounded-br-sm',
         )}
       >
         {isBot
@@ -421,8 +422,8 @@ export default function ChatBot() {
       <button
         onClick={() => setOpen(o => !o)}
         className={cn(
-          'fixed right-4 z-50 w-14 h-14 rounded-full shadow-lg flex items-center justify-center transition-all duration-300',
-          'bg-[#8B4513] text-white hover:bg-[#6b3310] active:scale-95',
+          'fixed right-4 z-50 w-14 h-14 rounded-full shadow-teal flex items-center justify-center transition-all duration-300',
+          'cafe-gradient text-white hover:scale-105 active:scale-95',
         )}
         style={{ bottom: `calc(env(safe-area-inset-bottom, 0px) + 5rem + ${keyboardOffset}px)` }}
         aria-label="Open chat"
@@ -451,8 +452,10 @@ export default function ChatBot() {
         }}
       >
         {/* Header */}
-        <div className="bg-[#8B4513] px-4 py-3 flex items-center gap-3 flex-shrink-0">
-          <div className="w-9 h-9 rounded-full bg-white/20 flex items-center justify-center text-lg flex-shrink-0">☕</div>
+        <div className="cafe-gradient px-4 py-3 flex items-center gap-3 flex-shrink-0">
+          <div className="w-9 h-9 rounded-full bg-white p-1 flex items-center justify-center flex-shrink-0 overflow-hidden">
+            <img src={cafeLogo} alt="" className="w-full h-full object-contain" />
+          </div>
           <div className="flex-1 min-w-0">
             <p className="text-white font-semibold text-sm leading-tight">Cafe Aadvikam</p>
             <p className="text-white/70 text-xs">Restaurant & Party Hall · Berikai</p>
@@ -480,7 +483,7 @@ export default function ChatBot() {
           <button onClick={() => openWA('Hi, I have an enquiry about Cafe Aadvikam')} className="flex items-center gap-1.5 text-xs px-3 py-1.5 bg-[#25D366] text-white rounded-full font-medium whitespace-nowrap hover:bg-[#1da851]">
             <MessageCircle className="size-3" />WhatsApp
           </button>
-          <button onClick={() => setShowOrder(true)} className="flex items-center gap-1.5 text-xs px-3 py-1.5 bg-[#8B4513] text-white rounded-full font-medium whitespace-nowrap hover:bg-[#6b3310]">
+          <button onClick={() => setShowOrder(true)} className="flex items-center gap-1.5 text-xs px-3 py-1.5 cafe-gradient text-white rounded-full font-medium whitespace-nowrap">
             <ShoppingBag className="size-3" />Order
           </button>
           <button onClick={() => setShowContact(true)} className="flex items-center gap-1.5 text-xs px-3 py-1.5 border border-gray-200 text-gray-600 rounded-full whitespace-nowrap hover:bg-gray-50">
@@ -508,11 +511,11 @@ export default function ChatBot() {
             onChange={e => setInput(e.target.value)}
             onKeyDown={e => e.key === 'Enter' && sendMsg()}
             placeholder="Ask about menu, prices, party hall…"
-            className="flex-1 text-sm px-3 py-2 border border-gray-200 rounded-xl outline-none focus:border-orange-400 bg-white"
+            className="flex-1 text-sm px-3 py-2 border border-gray-200 rounded-xl outline-none focus:border-primary bg-white"
           />
           <button
             onClick={() => sendMsg()}
-            className="w-9 h-9 flex items-center justify-center bg-[#8B4513] text-white rounded-xl hover:bg-[#6b3310] flex-shrink-0"
+            className="w-9 h-9 flex items-center justify-center cafe-gradient text-white rounded-xl flex-shrink-0"
           >
             <Send className="size-4" />
           </button>
