@@ -5847,8 +5847,14 @@ function BankDepositsTab({ userName }: { userName: string }) {
   );
 }
 function SalespersonManagementTab({ userName }: { userName: string }) {
-  const { salespeople, addSalesperson, updateSalesperson, removeSalesperson } =
+  const { salespeople, addSalesperson, updateSalesperson, removeSalesperson, refreshSalespeople } =
     useBranchOpsStore();
+
+  // URGENT FIX: fetch the salesperson roster directly on open rather than
+  // relying solely on the general branch-ops hydration, so a stale/
+  // incomplete persisted snapshot can't leave this screen showing nobody.
+  useEffect(() => { void refreshSalespeople(BRANCH); }, [refreshSalespeople]);
+
   const [editId, setEditId] = useState("");
   const [form, setForm] = useState({
     name: "",
