@@ -4,12 +4,19 @@ import type { CartItem, MenuItem, Order, OrderType, OrderStatus, PaymentType, Pa
 import { generateId } from '@/lib/utils';
 import { useMenuStore } from '@/stores/menuStore';
 
-// EGRESS FIX: Raised from 5 s → 30 s. With multiple tabs/devices open the old value
-// generated ~24 order-table fetches per minute. At 30 s the same scenario drops to
-// 4 fetches per minute — an 83 % reduction in order-query egress. The long-term
-// solution is Supabase Realtime postgres_changes, but this constant makes it easy
-// to tune further.
+// EGRESS FIX: originally raised from 5 s → 30 s here, then raised again to
+// 15 minutes once Supabase Realtime (postgres_changes) became the primary
+// sync mechanism for this store — this interval is now only a fallback poll
+// in case a realtime subscription silently drops, not the main sync path.
+// (Comment corrected: it previously still said "5 s → 30 s", which no
+// longer matched the 15-minute value below and made the retry/backoff math
+// downstream look broken when it was actually just using a stale base.)
 const POLL_INTERVAL_MS = 15 * 60_000;
+// Separate, much shorter base for the failure-retry backoff below — retries
+// after a fetch error should happen quickly and then back off, independent
+// of the steady-state 15-minute poll cadence.
+const POLL_BACKOFF_BASE_MS = 5_000;
+const POLL_BACKOFF_MAX_MS = 5 * 60_000;
 let orderRealtimeChannel: ReturnType<typeof supabase.channel> | null = null;
 let orderFetchInFlight = false;
 
@@ -168,7 +175,14 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     } catch (e) {
       const failCount = (get()._pollFailCount || 0) + 1;
       set({ _pollFailCount: failCount });
-      const backoffMs = Math.min(POLL_INTERVAL_MS * Math.pow(2, failCount - 1), 60_000);
+      // BUG FIX: this used to multiply the 15-minute POLL_INTERVAL_MS by the
+      // backoff exponent and then clamp to a 60s cap — since the base value
+      // alone (900,000ms) already exceeded the 60s cap on the very first
+      // failure, Math.min always returned the 60s cap regardless of
+      // failCount, so the exponential growth this was supposed to implement
+      // never actually had any effect. Now grows from a real short base and
+      // is capped well above that base so the backoff is meaningful.
+      const backoffMs = Math.min(POLL_BACKOFF_BASE_MS * Math.pow(2, failCount - 1), POLL_BACKOFF_MAX_MS);
       console.error(`[loadOrders] fetch failed (attempt ${failCount}, next retry in ${backoffMs}ms):`, e);
 
       const { pollTimer, _pollBackoffTimer } = get();
@@ -620,16 +634,33 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       throw new Error(`Failed to record balance payment: ${insertError.message}`);
     }
 
-    const { error: updateError } = await supabase
+    // BUG FIX: every sibling payment mutator (updateOrderStatus, applyDiscount,
+    // setPaymentType, setAdvancePayment) closes with an optimistic-lock check
+    // on updated_at so a concurrent write from another terminal is detected
+    // instead of silently overwritten. This function's closing update was
+    // missing that check — two billers collecting the same advance order's
+    // balance around the same time could both pass the earlier in-memory
+    // guard (each only sees their own client's stale order state), both
+    // insert their own balance order (fresh id each time, so both inserts
+    // succeed), and both close updates would succeed too, producing two
+    // duplicate paid "balance" orders and double-counted revenue for one
+    // advance sale.
+    const { data: balanceLock, error: updateError } = await supabase
       .from('orders')
       .update(closeUpdates)
-      .eq('id', orderId);
+      .eq('id', orderId)
+      .eq('updated_at', order.updatedAt)
+      .select('id');
 
-    if (updateError) {
+    if (updateError || !balanceLock || balanceLock.length === 0) {
       await supabase.from('orders').delete().eq('id', balanceOrderId);
       set({ orders: prev });
       console.error('[collectBalance] close advance order failed, compensated:', updateError);
-      throw new Error(`Failed to close advance order: ${updateError.message}`);
+      throw new Error(
+        !balanceLock || balanceLock.length === 0
+          ? 'This order was already updated (possibly by another terminal). Please refresh and check the balance before retrying.'
+          : `Failed to close advance order: ${updateError?.message}`,
+      );
     }
   },
 

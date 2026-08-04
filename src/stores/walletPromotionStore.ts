@@ -420,11 +420,21 @@ export const useWalletPromotionStore = create<WalletPromotionState>((set, get) =
   },
 
   updateWalletLimits: async (walletId, transactionLimit, dailyLimit, deductionPriority, highValueAuthorizationLimit) => {
+    // BUG FIX: this never sent p_high_value_authorization_limit even though
+    // the RPC accepts it (as its 5th param, DEFAULT NULL). Confirmed against
+    // the live function definition: it upserts that value straight into
+    // wallet_limits.high_value_otp_limit on every call via
+    // "on conflict ... do update set high_value_otp_limit = excluded...",
+    // so every previous "update limits" save was silently resetting the
+    // supervisor-authorization threshold to NULL — the exact gate
+    // BillingDashboard/BranchBillingProTab check before requiring
+    // supervisor sign-off on a high-value wallet payment.
     const { error } = await supabase.rpc('set_wallet_limits_secure', {
       p_wallet_id: walletId,
       p_transaction_limit: transactionLimit,
       p_daily_limit: dailyLimit,
       p_deduction_priority: deductionPriority,
+      p_high_value_authorization_limit: highValueAuthorizationLimit,
     });
     if (error) throw new Error(error.message);
     await get().loadWallets(true);
