@@ -344,6 +344,15 @@ async function fetchPaged(
     toDate?: string;
     orderColumn?: string;
     branchColumn?: string;
+    // BUG FIX: this used to hardcode the filter value to "SNB" regardless of
+    // what the caller passed — harmless today because the only caller
+    // (useSnbCashSummary) always happened to be invoked with branch="SNB",
+    // but the hook's own signature promises branch-scoping it didn't
+    // actually deliver, which would have silently leaked SNB cash/session
+    // data the moment this hook (or fetchPaged with branchColumn) was ever
+    // reused for VRSNB/Hosur. Callers must now pass branchValue explicitly
+    // whenever they pass branchColumn.
+    branchValue?: string;
     columns?: string;
     maxRows?: number;
   } = {},
@@ -353,7 +362,7 @@ async function fetchPaged(
   const rows: Record<string, unknown>[] = [];
   for (let from = 0; from < maxRows; from += pageSize) {
     let query = supabase.from(table).select(options.columns ?? "*");
-    if (options.branchColumn) query = query.eq(options.branchColumn, "SNB");
+    if (options.branchColumn) query = query.eq(options.branchColumn, options.branchValue ?? "SNB");
     if (options.dateColumn && options.fromDate) query = query.gte(options.dateColumn, options.fromDate);
     if (options.dateColumn && options.toDate) query = query.lte(options.dateColumn, options.toDate);
     if (options.orderColumn) query = query.order(options.orderColumn, { ascending: false });
@@ -606,6 +615,7 @@ export function useSnbCashSummary(branch: string) {
     const results = await Promise.allSettled([
       fetchPaged("branch_counter_sessions", {
         branchColumn: "branch",
+        branchValue: branch,
         orderColumn: "business_date",
         columns: "business_date,branch,cash_sales,upi_sales,card_sales,gross_sales,net_sales,credit_collected,advance_collected,expenses,supplier_payments",
         maxRows: 5000,
