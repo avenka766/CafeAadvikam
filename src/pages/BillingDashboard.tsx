@@ -1497,8 +1497,17 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
 }
 
 function NewBillPanel() {
+  // BUG FIX: this panel references `currentUser` in handleSendToKitchen,
+  // handleCancelTable, handleSubmit (credit/wallet/regular checkout) — 24
+  // usages total — but never actually called useAuthStore() to get it. Same
+  // class of bug already caught in production for `counterOpenedToday` in
+  // this exact component (see client_error_events: "counterOpenedToday is
+  // not defined" at /billing). Left unfixed, Send to Kitchen / Create Bill /
+  // Cancel Table would throw "currentUser is not defined" the moment any of
+  // them actually ran.
+  const { currentUser } = useAuthStore();
   const { items, loadMenu } = useMenuStore();
-  const { orders, cart, addToCart, updateCartQuantity, clearCart, setCart, getCartTotal, getCartCount, submitOrder, loadOrders } = useOrderStore(
+  const { orders, cart, addToCart, updateCartQuantity, clearCart, setCart, getCartTotal, getCartCount, submitOrder, loadOrders, setPaymentType } = useOrderStore(
     useShallow(s => ({
       orders: s.orders,
       cart: s.cart,
@@ -1510,6 +1519,7 @@ function NewBillPanel() {
       getCartCount: s.getCartCount,
       submitOrder: s.submitOrder,
       loadOrders: s.loadOrders,
+      setPaymentType: s.setPaymentType,
     }))
   );
 
@@ -1858,6 +1868,155 @@ function NewBillPanel() {
       }
     } finally {
       setSendingKot(false);
+    }
+  };
+
+  // -- Combined "Bill This Table" flow -----------------------------------------
+  // A table's tab can be spread across several separate records: the running
+  // POS tab built via Send to Kitchen above, PLUS any orders placed
+  // independently through the Order Pad or QR ordering (see
+  // incomingTableOrders — computed above, after orders/orderType/tableNumber
+  // are declared). Previously each of those needed its own separate payment
+  // action and the biller could only bill once kitchen had "readied" an
+  // order. This settles everything for the table in one pass, regardless of
+  // kitchen status: any unsent draft cart is KOT'd first (nothing is ever
+  // billed without a KOT — same rule as the rest of this screen), then every
+  // order source is charged with the same chosen payment method and printed
+  // as ONE receipt.
+  const [showCombineBillModal, setShowCombineBillModal] = useState(false);
+  const [combineBillMethod, setCombineBillMethod] = useState<'cash' | 'upi' | 'card' | 'credit'>('cash');
+  const [combineCreditPhone, setCombineCreditPhone] = useState('');
+  const [combineCreditDueDate, setCombineCreditDueDate] = useState('');
+  const [combineSubmitting, setCombineSubmitting] = useState(false);
+  const [combineError, setCombineError] = useState('');
+
+  const combineBillableCount = (runningOrder ? 1 : 0) + incomingTableOrders.length;
+
+  const handleConfirmCombinedBill = async () => {
+    if (combineSubmitting) return; // DOUBLE-BILL FIX: same re-entrant-tap guard used everywhere else in this file.
+    if (!tableNumber || !currentUser) return;
+    if (!counterOpenedToday) { setCombineError('Counter is not opened. Open Cashier Counter, then Counter Open before collecting payment.'); return; }
+    if (combineBillMethod === 'credit') {
+      const phoneDigits = combineCreditPhone.replace(/\D/g, '');
+      if (!customerName.trim()) { setCombineError('Customer name is required for credit sale.'); return; }
+      if (phoneDigits.length < 10) { setCombineError('Enter a valid phone number for credit sale.'); return; }
+      if (!combineCreditDueDate) { setCombineError('Due date is required for credit sale.'); return; }
+    }
+    setCombineError('');
+    setCombineSubmitting(true);
+    const billedBy = currentUser.displayName || currentUser.username;
+    try {
+      if (!allEmpty) {
+        await handleSendToKitchen();
+      }
+
+      // Pull a fresh snapshot rather than trusting closures that may be
+      // stale immediately after the KOT above.
+      const { data: runningRow, error: runningErr } = await supabase
+        .from('orders')
+        .select('id, order_number, table_number, order_type, items, subtotal, discount, discount_type, discount_value, total, status, created_by, created_at, updated_at, notes, customer_name, payment_type, payment_breakdown, billed_by, order_source, parcel_charges')
+        .eq('table_number', tableNumber)
+        .eq('order_type', 'dine_in')
+        .eq('status', 'running')
+        .maybeSingle();
+      if (runningErr) throw new Error(runningErr.message);
+      const freshRunning = runningRow ? dbRowToOrder(runningRow as Record<string, unknown>) : null;
+
+      const freshIncoming = useOrderStore.getState().orders.filter(o =>
+        o.orderType === 'dine_in' &&
+        o.tableNumber === tableNumber &&
+        (o.orderSource === 'staff' || o.orderSource === 'qr') &&
+        (o.status === 'pending' || o.status === 'preparing' || o.status === 'ready') &&
+        o.paymentType === 'unpaid'
+      );
+
+      const allSources = [...(freshRunning ? [freshRunning] : []), ...freshIncoming];
+      if (allSources.length === 0) {
+        setCombineError('Nothing to bill for this table.');
+        setCombineSubmitting(false);
+        return;
+      }
+
+      // Settle every source with the same already-tested primitives used
+      // elsewhere in this file — not a new payment code path. Each call is
+      // independently safe/atomic; if one fails partway we stop and surface
+      // it rather than printing a receipt for a partially-settled table.
+      if (freshRunning) {
+        const { error } = await supabase.rpc('finalize_table_bill_v1', {
+          p_order_id: freshRunning.id,
+          p_payment_type: combineBillMethod,
+          p_payment_breakdown: null,
+          p_billed_by: billedBy,
+          p_customer_name: customerName.trim() || null,
+        });
+        if (error) throw new Error(`Running tab: ${error.message}`);
+      }
+      for (const o of freshIncoming) {
+        await setPaymentType(o.id, combineBillMethod, billedBy);
+      }
+
+      const combinedItems = allSources.flatMap(o => o.items);
+      const combinedSubtotal = combinedItems.reduce((s, ci) => s + ci.menuItem.price * ci.quantity, 0);
+      const combinedParcel = allSources.reduce((s, o) => s + (o.parcelCharges || 0), 0);
+      const combinedTotal = combinedSubtotal + combinedParcel;
+
+      if (combineBillMethod === 'credit') {
+        const { recordCreditSale } = useBranchStore.getState();
+        const creditItems = combinedItems.map(ci => ({
+          itemName: ci.menuItem.name, quantity: ci.quantity, sellUnit: 'pcs' as const,
+          price: ci.menuItem.price, lineTotal: ci.menuItem.price * ci.quantity,
+        }));
+        const primaryNumber = (freshRunning ?? freshIncoming[0]).orderNumber;
+        const creditErr = await recordCreditSale('Cafe', {
+          billNo: `CREDIT-Cafe-${primaryNumber}`,
+          branch: 'Cafe',
+          customerName: customerName.trim(),
+          customerPhone: combineCreditPhone.trim(),
+          items: creditItems,
+          subtotal: combinedSubtotal,
+          amountPaid: 0,
+          creditAmount: combinedSubtotal,
+          dueDate: combineCreditDueDate,
+          soldBy: billedBy,
+          notes: `Combined Table ${tableNumber} bill (orders ${allSources.map(o => o.orderNumber).join(', ')})`,
+        });
+        if (creditErr) throw new Error(creditErr);
+      }
+
+      // Synthetic combined order purely for printing — reuses the exact same
+      // receipt renderer as every other bill on this screen.
+      const primary = freshRunning ?? freshIncoming[0];
+      const combinedOrderForPrint: Order = {
+        ...primary,
+        items: combinedItems,
+        subtotal: combinedSubtotal,
+        discount: 0, discountType: 'flat', discountValue: 0,
+        total: combinedTotal,
+        parcelCharges: combinedParcel,
+        paymentType: combineBillMethod,
+        billedBy,
+        status: 'served',
+        customerName: customerName.trim() || primary.customerName,
+        notes: `Combined bill — orders ${allSources.map(o => o.orderNumber).join(', ')}`,
+      };
+      if (combineBillMethod === 'credit') printCreditBill(combinedOrderForPrint, combineCreditPhone.trim(), combineCreditDueDate);
+      else printPaidBill(combinedOrderForPrint, 'original');
+
+      await loadOrders(60);
+      setRunningOrder(null);
+      clearTableDraft(tableNumber);
+      void loadTableBoard();
+      clearCart();
+      setCustomItems([]); setCustomName(''); setCustomPrice(''); setCustomQty('1');
+      setShowCombineBillModal(false);
+      setCombineCreditPhone(''); setCombineCreditDueDate(''); setCombineBillMethod('cash');
+      setShowSuccess(true);
+      setCustomerName(''); setTableNumber(null);
+      setTimeout(() => setShowSuccess(false), 2200);
+    } catch (err) {
+      setCombineError(err instanceof Error ? err.message : 'Failed to bill this table. Please check each order and try again.');
+    } finally {
+      setCombineSubmitting(false);
     }
   };
 
@@ -2942,6 +3101,24 @@ function NewBillPanel() {
                 </div>
               )}
 
+              {/* ONE-BILL FIX: a table that ordered more than once (running tab
+                  + Order Pad/QR orders) previously needed a separate payment
+                  action per order. This settles the whole table — draft cart,
+                  running tab, and every incoming order — in a single payment
+                  and a single printed receipt, without waiting on kitchen
+                  status. */}
+              {combineBillableCount >= 1 && (
+                <button
+                  type="button"
+                  onClick={() => { setCombineError(''); setShowCombineBillModal(true); }}
+                  className="w-full mt-2 flex items-center justify-center gap-2 rounded-xl py-2.5 text-sm font-body font-black text-white active:scale-[0.98] transition-all shadow-teal"
+                  style={{ background: 'linear-gradient(135deg,hsl(164 52% 30%),hsl(164 52% 20%))' }}
+                >
+                  <IndianRupee className="size-4" />
+                  Bill This Table{combineBillableCount > 1 ? ` (${combineBillableCount} orders combined)` : ''}
+                </button>
+              )}
+
               {tableNumber && (
                 <div className="mt-2 flex items-center justify-between gap-2 rounded-xl border border-border bg-muted/40 px-3 py-2">
                   <div className="flex items-center gap-1.5 text-xs font-body">
@@ -3261,6 +3438,126 @@ function NewBillPanel() {
         )}
       </div>
     </div>
+
+    {/* ONE-BILL FIX: combined settlement modal for a table that ordered more
+        than once (running tab + Order Pad/QR orders). */}
+    {showCombineBillModal && (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 px-4" onClick={() => !combineSubmitting && setShowCombineBillModal(false)}>
+        <div className="w-full max-w-md rounded-3xl bg-background border border-border shadow-2xl overflow-hidden max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()}>
+          <div className="px-5 py-4 border-b border-border bg-fuchsia-50 shrink-0">
+            <div className="flex items-center justify-between">
+              <p className="text-[10px] font-black uppercase tracking-widest text-fuchsia-700">Combined billing</p>
+              <span className="flex items-center gap-1 text-[10px] font-black uppercase tracking-widest text-fuchsia-700 bg-fuchsia-100 px-2 py-0.5 rounded-full">
+                <UtensilsCrossed className="size-3" />Table {tableNumber}
+              </span>
+            </div>
+            <h2 className="font-display text-2xl font-black text-foreground">Bill This Table</h2>
+            <p className="text-sm text-muted-foreground">
+              {combineBillableCount > 1
+                ? `Settles all ${combineBillableCount} orders for this table as one payment and one receipt.`
+                : 'Settles this table’s order — no need to wait for the kitchen.'}
+            </p>
+          </div>
+
+          <div className="p-5 space-y-4 overflow-y-auto">
+            <div className="rounded-2xl border border-border bg-muted/30 p-4 space-y-1.5">
+              {runningOrder && (
+                <div className="flex justify-between text-sm text-muted-foreground">
+                  <span>Running tab (sent via Send to Kitchen)</span>
+                  <span className="tabular-nums">{runningOrder.items.reduce((s, i) => s + i.quantity, 0)} items</span>
+                </div>
+              )}
+              {incomingTableOrders.map(o => (
+                <div key={o.id} className="flex justify-between text-sm text-muted-foreground">
+                  <span className="flex items-center gap-1">
+                    {o.orderSource === 'qr' ? <QrCode className="size-3" /> : <UserCheck className="size-3" />}
+                    Order #{o.orderNumber}
+                  </span>
+                  <span className="tabular-nums">{o.items.reduce((s, i) => s + i.quantity, 0)} items</span>
+                </div>
+              ))}
+              {!allEmpty && (
+                <div className="flex justify-between text-sm text-amber-700">
+                  <span>Items still in this cart (will be sent to kitchen first)</span>
+                  <span className="tabular-nums">{cartCount + customItems.length} items</span>
+                </div>
+              )}
+            </div>
+
+            <div>
+              <label className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest mb-1.5 block">Payment method</label>
+              <div className="grid grid-cols-4 gap-1.5">
+                {(['cash', 'upi', 'card', 'credit'] as const).map(m => (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() => setCombineBillMethod(m)}
+                    disabled={combineSubmitting}
+                    className={cn('py-2.5 rounded-xl text-xs font-body font-bold uppercase transition-all active:scale-95',
+                      combineBillMethod === m ? 'text-white shadow-teal' : 'bg-card border border-border text-foreground')}
+                    style={combineBillMethod === m ? { background: 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))' } : {}}>
+                    {m}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {combineBillMethod === 'credit' && (
+              <div className="space-y-2">
+                <input
+                  type="text"
+                  placeholder="Customer name"
+                  value={customerName}
+                  onChange={e => setCustomerName(e.target.value)}
+                  disabled={combineSubmitting}
+                  className="w-full px-3 py-2.5 rounded-xl border border-border bg-card text-sm font-body"
+                />
+                <input
+                  type="tel"
+                  placeholder="Customer phone"
+                  value={combineCreditPhone}
+                  onChange={e => setCombineCreditPhone(e.target.value)}
+                  disabled={combineSubmitting}
+                  className="w-full px-3 py-2.5 rounded-xl border border-border bg-card text-sm font-body"
+                />
+                <input
+                  type="date"
+                  value={combineCreditDueDate}
+                  onChange={e => setCombineCreditDueDate(e.target.value)}
+                  disabled={combineSubmitting}
+                  className="w-full px-3 py-2.5 rounded-xl border border-border bg-card text-sm font-body"
+                />
+              </div>
+            )}
+
+            {combineError && (
+              <p className="text-sm font-body text-destructive bg-destructive/10 rounded-xl px-3 py-2">{combineError}</p>
+            )}
+          </div>
+
+          <div className="p-5 pt-0 flex gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => setShowCombineBillModal(false)}
+              disabled={combineSubmitting}
+              className="px-4 py-3 rounded-xl bg-muted text-foreground text-sm font-body font-semibold active:scale-95 disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={handleConfirmCombinedBill}
+              disabled={combineSubmitting}
+              className="flex-1 py-3 rounded-xl text-white text-sm font-body font-black active:scale-[0.97] transition-all shadow-teal flex items-center justify-center gap-2 disabled:opacity-60"
+              style={{ background: 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))' }}
+            >
+              {combineSubmitting ? <Loader2 className="size-4 animate-spin" /> : <Receipt className="size-4" />}
+              {combineSubmitting ? 'Billing…' : 'Confirm & Print One Bill'}
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
     </>
   );
 }
