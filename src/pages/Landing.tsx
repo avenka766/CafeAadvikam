@@ -23,6 +23,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode, CSSProperties } from 'react';
 import { useNavigate } from 'react-router-dom';
+import gsap from 'gsap';
+import { ScrollTrigger } from 'gsap/ScrollTrigger';
+import Lenis from 'lenis';
+import * as THREE from 'three';
 import {
   ArrowRight,
   Cake,
@@ -88,6 +92,50 @@ const STOCK = {
 };
 function unsplash(url: string, w: number) {
   return `${url}?auto=format&fit=crop&w=${w}&q=80`;
+}
+
+// Real, free-license (Mixkit License — free for commercial use, no
+// attribution required) cinematic footage, hotlinked the same way the
+// Unsplash photography above is — no binary video assets ship with the app.
+// 360p on purpose: it's a background layer mostly covered by the gradient
+// scrim and hero text, and a smaller file loads faster on mobile data, which
+// matters more for a public marketing page than resolution nobody notices.
+const HERO_VIDEO: Record<Venue, string> = {
+  cafe: 'https://assets.mixkit.co/videos/810/810-360.mp4', // latte art pour
+  bakery: 'https://assets.mixkit.co/videos/24690/24690-360.mp4', // decorating a cake with chocolate
+};
+
+// Video hero background with a hard fallback to the existing proven-working
+// static image: if the video 404s, is blocked, or simply fails to decode for
+// any reason, onError swaps back to the plain <img> + CSS Ken-Burns zoom —
+// the same defensive pattern used for every other image in this file. Also
+// skipped entirely under prefers-reduced-motion (autoplaying video counts as
+// motion) and muted+playsInline, which is required for autoplay to work at
+// all cross-browser/mobile, not just a nicety.
+function HeroBackground({ videoSrc, imageSrc }: { videoSrc: string; imageSrc: string }) {
+  const [videoFailed, setVideoFailed] = useState(false);
+  const [reducedMotion, setReducedMotion] = useState(false);
+  useEffect(() => {
+    setReducedMotion(Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches));
+  }, []);
+  if (videoFailed || reducedMotion) {
+    return <img src={imageSrc} alt="" className="hero-zoom h-full w-full object-cover" />;
+  }
+  return (
+    <video
+      key={videoSrc}
+      autoPlay
+      muted
+      loop
+      playsInline
+      preload="metadata"
+      poster={imageSrc}
+      onError={() => setVideoFailed(true)}
+      className="h-full w-full object-cover"
+    >
+      <source src={videoSrc} type="video/mp4" />
+    </video>
+  );
 }
 
 type Venue = 'cafe' | 'bakery';
@@ -234,7 +282,7 @@ const CONTENT: Record<Venue, VenueContent> = {
       { image: bakerySweets, caption: 'Traditional Indian sweets' },
     ],
     storyImage: bakeryCounter,
-    storyBadge: 'Sri Nanjundeshwara',
+    storyBadge: 'Since 1988',
     storyTitle: 'Baked in-house, the same recipes since day one',
     storyP1: 'Every cake is decorated to order, every loaf is baked in small daily batches, and every festival sweet is still made the traditional way — by the same family that runs the cafe next door.',
     storyList: [
@@ -257,12 +305,23 @@ const CONTENT: Record<Venue, VenueContent> = {
   },
 };
 
-const TRUST_STRIP = [
-  { icon: CalendarCheck, value: 'Est. 2012', label: 'Family run, Berigai' },
-  { icon: Users, value: '120 seats', label: 'Party hall capacity' },
-  { icon: Clock, value: '7am – 10pm', label: 'Open every single day' },
-  { icon: Leaf, value: '100% in-house', label: 'Nothing frozen, nothing rushed' },
-];
+// Trust strip is venue-aware: the cafe opened in 2012, but Sri Nanjundeshwara
+// Bakery — the same family's bakery — has been running since 1988. Showing
+// "Est. 2012" while in Bakery mode was factually wrong; fixed here.
+const TRUST_STRIP: Record<Venue, { icon: typeof CalendarCheck; value: string; label: string }[]> = {
+  cafe: [
+    { icon: CalendarCheck, value: 'Est. 2012', label: 'Family run, Berigai' },
+    { icon: Users, value: '120 seats', label: 'Party hall capacity' },
+    { icon: Clock, value: '7am – 10pm', label: 'Open every single day' },
+    { icon: Leaf, value: '100% in-house', label: 'Nothing frozen, nothing rushed' },
+  ],
+  bakery: [
+    { icon: CalendarCheck, value: 'Est. 1988', label: 'Family run, Berigai' },
+    { icon: Cake, value: '35+ years', label: 'Baking for Berigai' },
+    { icon: Clock, value: '7am – 10pm', label: 'Open every single day' },
+    { icon: Leaf, value: '100% in-house', label: 'Nothing frozen, nothing rushed' },
+  ],
+};
 
 // Deterministic (not Math.random() per-render) ambient particle layout, so
 // it doesn't jitter/regenerate on re-render — computed once at module load.
@@ -321,38 +380,43 @@ function VenueToggle({ venue, onChange }: { venue: Venue; onChange: (v: Venue) =
   );
 }
 
-// Scroll-triggered storytelling reveal, built only on the native
-// IntersectionObserver API (no animation library). Fail-safe by construction:
-// a section starts fully visible in plain CSS (no class at all) and only
-// switches to the "pending" (hidden, offset) state once this component has
-// actually mounted on the client — so if JS never runs for any reason, the
-// content simply stays visible instead of getting stuck invisible, which is
-// exactly the failure mode Framer Motion caused here previously. Once the
-// section scrolls into view the observer flips it to "shown" and disconnects.
-function useReveal<T extends HTMLElement>() {
+gsap.registerPlugin(ScrollTrigger);
+
+// Scroll-triggered storytelling reveal, now driven by real GSAP + ScrollTrigger
+// timelines (per the brief: "Use GSAP. Create timeline animations."). The
+// element is NOT hidden until this effect has confirmed it can actually
+// attach a ScrollTrigger — and even then, a hard setTimeout safety net
+// forces the element visible after 2.5s no matter what. This preserves the
+// fail-open property that mattered here previously: Framer Motion's
+// scroll-linked animation broke in the field and left whole sections
+// permanently invisible because nothing ever un-hid them. GSAP is a more
+// mature, purpose-built scroll-animation engine than Framer Motion's scroll
+// hooks, but "more mature" isn't "untestable-by-me proof" — so the safety
+// net stays regardless of which library is doing the animating.
+function useGsapReveal<T extends HTMLElement>(delayMs = 0) {
   const ref = useRef<T | null>(null);
-  const [mounted, setMounted] = useState(false);
-  const [shown, setShown] = useState(false);
   useEffect(() => {
-    setMounted(true);
     const el = ref.current;
-    if (!el || typeof IntersectionObserver === 'undefined') {
-      setShown(true);
-      return;
-    }
-    const io = new IntersectionObserver(
-      ([entry]) => {
-        if (entry.isIntersecting) {
-          setShown(true);
-          io.disconnect();
-        }
-      },
-      { threshold: 0.12, rootMargin: '0px 0px -8% 0px' },
-    );
-    io.observe(el);
-    return () => io.disconnect();
-  }, []);
-  return { ref, state: !mounted ? 'static' : shown ? 'shown' : 'pending' } as const;
+    if (!el) return;
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
+
+    gsap.set(el, { opacity: 0, y: 28 });
+    let shown = false;
+    const reveal = () => {
+      if (shown) return;
+      shown = true;
+      gsap.to(el, { opacity: 1, y: 0, duration: 0.9, delay: delayMs / 1000, ease: 'power3.out' });
+    };
+    const trigger = ScrollTrigger.create({ trigger: el, start: 'top 90%', once: true, onEnter: reveal });
+    // Safety net — see comment above.
+    const safety = window.setTimeout(reveal, 2500);
+
+    return () => {
+      trigger.kill();
+      window.clearTimeout(safety);
+    };
+  }, [delayMs]);
+  return ref;
 }
 
 function Reveal({
@@ -366,16 +430,33 @@ function Reveal({
   delay?: 100 | 150 | 200 | 300 | 400;
   style?: CSSProperties;
 }) {
-  const { ref, state } = useReveal<HTMLDivElement>();
+  const ref = useGsapReveal<HTMLDivElement>(delay ?? 0);
   return (
-    <div
-      ref={ref}
-      className={cn(state === 'pending' && 'reveal-pending', state === 'shown' && 'reveal-shown', className)}
-      style={delay ? { ...style, transitionDelay: `${delay}ms` } : style}
-    >
+    <div ref={ref} className={className} style={style}>
       {children}
     </div>
   );
+}
+
+// Mounts Lenis smooth-scroll only while this component (the public landing
+// page) is on screen, and fully tears it down on unmount — the rest of the
+// app (billing terminals, dashboards) never sees it, matching the existing
+// "don't add global scroll/GPU cost to the Windows 7 POS terminals" rule
+// elsewhere in this codebase. Synced to GSAP's ticker, which is the
+// documented integration pattern between Lenis and ScrollTrigger.
+function useLenisSmoothScroll() {
+  useEffect(() => {
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
+    const lenis = new Lenis({ duration: 1.1, easing: (t: number) => 1 - Math.pow(1 - t, 3), smoothWheel: true });
+    lenis.on('scroll', ScrollTrigger.update);
+    const onTick = (time: number) => lenis.raf(time * 1000);
+    gsap.ticker.add(onTick);
+    gsap.ticker.lagSmoothing(0);
+    return () => {
+      gsap.ticker.remove(onTick);
+      lenis.destroy();
+    };
+  }, []);
 }
 
 // Lightweight, dependency-free parallax: reads scroll position on the
@@ -404,6 +485,99 @@ function useParallax(strength = 0.15) {
   return offset;
 }
 
+// Ambient WebGL particle field for the hero — an ADDITIVE enhancement layered
+// over the existing pure-CSS particle layer, never a replacement. If WebGL is
+// unavailable or anything in setup throws, this silently renders nothing and
+// the CSS particles (which have zero WebGL dependency) still cover the
+// atmosphere on their own — there is no code path where "particles fail to
+// load" means "hero looks broken." Particle count and geometry follow the
+// ui-ux-pro-max threejs guidance: alpha:true + CSS-driven background,
+// ~500 particles (well under the 3000 mobile-safe ceiling since this is a
+// background accent, not a hero-focal effect), low segment counts.
+function HeroParticlesThree() {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
+    if (typeof window === 'undefined' || !window.WebGLRenderingContext) return;
+
+    let frameId = 0;
+    let renderer: THREE.WebGLRenderer | null = null;
+    let geometry: THREE.BufferGeometry | null = null;
+    let material: THREE.PointsMaterial | null = null;
+
+    try {
+      const width = container.clientWidth || 1;
+      const height = container.clientHeight || 1;
+      const scene = new THREE.Scene();
+      const camera = new THREE.PerspectiveCamera(50, width / height, 0.1, 100);
+      camera.position.z = 20;
+
+      renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
+      renderer.setClearColor(0x000000, 0);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+      renderer.setSize(width, height);
+      container.appendChild(renderer.domElement);
+
+      const COUNT = 500;
+      const positions = new Float32Array(COUNT * 3);
+      const speeds = new Float32Array(COUNT);
+      for (let i = 0; i < COUNT; i += 1) {
+        positions[i * 3] = (Math.random() - 0.5) * 32;
+        positions[i * 3 + 1] = (Math.random() - 0.5) * 22;
+        positions[i * 3 + 2] = (Math.random() - 0.5) * 18;
+        speeds[i] = 0.004 + Math.random() * 0.01;
+      }
+      geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      material = new THREE.PointsMaterial({ color: 0xffe9c7, size: 0.16, transparent: true, opacity: 0.5, depthWrite: false });
+      const points = new THREE.Points(geometry, material);
+      scene.add(points);
+
+      const animate = () => {
+        const pos = geometry!.attributes.position as THREE.BufferAttribute;
+        for (let i = 0; i < COUNT; i += 1) {
+          let y = pos.getY(i) + speeds[i];
+          if (y > 11) y = -11;
+          pos.setY(i, y);
+        }
+        pos.needsUpdate = true;
+        points.rotation.y += 0.0005;
+        renderer!.render(scene, camera);
+        frameId = requestAnimationFrame(animate);
+      };
+      animate();
+
+      const onResize = () => {
+        if (!renderer || !container) return;
+        const w = container.clientWidth || 1;
+        const h = container.clientHeight || 1;
+        camera.aspect = w / h;
+        camera.updateProjectionMatrix();
+        renderer.setSize(w, h);
+      };
+      window.addEventListener('resize', onResize);
+
+      return () => {
+        window.removeEventListener('resize', onResize);
+        cancelAnimationFrame(frameId);
+        geometry?.dispose();
+        material?.dispose();
+        if (renderer) {
+          renderer.dispose();
+          if (renderer.domElement.parentElement === container) container.removeChild(renderer.domElement);
+        }
+      };
+    } catch {
+      // WebGL init failed for any reason — no-op. CSS particles already
+      // cover this visually, so there is nothing to fall back to here.
+      return undefined;
+    }
+  }, []);
+  return <div ref={containerRef} className="pointer-events-none absolute inset-0" aria-hidden="true" />;
+}
+
 export default function Landing() {
   const navigate = useNavigate();
   const { currentUser } = useAuthStore();
@@ -412,6 +586,7 @@ export default function Landing() {
   const [mapLoaded, setMapLoaded] = useState(false);
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   const heroParallax = useParallax(0.12);
+  useLenisSmoothScroll();
 
   const { items: cafeMenuItems, loading: cafeMenuLoading, loadMenu } = useMenuStore();
   const { items: bakeryMenuItems, loading: bakeryMenuLoading, loadItems: loadBakeryItems } = useBakeryItemsStore();
@@ -562,7 +737,7 @@ export default function Landing() {
               so combining them on one node would have silently dropped the
               parallax). */}
           <div className="h-[calc(100%+140px)] w-full" style={{ transform: `translateY(${-heroParallax}px)` }}>
-            <img src={c.heroImage} alt="" className="hero-zoom h-full w-full object-cover" />
+            <HeroBackground videoSrc={HERO_VIDEO[venue]} imageSrc={c.heroImage} />
           </div>
         </div>
         {/* Ambient floating flour/steam particles — pure CSS, no canvas. */}
@@ -582,6 +757,7 @@ export default function Landing() {
             />
           ))}
         </div>
+        <HeroParticlesThree />
         <div className="absolute inset-0" style={{ background: 'linear-gradient(180deg, rgba(10,15,12,0.22) 0%, rgba(10,15,12,0.46) 55%, rgba(8,10,8,0.94) 100%)' }} />
         <div className="relative z-10 w-full px-4 pb-20 md:px-8">
           <div className="venue-fade mx-auto max-w-7xl text-white">
@@ -602,7 +778,7 @@ export default function Landing() {
               </a>
             </div>
             <div className="mt-12 flex flex-wrap gap-10">
-              <div><p className="font-display text-3xl font-bold">12+</p><p className="mt-1 text-xs uppercase tracking-wide text-white/60">Years serving Berigai</p></div>
+              <div><p className="font-display text-3xl font-bold">{venue === 'cafe' ? '12+' : '35+'}</p><p className="mt-1 text-xs uppercase tracking-wide text-white/60">Years serving Berigai</p></div>
               <div><p className="font-display text-3xl font-bold">60+</p><p className="mt-1 text-xs uppercase tracking-wide text-white/60">{c.statLabel}</p></div>
               <div><p className="font-display text-3xl font-bold">7am–10pm</p><p className="mt-1 text-xs uppercase tracking-wide text-white/60">Open every day</p></div>
             </div>
@@ -624,7 +800,7 @@ export default function Landing() {
       <section id="trust" className="border-b border-border bg-card">
         <div className="mx-auto max-w-7xl px-4 py-8 md:px-8">
           <div className="grid grid-cols-2 gap-6 sm:grid-cols-4">
-            {TRUST_STRIP.map(({ icon: Icon, value, label }, i) => (
+            {TRUST_STRIP[venue].map(({ icon: Icon, value, label }, i) => (
               <div key={label} className={cn('animate-fade-up flex items-center gap-3', `delay-${(Math.min(i, 3) + 1) * 100}` as string)}>
                 <div className="grid size-10 shrink-0 place-items-center rounded-full bg-primary/10 text-primary">
                   <Icon className="size-4" />
