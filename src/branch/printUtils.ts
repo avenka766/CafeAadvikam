@@ -514,10 +514,19 @@ export function printBranchCashierClosure(
     </main>
     <script>window.onload=()=>window.print()</script>
     </body></html>`;
-  if (options.silent) {
-    printThermalHtml(html);
-    return;
-  }
+  // BUG FIX: `silent` used to route this report through printThermalHtml —
+  // a hidden 1px iframe with no printer-selection dialog, purpose-built for
+  // the 72mm-wide counter-open/close slips (see THERMAL_SLIP_STYLE below).
+  // This report is a wide, multi-column A4 audit document (@page{size:A4}
+  // above), completely different from those slips. Since every OTHER silent
+  // print in this file goes to the till's default thermal receipt printer,
+  // silently routing this one through the same invisible path would very
+  // likely have printed it to that same narrow thermal printer too —
+  // clipping/garbling a report designed for a full page. This still
+  // auto-triggers window.print() via the onload script below (so closing
+  // the counter still doesn't require the operator to click Print), it just
+  // does so through a real, visible print dialog so an A4-capable printer
+  // can actually be selected instead of blindly assuming the receipt printer.
   const win = window.open('', '_blank', 'width=920,height=900');
   if (!win) return;
   win.document.write(html);

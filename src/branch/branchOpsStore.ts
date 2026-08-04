@@ -807,6 +807,16 @@ type BranchOperationRecordRow = {
   record_id: string;
   payload: unknown;
   created_at: string;
+  // BUG FIX: added so callers can respect the soft-delete-via-status
+  // convention (see mirrorOperationRecord) on read, not just on write.
+  // Queries against branch_operation_records should select "status"
+  // alongside the other columns so the delete filter below actually works;
+  // optional because the synthetic "dedicated table" rows below (stock count
+  // reports, variance records, complaints) don't come from
+  // branch_operation_records at all and have no such column — those simply
+  // never carry a "Deleted" mirror status, which is correct since they use
+  // their own domain-specific status fields, not this soft-delete convention.
+  status?: string | null;
 };
 
 const SPARSE_OPERATION_HISTORY_TYPES = [
@@ -853,7 +863,7 @@ async function loadSparseOperationHistory(branch: Branch | null) {
   {
     let masterQuery = supabase
       .from('branch_operation_records')
-      .select('record_type, record_id, payload, created_at')
+      .select('record_type, record_id, payload, created_at, status')
       .in('record_type', Array.from(MASTER_DATA_TYPES))
       .order('created_at', { ascending: false })
       .limit(3000);
@@ -866,7 +876,7 @@ async function loadSparseOperationHistory(branch: Branch | null) {
   for (let from = 0; from < maxRows; from += pageSize) {
     let query = supabase
       .from('branch_operation_records')
-      .select('record_type, record_id, payload, created_at')
+      .select('record_type, record_id, payload, created_at, status')
       .in('record_type', historyTypes)
       .gte('created_at', cutoff.toISOString())
       .order('created_at', { ascending: false });
@@ -946,16 +956,32 @@ const mergeOperationRecordsIntoState = (
 
   for (const [stateKey, recordType] of buckets) {
     const current = Array.isArray(state[stateKey]) ? ([...(state[stateKey] as unknown[])] as Array<{ id?: string; createdAt?: string }>) : [];
-    const recoveredRows = rows
-      .filter((row) => row.record_type === recordType)
+    const rowsForType = rows.filter((row) => row.record_type === recordType);
+    // BUG FIX: a row mirrored with status "Deleted" (the soft-delete
+    // convention used by removeSupplier/removeSalesperson/etc. — same
+    // payload, separate status column set to "Deleted") must NOT be
+    // recovered back into state, and must also be scrubbed out of `current`
+    // in case a stale local snapshot still has it. Previously this loop only
+    // looked at `payload` and never read `row.status` at all, so a delete
+    // mirrored correctly on write was silently ignored on every read —
+    // deleted suppliers/salespeople/etc. would resurrect on the next reload
+    // or on any other device's hydration.
+    const deletedIds = new Set(
+      rowsForType
+        .filter((row) => row.status === "Deleted")
+        .map((row) => (row.payload as { id?: string })?.id)
+        .filter((id): id is string => Boolean(id)),
+    );
+    const recoveredRows = rowsForType
+      .filter((row) => row.status !== "Deleted")
       .map((row) => row.payload as { id?: string; createdAt?: string })
       .filter((payload) => payload?.id);
     const recovered = Array.from(
       new Map(recoveredRows.map((payload) => [payload.id, payload])).values(),
     );
-    if (recovered.length > 0) {
+    if (recovered.length > 0 || deletedIds.size > 0) {
       const recoveredIds = new Set(recovered.map((item) => item.id));
-      (state as unknown as Record<string, unknown[]>)[stateKey as string] = [...recovered, ...current.filter((item) => !recoveredIds.has(item.id))]
+      (state as unknown as Record<string, unknown[]>)[stateKey as string] = [...recovered, ...current.filter((item) => !recoveredIds.has(item.id) && !deletedIds.has(item.id))]
         .sort((a, b) => Number(new Date((b as { createdAt?: string }).createdAt || 0)) - Number(new Date((a as { createdAt?: string }).createdAt || 0)))
         .slice(0, 5000);
     }
@@ -997,7 +1023,11 @@ const branchOpsSupabaseStorage: PersistStorage<BranchOpsState> = {
 
     let opQuery = supabase
       .from("branch_operation_records")
-      .select("record_type, record_id, payload, created_at")
+      // BUG FIX: added "status" — this is the main hydration query (recent
+      // activity feed) and previously fed mergeOperationRecordsIntoState
+      // with no way to know a row had been soft-deleted, letting deleted
+      // records resurrect on the very next page load.
+      .select("record_type, record_id, payload, created_at, status")
       .order("created_at", { ascending: false })
       .limit(sessionBranch ? 300 : 8000); // Branch POS stays fast (300, today's activity). Admin/Owner/SNB Admin/VRSNB Admin need a full month across all branches combined for reports, so that path gets a much higher ceiling.
 
@@ -1642,6 +1672,18 @@ export const useBranchOpsStore = create<BranchOpsState>()(
         });
         return newBill;
       },
+      // DEAD CODE WARNING: collectCreditPayment/writeOffCreditSale and the
+      // `creditSales` array they operate on are not wired to any component
+      // (confirmed via a repo-wide call-site search — nothing calls either
+      // action) and can never be populated in the first place, since
+      // addBill's `creditEntry` is hardcoded to null. The REAL credit-sale
+      // system for every branch (including this one) lives in
+      // branchStore.ts (`recordCreditSale`, backed by the dedicated
+      // `branch_credit_sales`/`branch_credit_payments` Supabase tables with
+      // realtime sync) and is what BillingDashboard.tsx actually calls. Do
+      // not extend or wire up this copy — fix/extend branchStore.ts instead.
+      // Left in place rather than deleted to avoid a larger, riskier diff;
+      // safe to remove entirely in a future cleanup pass.
       collectCreditPayment: (creditId, payment) => {
         let updatedCredit: BranchCreditSale | undefined;
         set((s) => {
@@ -1737,19 +1779,23 @@ export const useBranchOpsStore = create<BranchOpsState>()(
             ],
           };
         }),
+      // BUG FIX: this only updated local state — the incremented printCount
+      // and "Duplicate Bill" status never reached branch_operation_records,
+      // so a second device pulling this bill by id/billNo wouldn't see
+      // either, weakening cross-terminal duplicate-bill detection.
       markBillDuplicate: (billId, user) =>
         set((s) => {
           const bill = s.bills.find((b) => b.id === billId);
+          if (!bill) return s;
+          const updatedBill = { ...bill, printCount: bill.printCount + 1, status: "Duplicate Bill" };
+          mirrorOperationRecord(bill.branch, "bill", billId, updatedBill, {
+            recordNo: bill.billNo,
+            amount: bill.total,
+            status: updatedBill.status,
+            actor: user,
+          });
           return {
-            bills: s.bills.map((b) =>
-              b.id === billId
-                ? {
-                    ...b,
-                    printCount: b.printCount + 1,
-                    status: "Duplicate Bill",
-                  }
-                : b,
-            ),
+            bills: s.bills.map((b) => (b.id === billId ? updatedBill : b)),
             notifications: bill
               ? [
                   {
@@ -1779,6 +1825,12 @@ export const useBranchOpsStore = create<BranchOpsState>()(
               : s.auditLogs,
           };
         }),
+      // BUG FIX: addHold/removeHold/clearHolds never called
+      // mirrorOperationRecord even though "hold_bill" is a listed
+      // SPARSE_OPERATION_HISTORY_TYPES/hydration-bucket type — a bill parked
+      // on one terminal was invisible to any other terminal/session trying to
+      // resume it. Now mirrored, with removal represented via the same
+      // soft-delete-via-status convention used for supplier/salesperson.
       addHold: (hold) => {
         const newHold = {
           ...hold,
@@ -1798,94 +1850,134 @@ export const useBranchOpsStore = create<BranchOpsState>()(
             ...s.auditLogs,
           ],
         }));
+        mirrorOperationRecord(hold.branch, "hold_bill", newHold.id, newHold, {
+          status: "Active",
+          actor: hold.salesperson,
+        });
         return newHold;
       },
       removeHold: (id) =>
-        set((s) => ({ holds: s.holds.filter((h) => h.id !== id) })),
+        set((s) => {
+          const prev = s.holds.find((h) => h.id === id);
+          if (prev) {
+            mirrorOperationRecord(prev.branch, "hold_bill", id, prev, {
+              status: "Deleted",
+              actor: prev.salesperson,
+            });
+          }
+          return { holds: s.holds.filter((h) => h.id !== id) };
+        }),
       clearHolds: (branch) =>
-        set((s) => ({ holds: s.holds.filter((h) => h.branch !== branch) })),
-      addSalesperson: (branch, name, user, details = {}) =>
+        set((s) => {
+          const toClear = s.holds.filter((h) => h.branch === branch);
+          for (const h of toClear) {
+            mirrorOperationRecord(h.branch, "hold_bill", h.id, h, {
+              status: "Deleted",
+              actor: h.salesperson,
+            });
+          }
+          return { holds: s.holds.filter((h) => h.branch !== branch) };
+        }),
+      // BUG FIX: addSalesperson/updateSalesperson/removeSalesperson used to
+      // only call set() — never mirrorOperationRecord() — unlike every other
+      // CRUD action in this file (supplier, expense, cashier_profile, etc.).
+      // That meant a salesperson added on one device only ever existed in
+      // that one browser's local state: reload, another terminal, or another
+      // staff login would never see them, and refreshSalespeople() (which
+      // reads branch_operation_records) had nothing to fetch. Now mirrored
+      // exactly like addSupplier/updateSupplier/removeSupplier.
+      addSalesperson: (branch, name, user, details = {}) => {
+        const newSalesperson = {
+          id: uid("sp"),
+          branch,
+          name: name.trim(),
+          mobile: details.mobile ?? "",
+          address: details.address ?? "",
+          role: details.role ?? "Salesperson",
+          active: details.active ?? true,
+          status:
+            details.status ??
+            ((details.active ?? true) ? "Active" : "Inactive"),
+          joiningDate:
+            details.joiningDate ?? new Date().toISOString().slice(0, 10),
+          assignedBranch: details.assignedBranch ?? branch,
+          remarks: details.remarks ?? "",
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
         set((s) => ({
-          salespeople: [
-            {
-              id: uid("sp"),
-              branch,
-              name: name.trim(),
-              mobile: details.mobile ?? "",
-              address: details.address ?? "",
-              role: details.role ?? "Salesperson",
-              active: details.active ?? true,
-              status:
-                details.status ??
-                ((details.active ?? true) ? "Active" : "Inactive"),
-              joiningDate:
-                details.joiningDate ?? new Date().toISOString().slice(0, 10),
-              assignedBranch: details.assignedBranch ?? branch,
-              remarks: details.remarks ?? "",
-              createdAt: new Date().toISOString(),
-              updatedAt: new Date().toISOString(),
-            },
-            ...s.salespeople,
-          ],
+          salespeople: [newSalesperson, ...s.salespeople],
           auditLogs: [
             audit(branch, user, "Add Salesperson", "-", name.trim()),
             ...s.auditLogs,
           ],
-        })),
+        }));
+        mirrorOperationRecord(branch, "salesperson", newSalesperson.id, newSalesperson, {
+          recordNo: newSalesperson.mobile,
+          status: "Active",
+          actor: user,
+        });
+      },
       updateSalesperson: (id, name, active, user, details = {}) =>
         set((s) => {
           const prev = s.salespeople.find((p) => p.id === id);
+          if (!prev) return s;
+          const updated = {
+            ...prev,
+            ...details,
+            name: name.trim(),
+            active,
+            status: details.status ?? (active ? "Active" : "Inactive"),
+            updatedAt: new Date().toISOString(),
+          };
+          mirrorOperationRecord(prev.branch, "salesperson", id, updated, {
+            recordNo: updated.mobile,
+            status: "Active",
+            actor: user,
+          });
           return {
-            salespeople: s.salespeople.map((p) =>
-              p.id === id
-                ? {
-                    ...p,
-                    ...details,
-                    name: name.trim(),
-                    active,
-                    status: details.status ?? (active ? "Active" : "Inactive"),
-                    updatedAt: new Date().toISOString(),
-                  }
-                : p,
-            ),
-            auditLogs: prev
-              ? [
-                  audit(
-                    prev.branch,
-                    user,
-                    "Update Salesperson",
-                    `${prev.name}/${prev.active}`,
-                    `${name}/${active}`,
-                  ),
-                  ...s.auditLogs,
-                ]
-              : s.auditLogs,
+            salespeople: s.salespeople.map((p) => (p.id === id ? updated : p)),
+            auditLogs: [
+              audit(
+                prev.branch,
+                user,
+                "Update Salesperson",
+                `${prev.name}/${prev.active}`,
+                `${name}/${active}`,
+              ),
+              ...s.auditLogs,
+            ],
           };
         }),
       removeSalesperson: (id, user) =>
         set((s) => {
           const prev = s.salespeople.find((p) => p.id === id);
+          if (!prev) return s;
+          mirrorOperationRecord(prev.branch, "salesperson", id, prev, {
+            recordNo: prev.mobile,
+            status: "Deleted",
+            actor: user,
+          });
           return {
             salespeople: s.salespeople.filter((p) => p.id !== id),
-            auditLogs: prev
-              ? [
-                  audit(
-                    prev.branch,
-                    user,
-                    "Delete Salesperson",
-                    prev.name,
-                    "-",
-                  ),
-                  ...s.auditLogs,
-                ]
-              : s.auditLogs,
+            auditLogs: [
+              audit(prev.branch, user, "Delete Salesperson", prev.name, "-"),
+              ...s.auditLogs,
+            ],
           };
         }),
       refreshSalespeople: async (branch) => {
         try {
+          // BUG FIX: now selects `status` and excludes rows mirrored as
+          // "Deleted" — previously this only selected record_id/payload, so
+          // a deleted salesperson's still-present (un-flagged in the
+          // fetched shape) row would get merged right back into local
+          // state, undoing the delete on the next refresh/reload. Deleted
+          // ids are now also explicitly stripped out of any local state the
+          // fetch doesn't already cover.
           const { data, error } = await supabase
             .from("branch_operation_records")
-            .select("record_id, payload")
+            .select("record_id, payload, status")
             .eq("branch", branch)
             .eq("record_type", "salesperson")
             .order("created_at", { ascending: false })
@@ -1894,19 +1986,25 @@ export const useBranchOpsStore = create<BranchOpsState>()(
             console.error("[branchOpsStore] refreshSalespeople failed:", error.message);
             return;
           }
-          const fetched = ((data ?? []) as Array<{ record_id: string; payload: unknown }>)
+          const allRows = (data ?? []) as Array<{ record_id: string; payload: unknown; status: string | null }>;
+          const deletedIds = new Set(
+            allRows.filter((row) => row.status === "Deleted").map((row) => row.record_id),
+          );
+          const fetched = allRows
+            .filter((row) => row.status !== "Deleted")
             .map((row) => row.payload as SalespersonProfile)
             .filter((p) => p?.id && p?.name);
-          if (fetched.length === 0) return;
           set((s) => {
             const byId = new Map(fetched.map((p) => [p.id, p]));
             // Merge rather than replace: keep any other-branch entries and any
             // very-recently-added-locally entries not yet reflected in this
             // fetch, but let the DB be the source of truth for anything it
-            // does have for this branch.
+            // does have for this branch — including deletes.
             const merged = [
               ...fetched,
-              ...s.salespeople.filter((p) => p.branch !== branch || !byId.has(p.id)),
+              ...s.salespeople.filter(
+                (p) => p.branch !== branch || (!byId.has(p.id) && !deletedIds.has(p.id)),
+              ),
             ];
             return { salespeople: merged };
           });
@@ -2232,6 +2330,16 @@ export const useBranchOpsStore = create<BranchOpsState>()(
           }, ...s.cashMovements] : s.cashMovements,
           auditLogs: [audit(ret.branch, ret.returnedBy, "Advance Refund", ret.originalBillNo, `${ret.returnNo} ${refundAmount}`), ...s.auditLogs],
         }));
+        // BUG FIX: "return" is a listed hydration/sparse-history type but
+        // neither this action nor addReturn ever mirrored to
+        // branch_operation_records. A refund processed on one terminal was
+        // invisible to any other terminal's Daily Closure cash reconciliation.
+        mirrorOperationRecord(ret.branch, "return", newReturn.id, newReturn, {
+          recordNo: newReturn.returnNo,
+          amount: refundAmount,
+          status: "Active",
+          actor: ret.returnedBy,
+        });
         return newReturn;
       },
       addReturn: async (ret) => {
@@ -2338,6 +2446,15 @@ export const useBranchOpsStore = create<BranchOpsState>()(
             ...state.auditLogs,
           ],
         }));
+        // BUG FIX: same "return" mirror gap as recordAdvanceRefund above —
+        // this is the main return path (used from the billing screen), so it
+        // matters even more that it reaches branch_operation_records.
+        mirrorOperationRecord(ret.branch, "return", newRet.id, newRet, {
+          recordNo: returnNo,
+          amount: refundAmount,
+          status: "Active",
+          actor: ret.returnedBy,
+        });
         return newRet;
       },
       addPurchase: (purchase) => {
