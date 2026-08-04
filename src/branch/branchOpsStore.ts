@@ -616,6 +616,15 @@ interface BranchOpsState {
     details?: Partial<SalespersonProfile>,
   ) => void;
   removeSalesperson: (id: string, user: string) => void;
+  // URGENT FIX: billing (SNB) reported the salesperson dropdown empty and
+  // Admin > Salesperson Management showing nobody, blocking billing in prod.
+  // Salespeople are master/reference data (a staff roster), not transactional
+  // history — they should never depend on the shared, date-scoped
+  // branch_operation_records hydration pipeline used for bills/expenses/etc.
+  // This does a direct, unbounded, always-correct fetch straight from the
+  // source of truth and merges it into the store, independent of whatever
+  // may be wrong with the general snapshot hydration for this session.
+  refreshSalespeople: (branch: Branch) => Promise<void>;
   addAdvanceCakeOrder: (
     order: Omit<CakeAdvanceOrder, "id" | "orderNo" | "createdAt" | "status"> & { orderNo?: string },
   ) => CakeAdvanceOrder;
@@ -807,6 +816,17 @@ const SPARSE_OPERATION_HISTORY_TYPES = [
   'supplier', 'expense', 'waste_log', 'cashier_profile', 'salesperson', 'audit_log',
 ];
 
+// URGENT FIX: 'salesperson', 'supplier' and 'cashier_profile' are
+// master/reference data (a staff/vendor roster), not transactional history —
+// a salesperson added years ago and still active must never be excluded just
+// because their record's created_at predates a rolling history window. The
+// 24-month cutoff below is correct for genuinely time-scoped transactional
+// types (bills, credit sales, purchases, audit log, etc.) but was being
+// applied to these master-data types too, which is what caused billing to
+// report an empty salesperson dropdown and Admin > Salesperson Management to
+// show nobody. These types are always fetched in full, unbounded by date.
+const MASTER_DATA_TYPES = new Set(['salesperson', 'supplier', 'cashier_profile']);
+
 // PERF FIX: this used to paginate up to 10 sequential round trips (pageSize
 // 1000 x maxRows 10000) with NO date bound at all, run on every single
 // hydration of the branch ops store (i.e. every page load/refresh of any
@@ -817,18 +837,37 @@ const SPARSE_OPERATION_HISTORY_TYPES = [
 // sparse (expenses, purchase orders, suppliers, etc.), so there is no
 // legitimate need to ever scan more than a couple of years of history here —
 // capped to 2 round trips and bounded to the last 24 months as a hard safety
-// net regardless of how large the table grows.
+// net regardless of how large the table grows. Master-data types (see
+// MASTER_DATA_TYPES above) are exempt from the date bound.
 async function loadSparseOperationHistory(branch: Branch | null) {
   const pageSize = 2500;
   const maxRows = 5000;
   const cutoff = new Date();
   cutoff.setMonth(cutoff.getMonth() - 24);
+  const historyTypes = SPARSE_OPERATION_HISTORY_TYPES.filter((t) => !MASTER_DATA_TYPES.has(t));
   const rows: BranchOperationRecordRow[] = [];
+
+  // Master data first: small, unbounded, always fetched in full regardless
+  // of age — this alone is enough to fix the empty salesperson dropdown even
+  // if something else is ever wrong with the transactional-history query below.
+  {
+    let masterQuery = supabase
+      .from('branch_operation_records')
+      .select('record_type, record_id, payload, created_at')
+      .in('record_type', Array.from(MASTER_DATA_TYPES))
+      .order('created_at', { ascending: false })
+      .limit(3000);
+    if (branch) masterQuery = masterQuery.eq('branch', branch);
+    const { data: masterData, error: masterError } = await masterQuery;
+    if (masterError) return { data: rows, error: masterError };
+    rows.push(...((masterData || []) as BranchOperationRecordRow[]));
+  }
+
   for (let from = 0; from < maxRows; from += pageSize) {
     let query = supabase
       .from('branch_operation_records')
       .select('record_type, record_id, payload, created_at')
-      .in('record_type', SPARSE_OPERATION_HISTORY_TYPES)
+      .in('record_type', historyTypes)
       .gte('created_at', cutoff.toISOString())
       .order('created_at', { ascending: false });
     if (branch) query = query.eq('branch', branch);
@@ -1842,6 +1881,39 @@ export const useBranchOpsStore = create<BranchOpsState>()(
               : s.auditLogs,
           };
         }),
+      refreshSalespeople: async (branch) => {
+        try {
+          const { data, error } = await supabase
+            .from("branch_operation_records")
+            .select("record_id, payload")
+            .eq("branch", branch)
+            .eq("record_type", "salesperson")
+            .order("created_at", { ascending: false })
+            .limit(1000);
+          if (error) {
+            console.error("[branchOpsStore] refreshSalespeople failed:", error.message);
+            return;
+          }
+          const fetched = ((data ?? []) as Array<{ record_id: string; payload: unknown }>)
+            .map((row) => row.payload as SalespersonProfile)
+            .filter((p) => p?.id && p?.name);
+          if (fetched.length === 0) return;
+          set((s) => {
+            const byId = new Map(fetched.map((p) => [p.id, p]));
+            // Merge rather than replace: keep any other-branch entries and any
+            // very-recently-added-locally entries not yet reflected in this
+            // fetch, but let the DB be the source of truth for anything it
+            // does have for this branch.
+            const merged = [
+              ...fetched,
+              ...s.salespeople.filter((p) => p.branch !== branch || !byId.has(p.id)),
+            ];
+            return { salespeople: merged };
+          });
+        } catch (err) {
+          console.error("[branchOpsStore] refreshSalespeople threw:", err);
+        }
+      },
       addAdvanceCakeOrder: (order) => {
         const orderNo = order.orderNo ?? nextBranchAdvanceOrderNumber(order.branch);
         const orderType = order.orderType || "cake";
