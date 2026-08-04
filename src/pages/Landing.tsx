@@ -1,17 +1,28 @@
 // src/pages/Landing.tsx
-// PREMIUM REDESIGN PASS: builds on the calm, fast, no-scroll-jack foundation
-// from the previous pass (still no backdrop-blur — see index.css PERF FIX
-// notes; that lesson from the billing-terminal work applies here too) and
-// layers in the requested premium treatment: a parallax hero, scroll-reveal
-// motion (Framer Motion — already an installed dependency, no new npm risk),
-// a gallery, a richer Party Hall / custom-cake section, and an embedded map.
-// Preserved verbatim per requirements: the Cafe/Bakery logos, the Party Hall
-// WhatsApp-enquiry CTA and its message text, all branding tokens/fonts, and
-// every backend/API/auth/routing call already in the app.
-import { useEffect, useRef, useState } from 'react';
-import type React from 'react';
+// PREMIUM REDESIGN, PASS 2: pass 1 used Framer Motion (useScroll/useTransform
+// parallax + whileInView scroll-reveals) and, in the field, whole sections
+// rendered blank — the hero collapsed to near-zero height and the menu/
+// gallery/party-hall image grids never became visible. Rather than keep
+// debugging an animation subsystem I can't attach a real browser to, this
+// pass removes it entirely and rebuilds every animation on the CSS keyframe
+// utilities already defined (and already proven working elsewhere in this
+// app) in index.css — .animate-fade-up, .animate-float, .hero-zoom, delay-*.
+// Pure CSS animations run on paint with no ref/IntersectionObserver timing
+// dependency, so content is guaranteed visible even if JS animation never
+// fires. Still no backdrop-blur (perf note carried over from the billing
+// terminal work). Every image container now has a bg-muted fallback so a
+// failed image shows a soft placeholder instead of invisible blank space.
+//
+// Also new in this pass: real, live menu data. The curated photo grid stays
+// (it's real local photography), but a new "Full menu, live" section below
+// it pulls actual items + prices straight from Supabase — useMenuStore for
+// Cafe Aadvikam's menu_items table, useBakeryItemsStore for Sri
+// Nanjundeshwara Bakery's bakery_items table — instead of only ever showing
+// four hardcoded dishes. A standalone floating WhatsApp button now sits
+// alongside the ChatBot toggle (bottom-left vs bottom-right, no overlap).
+import { useEffect, useMemo, useState } from 'react';
+import type { ReactNode, CSSProperties } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { motion, useScroll, useTransform, type Variants } from 'framer-motion';
 import {
   ArrowRight,
   Cake,
@@ -36,8 +47,11 @@ import {
   X,
 } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
+import { useMenuStore } from '@/stores/menuStore';
+import { useBakeryItemsStore } from '@/bakery/bakeryItemsStore';
+import { MENU_CATEGORIES } from '@/constants/config';
 import { getRoleDefaultPath } from '@/lib/routing';
-import { cn } from '@/lib/utils';
+import { cn, formatCurrency } from '@/lib/utils';
 import cafeLogo from '@/assets/cafe-logo.png';
 import snbLogo from '@/assets/snb-logo.png';
 import heroMeal from '@/assets/hero-bg.jpg';
@@ -65,7 +79,6 @@ const CAFE_INFO = {
 // from each photo's og:image so the links point at the actual image.
 const STOCK = {
   latteArtPour: 'https://images.unsplash.com/photo-1761271046396-97d231b59dd7',
-  cappuccinoFlatlay: 'https://images.unsplash.com/photo-1524671710025-d79530c2f957',
   cafeInteriorWarm: 'https://images.unsplash.com/photo-1749871615234-98bff62995ba',
   cafeInteriorPlants: 'https://images.unsplash.com/photo-1757010055832-de355d2f8f06',
   croissantCloseup: 'https://images.unsplash.com/photo-1668446377138-c763c16e99f0',
@@ -141,7 +154,7 @@ const CONTENT: Record<Venue, VenueContent> = {
     ],
     menuEyebrow: 'The lineup',
     menuTitle: 'Signature dishes guests order on repeat',
-    menuSub: 'A short list of what we’re known for — the full menu has a lot more.',
+    menuSub: 'A short list of what we’re known for — the full, live menu is just below.',
     menu: [
       { image: dosaImg, tag: 'Breakfast', name: 'Ghee roast dosa' },
       { image: specialThaliImg, tag: 'Full meal', name: 'Aadvikam special thali' },
@@ -202,7 +215,7 @@ const CONTENT: Record<Venue, VenueContent> = {
     ],
     menuEyebrow: 'The counter',
     menuTitle: 'Bakery favourites, made in-house every day',
-    menuSub: 'A short list of what leaves the counter fastest — ask about custom orders too.',
+    menuSub: 'A short list of what leaves the counter fastest — the full, live list is just below.',
     menu: [
       { image: bakeryCakes, tag: 'Celebration', name: 'Custom cakes' },
       { image: bakeryPastries, tag: 'Bakery', name: 'Fresh pastries' },
@@ -251,6 +264,14 @@ const TRUST_STRIP = [
   { icon: Leaf, value: '100% in-house', label: 'Nothing frozen, nothing rushed' },
 ];
 
+const BAKERY_CATEGORY_ICON: Record<string, string> = {
+  Sweets: '🍬',
+  Savouries: '🥨',
+  Cookies: '🍪',
+  Puffs: '🥐',
+  Bakery: '🍞',
+};
+
 function scrollToId(id: string) {
   document.querySelector(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
@@ -287,31 +308,23 @@ function VenueToggle({ venue, onChange }: { venue: Venue; onChange: (v: Venue) =
   );
 }
 
-// ── Motion variants (kept to transform/opacity only — cheap to composite,
-// consistent with the perf-driven "no backdrop-blur" rule elsewhere in the app) ──
-const fadeUp: Variants = {
-  hidden: { opacity: 0, y: 24 },
-  visible: { opacity: 1, y: 0, transition: { duration: 0.55, ease: [0.22, 1, 0.36, 1] } },
-};
-const stagger: Variants = {
-  hidden: {},
-  visible: { transition: { staggerChildren: 0.08 } },
-};
-const revealViewport = { once: true, margin: '-80px' };
-
+// Simple, dependency-free entrance animation: CSS class only, fires on paint —
+// no ref/IntersectionObserver timing to get wrong, so content is always visible.
 function Reveal({
   children,
   className,
+  delay,
   style,
 }: {
-  children: React.ReactNode;
+  children: ReactNode;
   className?: string;
-  style?: React.CSSProperties;
+  delay?: 100 | 150 | 200 | 300 | 400;
+  style?: CSSProperties;
 }) {
   return (
-    <motion.div className={className} style={style} initial="hidden" whileInView="visible" viewport={revealViewport} variants={fadeUp}>
+    <div className={cn('animate-fade-up', delay && `delay-${delay}`, className)} style={style}>
       {children}
-    </motion.div>
+    </div>
   );
 }
 
@@ -320,23 +333,49 @@ export default function Landing() {
   const { currentUser } = useAuthStore();
   const [venue, setVenue] = useState<Venue>('cafe');
   const [mobileOpen, setMobileOpen] = useState(false);
-  const heroRef = useRef<HTMLElement>(null);
-  const { scrollYProgress } = useScroll({ target: heroRef, offset: ['start start', 'end start'] });
-  const heroImgY = useTransform(scrollYProgress, [0, 1], ['0%', '18%']);
-  const heroContentY = useTransform(scrollYProgress, [0, 1], ['0%', '30%']);
-  const heroFade = useTransform(scrollYProgress, [0, 0.85], [1, 0]);
+  const [mapLoaded, setMapLoaded] = useState(false);
+
+  const { items: cafeMenuItems, loading: cafeMenuLoading, loadMenu } = useMenuStore();
+  const { items: bakeryMenuItems, loading: bakeryMenuLoading, loadItems: loadBakeryItems } = useBakeryItemsStore();
+
+  useEffect(() => {
+    void loadMenu();
+    void loadBakeryItems();
+  }, [loadMenu, loadBakeryItems]);
 
   useEffect(() => {
     if (currentUser) navigate(getRoleDefaultPath(currentUser.role), { replace: true });
   }, [currentUser, navigate]);
 
+  // Live cafe menu, grouped by category, in the same order as MENU_CATEGORIES.
+  const cafeLiveGroups = useMemo(() => {
+    const enabled = cafeMenuItems.filter((i) => i.enabled);
+    return MENU_CATEGORIES
+      .map((cat) => ({ cat, items: enabled.filter((i) => i.category === cat.id) }))
+      .filter((g) => g.items.length > 0);
+  }, [cafeMenuItems]);
+
+  // Live bakery menu, grouped by category.
+  const bakeryLiveGroups = useMemo(() => {
+    const enabled = bakeryMenuItems.filter((i) => i.enabled);
+    const byCategory = new Map<string, typeof enabled>();
+    for (const item of enabled) {
+      const list = byCategory.get(item.category) ?? [];
+      list.push(item);
+      byCategory.set(item.category, list);
+    }
+    return Array.from(byCategory.entries()).map(([category, items]) => ({ category, items }));
+  }, [bakeryMenuItems]);
+
   if (currentUser) return null;
 
   const c = CONTENT[venue];
   const goOrder = () => navigate('/order');
+  const goFullMenu = () => (venue === 'cafe' ? navigate('/menu') : scrollToId('#live-menu'));
   const mapsUrl = `https://maps.google.com/?q=${encodeURIComponent(CAFE_INFO.mapsQuery)}`;
-  const mapsEmbedUrl = `https://www.google.com/maps?q=${encodeURIComponent(CAFE_INFO.mapsQuery)}&output=embed`;
+  const mapsEmbedUrl = `https://maps.google.com/maps?q=${encodeURIComponent(CAFE_INFO.mapsQuery)}&t=&z=16&ie=UTF8&iwloc=&output=embed`;
   const waUrl = `https://wa.me/${CAFE_INFO.whatsapp}?text=${encodeURIComponent(c.waMessage)}`;
+  const waQuickUrl = `https://wa.me/${CAFE_INFO.whatsapp}?text=${encodeURIComponent('Hi Cafe Aadvikam, I have a question.')}`;
 
   const navLinks: [string, string][] = [
     ['Menu', '#menu'],
@@ -407,18 +446,23 @@ export default function Landing() {
             </nav>
             <div className="mt-auto space-y-3 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
               <button onClick={() => { setMobileOpen(false); goOrder(); }} className="w-full rounded-2xl cafe-gradient px-4 py-3.5 text-sm font-bold text-primary-foreground">{c.ctaNav}</button>
+              <a href={waQuickUrl} target="_blank" rel="noreferrer" onClick={() => setMobileOpen(false)} className="flex w-full items-center justify-center gap-2 rounded-2xl bg-[#25D366] px-4 py-3.5 text-sm font-bold text-white">
+                <MessageCircle className="size-4" /> WhatsApp us
+              </a>
               <button onClick={() => { setMobileOpen(false); navigate('/login'); }} className="w-full rounded-2xl border border-border px-4 py-3.5 text-sm font-bold text-foreground">Login</button>
             </div>
           </aside>
         </div>
       )}
 
-      {/* ── Hero (parallax) ── */}
-      <section id="top" ref={heroRef} className="relative flex min-h-[88vh] items-end overflow-hidden scroll-mt-[76px]">
-        <motion.img src={c.heroImage} alt="" style={{ y: heroImgY }} className="absolute inset-0 h-[120%] w-full object-cover" />
-        <div className="absolute inset-0" style={{ background: 'linear-gradient(180deg, rgba(10,15,12,0.15) 0%, rgba(10,15,12,0.4) 55%, rgba(8,10,8,0.92) 100%)' }} />
-        <motion.div style={{ y: heroContentY, opacity: heroFade }} className="relative z-10 w-full px-4 pb-16 md:px-8">
-          <motion.div initial={{ opacity: 0, y: 22 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1] }} className="mx-auto max-w-7xl text-white">
+      {/* ── Hero ── */}
+      <section id="top" className="relative flex min-h-[85vh] items-end overflow-hidden">
+        <div className="absolute inset-0 overflow-hidden bg-muted">
+          <img src={c.heroImage} alt="" className="hero-zoom h-full w-full object-cover" />
+        </div>
+        <div className="absolute inset-0" style={{ background: 'linear-gradient(180deg, rgba(10,15,12,0.18) 0%, rgba(10,15,12,0.42) 55%, rgba(8,10,8,0.92) 100%)' }} />
+        <div className="relative z-10 w-full px-4 pb-16 md:px-8">
+          <div className="animate-fade-up mx-auto max-w-7xl text-white">
             <div className="mb-5 inline-flex items-center gap-2 rounded-full border border-white/25 bg-white/10 px-4 py-2 text-xs font-bold uppercase tracking-[0.14em] text-amber-100">
               <Sparkles className="size-3.5 animate-float" /> {c.badge}
             </div>
@@ -431,22 +475,25 @@ export default function Landing() {
               <button onClick={() => scrollToId('#visit')} className="rounded-full border border-white/35 bg-white/5 px-6 py-3 text-sm font-bold text-white transition hover:bg-white/10">
                 {c.cta2}
               </button>
+              <a href={waUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 rounded-full bg-[#25D366] px-6 py-3 text-sm font-bold text-white shadow-2xl shadow-black/30 transition hover:scale-[1.03] active:scale-95">
+                <MessageCircle className="size-4" /> WhatsApp
+              </a>
             </div>
             <div className="mt-12 flex flex-wrap gap-10">
               <div><p className="font-display text-3xl font-bold">12+</p><p className="mt-1 text-xs uppercase tracking-wide text-white/60">Years serving Berigai</p></div>
               <div><p className="font-display text-3xl font-bold">60+</p><p className="mt-1 text-xs uppercase tracking-wide text-white/60">{c.statLabel}</p></div>
               <div><p className="font-display text-3xl font-bold">7am–10pm</p><p className="mt-1 text-xs uppercase tracking-wide text-white/60">Open every day</p></div>
             </div>
-          </motion.div>
-        </motion.div>
+          </div>
+        </div>
       </section>
 
       {/* ── Trust strip ── */}
       <section className="border-b border-border bg-card">
         <div className="mx-auto max-w-7xl px-4 py-8 md:px-8">
-          <motion.div initial="hidden" whileInView="visible" viewport={revealViewport} variants={stagger} className="grid grid-cols-2 gap-6 sm:grid-cols-4">
-            {TRUST_STRIP.map(({ icon: Icon, value, label }) => (
-              <motion.div key={label} variants={fadeUp} className="flex items-center gap-3">
+          <div className="grid grid-cols-2 gap-6 sm:grid-cols-4">
+            {TRUST_STRIP.map(({ icon: Icon, value, label }, i) => (
+              <div key={label} className={cn('animate-fade-up flex items-center gap-3', `delay-${(Math.min(i, 3) + 1) * 100}` as string)}>
                 <div className="grid size-10 shrink-0 place-items-center rounded-full bg-primary/10 text-primary">
                   <Icon className="size-4" />
                 </div>
@@ -454,9 +501,9 @@ export default function Landing() {
                   <p className="font-display text-lg font-bold leading-none text-foreground">{value}</p>
                   <p className="mt-1 text-[11px] text-muted-foreground">{label}</p>
                 </div>
-              </motion.div>
+              </div>
             ))}
-          </motion.div>
+          </div>
         </div>
       </section>
 
@@ -467,50 +514,124 @@ export default function Landing() {
             <p className="text-xs font-bold uppercase tracking-[0.2em] text-primary">{c.highlightsEyebrow}</p>
             <h2 className="mt-3 font-display text-3xl font-bold md:text-4xl">{c.highlightsTitle}</h2>
           </Reveal>
-          <motion.div initial="hidden" whileInView="visible" viewport={revealViewport} variants={stagger} className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
             {c.highlights.map(({ icon: Icon, title, copy }) => (
-              <motion.div key={title} variants={fadeUp} className="rounded-2xl border border-border bg-card p-6 shadow-soft transition hover:-translate-y-1 hover:shadow-lifted">
+              <div key={title} className="rounded-2xl border border-border bg-card p-6 shadow-soft transition hover:-translate-y-1 hover:shadow-lifted">
                 <div className="mb-4 grid size-11 place-items-center rounded-xl bg-primary/10 text-primary">
                   <Icon className="size-5" />
                 </div>
                 <h3 className="text-lg font-bold text-foreground">{title}</h3>
                 <p className="mt-1.5 text-sm text-muted-foreground">{copy}</p>
-              </motion.div>
+              </div>
             ))}
-          </motion.div>
+          </div>
         </div>
       </section>
 
-      {/* ── Menu grid ── */}
-      <section id="menu" className="scroll-mt-[76px] bg-card py-20">
+      {/* ── Curated menu (photography) ── */}
+      <section id="menu" className="bg-card py-20">
         <div className="mx-auto max-w-7xl px-4 md:px-8">
           <Reveal className="mx-auto mb-12 max-w-xl text-center">
             <p className="text-xs font-bold uppercase tracking-[0.2em] text-primary">{c.menuEyebrow}</p>
             <h2 className="mt-3 font-display text-3xl font-bold md:text-4xl">{c.menuTitle}</h2>
             <p className="mt-3 text-sm text-muted-foreground">{c.menuSub}</p>
           </Reveal>
-          <motion.div initial="hidden" whileInView="visible" viewport={revealViewport} variants={stagger} className="grid grid-cols-2 gap-5 lg:grid-cols-4">
+          <div className="grid grid-cols-2 gap-5 lg:grid-cols-4">
             {c.menu.map((item) => (
-              <motion.div key={item.name} variants={fadeUp} className="group relative aspect-[3/4] overflow-hidden rounded-2xl">
-                <img src={item.image} alt={item.name} className="h-full w-full object-cover transition duration-500 group-hover:scale-105" />
+              <div key={item.name} className="group relative aspect-[3/4] overflow-hidden rounded-2xl bg-muted">
+                <img src={item.image} alt={item.name} loading="lazy" className="h-full w-full object-cover transition duration-500 group-hover:scale-105" onError={(e) => { e.currentTarget.style.opacity = '0'; }} />
                 <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-transparent to-transparent" />
                 <div className="absolute inset-x-0 bottom-0 p-4 text-white">
                   <p className="text-[10px] font-bold uppercase tracking-wide text-amber-200">{item.tag}</p>
                   <h3 className="font-display text-lg font-bold">{item.name}</h3>
                 </div>
-              </motion.div>
+              </div>
             ))}
-          </motion.div>
+          </div>
           <div className="mt-10 text-center">
-            <button onClick={goOrder} className="inline-flex items-center gap-2 rounded-full border border-border bg-background px-6 py-3 text-sm font-bold text-foreground transition hover:bg-muted">
-              See the full menu <ArrowRight className="size-4" />
+            <button onClick={goFullMenu} className="inline-flex items-center gap-2 rounded-full border border-border bg-background px-6 py-3 text-sm font-bold text-foreground transition hover:bg-muted">
+              See the full menu with prices <ArrowRight className="size-4" />
             </button>
           </div>
         </div>
       </section>
 
+      {/* ── Live menu (real Supabase data) ── */}
+      <section id="live-menu" className="py-20">
+        <div className="mx-auto max-w-7xl px-4 md:px-8">
+          <Reveal className="mx-auto mb-12 max-w-xl text-center">
+            <p className="text-xs font-bold uppercase tracking-[0.2em] text-primary">Straight from the till</p>
+            <h2 className="mt-3 font-display text-3xl font-bold md:text-4xl">{venue === 'cafe' ? 'Full menu, live prices' : 'Full bakery counter, live prices'}</h2>
+            <p className="mt-3 text-sm text-muted-foreground">Pulled directly from what we sell today — not a static list.</p>
+          </Reveal>
+
+          {venue === 'cafe' ? (
+            cafeMenuLoading && cafeLiveGroups.length === 0 ? (
+              <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+                {[0, 1, 2].map((i) => <div key={i} className="h-48 animate-pulse rounded-2xl border border-border bg-muted" />)}
+              </div>
+            ) : cafeLiveGroups.length === 0 ? (
+              <p className="text-center text-sm text-muted-foreground">Menu prices are updated live — please check back shortly, or WhatsApp us for today’s menu.</p>
+            ) : (
+              <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+                {cafeLiveGroups.slice(0, 9).map(({ cat, items }) => (
+                  <div key={cat.id} className="rounded-2xl border border-border bg-card p-5 shadow-soft">
+                    <div className="mb-3 flex items-center justify-between">
+                      <h3 className="flex items-center gap-2 text-base font-bold text-foreground">
+                        <span aria-hidden="true">{cat.icon}</span> {cat.name}
+                      </h3>
+                      <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{cat.timing}</span>
+                    </div>
+                    <ul className="space-y-1.5">
+                      {items.slice(0, 5).map((item) => (
+                        <li key={item.id} className="flex items-center justify-between gap-3 text-sm">
+                          <span className="text-foreground/90">{item.name}</span>
+                          <span className="whitespace-nowrap font-semibold text-primary">{formatCurrency(item.price)}</span>
+                        </li>
+                      ))}
+                    </ul>
+                    {items.length > 5 && <p className="mt-2 text-[11px] font-semibold text-muted-foreground">+{items.length - 5} more in this category</p>}
+                  </div>
+                ))}
+              </div>
+            )
+          ) : bakeryMenuLoading && bakeryLiveGroups.length === 0 ? (
+            <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+              {[0, 1, 2].map((i) => <div key={i} className="h-48 animate-pulse rounded-2xl border border-border bg-muted" />)}
+            </div>
+          ) : bakeryLiveGroups.length === 0 ? (
+            <p className="text-center text-sm text-muted-foreground">Counter items are updated live — please check back shortly, or WhatsApp us for today’s stock.</p>
+          ) : (
+            <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+              {bakeryLiveGroups.map(({ category, items }) => (
+                <div key={category} className="rounded-2xl border border-border bg-card p-5 shadow-soft">
+                  <h3 className="mb-3 flex items-center gap-2 text-base font-bold text-foreground">
+                    <span aria-hidden="true">{BAKERY_CATEGORY_ICON[category] ?? '🧁'}</span> {category}
+                  </h3>
+                  <ul className="space-y-1.5">
+                    {items.slice(0, 6).map((item) => (
+                      <li key={item.id} className="flex items-center justify-between gap-3 text-sm">
+                        <span className="text-foreground/90">{item.icon} {item.name}</span>
+                        {item.price != null && <span className="whitespace-nowrap font-semibold text-primary">{formatCurrency(item.price)}</span>}
+                      </li>
+                    ))}
+                  </ul>
+                  {items.length > 6 && <p className="mt-2 text-[11px] font-semibold text-muted-foreground">+{items.length - 6} more in this category</p>}
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="mt-10 text-center">
+            <a href={waUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 rounded-full bg-[#25D366] px-6 py-3 text-sm font-bold text-white transition hover:scale-[1.03] active:scale-95">
+              <MessageCircle className="size-4" /> WhatsApp for today’s specials
+            </a>
+          </div>
+        </div>
+      </section>
+
       {/* ── Gallery ── */}
-      <section id="gallery" className="scroll-mt-[76px] py-20">
+      <section id="gallery" className="bg-card py-20">
         <div className="mx-auto max-w-7xl px-4 md:px-8">
           <Reveal className="mx-auto mb-12 max-w-xl text-center">
             <p className="inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-[0.2em] text-primary">
@@ -519,38 +640,37 @@ export default function Landing() {
             <h2 className="mt-3 font-display text-3xl font-bold md:text-4xl">{c.galleryTitle}</h2>
             <p className="mt-3 text-sm text-muted-foreground">{c.gallerySub}</p>
           </Reveal>
-          <motion.div initial="hidden" whileInView="visible" viewport={revealViewport} variants={stagger} className="grid grid-cols-2 gap-4 md:grid-cols-3">
+          <div className="grid grid-cols-2 gap-4 md:grid-cols-3">
             {c.gallery.map((item, i) => (
-              <motion.div
+              <div
                 key={item.caption}
-                variants={fadeUp}
                 className={cn(
-                  'group relative overflow-hidden rounded-2xl',
+                  'group relative overflow-hidden rounded-2xl bg-muted',
                   i === 0 ? 'col-span-2 aspect-[16/9] md:col-span-1 md:aspect-[4/5]' : 'aspect-square md:aspect-[4/5]',
                 )}
               >
-                <img src={item.image} alt={item.caption} loading="lazy" className="h-full w-full object-cover transition duration-500 group-hover:scale-105" />
+                <img src={item.image} alt={item.caption} loading="lazy" className="h-full w-full object-cover transition duration-500 group-hover:scale-105" onError={(e) => { e.currentTarget.style.opacity = '0'; }} />
                 <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/0 to-transparent opacity-0 transition group-hover:opacity-100" />
                 <p className="absolute inset-x-0 bottom-0 translate-y-2 p-3 text-xs font-semibold text-white opacity-0 transition duration-300 group-hover:translate-y-0 group-hover:opacity-100">
                   {item.caption}
                 </p>
-              </motion.div>
+              </div>
             ))}
-          </motion.div>
+          </div>
         </div>
       </section>
 
       {/* ── Story ── */}
-      <section id="story" className="scroll-mt-[76px] bg-card py-20">
+      <section id="story" className="py-20">
         <div className="mx-auto grid max-w-7xl gap-12 px-4 md:px-8 lg:grid-cols-2 lg:items-center">
-          <Reveal className="relative overflow-hidden rounded-[28px]">
-            <img src={c.storyImage} alt="" className="h-[420px] w-full object-cover md:h-[480px]" />
+          <Reveal className="relative overflow-hidden rounded-[28px] bg-muted">
+            <img src={c.storyImage} alt="" className="h-[420px] w-full object-cover md:h-[480px]" onError={(e) => { e.currentTarget.style.opacity = '0'; }} />
             <div className="absolute bottom-5 left-5 rounded-2xl bg-card/95 px-5 py-4 shadow-lifted">
               <p className="font-display text-xl font-bold text-foreground">{c.storyBadge}</p>
               <p className="mt-0.5 text-[11px] uppercase tracking-wide text-muted-foreground">Family run, Berigai</p>
             </div>
           </Reveal>
-          <Reveal>
+          <Reveal delay={100}>
             <p className="text-xs font-bold uppercase tracking-[0.2em] text-primary">Our story</p>
             <h2 className="mt-3 font-display text-3xl font-bold md:text-4xl">{c.storyTitle}</h2>
             <p className="mt-5 text-base leading-7 text-muted-foreground">{c.storyP1}</p>
@@ -570,7 +690,7 @@ export default function Landing() {
       {/* Preserved exactly: the WhatsApp-enquiry CTA (href + message text) for
           both venues. Everything else here — feature grid, image collage — is
           new presentation around that same, unchanged CTA. */}
-      <section id="occasion" className="scroll-mt-[76px] py-20">
+      <section id="occasion" className="py-20">
         <div className="mx-auto max-w-7xl px-4 md:px-8">
           <div
             className="overflow-hidden rounded-[32px] p-8 text-white md:p-14"
@@ -611,24 +731,24 @@ export default function Landing() {
                 )}
               </Reveal>
 
-              <motion.div initial="hidden" whileInView="visible" viewport={revealViewport} variants={stagger} className="grid grid-cols-2 gap-3">
-                <motion.div variants={fadeUp} className="col-span-2 overflow-hidden rounded-2xl">
-                  <img src={c.occasionGallery[0]} alt="" className="h-[190px] w-full object-cover md:h-[220px]" />
-                </motion.div>
-                <motion.div variants={fadeUp} className="overflow-hidden rounded-2xl">
-                  <img src={c.occasionGallery[1]} alt="" className="h-[140px] w-full object-cover md:h-[160px]" />
-                </motion.div>
-                <motion.div variants={fadeUp} className="overflow-hidden rounded-2xl">
-                  <img src={c.occasionGallery[2]} alt="" className="h-[140px] w-full object-cover md:h-[160px]" />
-                </motion.div>
-              </motion.div>
+              <Reveal delay={150} className="grid grid-cols-2 gap-3">
+                <div className="col-span-2 overflow-hidden rounded-2xl bg-white/5">
+                  <img src={c.occasionGallery[0]} alt="Party hall and celebration setup" loading="lazy" className="h-[190px] w-full object-cover md:h-[220px]" onError={(e) => { e.currentTarget.style.opacity = '0'; }} />
+                </div>
+                <div className="overflow-hidden rounded-2xl bg-white/5">
+                  <img src={c.occasionGallery[1]} alt="Celebration decor" loading="lazy" className="h-[140px] w-full object-cover md:h-[160px]" onError={(e) => { e.currentTarget.style.opacity = '0'; }} />
+                </div>
+                <div className="overflow-hidden rounded-2xl bg-white/5">
+                  <img src={c.occasionGallery[2]} alt="Celebration cake" loading="lazy" className="h-[140px] w-full object-cover md:h-[160px]" onError={(e) => { e.currentTarget.style.opacity = '0'; }} />
+                </div>
+              </Reveal>
             </div>
           </div>
         </div>
       </section>
 
       {/* ── Visit us ── */}
-      <section id="visit" className="scroll-mt-[76px] py-20">
+      <section id="visit" className="py-20">
         <div className="mx-auto max-w-7xl px-4 md:px-8">
           <Reveal
             className="grid gap-8 rounded-[32px] p-8 text-white md:grid-cols-3 md:p-14"
@@ -654,13 +774,21 @@ export default function Landing() {
             </div>
           </Reveal>
 
-          <Reveal className="mt-6 overflow-hidden rounded-[28px] border border-border">
+          <Reveal delay={100} className="relative mt-6 h-[320px] overflow-hidden rounded-[28px] border border-border bg-muted md:h-[380px]">
+            {!mapLoaded && (
+              <div className="absolute inset-0 z-0 flex flex-col items-center justify-center gap-2 px-6 text-center">
+                <MapPin className="size-6 text-muted-foreground" />
+                <p className="text-sm font-semibold text-muted-foreground">Loading map…</p>
+                <p className="text-xs text-muted-foreground">{CAFE_INFO.address}</p>
+              </div>
+            )}
             <iframe
               title="Cafe Aadvikam location"
               src={mapsEmbedUrl}
               loading="lazy"
               referrerPolicy="no-referrer-when-downgrade"
-              className="h-[320px] w-full border-0 md:h-[380px]"
+              onLoad={() => setMapLoaded(true)}
+              className="relative z-10 h-full w-full border-0"
             />
           </Reveal>
 
@@ -671,7 +799,7 @@ export default function Landing() {
             <a href={mapsUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 rounded-full border border-border bg-card px-7 py-3.5 text-sm font-bold text-foreground transition hover:bg-muted">
               Get directions <Navigation className="size-4" />
             </a>
-            <a href={`https://wa.me/${CAFE_INFO.whatsapp}`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 rounded-full border border-border bg-card px-7 py-3.5 text-sm font-bold text-foreground transition hover:bg-muted">
+            <a href={waUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 rounded-full bg-[#25D366] px-7 py-3.5 text-sm font-bold text-white transition hover:scale-[1.03] active:scale-95">
               WhatsApp us <MessageCircle className="size-4" />
             </a>
           </div>
@@ -692,6 +820,19 @@ export default function Landing() {
           <p className="text-xs text-muted-foreground">&copy; Cafe Aadvikam · Sri Nanjundeshwara Bakery · {CAFE_INFO.address}</p>
         </div>
       </footer>
+
+      {/* Standalone floating WhatsApp button — instant chat, separate from the
+          ChatBot panel (bottom-right). Bottom-left so the two never overlap. */}
+      <a
+        href={waUrl}
+        target="_blank"
+        rel="noreferrer"
+        aria-label="Chat on WhatsApp"
+        className="fixed left-4 z-40 grid size-14 place-items-center rounded-full bg-[#25D366] text-white shadow-lifted transition hover:scale-105 active:scale-95"
+        style={{ bottom: 'calc(env(safe-area-inset-bottom, 0px) + 1.25rem)' }}
+      >
+        <MessageCircle className="size-6" />
+      </a>
 
       <ChatBot />
     </main>
