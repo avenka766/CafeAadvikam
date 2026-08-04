@@ -10,6 +10,7 @@ import {
   type ReactNode,
 } from "react";
 import { useSearchParams } from "react-router-dom";
+import { jsPDF } from "jspdf";
 import { cn } from "@/lib/utils";
 import { useBranchLedger } from "@/hooks/useBranchLedger";
 import { asNumber, useSnbAdminReports, useSnbCashSummary } from "@/hooks/useSnbAdminReports";
@@ -22,6 +23,7 @@ import {
   useBranchOpsStore,
   type BranchBillRecord,
   type PurchaseRecord,
+  type QuotationRecord,
   type SalespersonProfile,
 } from "@/branch/branchOpsStore";
 import { useBranchCatalogStore } from "@/stores/branchCatalogStore";
@@ -2663,6 +2665,188 @@ function WasteLogsTab({ userName, role }: { userName: string; role: string }) {
   );
 }
 
+// ─── Quotation PDF (SNB) ────────────────────────────────────────────────────
+const SNB_QUOTE_BUSINESS = {
+  name: "SRI NANJUNDESHWARA BAKERY",
+  lines: ["404, Bagalur Main Road, Berigai Bus Stand, Berigai, Shoolagiri Taluk", "Krishnagiri, Tamil Nadu, Hosur-635105", "Phone: 9942266779, 9095445444"],
+  gstin: "33AMTPR1760M1ZE",
+};
+const SNB_QUOTE_BANK_DETAILS: Array<[string, string]> = [
+  ["Account No", "120032512285"],
+  ["Account Name", "VRSNB FOODS LLP"],
+  ["Bank Name", "Canara Bank"],
+  ["Branch Name", "Hosur"],
+  ["IFSC CODE", "CNRB0004385"],
+];
+const SNB_QUOTE_TERMS: Array<[string, string]> = [
+  ["Price", "Door delivery"],
+  ["Delivery mode", "Delivery at place (DAP) Against order Confirmation"],
+  ["payment Terms", "50% Advance balance 50% before Dispatch"],
+  ["Freight", "Free at door delivery"],
+  ["GST", "Extra"],
+];
+
+function buildQuotationPdf(quote: QuotationRecord) {
+  const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4", compress: true });
+  const marginX = 15;
+  const pageWidth = 210;
+  const contentWidth = pageWidth - marginX * 2;
+  let y = 16;
+
+  // Header
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(15);
+  doc.text(SNB_QUOTE_BUSINESS.name, pageWidth / 2, y, { align: "center" });
+  y += 5.5;
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(8.5);
+  SNB_QUOTE_BUSINESS.lines.forEach((line) => {
+    doc.text(line, pageWidth / 2, y, { align: "center" });
+    y += 4;
+  });
+  doc.text(`GSTIN: ${SNB_QUOTE_BUSINESS.gstin}`, pageWidth / 2, y, { align: "center" });
+  y += 5;
+  doc.setDrawColor(20);
+  doc.setLineWidth(0.4);
+  doc.line(marginX, y, pageWidth - marginX, y);
+  y += 6;
+
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(13);
+  doc.text("QUOTATION", pageWidth / 2, y, { align: "center" });
+  y += 8;
+
+  // Quote meta + customer details
+  doc.setFontSize(9.5);
+  const metaLeftX = marginX;
+  const metaRightX = pageWidth / 2 + 5;
+  const metaStartY = y;
+  const kv = (x: number, yy: number, label: string, value: string) => {
+    doc.setFont("helvetica", "bold");
+    doc.text(`${label}:`, x, yy);
+    doc.setFont("helvetica", "normal");
+    doc.text(value || "-", x + 32, yy);
+  };
+  kv(metaLeftX, y, "Quotation No", quote.quoteNo);
+  kv(metaRightX, y, "Date", new Date(quote.createdAt).toLocaleDateString("en-GB"));
+  y += 5.5;
+  kv(metaLeftX, y, "Customer", quote.customerName);
+  kv(metaRightX, y, "Mobile", quote.mobile || "-");
+  y += 5.5;
+  kv(metaLeftX, y, "Company", quote.companyName || "-");
+  kv(metaRightX, y, "GST No", quote.gstNumber || "-");
+  y += 5.5;
+  kv(metaLeftX, y, "Salesperson", quote.salesperson);
+  kv(metaRightX, y, "Status", quote.status);
+  y = Math.max(y, metaStartY) + 6;
+
+  // Items table
+  const cols = [
+    { label: "No", width: 10, align: "left" as const },
+    { label: "Item", width: 75, align: "left" as const },
+    { label: "Qty", width: 22, align: "right" as const },
+    { label: "Rate", width: 30, align: "right" as const },
+    { label: "Amount", width: contentWidth - (10 + 75 + 22 + 30), align: "right" as const },
+  ];
+  const drawRow = (cells: string[], rowY: number, bold: boolean, rowHeight: number) => {
+    let cx = marginX;
+    doc.setFont("helvetica", bold ? "bold" : "normal");
+    doc.setFontSize(9);
+    cols.forEach((col, i) => {
+      doc.rect(cx, rowY, col.width, rowHeight);
+      const textX = col.align === "right" ? cx + col.width - 2 : cx + 2;
+      doc.text(cells[i], textX, rowY + rowHeight - 2.6, { align: col.align, maxWidth: col.width - 3 });
+      cx += col.width;
+    });
+  };
+  drawRow(["No", "Item", "Qty", "Rate", "Amount"], y, true, 7);
+  y += 7;
+  quote.items.forEach((item, index) => {
+    const nameLines = doc.splitTextToSize(item.itemName, cols[1].width - 4) as string[];
+    const rowHeight = Math.max(6.5, nameLines.length * 4 + 2);
+    let cx = marginX;
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9);
+    cols.forEach((col, i) => {
+      doc.rect(cx, y, col.width, rowHeight);
+      cx += col.width;
+    });
+    doc.text(String(index + 1), marginX + 2, y + 4.4);
+    doc.text(nameLines, marginX + cols[0].width + 2, y + 4.4);
+    doc.text(`${item.quantity} ${item.unit}`, marginX + cols[0].width + cols[1].width + cols[2].width - 2, y + 4.4, { align: "right" });
+    doc.text(item.price.toFixed(2), marginX + cols[0].width + cols[1].width + cols[2].width + cols[3].width - 2, y + 4.4, { align: "right" });
+    doc.text(item.lineTotal.toFixed(2), pageWidth - marginX - 2, y + 4.4, { align: "right" });
+    y += rowHeight;
+  });
+  y += 3;
+
+  // Charges summary (right aligned)
+  const summaryLabelX = pageWidth - marginX - 60;
+  const summaryValueX = pageWidth - marginX;
+  const summaryLine = (label: string, value: number, bold = false) => {
+    doc.setFont("helvetica", bold ? "bold" : "normal");
+    doc.setFontSize(bold ? 10.5 : 9);
+    doc.text(label, summaryLabelX, y);
+    doc.text(money(value), summaryValueX, y, { align: "right" });
+    y += bold ? 6 : 5;
+  };
+  summaryLine("Subtotal", quote.subtotal ?? quote.items.reduce((s, i) => s + i.lineTotal, 0));
+  if (quote.deliveryCharges) summaryLine("Delivery Charges", quote.deliveryCharges);
+  if (quote.packingCharges) summaryLine("Packing Charges", quote.packingCharges);
+  if (quote.extraCharges) summaryLine("Extra Charges", quote.extraCharges);
+  if (quote.discount) summaryLine("Discount", -quote.discount);
+  doc.setDrawColor(20);
+  doc.line(summaryLabelX, y - 1, summaryValueX, y - 1);
+  y += 2;
+  summaryLine("Total", quote.total, true);
+  y += 4;
+
+  // Bank Details + Terms & Conditions (bordered 2-col key/value tables, side note: shown one below the other for A4 readability)
+  const drawKvTable = (title: string, rows: Array<[string, string]>, startY: number) => {
+    const labelW = 45;
+    const valueW = contentWidth - labelW;
+    let ty = startY;
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(10);
+    doc.setFillColor(230, 230, 230);
+    doc.rect(marginX, ty, contentWidth, 7, "FD");
+    doc.text(title, marginX + 3, ty + 4.8);
+    ty += 7;
+    doc.setFontSize(9);
+    rows.forEach(([label, value]) => {
+      const valueLines = doc.splitTextToSize(value, valueW - 5) as string[];
+      const rowHeight = Math.max(7, valueLines.length * 4 + 2.5);
+      doc.setFont("helvetica", "bold");
+      doc.rect(marginX, ty, labelW, rowHeight);
+      doc.text(label, marginX + 2, ty + 4.8);
+      doc.setFont("helvetica", "normal");
+      doc.rect(marginX + labelW, ty, valueW, rowHeight);
+      doc.text(valueLines, marginX + labelW + 2.5, ty + 4.8);
+      ty += rowHeight;
+    });
+    return ty;
+  };
+
+  if (y > 230) { doc.addPage(); y = 16; }
+  y = drawKvTable("Bank Details", SNB_QUOTE_BANK_DETAILS, y) + 6;
+  if (y > 230) { doc.addPage(); y = 16; }
+  y = drawKvTable("Terms & conditions", SNB_QUOTE_TERMS, y) + 10;
+
+  if (y > 260) { doc.addPage(); y = 16; }
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(9);
+  doc.text(`For ${SNB_QUOTE_BUSINESS.name}`, pageWidth - marginX, y, { align: "right" });
+  y += 14;
+  doc.text("Authorized Signatory", pageWidth - marginX, y, { align: "right" });
+
+  return doc;
+}
+
+function downloadQuotationPdf(quote: QuotationRecord) {
+  const doc = buildQuotationPdf(quote);
+  doc.save(`${quote.quoteNo}.pdf`);
+}
+
 function QuotationsTab({ userName }: { userName: string }) {
   const catalogItems = useSNBCatalog();
   const { quotations, addQuotation, updateQuotationStatus } = useBranchOpsStore();
@@ -2683,9 +2867,10 @@ function QuotationsTab({ userName }: { userName: string }) {
   const total = Math.max(0, subtotal + Number(form.deliveryCharges || 0) + Number(form.packingCharges || 0) + Number(form.extraCharges || 0) - Number(form.discount || 0));
   const save = () => {
     if (!form.customerName.trim() || !form.mobile.trim() || lines.length === 0) return;
-    addQuotation({ branch: BRANCH, customerName: form.customerName, companyName: form.companyName, mobile: form.mobile, gstNumber: form.gstNumber, items: lines, customItems: lines.filter((l) => !catalogItems.some((i) => i.name === l.itemName)), subtotal, deliveryCharges: Number(form.deliveryCharges || 0), packingCharges: Number(form.packingCharges || 0), extraCharges: Number(form.extraCharges || 0), discount: Number(form.discount || 0), total, salesperson: userName });
+    const saved = addQuotation({ branch: BRANCH, customerName: form.customerName, companyName: form.companyName, mobile: form.mobile, gstNumber: form.gstNumber, items: lines, customItems: lines.filter((l) => !catalogItems.some((i) => i.name === l.itemName)), subtotal, deliveryCharges: Number(form.deliveryCharges || 0), packingCharges: Number(form.packingCharges || 0), extraCharges: Number(form.extraCharges || 0), discount: Number(form.discount || 0), total, salesperson: userName });
     setLines([]);
     setForm({ ...form, customerName: "", companyName: "", mobile: "", gstNumber: "", deliveryCharges: "0", packingCharges: "0", extraCharges: "0", discount: "0" });
+    downloadQuotationPdf(saved);
   };
   return (
     <div className="grid gap-4 xl:grid-cols-[460px_minmax(0,1fr)]">
@@ -2714,11 +2899,11 @@ function QuotationsTab({ userName }: { userName: string }) {
             <Field label="Discount"><input type="number" className={inputCls} value={form.discount} onChange={(e) => setForm({ ...form, discount: e.target.value })} /></Field>
           </div>
           <div className="rounded-2xl bg-emerald-50 p-3 font-black text-emerald-700">Quotation Total: {money(total)}</div>
-          <button onClick={save} className={cn(btnCls, "w-full bg-slate-950 text-white")}>Save Quotation</button>
+          <button onClick={save} className={cn(btnCls, "w-full bg-slate-950 text-white")}><Download className="size-4" /> Save Quotation &amp; Download PDF</button>
         </div>
       </Panel>
       <Panel title="Quotation History" icon={<History className="size-4" />}>
-        <DataTable headers={["No", "Customer", "Mobile", "GST", "Items", "Charges", "Discount", "Total", "Status", "Action"]} rows={rows.map((q) => [q.quoteNo, q.customerName, q.mobile || "-", q.gstNumber || "-", q.items.length, money((q.deliveryCharges || 0) + (q.packingCharges || 0) + (q.extraCharges || 0)), money(q.discount || 0), money(q.total), q.status, <div key="a" className="flex gap-2"><button className={cn(btnCls, "bg-emerald-50 text-emerald-700")} onClick={() => updateQuotationStatus(q.id, "Converted", userName)}>Convert</button><button className={cn(btnCls, "bg-red-50 text-red-600")} onClick={() => updateQuotationStatus(q.id, "Cancelled", userName)}>Cancel</button></div>])} empty="No quotations saved." />
+        <DataTable headers={["No", "Customer", "Mobile", "GST", "Items", "Charges", "Discount", "Total", "Status", "Action"]} rows={rows.map((q) => [q.quoteNo, q.customerName, q.mobile || "-", q.gstNumber || "-", q.items.length, money((q.deliveryCharges || 0) + (q.packingCharges || 0) + (q.extraCharges || 0)), money(q.discount || 0), money(q.total), q.status, <div key="a" className="flex flex-wrap gap-2"><button className={cn(btnCls, "bg-slate-100 text-slate-700")} onClick={() => downloadQuotationPdf(q)}><Download className="size-4" /> PDF</button><button className={cn(btnCls, "bg-emerald-50 text-emerald-700")} onClick={() => updateQuotationStatus(q.id, "Converted", userName)}>Convert</button><button className={cn(btnCls, "bg-red-50 text-red-600")} onClick={() => updateQuotationStatus(q.id, "Cancelled", userName)}>Cancel</button></div>])} empty="No quotations saved." />
       </Panel>
     </div>
   );
