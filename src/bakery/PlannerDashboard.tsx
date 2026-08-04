@@ -12,8 +12,12 @@ import {
   ArrowRightLeft, Calendar, Plus, Send, CheckCircle2, Loader2,
   ChevronDown, ChevronUp, X, RefreshCw, AlertTriangle, FileSpreadsheet, Clock3,
   Store, CreditCard, WalletCards, MessageCircle, Bell, CalendarDays, ShieldCheck,
-  Search, Printer, Receipt, ListPlus,
+  Search, Printer, Receipt, ListPlus, BarChart3, FileText, Minus, IndianRupee,
+  ShoppingCart, Percent, Trash2,
 } from 'lucide-react';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
+import * as XLSX from 'xlsx';
+import jsPDF from 'jspdf';
 import { useBakeryStore, isPlannedOrder } from './bakeryStore';
 import { useAuthStore } from '@/stores/authStore';
 import { cn } from '@/lib/utils';
@@ -24,12 +28,12 @@ import PackingTransferInTab from './PackingTransferInTab';
 import PackingDailyClosureTab from './PackingDailyClosureTab';
 import { exportToExcel } from '@/lib/exportExcel';
 import HosurDashboard from '@/pages/HosurDashboard';
-import HosurShopOrderPanel from './HosurShopOrderPanel';
+import HosurShopOrderPanel, { leftoverReasonLabel } from './HosurShopOrderPanel';
 import PackingCakeOrdersTab from './PackingCakeOrdersTab';
 import { useBranchCatalogStore } from '@/stores/branchCatalogStore';
 import { supabase } from '@/lib/supabase';
 
-type PlannerTab = 'incoming' | 'sent' | 'merged' | 'planning' | 'production' | 'dispatch' | 'hosur' | 'cake' | 'transfer-in' | 'closure' | 'invoice' | 'done';
+type PlannerTab = 'incoming' | 'sent' | 'merged' | 'planning' | 'production' | 'dispatch' | 'hosur' | 'cake' | 'transfer-in' | 'closure' | 'invoice' | 'reports' | 'billing' | 'done';
 const TABS: { key: PlannerTab; label: string; icon: React.ReactNode }[] = [
   { key: 'incoming',    label: 'Incoming Orders',  icon: <ClipboardList className="size-4" /> },
   { key: 'sent',        label: 'Sent',             icon: <Send className="size-4" /> },
@@ -42,6 +46,8 @@ const TABS: { key: PlannerTab; label: string; icon: React.ReactNode }[] = [
   { key: 'transfer-in', label: 'Transfer In',      icon: <ArrowRightLeft className="size-4" /> },
   { key: 'closure',     label: 'Daily Closure',    icon: <Calendar className="size-4" /> },
   { key: 'invoice',     label: 'Invoice',          icon: <Receipt className="size-4" /> },
+  { key: 'billing',     label: 'Billing (Walk-in)', icon: <ShoppingCart className="size-4" /> },
+  { key: 'reports',     label: 'Reports',          icon: <BarChart3 className="size-4" /> },
   { key: 'done',        label: 'Leftover / Done',  icon: <PackageCheck className="size-4" /> },
 ];
 
@@ -210,6 +216,8 @@ export default function PlannerDashboard() {
             {tab === 'transfer-in' && <PackingTransferInTab />}
             {tab === 'closure' && <PackingDailyClosureTab />}
             {tab === 'invoice' && <InvoiceTab orders={orders} />}
+            {tab === 'billing' && <BillingTab />}
+            {tab === 'reports' && <ReportsTab orders={orders} />}
             {tab === 'done' && <LeftoverDoneTab active={activeLeftovers} done={doneOrders} />}
           </>
         )}
@@ -707,21 +715,104 @@ function PlanningTab({ orders }: { orders: BakeryOrder[] }) {
   );
 }
 
+// ─── Date grouping (Production Entry + Dispatch) ────────────────────────────
+// Anchors "which date" an order belongs to on storeConfirmedAt — the moment
+// Store hands the merged order to production (confirmStock/confirmStockSelected
+// in bakeryStore.ts) — not createdAt. This is exactly the planner's own mental
+// model ("I send the merged order to store by morning 7... what Store sends to
+// production is what I should see, date-wise"). Falls back to createdAt only
+// for legacy rows that predate the store_confirmed_at column.
+const groupDateKey = (o: Pick<BakeryOrder, 'storeConfirmedAt' | 'createdAt'>) =>
+  kolkataDateKey(o.storeConfirmedAt || o.createdAt);
+
+function dateGroupLabel(dateKey: string, todayKey: string, yesterdayKey: string): string {
+  if (dateKey === todayKey) return 'Today';
+  if (dateKey === yesterdayKey) return 'Yesterday';
+  return new Date(`${dateKey}T00:00:00`).toLocaleDateString('en-IN', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' });
+}
+
+interface DateGroup { dateKey: string; label: string; orders: BakeryOrder[] }
+
+// Splits a flat order list into calendar-day buckets (newest first) — the
+// single grouping primitive shared by Production Entry and Dispatch so an
+// item pending from an earlier date never silently folds into "today".
+function groupOrdersByStoreDate(orders: BakeryOrder[]): DateGroup[] {
+  const now = new Date();
+  const todayKey = kolkataDateKey(now.toISOString());
+  const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+  const yesterdayKey = kolkataDateKey(yesterday.toISOString());
+  const map = new Map<string, BakeryOrder[]>();
+  for (const o of orders) {
+    const key = groupDateKey(o);
+    if (!map.has(key)) map.set(key, []);
+    map.get(key)!.push(o);
+  }
+  return Array.from(map.entries())
+    .map(([dateKey, dateOrders]) => ({ dateKey, label: dateGroupLabel(dateKey, todayKey, yesterdayKey), orders: dateOrders }))
+    .sort((a, b) => b.dateKey.localeCompare(a.dateKey));
+}
+
 // ─── Tab: Production Entry ──────────────────────────────────────────────────
+// Date-wise: each calendar day Store confirmed/sent an order to production
+// gets its own collapsible group with its own merged rows, so an item still
+// pending from an earlier date stays visible under that date instead of
+// getting folded into today's total.
 function ProductionEntryTab({ orders }: { orders: BakeryOrder[] }) {
-  const { recordProduction } = useBakeryStore();
-  const rows = useMemo(() => computeProductionRows(orders).filter(r => r.itemStatus !== 'completed'), [orders]);
-  const [qty, setQty] = useState<Record<string, string>>({});
   const [search, setSearch] = useState('');
+  const [dateFilter, setDateFilter] = useState<string>('all');
+  const dateGroups = useMemo(() => groupOrdersByStoreDate(orders), [orders]);
+  const rowsByDate = useMemo(() => dateGroups.map(g => ({ ...g, rows: computeProductionRows(g.orders).filter(r => r.itemStatus !== 'completed') })), [dateGroups]);
+  const visible = dateFilter === 'all' ? rowsByDate : rowsByDate.filter(g => g.dateKey === dateFilter);
+  const totalPending = rowsByDate.reduce((s, g) => s + g.rows.length, 0);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="font-display text-lg font-bold text-foreground">Production Entry <span className="text-sm font-bold text-muted-foreground">({totalPending} items · {rowsByDate.filter(g => g.rows.length > 0).length} date{rowsByDate.filter(g => g.rows.length > 0).length === 1 ? '' : 's'})</span></h2>
+        <div className="flex items-center gap-2">
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+            <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search item..." className="rounded-xl border border-border py-1.5 pl-8 pr-3 text-xs font-bold" />
+          </div>
+          <select value={dateFilter} onChange={e => setDateFilter(e.target.value)} className="rounded-xl border border-border px-3 py-1.5 text-xs font-bold text-foreground">
+            <option value="all">All dates</option>
+            {dateGroups.map(g => <option key={g.dateKey} value={g.dateKey}>{g.label}</option>)}
+          </select>
+          <ExportButton
+            disabled={totalPending === 0}
+            onClick={() => exportToExcel({
+              filename: 'production-entry', sheetName: 'Production', title: 'Planner — Production Entry',
+              columns: [{ header: 'Date', key: 'date' }, { header: 'Category', key: 'category' }, { header: 'Item', key: 'item' }, { header: 'Ordered Qty', key: 'ordered' }, { header: 'Produced So Far', key: 'produced' }, { header: 'Unit', key: 'unit' }, { header: 'Status', key: 'status' }],
+              rows: rowsByDate.flatMap(g => g.rows.map(row => ({ date: g.label, category: row.category, item: row.itemName, ordered: row.totalRequested, produced: row.preparedTotal, unit: row.unit, status: row.itemStatus }))),
+            })}
+          />
+        </div>
+      </div>
+      {dateGroups.length === 0 && <EmptyState text="No items waiting on production entry." />}
+      {visible.map((g, idx) => (
+        <ProductionEntryDateGroup key={g.dateKey} dateKey={g.dateKey} label={g.label} orders={g.orders} rows={g.rows} search={search} defaultOpen={idx === 0} />
+      ))}
+    </div>
+  );
+}
+
+// One collapsible calendar-day group — owns its own qty/save/confirm state so
+// the exact same item name pending on two different dates never collides.
+function ProductionEntryDateGroup({ label, orders, rows, search, defaultOpen }: {
+  dateKey: string; label: string; orders: BakeryOrder[]; rows: ProductionRow[]; search: string; defaultOpen: boolean;
+}) {
+  const { recordProduction } = useBakeryStore();
+  const [open, setOpen] = useState(defaultOpen);
+  const [qty, setQty] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState<string | null>(null);
   // Single unified flow: Save -> ask Completed/Pending -> if Completed, ask again to confirm.
   const [askItem, setAskItem] = useState<ProductionRow | null>(null);
   const [confirmItem, setConfirmItem] = useState<ProductionRow | null>(null);
-  // BUG FIX (planner confusion): a merged item row hides which date's / which
-  // branch's order(s) actually contributed to it. Expanding "Sources" shows
-  // every contributing order's date, branch/plan bucket, and its own
-  // requested quantity, so the planner always knows exactly what they're
-  // producing and for whom before entering a quantity.
+  // BUG FIX (planner confusion): a merged item row hides which branch's
+  // order(s) actually contributed to it within this date. Expanding "Sources"
+  // shows every contributing order's branch/plan bucket and its own requested
+  // quantity, so the planner always knows exactly what they're producing and
+  // for whom before entering a quantity.
   const [expandedSources, setExpandedSources] = useState<string | null>(null);
   const sourcesFor = (row: ProductionRow) => row.contributingOrderIds
     .map(id => orders.find(o => o.id === id))
@@ -729,15 +820,8 @@ function ProductionEntryTab({ orders }: { orders: BakeryOrder[] }) {
     .map(o => {
       const item = o.items.find(i => sameItem(i.itemName, row.itemName));
       const requested = item ? (item.dispatchUnit === 'pcs' && item.originalPcs != null ? item.originalPcs : item.quantity) : 0;
-      return {
-        orderId: o.id,
-        orderNumber: o.orderNumber,
-        bucket: bucketFor(o),
-        date: new Date(o.createdAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }),
-        requested,
-      };
-    })
-    .sort((a, b) => a.date.localeCompare(b.date));
+      return { orderId: o.id, orderNumber: o.orderNumber, bucket: bucketFor(o), requested };
+    });
 
   const filtered = useMemo(() => rows.filter(r => r.itemName.toLowerCase().includes(search.trim().toLowerCase())), [rows, search]);
   const grouped = useMemo(() => {
@@ -768,78 +852,77 @@ function ProductionEntryTab({ orders }: { orders: BakeryOrder[] }) {
     }
   };
 
+  // While actively searching, hide date groups with no matches so the search
+  // reads as global even though rendering stays date-scoped underneath.
+  if (search.trim() && filtered.length === 0) return null;
+
   return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="font-display text-lg font-bold text-foreground">Production Entry <span className="text-sm font-bold text-muted-foreground">({rows.length} items)</span></h2>
+    <div className="overflow-hidden rounded-2xl border border-border bg-white shadow-sm">
+      <button type="button" onClick={() => setOpen(v => !v)} className="flex w-full items-center justify-between px-4 py-3 text-left hover:bg-muted/40">
         <div className="flex items-center gap-2">
-          <div className="relative">
-            <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-            <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search item..." className="rounded-xl border border-border py-1.5 pl-8 pr-3 text-xs font-bold" />
-          </div>
-          <ExportButton
-            disabled={rows.length === 0}
-            onClick={() => exportToExcel({
-              filename: 'production-entry', sheetName: 'Production', title: 'Planner — Production Entry',
-              columns: [{ header: 'Category', key: 'category' }, { header: 'Item', key: 'item' }, { header: 'Ordered Qty', key: 'ordered' }, { header: 'Produced So Far', key: 'produced' }, { header: 'Unit', key: 'unit' }, { header: 'Status', key: 'status' }],
-              rows: rows.map(row => ({ category: row.category, item: row.itemName, ordered: row.totalRequested, produced: row.preparedTotal, unit: row.unit, status: row.itemStatus })),
-            })}
-          />
+          <CalendarDays className="size-4 text-muted-foreground" />
+          <span className="text-sm font-black text-foreground">{label}</span>
+          <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-bold text-muted-foreground">{rows.length} item{rows.length === 1 ? '' : 's'}</span>
         </div>
-      </div>
-      {rows.length === 0 && <EmptyState text="No items waiting on production entry." />}
-      {grouped.map(([category, items]) => (
-        <div key={category}>
-          <p className="mb-2 text-xs font-black uppercase tracking-wide text-muted-foreground">{category} ({items.length})</p>
-          <div className="space-y-2">
-            {items.map(row => {
-              const sources = sourcesFor(row);
-              const sourcesOpen = expandedSources === row.itemName;
-              return (
-                <div key={row.itemName} className="rounded-2xl border border-border bg-card p-3 shadow-sm">
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-black text-foreground">{row.itemName}</p>
-                      <p className="text-xs font-bold text-muted-foreground">
-                        Ordered {row.totalRequested} {row.unit}{row.preparedTotal > 0 ? ` · Produced so far ${row.preparedTotal} ${row.unit}` : ''}
-                        {row.itemStatus === 'pending' && <span className="ml-1 rounded-full bg-amber-100 px-1.5 py-0.5 text-amber-700">More to come</span>}
-                      </p>
-                      <button
-                        type="button"
-                        onClick={() => setExpandedSources(v => v === row.itemName ? null : row.itemName)}
-                        className="mt-1 text-[10px] font-black uppercase tracking-wide text-primary hover:underline"
-                      >
-                        {sourcesOpen ? 'Hide' : 'Show'} sources ({sources.length} order{sources.length === 1 ? '' : 's'})
-                      </button>
-                    </div>
-                    <input type="number" placeholder="Qty produced" value={qty[row.itemName] ?? ''} onChange={e => setQty(v => ({ ...v, [row.itemName]: e.target.value }))}
-                      className="w-28 rounded-lg border border-border bg-background px-2 py-1.5 text-right text-xs font-bold" />
-                    <button onClick={() => setAskItem(row)} disabled={saving === row.itemName || !qty[row.itemName]}
-                      className="flex items-center gap-1.5 rounded-xl cafe-gradient px-4 py-2 text-xs font-bold text-white shadow-teal disabled:opacity-40">
-                      {saving === row.itemName ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />} Save
-                    </button>
-                  </div>
-                  {sourcesOpen && (
-                    <div className="mt-2.5 space-y-1 border-t border-border pt-2.5">
-                      {sources.map(s => (
-                        <div key={s.orderId} className="flex items-center justify-between gap-2 rounded-lg bg-muted/40 px-2.5 py-1.5 text-[11px] font-bold">
-                          <span className="flex items-center gap-1.5">
-                            <span className={cn('rounded-full px-1.5 py-0.5 text-[10px] font-black', BRANCH_META[s.bucket].bg, BRANCH_META[s.bucket].text)}>
-                              {BRANCH_META[s.bucket].icon} {s.bucket === 'Planned' ? 'Planned' : s.bucket}
-                            </span>
-                            <span className="text-muted-foreground">Order #{s.orderNumber} · {s.date}</span>
-                          </span>
-                          <span className="text-foreground">{s.requested} {row.unit}</span>
+        <ChevronDown className={cn('size-4 text-muted-foreground transition-transform', open && 'rotate-180')} />
+      </button>
+      {open && (
+        <div className="space-y-4 border-t border-border p-3">
+          {rows.length === 0 && <EmptyState text="Nothing pending for this date." />}
+          {grouped.map(([category, items]) => (
+            <div key={category}>
+              <p className="mb-2 text-xs font-black uppercase tracking-wide text-muted-foreground">{category} ({items.length})</p>
+              <div className="space-y-2">
+                {items.map(row => {
+                  const sources = sourcesFor(row);
+                  const sourcesOpen = expandedSources === row.itemName;
+                  return (
+                    <div key={row.itemName} className="rounded-2xl border border-border bg-card p-3 shadow-sm">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-sm font-black text-foreground">{row.itemName}</p>
+                          <p className="text-xs font-bold text-muted-foreground">
+                            Ordered {row.totalRequested} {row.unit}{row.preparedTotal > 0 ? ` · Produced so far ${row.preparedTotal} ${row.unit}` : ''}
+                            {row.itemStatus === 'pending' && <span className="ml-1 rounded-full bg-amber-100 px-1.5 py-0.5 text-amber-700">More to come</span>}
+                          </p>
+                          <button
+                            type="button"
+                            onClick={() => setExpandedSources(v => v === row.itemName ? null : row.itemName)}
+                            className="mt-1 text-[10px] font-black uppercase tracking-wide text-primary hover:underline"
+                          >
+                            {sourcesOpen ? 'Hide' : 'Show'} sources ({sources.length} order{sources.length === 1 ? '' : 's'})
+                          </button>
                         </div>
-                      ))}
+                        <input type="number" placeholder="Qty produced" value={qty[row.itemName] ?? ''} onChange={e => setQty(v => ({ ...v, [row.itemName]: e.target.value }))}
+                          className="w-28 rounded-lg border border-border bg-background px-2 py-1.5 text-right text-xs font-bold" />
+                        <button onClick={() => setAskItem(row)} disabled={saving === row.itemName || !qty[row.itemName]}
+                          className="flex items-center gap-1.5 rounded-xl cafe-gradient px-4 py-2 text-xs font-bold text-white shadow-teal disabled:opacity-40">
+                          {saving === row.itemName ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />} Save
+                        </button>
+                      </div>
+                      {sourcesOpen && (
+                        <div className="mt-2.5 space-y-1 border-t border-border pt-2.5">
+                          {sources.map(s => (
+                            <div key={s.orderId} className="flex items-center justify-between gap-2 rounded-lg bg-muted/40 px-2.5 py-1.5 text-[11px] font-bold">
+                              <span className="flex items-center gap-1.5">
+                                <span className={cn('rounded-full px-1.5 py-0.5 text-[10px] font-black', BRANCH_META[s.bucket].bg, BRANCH_META[s.bucket].text)}>
+                                  {BRANCH_META[s.bucket].icon} {s.bucket === 'Planned' ? 'Planned' : s.bucket}
+                                </span>
+                                <span className="text-muted-foreground">Order #{s.orderNumber}</span>
+                              </span>
+                              <span className="text-foreground">{s.requested} {row.unit}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
         </div>
-      ))}
+      )}
 
       {/* Step 1: after Save, ask Completed or Pending. */}
       {askItem && (
@@ -1185,6 +1268,759 @@ function InvoiceTab({ orders }: { orders: BakeryOrder[] }) {
   );
 }
 
+// ─── Tab: Reports ────────────────────────────────────────────────────────────
+// Owner/manager-facing operational report: orders placed, merged summary, and
+// production-vs-dispatch variance (which items are falling short of what was
+// ordered vs which are running ahead) for a chosen date range, with one-click
+// multi-sheet Excel and a printable PDF summary.
+const REPORT_VARIANCE_BAND = 10; // % — inside this band an item counts as "On Target"
+
+interface ReportVarianceRow {
+  itemName: string; unit: string; category: string;
+  requested: number; produced: number; dispatched: number;
+  prodVariancePct: number; dispatchVariancePct: number;
+  status: 'Not Started' | 'Under-producing' | 'On Target' | 'Over-producing';
+}
+
+function computeReportRows(orders: BakeryOrder[]): ReportVarianceRow[] {
+  const production = computeProductionRows(orders);
+  return production.map(row => {
+    const dispatched = orders.filter(o => row.contributingOrderIds.includes(o.id))
+      .reduce((s, o) => s + (o.dispatchLog || []).filter(d => sameItem(d.itemName, row.itemName)).reduce((s2, d) => s2 + d.quantity, 0), 0);
+    const prodVariancePct = row.totalRequested > 0 ? Math.round(((row.preparedTotal - row.totalRequested) / row.totalRequested) * 1000) / 10 : 0;
+    const dispatchVariancePct = row.preparedTotal > 0 ? Math.round(((dispatched - row.preparedTotal) / row.preparedTotal) * 1000) / 10 : 0;
+    const status: ReportVarianceRow['status'] =
+      row.preparedTotal === 0 ? 'Not Started'
+      : prodVariancePct < -REPORT_VARIANCE_BAND ? 'Under-producing'
+      : prodVariancePct > REPORT_VARIANCE_BAND ? 'Over-producing'
+      : 'On Target';
+    return { itemName: row.itemName, unit: row.unit, category: row.category, requested: row.totalRequested, produced: row.preparedTotal, dispatched, prodVariancePct, dispatchVariancePct, status };
+  }).sort((a, b) => a.prodVariancePct - b.prodVariancePct);
+}
+
+const REPORT_STATUS_COLOR: Record<ReportVarianceRow['status'], string> = {
+  'Not Started':    'bg-muted text-muted-foreground',
+  'Under-producing': 'bg-red-100 text-red-700',
+  'On Target':       'bg-teal-100 text-teal-700',
+  'Over-producing':  'bg-blue-100 text-blue-700',
+};
+
+function ReportsTab({ orders }: { orders: BakeryOrder[] }) {
+  const [quickRange, setQuickRange] = useState<'today' | '7d' | '30d' | 'custom'>('7d');
+  const [dateFrom, setDateFrom] = useState(() => { const d = new Date(); d.setDate(d.getDate() - 6); return kolkataDateKey(d.toISOString()); });
+  const [dateTo, setDateTo] = useState(() => kolkataDateKey(new Date().toISOString()));
+
+  useEffect(() => {
+    if (quickRange === 'custom') return;
+    const to = new Date();
+    const from = new Date();
+    if (quickRange === '7d') from.setDate(from.getDate() - 6);
+    else if (quickRange === '30d') from.setDate(from.getDate() - 29);
+    setDateFrom(kolkataDateKey(from.toISOString()));
+    setDateTo(kolkataDateKey(to.toISOString()));
+  }, [quickRange]);
+
+  const ordersInRange = useMemo(
+    () => orders.filter(o => { const key = groupDateKey(o); return key >= dateFrom && key <= dateTo; }),
+    [orders, dateFrom, dateTo],
+  );
+  // Orders actually placed in the window (any status) vs the subset that reached
+  // Store/production — both matter: one shows demand, the other shows what moved.
+  const placedOrders = useMemo(() => ordersInRange, [ordersInRange]);
+  const producedSource = useMemo(() => ordersInRange.filter(o => ['store_confirmed', 'produced', 'dispatched'].includes(o.status)), [ordersInRange]);
+
+  const merged = useMemo(() => computeMergedSummary(producedSource), [producedSource]);
+  const varianceRows = useMemo(() => computeReportRows(producedSource), [producedSource]);
+  const underRows = useMemo(() => varianceRows.filter(r => r.status === 'Under-producing'), [varianceRows]);
+  const overRows = useMemo(() => varianceRows.filter(r => r.status === 'Over-producing'), [varianceRows]);
+  const notStartedRows = useMemo(() => varianceRows.filter(r => r.status === 'Not Started'), [varianceRows]);
+  const onTargetRows = useMemo(() => varianceRows.filter(r => r.status === 'On Target'), [varianceRows]);
+
+  const chartData = useMemo(() => varianceRows
+    .filter(r => r.status === 'Under-producing' || r.status === 'Over-producing')
+    .slice(0, 12)
+    .map(r => ({ name: r.itemName.length > 14 ? r.itemName.slice(0, 12) + '…' : r.itemName, variance: r.prodVariancePct })),
+  [varianceRows]);
+
+  // Hosur leftover pool + billed-order cancellations for the same window —
+  // separate data source (Supabase directly, not the bakery_orders prop)
+  // since this is Hosur-shop-order-level detail, not bakery production detail.
+  const [hosurLeftovers, setHosurLeftovers] = useState<{ itemName: string; unit: string; quantity: number; unitPrice: number; sourceShopName: string | null; reason: string; status: string; createdAt: string }[]>([]);
+  const [hosurAdjustments, setHosurAdjustments] = useState<{ itemName: string; unit: string; quantity: number; adjustmentAmount: number; reason: string | null; createdAt: string }[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const fromIso = `${dateFrom}T00:00:00`;
+      const toIso = `${dateTo}T23:59:59`;
+      const [leftoverRes, adjustmentRes] = await Promise.all([
+        supabase.from('hosur_leftover_pool').select('item_name, unit, quantity, unit_price, source_shop_name, reason, status, created_at').gte('created_at', fromIso).lte('created_at', toIso).order('created_at', { ascending: false }),
+        supabase.from('hosur_bill_adjustments').select('item_name, unit, quantity, adjustment_amount, reason, created_at').gte('created_at', fromIso).lte('created_at', toIso).order('created_at', { ascending: false }),
+      ]);
+      if (cancelled) return;
+      setHosurLeftovers((leftoverRes.data ?? []).map((r: Record<string, unknown>) => ({
+        itemName: String(r.item_name ?? ''), unit: String(r.unit ?? 'kg'), quantity: Number(r.quantity ?? 0),
+        unitPrice: Number(r.unit_price ?? 0), sourceShopName: (r.source_shop_name as string) ?? null,
+        reason: String(r.reason ?? ''), status: String(r.status ?? ''), createdAt: String(r.created_at ?? ''),
+      })));
+      setHosurAdjustments((adjustmentRes.data ?? []).map((r: Record<string, unknown>) => ({
+        itemName: String(r.item_name ?? ''), unit: String(r.unit ?? 'kg'), quantity: Number(r.quantity ?? 0),
+        adjustmentAmount: Number(r.adjustment_amount ?? 0), reason: (r.reason as string) ?? null, createdAt: String(r.created_at ?? ''),
+      })));
+    })();
+    return () => { cancelled = true; };
+  }, [dateFrom, dateTo]);
+  const hosurLeftoverAvailable = useMemo(() => hosurLeftovers.filter(l => l.status === 'available'), [hosurLeftovers]);
+  const hosurLeftoverResolved = useMemo(() => hosurLeftovers.filter(l => l.status === 'resolved'), [hosurLeftovers]);
+  const hosurShortfallCount = useMemo(() => hosurLeftovers.filter(l => l.reason === 'dispatch_shortfall').length, [hosurLeftovers]);
+  const hosurCancelledCount = useMemo(() => hosurLeftovers.filter(l => l.reason === 'post_dispatch_cancel').length, [hosurLeftovers]);
+  const hosurCancelledValue = useMemo(() => Math.round(Math.abs(hosurAdjustments.reduce((s, a) => s + a.adjustmentAmount, 0)) * 100) / 100, [hosurAdjustments]);
+
+  const rangeLabel = dateFrom === dateTo
+    ? new Date(`${dateFrom}T00:00:00`).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
+    : `${new Date(`${dateFrom}T00:00:00`).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })} – ${new Date(`${dateTo}T00:00:00`).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}`;
+
+  const exportExcelReport = () => {
+    const wb = XLSX.utils.book_new();
+    const addSheet = (rows: Record<string, unknown>[], name: string, fallback: string) => {
+      const data = rows.length > 0 ? rows : [{ Note: fallback }];
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(data), name.slice(0, 31));
+    };
+    addSheet([
+      { Metric: 'Period', Value: rangeLabel },
+      { Metric: 'Orders Placed', Value: placedOrders.length },
+      { Metric: 'Items Tracked', Value: varianceRows.length },
+      { Metric: 'Under-producing Items', Value: underRows.length },
+      { Metric: 'On-Target Items', Value: onTargetRows.length },
+      { Metric: 'Over-producing Items', Value: overRows.length },
+      { Metric: 'Not Started Items', Value: notStartedRows.length },
+    ], 'Summary', 'No data');
+    addSheet(placedOrders.map(o => ({
+      'Order #': o.orderNumber, Branch: bucketFor(o), Status: o.status,
+      'Placed On': new Date(o.createdAt).toLocaleString('en-IN'),
+      'Sent to Production': o.storeConfirmedAt ? new Date(o.storeConfirmedAt).toLocaleString('en-IN') : 'Not yet sent',
+      'Items': o.items.map(i => `${i.itemName} x${i.dispatchUnit === 'pcs' ? (i.originalPcs ?? i.quantity) : i.quantity}${i.dispatchUnit || 'kg'}`).join(', '),
+    })), 'Orders Placed', 'No orders in this range');
+    addSheet(merged.map(row => ({
+      Item: row.itemName, Unit: row.unit,
+      ...Object.fromEntries(DISPLAY_BUCKETS.map(b => [b, row.perBranch[b] ?? ''])),
+      Total: row.totalRequested,
+    })), 'Merged Summary', 'No data');
+    addSheet(varianceRows.map(r => ({
+      Category: r.category, Item: r.itemName, Unit: r.unit,
+      Requested: r.requested, Produced: r.produced, Dispatched: r.dispatched,
+      'Production Variance %': r.prodVariancePct, 'Dispatch Variance %': r.dispatchVariancePct, Status: r.status,
+    })), 'Production & Dispatch', 'No data');
+    addSheet(hosurLeftovers.map(l => ({
+      Item: l.itemName, Unit: l.unit, Quantity: l.quantity, 'Unit Price': l.unitPrice,
+      Shop: l.sourceShopName || '', Reason: leftoverReasonLabel(l.reason),
+      Status: l.status === 'available' ? 'Still in pool' : 'Resolved / sent',
+      Date: new Date(l.createdAt).toLocaleString('en-IN'),
+    })), 'Hosur Leftover Pool', 'No leftover activity in this range');
+    addSheet(hosurAdjustments.map(a => ({
+      Item: a.itemName, Unit: a.unit, Quantity: a.quantity, 'Adjustment (₹)': a.adjustmentAmount,
+      Reason: a.reason || '', Date: new Date(a.createdAt).toLocaleString('en-IN'),
+    })), 'Hosur Bill Adjustments', 'No cancellations in this range');
+    XLSX.writeFile(wb, `planner-report-${dateFrom}_to_${dateTo}.xlsx`);
+  };
+
+  const exportPdfReport = () => {
+    const doc = new jsPDF({ unit: 'pt', format: 'a4' });
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const marginX = 40;
+    let y = 48;
+
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(18); doc.setTextColor(20);
+    doc.text('Cafe Aadvikam — Planner Report', marginX, y);
+    y += 18;
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(100);
+    doc.text(`Period: ${rangeLabel}  ·  Generated: ${new Date().toLocaleString('en-IN')}`, marginX, y);
+    doc.setTextColor(0);
+    y += 26;
+
+    // Ensures there's room for the next block, adding a fresh page (with its
+    // own margin) if not — every section below routes through this so long
+    // reports (Orders Placed, Merged Summary) paginate cleanly.
+    const ensureRoom = (needed: number) => {
+      if (y + needed > 780) { doc.addPage(); y = 50; }
+    };
+
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(12);
+    doc.text('Summary', marginX, y); y += 10;
+    const kpis: [string, string][] = [
+      ['Orders Placed', String(placedOrders.length)],
+      ['Items Tracked', String(varianceRows.length)],
+      ['Under-producing', String(underRows.length)],
+      ['On Target', String(onTargetRows.length)],
+      ['Over-producing', String(overRows.length)],
+      ['Not Started', String(notStartedRows.length)],
+      ['Hosur Leftover (pool)', String(hosurLeftoverAvailable.length)],
+      ['Hosur Cancelled Value', `Rs.${hosurCancelledValue}`],
+    ];
+    const kpiColWidth = (pageWidth - marginX * 2) / 3;
+    kpis.forEach(([label, value], i) => {
+      const col = i % 3; const row = Math.floor(i / 3);
+      const x = marginX + col * kpiColWidth;
+      const yy = y + 16 + row * 36;
+      doc.setDrawColor(210); doc.rect(x, yy - 14, kpiColWidth - 8, 32);
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(120);
+      doc.text(label, x + 6, yy - 3);
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(13); doc.setTextColor(0);
+      doc.text(value, x + 6, yy + 12);
+    });
+    y += 16 + Math.ceil(kpis.length / 3) * 36 + 14;
+
+    // Reusable bordered table with header repeated on every page it spans —
+    // used for all four detail sections below so pagination only has to be
+    // written once.
+    const drawTable = (title: string, headers: string[], colWidths: number[], rows: string[][], emptyText: string) => {
+      ensureRoom(40);
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(12); doc.setTextColor(0);
+      doc.text(title, marginX, y); y += 14;
+      const totalWidth = colWidths.reduce((a, b) => a + b, 0);
+      const drawHeader = () => {
+        doc.setFillColor(238); doc.setDrawColor(220);
+        doc.rect(marginX, y - 10, totalWidth, 16, 'F');
+        doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(40);
+        let x = marginX;
+        headers.forEach((h, i) => { doc.text(h, x + 4, y); x += colWidths[i]; });
+        y += 12;
+      };
+      drawHeader();
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5); doc.setTextColor(30);
+      for (const cells of rows) {
+        if (y > 770) { doc.addPage(); y = 50; drawHeader(); doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5); doc.setTextColor(30); }
+        let x = marginX;
+        cells.forEach((c, i) => { doc.text(c, x + 4, y); x += colWidths[i]; });
+        doc.setDrawColor(235); doc.line(marginX, y + 4, marginX + totalWidth, y + 4);
+        y += 14;
+      }
+      if (rows.length === 0) { doc.setFont('helvetica', 'italic'); doc.setFontSize(9); doc.setTextColor(120); doc.text(emptyText, marginX, y); y += 14; doc.setTextColor(0); }
+      y += 12;
+    };
+
+    drawTable(
+      'Production & Dispatch Variance',
+      ['Item', 'Unit', 'Req', 'Prod', 'Disp', 'Var %', 'Status'],
+      [155, 35, 55, 55, 55, 55, 100],
+      varianceRows.map(r => [r.itemName.slice(0, 28), r.unit, String(r.requested), String(r.produced), String(r.dispatched), `${r.prodVariancePct > 0 ? '+' : ''}${r.prodVariancePct}%`, r.status]),
+      'No items in this range.',
+    );
+
+    drawTable(
+      'Merged Orders Summary',
+      ['Item', 'Unit', ...DISPLAY_BUCKETS, 'Total'],
+      [140, 35, ...DISPLAY_BUCKETS.map(() => 60), 60],
+      merged.map(row => [row.itemName.slice(0, 24), row.unit, ...DISPLAY_BUCKETS.map(b => String(row.perBranch[b] ?? '-')), String(row.totalRequested)]),
+      'No orders merged in this range.',
+    );
+
+    drawTable(
+      'Orders Placed',
+      ['Order #', 'Branch', 'Status', 'Placed On', 'Items'],
+      [70, 55, 75, 105, 205],
+      placedOrders.map(o => [o.orderNumber, bucketFor(o), o.status.replace('_', ' '), new Date(o.createdAt).toLocaleDateString('en-IN'), o.items.map(i => i.itemName).join(', ').slice(0, 60)]),
+      'No orders placed in this range.',
+    );
+
+    drawTable(
+      'Hosur Leftover & Cancellations',
+      ['Item', 'Unit', 'Qty', 'Shop', 'Reason', 'Status'],
+      [140, 35, 45, 110, 130, 90],
+      hosurLeftovers.map(l => [l.itemName.slice(0, 22), l.unit, String(l.quantity), (l.sourceShopName || '-').slice(0, 18), leftoverReasonLabel(l.reason), l.status === 'available' ? 'In pool' : 'Resolved']),
+      'No leftover or cancellation activity in this range.',
+    );
+
+    doc.save(`planner-report-${dateFrom}_to_${dateTo}.pdf`);
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="card-base flex flex-wrap items-center justify-between gap-3 p-4">
+        <div className="flex items-center gap-3">
+          <span className="flex size-10 shrink-0 items-center justify-center rounded-xl cafe-gradient text-white shadow-teal">
+            <BarChart3 className="size-5" />
+          </span>
+          <div>
+            <h2 className="font-display text-xl font-bold text-foreground">Reports</h2>
+            <p className="text-xs font-bold text-muted-foreground font-body">Orders, merged summary, production vs dispatch — with a clear variance view for the owner.</p>
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <button onClick={exportExcelReport} className="flex items-center gap-1.5 rounded-xl border border-teal-200 bg-teal-50 px-3 py-2 text-xs font-bold text-teal-700 hover:bg-teal-100">
+            <FileSpreadsheet className="size-4" /> Excel Report
+          </button>
+          <button onClick={exportPdfReport} className="flex items-center gap-1.5 rounded-xl border border-slate-300 bg-slate-50 px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-100">
+            <FileText className="size-4" /> PDF Report
+          </button>
+        </div>
+      </div>
+
+      {/* Quick range pills — same convention as branch Sales Reports. */}
+      <div className="flex flex-wrap items-center gap-2">
+        {([{ id: 'today', label: 'Today' }, { id: '7d', label: 'Last 7 days' }, { id: '30d', label: 'Last 30 days' }, { id: 'custom', label: 'Custom' }] as const).map(q => (
+          <button key={q.id} onClick={() => setQuickRange(q.id)} className={cn('rounded-full px-3 py-1.5 text-[11px] font-bold', quickRange === q.id ? 'bg-primary text-primary-foreground' : 'border border-border text-muted-foreground')}>{q.label}</button>
+        ))}
+        {quickRange === 'custom' && (
+          <>
+            <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} className="rounded-xl border border-border px-2 py-1.5 text-xs font-bold" />
+            <span className="text-xs text-muted-foreground">to</span>
+            <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} className="rounded-xl border border-border px-2 py-1.5 text-xs font-bold" />
+          </>
+        )}
+        <span className="text-xs font-bold text-muted-foreground">{rangeLabel}</span>
+      </div>
+
+      {/* KPI cards */}
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+        {[
+          { label: 'Orders Placed', value: placedOrders.length, tone: 'bg-card border-border text-foreground' },
+          { label: 'Items Tracked', value: varianceRows.length, tone: 'bg-card border-border text-foreground' },
+          { label: 'Under-producing', value: underRows.length, tone: 'bg-red-50 border-red-200 text-red-700' },
+          { label: 'On Target', value: onTargetRows.length, tone: 'bg-teal-50 border-teal-200 text-teal-700' },
+          { label: 'Over-producing', value: overRows.length, tone: 'bg-blue-50 border-blue-200 text-blue-700' },
+          { label: 'Not Started', value: notStartedRows.length, tone: 'bg-muted border-border text-muted-foreground' },
+        ].map(k => (
+          <div key={k.label} className={cn('rounded-xl border p-3', k.tone)}>
+            <p className="text-[10px] font-black uppercase tracking-wide opacity-70">{k.label}</p>
+            <p className="font-display text-xl font-bold tabular-nums">{k.value}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* Variance visualization — items furthest from their requested quantity,
+          red = falling short, blue = running ahead, so the owner sees at a glance
+          which items are getting affected and which are over-producing. */}
+      {chartData.length > 0 && (
+        <div className="card-base p-4">
+          <p className="mb-1 text-sm font-black text-foreground">Production Variance — Most Affected Items</p>
+          <p className="mb-3 text-[11px] font-bold text-muted-foreground">% difference between produced and requested quantity (top 12 furthest from target)</p>
+          <ResponsiveContainer width="100%" height={Math.max(chartData.length * 32, 160)}>
+            <BarChart data={chartData} layout="vertical" margin={{ left: 0, right: 24, top: 0, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="hsl(var(--border))" />
+              <XAxis type="number" tick={{ fontSize: 9 }} tickFormatter={v => `${v}%`} />
+              <YAxis type="category" dataKey="name" tick={{ fontSize: 9 }} width={100} />
+              <Tooltip formatter={(v: number) => [`${v > 0 ? '+' : ''}${v}%`, 'Variance vs requested']} contentStyle={{ fontSize: 11 }} />
+              <Bar dataKey="variance" radius={[0, 4, 4, 0]}>
+                {chartData.map((d, i) => <Cell key={i} fill={d.variance < 0 ? '#dc2626' : '#2563eb'} />)}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      {/* Production & Dispatch variance table — the core "understand at a glance" view. */}
+      <div className="overflow-hidden rounded-2xl border border-border bg-white shadow-sm">
+        <div className="flex items-center justify-between border-b border-border bg-muted/40 px-4 py-3">
+          <p className="text-sm font-black text-foreground">Production & Dispatch — By Item</p>
+          <span className="text-xs font-bold text-muted-foreground">{varianceRows.length} items</span>
+        </div>
+        {varianceRows.length === 0 ? <div className="p-4"><EmptyState text="No production activity in this range." /></div> : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-muted/20 text-left text-xs font-black uppercase text-muted-foreground">
+                <tr>
+                  <th className="px-4 py-2">Item</th>
+                  <th className="px-4 py-2 text-right">Requested</th>
+                  <th className="px-4 py-2 text-right">Produced</th>
+                  <th className="px-4 py-2 text-right">Dispatched</th>
+                  <th className="px-4 py-2 text-right">Variance</th>
+                  <th className="px-4 py-2 text-right">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {varianceRows.map(r => (
+                  <tr key={`${r.itemName}-${r.unit}`} className="border-t border-border">
+                    <td className="px-4 py-2 font-bold text-foreground">{r.itemName} <span className="text-muted-foreground">({r.unit})</span></td>
+                    <td className="px-4 py-2 text-right text-muted-foreground">{r.requested}</td>
+                    <td className="px-4 py-2 text-right text-muted-foreground">{r.produced}</td>
+                    <td className="px-4 py-2 text-right text-muted-foreground">{r.dispatched}</td>
+                    <td className={cn('px-4 py-2 text-right font-bold', r.prodVariancePct < 0 ? 'text-red-600' : r.prodVariancePct > 0 ? 'text-blue-600' : 'text-teal-600')}>{r.prodVariancePct > 0 ? '+' : ''}{r.prodVariancePct}%</td>
+                    <td className="px-4 py-2 text-right"><span className={cn('rounded-full px-2 py-0.5 text-[10px] font-black', REPORT_STATUS_COLOR[r.status])}>{r.status}</span></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* Merged Summary — per-branch requested breakdown for the same range. */}
+      <div className="overflow-hidden rounded-2xl border border-border bg-white shadow-sm">
+        <div className="border-b border-border bg-muted/40 px-4 py-3"><p className="text-sm font-black text-foreground">Merged Orders Summary</p></div>
+        {merged.length === 0 ? <div className="p-4"><EmptyState text="No orders merged in this range." /></div> : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-muted/20 text-left text-xs font-black uppercase text-muted-foreground">
+                <tr>
+                  <th className="px-4 py-2">Item</th>
+                  {DISPLAY_BUCKETS.map(b => <th key={b} className="px-4 py-2 text-right">{b}</th>)}
+                  <th className="px-4 py-2 text-right">Total</th>
+                </tr>
+              </thead>
+              <tbody>
+                {merged.map(row => (
+                  <tr key={`${row.itemName}-${row.unit}`} className="border-t border-border">
+                    <td className="px-4 py-2 font-bold text-foreground">{row.itemName}</td>
+                    {DISPLAY_BUCKETS.map(b => <td key={b} className="px-4 py-2 text-right text-muted-foreground">{row.perBranch[b] ? `${row.perBranch[b]} ${row.unit}` : '—'}</td>)}
+                    <td className="px-4 py-2 text-right font-black text-foreground">{row.totalRequested} {row.unit}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* Orders Placed — raw detail so the owner can trace any figure back to source orders. */}
+      <div className="overflow-hidden rounded-2xl border border-border bg-white shadow-sm">
+        <div className="border-b border-border bg-muted/40 px-4 py-3"><p className="text-sm font-black text-foreground">Orders Placed ({placedOrders.length})</p></div>
+        {placedOrders.length === 0 ? <div className="p-4"><EmptyState text="No orders placed in this range." /></div> : (
+          <div className="max-h-96 divide-y divide-border overflow-y-auto">
+            {placedOrders.map(o => (
+              <div key={o.id} className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5">
+                <div className="min-w-0">
+                  <p className="text-xs font-black text-foreground">
+                    <span className={cn('mr-1.5 rounded-full px-1.5 py-0.5 text-[10px]', BRANCH_META[bucketFor(o)].bg, BRANCH_META[bucketFor(o)].text)}>{bucketFor(o)}</span>
+                    Order #{o.orderNumber}
+                  </p>
+                  <p className="text-[11px] font-bold text-muted-foreground">{new Date(o.createdAt).toLocaleString('en-IN')} · {o.items.length} item{o.items.length === 1 ? '' : 's'}</p>
+                </div>
+                <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-black text-muted-foreground">{o.status.replace('_', ' ')}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Hosur Leftover & Cancellations — what didn't reach a shop (shortfall
+          at dispatch) or got cancelled after already being dispatched/billed,
+          and how much of that is still sitting in the pool vs already resolved. */}
+      <div className="overflow-hidden rounded-2xl border border-border bg-white shadow-sm">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-muted/40 px-4 py-3">
+          <p className="text-sm font-black text-foreground">Hosur Leftover &amp; Cancellations</p>
+          <div className="flex flex-wrap gap-1.5 text-[10px] font-black">
+            <span className="rounded-full bg-amber-100 px-2 py-1 text-amber-700">{hosurLeftoverAvailable.length} in pool</span>
+            <span className="rounded-full bg-teal-100 px-2 py-1 text-teal-700">{hosurLeftoverResolved.length} resolved</span>
+            <span className="rounded-full bg-slate-100 px-2 py-1 text-slate-700">{hosurShortfallCount} shortfalls</span>
+            <span className="rounded-full bg-red-100 px-2 py-1 text-red-700">{hosurCancelledCount} cancelled · Rs.{hosurCancelledValue}</span>
+          </div>
+        </div>
+        {hosurLeftovers.length === 0 ? <div className="p-4"><EmptyState text="No leftover or cancellation activity in this range." /></div> : (
+          <div className="max-h-96 divide-y divide-border overflow-y-auto">
+            {hosurLeftovers.map((l, i) => (
+              <div key={i} className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5">
+                <div className="min-w-0">
+                  <p className="text-xs font-black text-foreground">{l.itemName} — {l.quantity} {l.unit}</p>
+                  <p className="text-[11px] font-bold text-muted-foreground">
+                    {leftoverReasonLabel(l.reason)} · {l.sourceShopName || 'Unknown shop'} · {new Date(l.createdAt).toLocaleString('en-IN')}
+                  </p>
+                </div>
+                <span className={cn('rounded-full px-2 py-0.5 text-[10px] font-black', l.status === 'available' ? 'bg-amber-100 text-amber-700' : 'bg-teal-100 text-teal-700')}>{l.status === 'available' ? 'In pool' : 'Resolved'}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Tab: Billing (Walk-in) ──────────────────────────────────────────────────
+// Internal counter sale for customers who walk in directly — separate from
+// the branch-to-branch order pipeline. Pulls the deduplicated SNB + VRSNB
+// catalog (with real prices), supports a % or ₹ discount, and saves a proper
+// bill to bakery_walkin_bills, with a printable receipt and a cancel option.
+const WALKIN_PAYMENT_MODES = [
+  { key: 'cash', label: 'Cash' },
+  { key: 'upi', label: 'UPI' },
+  { key: 'card', label: 'Card' },
+] as const;
+
+interface WalkinBillItem { itemName: string; unit: string; price: number; quantity: number; lineTotal: number }
+interface WalkinBillRow {
+  id: string; billNo: string; items: WalkinBillItem[]; subtotal: number;
+  discountType: 'none' | 'percent' | 'amount'; discountValue: number; discountAmount: number; total: number;
+  paymentMode: string; cashierName: string | null; status: 'active' | 'cancelled'; createdAt: string;
+}
+
+function mapWalkinBill(d: Record<string, unknown>): WalkinBillRow {
+  return {
+    id: d.id as string, billNo: d.bill_no as string,
+    items: Array.isArray(d.items) ? (d.items as WalkinBillItem[]) : [],
+    subtotal: Number(d.subtotal) || 0,
+    discountType: (d.discount_type as WalkinBillRow['discountType']) || 'none',
+    discountValue: Number(d.discount_value) || 0,
+    discountAmount: Number(d.discount_amount) || 0,
+    total: Number(d.total) || 0,
+    paymentMode: (d.payment_mode as string) || 'cash',
+    cashierName: (d.cashier_name as string | null) ?? null,
+    status: (d.status as WalkinBillRow['status']) || 'active',
+    createdAt: d.created_at as string,
+  };
+}
+
+function printWalkinBill(bill: WalkinBillRow) {
+  const win = window.open('', '_blank'); if (!win) return;
+  const rows = bill.items.map(i => `<tr><td>${i.itemName}</td><td style="text-align:right">${i.quantity} ${i.unit}</td><td style="text-align:right">${invoiceMoney(i.price)}</td><td style="text-align:right">${invoiceMoney(i.lineTotal)}</td></tr>`).join('');
+  win.document.write(`<html><head><title>Bill ${bill.billNo}</title><style>
+    @page { size: 80mm auto; margin: 4mm; } body { font-family: monospace; font-size: 11px; width: 72mm; padding: 6px; color:#000; }
+    h1 { font-size: 13px; margin: 0 0 4px; text-align:center; } .meta { font-size: 10px; text-align:center; margin-bottom: 6px; }
+    table { width: 100%; border-collapse: collapse; font-size: 10px; } th, td { padding: 2px 0; } th { border-bottom: 1px dashed #000; text-align:left; }
+    .totals div { display:flex; justify-content:space-between; font-size:11px; padding: 1px 0; } .totals { margin-top:6px; border-top:1px dashed #000; padding-top:4px; }
+    .grand { font-weight:bold; font-size:13px; border-top:1px solid #000; margin-top:3px; padding-top:3px; }
+  </style></head><body>
+    <h1>Cafe Aadvikam — Walk-in Bill</h1>
+    <div class="meta">Bill #${bill.billNo}<br/>${new Date(bill.createdAt).toLocaleString('en-IN')}<br/>Cashier: ${bill.cashierName || '-'}</div>
+    <table><thead><tr><th>Item</th><th style="text-align:right">Qty</th><th style="text-align:right">Rate</th><th style="text-align:right">Amt</th></tr></thead><tbody>${rows}</tbody></table>
+    <div class="totals">
+      <div><span>Subtotal</span><span>${invoiceMoney(bill.subtotal)}</span></div>
+      ${bill.discountAmount > 0 ? `<div><span>Discount${bill.discountType === 'percent' ? ` (${bill.discountValue}%)` : ''}</span><span>- ${invoiceMoney(bill.discountAmount)}</span></div>` : ''}
+      <div class="grand"><span>Total</span><span>${invoiceMoney(bill.total)}</span></div>
+      <div style="margin-top:4px">Payment: ${bill.paymentMode.toUpperCase()}</div>
+    </div>
+  </body></html>`);
+  win.document.close(); win.print();
+}
+
+function BillingTab() {
+  const { items: catalogItems, loadCatalog } = useBranchCatalogStore();
+  const currentUser = useAuthStore(s => s.currentUser);
+  const [search, setSearch] = useState('');
+  const [cart, setCart] = useState<Record<string, { itemName: string; unit: 'pcs' | 'kg'; price: number; quantity: number }>>({});
+  const [discountType, setDiscountType] = useState<'none' | 'percent' | 'amount'>('none');
+  const [discountValue, setDiscountValue] = useState('');
+  const [paymentMode, setPaymentMode] = useState<typeof WALKIN_PAYMENT_MODES[number]['key']>('cash');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [lastBill, setLastBill] = useState<WalkinBillRow | null>(null);
+  const [recent, setRecent] = useState<WalkinBillRow[]>([]);
+  const [loadingRecent, setLoadingRecent] = useState(true);
+
+  useEffect(() => { loadCatalog('SNB').catch(() => {}); loadCatalog('VRSNB').catch(() => {}); }, [loadCatalog]);
+
+  const loadRecent = useCallback(async () => {
+    setLoadingRecent(true);
+    const { data, error: fetchError } = await supabase.from('bakery_walkin_bills').select('*').order('created_at', { ascending: false }).limit(30);
+    if (!fetchError && data) setRecent((data as Record<string, unknown>[]).map(mapWalkinBill));
+    setLoadingRecent(false);
+  }, []);
+  useEffect(() => { loadRecent().catch(() => {}); }, [loadRecent]);
+
+  // Deduplicated SNB + VRSNB catalog, active items only, with real prices.
+  const catalog = useMemo(() => {
+    const map = new Map<string, { name: string; unit: 'pcs' | 'kg'; category: string; price: number }>();
+    for (const branch of ['SNB', 'VRSNB'] as const) {
+      for (const item of catalogItems[branch] ?? []) {
+        if (!item.active) continue;
+        const key = item.name.trim().toLowerCase();
+        if (!map.has(key)) map.set(key, { name: item.name, unit: item.uom === 'Kgs' ? 'kg' : 'pcs', category: item.category, price: item.price });
+      }
+    }
+    return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
+  }, [catalogItems]);
+
+  const filtered = useMemo(
+    () => catalog.filter(i => !search.trim() || i.name.toLowerCase().includes(search.trim().toLowerCase())),
+    [catalog, search],
+  );
+
+  const setQty = (item: { name: string; unit: 'pcs' | 'kg'; price: number }, value: number) => {
+    const safe = Math.max(0, Math.round(value * 1000) / 1000);
+    setCart(prev => {
+      const next = { ...prev };
+      if (safe <= 0) delete next[item.name];
+      else next[item.name] = { itemName: item.name, unit: item.unit, price: item.price, quantity: safe };
+      return next;
+    });
+  };
+
+  const cartLines = Object.values(cart);
+  const subtotal = Math.round(cartLines.reduce((s, l) => s + l.price * l.quantity, 0) * 100) / 100;
+  const discountAmount = discountType === 'none' ? 0
+    : discountType === 'percent' ? Math.round(subtotal * (Math.min(100, Math.max(0, Number(discountValue) || 0)) / 100) * 100) / 100
+    : Math.round(Math.min(subtotal, Math.max(0, Number(discountValue) || 0)) * 100) / 100;
+  const total = Math.max(0, Math.round((subtotal - discountAmount) * 100) / 100);
+
+  const resetCart = () => { setCart({}); setDiscountType('none'); setDiscountValue(''); };
+
+  const saveBill = async () => {
+    if (cartLines.length === 0) { setError('Add at least one item.'); return; }
+    setSaving(true); setError('');
+    try {
+      // BUG FIX: `Date.now().toString().slice(-8)` looked unique but is just
+      // the last 8 digits of a monotonically increasing counter — it repeats
+      // exactly every ~27.8 hours (10^8 ms), so a bakery billing daily would
+      // eventually hit the bill_no UNIQUE constraint and fail to save. Use a
+      // date prefix (for readability) + a random suffix (for uniqueness),
+      // same convention as the Hosur order-number generator elsewhere in this file.
+      const billNo = `WB-${new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: '2-digit', month: '2-digit', day: '2-digit' }).format(new Date()).replace(/-/g, '')}-${crypto.randomUUID().slice(0, 6).toUpperCase()}`;
+      const items: WalkinBillItem[] = cartLines.map(l => ({ itemName: l.itemName, unit: l.unit, price: l.price, quantity: l.quantity, lineTotal: Math.round(l.price * l.quantity * 100) / 100 }));
+      const { data, error: insertError } = await supabase.from('bakery_walkin_bills').insert({
+        bill_no: billNo, items, subtotal, discount_type: discountType, discount_value: Number(discountValue) || 0,
+        discount_amount: discountAmount, total, payment_mode: paymentMode, cashier_name: currentUser?.displayName || 'Planner',
+      }).select().single();
+      if (insertError || !data) throw new Error('Failed to save the bill — please try again.');
+      const bill = mapWalkinBill(data as Record<string, unknown>);
+      setLastBill(bill);
+      resetCart();
+      loadRecent();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save the bill.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const cancelBill = async (bill: WalkinBillRow) => {
+    if (!window.confirm(`Cancel bill ${bill.billNo}? This can't be undone.`)) return;
+    const { error: updateError } = await supabase.from('bakery_walkin_bills').update({ status: 'cancelled', cancelled_at: new Date().toISOString() }).eq('id', bill.id);
+    if (!updateError) loadRecent();
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="card-base flex flex-wrap items-center justify-between gap-3 p-4">
+        <div className="flex items-center gap-3">
+          <span className="flex size-10 shrink-0 items-center justify-center rounded-xl cafe-gradient text-white shadow-teal">
+            <ShoppingCart className="size-5" />
+          </span>
+          <div>
+            <h2 className="font-display text-xl font-bold text-foreground">Billing (Walk-in)</h2>
+            <p className="text-xs font-bold text-muted-foreground font-body">For customers who walk in directly. Combined SNB + VRSNB catalog, deduplicated.</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_22rem]">
+        <section className="space-y-3 card-base p-5">
+          <label className="space-y-1">
+            <span className="text-[11px] font-black uppercase tracking-wide text-muted-foreground">Search item</span>
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+              <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search item..." className="h-11 w-full rounded-xl border border-border bg-background pl-9 pr-3 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-primary/30" />
+            </div>
+          </label>
+
+          {filtered.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-border p-8 text-center text-xs font-bold text-muted-foreground">No items match.</div>
+          ) : (
+            <div className="grid gap-2 sm:grid-cols-2 max-h-[60vh] overflow-y-auto pr-1">
+              {filtered.map(item => {
+                const current = cart[item.name]?.quantity ?? 0;
+                const step = item.unit === 'kg' ? 0.25 : 1;
+                return (
+                  <article key={item.name} className={cn('rounded-xl border p-3 transition-colors', current > 0 ? 'border-teal bg-primary/5' : 'border-border bg-muted/40')}>
+                    <p className="text-sm font-black text-foreground">{item.name}</p>
+                    <p className="text-xs font-bold text-muted-foreground">{invoiceMoney(item.price)} / {item.unit} · {item.category}</p>
+                    <div className="mt-2 flex items-center gap-2">
+                      <button onClick={() => setQty(item, current - step)} className="size-8 rounded-lg border border-border bg-card font-black text-foreground hover:bg-muted">-</button>
+                      <input type="number" value={current || ''} onChange={e => setQty(item, Number(e.target.value))} placeholder="0" className="h-8 w-full rounded-lg border border-border bg-background text-center text-sm font-black" />
+                      <button onClick={() => setQty(item, current + step)} className="size-8 rounded-lg bg-primary font-black text-primary-foreground hover:opacity-90">+</button>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          )}
+        </section>
+
+        <aside className="space-y-3 card-base p-5">
+          <div className="flex items-center gap-2"><ShoppingCart className="size-4 text-primary" /><h3 className="font-display text-lg font-bold text-foreground">Cart</h3></div>
+          {cartLines.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-border p-6 text-center text-xs font-bold text-muted-foreground">No items added</div>
+          ) : (
+            <div className="max-h-64 space-y-2 overflow-auto">
+              {cartLines.map(line => (
+                <div key={line.itemName} className="flex items-center justify-between rounded-xl bg-muted/40 p-2.5">
+                  <div className="min-w-0">
+                    <p className="truncate text-xs font-black text-foreground">{line.itemName}</p>
+                    <p className="text-[11px] font-bold text-muted-foreground">{line.quantity} {line.unit} × {invoiceMoney(line.price)} = {invoiceMoney(line.price * line.quantity)}</p>
+                  </div>
+                  <button onClick={() => setQty({ name: line.itemName, unit: line.unit, price: line.price }, 0)}><X className="size-3.5 text-destructive" /></button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="space-y-2 rounded-xl border border-border bg-muted/20 p-3">
+            <div className="flex items-center gap-1.5"><Percent className="size-3.5 text-muted-foreground" /><span className="text-[11px] font-black uppercase tracking-wide text-muted-foreground">Discount</span></div>
+            <div className="flex gap-1.5">
+              {(['none', 'percent', 'amount'] as const).map(t => (
+                <button key={t} onClick={() => { setDiscountType(t); if (t === 'none') setDiscountValue(''); }} className={cn('flex-1 rounded-lg px-2 py-1.5 text-[11px] font-bold', discountType === t ? 'bg-primary text-primary-foreground' : 'border border-border bg-card text-foreground')}>
+                  {t === 'none' ? 'None' : t === 'percent' ? '%' : '₹'}
+                </button>
+              ))}
+            </div>
+            {discountType !== 'none' && (
+              <input type="number" value={discountValue} onChange={e => setDiscountValue(e.target.value)} placeholder={discountType === 'percent' ? 'e.g. 10' : 'e.g. 50'} className="w-full rounded-lg border border-border bg-background px-2 py-1.5 text-sm font-bold" />
+            )}
+          </div>
+
+          <div className="space-y-1 rounded-xl bg-muted/40 p-3 text-sm">
+            <div className="flex justify-between font-bold text-muted-foreground"><span>Subtotal</span><span>{invoiceMoney(subtotal)}</span></div>
+            {discountAmount > 0 && <div className="flex justify-between font-bold text-red-600"><span>Discount</span><span>- {invoiceMoney(discountAmount)}</span></div>}
+            <div className="flex justify-between border-t border-border pt-1.5 text-base font-black text-foreground"><span>Total</span><span>{invoiceMoney(total)}</span></div>
+          </div>
+
+          <div>
+            <p className="mb-1.5 text-[10px] font-black uppercase tracking-wide text-muted-foreground">Payment Mode</p>
+            <div className="flex gap-1.5">
+              {WALKIN_PAYMENT_MODES.map(m => (
+                <button key={m.key} onClick={() => setPaymentMode(m.key)} className={cn('flex-1 rounded-lg px-2 py-1.5 text-xs font-bold', paymentMode === m.key ? 'bg-primary text-primary-foreground' : 'border border-border bg-card text-foreground')}>{m.label}</button>
+              ))}
+            </div>
+          </div>
+
+          {error && <p className="rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs font-bold text-destructive">{error}</p>}
+
+          <button onClick={saveBill} disabled={saving || cartLines.length === 0} className="flex h-11 w-full items-center justify-center gap-2 rounded-xl cafe-gradient text-sm font-black text-white shadow-teal disabled:opacity-40">
+            {saving ? <Loader2 className="size-4 animate-spin" /> : <IndianRupee className="size-4" />} Save Bill{cartLines.length > 0 ? ` (${invoiceMoney(total)})` : ''}
+          </button>
+
+          {lastBill && (
+            <div className="rounded-xl border border-teal-200 bg-teal-50 p-3">
+              <p className="text-xs font-black text-teal-800">Bill {lastBill.billNo} saved — {invoiceMoney(lastBill.total)}</p>
+              <button onClick={() => printWalkinBill(lastBill)} className="mt-2 flex items-center gap-1.5 rounded-lg bg-teal-600 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-teal-700">
+                <Printer className="size-3.5" /> Print Bill
+              </button>
+            </div>
+          )}
+        </aside>
+      </div>
+
+      <div className="overflow-hidden rounded-2xl border border-border bg-white shadow-sm">
+        <div className="border-b border-border bg-muted/40 px-4 py-3"><p className="text-sm font-black text-foreground">Recent Bills</p></div>
+        {loadingRecent ? (
+          <div className="flex justify-center py-8"><Loader2 className="size-5 animate-spin text-muted-foreground" /></div>
+        ) : recent.length === 0 ? (
+          <div className="p-4"><EmptyState text="No walk-in bills yet." /></div>
+        ) : (
+          <div className="max-h-96 divide-y divide-border overflow-y-auto">
+            {recent.map(bill => (
+              <div key={bill.id} className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5">
+                <div className="min-w-0">
+                  <p className="text-xs font-black text-foreground">
+                    #{bill.billNo}
+                    {bill.status === 'cancelled' && <span className="ml-1.5 rounded-full bg-red-100 px-1.5 py-0.5 text-[10px] font-black text-red-700">Cancelled</span>}
+                  </p>
+                  <p className="text-[11px] font-bold text-muted-foreground">{new Date(bill.createdAt).toLocaleString('en-IN')} · {bill.items.length} item{bill.items.length === 1 ? '' : 's'} · {bill.paymentMode.toUpperCase()} · {bill.cashierName || '-'}</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-black text-foreground">{invoiceMoney(bill.total)}</span>
+                  <button onClick={() => printWalkinBill(bill)} className="rounded-lg border border-border bg-card p-1.5 text-muted-foreground hover:bg-muted" title="Print"><Printer className="size-3.5" /></button>
+                  {bill.status === 'active' && (
+                    <button onClick={() => cancelBill(bill)} className="rounded-lg border border-destructive/30 bg-destructive/10 p-1.5 text-destructive hover:bg-destructive/20" title="Cancel bill"><Trash2 className="size-3.5" /></button>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // Sum of everything already dispatched to one specific branch for one row,
 // so per-branch progress can be shown/checked independently of other branches.
 function branchDispatchedForRow(row: ProductionRow, branch: Branch, orders: BakeryOrder[]): number {
@@ -1204,11 +2040,64 @@ function plannedDispatchedForRow(row: ProductionRow, orders: BakeryOrder[]): num
     .reduce((s, o) => s + (o.dispatchLog || []).filter(d => sameItem(d.itemName, row.itemName)).reduce((s2, d) => s2 + d.quantity, 0), 0);
 }
 
+// Date-wise: each calendar day gets its own collapsible group (own branch
+// filter, own To Dispatch/Dispatched/Planned sub-tabs). Within one date, the
+// same item across several same-day orders still merges into a single
+// dispatch line (computeProductionRows already does this per date-bucket) —
+// only the cross-date merge is removed, so yesterday's still-pending items
+// stay under "Yesterday" instead of silently folding into "Today".
 function DispatchTab({ orders, allOrders }: { orders: BakeryOrder[]; allOrders: BakeryOrder[] }) {
+  const [search, setSearch] = useState('');
+  const [dateFilter, setDateFilter] = useState<string>('all');
+  const dateGroups = useMemo(() => groupOrdersByStoreDate(orders), [orders]);
+  const visible = dateFilter === 'all' ? dateGroups : dateGroups.filter(g => g.dateKey === dateFilter);
+  const exportRows = useMemo(() => dateGroups.flatMap(g => {
+    const rows = computeProductionRows(g.orders).filter(r => r.itemStatus !== 'not_started');
+    return rows.map(row => {
+      const dispatched = g.orders.filter(o => row.contributingOrderIds.includes(o.id))
+        .reduce((s, o) => s + (o.dispatchLog || []).filter(d => sameItem(d.itemName, row.itemName)).reduce((s2, d) => s2 + d.quantity, 0), 0);
+      return { date: g.label, item: row.itemName, VRSNB: row.perBranch.VRSNB ?? '', SNB: row.perBranch.SNB ?? '', Hosur: row.perBranch.Hosur ?? '', produced: row.preparedTotal, dispatched, status: row.itemStatus };
+    });
+  }), [dateGroups]);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-sm font-black text-foreground">Dispatch <span className="text-xs font-bold text-muted-foreground">({dateGroups.length} date{dateGroups.length === 1 ? '' : 's'})</span></h2>
+        <div className="flex items-center gap-2">
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+            <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search item..." className="rounded-xl border border-border py-1.5 pl-8 pr-3 text-xs font-bold" />
+          </div>
+          <select value={dateFilter} onChange={e => setDateFilter(e.target.value)} className="rounded-xl border border-border px-3 py-1.5 text-xs font-bold text-foreground">
+            <option value="all">All dates</option>
+            {dateGroups.map(g => <option key={g.dateKey} value={g.dateKey}>{g.label}</option>)}
+          </select>
+          <ExportButton
+            disabled={exportRows.length === 0}
+            onClick={() => exportToExcel({
+              filename: 'dispatch', sheetName: 'Dispatch', title: 'Planner — Dispatch',
+              columns: [{ header: 'Date', key: 'date' }, { header: 'Item', key: 'item' }, ...BRANCHES.map(b => ({ header: `${b} Req`, key: b })), { header: 'Produced', key: 'produced' }, { header: 'Dispatched', key: 'dispatched' }, { header: 'Status', key: 'status' }],
+              rows: exportRows,
+            })}
+          />
+        </div>
+      </div>
+      {dateGroups.length === 0 && <EmptyState text="Nothing waiting on dispatch." />}
+      {visible.map((g, idx) => (
+        <DispatchDateGroup key={g.dateKey} dateKey={g.dateKey} label={g.label} orders={g.orders} allOrders={allOrders} search={search} defaultOpen={idx === 0} />
+      ))}
+    </div>
+  );
+}
+
+function DispatchDateGroup({ label, orders, search, defaultOpen }: {
+  dateKey: string; label: string; orders: BakeryOrder[]; allOrders: BakeryOrder[]; search: string; defaultOpen: boolean;
+}) {
   const { submitDispatch } = useBakeryStore();
   const currentUser = useAuthStore(s => s.currentUser);
+  const [open, setOpen] = useState(defaultOpen);
   const rows = useMemo(() => computeProductionRows(orders).filter(r => r.itemStatus !== 'not_started'), [orders]);
-  const [search, setSearch] = useState('');
   const [subTab, setSubTab] = useState<'active' | 'completed' | 'planned'>('active');
   const [checklistItem, setChecklistItem] = useState<ProductionRow | null>(null);
   // 'All' shows every item like before. Picking a branch filters to only items
@@ -1259,26 +2148,23 @@ function DispatchTab({ orders, allOrders }: { orders: BakeryOrder[]; allOrders: 
   });
   const selectedRows = activeRows.filter(r => selected.has(r.itemName));
 
-  return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-sm font-black text-foreground">Dispatch</h2>
-        <div className="flex items-center gap-2">
-          <div className="relative">
-            <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-            <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search item..." className="rounded-xl border border-border py-1.5 pl-8 pr-3 text-xs font-bold" />
-          </div>
-          <ExportButton
-            disabled={rows.length === 0}
-            onClick={() => exportToExcel({
-              filename: 'dispatch', sheetName: 'Dispatch', title: 'Planner — Dispatch',
-              columns: [{ header: 'Item', key: 'item' }, ...BRANCHES.map(b => ({ header: `${b} Req`, key: b })), { header: 'Produced', key: 'produced' }, { header: 'Dispatched', key: 'dispatched' }, { header: 'Status', key: 'status' }],
-              rows: rows.map(row => ({ item: row.itemName, VRSNB: row.perBranch.VRSNB ?? '', SNB: row.perBranch.SNB ?? '', Hosur: row.perBranch.Hosur ?? '', produced: row.preparedTotal, dispatched: dispatchedQtyForItem(row), status: row.itemStatus })),
-            })}
-          />
-        </div>
-      </div>
+  // While actively searching, hide date groups with no matches so the search
+  // reads as global even though rendering stays date-scoped underneath.
+  if (search.trim() && filtered.length === 0) return null;
 
+  return (
+    <div className="overflow-hidden rounded-2xl border border-border bg-white shadow-sm">
+      <button type="button" onClick={() => setOpen(v => !v)} className="flex w-full items-center justify-between px-4 py-3 text-left hover:bg-muted/40">
+        <div className="flex items-center gap-2">
+          <CalendarDays className="size-4 text-muted-foreground" />
+          <span className="text-sm font-black text-foreground">{label}</span>
+          <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-bold text-muted-foreground">{activeRows.length} to dispatch</span>
+          {completedRows.length > 0 && <span className="rounded-full bg-teal-100 px-2 py-0.5 text-[10px] font-bold text-teal-700">{completedRows.length} done</span>}
+        </div>
+        <ChevronDown className={cn('size-4 text-muted-foreground transition-transform', open && 'rotate-180')} />
+      </button>
+      {!open ? null : (
+      <div className="space-y-3 border-t border-border p-3">
       {/* Branch view — click a branch to see only what that branch ordered,
           with a checkbox on each card to bulk-dispatch several items at once. */}
       <div className="flex flex-wrap gap-2">
@@ -1325,7 +2211,7 @@ function DispatchTab({ orders, allOrders }: { orders: BakeryOrder[]; allOrders: 
       ) : (
       <>
       {shown.length === 0 && <EmptyState text={subTab === 'active' ? 'Nothing waiting on dispatch.' : 'Nothing dispatched yet.'} />}
-      <div className="space-y-2 pb-16">
+      <div className="space-y-2">
         {shown.map(row => {
           const dispatched = dispatchedQtyForItem(row);
           const canSelect = subTab === 'active' && branchFilter !== 'All';
@@ -1366,12 +2252,18 @@ function DispatchTab({ orders, allOrders }: { orders: BakeryOrder[]; allOrders: 
       </div>
       </>
       )}
-
-      {/* Floating bulk-dispatch bar — appears once the planner has ticked one or
-          more items for the currently selected branch, so several items can go
-          out to that branch in a single dispatch action. */}
+      {/* Bulk-dispatch bar — appears once the planner has ticked one or more
+          items for the currently selected branch, so several items can go out
+          to that branch in a single dispatch action.
+          BUG FIX: this used to be `fixed inset-x-0 bottom-0`, viewport-pinned.
+          With date-wise grouping, several of these date cards can now be open
+          at once — if two of them each had a bulk selection in progress, two
+          identical viewport-pinned bars would stack on top of each other,
+          and only the topmost one would actually be clickable. `sticky`
+          keeps it pinned to the bottom of the viewport only while its own
+          card is in view, so two open cards never fight for the same spot. */}
       {branchFilter !== 'All' && selected.size > 0 && (
-        <div className="fixed inset-x-0 bottom-0 z-40 flex justify-center p-3">
+        <div className="sticky bottom-2 z-10 flex justify-center pt-2">
           <button
             onClick={() => setBulkOpen(true)}
             className="flex items-center gap-2 rounded-2xl bg-foreground px-5 py-3 text-sm font-black text-white shadow-xl"
@@ -1379,6 +2271,8 @@ function DispatchTab({ orders, allOrders }: { orders: BakeryOrder[]; allOrders: 
             <Truck className="size-4" /> Dispatch {selected.size} item{selected.size > 1 ? 's' : ''} to {branchFilter}
           </button>
         </div>
+      )}
+      </div>
       )}
 
       {checklistItem && (
