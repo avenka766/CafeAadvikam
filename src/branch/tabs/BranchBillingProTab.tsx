@@ -219,6 +219,13 @@ export default function BranchBillingProTab({
   const addHold = useBranchOpsStore((s) => s.addHold);
   const removeHold = useBranchOpsStore((s) => s.removeHold);
   const addNotification = useBranchOpsStore((s) => s.addNotification);
+  const refreshSalespeople = useBranchOpsStore((s) => s.refreshSalespeople);
+
+  // URGENT FIX: don't rely solely on the general branch-ops hydration for
+  // this — fetch the salesperson roster directly whenever this billing
+  // screen is opened, so a stale/incomplete persisted snapshot can never
+  // block billing by leaving the dropdown empty.
+  useEffect(() => { void refreshSalespeople(branch); }, [branch, refreshSalespeople]);
 
   const userName = currentUser?.username || currentUser?.displayName || 'Branch Staff';
   const isAdmin = ['admin', 'admin_snb', 'admin_vrsnb', 'owner'].includes(currentUser?.role || '');
