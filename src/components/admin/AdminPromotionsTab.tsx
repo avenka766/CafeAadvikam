@@ -193,9 +193,18 @@ export default function AdminPromotionsTab() {
     depositRequired: form.depositRequired ? Number(form.depositRequired) : null,
   });
 
+  // BUG FIX: this used to hardcode description/terms/startTime/endTime/
+  // priority/imageUrl instead of reading them from `form` — the form state
+  // already carries all six (formFromCampaign populates them when opening
+  // "Edit"), but there is no UI in this tab to change them, so saving a
+  // campaign for ANY reason (even just renaming it) silently reset them to
+  // these hardcoded defaults, wiping out anything set by another means
+  // (migration, future feature, direct DB edit). priority in particular
+  // drives ordering/best-offer selection at billing time. Now round-trips
+  // through form.* so an edit-and-save preserves whatever was already there.
   const campaignInput = () => ({
-    campaignName: form.campaignName.trim(), campaignCode: (form.campaignCode || `${form.campaignName.trim().slice(0, 12).toUpperCase().replace(/[^A-Z0-9]/g, '')}-${Date.now().toString(36).toUpperCase()}`), title: form.title.trim() || form.campaignName.trim(), message: form.message.trim(), description: null, terms: null,
-    status: form.status, startDate: form.startDate, endDate: form.endDate, startTime: null, endTime: null, activeDays: form.activeDays, priority: 10, imageUrl: null,
+    campaignName: form.campaignName.trim(), campaignCode: (form.campaignCode || `${form.campaignName.trim().slice(0, 12).toUpperCase().replace(/[^A-Z0-9]/g, '')}-${Date.now().toString(36).toUpperCase()}`), title: form.title.trim() || form.campaignName.trim(), message: form.message.trim(), description: form.description.trim() || null, terms: form.terms.trim() || null,
+    status: form.status, startDate: form.startDate, endDate: form.endDate, startTime: form.startTime || null, endTime: form.endTime || null, activeDays: form.activeDays, priority: form.priority ? Number(form.priority) : 10, imageUrl: form.imageUrl.trim() || null,
     autoApply: form.autoApply, cashierApprovalRequired: form.cashierApprovalRequired, customerConsentRequired: form.customerConsentRequired, canCombineWithWallet: form.canCombineWithWallet, canStack: form.canStack,
     canCombineWithManualDiscount: form.canCombineWithManualDiscount, canCombineWithCustomerPricing: form.canCombineWithCustomerPricing, maximumPromotionsPerBill: Math.max(1, Number(form.maximumPromotionsPerBill || 1)), bestOfferOnly: form.bestOfferOnly,
     branches: form.allBranches ? [] : form.branches, billingChannels: form.billingChannels, customerSegments: form.customerSegments, productIds: parseList(form.productIds), categories: parseList(form.categories), excludedProductIds: parseList(form.excludedProductIds), excludedCategories: parseList(form.excludedCategories),
