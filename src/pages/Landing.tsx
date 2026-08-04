@@ -221,7 +221,7 @@ const CONTENT: Record<Venue, VenueContent> = {
       { image: filterCoffeeImg, caption: 'Slow-brewed filter coffee' },
     ],
     storyImage: bakeryCounter,
-    storyBadge: 'Since 2012',
+    storyBadge: 'Since 1988',
     storyTitle: 'Two kitchens, one standard: nothing leaves half-effort',
     storyP1: 'Cafe Aadvikam started as a single breakfast counter on Bagalur Main Road. Today it’s a full-service cafe, a working bakery under the Sri Nanjundeshwara Bakery name, and a party hall — all run by the same family, on the same standard.',
     storyList: [
@@ -305,12 +305,12 @@ const CONTENT: Record<Venue, VenueContent> = {
   },
 };
 
-// Trust strip is venue-aware: the cafe opened in 2012, but Sri Nanjundeshwara
-// Bakery — the same family's bakery — has been running since 1988. Showing
-// "Est. 2012" while in Bakery mode was factually wrong; fixed here.
+// The whole business — cafe and bakery alike — traces back to 1988, not
+// 2012. "Est. 2012" was wrong everywhere it appeared, not just in Bakery
+// mode; both venues now show the same, correct founding year.
 const TRUST_STRIP: Record<Venue, { icon: typeof CalendarCheck; value: string; label: string }[]> = {
   cafe: [
-    { icon: CalendarCheck, value: 'Est. 2012', label: 'Family run, Berigai' },
+    { icon: CalendarCheck, value: 'Est. 1988', label: 'Family run, Berigai' },
     { icon: Users, value: '120 seats', label: 'Party hall capacity' },
     { icon: Clock, value: '7am – 10pm', label: 'Open every single day' },
     { icon: Leaf, value: '100% in-house', label: 'Nothing frozen, nothing rushed' },
@@ -778,7 +778,7 @@ export default function Landing() {
               </a>
             </div>
             <div className="mt-12 flex flex-wrap gap-10">
-              <div><p className="font-display text-3xl font-bold">{venue === 'cafe' ? '12+' : '35+'}</p><p className="mt-1 text-xs uppercase tracking-wide text-white/60">Years serving Berigai</p></div>
+              <div><p className="font-display text-3xl font-bold">35+</p><p className="mt-1 text-xs uppercase tracking-wide text-white/60">Years serving Berigai</p></div>
               <div><p className="font-display text-3xl font-bold">60+</p><p className="mt-1 text-xs uppercase tracking-wide text-white/60">{c.statLabel}</p></div>
               <div><p className="font-display text-3xl font-bold">7am–10pm</p><p className="mt-1 text-xs uppercase tracking-wide text-white/60">Open every day</p></div>
             </div>
