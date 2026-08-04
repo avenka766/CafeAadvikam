@@ -20,7 +20,7 @@
 // Nanjundeshwara Bakery's bakery_items table — instead of only ever showing
 // four hardcoded dishes. A standalone floating WhatsApp button now sits
 // alongside the ChatBot toggle (bottom-left vs bottom-right, no overlap).
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode, CSSProperties } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
@@ -264,6 +264,19 @@ const TRUST_STRIP = [
   { icon: Leaf, value: '100% in-house', label: 'Nothing frozen, nothing rushed' },
 ];
 
+// Deterministic (not Math.random() per-render) ambient particle layout, so
+// it doesn't jitter/regenerate on re-render — computed once at module load.
+const HERO_PARTICLES = Array.from({ length: 14 }, (_, i) => {
+  const seed = i * 37;
+  return {
+    left: (seed * 7) % 100,
+    size: 3 + ((seed * 3) % 5),
+    duration: 7 + ((seed * 11) % 8),
+    delay: (seed % 10) * 0.6,
+    driftX: ((seed % 5) - 2) * 8,
+  };
+});
+
 const BAKERY_CATEGORY_ICON: Record<string, string> = {
   Sweets: '🍬',
   Savouries: '🥨',
@@ -308,8 +321,40 @@ function VenueToggle({ venue, onChange }: { venue: Venue; onChange: (v: Venue) =
   );
 }
 
-// Simple, dependency-free entrance animation: CSS class only, fires on paint —
-// no ref/IntersectionObserver timing to get wrong, so content is always visible.
+// Scroll-triggered storytelling reveal, built only on the native
+// IntersectionObserver API (no animation library). Fail-safe by construction:
+// a section starts fully visible in plain CSS (no class at all) and only
+// switches to the "pending" (hidden, offset) state once this component has
+// actually mounted on the client — so if JS never runs for any reason, the
+// content simply stays visible instead of getting stuck invisible, which is
+// exactly the failure mode Framer Motion caused here previously. Once the
+// section scrolls into view the observer flips it to "shown" and disconnects.
+function useReveal<T extends HTMLElement>() {
+  const ref = useRef<T | null>(null);
+  const [mounted, setMounted] = useState(false);
+  const [shown, setShown] = useState(false);
+  useEffect(() => {
+    setMounted(true);
+    const el = ref.current;
+    if (!el || typeof IntersectionObserver === 'undefined') {
+      setShown(true);
+      return;
+    }
+    const io = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          setShown(true);
+          io.disconnect();
+        }
+      },
+      { threshold: 0.12, rootMargin: '0px 0px -8% 0px' },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, []);
+  return { ref, state: !mounted ? 'static' : shown ? 'shown' : 'pending' } as const;
+}
+
 function Reveal({
   children,
   className,
@@ -321,11 +366,42 @@ function Reveal({
   delay?: 100 | 150 | 200 | 300 | 400;
   style?: CSSProperties;
 }) {
+  const { ref, state } = useReveal<HTMLDivElement>();
   return (
-    <div className={cn('animate-fade-up', delay && `delay-${delay}`, className)} style={style}>
+    <div
+      ref={ref}
+      className={cn(state === 'pending' && 'reveal-pending', state === 'shown' && 'reveal-shown', className)}
+      style={delay ? { ...style, transitionDelay: `${delay}ms` } : style}
+    >
       {children}
     </div>
   );
+}
+
+// Lightweight, dependency-free parallax: reads scroll position on the
+// passive scroll listener + rAF (never blocks the main thread), returns a
+// translateY in px. Capped to a small range so it reads as "cinematic depth"
+// rather than motion-sickness scroll-jacking, and is fully inert (returns 0,
+// no listener at all) if reduced-motion is requested.
+function useParallax(strength = 0.15) {
+  const [offset, setOffset] = useState(0);
+  useEffect(() => {
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
+    let raf = 0;
+    const onScroll = () => {
+      if (raf) return;
+      raf = requestAnimationFrame(() => {
+        setOffset(Math.min(140, window.scrollY * strength));
+        raf = 0;
+      });
+    };
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      window.removeEventListener('scroll', onScroll);
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, [strength]);
+  return offset;
 }
 
 export default function Landing() {
@@ -334,6 +410,8 @@ export default function Landing() {
   const [venue, setVenue] = useState<Venue>('cafe');
   const [mobileOpen, setMobileOpen] = useState(false);
   const [mapLoaded, setMapLoaded] = useState(false);
+  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+  const heroParallax = useParallax(0.12);
 
   const { items: cafeMenuItems, loading: cafeMenuLoading, loadMenu } = useMenuStore();
   const { items: bakeryMenuItems, loading: bakeryMenuLoading, loadItems: loadBakeryItems } = useBakeryItemsStore();
@@ -346,6 +424,24 @@ export default function Landing() {
   useEffect(() => {
     if (currentUser) navigate(getRoleDefaultPath(currentUser.role), { replace: true });
   }, [currentUser, navigate]);
+
+  // Close the lightbox if the venue changes underneath it (gallery array
+  // differs per venue, so a stale index could otherwise point at the wrong photo).
+  useEffect(() => {
+    setLightboxIndex(null);
+  }, [venue]);
+
+  const galleryLength = CONTENT[venue].gallery.length;
+  useEffect(() => {
+    if (lightboxIndex === null) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setLightboxIndex(null);
+      else if (e.key === 'ArrowRight') setLightboxIndex((i) => (i === null ? i : (i + 1) % galleryLength));
+      else if (e.key === 'ArrowLeft') setLightboxIndex((i) => (i === null ? i : (i - 1 + galleryLength) % galleryLength));
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [lightboxIndex, galleryLength]);
 
   // Live cafe menu, grouped by category, in the same order as MENU_CATEGORIES.
   const cafeLiveGroups = useMemo(() => {
@@ -391,8 +487,8 @@ export default function Landing() {
       <header className="sticky top-0 z-50 border-b border-border bg-background/95">
         <div className="mx-auto flex h-[76px] max-w-7xl items-center justify-between px-4 md:px-8">
           <button onClick={() => scrollToId('#top')} className="flex items-center gap-3 text-left">
-            <img src={c.logo} alt={venue === 'cafe' ? 'Cafe Aadvikam' : 'Sri Nanjundeshwara Bakery'} className="size-11 rounded-full border border-border bg-white object-contain p-1" />
-            <div>
+            <img key={venue} src={c.logo} alt={venue === 'cafe' ? 'Cafe Aadvikam' : 'Sri Nanjundeshwara Bakery'} className="venue-fade size-11 rounded-full border border-border bg-white object-contain p-1" />
+            <div key={venue} className="venue-fade">
               <p className="font-display text-lg font-bold leading-none text-foreground">Cafe Aadvikam</p>
               <p className="mt-1 text-[10px] font-bold uppercase tracking-[0.18em] text-primary">{c.navSub}</p>
             </div>
@@ -456,19 +552,45 @@ export default function Landing() {
       )}
 
       {/* ── Hero ── */}
-      <section id="top" className="relative flex min-h-[85vh] items-end overflow-hidden">
+      <section id="top" key={`hero-${venue}`} className="relative flex min-h-[92vh] items-end overflow-hidden">
         <div className="absolute inset-0 overflow-hidden bg-muted">
-          <img src={c.heroImage} alt="" className="hero-zoom h-full w-full object-cover" />
+          {/* Parallax lives on this wrapper (translateY only); the Ken-Burns
+              zoom animation lives on the <img> itself (scale only). Keeping
+              them on separate elements avoids the two transforms fighting
+              over the same CSS property (a running animation always wins
+              the cascade over an inline style on the same element/property,
+              so combining them on one node would have silently dropped the
+              parallax). */}
+          <div className="h-[calc(100%+140px)] w-full" style={{ transform: `translateY(${-heroParallax}px)` }}>
+            <img src={c.heroImage} alt="" className="hero-zoom h-full w-full object-cover" />
+          </div>
         </div>
-        <div className="absolute inset-0" style={{ background: 'linear-gradient(180deg, rgba(10,15,12,0.18) 0%, rgba(10,15,12,0.42) 55%, rgba(8,10,8,0.92) 100%)' }} />
-        <div className="relative z-10 w-full px-4 pb-16 md:px-8">
-          <div className="animate-fade-up mx-auto max-w-7xl text-white">
+        {/* Ambient floating flour/steam particles — pure CSS, no canvas. */}
+        <div className="pointer-events-none absolute inset-0 overflow-hidden">
+          {HERO_PARTICLES.map((p, i) => (
+            <span
+              key={i}
+              className="hero-particle"
+              style={{
+                left: `${p.left}%`,
+                width: p.size,
+                height: p.size,
+                '--drift-duration': `${p.duration}s`,
+                '--drift-delay': `${p.delay}s`,
+                '--drift-x': `${p.driftX}px`,
+              } as CSSProperties}
+            />
+          ))}
+        </div>
+        <div className="absolute inset-0" style={{ background: 'linear-gradient(180deg, rgba(10,15,12,0.22) 0%, rgba(10,15,12,0.46) 55%, rgba(8,10,8,0.94) 100%)' }} />
+        <div className="relative z-10 w-full px-4 pb-20 md:px-8">
+          <div className="venue-fade mx-auto max-w-7xl text-white">
             <div className="mb-5 inline-flex items-center gap-2 rounded-full border border-white/25 bg-white/10 px-4 py-2 text-xs font-bold uppercase tracking-[0.14em] text-amber-100">
               <Sparkles className="size-3.5 animate-float" /> {c.badge}
             </div>
-            <h1 className="max-w-3xl font-display text-4xl font-bold leading-[1.02] md:text-6xl lg:text-7xl">{c.title}</h1>
-            <p className="mt-5 max-w-xl text-lg text-white/80">{c.lede}</p>
-            <div className="mt-8 flex flex-wrap gap-3">
+            <h1 className="max-w-4xl font-display text-5xl font-bold leading-[0.98] tracking-tight md:text-7xl lg:text-8xl">{c.title}</h1>
+            <p className="mt-6 max-w-xl text-lg text-white/80 md:text-xl">{c.lede}</p>
+            <div className="mt-9 flex flex-wrap gap-3">
               <button onClick={() => scrollToId('#menu')} className="rounded-full bg-white px-6 py-3 text-sm font-bold text-stone-950 shadow-2xl shadow-black/30 transition hover:scale-[1.03] active:scale-95">
                 {c.cta1}
               </button>
@@ -486,10 +608,20 @@ export default function Landing() {
             </div>
           </div>
         </div>
+        <button
+          onClick={() => scrollToId('#trust')}
+          aria-label="Scroll to explore"
+          className="scroll-hint absolute bottom-6 left-1/2 z-10 hidden -translate-x-1/2 flex-col items-center gap-1 text-white/70 md:flex"
+        >
+          <span className="text-[10px] font-bold uppercase tracking-[0.2em]">Scroll</span>
+          <span className="flex h-8 w-5 items-start justify-center rounded-full border border-white/35 p-1">
+            <span className="h-1.5 w-1.5 rounded-full bg-white/80" />
+          </span>
+        </button>
       </section>
 
       {/* ── Trust strip ── */}
-      <section className="border-b border-border bg-card">
+      <section id="trust" className="border-b border-border bg-card">
         <div className="mx-auto max-w-7xl px-4 py-8 md:px-8">
           <div className="grid grid-cols-2 gap-6 sm:grid-cols-4">
             {TRUST_STRIP.map(({ icon: Icon, value, label }, i) => (
@@ -508,7 +640,7 @@ export default function Landing() {
       </section>
 
       {/* ── Highlights ── */}
-      <section className="py-20">
+      <section key={`highlights-${venue}`} className="py-20">
         <div className="mx-auto max-w-7xl px-4 md:px-8">
           <Reveal className="mx-auto mb-12 max-w-xl text-center">
             <p className="text-xs font-bold uppercase tracking-[0.2em] text-primary">{c.highlightsEyebrow}</p>
@@ -529,7 +661,7 @@ export default function Landing() {
       </section>
 
       {/* ── Curated menu (photography) ── */}
-      <section id="menu" className="bg-card py-20">
+      <section id="menu" key={`menu-${venue}`} className="bg-card py-20">
         <div className="mx-auto max-w-7xl px-4 md:px-8">
           <Reveal className="mx-auto mb-12 max-w-xl text-center">
             <p className="text-xs font-bold uppercase tracking-[0.2em] text-primary">{c.menuEyebrow}</p>
@@ -557,7 +689,7 @@ export default function Landing() {
       </section>
 
       {/* ── Live menu (real Supabase data) ── */}
-      <section id="live-menu" className="py-20">
+      <section id="live-menu" key={`live-menu-${venue}`} className="py-20">
         <div className="mx-auto max-w-7xl px-4 md:px-8">
           <Reveal className="mx-auto mb-12 max-w-xl text-center">
             <p className="text-xs font-bold uppercase tracking-[0.2em] text-primary">Straight from the till</p>
@@ -575,7 +707,7 @@ export default function Landing() {
             ) : (
               <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
                 {cafeLiveGroups.slice(0, 9).map(({ cat, items }) => (
-                  <div key={cat.id} className="rounded-2xl border border-border bg-card p-5 shadow-soft">
+                  <div key={cat.id} className="rounded-2xl border border-border bg-card p-5 shadow-soft transition hover:-translate-y-1 hover:shadow-lifted">
                     <div className="mb-3 flex items-center justify-between">
                       <h3 className="flex items-center gap-2 text-base font-bold text-foreground">
                         <span aria-hidden="true">{cat.icon}</span> {cat.name}
@@ -604,7 +736,7 @@ export default function Landing() {
           ) : (
             <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
               {bakeryLiveGroups.map(({ category, items }) => (
-                <div key={category} className="rounded-2xl border border-border bg-card p-5 shadow-soft">
+                <div key={category} className="rounded-2xl border border-border bg-card p-5 shadow-soft transition hover:-translate-y-1 hover:shadow-lifted">
                   <h3 className="mb-3 flex items-center gap-2 text-base font-bold text-foreground">
                     <span aria-hidden="true">{BAKERY_CATEGORY_ICON[category] ?? '🧁'}</span> {category}
                   </h3>
@@ -631,7 +763,7 @@ export default function Landing() {
       </section>
 
       {/* ── Gallery ── */}
-      <section id="gallery" className="bg-card py-20">
+      <section id="gallery" key={`gallery-${venue}`} className="bg-card py-20">
         <div className="mx-auto max-w-7xl px-4 md:px-8">
           <Reveal className="mx-auto mb-12 max-w-xl text-center">
             <p className="inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-[0.2em] text-primary">
@@ -642,10 +774,13 @@ export default function Landing() {
           </Reveal>
           <div className="grid grid-cols-2 gap-4 md:grid-cols-3">
             {c.gallery.map((item, i) => (
-              <div
+              <button
                 key={item.caption}
+                type="button"
+                onClick={() => setLightboxIndex(i)}
+                aria-label={`View larger: ${item.caption}`}
                 className={cn(
-                  'group relative overflow-hidden rounded-2xl bg-muted',
+                  'group relative cursor-zoom-in overflow-hidden rounded-2xl bg-muted text-left',
                   i === 0 ? 'col-span-2 aspect-[16/9] md:col-span-1 md:aspect-[4/5]' : 'aspect-square md:aspect-[4/5]',
                 )}
               >
@@ -654,14 +789,17 @@ export default function Landing() {
                 <p className="absolute inset-x-0 bottom-0 translate-y-2 p-3 text-xs font-semibold text-white opacity-0 transition duration-300 group-hover:translate-y-0 group-hover:opacity-100">
                   {item.caption}
                 </p>
-              </div>
+                <span className="absolute right-3 top-3 grid size-8 place-items-center rounded-full bg-black/45 text-white opacity-0 transition group-hover:opacity-100">
+                  <Camera className="size-3.5" />
+                </span>
+              </button>
             ))}
           </div>
         </div>
       </section>
 
       {/* ── Story ── */}
-      <section id="story" className="py-20">
+      <section id="story" key={`story-${venue}`} className="py-20">
         <div className="mx-auto grid max-w-7xl gap-12 px-4 md:px-8 lg:grid-cols-2 lg:items-center">
           <Reveal className="relative overflow-hidden rounded-[28px] bg-muted">
             <img src={c.storyImage} alt="" className="h-[420px] w-full object-cover md:h-[480px]" onError={(e) => { e.currentTarget.style.opacity = '0'; }} />
@@ -690,7 +828,7 @@ export default function Landing() {
       {/* Preserved exactly: the WhatsApp-enquiry CTA (href + message text) for
           both venues. Everything else here — feature grid, image collage — is
           new presentation around that same, unchanged CTA. */}
-      <section id="occasion" className="py-20">
+      <section id="occasion" key={`occasion-${venue}`} className="py-20">
         <div className="mx-auto max-w-7xl px-4 md:px-8">
           <div
             className="overflow-hidden rounded-[32px] p-8 text-white md:p-14"
@@ -732,14 +870,14 @@ export default function Landing() {
               </Reveal>
 
               <Reveal delay={150} className="grid grid-cols-2 gap-3">
-                <div className="col-span-2 overflow-hidden rounded-2xl bg-white/5">
-                  <img src={c.occasionGallery[0]} alt="Party hall and celebration setup" loading="lazy" className="h-[190px] w-full object-cover md:h-[220px]" onError={(e) => { e.currentTarget.style.opacity = '0'; }} />
+                <div className="group col-span-2 overflow-hidden rounded-2xl bg-white/5">
+                  <img src={c.occasionGallery[0]} alt="Party hall and celebration setup" loading="lazy" className="h-[190px] w-full object-cover transition duration-500 group-hover:scale-105 md:h-[220px]" onError={(e) => { e.currentTarget.style.opacity = '0'; }} />
                 </div>
-                <div className="overflow-hidden rounded-2xl bg-white/5">
-                  <img src={c.occasionGallery[1]} alt="Celebration decor" loading="lazy" className="h-[140px] w-full object-cover md:h-[160px]" onError={(e) => { e.currentTarget.style.opacity = '0'; }} />
+                <div className="group overflow-hidden rounded-2xl bg-white/5">
+                  <img src={c.occasionGallery[1]} alt="Celebration decor" loading="lazy" className="h-[140px] w-full object-cover transition duration-500 group-hover:scale-105 md:h-[160px]" onError={(e) => { e.currentTarget.style.opacity = '0'; }} />
                 </div>
-                <div className="overflow-hidden rounded-2xl bg-white/5">
-                  <img src={c.occasionGallery[2]} alt="Celebration cake" loading="lazy" className="h-[140px] w-full object-cover md:h-[160px]" onError={(e) => { e.currentTarget.style.opacity = '0'; }} />
+                <div className="group overflow-hidden rounded-2xl bg-white/5">
+                  <img src={c.occasionGallery[2]} alt="Celebration cake" loading="lazy" className="h-[140px] w-full object-cover transition duration-500 group-hover:scale-105 md:h-[160px]" onError={(e) => { e.currentTarget.style.opacity = '0'; }} />
                 </div>
               </Reveal>
             </div>
@@ -833,6 +971,50 @@ export default function Landing() {
       >
         <MessageCircle className="size-6" />
       </a>
+
+      {/* ── Gallery lightbox (Apple Photos-style viewer, no library) ── */}
+      {lightboxIndex !== null && (
+        <div
+          className="fixed inset-0 z-[70] flex flex-col bg-black/95 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Photo viewer"
+        >
+          <div className="flex items-center justify-between text-white/80">
+            <p className="text-xs font-semibold uppercase tracking-wide">
+              {lightboxIndex + 1} / {c.gallery.length}
+            </p>
+            <button onClick={() => setLightboxIndex(null)} aria-label="Close" className="grid size-10 place-items-center rounded-full bg-white/10 transition hover:bg-white/20">
+              <X className="size-5" />
+            </button>
+          </div>
+          <div className="relative flex flex-1 items-center justify-center overflow-hidden">
+            <button
+              onClick={() => setLightboxIndex((i) => (i === null ? i : (i - 1 + c.gallery.length) % c.gallery.length))}
+              aria-label="Previous photo"
+              className="absolute left-0 z-10 grid h-full w-14 place-items-center text-white/60 transition hover:text-white md:w-20"
+            >
+              <ArrowRight className="size-6 rotate-180" />
+            </button>
+            <img
+              key={lightboxIndex}
+              src={c.gallery[lightboxIndex].image}
+              alt={c.gallery[lightboxIndex].caption}
+              className="lightbox-in max-h-[75vh] max-w-full rounded-xl object-contain shadow-2xl"
+            />
+            <button
+              onClick={() => setLightboxIndex((i) => (i === null ? i : (i + 1) % c.gallery.length))}
+              aria-label="Next photo"
+              className="absolute right-0 z-10 grid h-full w-14 place-items-center text-white/60 transition hover:text-white md:w-20"
+            >
+              <ArrowRight className="size-6" />
+            </button>
+          </div>
+          <p className="pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-2 text-center text-sm font-semibold text-white/85">
+            {c.gallery[lightboxIndex].caption}
+          </p>
+        </div>
+      )}
 
       <ChatBot />
     </main>
