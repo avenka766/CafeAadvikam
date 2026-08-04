@@ -183,6 +183,56 @@
   }
   .hero-zoom { animation: heroZoom 22s ease-in-out infinite alternate; }
 
+  /* ── Landing: scroll-triggered storytelling reveal ──
+     Paired with the useReveal hook in Landing.tsx. .reveal-pending is only
+     ever applied AFTER the component has mounted on the client (see hook
+     comment) — so a no-JS or slow-JS visitor simply sees the section with no
+     class at all, i.e. fully visible, never stuck hidden. */
+  .reveal-pending { opacity: 0; transform: translateY(28px); }
+  .reveal-shown {
+    opacity: 1;
+    transform: translateY(0);
+    transition: opacity 0.8s cubic-bezier(0.16,1,0.3,1), transform 0.8s cubic-bezier(0.16,1,0.3,1);
+  }
+
+  /* ── Landing: ambient hero particles (pure CSS, no canvas/WebGL) ── */
+  @keyframes driftUp {
+    0%   { transform: translateY(0) translateX(0); opacity: 0; }
+    10%  { opacity: 0.55; }
+    90%  { opacity: 0.35; }
+    100% { transform: translateY(-120px) translateX(var(--drift-x, 12px)); opacity: 0; }
+  }
+  .hero-particle {
+    position: absolute;
+    bottom: -20px;
+    border-radius: 999px;
+    background: radial-gradient(circle, rgba(255,235,205,0.9) 0%, rgba(255,235,205,0) 70%);
+    animation: driftUp var(--drift-duration, 9s) ease-in infinite;
+    animation-delay: var(--drift-delay, 0s);
+    pointer-events: none;
+  }
+
+  /* ── Landing: venue cross-fade (Bakery <-> Cafe world switch) ── */
+  @keyframes venueFade {
+    from { opacity: 0; transform: translateY(6px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  .venue-fade { animation: venueFade 0.6s cubic-bezier(0.16,1,0.3,1) both; }
+
+  /* ── Landing: bouncing scroll indicator ── */
+  @keyframes scrollHint {
+    0%, 100% { transform: translateY(0); opacity: 0.6; }
+    50%      { transform: translateY(8px); opacity: 1; }
+  }
+  .scroll-hint { animation: scrollHint 2s ease-in-out infinite; }
+
+  /* ── Landing: lightbox ── */
+  @keyframes lightboxIn {
+    from { opacity: 0; transform: scale(0.96); }
+    to   { opacity: 1; transform: scale(1); }
+  }
+  .lightbox-in { animation: lightboxIn 0.25s cubic-bezier(0.16,1,0.3,1) both; }
+
   .animate-fade-up       { animation: fadeUp 0.5s cubic-bezier(0.22,1,0.36,1) both; }
   .animate-fade-in       { animation: fadeIn 0.35s ease both; }
   .animate-slide-right   { animation: slideInRight 0.4s cubic-bezier(0.22,1,0.36,1) both; }
