@@ -3806,8 +3806,13 @@ export default function BillingDashboard() {
   }, [startPolling, stopPolling]);
 
   const todayOrders = useMemo(() => {
-    const today = new Date().toDateString();
-    return orders.filter(o => new Date(o.createdAt).toDateString() === today);
+    // BUG FIX: this bucketed "today" using raw browser-local toDateString()
+    // instead of the IST-safe businessDate() helper already used elsewhere
+    // in this same file (counter-open/closure logic). On a terminal with a
+    // wrong OS timezone/clock, orders near midnight could vanish from or
+    // wrongly appear in the biller's New/Completed/Cancelled tabs.
+    const todayKey = businessDate();
+    return orders.filter(o => businessDate(o.createdAt) === todayKey);
   }, [orders]);
 
   // Advance orders: paymentType=advance AND balance still outstanding (not yet fully paid)

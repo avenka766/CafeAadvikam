@@ -1080,7 +1080,7 @@ export default function AdminVRSNBDashboard() {
       )}
       {tab === "expenses" && <ExpensesTab userName={userName} {...commonProps} />}
       {tab === "complaints" && <ComplaintsTab userName={userName} />}
-      {tab === "waste" && <WasteLogsTab userName={userName} />}
+      {tab === "waste" && <WasteLogsTab userName={userName} role={role} />}
       {tab === "quotations" && <QuotationsTab userName={userName} />}
       {tab === "credit" && <CreditTab fromDate={fromDate} toDate={toDate} />}
       {tab === "cashier-report" && <CashierReportTab {...commonProps} />}
@@ -2015,19 +2015,55 @@ function StockSyncedTab({ fromDate, toDate }: { fromDate: string; toDate: string
       setError("");
       const fromIso = startOfDay(fromDate).toISOString();
       const toIso = endOfDay(toDate).toISOString();
-      const [adjustmentResult, incomingResult] = await Promise.all([
-        supabase.from("branch_stock_adjustments").select("id,item_name,old_quantity,new_quantity,delta,reason,adjusted_by,reference_id,notes,adjusted_at").eq("branch", BRANCH).in("reason", ["Purchase Invoice Stock Sync", "Purchase Invoice Re-sync"]).gte("adjusted_at", fromIso).lte("adjusted_at", toIso).order("adjusted_at", { ascending: false }).limit(5000),
-        supabase.from("branch_incoming").select("id,dispatch_id,item_barcode,item_name,quantity,unit,received_at,dispatched_by,confirmed,disputed").eq("branch", BRANCH).eq("confirmed", true).gte("received_at", fromIso).lte("received_at", toIso).order("received_at", { ascending: false }).limit(5000),
-      ]);
-      if (cancelled) return;
-      if (adjustmentResult.error || incomingResult.error) {
-        setError(adjustmentResult.error?.message || incomingResult.error?.message || "Unable to load stock sync history.");
-        setLoading(false);
+      // BUG FIX: this used to be a single `.limit(5000)` query per source —
+      // once either branch_stock_adjustments or branch_incoming accumulated
+      // more than 5000 matching rows within the selected date range, older
+      // sync records would silently disappear from the register with no
+      // error shown. SNB's equivalent tab already paginates in pages of
+      // 1000 up to 30,000 rows; mirrored here for parity.
+      const pageSize = 1000;
+      const adjustments: any[] = [];
+      const incoming: any[] = [];
+      try {
+        for (let from = 0; from < 30_000; from += pageSize) {
+          const { data, error: queryError } = await supabase
+            .from("branch_stock_adjustments")
+            .select("id,item_name,old_quantity,new_quantity,delta,reason,adjusted_by,reference_id,notes,adjusted_at")
+            .eq("branch", BRANCH)
+            .in("reason", ["Purchase Invoice Stock Sync", "Purchase Invoice Re-sync"])
+            .gte("adjusted_at", fromIso)
+            .lte("adjusted_at", toIso)
+            .order("adjusted_at", { ascending: false })
+            .range(from, from + pageSize - 1);
+          if (queryError) throw new Error(`Purchase stock sync history: ${queryError.message}`);
+          adjustments.push(...(data || []));
+          if ((data || []).length < pageSize) break;
+        }
+        for (let from = 0; from < 30_000; from += pageSize) {
+          const { data, error: queryError } = await supabase
+            .from("branch_incoming")
+            .select("id,dispatch_id,item_barcode,item_name,quantity,unit,received_at,dispatched_by,confirmed,disputed")
+            .eq("branch", BRANCH)
+            .eq("confirmed", true)
+            .gte("received_at", fromIso)
+            .lte("received_at", toIso)
+            .order("received_at", { ascending: false })
+            .range(from, from + pageSize - 1);
+          if (queryError) throw new Error(`VRSNB incoming sync history: ${queryError.message}`);
+          incoming.push(...(data || []));
+          if ((data || []).length < pageSize) break;
+        }
+      } catch (loadError) {
+        if (!cancelled) {
+          setError(loadError instanceof Error ? loadError.message : "Unable to load stock sync history.");
+          setLoading(false);
+        }
         return;
       }
+      if (cancelled) return;
       const unitByName = new Map(catalogItems.map((item) => [normal(item.name), item.uom === "Kgs" ? "kg" : "pcs"]));
-      const purchaseRows: StockSyncedRow[] = (adjustmentResult.data || []).map((row: any) => ({ id: `purchase:${row.id}`, source: "Purchase", syncedAt: row.adjusted_at, reference: row.reference_id || "-", itemName: row.item_name, quantity: Number(row.delta || 0), unit: unitByName.get(normal(row.item_name)) || "", before: row.old_quantity == null ? null : Number(row.old_quantity), after: row.new_quantity == null ? null : Number(row.new_quantity), syncedBy: row.adjusted_by || "-", status: String(row.reason).includes("Re-sync") ? "Re-synced" : "Synced", details: row.notes || row.reason }));
-      const incomingRows: StockSyncedRow[] = (incomingResult.data || []).map((row: any) => ({ id: `incoming:${row.id}`, source: "VRSNB Incoming", syncedAt: row.received_at, reference: row.dispatch_id || row.id, itemName: row.item_name, quantity: Number(row.quantity || 0), unit: row.unit || unitByName.get(normal(row.item_name)) || "", before: null, after: null, syncedBy: row.dispatched_by || "Packing", status: row.disputed ? "Confirmed after dispute" : "Confirmed", details: `Confirmed incoming stock${row.item_barcode ? ` - Barcode ${row.item_barcode}` : ""}` }));
+      const purchaseRows: StockSyncedRow[] = adjustments.map((row: any) => ({ id: `purchase:${row.id}`, source: "Purchase", syncedAt: row.adjusted_at, reference: row.reference_id || "-", itemName: row.item_name, quantity: Number(row.delta || 0), unit: unitByName.get(normal(row.item_name)) || "", before: row.old_quantity == null ? null : Number(row.old_quantity), after: row.new_quantity == null ? null : Number(row.new_quantity), syncedBy: row.adjusted_by || "-", status: String(row.reason).includes("Re-sync") ? "Re-synced" : "Synced", details: row.notes || row.reason }));
+      const incomingRows: StockSyncedRow[] = incoming.map((row: any) => ({ id: `incoming:${row.id}`, source: "VRSNB Incoming", syncedAt: row.received_at, reference: row.dispatch_id || row.id, itemName: row.item_name, quantity: Number(row.quantity || 0), unit: row.unit || unitByName.get(normal(row.item_name)) || "", before: null, after: null, syncedBy: row.dispatched_by || "Packing", status: row.disputed ? "Confirmed after dispute" : "Confirmed", details: `Confirmed incoming stock${row.item_barcode ? ` - Barcode ${row.item_barcode}` : ""}` }));
       setRows([...purchaseRows, ...incomingRows].sort((a, b) => new Date(b.syncedAt).getTime() - new Date(a.syncedAt).getTime()));
       setLoading(false);
     };
@@ -2215,9 +2251,27 @@ function printWasteLog(entry: any, branchLabel: string) {
   printHtml(`${branchLabel} Waste Log - ${entry.itemName}`, body);
 }
 
-function WasteLogsTab({ userName }: { userName: string }) {
+type VrsnbWasteHistoryRow = {
+  id: string;
+  logType: string;
+  itemName: string;
+  quantity: number;
+  unit: string;
+  reason: string;
+  verifiedBy: string;
+  createdBy: string;
+  createdAt: string;
+  checklist: string[];
+  status: "Active" | "Cancelled";
+  editReason: string;
+  editedBy: string;
+  cancellationReason: string;
+  cancelledBy: string;
+};
+
+function WasteLogsTab({ userName, role }: { userName: string; role: string }) {
   const catalogItems = useVRSNBCatalog();
-  const { wasteLogs, addWasteLog } = useBranchOpsStore();
+  const { addWasteLog } = useBranchOpsStore();
   const { stock } = useBranchStore();
   const [subTab, setSubTab] = useState<"Dump" | "Damage" | "Trans Out">("Dump");
   const [form, setForm] = useState({ itemName: catalogItems[0]?.name || "", quantity: "", unit: "pcs", reason: "", verifiedBy: "", checklist: [] as string[] });
@@ -2234,7 +2288,97 @@ function WasteLogsTab({ userName }: { userName: string }) {
   const checklistOptions = subTab === "Trans Out"
     ? transferOutChecklist
     : ["Item counted", "Reason checked", "Verified by responsible person", "Stock adjustment required"];
-  const rows = wasteLogs.filter((w) => w.branch === BRANCH);
+  // BUG FIX: this used to read `wasteLogs` straight from the local
+  // branchOpsStore, so entries made from VRSNB Order (or any other device)
+  // never showed here and vice-versa. Waste logs are shared across devices
+  // via the `branch_waste_logs` Supabase table (written by
+  // record_branch_waste_secure, already correct below) — mirrors the fix
+  // already shipped for SNB's equivalent tab.
+  const [rows, setRows] = useState<VrsnbWasteHistoryRow[]>([]);
+  const [rowsLoading, setRowsLoading] = useState(true);
+  const [manageRow, setManageRow] = useState<VrsnbWasteHistoryRow | null>(null);
+  const [manageMode, setManageMode] = useState<"edit" | "cancel">("edit");
+  const [manageForm, setManageForm] = useState({ quantity: "", reason: "", verifiedBy: "", actionReason: "", password: "" });
+  const [manageError, setManageError] = useState("");
+  const [managing, setManaging] = useState(false);
+  const canManageWaste = ["admin_vrsnb", "admin", "owner"].includes(role);
+  const loadRows = async () => {
+    setRowsLoading(true);
+    const { data, error: loadError } = await supabase
+      .from("branch_waste_logs")
+      .select("id,log_type,item_name,quantity,unit,reason,verified_by,created_by_username,created_at,checklist,status,edit_reason,edited_by_username,cancellation_reason,cancelled_by_username")
+      .eq("branch", BRANCH)
+      .order("created_at", { ascending: false })
+      .limit(1000);
+    setRowsLoading(false);
+    if (!loadError && data) {
+      setRows(
+        data.map((d: any) => ({
+          id: d.id,
+          logType: d.log_type === "Trans Out" ? "Trans Out" : d.log_type,
+          itemName: d.item_name,
+          quantity: Number(d.quantity || 0),
+          unit: d.unit,
+          reason: d.reason || "",
+          verifiedBy: d.verified_by || "",
+          createdBy: d.created_by_username || "",
+          createdAt: d.created_at,
+          checklist: Array.isArray(d.checklist) ? d.checklist : [],
+          status: d.status === "Cancelled" ? "Cancelled" : "Active",
+          editReason: d.edit_reason || "",
+          editedBy: d.edited_by_username || "",
+          cancellationReason: d.cancellation_reason || "",
+          cancelledBy: d.cancelled_by_username || "",
+        })),
+      );
+    }
+  };
+  useEffect(() => { void loadRows(); }, []);
+  const openManage = (row: VrsnbWasteHistoryRow, mode: "edit" | "cancel") => {
+    setManageRow(row);
+    setManageMode(mode);
+    setManageError("");
+    setManageForm({ quantity: String(row.quantity), reason: row.reason, verifiedBy: row.verifiedBy, actionReason: "", password: "" });
+  };
+  const submitManage = async () => {
+    if (!manageRow) return;
+    setManageError("");
+    if (!manageForm.actionReason.trim() || !manageForm.password) {
+      setManageError(`${manageMode === "edit" ? "Edit" : "Cancellation"} reason and password are required.`);
+      return;
+    }
+    const quantity = Number(manageForm.quantity);
+    if (manageMode === "edit" && (!Number.isFinite(quantity) || quantity <= 0 || !manageForm.reason.trim() || !manageForm.verifiedBy.trim())) {
+      setManageError("Quantity, reason, and verified by must be valid.");
+      return;
+    }
+    setManaging(true);
+    try {
+      const { error } = manageMode === "edit"
+        ? await supabase.rpc("edit_branch_waste_log_secure", {
+            p_branch: BRANCH,
+            p_log_id: manageRow.id,
+            p_quantity: quantity,
+            p_reason: manageForm.reason.trim(),
+            p_verified_by: manageForm.verifiedBy.trim(),
+            p_edit_reason: manageForm.actionReason.trim(),
+            p_password: manageForm.password,
+          })
+        : await supabase.rpc("cancel_branch_waste_log_secure", {
+            p_branch: BRANCH,
+            p_log_id: manageRow.id,
+            p_reason: manageForm.actionReason.trim(),
+            p_password: manageForm.password,
+          });
+      if (error) throw error;
+      setManageRow(null);
+      await Promise.all([loadRows(), useBranchStore.getState().fetchBranchData(BRANCH)]);
+    } catch (error) {
+      setManageError(error instanceof Error ? error.message : "Unable to update this stock movement.");
+    } finally {
+      setManaging(false);
+    }
+  };
   const [validationError, setValidationError] = useState("");
   const save = async () => {
     const qty = Number(form.quantity);
@@ -2284,6 +2428,7 @@ function WasteLogsTab({ userName }: { userName: string }) {
       addWasteLog({ branch: BRANCH, logType: subTab, itemName: form.itemName, quantity: qty, unit: form.unit, reason: form.reason, verifiedBy: form.verifiedBy, checklist: form.checklist, createdBy: userName });
       printWasteLog({ ...form, quantity: qty, logType: subTab, createdBy: userName }, "VRSNB");
       setForm({ ...form, quantity: "", reason: "", verifiedBy: "", checklist: [] });
+      await loadRows();
     } catch (saveError) {
       setValidationError(saveError instanceof Error ? saveError.message : "Unable to save waste log");
     }
@@ -2315,10 +2460,46 @@ function WasteLogsTab({ userName }: { userName: string }) {
             <button onClick={save} className={cn(btnCls, "w-full bg-slate-950 text-white")}>Save Waste Log</button>
           </div>
         </Panel>
-        <Panel title="Waste Log History" icon={<History className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("VRSNB_Waste_Logs.xls", rows.map((w) => ({ Date: w.createdAt, Type: w.logType, Item: w.itemName, Quantity: w.quantity, Unit: w.unit, Reason: w.reason, VerifiedBy: w.verifiedBy })))}><Download className="size-4" /> Excel</button>}>
-          <DataTable headers={["Date", "Type", "Item", "Qty", "Reason", "Verified By", "Checklist"]} rows={rows.map((w) => [fmtDateTime(w.createdAt), w.logType, w.itemName, `${w.quantity} ${w.unit}`, w.reason, w.verifiedBy, w.checklist.join(", ") || "-"])} empty="No waste logs saved." />
+        <Panel title="Waste Log History" icon={<History className="size-4" />} action={<div className="flex items-center gap-2"><button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => void loadRows()}><RefreshCcw className={cn("size-4", rowsLoading && "animate-spin")} /> Refresh</button><button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("VRSNB_Waste_Logs.xls", rows.map((w) => ({ Date: w.createdAt, Type: w.logType, Item: w.itemName, Quantity: w.quantity, Unit: w.unit, Reason: w.reason, VerifiedBy: w.verifiedBy })))}><Download className="size-4" /> Excel</button></div>}>
+          <DataTable headers={["Date", "Type", "Item", "Qty", "Reason", "Verified By", "Status", "Actions"]} rows={rows.map((w) => [
+            fmtDateTime(w.createdAt),
+            w.logType,
+            w.itemName,
+            `${w.quantity} ${w.unit}`,
+            w.reason,
+            w.verifiedBy,
+            <StatusBadge tone={w.status === "Cancelled" ? "red" : "green"}>{w.status}</StatusBadge>,
+            canManageWaste && w.status !== "Cancelled" ? (
+              <div className="flex gap-1.5">
+                <button type="button" title="Edit stock movement" onClick={() => openManage(w, "edit")} className="grid size-8 place-items-center rounded-xl bg-amber-50 text-amber-700 ring-1 ring-amber-200"><Pencil className="size-3.5" /></button>
+                <button type="button" title="Cancel and restore stock" onClick={() => openManage(w, "cancel")} className="grid size-8 place-items-center rounded-xl bg-red-50 text-red-700 ring-1 ring-red-200"><X className="size-3.5" /></button>
+              </div>
+            ) : "-",
+          ])} empty="No waste logs saved." />
         </Panel>
       </div>
+      {manageRow && (
+        <div className="fixed inset-0 z-[100] grid place-items-center bg-slate-950/55 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget && !managing) setManageRow(null); }}>
+          <div className="w-full max-w-md rounded-3xl bg-white p-5 shadow-2xl ring-1 ring-slate-200">
+            <div className="mb-4 flex items-start justify-between gap-3">
+              <div><p className="text-lg font-black text-slate-950">{manageMode === "edit" ? "Edit stock movement" : "Cancel and restore stock"}</p><p className="text-sm font-semibold text-slate-500">{manageRow.itemName} · {manageRow.logType}</p></div>
+              <button type="button" disabled={managing} onClick={() => setManageRow(null)} className="grid size-9 place-items-center rounded-xl bg-slate-100 text-slate-600"><X className="size-4" /></button>
+            </div>
+            <div className="space-y-3">
+              {manageMode === "edit" && <>
+                <Field label={`Quantity (${manageRow.unit})`}><input type="number" min="0.001" step="0.001" className={inputCls} value={manageForm.quantity} onChange={(event) => setManageForm({ ...manageForm, quantity: event.target.value })} /></Field>
+                <Field label="Stock movement reason"><textarea className={inputCls} value={manageForm.reason} onChange={(event) => setManageForm({ ...manageForm, reason: event.target.value })} /></Field>
+                <Field label="Verified by"><input className={inputCls} value={manageForm.verifiedBy} onChange={(event) => setManageForm({ ...manageForm, verifiedBy: event.target.value })} /></Field>
+              </>}
+              {manageMode === "cancel" && <p className="rounded-2xl bg-emerald-50 p-3 text-sm font-bold text-emerald-800 ring-1 ring-emerald-200">Cancelling restores {manageRow.quantity} {manageRow.unit} to VRSNB stock and keeps this row in history.</p>}
+              <Field label={manageMode === "edit" ? "Reason for editing" : "Reason for cancellation"}><textarea className={inputCls} value={manageForm.actionReason} onChange={(event) => setManageForm({ ...manageForm, actionReason: event.target.value })} /></Field>
+              <Field label="Your password"><input type="password" autoComplete="current-password" className={inputCls} value={manageForm.password} onChange={(event) => setManageForm({ ...manageForm, password: event.target.value })} /></Field>
+              {manageError && <p className="rounded-xl bg-red-50 px-3 py-2 text-sm font-bold text-red-700 ring-1 ring-red-200">{manageError}</p>}
+              <div className="grid grid-cols-2 gap-2 pt-1"><button type="button" disabled={managing} onClick={() => setManageRow(null)} className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")}>Keep record</button><button type="button" disabled={managing} onClick={() => void submitManage()} className={cn(btnCls, manageMode === "cancel" ? "bg-red-600 text-white" : "bg-slate-950 text-white")}>{managing ? "Saving..." : manageMode === "cancel" ? "Cancel & restore" : "Save changes"}</button></div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

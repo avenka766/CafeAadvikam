@@ -153,6 +153,15 @@ export default function QROrderPage() {
   };
 
   const handleSubmitOrder = async () => {
+    // BUG FIX: this relied solely on the submit button's `disabled={submitting}`
+    // attribute to prevent duplicate order submission on a fast double-tap,
+    // unlike every other submit handler in this codebase (e.g. OrderCard's
+    // payment handlers), which guard re-entrancy explicitly inside the
+    // function itself. React 18 batches the setSubmitting(true) update
+    // before the first await, so risk here was low, but a duplicate order
+    // (not a duplicate charge) could still slip through on some interaction
+    // timings. Explicit guard added for defense in depth / consistency.
+    if (submitting) return;
     setError('');
     if (cart.length === 0) return setError('Add at least one item before placing the order.');
     if (cart.length > MAX_ITEMS_PER_ORDER) return setError(`Maximum ${MAX_ITEMS_PER_ORDER} different items per order.`);

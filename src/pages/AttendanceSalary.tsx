@@ -1778,11 +1778,11 @@ export default function AttendanceSalary() {
             </button>
           ))}
         </div>
-        {monthIdx === 1 && (
-          <p className="text-[10px] font-body text-muted-foreground mt-1.5 flex items-center gap-1">
-            <AlertCircle className="size-3" /> Data older than 2 months is auto-deleted
-          </p>
-        )}
+        {/* BUG FIX: deleteOldAttendance() (above) is intentionally a no-op —
+            payroll/attendance records are business records that must be
+            retained, not auto-purged. This message told admins/owners the
+            opposite, which could lead them to believe old data was being
+            deleted when it's actually retained indefinitely. */}
       </div>
 
       {/* KPI Cards */}

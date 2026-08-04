@@ -314,8 +314,14 @@ export default function KitchenDashboard() {
   }, [startPolling, stopPolling]);
 
   const todayOrders = useMemo(() => {
-    const today = new Date().toDateString();
-    return orders.filter(o => new Date(o.createdAt).toDateString() === today);
+    // BUG FIX: this was the only date-bucketing in this file that ignored
+    // IST — businessDateKey (used just above for WasteTab) explicitly pins
+    // to Asia/Kolkata. On a terminal with a wrong OS timezone/clock (a real
+    // risk on the older Windows terminals this app runs on), orders near
+    // midnight could vanish from or wrongly appear on the kitchen board for
+    // "today" even while WasteTab on the same screen stayed correct.
+    const todayKey = businessDateKey(new Date());
+    return orders.filter(o => businessDateKey(o.createdAt) === todayKey);
   }, [orders]);
 
   const pending = useMemo(() => todayOrders.filter(o => o.status === 'pending'), [todayOrders]);

@@ -1607,39 +1607,26 @@ export default function HosurDashboard({ hideNav = false }: { hideNav?: boolean 
     if (amount <= 0) throw new Error('Enter amount collected.');
     if (amount > ledger.balanceAmount) throw new Error('Collected amount cannot be greater than pending balance.');
 
-    const newPaid = ledger.paidAmount + amount;
-    const newBalance = Math.max(0, ledger.balanceAmount - amount);
-    const cleared = newBalance <= 0.01;
-    const now = new Date().toISOString();
-
-    const { error: paymentError } = await supabase.from('branch_credit_payments').insert({
-      credit_sale_id: ledger.id,
-      branch: BRANCH,
-      bill_no: ledger.billNo,
-      amount,
-      payment_mode: draft.paymentMode,
-      reference: null,
-      remarks: draft.remarks || null,
-      collected_by: userName,
-      collected_role: userRole,
-      created_at: now,
+    // BUG FIX: this used to compute newPaid/newBalance from the `ledger`
+    // object held in local React state, then write them with a plain
+    // (non-conditional) update — two near-simultaneous collections against
+    // the same ledger (two staff, or one staff double-tapping) could both
+    // read the same stale balance, and the second write would silently
+    // overwrite the first's effect on the running balance. Moved to a single
+    // atomic RPC that locks the row and recomputes from the current DB
+    // values, not whatever this client had in memory.
+    const { data, error: rpcError } = await supabase.rpc('collect_hosur_credit_payment_secure', {
+      p_ledger_id: ledger.id,
+      p_bill_id: ledger.billId,
+      p_amount: amount,
+      p_payment_mode: draft.paymentMode,
+      p_remarks: draft.remarks || null,
+      p_collected_by: userName,
+      p_collected_role: userRole,
     });
-    if (paymentError) throw paymentError;
-
-    const { error: ledgerError } = await supabase.from('branch_credit_sales').update({
-      amount_paid: newPaid,
-      credit_amount: newBalance,
-      status: cleared ? 'settled' : 'partial',
-      settled_at: cleared ? now : null,
-    }).eq('id', ledger.id);
-    if (ledgerError) throw ledgerError;
-
-    const { error: billError } = await supabase.from('hosur_bills').update({
-      paid_amount: newPaid,
-      credit_amount: newBalance,
-      status: cleared ? 'settled' : 'partial_credit',
-    }).eq('id', ledger.billId);
-    if (billError) throw billError;
+    if (rpcError) throw rpcError;
+    const result = (data ?? {}) as { newBalance?: number };
+    const newBalance = Number(result.newBalance ?? Math.max(0, ledger.balanceAmount - amount));
 
     const notificationBody = `${ledger.shopName} credit payment ${money(amount)} collected by ${userName}. Balance: ${money(newBalance)}.`;
     if (isAdmin) await notifyBranch('Hosur credit cleared by Admin', notificationBody, ledger.billId, ledger.billNo, { ledgerId: ledger.id, amount });
