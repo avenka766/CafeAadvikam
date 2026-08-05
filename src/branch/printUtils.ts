@@ -15,6 +15,19 @@ const discountLabel = (bill: BranchBillRecord) => bill.discountPercent != null
   ? `Discount (${Number(bill.discountPercent).toFixed(2).replace(/\.00$/, '')}%)`
   : 'Discount';
 
+// Cash Tendered / Change was collected at billing time (BranchBillingProTab
+// already stores it on every bill as `tendered`/`balance`) but never actually
+// printed on the receipt — only relevant for straight cash payments where the
+// customer handed over more than the exact total and change was given back.
+// Split/credit/wallet/UPI/card payments don't have a "change" concept here.
+const cashTenderedChangeHtml = (bill: BranchBillRecord, rowClass: string) => {
+  if (bill.paymentMode !== 'cash') return '';
+  const tendered = Number(bill.tendered || 0);
+  const change = Math.max(0, roundMoney(tendered - bill.total));
+  if (tendered <= 0 || tendered <= bill.total) return '';
+  return `<div class="${rowClass}"><span>Cash Tendered</span><span>&#x20B9;${tendered.toFixed(2)}</span></div><div class="${rowClass}"><span>Change Returned</span><span>&#x20B9;${change.toFixed(2)}</span></div>`;
+};
+
 // ─── Generic HTML print helper ─────────────────────────────────────────────────
 export function printHtml(title: string, body: string) {
   const w = window.open('', '_blank', 'width=920,height=900');
@@ -132,6 +145,7 @@ function printVrsnbReceiptBill(bill: BranchBillRecord, duplicate = false, target
     </div>
     <div class="grand"><span>Grand Total</span><span>&#x20B9;${bill.total.toFixed(2)}</span></div>
     <div class="paid-via">Paid via ${payModeLabel}</div>
+    ${cashTenderedChangeHtml(bill, 'row')}
     ${bill.walletTransactionId ? `<div class="row"><span>Wallet Txn</span><span>${bill.walletTransactionId}</span></div><div class="row"><span>Wallet Balance</span><span>&#x20B9;${Number(bill.walletBalanceRemaining || 0).toFixed(2)}</span></div>` : ''}
     ${Number(bill.walletCashback || 0) > 0 ? `<div class="row"><span>Wallet Cashback</span><span>&#x20B9;${Number(bill.walletCashback).toFixed(2)}</span></div>` : ''}
     ${Number(bill.refundAmount || 0) > 0 ? `<div class="row bold"><span>Refunded via ${String(bill.refundMode || '').toUpperCase()}</span><span>&#x20B9;${Number(bill.refundAmount).toFixed(2)}</span></div>` : ''}
@@ -173,7 +187,7 @@ function printSnbCounterBill(bill: BranchBillRecord, duplicate = false, target?:
       <tr class="total-row"><td></td><td>Total</td><td class="num">${bill.items.reduce((s, i) => s + i.quantity, 0).toFixed(2)}</td><td></td><td class="num">${bill.subtotal.toFixed(2)}</td></tr>
     </tbody></table>
     <div class="summary"><div class="row"><span>${discountLabel(bill)} :</span><span>${bill.discount.toFixed(2)}</span></div><div class="row"><span>Additional Charges :</span><span>${Number(bill.additionalCharges || 0).toFixed(2)}</span></div><div class="row"><span>GST :</span><span>${bill.tax.toFixed(2)}</span></div><div class="row"><span>Amount Before Round-Off :</span><span>${(bill.amountBeforeRoundOff ?? Math.max(0, bill.subtotal + bill.tax - bill.discount)).toFixed(2)}</span></div><div class="row"><span>Round-Off :</span><span>${billRoundOff(bill) >= 0 ? '+' : ''}${billRoundOff(bill).toFixed(2)}</span></div><div class="row net"><span>Net Bill Amount :</span><span>Rs ${bill.total.toFixed(2)}</span></div></div>
-    <div class="paybox"><div class="paytitle">Payment Details</div>${paymentRows}${bill.walletTransactionId ? `<div class="pay"><span>WALLET BALANCE</span><span>${Number(bill.walletBalanceRemaining || 0).toFixed(2)}</span></div>` : ''}${Number(bill.walletCashback || 0) > 0 ? `<div class="pay"><span>WALLET CASHBACK</span><span>${Number(bill.walletCashback).toFixed(2)}</span></div>` : ''}${Number(bill.refundAmount || 0) > 0 ? `<div class="pay"><span>REFUND ${String(bill.refundMode || '').toUpperCase()}</span><span>-${Number(bill.refundAmount).toFixed(2)}</span></div>` : ''}</div>
+    <div class="paybox"><div class="paytitle">Payment Details</div>${paymentRows}${cashTenderedChangeHtml(bill, 'pay')}${bill.walletTransactionId ? `<div class="pay"><span>WALLET BALANCE</span><span>${Number(bill.walletBalanceRemaining || 0).toFixed(2)}</span></div>` : ''}${Number(bill.walletCashback || 0) > 0 ? `<div class="pay"><span>WALLET CASHBACK</span><span>${Number(bill.walletCashback).toFixed(2)}</span></div>` : ''}${Number(bill.refundAmount || 0) > 0 ? `<div class="pay"><span>REFUND ${String(bill.refundMode || '').toUpperCase()}</span><span>-${Number(bill.refundAmount).toFixed(2)}</span></div>` : ''}</div>
     ${bill.paymentMode === 'credit' ? `<div class="dash"></div><div class="row"><span>Credit Customer</span><span>${bill.creditCustomerName || '-'}</span></div><div class="row"><span>Mobile</span><span>${bill.creditCustomerMobile || '-'}</span></div><div class="row"><span>Due Date</span><span>${bill.creditDueDate || '-'}</span></div><div class="row"><span>Credit Due</span><span>${bill.balance.toFixed(2)}</span></div>` : ''}
     <div class="c small">Salesperson : ${bill.salesperson}</div>
     <div class="footer">Thank you, Visit Again</div>
