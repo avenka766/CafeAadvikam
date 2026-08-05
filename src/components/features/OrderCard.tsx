@@ -558,6 +558,7 @@ export default function OrderCard({ order, showActions = false, counterOpenedTod
                 <p className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-1.5">Your password <span className="text-destructive">*</span></p>
                 <input
                   type="password"
+                  autoComplete="off" data-lpignore="true" data-1p-ignore="true" data-bwignore="true"
                   placeholder="Enter your login password"
                   value={cancelPassword}
                   onChange={e => { setCancelPassword(e.target.value); setCancelPasswordError(''); }}
