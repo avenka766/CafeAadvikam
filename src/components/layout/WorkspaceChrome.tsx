@@ -188,9 +188,14 @@ function navForRole(role?: string): NavItem[] {
         // Stock movement + reconciliation, grouped together.
         { label: 'Transfer In', path: '/bakery/planner?tab=transfer-in', icon: <ArrowRightLeft className="size-4" />, group: 'Stock' },
         { label: 'Leftover / Done', path: '/bakery/planner?tab=done', icon: <PackageCheck className="size-4" />, group: 'Stock' },
+        // Walk-in billing (SNB+VRSNB dedup counter sales) — added alongside
+        // the Reports tab below when the Planner Dashboard gained its own
+        // reporting + billing surfaces; both were missing from this sidebar.
+        { label: 'Billing (Walk-in)', path: '/bakery/planner?tab=billing', icon: <ShoppingCart className="size-4" />, group: 'Operations' },
         // End-of-day financial close-out.
         { label: 'Daily Closure', path: '/bakery/planner?tab=closure', icon: <Calendar className="size-4" />, group: 'Reports' },
         { label: 'Invoice', path: '/bakery/planner?tab=invoice', icon: <Receipt className="size-4" />, group: 'Reports' },
+        { label: 'Reports', path: '/bakery/planner?tab=reports', icon: <BarChart3 className="size-4" />, group: 'Reports' },
       ];
     case 'cake_master':
       return [
