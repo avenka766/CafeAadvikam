@@ -7,7 +7,7 @@ import {
   Warehouse, Plus, Pencil, Trash2, AlertTriangle,
   Search, X, Check, RefreshCw, Flame,
   Printer, Truck, Mail, MapPin, ShoppingBag, BarChart2, MinusCircle,
-  History, WalletCards, Download, FileText,
+  History, WalletCards, Download, FileText, Calendar,
 } from 'lucide-react';
 import { Layers } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
@@ -37,6 +37,14 @@ import {
   normalizeProductionCategory,
   type ProductionCategory,
 } from './productionRouting';
+
+// Kolkata-safe date key/label, same pattern used in PlannerDashboard.tsx —
+// needed so an order raised late at night still buckets to the correct
+// business day rather than drifting a day off in the browser's local tz.
+const kolkataDateKey = (iso: string) =>
+  new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(iso));
+const kolkataDateLabel = (iso: string) =>
+  new Intl.DateTimeFormat('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short' }).format(new Date(iso));
 
 type StoreDashboardTab = 'orders' | 'history' | 'inventory' | 'suppliers' | 'invoices' | 'analytics' | 'custom' | 'closure' | 'report';
 const STORE_TABS: StoreDashboardTab[] = ['orders', 'history', 'inventory', 'suppliers', 'invoices', 'analytics', 'custom', 'closure', 'report'];
@@ -294,6 +302,14 @@ function ItemRow({ order, item, category, selectionEnabled = false, selected = f
   const recipeIssue = recipeIssueForItem(item)
     ?? (!hasMats ? 'Recipe found, but its raw materials could not be calculated.' : null);
   const { items: stockItems } = useStoreStockStore();
+  // FEATURE: Planner sends raw quantity only (e.g. "200 pcs") with no sense of
+  // how many production batches that actually is — store staff had to do
+  // this math themselves against the recipe's known batch yield. Recipes
+  // already carry that yield as outputQty (see recipeStore.ts); surface it
+  // here as "200 pcs · 4 batches" whenever a positive batch size is known.
+  const recipe = useRecipeStore(useCallback(state => state.getRecipe(item.itemId, item.itemName), [item.itemId, item.itemName]));
+  const batchSize = Number(recipe?.outputQty || 0);
+  const batchCount = batchSize > 0 ? Math.ceil(item.quantity / batchSize) : 0;
 
   // Check each recipe material against current inventory
   const matStatus = useMemo(() => {
@@ -363,11 +379,16 @@ function ItemRow({ order, item, category, selectionEnabled = false, selected = f
               <AlertTriangle className="size-2.5" /> LOW
             </span>
           )}
-          <p className="text-sm font-body font-bold tabular-nums text-foreground">
-            {item.originalPcs != null && item.weightGrams != null
-              ? `${item.quantity} kg`
-              : `${item.quantity}${item.dispatchUnit === 'pcs' ? ' pcs' : ' kg'}`}
-          </p>
+          <div className="text-right">
+            <p className="text-sm font-body font-bold tabular-nums text-foreground">
+              {item.originalPcs != null && item.weightGrams != null
+                ? `${item.quantity} kg`
+                : `${item.quantity}${item.dispatchUnit === 'pcs' ? ' pcs' : ' kg'}`}
+            </p>
+            {batchCount > 0 && (
+              <p className="text-[10px] font-body font-semibold text-primary tabular-nums">{batchCount} batch{batchCount !== 1 ? 'es' : ''}</p>
+            )}
+          </div>
         </div>
       </div>
 
@@ -613,6 +634,9 @@ function OrderCard({ order }: { order: BakeryOrder }) {
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="font-display font-bold text-sm text-foreground">Order #{order.orderNumber}</span>
+            <span className="flex items-center gap-1 text-[9px] font-body font-bold px-2 py-0.5 rounded-full border bg-muted/60 text-muted-foreground border-border">
+              <Calendar className="size-2.5" />{kolkataDateLabel(order.createdAt)}
+            </span>
             {order.targetBranch && (
               <span className={cn('text-[9px] font-body font-bold px-2 py-0.5 rounded-full border', branchColor[order.targetBranch] ?? 'bg-muted text-muted-foreground border-border')}>
                 {order.targetBranch}
@@ -626,6 +650,17 @@ function OrderCard({ order }: { order: BakeryOrder }) {
             {accepted && !sent && (
               <span className="text-[9px] font-body font-bold px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 border border-blue-200">
                 Accepted at Store
+              </span>
+            )}
+            {/* BUG FIX: not-yet-sent orders from a previous day used to look
+                identical to a fresh order raised minutes ago — nothing told
+                store staff this one had been sitting unsent since yesterday
+                (or earlier). Orders never disappeared (the underlying list
+                already includes every 'accepted' order regardless of date),
+                but there was no way to tell how stale one was at a glance. */}
+            {!sent && kolkataDateKey(order.createdAt) !== kolkataDateKey(new Date().toISOString()) && (
+              <span className="flex items-center gap-1 text-[9px] font-body font-bold px-2 py-0.5 rounded-full bg-red-100 text-red-700 border border-red-200">
+                <AlertTriangle className="size-2.5" />Still Pending — Past Date
               </span>
             )}
           </div>
@@ -1088,6 +1123,33 @@ function StoreInventoryTab() {
     await pushStoreItemChange({ action, itemId, itemName, category: summary, changedBy: actor });
   };
 
+  // Inventory tab had no export at all — same lightweight CSV-as-"Excel"
+  // pattern already used for the pending-orders export above, applied to
+  // whatever's currently in view (respects the active search + All/Low
+  // Stock filter rather than always dumping the entire inventory).
+  const downloadInventoryExcel = () => {
+    const rows: string[][] = [
+      ['Item', 'Quantity', 'Unit', 'Min Threshold', 'Status'],
+    ];
+    for (const item of filtered) {
+      rows.push([
+        item.name,
+        String(item.quantity),
+        item.unit,
+        String(item.minThreshold),
+        item.quantity < 0 ? 'Negative' : item.quantity <= item.minThreshold ? 'Low Stock' : 'OK',
+      ]);
+    }
+    const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `inventory-${stockView}-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <div className="space-y-3">
       {/* Sub-tab switcher: All / Low Stock */}
@@ -1134,6 +1196,10 @@ function StoreInventoryTab() {
             </div>
             <button onClick={() => load()} disabled={loading} className="size-10 flex items-center justify-center rounded-xl border border-border hover:bg-muted active:scale-90">
               <RefreshCw className={cn('size-3.5 text-muted-foreground', loading && 'animate-spin')} />
+            </button>
+            <button onClick={downloadInventoryExcel} disabled={filtered.length === 0}
+              className="h-10 px-3 rounded-xl border border-border bg-card text-xs font-body font-semibold flex items-center gap-1.5 hover:bg-muted disabled:opacity-40 active:scale-95">
+              <Download className="size-3.5 text-emerald-600" /> Excel
             </button>
             <button onClick={() => setShowAdd(true)}
               className="h-10 px-3 rounded-xl cafe-gradient text-primary-foreground text-xs font-body font-bold flex items-center gap-1.5 active:scale-95">

@@ -211,6 +211,25 @@ export default function StoreReportTab() {
       Amount: inv.grandTotal,
       Status: inv.status.replace('_', ' '),
     }))), 'Invoices');
+    // BUG FIX: the "Invoices" sheet above only ever had one summary row per
+    // invoice (just an item COUNT, never what those items actually were).
+    // This adds the missing detail — every line item from every invoice in
+    // range, sorted by supplier then invoice so all of one supplier's
+    // deliveries and exactly what was in each of them sit together.
+    const invoiceItemRows = reportInvoices
+      .flatMap(inv => inv.lineItems.map(li => ({
+        Supplier: inv.supplierName,
+        Date: prettyDate(inv.createdAt),
+        Invoice: inv.invoiceNumber,
+        Item: li.itemName,
+        Quantity: li.quantity,
+        Unit: li.unit,
+        'Price/Unit': li.pricePerUnit,
+        'Line Total': li.totalPrice,
+        Status: inv.status.replace('_', ' '),
+      })))
+      .sort((a, b) => a.Supplier.localeCompare(b.Supplier) || a.Invoice.localeCompare(b.Invoice));
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(invoiceItemRows), 'Invoice Items by Supplier');
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(priceRows.map(r => ({
       Date: prettyDate(r.date),
       Item: r.itemName,

@@ -63,6 +63,7 @@ const REASON_PRESETS = [
   'KITCHEN',
   'CAFE',
   'SNB BAKERY',
+  'Mill',
 ];
 
 // ─── DB helpers ────────────────────────────────────────────────────────────────

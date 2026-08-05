@@ -16,9 +16,30 @@ import { useNotificationStore } from './notificationStore';
 import { searchItems } from './storeItemMaster';
 
 // ─── Print helper ─────────────────────────────────────────────────────────────
+// BUG FIX: this opened a real, visible `window.open(..., '_blank', ...)`
+// popup — a whole separate browser window/tab would appear before printing.
+// Switched to the same off-screen, aria-hidden iframe pattern already proven
+// in src/branch/printUtils.ts (printCounterBill) — the print job fires with
+// nothing ever shown on screen, no popup window at all.
 function printInvoice(invoice: StoreInvoice) {
-  const win = window.open('', '_blank', 'width=480,height=700');
-  if (!win) return;
+  const frame = document.createElement('iframe');
+  frame.setAttribute('aria-hidden', 'true');
+  frame.style.position = 'fixed';
+  frame.style.left = '-10000px';
+  frame.style.bottom = '0';
+  frame.style.width = '1px';
+  frame.style.height = '1px';
+  frame.style.border = '0';
+  frame.style.opacity = '0';
+  frame.style.pointerEvents = 'none';
+  document.body.appendChild(frame);
+
+  const win = frame.contentWindow;
+  if (!win) { frame.remove(); return; }
+  let cleaned = false;
+  const cleanup = () => { if (cleaned) return; cleaned = true; frame.remove(); };
+  win.onafterprint = cleanup;
+  window.setTimeout(cleanup, 60_000);
 
   const rows = invoice.lineItems.map((li, i) => `
     <tr style="border-bottom:1px solid #f0f0f0;">
@@ -35,6 +56,7 @@ function printInvoice(invoice: StoreInvoice) {
   const statusLabel = invoice.status === 'approved'
     ? 'Approved' : invoice.status === 'rejected' ? 'Rejected' : 'Pending Review';
 
+  win.document.open();
   win.document.write(`
     <!DOCTYPE html><html><head>
     <title>Invoice ${invoice.invoiceNumber}</title>
@@ -103,8 +125,7 @@ function printInvoice(invoice: StoreInvoice) {
     </body></html>
   `);
   win.document.close();
-  win.focus();
-  setTimeout(() => win.print(), 300);
+  setTimeout(() => { try { win.focus(); win.print(); } catch { cleanup(); } }, 300);
 }
 
 // ─── Invoice Card (list view) ─────────────────────────────────────────────────
@@ -399,6 +420,104 @@ function InvoiceItemPicker({
   );
 }
 
+// BUG FIX: supplier used to be a plain native <select> — no substring
+// search (only first-letter typeahead), and there was no way to make Enter
+// jump straight into item search since a native <select> doesn't expose a
+// meaningful "confirm and move on" keystroke. Rebuilt as a searchable,
+// keyboard-navigable combobox using the exact same pattern already proven
+// for item search just above (InvoiceItemPicker) — type to filter, Arrow
+// Up/Down to move through matches, Enter to select and jump focus straight
+// into the first item's search box.
+function SupplierPicker({
+  value,
+  supplierId,
+  suppliers,
+  onChange,
+  onSelect,
+  firstItemInputId,
+}: {
+  value: string;
+  supplierId: string;
+  suppliers: { id: string; businessName: string; contactName: string }[];
+  onChange: (value: string) => void;
+  onSelect: (supplier: { id: string; businessName: string; contactName: string }) => void;
+  firstItemInputId: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(0);
+
+  const suggestions = useMemo(() => {
+    const query = value.trim().toLowerCase();
+    if (!query) return suppliers.slice(0, 20);
+    return suppliers
+      .filter(supplier => supplier.businessName.toLowerCase().includes(query) || supplier.contactName.toLowerCase().includes(query))
+      .slice(0, 20);
+  }, [value, suppliers]);
+
+  useEffect(() => { setActiveIndex(0); }, [value, suggestions.length]);
+
+  const selectSupplier = (supplier: { id: string; businessName: string; contactName: string }) => {
+    onSelect(supplier);
+    setOpen(false);
+    requestAnimationFrame(() => document.getElementById(firstItemInputId)?.focus());
+  };
+
+  return (
+    <div className="relative">
+      <Search className="pointer-events-none absolute left-3 top-1/2 z-10 size-3.5 -translate-y-1/2 text-muted-foreground" />
+      <input
+        id="inv-supplier-search"
+        value={value}
+        onChange={event => { onChange(event.target.value); setOpen(true); }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => window.setTimeout(() => setOpen(false), 120)}
+        onKeyDown={event => {
+          if (event.key === 'ArrowDown' && suggestions.length > 0) {
+            event.preventDefault();
+            setActiveIndex(index => Math.min(index + 1, suggestions.length - 1));
+          } else if (event.key === 'ArrowUp' && suggestions.length > 0) {
+            event.preventDefault();
+            setActiveIndex(index => Math.max(index - 1, 0));
+          } else if (event.key === 'Enter' && open && suggestions[activeIndex]) {
+            event.preventDefault();
+            selectSupplier(suggestions[activeIndex]);
+          } else if (event.key === 'Escape') {
+            setOpen(false);
+          }
+        }}
+        placeholder="Search supplier name…"
+        autoComplete="off"
+        className="h-11 w-full rounded-xl border border-border bg-background pl-9 pr-3 text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30"
+      />
+      {open && (
+        <div className="absolute left-0 right-0 top-full z-40 mt-1.5 max-h-64 overflow-y-auto rounded-xl border border-border bg-background shadow-xl">
+          {suggestions.length > 0 ? suggestions.map((supplier, index) => (
+            <button
+              type="button"
+              key={supplier.id}
+              onMouseDown={event => event.preventDefault()}
+              onClick={() => selectSupplier(supplier)}
+              className={cn(
+                'flex w-full items-center justify-between gap-3 border-b border-border/50 px-3 py-2.5 text-left last:border-0',
+                activeIndex === index ? 'bg-primary/5' : 'hover:bg-muted/60',
+                supplierId === supplier.id && 'bg-primary/10',
+              )}
+            >
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-body font-semibold text-foreground">{supplier.businessName}</p>
+                <p className="text-[10px] font-body text-muted-foreground">{supplier.contactName}</p>
+              </div>
+              {supplierId === supplier.id && <Check className="size-4 shrink-0 text-primary" />}
+            </button>
+          )) : (
+            <div className="px-3 py-4 text-center text-xs font-body text-muted-foreground">No matching supplier found.</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function InvoiceLineEditor({
   line,
   index,
@@ -557,6 +676,7 @@ function CreateInvoiceModal({
   useEffect(() => { if (!stockLoaded) void loadStock(); }, [stockLoaded, loadStock]);
 
   const [supplierId, setSupplierId] = useState(editingInvoice?.supplierId ?? '');
+  const [supplierQuery, setSupplierQuery] = useState(editingInvoice?.supplierName ?? '');
   const [deliveryDate, setDeliveryDate] = useState(editingInvoice?.deliveryDate ?? businessDate());
   const [notes, setNotes] = useState(editingInvoice?.notes ?? '');
   const [lines, setLines] = useState<InvoiceLineDraft[]>(() => {
@@ -774,16 +894,14 @@ function CreateInvoiceModal({
             <div className="grid gap-3 md:grid-cols-2">
               <div>
                 <label className="mb-1.5 block text-[10px] font-body font-bold uppercase text-muted-foreground">Supplier *</label>
-                <select
-                  value={supplierId}
-                  onChange={event => { setSupplierId(event.target.value); setError(''); }}
-                  className="h-11 w-full rounded-xl border border-border bg-background px-3 text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30"
-                >
-                  <option value="">Select supplier…</option>
-                  {suppliers.map(supplier => (
-                    <option key={supplier.id} value={supplier.id}>{supplier.businessName} – {supplier.contactName}</option>
-                  ))}
-                </select>
+                <SupplierPicker
+                  value={supplierQuery}
+                  supplierId={supplierId}
+                  suppliers={suppliers}
+                  onChange={value => { setSupplierQuery(value); if (!value) setSupplierId(''); }}
+                  onSelect={supplier => { setSupplierId(supplier.id); setSupplierQuery(supplier.businessName); setError(''); }}
+                  firstItemInputId={`inv-item-${lines[0]?.rowId}`}
+                />
                 {supplierId && selectedSupplier && (
                   <p className="mt-1 flex items-center gap-1 text-[10px] font-body text-primary"><Check className="size-3" /> {selectedSupplier.businessName}</p>
                 )}
