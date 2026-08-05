@@ -680,8 +680,20 @@ export default function BranchBillingProTab({
       const canonicalItems = (canonicalData ?? []) as BranchBillItem[];
       const canonicalSubtotal = roundMoney(canonicalItems.reduce((sum, item) => sum + item.price * item.quantity, 0));
       const canonicalTax = roundMoney(canonicalItems.reduce((sum, item) => sum + Number(item.tax || 0), 0));
+      // BUG FIX: this rounded the discount amount itself to the nearest WHOLE
+      // rupee (roundWholeRupee) while the client-side `discountValue` above
+      // (line ~384) is computed with paise precision (roundMoney). Only the
+      // FINAL TOTAL is supposed to be whole-rupee rounded — that already
+      // happens correctly a few lines below (canonicalTotal) with the
+      // difference captured as its own "Round-off" line. Rounding the
+      // discount itself to a whole rupee made canonicalManualDiscount and
+      // discountValue disagree for almost any real percentage-off discount
+      // (e.g. 10% of Rs 237 = Rs 23.70 client-side vs Rs 24 here), which trips
+      // the mismatch guard below and aborts the sale with "cart has been
+      // refreshed" — flat/value discounts happened to already be whole
+      // rupees most of the time, so only percentage discounts were affected.
       const canonicalRawDiscount = roundMoney((canonicalSubtotal * discountPercent) / 100);
-      const canonicalManualDiscount = Math.min(canonicalSubtotal, roundWholeRupee(canonicalRawDiscount));
+      const canonicalManualDiscount = Math.min(canonicalSubtotal, canonicalRawDiscount);
       const canonicalPromotionDiscount = Math.min(Math.max(0, canonicalSubtotal - canonicalManualDiscount), promotionDiscount);
       const canonicalCombinedDiscount = roundMoney(Math.min(canonicalSubtotal, canonicalManualDiscount + canonicalPromotionDiscount));
       const canonicalAmountBeforeRoundOff = roundMoney(Math.max(0, canonicalSubtotal + canonicalTax - canonicalCombinedDiscount));
@@ -691,7 +703,16 @@ export default function BranchBillingProTab({
         const old = cart.find((line) => line.barcode === item.barcode) ?? cart[index];
         return !old || old.itemName !== item.itemName || roundMoney(old.price) !== roundMoney(item.price) || old.unit !== item.unit;
       });
-      if (catalogueChanged || canonicalManualDiscount !== discountValue || canonicalTotal !== total) {
+      // BUG FIX: canonicalManualDiscount is re-derived by converting the
+      // discount to a percentage and back (value -> discountPercent ->
+      // canonicalRawDiscount), which is a legitimately lossy round-trip for
+      // flat ₹ discounts (e.g. Rs 20 on Rs 237 -> 8.44% -> Rs 19.99). Strict
+      // `!==` on that recomputed float against the original paise-precision
+      // discountValue would false-positive on sub-paisa noise and block a
+      // perfectly valid sale. A one-paisa tolerance still catches anything
+      // that actually matters (a real price/catalogue change moves this by
+      // far more than a paisa) while no longer rejecting valid discounts.
+      if (catalogueChanged || Math.abs(canonicalManualDiscount - discountValue) > 0.01 || canonicalTotal !== total) {
         setCart(canonicalItems);
         throw new Error('An item name, price, or offer changed. The cart has been refreshed; please review and collect payment again.');
       }
