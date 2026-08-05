@@ -136,7 +136,19 @@ export default function Login() {
           </div>
 
           {/* Form */}
-          <form onSubmit={handleSubmit} className="space-y-4">
+          {/* BUG FIX: shared POS/staff terminals should never let the browser
+              offer to save or autofill login credentials — anyone at the
+              terminal could pick a saved username/password from the
+              browser's autofill dropdown and log in as a different staff
+              member. autoComplete="off" on the form is a hint most browsers
+              partially ignore for password managers, so it's combined with
+              password-manager-specific "don't fill this" attributes
+              (data-lpignore for LastPass, data-1p-ignore for 1Password,
+              data-bwignore for Bitwarden, data-form-type to defeat generic
+              heuristics) plus the well-known autoComplete="new-password"
+              trick, which stops Chrome/Edge specifically from prompting to
+              save the password after a successful login. */}
+          <form onSubmit={handleSubmit} className="space-y-4" autoComplete="off" data-form-type="other">
             {error && (
               <div className="flex items-center gap-2.5 px-4 py-3 rounded-xl animate-fade-up"
                 style={{ background: 'rgba(220,38,38,0.18)', border: '1px solid rgba(220,38,38,0.35)' }}>
@@ -150,11 +162,15 @@ export default function Login() {
               <User className="absolute left-4 top-1/2 -translate-y-1/2 size-4 text-white/40" />
               <input
                 type="text"
+                name="staff-login-identifier"
                 placeholder="Username"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
                 autoCapitalize="off"
-                autoComplete="username"
+                autoComplete="off"
+                data-lpignore="true"
+                data-1p-ignore="true"
+                data-bwignore="true"
                 className="w-full pl-11 pr-4 py-3.5 rounded-xl text-sm font-body text-white placeholder:text-white/35 focus:outline-none focus:ring-2 transition-all duration-200"
                 style={{
                   background: 'rgba(255,255,255,0.08)',
@@ -171,10 +187,14 @@ export default function Login() {
               <Lock className="absolute left-4 top-1/2 -translate-y-1/2 size-4 text-white/40" />
               <input
                 type={showPassword ? 'text' : 'password'}
+                name="staff-login-secret"
                 placeholder="Password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                autoComplete="current-password"
+                autoComplete="new-password"
+                data-lpignore="true"
+                data-1p-ignore="true"
+                data-bwignore="true"
                 className="w-full pl-11 pr-12 py-3.5 rounded-xl text-sm font-body text-white placeholder:text-white/35 focus:outline-none transition-all duration-200"
                 style={{
                   background: 'rgba(255,255,255,0.08)',

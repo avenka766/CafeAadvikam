@@ -19,7 +19,7 @@ import {
 import OrderCard from '@/components/features/OrderCard';
 import CategoryFilter from '@/components/features/CategoryFilter';
 import MenuItemCard from '@/components/features/MenuItemCard';
-import type { OrderStatus, OrderType, PaymentType, PaymentBreakdown, Order, CartItem } from '@/types';
+import type { OrderStatus, OrderType, PaymentType, PaymentBreakdown, Order, CartItem, MenuItem } from '@/types';
 import { TABLE_NUMBERS, MENU_CATEGORIES } from '@/constants/config';
 import EmptyState from '@/components/ui/EmptyState';
 import { supabase } from '@/lib/supabase';
@@ -97,13 +97,22 @@ function useCafeCounterOpened() {
           .select('status, created_at')
           .eq('branch', 'Cafe')
           .eq('closure_date', today),
+        // BUG FIX: this used to only select `record_id` and check
+        // `opRows.length > 0` — i.e. "does ANY counter_opening row exist for
+        // today", completely ignoring whether that row's status was later
+        // flipped to "Closed" by closeCounter(). Verified directly against
+        // production data: rows genuinely do end up with status "Closed"
+        // (and the counter can be opened/closed more than once a day), so
+        // this was reporting the counter as open all day even hours after
+        // it had actually been closed. Now pulls status + updated_at for
+        // every row so the *latest* one decides, same pattern already used
+        // for the formal daily-closure rows just above.
         supabase
           .from('branch_operation_records')
-          .select('record_id')
+          .select('status, updated_at, created_at')
           .eq('branch', 'Cafe')
           .eq('record_type', 'counter_opening')
-          .eq('record_no', today)
-          .limit(1),
+          .eq('record_no', today),
       ]);
       if (!alive) return;
       const formalRows = !closureError && Array.isArray(closureRows) ? closureRows : [];
@@ -112,9 +121,15 @@ function useCafeCounterOpened() {
       )[0];
       const latestStatus = String(latestRow?.status || '').toLowerCase();
       const closed = latestStatus === 'finalized';
+
+      const openingRows = !opError && Array.isArray(opRows) ? opRows : [];
+      const latestOpeningRow = [...openingRows].sort((a, b) =>
+        new Date((b.updated_at || b.created_at) as string).getTime() - new Date((a.updated_at || a.created_at) as string).getTime(),
+      )[0];
+      const latestOpeningStatus = String(latestOpeningRow?.status || '').toLowerCase();
       const opened =
         latestStatus === 'draft' ||
-        (!closed && !opError && Array.isArray(opRows) && opRows.length > 0);
+        (!closed && latestOpeningStatus === 'opened');
       setRemoteCounter({ opened, closed, loaded: true });
     };
     void checkCounterOpening();
@@ -123,11 +138,28 @@ function useCafeCounterOpened() {
     };
   }, [today]);
 
-  const localOpened = counterOpenings.some((record) => record.branch === 'Cafe' && record.date === today);
+  // BUG FIX (part 1): closeCounter() in branchOpsStore.ts doesn't remove or
+  // move the day's counterOpenings record when the counter is closed — it
+  // just flips that same record's `active` field to false in place. This
+  // check never looked at `active` at all, so it kept counting today's
+  // record as "open" even after it had been closed.
+  const todaysLocalOpening = counterOpenings.find((record) => record.branch === 'Cafe' && record.date === today);
+  const localOpened = todaysLocalOpening ? todaysLocalOpening.active !== false : false;
+
+  // BUG FIX (part 2, the actual root cause of "close isn't working"): the
+  // remote snapshot above is fetched exactly once per mount (the effect only
+  // depends on `today`) and never refreshed afterward. The old final line —
+  // `return remoteCounter.opened || localOpened` — meant that once the
+  // remote fetch had seen the counter open, closing it locally later in the
+  // very same session could never flip this back to false: `true ||
+  // anything` is always `true`. A local record for today (this session
+  // having just opened and/or closed the counter itself, right now) is
+  // always fresher information than that one-time remote snapshot, so it
+  // must take priority over it rather than only ever being OR'd in.
+  if (todaysLocalOpening) return localOpened;
+  if (localClosed) return false;
   if (!remoteCounter.loaded) return true;
-  if (remoteCounter.closed) return false;
-  if (localClosed && !remoteCounter.opened) return false;
-  return remoteCounter.opened || localOpened;
+  return remoteCounter.opened && !remoteCounter.closed;
 }
 
 function BillerCreditTab() {
@@ -389,18 +421,54 @@ function safeHtml(value: unknown): string {
     .replace(/'/g, '&#39;');
 }
 
+// BUG FIX: this used to open a real, visible `window.open(..., '_blank', ...)`
+// popup for every single print (KOT, bill, KOT+bill, credit slip, advance
+// slip...) — a whole separate browser window would flash on screen before/
+// during printing. The branch billing print pipeline (src/branch/printUtils.ts
+// printCounterBill) already solved this correctly with an off-screen,
+// aria-hidden 1x1 iframe that's never actually visible at any point — same
+// silent-print outcome, no popup window, no "preparing print" page ever
+// shown. Cafe printing now uses that same pattern instead of its own weaker
+// popup-window approach.
 function printCounterSlip(title: string, bodyHtml: string) {
-  const win = window.open('', '_blank', 'width=420,height=720');
-  if (!win) return Promise.resolve();
+  const frame = document.createElement('iframe');
+  frame.setAttribute('aria-hidden', 'true');
+  frame.style.position = 'fixed';
+  frame.style.left = '-10000px';
+  frame.style.bottom = '0';
+  frame.style.width = '1px';
+  frame.style.height = '1px';
+  frame.style.border = '0';
+  frame.style.opacity = '0';
+  frame.style.pointerEvents = 'none';
+  document.body.appendChild(frame);
+
+  const win = frame.contentWindow;
+  if (!win) { frame.remove(); return Promise.resolve(); }
+
+  win.document.open();
   win.document.write(`<!DOCTYPE html><html><head><title>${safeHtml(title)}</title>
 <style>
 @page{margin:4mm;size:80mm auto}*{box-sizing:border-box}body{margin:0;width:76mm;font-family:'Courier New',monospace;color:#000;font-size:12px;line-height:1.3}.c{text-align:center}.r{text-align:right}.b{font-weight:900}.muted{color:#444}.big{font-size:16px}.shop{font-size:17px;font-weight:900}.dash{border-top:1px dashed #000;margin:6px 0}.solid{border-top:2px solid #000;margin:6px 0}.kv{width:100%;border-collapse:collapse}.kv td{padding:1px 0;vertical-align:top}.mt{margin-top:6px}.paid{font-size:15px;font-weight:900;text-align:center;margin-bottom:3px}.pick{text-align:right;font-size:16px;font-weight:900}table{width:100%;border-collapse:collapse}td,th{padding:3px 1px;vertical-align:top}th{text-align:left;border-bottom:1px solid #000}tbody tr.item-row td{border-bottom:1px solid #ddd}.num{text-align:right}.grand td{font-size:18px;font-weight:900;padding:6px 0}.thanks{text-align:center;font-size:14px;margin-top:8px}.small{font-size:10px}
 </style></head><body>${bodyHtml}</body></html>`);
   win.document.close();
+
   return new Promise<void>((resolve) => {
-    const finish = () => { try { win.close(); } catch { /* already closed */ } resolve(); };
+    let cleaned = false;
+    const finish = () => {
+      if (cleaned) return;
+      cleaned = true;
+      frame.remove();
+      resolve();
+    };
     win.onafterprint = finish;
-    setTimeout(() => { win.focus(); win.print(); setTimeout(finish, 800); }, 350);
+    // Safety-net timeout matches the one already proven safe in the branch
+    // billing print pipeline (printCounterBill in printUtils.ts) — long
+    // enough that it never yanks the iframe out from under an actual native
+    // print dialog still open and waiting on the cashier, but still
+    // guarantees eventual cleanup if onafterprint never fires.
+    window.setTimeout(finish, 60_000);
+    setTimeout(() => { try { win.focus(); win.print(); } catch { finish(); } }, 350);
   });
 }
 
@@ -528,7 +596,7 @@ function printKotSlip(order: Order) {
   return printCounterSlip(`KOT ${order.orderNumber}`, kotBody(order));
 }
 
-function billBody(order: Order, copyType: 'original' | 'duplicate' = 'original'): string {
+function billBody(order: Order, copyType: 'original' | 'duplicate' = 'original', cashTendered?: number): string {
   const paidBy = PAYMENT_LABELS_PRINT[order.paymentType] || order.paymentType;
   const breakdownRows = order.paymentBreakdown ? `
     ${kvRow(['Cash', moneyHtml(order.paymentBreakdown.cash || 0)], { bold: true })}
@@ -537,6 +605,12 @@ function billBody(order: Order, copyType: 'original' | 'duplicate' = 'original')
     ${Number(order.paymentBreakdown.wallet || 0) > 0 ? kvRow(['Wallet', moneyHtml(order.paymentBreakdown.wallet || 0)], { bold: true }) : ''}
     ${Number(order.paymentBreakdown.credit || 0) > 0 ? kvRow(['Credit', moneyHtml(order.paymentBreakdown.credit || 0)], { bold: true }) : ''}
   ` : '';
+  // Cash Tendered / Change — previously never collected or printed anywhere
+  // in cafe billing (unlike SNB/VRSNB branch billing, which already had it).
+  // Only shown for a genuine cash overpayment.
+  const tenderedRows = order.paymentType === 'cash' && cashTendered != null && cashTendered > order.total
+    ? `${kvRow(['Cash Tendered', moneyHtml(cashTendered)], { bold: true })}${kvRow(['Change Returned', moneyHtml(cashTendered - order.total)], { bold: true })}`
+    : '';
   const dt = receiptDate(order.createdAt);
   return `
     ${cafeHeader('PAID', copyType === 'duplicate' ? 'DUPLICATE BILL' : 'TAX INVOICE')}
@@ -550,6 +624,7 @@ function billBody(order: Order, copyType: 'original' | 'duplicate' = 'original')
     ${receiptTotals(order, order.total)}
     ${kvRow([`Paid via ${safeHtml(paidBy)}`, ''])}
     ${breakdownRows}
+    ${tenderedRows}
     ${order.walletTransactionId ? kvRow(['Wallet Txn', safeHtml(order.walletTransactionId)]) : ''}
     ${order.walletBalanceRemaining !== undefined ? kvRow(['Wallet Balance', moneyHtml(order.walletBalanceRemaining)], { bold: true }) : ''}
     ${Number(order.walletCashback || 0) > 0 ? kvRow(['Wallet Cashback', moneyHtml(order.walletCashback || 0)], { bold: true }) : ''}
@@ -558,16 +633,23 @@ function billBody(order: Order, copyType: 'original' | 'duplicate' = 'original')
   `;
 }
 
-function printPaidBill(order: Order, copyType: 'original' | 'duplicate' = 'original') {
-  return printCounterSlip(`Bill ${order.orderNumber}`, billBody(order, copyType));
+function printPaidBill(order: Order, copyType: 'original' | 'duplicate' = 'original', cashTendered?: number) {
+  return printCounterSlip(`Bill ${order.orderNumber}`, billBody(order, copyType, cashTendered));
 }
 
-// Prints the KOT and the paid bill as ONE print job (KOT section first, bill
-// immediately after, on the same slip) instead of two separate popups/print
-// jobs — this is what removes the risk of the two prints racing or arriving
-// out of order.
-function printKotThenBill(order: Order, copyType: 'original' | 'duplicate' = 'original') {
-  return printCounterSlip(`Bill ${order.orderNumber}`, `${kotBody(order)}<div class="solid"></div>${billBody(order, copyType)}`);
+// BUG FIX: this used to merge the KOT and the paid bill into ONE print job
+// (KOT section, then a divider, then the bill, all on one slip) — so every
+// customer receipt had kitchen prep info printed on it, and there was no way
+// to route the KOT to a separate kitchen printer since it was physically
+// part of the bill document. The kitchen has its own KOT printer, separate
+// from the counter's bill/receipt printer, so these now fire as two
+// independent print jobs — the KOT job first (so the kitchen starts prepping
+// immediately), then the customer bill — instead of one combined slip.
+// Still awaited in sequence (not parallel) so the two jobs can't race each
+// other on machines with only one active print queue.
+async function printKotThenBill(order: Order, copyType: 'original' | 'duplicate' = 'original', cashTendered?: number) {
+  await printKotSlip(order);
+  await printPaidBill(order, copyType, cashTendered);
 }
 
 function printAdvanceSalesSlip(order: Order, mobile: string, orderDate: string, billPerson: string) {
@@ -1597,6 +1679,10 @@ function NewBillPanel() {
   const [showBillModal, setShowBillModal] = useState(false);
   const [billMethod, setBillMethod] = useState<BillPaymentMethod>('cash');
   const [splitPayment, setSplitPayment] = useState<SplitPaymentInputs>({ cash: '', upi: '', card: '' });
+  // Cash Tendered / Change — was never collected anywhere in cafe billing at
+  // all (SNB/VRSNB branch billing already has this; cafe didn't). Only
+  // meaningful for a straight cash payment.
+  const [cashTendered, setCashTendered] = useState('');
 
   // Credit sale state
   const [paymentMode, setPaymentMode] = useState<'regular' | 'credit' | 'wallet'>('regular');
@@ -1859,12 +1945,25 @@ function NewBillPanel() {
       setTimeout(() => setKotSuccess(null), 2500);
     } catch (err) {
       const msg = err instanceof Error ? err.message : '';
+      // BUG FIX: this local `runningOrder` snapshot can go stale — e.g. another
+      // biller already billed/closed this exact table a moment earlier, or this
+      // screen just hadn't refreshed yet. In that case `add_items_to_table_order_v1`
+      // throws ORDER_NOT_RUNNING, which used to fall straight into the generic
+      // "Failed to send order to kitchen" error with no recovery — the button
+      // looked broken ("I click it and get an error") even though the fix is
+      // just to resync and let staff press it again. Now handled the same way
+      // TABLE_ALREADY_RUNNING already was: silently resync and give a clear
+      // explanation instead of a raw error.
       if (msg.includes('TABLE_ALREADY_RUNNING') || msg.includes('duplicate key') || msg.includes('23505')) {
         setSubmitError('Another biller just opened this table. Refreshing its current order…');
         await refreshRunningOrder(tableNumber);
         void loadTableBoard();
+      } else if (msg.includes('ORDER_NOT_RUNNING')) {
+        setSubmitError('This table was already billed or closed elsewhere. Refreshed — please try again.');
+        await refreshRunningOrder(tableNumber);
+        void loadTableBoard();
       } else {
-        setSubmitError(msg || 'Failed to send order to kitchen.');
+        setSubmitError(msg || 'Failed to send order to kitchen. Please try again.');
       }
     } finally {
       setSendingKot(false);
@@ -2110,7 +2209,26 @@ function NewBillPanel() {
   const splitTotal = splitBreakdown.cash + splitBreakdown.upi + splitBreakdown.card;
   const splitRemaining = total - splitTotal;
 
+  // BUG FIX: dine-in items could previously be added to the cart before a
+  // table was selected — the table gate only existed at Send to Kitchen and
+  // billing time, so an unassigned pile of items could build up with nowhere
+  // for it to actually go. Table must now be picked first.
+  const requireTableForDineIn = () => {
+    if (orderType === 'dine_in' && !tableNumber) {
+      setTableError(true);
+      setSubmitError('Select a table first before adding items.');
+      return false;
+    }
+    return true;
+  };
+
+  const handleAddMenuItem = (item: MenuItem) => {
+    if (!requireTableForDineIn()) return;
+    addToCart(item);
+  };
+
   const handleAddCustomItem = () => {
+    if (!requireTableForDineIn()) return;
     const n = customName.trim();
     const p = parseFloat(customPrice);
     const q = parseInt(customQty) || 1;
@@ -2257,7 +2375,7 @@ function NewBillPanel() {
           setShowSuccess(true);
           setNotes(''); setCustomerName(''); setTableNumber(null);
           setCustomItems([]); setCustomName(''); setCustomPrice(''); setCustomQty('1');
-          setBillMethod('cash'); setSplitPayment({ cash: '', upi: '', card: '' });
+          setBillMethod('cash'); setSplitPayment({ cash: '', upi: '', card: '' }); setCashTendered('');
           setCreditCustomerPhone(''); setCreditDueDate(''); setPaymentMode('regular');
           setTimeout(() => setShowSuccess(false), 2200);
           setSubmitting(false);
@@ -2298,7 +2416,7 @@ function NewBillPanel() {
           if (err) throw new Error(err);
           printCreditBill(finalized, creditCustomerPhone.trim(), creditDueDate);
         } else {
-          printPaidBill(finalized, 'original');
+          printPaidBill(finalized, 'original', billMethod === 'cash' ? Number(cashTendered || 0) || undefined : undefined);
         }
 
         await loadOrders(60);
@@ -2310,7 +2428,7 @@ function NewBillPanel() {
         setShowSuccess(true);
         setNotes(''); setCustomerName(''); setTableNumber(null);
         setCustomItems([]); setCustomName(''); setCustomPrice(''); setCustomQty('1');
-        setBillMethod('cash'); setSplitPayment({ cash: '', upi: '', card: '' });
+        setBillMethod('cash'); setSplitPayment({ cash: '', upi: '', card: '' }); setCashTendered('');
         setCreditCustomerPhone(''); setCreditDueDate(''); setPaymentMode('regular');
         setTimeout(() => setShowSuccess(false), 2200);
       } catch (err) {
@@ -2397,6 +2515,16 @@ function NewBillPanel() {
         if (savedOrder) printCreditBill(savedOrder, creditCustomerPhone.trim(), creditDueDate);
         clearCart();
         closeActiveTakeawayTicket();
+        // BUG FIX: this credit-sale path (billing a table that never had a
+        // KOT sent, so there's no `runningOrder`) never purged the table's
+        // saved draft. The wallet and running-order finalize paths a few
+        // hundred lines up both already call clearTableDraft() — this path
+        // was missed, so a table billed via credit would still have its old,
+        // already-paid items reappear the next time that table number was
+        // picked again (switchTable() restores whatever's left in
+        // tableDrafts). Matches "Table 1 items not clearing after billing."
+        if (orderType === 'dine_in' && tableNumber != null) clearTableDraft(tableNumber);
+        void loadTableBoard();
         setShowSuccess(true);
         setNotes(''); setCustomerName(''); setTableNumber(null);
         setCustomItems([]); setCustomName(''); setCustomPrice(''); setCustomQty('1');
@@ -2522,12 +2650,17 @@ function NewBillPanel() {
         checkoutIdempotencyRef.current = null;
         clearCart();
         closeActiveTakeawayTicket();
+        // BUG FIX: same missing clearTableDraft() as the credit-sale path above —
+        // without it, a table paid via wallet here would still show its old
+        // (already-paid) items the next time that table number was reselected.
+        if (orderType === 'dine_in' && tableNumber != null) clearTableDraft(tableNumber);
+        void loadTableBoard();
         setShowBillModal(false);
         setShowSuccess(true);
         setNotes(''); setCustomerName(''); setTableNumber(null);
         setCustomItems([]); setCustomName(''); setCustomPrice(''); setCustomQty('1');
         setSelectedWallet(null); setWalletAmount(0); setWalletOtherMode(null); setWalletAuthorizationSecret(''); setCouponCode('');
-        setBillMethod('cash'); setSplitPayment({ cash: '', upi: '', card: '' });
+        setBillMethod('cash'); setSplitPayment({ cash: '', upi: '', card: '' }); setCashTendered('');
         setCreditDueDate(''); setPaymentMode('regular');
         setTimeout(() => setShowSuccess(false), 2200);
       } catch (err) {
@@ -2606,15 +2739,22 @@ function NewBillPanel() {
         promotionIds: result.promotionIds || [],
         walletCashback: Number(result.cashback || 0),
       };
-      printKotThenBill(printable, 'original');
+      printKotThenBill(printable, 'original', billMethod === 'cash' ? Number(cashTendered || 0) || undefined : undefined);
       checkoutIdempotencyRef.current = null;
       clearCart();
       closeActiveTakeawayTicket();
+      // BUG FIX: this is the most common checkout path (regular cash/UPI/card/
+      // split bill for a table with no prior KOT) and it had the same missing
+      // clearTableDraft() as the credit and wallet paths above — the single
+      // biggest source of "Table 1 items not clearing after billing", since
+      // it's the default path most dine-in bills go through.
+      if (orderType === 'dine_in' && tableNumber != null) clearTableDraft(tableNumber);
+      void loadTableBoard();
       setShowBillModal(false);
       setShowSuccess(true);
       setNotes(''); setCustomerName(''); setTableNumber(null);
       setCustomItems([]); setCustomName(''); setCustomPrice(''); setCustomQty('1');
-      setBillMethod('cash'); setSplitPayment({ cash: '', upi: '', card: '' }); setCouponCode('');
+      setBillMethod('cash'); setSplitPayment({ cash: '', upi: '', card: '' }); setCouponCode(''); setCashTendered('');
       setTimeout(() => setShowSuccess(false), 2200);
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : 'Failed to submit order - please try again.');
@@ -2708,6 +2848,27 @@ function NewBillPanel() {
                 </div>
               )}
             </div>
+            {paymentMode !== 'wallet' && billMethod === 'cash' && (
+              <div className="rounded-2xl border border-emerald-200 bg-emerald-50/60 p-3 space-y-2">
+                <label className="block">
+                  <span className="mb-1 block text-[10px] font-black uppercase tracking-widest text-muted-foreground">Cash tendered</span>
+                  <input
+                    type="number"
+                    min="0"
+                    value={cashTendered}
+                    onChange={e => setCashTendered(e.target.value)}
+                    placeholder={formatCurrency(total)}
+                    className="w-full rounded-xl border border-border bg-card px-3 py-2.5 text-sm font-black tabular-nums focus:outline-none focus:ring-2 focus:ring-emerald-400/40"
+                  />
+                </label>
+                {Number(cashTendered || 0) > total && (
+                  <div className="flex items-center justify-between rounded-xl bg-card/80 px-3 py-2 text-xs font-black text-emerald-700">
+                    <span>Change to return</span>
+                    <span className="tabular-nums">{formatCurrency(Number(cashTendered) - total)}</span>
+                  </div>
+                )}
+              </div>
+            )}
             {billMethod === 'part_payment' && (
               <div className="rounded-2xl border border-emerald-200 bg-emerald-50/60 p-3 space-y-3">
                 <div className="flex items-center justify-between gap-3">
@@ -2816,7 +2977,7 @@ function NewBillPanel() {
                 <div className="biller-menu-grid grid gap-1.5" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(116px, 1fr))' }}>
                   {filteredItems.map(item => (
                     <MenuItemCard key={item.id} item={item} quantity={getQty(item.id)}
-                      onAdd={() => addToCart(item)} onRemove={() => updateCartQuantity(item.id, getQty(item.id) - 1)} compact hideImage />
+                      onAdd={() => handleAddMenuItem(item)} onRemove={() => updateCartQuantity(item.id, getQty(item.id) - 1)} compact hideImage />
                   ))}
                 </div>
               )}
@@ -3717,23 +3878,19 @@ function CafePaymentModeEditTab({ orders }: { orders: Order[] }) {
 // -- Main BillingDashboard -----------------------------------------------------
 export default function BillingDashboard() {
   // STORE-01 FIX: granular selector with shallow equality - avoids full re-render on cart/loading changes
-  const { orders, startPolling, stopPolling, polling, loadOrders, clearCart, cart } = useOrderStore(
+  const { orders, startPolling, stopPolling, polling, loadOrders } = useOrderStore(
     useShallow(s => ({
       orders: s.orders,
       startPolling: s.startPolling,
       stopPolling: s.stopPolling,
       polling: s.polling,
       loadOrders: s.loadOrders,
-      clearCart: s.clearCart,
-      cart: s.cart,
     }))
   );
   const { currentUser } = useAuthStore();
   const counterOpenedToday = useCafeCounterOpened();
   const [searchParams, setSearchParams] = useSearchParams();
   const [activeTab, setActiveTab] = useState<OrderStatus | 'new_bill' | 'advance' | 'alerts' | 'payment_edit'>('new_bill');
-  // U-01 FIX: track pending tab switch so we can show a confirmation before wiping cart
-  const [pendingTab, setPendingTab] = useState<OrderStatus | 'new_bill' | 'advance' | 'alerts' | 'payment_edit' | null>(null);
 
   useEffect(() => {
     const requested = searchParams.get('tab');
@@ -3744,38 +3901,20 @@ export default function BillingDashboard() {
     else setActiveTab('new_bill');
   }, [searchParams]);
 
-  // U-01 FIX: guard against accidental cart wipe - show confirmation when cart has items
+  // STATE-LOSS FIX: this used to clear the cart (and pop a "you'll lose your
+  // items" confirmation) whenever staff switched away from New Bill/Advance,
+  // because those panels used to fully unmount on tab switch and the cart
+  // would've been orphaned anyway. Now that NewBillPanel/AdvanceOrderPanel
+  // stay permanently mounted (just hidden) below, nothing is lost by
+  // switching tabs, so this can just be a plain tab switch — no clearing,
+  // no confirmation dialog needed.
   const switchTab = (tab: OrderStatus | 'new_bill' | 'advance' | 'alerts' | 'payment_edit') => {
-    const leavingBillTab = activeTab === 'new_bill' || activeTab === 'advance';
-    const enteringBillTab = tab === 'new_bill' || tab === 'advance';
-    const cartHasItems = cart.length > 0;
-    if (tab !== activeTab && (leavingBillTab || enteringBillTab) && cartHasItems) {
-      // Park the destination and ask for confirmation
-      setPendingTab(tab);
-      return;
-    }
-    if (tab !== activeTab && (leavingBillTab || enteringBillTab)) {
-      clearCart();
-    }
     setActiveTab(tab);
     if (tab === 'new_bill') setSearchParams({});
     else if (tab === 'advance') setSearchParams({ tab: 'advance' });
     else if (tab === 'alerts') setSearchParams({ tab: 'alerts' });
     else if (tab === 'payment_edit') setSearchParams({ tab: 'payment-edit' });
     else setSearchParams({ tab: 'history' });
-  };
-
-  const confirmTabSwitch = () => {
-    if (!pendingTab) return;
-    clearCart();
-    const next = pendingTab;
-    setActiveTab(next);
-    if (next === 'new_bill') setSearchParams({});
-    else if (next === 'advance') setSearchParams({ tab: 'advance' });
-    else if (next === 'alerts') setSearchParams({ tab: 'alerts' });
-    else if (next === 'payment_edit') setSearchParams({ tab: 'payment-edit' });
-    else setSearchParams({ tab: 'history' });
-    setPendingTab(null);
   };
 
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all');
@@ -3892,35 +4031,6 @@ export default function BillingDashboard() {
       data-billing-dashboard
     >
 
-      {/* U-01 FIX: cart-clear confirmation dialog */}
-      {pendingTab !== null && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-6">
-          <div className="bg-background rounded-2xl p-6 max-w-sm w-full shadow-xl border border-border">
-            <div className="size-12 rounded-2xl bg-amber-100 flex items-center justify-center mb-4">
-              <Inbox className="size-6 text-amber-600" />
-            </div>
-            <h2 className="font-display text-lg font-bold text-foreground mb-1">Clear cart?</h2>
-            <p className="text-sm font-body text-muted-foreground mb-5">
-              Switching tabs will clear all current bill items, including any custom lines ({cart.length} saved cart item{cart.length !== 1 ? 's' : ''}). This cannot be undone.
-            </p>
-            <div className="flex gap-3">
-              <button
-                onClick={() => setPendingTab(null)}
-                className="flex-1 py-2.5 rounded-xl border border-border text-sm font-body font-semibold text-foreground active:scale-95"
-              >
-                Stay here
-              </button>
-              <button
-                onClick={confirmTabSwitch}
-                className="flex-1 py-2.5 rounded-xl bg-destructive text-destructive-foreground text-sm font-body font-semibold active:scale-95"
-              >
-                Clear & switch
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {showDeliveryPopup && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/55 px-5">
           <div className="w-full max-w-md rounded-3xl border border-amber-200 bg-background p-5 shadow-2xl">
@@ -3985,11 +4095,22 @@ export default function BillingDashboard() {
       </div>
 
       {/* Content */}
-      {activeTab === 'new_bill' ? (
-        <div className="flex-1 min-h-0 flex flex-col overflow-hidden"><NewBillPanel /></div>
-      ) : activeTab === 'advance' ? (
-        <div className="flex-1 min-h-0 flex flex-col overflow-hidden"><AdvanceOrderPanel onCreated={() => {}} advanceOrders={advanceOrders} /></div>
-      ) : activeTab === 'payment_edit' ? (
+      {/* STATE-LOSS FIX: New Bill and Advance used to be conditionally
+          rendered ({activeTab === 'new_bill' ? <NewBillPanel/> : ...}), which
+          fully unmounted them the instant staff switched to any other tab
+          (History, Alerts, Payment Edit) — destroying every piece of local
+          state that lives inside those panels (draft carts per table, draft
+          takeaway tickets, custom items, selected table/order type). The
+          existing "unsaved cart" confirmation only guarded the Zustand
+          `cart.length` (menu items in the *currently active* table/ticket)
+          and even then still wiped it on confirm — it never protected custom
+          items or the other tables'/tickets' saved drafts, which were always
+          silently destroyed on every tab switch. Both panels now stay
+          mounted permanently and are just hidden with CSS when not active,
+          so all of that draft state survives switching tabs and back. */}
+      <div className={cn('flex-1 min-h-0 flex-col overflow-hidden', activeTab === 'new_bill' ? 'flex' : 'hidden')}><NewBillPanel /></div>
+      <div className={cn('flex-1 min-h-0 flex-col overflow-hidden', activeTab === 'advance' ? 'flex' : 'hidden')}><AdvanceOrderPanel onCreated={() => {}} advanceOrders={advanceOrders} /></div>
+      {activeTab === 'new_bill' || activeTab === 'advance' ? null : activeTab === 'payment_edit' ? (
         <div className="flex-1 min-h-0 overflow-hidden"><CafePaymentModeEditTab orders={orders} /></div>
       ) : activeTab === 'alerts' ? (
         <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-3">

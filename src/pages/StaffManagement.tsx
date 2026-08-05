@@ -240,11 +240,17 @@ export default function StaffManagement() {
             <input
               placeholder="Username" value={newUsername}
               onChange={(e) => setNewUsername(e.target.value)}
+              autoComplete="off" data-lpignore="true" data-1p-ignore="true" data-bwignore="true"
               className="w-full px-4 py-3 bg-muted/50 border border-border rounded-xl text-sm font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/40 transition-all"
             />
+            {/* BUG FIX: setting/resetting another staff member's password
+                shouldn't be offered for the browser's own credential
+                autofill/autosave — this is an admin typing someone else's
+                new password, not their own login. */}
             <input
               placeholder="Password (min 6 chars)" type="password" value={newPassword}
               onChange={(e) => setNewPassword(e.target.value)}
+              autoComplete="new-password" data-lpignore="true" data-1p-ignore="true" data-bwignore="true"
               className="w-full px-4 py-3 bg-muted/50 border border-border rounded-xl text-sm font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/40 transition-all"
             />
 
@@ -426,6 +432,7 @@ export default function StaffManagement() {
                           placeholder="Enter new password (min 6 chars)"
                           value={newPw}
                           onChange={(e) => setNewPw(e.target.value)}
+                          autoComplete="new-password" data-lpignore="true" data-1p-ignore="true" data-bwignore="true"
                           className="flex-1 px-3 py-2 bg-background border border-border rounded-lg text-sm font-body"
                         />
                         <button

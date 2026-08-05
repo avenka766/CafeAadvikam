@@ -1221,7 +1221,7 @@ function UpdateStockTab({
           </div>
           <Field label="New Quantity"><input type="number" min="0" step="0.001" className={inputCls} value={quantity} onChange={(e) => setQuantity(e.target.value)} /></Field>
           <Field label="Reason for Adjustment"><textarea className={inputCls} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Physical count correction, damaged stock correction, opening balance correction..." /></Field>
-          <Field label="Admin Login Password"><input type="password" autoComplete="current-password" className={inputCls} value={password} onChange={(e) => setPassword(e.target.value)} /></Field>
+          <Field label="Admin Login Password"><input type="password" autoComplete="off" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" className={inputCls} value={password} onChange={(e) => setPassword(e.target.value)} /></Field>
           {error && <p className="rounded-2xl bg-red-50 p-3 text-sm font-black text-red-700 ring-1 ring-red-100">{error}</p>}
           <button disabled={saving} onClick={save} className={cn(btnCls, "w-full bg-slate-950 text-white disabled:cursor-not-allowed disabled:opacity-60")}>
             {saving ? <RefreshCcw className="size-4 animate-spin" /> : <ShieldCheck className="size-4" />}{saving ? "Verifying & Updating..." : "Authorize & Update Stock"}
@@ -2493,7 +2493,7 @@ function WasteLogsTab({ userName, role }: { userName: string; role: string }) {
               </>}
               {manageMode === "cancel" && <p className="rounded-2xl bg-emerald-50 p-3 text-sm font-bold text-emerald-800 ring-1 ring-emerald-200">Cancelling restores {manageRow.quantity} {manageRow.unit} to VRSNB stock and keeps this row in history.</p>}
               <Field label={manageMode === "edit" ? "Reason for editing" : "Reason for cancellation"}><textarea className={inputCls} value={manageForm.actionReason} onChange={(event) => setManageForm({ ...manageForm, actionReason: event.target.value })} /></Field>
-              <Field label="Your password"><input type="password" autoComplete="current-password" className={inputCls} value={manageForm.password} onChange={(event) => setManageForm({ ...manageForm, password: event.target.value })} /></Field>
+              <Field label="Your password"><input type="password" autoComplete="off" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" className={inputCls} value={manageForm.password} onChange={(event) => setManageForm({ ...manageForm, password: event.target.value })} /></Field>
               {manageError && <p className="rounded-xl bg-red-50 px-3 py-2 text-sm font-bold text-red-700 ring-1 ring-red-200">{manageError}</p>}
               <div className="grid grid-cols-2 gap-2 pt-1"><button type="button" disabled={managing} onClick={() => setManageRow(null)} className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")}>Keep record</button><button type="button" disabled={managing} onClick={() => void submitManage()} className={cn(btnCls, manageMode === "cancel" ? "bg-red-600 text-white" : "bg-slate-950 text-white")}>{managing ? "Saving..." : manageMode === "cancel" ? "Cancel & restore" : "Save changes"}</button></div>
             </div>
