@@ -2222,87 +2222,6 @@ function branchDispatchedForRow(row: ProductionRow, branch: Branch, orders: Bake
 // Same idea as branchDispatchedForRow, but for the "Planned" bucket (Planning
 // tab batches) — these orders have no fixed branch, so we track their
 // dispatch progress by order id instead of by targetBranch.
-// NEW FEATURE: lets the planner draw down the shared Closing Stock / leftover
-// pool (recorded in the "Closing Stock" tab) against a real branch order
-// instead of only dispatching fresh production. Consumes the leftover ledger
-// first (guarded server-side against over-drawing), then logs the dispatch
-// through the exact same submitDispatch() path every other dispatch button
-// uses, split across contributing orders the same way BulkDispatchModal does
-// — so it shows up identically everywhere downstream (branch_incoming,
-// order.dispatchLog, Daily Closure dispatch totals).
-function LeftoverDispatchButton({ row, orders, onDispatch, dispatchedBy, defaultBranch, balance, onDone }: {
-  row: ProductionRow; orders: BakeryOrder[];
-  onDispatch: ReturnType<typeof useBakeryStore.getState>['submitDispatch']; dispatchedBy: string;
-  defaultBranch: Branch | 'All'; balance: { unit: LeftoverUnit; balance: number } | undefined;
-  onDone: () => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const [branch, setBranch] = useState<Branch>(defaultBranch === 'All' ? 'SNB' : defaultBranch);
-  const [qty, setQty] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
-  const { getId, reset: resetDispatchIds } = useStableDispatchIds();
-
-  if (!balance || balance.balance <= 0.001) return null;
-
-  const confirm = async () => {
-    const q = Number(qty);
-    if (!Number.isFinite(q) || q <= 0) { setResult({ ok: false, message: 'Enter a valid quantity.' }); return; }
-    if (q > balance.balance + 0.001) { setResult({ ok: false, message: `Only ${qtyFmt(balance.balance)} ${balance.unit} available in leftover.` }); return; }
-    const entries = orders.filter(o => o.targetBranch === branch && row.contributingOrderIds.includes(o.id));
-    if (entries.length === 0) { setResult({ ok: false, message: `${branch} has no order waiting for ${row.itemName}.` }); return; }
-    setBusy(true); setResult(null);
-    // NOTE: the Closing Stock pool debit now happens automatically inside
-    // submitDispatch() itself (every dispatch, from any button, debits the
-    // pool) — this button no longer needs its own separate ledger call, it
-    // just checks the balance up front (above) as a UX guard before dispatching.
-    // Dispatch ids are held stable per contributing order (getId) so a retry
-    // after a failure reuses the same id instead of double-counting.
-    try {
-      const split = autoSplitForItem(entries, row.itemName, q);
-      for (const order of entries) {
-        const item = order.items.find(i => sameItem(i.itemName, row.itemName));
-        const orderQty = split[order.id] ?? 0;
-        if (!item || orderQty <= 0) continue;
-        await onDispatch(order.id, { id: getId(order.id), itemName: item.itemName, quantity: orderQty, unit: item.dispatchUnit || 'kg', branch, dispatchedBy, dispatchedAt: new Date().toISOString() });
-      }
-      setResult({ ok: true, message: `Dispatched ${qtyFmt(q)} ${balance.unit} to ${branch} from leftover.` });
-      setQty(''); setOpen(false);
-      resetDispatchIds();
-      onDone();
-    } catch (err) {
-      setResult({ ok: false, message: (err instanceof Error ? err.message : 'Dispatch logging failed') + ' — leftover was already deducted, check the Dispatch tab before retrying.' });
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="mt-2">
-      {!open ? (
-        <button onClick={() => setOpen(true)} className="inline-flex items-center gap-1.5 rounded-xl border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-[11px] font-black text-amber-800">
-          <PackageCheck className="size-3.5" /> {qtyFmt(balance.balance)} {balance.unit} in leftover — Use it
-        </button>
-      ) : (
-        <div className="rounded-xl border border-amber-300 bg-amber-50 p-2.5">
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="flex gap-1">
-              {BRANCHES.map(b => (
-                <button key={b} onClick={() => setBranch(b)} className={cn('rounded-lg px-2 py-1 text-[11px] font-bold', branch === b ? 'bg-amber-700 text-white' : 'border border-amber-300 bg-white text-amber-800')}>{b}</button>
-              ))}
-            </div>
-            <input type="number" min="0" step="0.001" placeholder={`max ${qtyFmt(balance.balance)}`} value={qty} onChange={e => setQty(e.target.value)} className="w-24 rounded-lg border border-amber-300 bg-white px-2 py-1 text-right text-xs font-bold" />
-            <span className="text-[10px] font-bold text-amber-800">{balance.unit}</span>
-            <button onClick={confirm} disabled={busy} className="inline-flex items-center gap-1 rounded-lg bg-amber-700 px-2.5 py-1.5 text-[11px] font-black text-white disabled:opacity-50">{busy ? <Loader2 className="size-3 animate-spin" /> : <Truck className="size-3" />}Confirm</button>
-            <button onClick={() => { setOpen(false); setResult(null); }} className="rounded-lg bg-white px-2 py-1.5"><X className="size-3" /></button>
-          </div>
-          {result && <p className={cn('mt-1.5 text-[11px] font-bold', result.ok ? 'text-teal-700' : 'text-red-700')}>{result.message}</p>}
-        </div>
-      )}
-    </div>
-  );
-}
-
 // Extracts every Hosur shop-order id tagged onto this row's contributing
 // bakery orders (HOSUR_ORDER_ID / HOSUR_ORDER_IDS in notes — see
 // mergeOrdersForStore's collectHosurIds for how these get written/merged).
@@ -2382,34 +2301,58 @@ function HosurShopBreakdown({ row, orders }: { row: ProductionRow; orders: Baker
   );
 }
 
-// Shop-centric Hosur dispatch view: instead of one card per item with shops
-// nested underneath (HosurShopBreakdown above), this groups the opposite way
-// — one card per shop, with every item that shop ordered listed underneath —
-// per the planner's explicit request ("shop name, then the items they
-// requested under it"). Batches a single query across every row's Hosur
+// True per-order-card check (not the batch-level collectHosurOrderIds
+// above) — used when a dispatch must be attributed to exactly ONE shop's
+// hosur_orders row, not "any shop tagged onto this production batch."
+function bakeryOrderCoversHosurShopOrder(order: BakeryOrder, hosurOrderId: string): boolean {
+  const text = String(order.notes ?? '');
+  const plural = text.match(/HOSUR_ORDER_IDS:([^|]+)/);
+  if (plural?.[1]) return plural[1].split(',').map(s => s.trim()).includes(hosurOrderId);
+  const singular = text.match(/HOSUR_ORDER_ID:([^|]+)/);
+  return singular?.[1]?.trim() === hosurOrderId;
+}
+
+interface HosurShopOrderCard {
+  orderId: string;
+  orderNumber: string;
+  shopName: string;
+  items: { itemName: string; unit: string; requested: number; dispatched: number }[];
+}
+
+// Shop-centric Hosur dispatch view: one card per shop ORDER (not just shop
+// name — a shop can have more than one order in flight), with every item
+// that order contains listed underneath, mirroring the same order-card
+// pattern already used in the Hosur Shops & Billing → Dispatch queue so both
+// screens feel consistent. Batches a single query across every row's Hosur
 // order ids rather than one query per item.
-function useHosurByShopBreakdown(rows: ProductionRow[], orders: BakeryOrder[]) {
+function useHosurShopOrders(rows: ProductionRow[], orders: BakeryOrder[]) {
   const hosurOrderIds = useMemo(() => {
     const ids = new Set<string>();
     for (const row of rows) collectHosurOrderIds(row, orders).forEach(id => ids.add(id));
     return Array.from(ids);
   }, [rows, orders]);
   const idsKey = hosurOrderIds.join(',');
-  const [shopMap, setShopMap] = useState<Map<string, { itemName: string; unit: string; requested: number; dispatched: number }[]> | null>(null);
+  const [shopOrders, setShopOrders] = useState<HosurShopOrderCard[] | null>(null);
+  // BUG FIX (audit): the effect below only re-fires when the SET of Hosur
+  // order ids changes — but sending a shop's order changes those same ids'
+  // dispatched_quantity, not the set itself, so the just-sent card kept
+  // showing pre-dispatch numbers until an unrelated re-render. reloadTick
+  // gives callers (sendCard) an explicit way to force a refetch.
+  const [reloadTick, setReloadTick] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
-    if (hosurOrderIds.length === 0) { setShopMap(new Map()); return; }
+    if (hosurOrderIds.length === 0) { setShopOrders([]); return; }
     (async () => {
       const [{ data: ordersData }, { data: itemsData }] = await Promise.all([
-        supabase.from('hosur_orders').select('id, shop_name').in('id', hosurOrderIds),
+        supabase.from('hosur_orders').select('id, order_number, shop_name').in('id', hosurOrderIds),
         supabase.from('hosur_order_items').select('order_id, item_name, unit, quantity, dispatched_quantity').in('order_id', hosurOrderIds),
       ]);
       if (cancelled) return;
-      const shopNameById = new Map<string, string>(
-        ((ordersData ?? []) as Record<string, unknown>[]).map((o) => [o.id as string, o.shop_name as string]),
+      const metaById = new Map<string, { orderNumber: string; shopName: string }>(
+        ((ordersData ?? []) as Record<string, unknown>[]).map((o) => [o.id as string, { orderNumber: String(o.order_number ?? ''), shopName: String(o.shop_name ?? '') }]),
       );
-      const byShop = new Map<string, Map<string, { unit: string; requested: number; dispatched: number }>>();
+      const byOrder = new Map<string, { itemName: string; unit: string; requested: number; dispatched: number }[]>();
       for (const item of (itemsData ?? []) as Record<string, unknown>[]) {
         const rawName = String(item.item_name ?? '');
         // Only surface items that belong to the currently-visible row set
@@ -2418,74 +2361,189 @@ function useHosurByShopBreakdown(rows: ProductionRow[], orders: BakeryOrder[]) {
         // spelling variants across shops collapse into one line.
         const matchedRow = rows.find(r => sameItem(r.itemName, rawName));
         if (!matchedRow) continue;
-        const shopName: string = shopNameById.get(item.order_id as string) ?? 'Unknown shop';
-        const perShop = byShop.get(shopName) ?? new Map<string, { unit: string; requested: number; dispatched: number }>();
-        const cur = perShop.get(matchedRow.itemName) ?? { unit: String(item.unit ?? matchedRow.unit ?? 'pcs'), requested: 0, dispatched: 0 };
-        cur.requested += Number(item.quantity ?? 0);
-        cur.dispatched += Number(item.dispatched_quantity ?? 0);
-        perShop.set(matchedRow.itemName, cur);
-        byShop.set(shopName, perShop);
+        const orderId = item.order_id as string;
+        const list = byOrder.get(orderId) ?? [];
+        list.push({
+          itemName: matchedRow.itemName,
+          unit: String(item.unit ?? matchedRow.unit ?? 'pcs'),
+          requested: Number(item.quantity ?? 0),
+          dispatched: Number(item.dispatched_quantity ?? 0),
+        });
+        byOrder.set(orderId, list);
       }
-      const result = new Map<string, { itemName: string; unit: string; requested: number; dispatched: number }[]>();
-      for (const [shopName, perShop] of byShop) {
-        result.set(shopName, Array.from(perShop.entries())
-          .map(([itemName, v]) => ({ itemName, ...v }))
-          .sort((a, b) => a.itemName.localeCompare(b.itemName)));
+      const cards: HosurShopOrderCard[] = [];
+      for (const [orderId, items] of byOrder) {
+        const meta = metaById.get(orderId);
+        if (!meta || items.length === 0) continue;
+        cards.push({ orderId, orderNumber: meta.orderNumber, shopName: meta.shopName, items: items.sort((a, b) => a.itemName.localeCompare(b.itemName)) });
       }
-      setShopMap(result);
+      cards.sort((a, b) => a.shopName.localeCompare(b.shopName));
+      setShopOrders(cards);
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the
-    // stable joined id string, not the unstable rows/orders array references.
-  }, [idsKey]);
+    // stable joined id string (plus an explicit manual-refresh counter), not
+    // the unstable rows/orders array references.
+  }, [idsKey, reloadTick]);
 
-  return shopMap;
+  return { shopOrders, reload: () => setReloadTick(t => t + 1) };
 }
 
-function HosurByShopPanel({ rows, orders, onDispatchItem }: {
-  rows: ProductionRow[]; orders: BakeryOrder[]; onDispatchItem: (row: ProductionRow) => void;
+// The real "select a shop, edit its order, remove an item, send the whole
+// shop's order in one go" workflow — replaces the old read-only By-Shop
+// breakdown. Quantities default to what's actually available to send right
+// now (the shared Closing Stock/leftover balance, which already reflects
+// today's production plus any carryover — see the balance/leftover note in
+// DispatchChecklistModal), so leftover no longer needs a separate manual
+// "Use it" step: opening a shop's order already has it applied.
+function HosurShopDispatchPanel({ rows, orders, leftoverBalances, onDispatch, dispatchedBy, onDone }: {
+  rows: ProductionRow[]; orders: BakeryOrder[];
+  leftoverBalances: Map<string, { itemName: string; unit: LeftoverUnit; balance: number }>;
+  onDispatch: ReturnType<typeof useBakeryStore.getState>['submitDispatch']; dispatchedBy: string;
+  onDone: () => void;
 }) {
-  const shopMap = useHosurByShopBreakdown(rows, orders);
+  const { shopOrders, reload } = useHosurShopOrders(rows, orders);
   const rowsByName = useMemo(() => new Map(rows.map(r => [r.itemName, r])), [rows]);
+  const [shopSearch, setShopSearch] = useState('');
+  const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
+  const [qtyDraft, setQtyDraft] = useState<Record<string, string>>({});
+  const [sending, setSending] = useState(false);
+  const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const { getId, reset: resetDispatchIds } = useStableDispatchIds();
 
-  if (shopMap === null) return <p className="text-xs font-bold text-muted-foreground">Loading shop breakdown…</p>;
-  const shopNames = Array.from(shopMap.keys()).sort((a, b) => a.localeCompare(b));
-  if (shopNames.length === 0) return <EmptyState text="No Hosur shop orders here." />;
+  const availableFor = (itemName: string) => Math.max(0, leftoverBalances.get(canonicalItemSlug(itemName))?.balance ?? 0);
+
+  const openCard = (card: HosurShopOrderCard) => {
+    setSelectedOrderId(card.orderId);
+    const draft: Record<string, string> = {};
+    for (const item of card.items) {
+      const remaining = Math.max(0, Math.round((item.requested - item.dispatched) * 100) / 100);
+      const suggested = Math.round(Math.min(remaining, availableFor(item.itemName)) * 100) / 100;
+      draft[item.itemName] = String(suggested);
+    }
+    setQtyDraft(draft);
+    setResult(null);
+  };
+  const cancel = () => { setSelectedOrderId(null); setQtyDraft({}); setResult(null); };
+  const removeItem = (itemName: string) => setQtyDraft(v => ({ ...v, [itemName]: '0' }));
+
+  const sendCard = async (card: HosurShopOrderCard) => {
+    setSending(true);
+    setResult(null);
+    try {
+      let sentAny = false;
+      let skippedNoLink = false;
+      for (const item of card.items) {
+        const qty = Number(qtyDraft[item.itemName] || 0);
+        if (qty <= 0.001) continue;
+        const row = rowsByName.get(item.itemName);
+        if (!row) { skippedNoLink = true; continue; }
+        const targetEntries = orders.filter(o => row.contributingOrderIds.includes(o.id) && bakeryOrderCoversHosurShopOrder(o, card.orderId));
+        // BUG FIX (audit): this used to fall through silently when no
+        // bakery_orders row could be matched back to this shop's tag (e.g.
+        // stale/edited notes) — the planner would just see the generic
+        // "every item is set to 0" message even though they'd entered a
+        // real quantity, which is misleading about what actually went wrong.
+        if (targetEntries.length === 0) { skippedNoLink = true; continue; }
+        const split = autoSplitForItem(targetEntries, row.itemName, qty);
+        for (const order of targetEntries) {
+          const orderItem = order.items.find(i => sameItem(i.itemName, row.itemName));
+          const orderQty = split[order.id] ?? 0;
+          if (!orderItem || orderQty <= 0) continue;
+          await onDispatch(order.id, {
+            id: getId(`${order.id}:${row.itemName}:${card.orderId}`),
+            itemName: orderItem.itemName,
+            quantity: orderQty,
+            unit: orderItem.dispatchUnit || 'kg',
+            branch: 'Hosur',
+            dispatchedBy,
+            dispatchedAt: new Date().toISOString(),
+            targetHosurOrderId: card.orderId,
+          });
+          sentAny = true;
+        }
+      }
+      if (!sentAny) {
+        setResult({
+          ok: false,
+          message: skippedNoLink
+            ? "Couldn't send — one or more items couldn't be linked back to this shop's order. Refresh the page and try again; if it keeps happening, this order's data may need attention."
+            : 'Nothing to send — every item is set to 0.',
+        });
+        return;
+      }
+      setResult({ ok: true, message: `Sent ${card.shopName}'s order to Hosur dispatch.` });
+      resetDispatchIds();
+      setSelectedOrderId(null);
+      setQtyDraft({});
+      reload();
+      onDone();
+    } catch (err) {
+      setResult({ ok: false, message: err instanceof Error ? err.message : "Failed to send this shop's order." });
+    } finally {
+      setSending(false);
+    }
+  };
+
+  if (shopOrders === null) return <p className="text-xs font-bold text-muted-foreground">Loading shop orders…</p>;
+  const filtered = shopSearch.trim()
+    ? shopOrders.filter(c => c.shopName.toLowerCase().includes(shopSearch.trim().toLowerCase()))
+    : shopOrders;
+  if (shopOrders.length === 0) return <EmptyState text="No Hosur shop orders here." />;
 
   return (
     <div className="space-y-2.5">
-      {shopNames.map(shopName => {
-        const items = shopMap.get(shopName) ?? [];
+      <div className="relative max-w-sm">
+        <Search className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+        <input value={shopSearch} onChange={e => setShopSearch(e.target.value)} placeholder="Select / search a shop..." className="w-full rounded-xl border border-border bg-background py-2 pl-8 pr-3 text-xs font-bold" />
+      </div>
+      {filtered.length === 0 && <EmptyState text={`No shop orders match "${shopSearch}".`} />}
+      {filtered.map(card => {
+        const isOpen = selectedOrderId === card.orderId;
+        const doneCount = card.items.filter(i => i.dispatched >= i.requested - 0.01).length;
         return (
-          <div key={shopName} className="rounded-2xl border border-border bg-white p-3 shadow-sm">
-            <p className="mb-2 flex items-center gap-1.5 text-sm font-black text-foreground">
-              <Store className="size-4 text-indigo-600" /> {shopName}
-              <span className="rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-bold text-indigo-700">{items.length} item{items.length === 1 ? '' : 's'}</span>
-            </p>
-            <div className="space-y-1.5">
-              {items.map(item => {
-                const row = rowsByName.get(item.itemName);
-                const done = item.requested > 0 && item.dispatched >= item.requested - 0.01;
-                return (
-                  <div key={item.itemName} className={cn('flex flex-wrap items-center justify-between gap-2 rounded-xl px-2.5 py-2 text-xs font-bold', done ? 'bg-teal-50' : 'bg-muted/40')}>
-                    <span className="flex min-w-0 items-center gap-1.5">
-                      <span className={cn('truncate', done ? 'text-teal-700 line-through opacity-70' : 'text-foreground')}>{item.itemName}</span>
-                      {row && (
-                        <span className={cn('shrink-0 rounded-full px-1.5 py-0.5 text-[9px] font-black', row.itemStatus === 'completed' ? 'bg-teal-100 text-teal-700' : row.itemStatus === 'not_started' ? 'bg-slate-200 text-slate-600' : 'bg-amber-100 text-amber-700')}>
-                          {row.itemStatus === 'completed' ? 'Completed' : row.itemStatus === 'not_started' ? 'Not produced yet' : 'More to come'}
-                        </span>
-                      )}
-                    </span>
-                    <span className="flex shrink-0 items-center gap-2">
-                      <span className="text-muted-foreground">{qtyFmt(item.requested)} {item.unit} requested{item.dispatched > 0 ? ` · ${qtyFmt(item.dispatched)} ${item.unit} sent` : ''}</span>
-                      {row && !done && (
-                        <button onClick={() => onDispatchItem(row)} className="rounded-lg bg-teal-600 px-2 py-1 text-[10px] font-black text-white hover:bg-teal-700">Dispatch</button>
-                      )}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
+          <div key={card.orderId} className="rounded-2xl border border-border bg-white p-3 shadow-sm">
+            <button onClick={() => (isOpen ? cancel() : openCard(card))} className="flex w-full flex-wrap items-center justify-between gap-2 text-left">
+              <span className="flex items-center gap-1.5 text-sm font-black text-foreground">
+                <Store className="size-4 text-indigo-600" /> {card.shopName} <span className="text-xs font-bold text-muted-foreground">#{card.orderNumber}</span>
+                <span className="rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-bold text-indigo-700">{card.items.length} item{card.items.length === 1 ? '' : 's'}</span>
+                {doneCount > 0 && <span className="rounded-full bg-teal-100 px-2 py-0.5 text-[10px] font-bold text-teal-700">{doneCount} sent</span>}
+              </span>
+              <span className="rounded-full bg-muted px-2.5 py-1 text-[11px] font-bold text-muted-foreground">{isOpen ? 'Hide' : 'Open'}</span>
+            </button>
+            {isOpen && (
+              <div className="mt-3 space-y-2">
+                {card.items.map(item => {
+                  const remaining = Math.max(0, Math.round((item.requested - item.dispatched) * 100) / 100);
+                  const available = availableFor(item.itemName);
+                  const val = qtyDraft[item.itemName] ?? '0';
+                  const done = remaining <= 0.01;
+                  return (
+                    <div key={item.itemName} className={cn('rounded-lg px-3 py-1.5', done ? 'bg-teal-50' : 'bg-muted/40')}>
+                      <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-bold">
+                        <span>{item.itemName} <span className="text-muted-foreground">(ordered {qtyFmt(item.requested)} {item.unit} · sent {qtyFmt(item.dispatched)} {item.unit})</span></span>
+                        <div className="flex items-center gap-1.5">
+                          <input
+                            type="number" min={0} value={val}
+                            onChange={e => setQtyDraft(v => ({ ...v, [item.itemName]: e.target.value }))}
+                            className="w-20 rounded-lg border border-border bg-background px-2 py-1 text-right"
+                          />
+                          <button onClick={() => removeItem(item.itemName)} className="rounded-lg border border-border px-2 py-1 text-[10px] font-black text-muted-foreground hover:bg-muted" title="Not sending this item — set to 0">Remove</button>
+                        </div>
+                      </div>
+                      <p className="mt-0.5 text-[10px] font-bold text-muted-foreground">{qtyFmt(available)} {item.unit} available now (produced + leftover){Number(val) > available + 0.01 ? ' — you\'re sending more than what\'s currently available, double-check before sending.' : ''}</p>
+                    </div>
+                  );
+                })}
+                <div className="flex flex-wrap justify-end gap-2 pt-1">
+                  <button onClick={cancel} className="rounded-xl border border-border px-3 py-2 text-xs font-bold text-muted-foreground hover:bg-muted">Cancel</button>
+                  <button onClick={() => sendCard(card)} disabled={sending} className="flex items-center gap-1.5 rounded-xl bg-teal-600 px-3 py-2 text-xs font-bold text-white hover:bg-teal-700 disabled:opacity-50">
+                    {sending ? <Loader2 className="size-3.5 animate-spin" /> : <Truck className="size-3.5" />} Send {card.shopName}'s Order
+                  </button>
+                </div>
+                {result && <p className={cn('text-[11px] font-bold', result.ok ? 'text-teal-700' : 'text-red-700')}>{result.message}</p>}
+              </div>
+            )}
           </div>
         );
       })}
@@ -2703,7 +2761,16 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
       ) : branchFilter === 'Hosur' && hosurView === 'shop' ? (
         <>
           {shown.length === 0 && <EmptyState text={subTab === 'active' ? 'Nothing waiting on dispatch.' : 'Nothing dispatched yet.'} />}
-          {shown.length > 0 && <HosurByShopPanel rows={shown} orders={orders} onDispatchItem={setChecklistItem} />}
+          {shown.length > 0 && (
+            <HosurShopDispatchPanel
+              rows={shown}
+              orders={orders}
+              leftoverBalances={leftoverBalances}
+              onDispatch={submitDispatch}
+              dispatchedBy={currentUser?.displayName || currentUser?.username || 'Planner'}
+              onDone={refreshLeftover}
+            />
+          )}
         </>
       ) : (
       <>
@@ -2730,17 +2797,20 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
                   </button>
                 )}
               </div>
-              {subTab === 'active' && (
-                <LeftoverDispatchButton
-                  row={row}
-                  orders={orders}
-                  onDispatch={submitDispatch}
-                  dispatchedBy={currentUser?.displayName || currentUser?.username || 'Planner'}
-                  defaultBranch={branchFilter}
-                  balance={leftoverBalances.get(canonicalItemSlug(row.itemName))}
-                  onDone={refreshLeftover}
-                />
-              )}
+              {subTab === 'active' && (() => {
+                // Leftover is no longer a separate manual step — the "Dispatch"
+                // button above now auto-fills from this same balance (see
+                // DispatchChecklistModal's leftoverBalance prop). This is just
+                // a visible confirmation of what's already going to be used,
+                // so nothing has to be manually chosen/applied first.
+                const balance = leftoverBalances.get(canonicalItemSlug(row.itemName));
+                if (!balance || balance.balance <= 0.001) return null;
+                return (
+                  <p className="mt-2 inline-flex items-center gap-1.5 rounded-xl border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-[11px] font-black text-amber-800">
+                    <PackageCheck className="size-3.5" /> {qtyFmt(balance.balance)} {balance.unit} available in leftover — used automatically when you dispatch
+                  </p>
+                );
+              })()}
               {/* Every branch that actually ordered this item — only shown if they
                   really requested it — so a combined item shows its full picture. */}
               <div className="mt-2 flex flex-wrap gap-2 text-[11px] font-bold text-muted-foreground">
@@ -2791,6 +2861,7 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
           onClose={() => setChecklistItem(null)}
           onDispatch={submitDispatch}
           dispatchedBy={currentUser?.displayName || 'Planner'}
+          leftoverBalance={leftoverBalances.get(canonicalItemSlug(checklistItem.itemName))?.balance ?? 0}
         />
       )}
 
@@ -2917,12 +2988,20 @@ function BulkDispatchModal({ branch, rows, orders, onClose, onDispatch, dispatch
 
   const [qty, setQty] = useState<Record<string, string>>(() => Object.fromEntries(lines.map(l => [l.row.itemName, String(l.defaultQty)])));
   const [sending, setSending] = useState(false);
+  // BUG FIX (audit): confirmAll had try/finally with no catch — if
+  // onDispatch threw partway through (e.g. a network hiccup on item 2 of
+  // 5), the error became an unhandled rejection with zero feedback in this
+  // modal, and items already dispatched before the failure had no visible
+  // record of what succeeded vs what didn't.
+  const [error, setError] = useState<string | null>(null);
   const { getId, reset: resetDispatchIds } = useStableDispatchIds();
 
   const qtyFor = (itemName: string) => Number(qty[itemName] || 0);
 
   const confirmAll = async () => {
     setSending(true);
+    setError(null);
+    let dispatchedCount = 0;
     try {
       for (const { row } of lines) {
         const q = qtyFor(row.itemName);
@@ -2934,10 +3013,16 @@ function BulkDispatchModal({ branch, rows, orders, onClose, onDispatch, dispatch
           const orderQty = split[order.id] ?? 0;
           if (!item || orderQty <= 0) continue;
           await onDispatch(order.id, { id: getId(`${order.id}:${row.itemName}`), itemName: item.itemName, quantity: orderQty, unit: item.dispatchUnit || 'kg', branch, dispatchedBy, dispatchedAt: new Date().toISOString() });
+          dispatchedCount += 1;
         }
       }
       resetDispatchIds();
       onDone();
+    } catch (err) {
+      setError(
+        (err instanceof Error ? err.message : 'Failed to dispatch.') +
+        (dispatchedCount > 0 ? ` — ${dispatchedCount} item${dispatchedCount === 1 ? '' : 's'} already went through before this failed; check the Dispatch tab before retrying to avoid double-sending.` : ''),
+      );
     } finally {
       setSending(false);
     }
@@ -2966,6 +3051,7 @@ function BulkDispatchModal({ branch, rows, orders, onClose, onDispatch, dispatch
             </div>
           ))}
         </div>
+        {error && <p className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700">{error}</p>}
         <div className="mt-4 flex justify-end gap-2">
           <button onClick={onClose} disabled={sending} className="rounded-xl bg-muted px-4 py-2 text-xs font-bold text-muted-foreground">Cancel</button>
           <button onClick={confirmAll} disabled={sending} className="flex items-center gap-1.5 rounded-xl bg-teal-600 px-4 py-2 text-xs font-bold text-white">
@@ -2977,9 +3063,10 @@ function BulkDispatchModal({ branch, rows, orders, onClose, onDispatch, dispatch
   );
 }
 
-function DispatchChecklistModal({ row, orders, onClose, onDispatch, dispatchedBy }: {
+function DispatchChecklistModal({ row, orders, onClose, onDispatch, dispatchedBy, leftoverBalance }: {
   row: ProductionRow; orders: BakeryOrder[]; onClose: () => void;
   onDispatch: ReturnType<typeof useBakeryStore.getState>['submitDispatch']; dispatchedBy: string;
+  leftoverBalance: number;
 }) {
   const branchOrders = useMemo(() => {
     const map = new Map<string, { order: BakeryOrder; item: BakeryOrderItem }[]>();
@@ -2993,7 +3080,16 @@ function DispatchChecklistModal({ row, orders, onClose, onDispatch, dispatchedBy
     return map;
   }, [row, orders]);
 
-  const autoSplit = useMemo(() => autoSplitForItem(orders, row.itemName, row.preparedTotal), [orders, row]);
+  // Suggested quantity now automatically factors in the shared Closing
+  // Stock/leftover balance — previously this only defaulted from today's
+  // recorded production (row.preparedTotal), so stock already sitting in
+  // leftover needed a separate manual "Use it" button before it actually
+  // got dispatched. The ledger balance already reflects preparedTotal's own
+  // contribution (production-complete credits it, dispatch debits it), so
+  // taking whichever is larger is just a safety margin against a
+  // momentarily stale balance read, not double-counting.
+  const availableToDispatch = Math.max(row.preparedTotal, leftoverBalance);
+  const autoSplit = useMemo(() => autoSplitForItem(orders, row.itemName, availableToDispatch), [orders, row, availableToDispatch]);
   const [qty, setQty] = useState<Record<string, string>>({});
   const [sending, setSending] = useState(false);
   const [done, setDone] = useState(false);
@@ -3076,6 +3172,11 @@ function DispatchChecklistModal({ row, orders, onClose, onDispatch, dispatchedBy
         <p className="text-sm font-black text-foreground">Dispatch Checklist — {row.itemName}</p>
         {!done ? (
           <>
+            {leftoverBalance > row.preparedTotal + 0.01 && (
+              <p className="mt-1.5 flex items-center gap-1.5 rounded-lg border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-[11px] font-black text-amber-800">
+                <PackageCheck className="size-3.5 shrink-0" /> {qtyFmt(leftoverBalance)} {row.unit} available in leftover — already included in the quantities below.
+              </p>
+            )}
             {branchKeys.length > 1 && (
               <div className="mt-2 flex flex-wrap gap-2">
                 <span className="text-[11px] font-black text-muted-foreground">Dispatch for:</span>

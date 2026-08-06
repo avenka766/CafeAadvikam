@@ -630,7 +630,7 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
           </span>
           <div>
             <h3 className="font-display text-xl font-bold text-foreground">Dispatch Queue</h3>
-            <p className="text-xs font-bold text-muted-foreground font-body">Auto-filled from ordered quantity. Dispatching also creates the bill, captures payment, and sends the WhatsApp bill — one click.</p>
+            <p className="text-xs font-bold text-muted-foreground font-body">Auto-filled from what's actually been dispatched from production (not just ordered). Dispatching also creates the bill, captures payment, and sends the WhatsApp bill — one click.</p>
           </div>
         </div>
         <button

@@ -706,10 +706,79 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     const hosurOrderIds = hosurIdsMatch?.[1]
       ? hosurIdsMatch[1].split(',').map(s => s.trim()).filter(Boolean)
       : [];
-    if (entry.branch === 'Hosur' && hosurOrderIds.length > 0) {
+    // BUG FIX (audit): the entire Hosur-sync block below used to run on
+    // every call, including a retried duplicate of an already-succeeded
+    // dispatch. The proportional-split branch happens to recompute an
+    // absolute value from updatedLog so a retry was a harmless no-op there,
+    // but the shop-targeted branch INCREMENTS dispatched_quantity off a
+    // fresh DB read — a retry of the same dispatch would add entry.quantity
+    // a second time, corrupting the shop's dispatched total. Gate the whole
+    // block on isDuplicateDispatch, matching the Closing Stock debit above.
+    if (entry.branch === 'Hosur' && hosurOrderIds.length > 0 && !isDuplicateDispatch) {
+      if (entry.targetHosurOrderId && hosurOrderIds.includes(entry.targetHosurOrderId)) {
+        // SHOP-TARGETED PATH: the planner explicitly chose to send THIS
+        // shop's whole order from the By-Shop dispatch view. Attribute the
+        // dispatched quantity only to that shop's line item — every other
+        // shop sharing this production batch is left untouched. This must
+        // stay a completely separate path from the proportional-split logic
+        // below: re-running that fairness formula after a targeted send
+        // would immediately overwrite this shop's explicit allocation
+        // (and everyone else's) based on cumulative totals, silently
+        // clawing back exactly what was just promised to this shop.
+        const { data: existingRow, error: existingErr } = await supabase
+          .from('hosur_order_items')
+          .select('quantity, dispatched_quantity')
+          .eq('order_id', entry.targetHosurOrderId)
+          .eq('item_name', entry.itemName)
+          .maybeSingle();
+        if (existingErr) throw new Error(`Hosur dispatch sync failed: ${existingErr.message}`);
+        const already = Number(existingRow?.dispatched_quantity ?? 0);
+        const newDispatched = Math.round((already + entry.quantity) * 100) / 100;
+        const { error: hosurItemError } = await supabase
+          .from('hosur_order_items')
+          .update({ dispatched_quantity: newDispatched })
+          .eq('order_id', entry.targetHosurOrderId)
+          .eq('item_name', entry.itemName);
+        if (hosurItemError) throw new Error(`Hosur dispatch sync failed: ${hosurItemError.message}`);
+
+        const { data: allItems, error: allItemsError } = await supabase
+          .from('hosur_order_items')
+          .select('quantity, dispatched_quantity')
+          .eq('order_id', entry.targetHosurOrderId);
+        if (allItemsError) throw new Error(`Hosur order status sync failed: ${allItemsError.message}`);
+        const fullyDone = (allItems ?? []).length > 0 &&
+          (allItems ?? []).every(r => Number(r.dispatched_quantity || 0) >= Number(r.quantity || 0) - 0.01);
+        const { error: hosurOrderError } = await supabase
+          .from('hosur_orders')
+          .update({ status: fullyDone ? 'dispatched' : 'pending_packing' })
+          .eq('id', entry.targetHosurOrderId);
+        if (hosurOrderError) throw new Error(`Hosur order status sync failed: ${hosurOrderError.message}`);
+      } else {
       const itemDispatchTotal = updatedLog
         .filter(d => d.branch === 'Hosur' && d.itemName === entry.itemName)
         .reduce((sum, d) => sum + Number(d.quantity || 0), 0);
+
+      // BUG FIX (audit): this proportional recompute used to redistribute
+      // itemDispatchTotal across EVERY shop tagged on the batch, including
+      // shops that already have an explicit targeted allocation from the
+      // By-Shop dispatch panel — silently overwriting (usually shrinking)
+      // that shop's dispatched_quantity the next time anyone dispatched
+      // this same item untargeted (e.g. from the older By-Item flow).
+      // Exclude targeted shops' log entries from the pool being
+      // redistributed, and exclude those shops themselves from the
+      // proportional-share write below, so an explicit per-shop allocation
+      // is never clawed back by a later untargeted dispatch.
+      const targetedTotalsByShop = new Map<string, number>();
+      for (const d of updatedLog) {
+        if (d.branch === 'Hosur' && d.itemName === entry.itemName && d.targetHosurOrderId) {
+          targetedTotalsByShop.set(
+            d.targetHosurOrderId,
+            (targetedTotalsByShop.get(d.targetHosurOrderId) ?? 0) + Number(d.quantity || 0),
+          );
+        }
+      }
+      const targetedTotal = Array.from(targetedTotalsByShop.values()).reduce((s, v) => s + v, 0);
+      const untargetedTotal = Math.max(0, Math.round((itemDispatchTotal - targetedTotal) * 100) / 100);
 
       // Split this item's total dispatched quantity across every
       // contributing shop, weighted by that shop's own originally-ordered
@@ -723,14 +792,17 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
         .eq('item_name', entry.itemName);
       if (itemRowsError) throw new Error(`Hosur dispatch sync failed: ${itemRowsError.message}`);
       const rows = itemRows ?? [];
-      const totalRequested = rows.reduce((s, r) => s + Number(r.quantity || 0), 0) || 1;
+      const untargetedRows = rows.filter(r => !targetedTotalsByShop.has(r.order_id as string));
+      const totalRequested = untargetedRows.reduce((s, r) => s + Number(r.quantity || 0), 0) || 1;
 
       for (const row of rows) {
-        const share = Math.round(itemDispatchTotal * (Number(row.quantity || 0) / totalRequested) * 100) / 100;
+        const orderId = row.order_id as string;
+        if (targetedTotalsByShop.has(orderId)) continue; // leave this shop's explicit allocation alone
+        const share = Math.round(untargetedTotal * (Number(row.quantity || 0) / totalRequested) * 100) / 100;
         const { error: hosurItemError } = await supabase
           .from('hosur_order_items')
           .update({ dispatched_quantity: share })
-          .eq('order_id', row.order_id as string)
+          .eq('order_id', orderId)
           .eq('item_name', entry.itemName);
         if (hosurItemError) throw new Error(`Hosur dispatch sync failed: ${hosurItemError.message}`);
       }
@@ -751,6 +823,7 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
           .update({ status: fullyDone ? 'dispatched' : 'pending_packing' })
           .eq('id', hosurOrderId);
         if (hosurOrderError) throw new Error(`Hosur order status sync failed: ${hosurOrderError.message}`);
+      }
       }
     }
 

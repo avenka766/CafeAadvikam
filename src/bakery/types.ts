@@ -86,6 +86,14 @@ export interface DispatchEntry {
   branch: Branch;
   dispatchedAt: string;
   dispatchedBy: string;
+  /**
+   * Hosur-only: when set, this dispatch is explicitly earmarked for ONE
+   * shop's order (hosur_orders.id) rather than the whole Hosur branch pool.
+   * Lets the planner send "this shop's whole order" without it being
+   * silently re-spread across every other shop sharing the same production
+   * batch on the next proportional-split recompute.
+   */
+  targetHosurOrderId?: string;
 }
 
 export type Branch = 'VRSNB' | 'SNB' | 'Hosur';
