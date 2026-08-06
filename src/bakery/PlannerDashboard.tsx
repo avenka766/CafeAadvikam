@@ -2374,6 +2374,117 @@ function HosurShopBreakdown({ row, orders }: { row: ProductionRow; orders: Baker
   );
 }
 
+// Shop-centric Hosur dispatch view: instead of one card per item with shops
+// nested underneath (HosurShopBreakdown above), this groups the opposite way
+// — one card per shop, with every item that shop ordered listed underneath —
+// per the planner's explicit request ("shop name, then the items they
+// requested under it"). Batches a single query across every row's Hosur
+// order ids rather than one query per item.
+function useHosurByShopBreakdown(rows: ProductionRow[], orders: BakeryOrder[]) {
+  const hosurOrderIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const row of rows) collectHosurOrderIds(row, orders).forEach(id => ids.add(id));
+    return Array.from(ids);
+  }, [rows, orders]);
+  const idsKey = hosurOrderIds.join(',');
+  const [shopMap, setShopMap] = useState<Map<string, { itemName: string; unit: string; requested: number; dispatched: number }[]> | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (hosurOrderIds.length === 0) { setShopMap(new Map()); return; }
+    (async () => {
+      const [{ data: ordersData }, { data: itemsData }] = await Promise.all([
+        supabase.from('hosur_orders').select('id, shop_name').in('id', hosurOrderIds),
+        supabase.from('hosur_order_items').select('order_id, item_name, unit, quantity, dispatched_quantity').in('order_id', hosurOrderIds),
+      ]);
+      if (cancelled) return;
+      const shopNameById = new Map<string, string>(
+        ((ordersData ?? []) as Record<string, unknown>[]).map((o) => [o.id as string, o.shop_name as string]),
+      );
+      const byShop = new Map<string, Map<string, { unit: string; requested: number; dispatched: number }>>();
+      for (const item of (itemsData ?? []) as Record<string, unknown>[]) {
+        const rawName = String(item.item_name ?? '');
+        // Only surface items that belong to the currently-visible row set
+        // (e.g. only "active" or only "dispatched" items, matching whichever
+        // sub-tab is open) — and display using the row's canonical name so
+        // spelling variants across shops collapse into one line.
+        const matchedRow = rows.find(r => sameItem(r.itemName, rawName));
+        if (!matchedRow) continue;
+        const shopName: string = shopNameById.get(item.order_id as string) ?? 'Unknown shop';
+        const perShop = byShop.get(shopName) ?? new Map<string, { unit: string; requested: number; dispatched: number }>();
+        const cur = perShop.get(matchedRow.itemName) ?? { unit: String(item.unit ?? matchedRow.unit ?? 'pcs'), requested: 0, dispatched: 0 };
+        cur.requested += Number(item.quantity ?? 0);
+        cur.dispatched += Number(item.dispatched_quantity ?? 0);
+        perShop.set(matchedRow.itemName, cur);
+        byShop.set(shopName, perShop);
+      }
+      const result = new Map<string, { itemName: string; unit: string; requested: number; dispatched: number }[]>();
+      for (const [shopName, perShop] of byShop) {
+        result.set(shopName, Array.from(perShop.entries())
+          .map(([itemName, v]) => ({ itemName, ...v }))
+          .sort((a, b) => a.itemName.localeCompare(b.itemName)));
+      }
+      setShopMap(result);
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the
+    // stable joined id string, not the unstable rows/orders array references.
+  }, [idsKey]);
+
+  return shopMap;
+}
+
+function HosurByShopPanel({ rows, orders, onDispatchItem }: {
+  rows: ProductionRow[]; orders: BakeryOrder[]; onDispatchItem: (row: ProductionRow) => void;
+}) {
+  const shopMap = useHosurByShopBreakdown(rows, orders);
+  const rowsByName = useMemo(() => new Map(rows.map(r => [r.itemName, r])), [rows]);
+
+  if (shopMap === null) return <p className="text-xs font-bold text-muted-foreground">Loading shop breakdown…</p>;
+  const shopNames = Array.from(shopMap.keys()).sort((a, b) => a.localeCompare(b));
+  if (shopNames.length === 0) return <EmptyState text="No Hosur shop orders here." />;
+
+  return (
+    <div className="space-y-2.5">
+      {shopNames.map(shopName => {
+        const items = shopMap.get(shopName) ?? [];
+        return (
+          <div key={shopName} className="rounded-2xl border border-border bg-white p-3 shadow-sm">
+            <p className="mb-2 flex items-center gap-1.5 text-sm font-black text-foreground">
+              <Store className="size-4 text-indigo-600" /> {shopName}
+              <span className="rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-bold text-indigo-700">{items.length} item{items.length === 1 ? '' : 's'}</span>
+            </p>
+            <div className="space-y-1.5">
+              {items.map(item => {
+                const row = rowsByName.get(item.itemName);
+                const done = item.requested > 0 && item.dispatched >= item.requested - 0.01;
+                return (
+                  <div key={item.itemName} className={cn('flex flex-wrap items-center justify-between gap-2 rounded-xl px-2.5 py-2 text-xs font-bold', done ? 'bg-teal-50' : 'bg-muted/40')}>
+                    <span className="flex min-w-0 items-center gap-1.5">
+                      <span className={cn('truncate', done ? 'text-teal-700 line-through opacity-70' : 'text-foreground')}>{item.itemName}</span>
+                      {row && (
+                        <span className={cn('shrink-0 rounded-full px-1.5 py-0.5 text-[9px] font-black', row.itemStatus === 'completed' ? 'bg-teal-100 text-teal-700' : row.itemStatus === 'not_started' ? 'bg-slate-200 text-slate-600' : 'bg-amber-100 text-amber-700')}>
+                          {row.itemStatus === 'completed' ? 'Completed' : row.itemStatus === 'not_started' ? 'Not produced yet' : 'More to come'}
+                        </span>
+                      )}
+                    </span>
+                    <span className="flex shrink-0 items-center gap-2">
+                      <span className="text-muted-foreground">{qtyFmt(item.requested)} {item.unit} requested{item.dispatched > 0 ? ` · ${qtyFmt(item.dispatched)} ${item.unit} sent` : ''}</span>
+                      {row && !done && (
+                        <button onClick={() => onDispatchItem(row)} className="rounded-lg bg-teal-600 px-2 py-1 text-[10px] font-black text-white hover:bg-teal-700">Dispatch</button>
+                      )}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function plannedContributingOrders(row: ProductionRow, orders: BakeryOrder[]): BakeryOrder[] {
   return orders.filter(o => bucketFor(o) === 'Planned' && row.contributingOrderIds.includes(o.id));
 }
@@ -2455,6 +2566,11 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
   const [branchFilter, setBranchFilter] = useState<'All' | Branch>('All');
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkOpen, setBulkOpen] = useState(false);
+  // Hosur dispatch can be viewed item-first (original) or shop-first (shop
+  // name, then the items that shop ordered underneath it) — defaults to
+  // shop-first per the planner's request, since that's how shop orders are
+  // actually organized in their head.
+  const [hosurView, setHosurView] = useState<'shop' | 'item'>('shop');
 
   useEffect(() => { setSelected(new Set()); }, [branchFilter]);
 
@@ -2517,16 +2633,26 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
       <div className="space-y-3 border-t border-border p-3">
       {/* Branch view — click a branch to see only what that branch ordered,
           with a checkbox on each card to bulk-dispatch several items at once. */}
-      <div className="flex flex-wrap gap-2">
-        {(['All', ...BRANCHES] as const).map(b => (
-          <button
-            key={b}
-            onClick={() => setBranchFilter(b)}
-            className={cn('rounded-xl px-3 py-1.5 text-xs font-black', branchFilter === b ? 'bg-teal-600 text-white' : 'bg-muted text-muted-foreground')}
-          >
-            {b}
-          </button>
-        ))}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap gap-2">
+          {(['All', ...BRANCHES] as const).map(b => (
+            <button
+              key={b}
+              onClick={() => setBranchFilter(b)}
+              className={cn('rounded-xl px-3 py-1.5 text-xs font-black', branchFilter === b ? 'bg-teal-600 text-white' : 'bg-muted text-muted-foreground')}
+            >
+              {b}
+            </button>
+          ))}
+        </div>
+        {/* Hosur-only: switch between item-first (original) and shop-first
+            (shop name, items requested underneath) grouping. */}
+        {branchFilter === 'Hosur' && (
+          <div className="flex gap-1 rounded-xl bg-indigo-50 p-1">
+            <button onClick={() => setHosurView('shop')} className={cn('rounded-lg px-2.5 py-1 text-[11px] font-black', hosurView === 'shop' ? 'bg-indigo-600 text-white' : 'text-indigo-700')}>By Shop</button>
+            <button onClick={() => setHosurView('item')} className={cn('rounded-lg px-2.5 py-1 text-[11px] font-black', hosurView === 'item' ? 'bg-indigo-600 text-white' : 'text-indigo-700')}>By Item</button>
+          </div>
+        )}
       </div>
 
       {/* Pinned summary — partially dispatched items with more still coming from the baker,
@@ -2558,6 +2684,11 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
 
       {subTab === 'planned' ? (
         <PlannedDispatchPanel rows={plannedRows} orders={orders} onDispatch={submitDispatch} dispatchedBy={currentUser?.displayName || 'Planner'} />
+      ) : branchFilter === 'Hosur' && hosurView === 'shop' ? (
+        <>
+          {shown.length === 0 && <EmptyState text={subTab === 'active' ? 'Nothing waiting on dispatch.' : 'Nothing dispatched yet.'} />}
+          {shown.length > 0 && <HosurByShopPanel rows={shown} orders={orders} onDispatchItem={setChecklistItem} />}
+        </>
       ) : (
       <>
       {shown.length === 0 && <EmptyState text={subTab === 'active' ? 'Nothing waiting on dispatch.' : 'Nothing dispatched yet.'} />}

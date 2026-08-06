@@ -14,13 +14,23 @@ export default function RecipeSpellingHint({
   onApply?: (name: string) => void;
 }) {
   const result = closestRecipeMatch(itemName, recipeItemNames);
-  if (!result || result.exact) return null;
+  if (!result || result.status === 'exact') return null;
+
+  if (result.status === 'missing') {
+    return (
+      <p className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] font-semibold text-amber-700">
+        <AlertTriangle className="size-3 shrink-0" />
+        This item isn't in Recipe Management yet — add it there so stock deducts correctly.
+      </p>
+    );
+  }
+
   return (
     <p className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] font-semibold text-amber-700">
       <AlertTriangle className="size-3 shrink-0" />
       Spelling doesn't match Recipe Management — did you mean{' '}
       {onApply ? (
-        <button type="button" onClick={() => onApply(result.match)} className="underline decoration-dotted underline-offset-2 hover:text-amber-900">
+        <button type="button" onClick={() => onApply(result.match as string)} className="underline decoration-dotted underline-offset-2 hover:text-amber-900">
           "{result.match}"
         </button>
       ) : (

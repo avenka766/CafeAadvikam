@@ -140,6 +140,29 @@ function RecipeEditor({
   );
   const [error, setError] = useState('');
 
+  // Inline item-name rename — this is Recipe Management's own item name, the
+  // source of truth every SNB/VRSNB/Hosur spelling check compares against, so
+  // fixing a typo here (rather than only in Admin > Items) is what actually
+  // resolves the mismatch warnings shown elsewhere.
+  const { updateItem: renameBakeryItem } = useBakeryItemsStore();
+  const [renaming, setRenaming] = useState(false);
+  const [nameDraft, setNameDraft] = useState(itemName);
+  const [nameSaving, setNameSaving] = useState(false);
+  const [nameError, setNameError] = useState('');
+  useEffect(() => { setNameDraft(itemName); }, [itemName]);
+
+  const saveRename = async () => {
+    const clean = nameDraft.trim();
+    if (!clean) { setNameError('Name is required'); return; }
+    if (clean === itemName) { setRenaming(false); return; }
+    setNameSaving(true);
+    setNameError('');
+    const err = await renameBakeryItem(itemId, { name: clean });
+    setNameSaving(false);
+    if (err) { setNameError(err); return; }
+    setRenaming(false);
+  };
+
   const changeMat = (idx: number, field: keyof Material, val: string | number) => {
     setMaterials(prev => prev.map((m, i) => i === idx ? { ...m, [field]: val } : m));
   };
@@ -164,10 +187,32 @@ function RecipeEditor({
 
   return (
     <div className="space-y-4 pt-2">
-      <div className="flex items-center gap-2 pb-2 border-b border-border">
+      <div className="flex items-start gap-2 pb-2 border-b border-border">
         <span className="text-lg">{itemIcon}</span>
-        <div>
-          <p className="text-sm font-body font-bold text-foreground">{itemName}</p>
+        <div className="min-w-0 flex-1">
+          {renaming ? (
+            <div className="space-y-1.5">
+              <div className="flex items-center gap-1.5">
+                <input
+                  autoFocus
+                  value={nameDraft}
+                  onChange={e => setNameDraft(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') void saveRename(); if (e.key === 'Escape') { setRenaming(false); setNameDraft(itemName); setNameError(''); } }}
+                  className="h-8 flex-1 min-w-0 rounded-lg border border-primary/40 bg-background px-2 text-sm font-body font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-primary/30"
+                />
+                <button onClick={saveRename} disabled={nameSaving} className="h-8 shrink-0 rounded-lg bg-primary px-2.5 text-xs font-body font-bold text-primary-foreground disabled:opacity-50">{nameSaving ? '…' : 'Save'}</button>
+                <button onClick={() => { setRenaming(false); setNameDraft(itemName); setNameError(''); }} className="h-8 shrink-0 rounded-lg border border-border px-2.5 text-xs font-body font-bold text-muted-foreground">Cancel</button>
+              </div>
+              {nameError && <p className="text-[10px] font-body font-semibold text-destructive">{nameError}</p>}
+            </div>
+          ) : (
+            <div className="flex items-center gap-1.5">
+              <p className="truncate text-sm font-body font-bold text-foreground">{itemName}</p>
+              <button onClick={() => setRenaming(true)} title="Edit item name" className="shrink-0 rounded-lg p-1 text-muted-foreground hover:bg-muted hover:text-foreground">
+                <Pencil className="size-3" />
+              </button>
+            </div>
+          )}
           <p className="text-[10px] font-body text-muted-foreground">{itemId}</p>
         </div>
       </div>
@@ -476,7 +521,7 @@ function StoreItemsPanel({ onOpenRecipes }: { onOpenRecipes: () => void }) {
 // difference — those already resolve fine at runtime) silently breaks
 // recipe-based stock deduction for that item, so it's surfaced here with the
 // closest Recipe Management spelling to fix it to.
-interface MismatchRow { source: 'SNB' | 'VRSNB' | 'Hosur'; itemName: string; suggestion: string }
+interface MismatchRow { source: 'SNB' | 'VRSNB' | 'Hosur'; itemName: string; suggestion: string | null; status: 'mismatch' | 'missing' }
 
 function SpellingMismatchPanel({ recipeItemNames }: { recipeItemNames: string[] }) {
   const { items: catalogItems, loadCatalog } = useBranchCatalogStore();
@@ -508,7 +553,7 @@ function SpellingMismatchPanel({ recipeItemNames }: { recipeItemNames: string[] 
         if (seen.has(key)) continue;
         seen.add(key);
         const result = closestRecipeMatch(name, recipeItemNames);
-        if (result && !result.exact) rows.push({ source, itemName: name, suggestion: result.match });
+        if (result && result.status !== 'exact') rows.push({ source, itemName: name, suggestion: result.match, status: result.status });
       }
     };
     check('SNB', (catalogItems.SNB ?? []).filter(i => i.active).map(i => i.name));
@@ -518,12 +563,17 @@ function SpellingMismatchPanel({ recipeItemNames }: { recipeItemNames: string[] 
   }, [catalogItems, hosurNames, recipeItemNames]);
 
   if (mismatches.length === 0) return null;
+  const missingCount = mismatches.filter(m => m.status === 'missing').length;
+  const mismatchCount = mismatches.length - missingCount;
 
   return (
     <div className="mb-3 rounded-xl border border-amber-300 bg-amber-50 overflow-hidden">
       <button onClick={() => setExpanded(v => !v)} className="w-full flex items-center justify-between px-3 py-2.5 text-left">
         <span className="flex items-center gap-2 text-xs font-body font-bold text-amber-800">
-          <AlertTriangle className="size-3.5" /> {mismatches.length} item name{mismatches.length === 1 ? '' : 's'} don't match Recipe Management spelling
+          <AlertTriangle className="size-3.5" />
+          {mismatchCount > 0 && `${mismatchCount} spelling mismatch${mismatchCount === 1 ? '' : 'es'}`}
+          {mismatchCount > 0 && missingCount > 0 && ' · '}
+          {missingCount > 0 && `${missingCount} item${missingCount === 1 ? '' : 's'} missing from Recipe Management`}
         </span>
         {expanded ? <ChevronUp className="size-3.5 text-amber-700" /> : <ChevronDown className="size-3.5 text-amber-700" />}
       </button>
@@ -535,7 +585,11 @@ function SpellingMismatchPanel({ recipeItemNames }: { recipeItemNames: string[] 
                 <span className="mr-1.5 rounded-full bg-amber-200 px-1.5 py-0.5 text-[10px] font-black text-amber-800">{m.source}</span>
                 {m.itemName}
               </span>
-              <span className="text-amber-700">should match Recipe Management: <span className="font-bold">"{m.suggestion}"</span></span>
+              {m.status === 'missing' ? (
+                <span className="font-bold text-red-700">not in Recipe Management</span>
+              ) : (
+                <span className="text-amber-700">should match Recipe Management: <span className="font-bold">"{m.suggestion}"</span></span>
+              )}
             </div>
           ))}
         </div>
