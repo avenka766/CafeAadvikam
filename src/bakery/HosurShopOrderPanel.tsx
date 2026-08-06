@@ -142,6 +142,24 @@ function PlaceOrderSection({ shops, prices, userName, onSaved }: { shops: HosurS
   const [customUnit, setCustomUnit] = useState<'pcs' | 'kg'>('kg');
   const [customPrice, setCustomPrice] = useState('');
   const [customQty, setCustomQty] = useState('');
+  const [showCustomSuggestions, setShowCustomSuggestions] = useState(false);
+
+  // Every item name already priced for ANY shop, so a custom item typed here
+  // suggests the existing spelling instead of silently creating a near-duplicate
+  // (e.g. "Bun" vs "Buns") in hosur_shop_price_lists.
+  const allHosurItemNames = useMemo(() => {
+    const seen = new Map<string, string>();
+    for (const p of prices) {
+      const key = normalize(p.itemName);
+      if (key && !seen.has(key)) seen.set(key, p.itemName);
+    }
+    return Array.from(seen.values()).sort((a, b) => a.localeCompare(b));
+  }, [prices]);
+  const customNameSuggestions = useMemo(() => {
+    const q = normalize(customName);
+    if (!q) return [];
+    return allHosurItemNames.filter(n => normalize(n).includes(q) && normalize(n) !== q).slice(0, 8);
+  }, [customName, allHosurItemNames]);
   const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -342,7 +360,30 @@ function PlaceOrderSection({ shops, prices, userName, onSaved }: { shops: HosurS
         </button>
         {showCustom && (
           <div className="grid gap-2 rounded-xl border border-gold bg-accent/10 p-3 sm:grid-cols-5">
-            <input value={customName} onChange={e => setCustomName(e.target.value)} placeholder="Item name" className="rounded-lg border border-border bg-background px-2 py-1.5 text-xs font-bold sm:col-span-2" />
+            <div className="relative sm:col-span-2">
+              <input
+                value={customName}
+                onChange={e => { setCustomName(e.target.value); setShowCustomSuggestions(true); }}
+                onFocus={() => setShowCustomSuggestions(true)}
+                onBlur={() => setTimeout(() => setShowCustomSuggestions(false), 150)}
+                placeholder="Item name"
+                className="w-full rounded-lg border border-border bg-background px-2 py-1.5 text-xs font-bold"
+              />
+              {showCustomSuggestions && customNameSuggestions.length > 0 && (
+                <div className="absolute top-full left-0 right-0 z-30 mt-1 max-h-40 overflow-y-auto rounded-lg border border-border bg-card shadow-lg">
+                  {customNameSuggestions.map(name => (
+                    <button
+                      key={name}
+                      type="button"
+                      onMouseDown={e => { e.preventDefault(); setCustomName(name); setShowCustomSuggestions(false); }}
+                      className="block w-full truncate px-2.5 py-1.5 text-left text-xs font-bold text-foreground hover:bg-muted"
+                    >
+                      {name}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
             <input value={customQty} onChange={e => setCustomQty(e.target.value)} type="number" placeholder="Qty" className="rounded-lg border border-border bg-background px-2 py-1.5 text-xs font-bold" />
             <select value={customUnit} onChange={e => setCustomUnit(e.target.value as 'pcs' | 'kg')} className="rounded-lg border border-border bg-background px-2 py-1.5 text-xs font-bold">
               <option value="kg">kg</option><option value="pcs">pcs</option>

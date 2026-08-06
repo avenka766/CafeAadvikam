@@ -4,7 +4,7 @@
 import { useState, useEffect, useMemo, type ReactNode } from 'react';
 import {
   ChefHat, Plus, Trash2, Pencil, Check, X, Loader2,
-  Search, ChevronDown, ChevronUp, Scale, Hash, Package, Info, BookOpen,
+  Search, ChevronDown, ChevronUp, Scale, Hash, Package, Info, BookOpen, AlertTriangle,
 } from 'lucide-react';
 import { useBakeryItemsStore } from './bakeryItemsStore';
 import { useRecipeStore } from './recipeStore';
@@ -13,6 +13,9 @@ import { cn } from '@/lib/utils';
 import EmptyState from '@/components/ui/EmptyState';
 import { useNotificationStore } from './notificationStore';
 import { useAuthStore } from '@/stores/authStore';
+import { useBranchCatalogStore } from '@/stores/branchCatalogStore';
+import { supabase } from '@/lib/supabase';
+import { closestRecipeMatch } from './recipeNameMatch';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface Material { material: string; qty: number; unit: string }
@@ -467,6 +470,80 @@ function StoreItemsPanel({ onOpenRecipes }: { onOpenRecipes: () => void }) {
   );
 }
 
+// ── Spelling mismatch audit ──────────────────────────────────────────────────
+// Cross-checks every SNB / VRSNB / Hosur item name against Recipe
+// Management's own item names. A near-miss (typo, not just a plural/spacing
+// difference — those already resolve fine at runtime) silently breaks
+// recipe-based stock deduction for that item, so it's surfaced here with the
+// closest Recipe Management spelling to fix it to.
+interface MismatchRow { source: 'SNB' | 'VRSNB' | 'Hosur'; itemName: string; suggestion: string }
+
+function SpellingMismatchPanel({ recipeItemNames }: { recipeItemNames: string[] }) {
+  const { items: catalogItems, loadCatalog } = useBranchCatalogStore();
+  const [hosurNames, setHosurNames] = useState<string[]>([]);
+  const [expanded, setExpanded] = useState(false);
+
+  useEffect(() => { loadCatalog('SNB').catch(() => {}); loadCatalog('VRSNB').catch(() => {}); }, [loadCatalog]);
+  useEffect(() => {
+    let cancelled = false;
+    supabase.from('hosur_shop_price_lists').select('item_name').eq('is_active', true).then(({ data }) => {
+      if (cancelled) return;
+      const seen = new Map<string, string>();
+      for (const row of data ?? []) {
+        const name = String((row as { item_name?: string }).item_name ?? '').trim();
+        if (name && !seen.has(name.toLowerCase())) seen.set(name.toLowerCase(), name);
+      }
+      setHosurNames(Array.from(seen.values()));
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  const mismatches = useMemo(() => {
+    if (recipeItemNames.length === 0) return [];
+    const rows: MismatchRow[] = [];
+    const seen = new Set<string>();
+    const check = (source: MismatchRow['source'], names: string[]) => {
+      for (const name of names) {
+        const key = `${source}__${name.toLowerCase()}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const result = closestRecipeMatch(name, recipeItemNames);
+        if (result && !result.exact) rows.push({ source, itemName: name, suggestion: result.match });
+      }
+    };
+    check('SNB', (catalogItems.SNB ?? []).filter(i => i.active).map(i => i.name));
+    check('VRSNB', (catalogItems.VRSNB ?? []).filter(i => i.active).map(i => i.name));
+    check('Hosur', hosurNames);
+    return rows;
+  }, [catalogItems, hosurNames, recipeItemNames]);
+
+  if (mismatches.length === 0) return null;
+
+  return (
+    <div className="mb-3 rounded-xl border border-amber-300 bg-amber-50 overflow-hidden">
+      <button onClick={() => setExpanded(v => !v)} className="w-full flex items-center justify-between px-3 py-2.5 text-left">
+        <span className="flex items-center gap-2 text-xs font-body font-bold text-amber-800">
+          <AlertTriangle className="size-3.5" /> {mismatches.length} item name{mismatches.length === 1 ? '' : 's'} don't match Recipe Management spelling
+        </span>
+        {expanded ? <ChevronUp className="size-3.5 text-amber-700" /> : <ChevronDown className="size-3.5 text-amber-700" />}
+      </button>
+      {expanded && (
+        <div className="divide-y divide-amber-200 border-t border-amber-200">
+          {mismatches.map(m => (
+            <div key={`${m.source}-${m.itemName}`} className="flex items-center justify-between gap-2 px-3 py-2 text-xs font-body">
+              <span className="font-semibold text-amber-900">
+                <span className="mr-1.5 rounded-full bg-amber-200 px-1.5 py-0.5 text-[10px] font-black text-amber-800">{m.source}</span>
+                {m.itemName}
+              </span>
+              <span className="text-amber-700">should match Recipe Management: <span className="font-bold">"{m.suggestion}"</span></span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main component ─────────────────────────────────────────────────────────────
 export default function RecipeManagement({ embedded = false, storeMode = false }: { embedded?: boolean; storeMode?: boolean } = {}) {
   const [search, setSearch]   = useState('');
@@ -652,6 +729,7 @@ export default function RecipeManagement({ embedded = false, storeMode = false }
         <StoreItemsPanel onOpenRecipes={() => setStoreSection('recipes')} />
       ) : (
         <>
+      <SpellingMismatchPanel recipeItemNames={bakeryItems.filter(i => i.enabled).map(i => i.name)} />
       {/* Info banner */}
       <div className="flex items-start gap-2 px-3 py-2 mb-3 bg-blue-50 border border-blue-200 rounded-xl">
         <Info className="size-4 text-blue-500 shrink-0 mt-0.5" />
