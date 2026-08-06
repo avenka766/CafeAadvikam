@@ -1589,7 +1589,7 @@ function NewBillPanel() {
   // them actually ran.
   const { currentUser } = useAuthStore();
   const { items, loadMenu } = useMenuStore();
-  const { orders, cart, addToCart, updateCartQuantity, clearCart, setCart, getCartTotal, getCartCount, submitOrder, loadOrders, setPaymentType } = useOrderStore(
+  const { orders, cart, addToCart, updateCartQuantity, clearCart, setCart, getCartTotal, getCartCount, submitOrder, loadOrders, setPaymentType, updateOrderStatus } = useOrderStore(
     useShallow(s => ({
       orders: s.orders,
       cart: s.cart,
@@ -1602,6 +1602,7 @@ function NewBillPanel() {
       submitOrder: s.submitOrder,
       loadOrders: s.loadOrders,
       setPaymentType: s.setPaymentType,
+      updateOrderStatus: s.updateOrderStatus,
     }))
   );
 
@@ -1626,12 +1627,23 @@ function NewBillPanel() {
   // "Cannot access 'b' before initialization" in production). The dependency
   // array `[orders, orderType, tableNumber]` is evaluated synchronously as
   // this line runs, so both variables must already be initialized by then.
+  // BUG FIX: these three filters only checked kitchen status, not payment
+  // status. setPaymentType() (used by the single-order payment flow and, until
+  // the fix above, the combine-bill flow) can stamp an order as paid without
+  // ever moving it out of pending/preparing/ready - so a paid order whose
+  // kitchen status never advanced would show up as "waiting" on this table
+  // forever, even though it's already been billed. Two orders on Table 1 were
+  // found stuck exactly this way. Adding the paymentType==='unpaid' check
+  // here (already used by the combine-bill flow's own freshIncoming filter)
+  // means an already-paid order can never re-appear as an incoming/waiting
+  // order again, regardless of what state its kitchen status is stuck in.
   const incomingByTable = useMemo(() => {
     const map: Record<number, number> = {};
     for (const o of orders) {
       if (o.orderType !== 'dine_in' || o.tableNumber == null) continue;
       if (o.orderSource !== 'staff' && o.orderSource !== 'qr') continue;
       if (o.status !== 'pending' && o.status !== 'preparing' && o.status !== 'ready') continue;
+      if (o.paymentType !== 'unpaid') continue;
       map[o.tableNumber] = (map[o.tableNumber] || 0) + o.items.reduce((s, i) => s + i.quantity, 0);
     }
     return map;
@@ -1643,14 +1655,16 @@ function NewBillPanel() {
       o.orderType === 'dine_in' &&
       o.tableNumber === tableNumber &&
       (o.orderSource === 'staff' || o.orderSource === 'qr') &&
-      (o.status === 'pending' || o.status === 'preparing' || o.status === 'ready')
+      (o.status === 'pending' || o.status === 'preparing' || o.status === 'ready') &&
+      o.paymentType === 'unpaid'
     );
   }, [orders, orderType, tableNumber]);
 
   const incomingTakeawayOrders = useMemo(() => orders.filter(o =>
     o.orderType === 'takeaway' &&
     (o.orderSource === 'staff' || o.orderSource === 'qr') &&
-    (o.status === 'pending' || o.status === 'preparing' || o.status === 'ready')
+    (o.status === 'pending' || o.status === 'preparing' || o.status === 'ready') &&
+    o.paymentType === 'unpaid'
   ), [orders]);
 
   // -- Multi-order drafts ------------------------------------------------------
@@ -2052,6 +2066,21 @@ function NewBillPanel() {
       }
       for (const o of freshIncoming) {
         await setPaymentType(o.id, combineBillMethod, billedBy);
+        // BUG FIX: setPaymentType only stamps payment_type - it deliberately
+        // never touches status (see OrderCard.tsx's single-order payment flow,
+        // which only advances to 'served' once the kitchen has separately
+        // marked the order 'ready'). But a combine-bill IS the table's final
+        // checkout - the comment above ("settles everything for the table in
+        // one pass") says so - so these legacy order-pad/QR rows must be
+        // explicitly closed out here too. Without this, a paid order stays
+        // stuck at pending/preparing/ready forever (payment_type no longer
+        // 'unpaid', so it can never be billed again, but status never left
+        // the kitchen-queue bucket) - a permanent "ghost" that keeps showing
+        // as waiting items on this table. Two real orders were found stuck
+        // exactly this way on Table 1 and were cleaned up in the database.
+        if (o.status !== 'served') {
+          await updateOrderStatus(o.id, 'served');
+        }
       }
 
       const combinedItems = allSources.flatMap(o => o.items);
@@ -2363,7 +2392,14 @@ function NewBillPanel() {
           }
           await loadOrders(60);
           const loaded = useOrderStore.getState().orders.find((o) => o.orderNumber === result.orderNumber);
-          if (loaded) printKotThenBill({ ...loaded, walletBalanceRemaining: Number(result.walletBalanceRemaining || 0) }, 'original');
+          // BUG FIX: this is the wallet-payment branch of the TABLE FINALIZE
+          // path (runningOrder already exists - items were already sent to
+          // the kitchen via Send to Kitchen). Its cash/UPI/card sibling below
+          // correctly prints only the bill (printPaidBill); this branch was
+          // wrongly using printKotThenBill, silently re-printing a duplicate
+          // KOT for items the kitchen already has. Dine-in should only ever
+          // get a KOT from the explicit Send to Kitchen button.
+          if (loaded) printPaidBill({ ...loaded, walletBalanceRemaining: Number(result.walletBalanceRemaining || 0) }, 'original');
           checkoutIdempotencyRef.current = null;
           setSelectedWallet(null); setWalletAmount(0); setWalletOtherMode(null); setWalletAuthorizationSecret(''); setCouponCode('');
           await loadOrders(60);
@@ -3136,17 +3172,22 @@ function NewBillPanel() {
           )}
         </div>
 
-        {/* -- Order type + Table Board / Takeaway tickets: ALWAYS visible -- */}
-        <div className="border-b border-border px-4 py-3 space-y-2.5 shrink-0 bg-background/40">
-          <div className="flex gap-2">
+        {/* -- Order type + Table Board / Takeaway tickets: ALWAYS visible --
+             SIZE FIX: on a cramped touch terminal these controls (toggle +
+             table picker + legend) were eating too much vertical space above
+             the cart, which is the part staff actually need to see/scroll.
+             Shrunk padding/text/legend here so more of the panel below is
+             cart. */}
+        <div className="border-b border-border px-3 py-2 space-y-1.5 shrink-0 bg-background/40">
+          <div className="flex gap-1.5">
             <button onClick={() => switchOrderType('dine_in')}
-              className={cn('flex-1 py-2.5 rounded-xl text-sm font-body font-semibold transition-all active:scale-95',
+              className={cn('flex-1 py-1.5 rounded-lg text-xs font-body font-semibold transition-all active:scale-95',
                 orderType === 'dine_in' ? 'text-primary-foreground shadow-teal' : 'bg-card border border-border text-foreground')}
               style={orderType === 'dine_in' ? { background: 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))' } : {}}>
               Dine In
             </button>
             <button onClick={() => switchOrderType('takeaway')}
-              className={cn('flex-1 py-2.5 rounded-xl text-sm font-body font-semibold transition-all active:scale-95',
+              className={cn('flex-1 py-1.5 rounded-lg text-xs font-body font-semibold transition-all active:scale-95',
                 orderType === 'takeaway' ? 'text-primary-foreground shadow-teal' : 'bg-card border border-border text-foreground')}
               style={orderType === 'takeaway' ? { background: 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))' } : {}}>
               Takeaway
@@ -3155,15 +3196,15 @@ function NewBillPanel() {
 
           {orderType === 'dine_in' ? (
             <div className="relative">
-              <div className="flex items-center justify-between mb-1.5">
-                <label className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest flex items-center gap-1">
-                  <MapPin className="size-3" />Select Table
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-[9px] font-body font-bold text-muted-foreground uppercase tracking-widest flex items-center gap-1">
+                  <MapPin className="size-2.5" />Table
                 </label>
-                <div className="flex items-center gap-2 text-[10px] font-body text-muted-foreground">
-                  <span className="flex items-center gap-1"><span className="size-2 rounded-full bg-muted-foreground/30" />Free</span>
-                  <span className="flex items-center gap-1"><span className="size-2 rounded-full bg-amber-500" />Running</span>
-                  <span className="flex items-center gap-1"><span className="size-2 rounded-full bg-blue-400" />Draft</span>
-                  <span className="flex items-center gap-1"><span className="size-2 rounded-full bg-fuchsia-500" />New order</span>
+                <div className="flex items-center gap-1.5 text-[9px] font-body text-muted-foreground">
+                  <span className="flex items-center gap-0.5"><span className="size-1.5 rounded-full bg-muted-foreground/30" />Free</span>
+                  <span className="flex items-center gap-0.5"><span className="size-1.5 rounded-full bg-amber-500" />Running</span>
+                  <span className="flex items-center gap-0.5"><span className="size-1.5 rounded-full bg-blue-400" />Draft</span>
+                  <span className="flex items-center gap-0.5"><span className="size-1.5 rounded-full bg-fuchsia-500" />New</span>
                 </div>
               </div>
 
@@ -3172,7 +3213,7 @@ function NewBillPanel() {
               <button
                 type="button"
                 onClick={() => setTablePickerOpen((open) => !open)}
-                className={cn('w-full flex items-center justify-between gap-2 rounded-xl border px-3 py-2.5 text-sm font-body font-bold transition-all active:scale-[0.98]',
+                className={cn('w-full flex items-center justify-between gap-2 rounded-lg border px-2.5 py-1.5 text-xs font-body font-bold transition-all active:scale-[0.98]',
                   tableError ? 'border-destructive/50 ring-1 ring-destructive/40' : 'border-border bg-muted/60')}>
                 <span className="flex items-center gap-1.5 truncate">
                   {tableNumber ? (
