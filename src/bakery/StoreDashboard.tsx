@@ -7,7 +7,7 @@ import {
   Warehouse, Plus, Pencil, Trash2, AlertTriangle,
   Search, X, Check, RefreshCw, Flame,
   Printer, Truck, Mail, MapPin, ShoppingBag, BarChart2, MinusCircle,
-  History, WalletCards, Download, FileText, Calendar,
+  History, WalletCards, Download, FileText, Calendar, ClipboardList,
 } from 'lucide-react';
 import { Layers } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
@@ -32,6 +32,8 @@ import type { DeductionContext } from './storeStockStore';
 import { itemNamesMatch, pcsToKg, resolveItemWeightGrams } from './itemMatcher';
 import { matForItem } from './materialCalc';
 import InvoiceTab from './InvoiceTab';
+import StorePurchaseOrderTab from './StorePurchaseOrderTab';
+import { useStorePurchaseOrderStore } from './storePurchaseOrderStore';
 import { SNB_ITEMS } from '@/branch/snbItems';
 import { VRSNB_ITEMS } from '@/branch/vrsnbItems';
 import {
@@ -47,8 +49,8 @@ const kolkataDateKey = (iso: string) =>
 const kolkataDateLabel = (iso: string) =>
   new Intl.DateTimeFormat('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short' }).format(new Date(iso));
 
-type StoreDashboardTab = 'orders' | 'history' | 'inventory' | 'suppliers' | 'invoices' | 'analytics' | 'custom' | 'closure' | 'report';
-const STORE_TABS: StoreDashboardTab[] = ['orders', 'history', 'inventory', 'suppliers', 'invoices', 'analytics', 'custom', 'closure', 'report'];
+type StoreDashboardTab = 'orders' | 'history' | 'inventory' | 'suppliers' | 'purchaseOrders' | 'invoices' | 'analytics' | 'custom' | 'closure' | 'report';
+const STORE_TABS: StoreDashboardTab[] = ['orders', 'history', 'inventory', 'suppliers', 'purchaseOrders', 'invoices', 'analytics', 'custom', 'closure', 'report'];
 const CORE_RECIPE_CATEGORIES: ProductionCategory[] = ['Sweets', 'Savouries', 'Bakery', 'Cookies', 'Others'];
 const STORE_ORDER_CATEGORIES: ProductionCategory[] = [...CORE_RECIPE_CATEGORIES.slice(0, 2), 'Cookies', 'Puffs', 'Bakery', 'Others'];
 type StoreOrderCategory = ProductionCategory;
@@ -2150,8 +2152,10 @@ export default function StoreDashboard() {
   const { orders } = useBakeryStore();
   const { items: stockItems } = useStoreStockStore();
   const { suppliers } = useSupplierStore();
+  const { orders: purchaseOrders, loaded: poLoaded, load: loadPOs } = useStorePurchaseOrderStore();
 
   useEffect(() => { void loadRecipes(); return subscribeRecipes(); }, [loadRecipes, subscribeRecipes]);
+  useEffect(() => { if (!poLoaded) void loadPOs(); }, [poLoaded, loadPOs]);
   void recipes;
 
   const requestedTab = searchParams.get('tab') as StoreDashboardTab | null;
@@ -2168,12 +2172,15 @@ export default function StoreDashboard() {
     return Array.from(byName.values());
   }, [stockItems]);
   const lowStock   = uniqueStockItems.filter(i => i.quantity <= i.minThreshold);
+  const poPendingCount = purchaseOrders.filter(po => po.status === 'pending_approval').length;
+  const poApprovedCount = purchaseOrders.filter(po => po.status === 'approved').length;
   const tabs = [
     { id: 'orders',    label: 'Orders',             description: 'Handled by Planner',  icon: Package,     badge: null, badgeColor: 'bg-amber-500' },
     { id: 'history',   label: 'Sent by Planner',    description: 'Ready to confirm stock', icon: History,     badge: sentOrders.length > 0 ? String(sentOrders.length) : null, badgeColor: 'bg-emerald-500' },
     { id: 'inventory', label: 'Inventory',          description: 'Raw stock control',  icon: Warehouse,   badge: lowStock.length > 0 ? String(lowStock.length) : null, badgeColor: 'bg-red-500' },
     { id: 'suppliers', label: 'Suppliers',          description: 'Vendor directory',   icon: Truck,       badge: suppliers.length > 0 ? String(suppliers.length) : null, badgeColor: 'bg-primary' },
-    { id: 'invoices',  label: 'Invoices',           description: 'Purchase records',   icon: FileText,    badge: null, badgeColor: '' },
+    { id: 'purchaseOrders', label: 'Purchase Order', description: 'Raise & track Owner approval', icon: ClipboardList, badge: poPendingCount > 0 ? String(poPendingCount) : poApprovedCount > 0 ? String(poApprovedCount) : null, badgeColor: poPendingCount > 0 ? 'bg-amber-500' : 'bg-emerald-500' },
+    { id: 'invoices',  label: 'GRN',                description: 'Goods receipt & purchase records', icon: FileText,    badge: null, badgeColor: '' },
     { id: 'analytics', label: 'Analytics',          description: 'Stock insights',     icon: Calculator,  badge: null, badgeColor: '' },
     { id: 'custom',    label: 'Custom',             description: 'Manual planning',    icon: ShoppingBag, badge: null, badgeColor: '' },
     { id: 'closure',   label: 'Daily Closure',      description: 'Stock deductions',  icon: WalletCards, badge: null, badgeColor: '' },
@@ -2221,6 +2228,7 @@ export default function StoreDashboard() {
               {tab === 'history'   && <StoreHistoryTab />}
               {tab === 'inventory' && <StoreInventoryTab />}
               {tab === 'suppliers' && <SuppliersTab />}
+              {tab === 'purchaseOrders' && <StorePurchaseOrderTab />}
               {tab === 'invoices'  && <InvoiceTab />}
               {tab === 'analytics' && <StoreAnalyticsTab />}
               {tab === 'custom'    && <StoreCustomTab />}

@@ -74,7 +74,16 @@ interface BakeryState {
   confirmStockSelected: (orderId: string, selectedIndexes: number[], sentBy?: string) => Promise<void>;
   recordProduction: (orderId: string, producedItems: PreparedItem[]) => Promise<void>;
   setDispatchSplit: (orderId: string, split: Record<string, Record<string, number>>) => Promise<void>;
-  submitDispatch: (orderId: string, entry: Omit<DispatchEntry, 'id'>) => Promise<void>;
+  // RETRY-SAFETY FIX (2026-08-06): `entry.id` is now optional and, when the
+  // caller provides one, is reused as-is instead of always minting a fresh
+  // UUID inside submitDispatch. Every dispatch UI generates and holds onto
+  // one stable id per in-flight dispatch (see e.g. DispatchChecklistModal's
+  // dispatchIdsRef) — if a network timeout makes a call look like it failed
+  // when it actually succeeded server-side, retrying with the SAME id lets
+  // every idempotency guard downstream (the dispatch-log append, the
+  // branch_incoming insert, and the Closing Stock ledger debit) correctly
+  // recognize "this already happened" instead of double-counting it.
+  submitDispatch: (orderId: string, entry: Omit<DispatchEntry, 'id'> & { id?: string }) => Promise<void>;
   deleteDispatchEntry: (orderId: string, entryId: string) => Promise<void>;
   markDone: (orderId: string) => Promise<void>;
   subscribe: () => () => void; // returns unsubscribe fn
@@ -290,17 +299,42 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
 
     // Combine items with the same name + unit across all orders in the group.
     const combined: BakeryOrderItem[] = [];
+    // PRODUCED-ITEMS CARRY-OVER (2026-08-06): now that Production Entry
+    // shows every order — including ones never sent to Store yet — a
+    // planner can record production against an order BEFORE it's merged.
+    // The block below deletes every non-primary order in the group; without
+    // this, any production already recorded on one of those orders would be
+    // silently destroyed the moment its row is deleted. Carry each
+    // contributing order's producedItems entry for an item onto the merged
+    // result, remapped to the surviving combined item's id.
+    const combinedProduced: PreparedItem[] = [];
     for (const o of group) {
       for (const item of o.items) {
         const unit = item.dispatchUnit === 'pcs' ? 'pcs' : 'kg';
         const existing = combined.find(c =>
           c.itemName.trim().toLowerCase() === item.itemName.trim().toLowerCase() &&
           (c.dispatchUnit === 'pcs' ? 'pcs' : 'kg') === unit);
+        let targetItemId: string;
         if (existing) {
           existing.quantity += item.quantity;
           if (item.originalPcs != null) existing.originalPcs = (existing.originalPcs ?? 0) + item.originalPcs;
+          targetItemId = existing.itemId;
         } else {
           combined.push({ ...item });
+          targetItemId = item.itemId;
+        }
+        const prod = (o.producedItems || []).find(p => p.itemId === item.itemId);
+        if (prod) {
+          const existingProd = combinedProduced.find(p => p.itemId === targetItemId);
+          if (existingProd) {
+            existingProd.quantityPrepared = Math.round((existingProd.quantityPrepared + prod.quantityPrepared) * 1000) / 1000;
+            // Stays 'completed' only if every contributing entry was completed —
+            // otherwise the merged row correctly shows as still 'pending'.
+            if (prod.status !== 'completed' || existingProd.status !== 'completed') existingProd.status = 'pending';
+            if (prod.preparedAt > existingProd.preparedAt) existingProd.preparedAt = prod.preparedAt;
+          } else {
+            combinedProduced.push({ ...prod, itemId: targetItemId, itemName: item.itemName });
+          }
         }
       }
     }
@@ -343,7 +377,7 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
 
     const { error: updateError } = await supabase
       .from('bakery_orders')
-      .update({ items: combined, status: 'store_confirmed', store_confirmed_at: now, notes: mergedNotes })
+      .update({ items: combined, status: 'store_confirmed', store_confirmed_at: now, notes: mergedNotes, produced_items: combinedProduced })
       .eq('id', primary.id);
     if (updateError) throw new Error('Failed to merge orders for Store — please try again.');
 
@@ -358,7 +392,7 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     set(s => ({
       orders: s.orders
         .filter(o => !others.some(x => x.id === o.id))
-        .map(o => o.id === primary.id ? { ...o, items: combined, status: 'store_confirmed' as WorkflowStatus, storeConfirmedAt: now, notes: mergedNotes ?? undefined } : o),
+        .map(o => o.id === primary.id ? { ...o, items: combined, producedItems: combinedProduced, status: 'store_confirmed' as WorkflowStatus, storeConfirmedAt: now, notes: mergedNotes ?? undefined } : o),
     }));
 
     const { useAuthStore } = await import('@/stores/authStore');
@@ -546,7 +580,7 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
 
 
   submitDispatch: async (orderId, entry) => {
-    const newEntry: DispatchEntry = { ...entry, id: crypto.randomUUID() };
+    const newEntry: DispatchEntry = { ...entry, id: entry.id ?? crypto.randomUUID() };
 
     // Fetch fresh order from DB — includes order_number for notifications.
     // BUG #3 FIX: fetching from DB avoids stale React state in the dispatch log.
@@ -610,7 +644,7 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
       orderItems.every(oi => preparedItems.some(p => p.itemId === oi.itemId));
     const newStatus: WorkflowStatus = allFullyDispatched && isOrderFullyPrepared ? 'dispatched' : 'produced';
 
-    const { error } = await supabase.rpc('append_bakery_dispatch_log', {
+    const { data: appendResult, error } = await supabase.rpc('append_bakery_dispatch_log', {
       p_order_id: orderId,
       p_entry: newEntry,
       p_status: newStatus,
@@ -618,6 +652,14 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     if (error) {
       throw new Error(error.message || 'Dispatch failed while saving the dispatch log.');
     }
+    // RETRY-SAFETY FIX: the RPC itself is now the authoritative source of
+    // truth on whether this exact dispatch (by id) was already recorded —
+    // more reliable than the client's own stale-state `alreadyAppended`
+    // guess above. If this call is a retry of one that already succeeded,
+    // skip the branch_incoming insert and Closing Stock debit below too, so
+    // a retried dispatch is a true no-op rather than counting the same
+    // physical dispatch twice anywhere downstream.
+    const isDuplicateDispatch = Boolean((appendResult as { duplicate?: boolean } | null)?.duplicate);
 
     // CLOSING STOCK LINK: every dispatch debits the shared leftover/closing
     // stock pool, even if there isn't enough recorded stock to cover it —
@@ -625,23 +667,27 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     // negative (a visible "backorder") rather than blocking the real-world
     // dispatch from happening. This is deliberately non-fatal: a ledger
     // hiccup must never block goods that have actually gone out the door.
-    try {
-      const ledgerResult = await recordLeftoverMovement({
-        itemName: newEntry.itemName,
-        unit: newEntry.unit === 'pcs' ? 'pcs' : 'kg',
-        delta: -Math.abs(Number(newEntry.quantity) || 0),
-        businessDate: kolkataToday(),
-        reason: 'dispatch',
-        recordedBy: newEntry.dispatchedBy || 'Planner',
-        branch: newEntry.branch,
-        orderId,
-        orderNumber: freshOrder.order_number != null ? Number(freshOrder.order_number) : undefined,
-      });
-      if ('error' in ledgerResult) {
-        console.error('[submitDispatch] Closing Stock pool debit failed:', ledgerResult.error);
+    // Skipped entirely on a detected retry-duplicate (see isDuplicateDispatch
+    // above) so a retried dispatch doesn't debit the pool a second time.
+    if (!isDuplicateDispatch) {
+      try {
+        const ledgerResult = await recordLeftoverMovement({
+          itemName: newEntry.itemName,
+          unit: newEntry.unit === 'pcs' ? 'pcs' : 'kg',
+          delta: -Math.abs(Number(newEntry.quantity) || 0),
+          businessDate: kolkataToday(),
+          reason: 'dispatch',
+          recordedBy: newEntry.dispatchedBy || 'Planner',
+          branch: newEntry.branch,
+          orderId,
+          orderNumber: freshOrder.order_number != null ? Number(freshOrder.order_number) : undefined,
+        });
+        if ('error' in ledgerResult) {
+          console.error('[submitDispatch] Closing Stock pool debit failed:', ledgerResult.error);
+        }
+      } catch (ledgerErr) {
+        console.error('[submitDispatch] Closing Stock pool debit threw:', ledgerErr);
       }
-    } catch (ledgerErr) {
-      console.error('[submitDispatch] Closing Stock pool debit threw:', ledgerErr);
     }
 
     // Keep the Hosur shop-order record(s) behind the bakery workflow. It
@@ -791,6 +837,10 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     // DISPATCH-FIX: Don't rely on onConflict:'dispatch_id' — that requires a unique
     // constraint in the DB which may not exist, causing the upsert to silently fail.
     // Instead: check if a row with this dispatch_id already exists, insert only if not.
+    // RETRY-SAFETY: this check only actually catches a retry now that
+    // newEntry.id is stable across retries (see isDuplicateDispatch above) —
+    // previously a fresh UUID was minted on every call, so this lookup could
+    // never find a match even on a genuine retry.
     const { data: existingRow } = await supabase
       .from('branch_incoming')
       .select('id')
@@ -891,6 +941,36 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
       await supabase.from('branch_incoming')
         .delete()
         .eq('dispatch_id', entryId);
+
+      // BUG FIX (deep-dive audit): submitDispatch debits the shared Closing
+      // Stock / leftover pool by this entry's quantity every time a dispatch
+      // is recorded (recordLeftoverMovement, reason='dispatch', negative
+      // delta) — but this undo path never credited it back. Every deleted/
+      // corrected dispatch was silently leaving the Closing Stock ledger
+      // permanently short by that quantity, even though the destination
+      // branch's own stock (decrement_branch_stock above) was correctly
+      // rolled back. Credit the pool back here, mirroring the debit.
+      // Non-fatal by the same reasoning submitDispatch uses: a ledger
+      // hiccup must never block the undo the user actually asked for.
+      try {
+        const creditResult = await recordLeftoverMovement({
+          itemName: removedEntry.itemName,
+          unit: removedEntry.unit === 'pcs' ? 'pcs' : 'kg',
+          delta: Math.abs(Number(removedEntry.quantity) || 0),
+          businessDate: kolkataToday(),
+          reason: 'adjustment',
+          recordedBy: removedEntry.dispatchedBy || 'Planner',
+          branch: removedEntry.branch,
+          orderId,
+          orderNumber: order.orderNumber != null ? Number(order.orderNumber) : undefined,
+          notes: 'Dispatch entry deleted — reversing Closing Stock debit',
+        });
+        if ('error' in creditResult) {
+          console.error('[deleteDispatchEntry] Closing Stock pool credit-back failed:', creditResult.error);
+        }
+      } catch (ledgerErr) {
+        console.error('[deleteDispatchEntry] Closing Stock pool credit-back threw:', ledgerErr);
+      }
 
       // BUG FIX: submitDispatch mirrors a Hosur dispatch into
       // hosur_order_items.dispatched_quantity and flips hosur_orders.status

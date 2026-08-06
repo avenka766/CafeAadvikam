@@ -11,6 +11,12 @@ export interface InvoiceLineItem {
   unit: string;
   pricePerUnit: number;
   totalPrice: number;
+  // GRN receiving fields (2026-08-06) — optional so every pre-existing
+  // invoice row (created before these existed) still maps cleanly.
+  itemCode?: string;
+  acceptedQty?: number;
+  rejectedQty?: number;
+  remarks?: string;
 }
 
 export type InvoiceStatus = 'pending_review' | 'approved' | 'rejected';
@@ -20,6 +26,7 @@ export interface StoreInvoice {
   invoiceNumber: string;
   supplierId: string;
   supplierName: string;
+  supplierAddress?: string;
   deliveryDate: string;
   lineItems: InvoiceLineItem[];
   grandTotal: number;
@@ -31,6 +38,13 @@ export interface StoreInvoice {
   reviewNote?: string;
   editedAt?: string;
   editCount?: number;
+  // GRN document fields (2026-08-06)
+  supplierInvoiceNumber?: string;
+  supplierInvoiceDate?: string;
+  vehicleNumber?: string;
+  poNumber?: string;
+  poDate?: string;
+  sourcePoId?: string;
 }
 
 interface InvoiceState {
@@ -41,6 +55,18 @@ interface InvoiceState {
   load: () => Promise<string | null>;
   createInvoice: (data: Omit<StoreInvoice, 'id' | 'invoiceNumber' | 'status' | 'createdAt'>) => Promise<{ invoice: { id: string; invoiceNumber: string; syncedToStock: boolean } | null; error: string | null }>;
   updateInvoice: (id: string, data: Omit<StoreInvoice, 'id' | 'invoiceNumber' | 'status' | 'createdAt' | 'editedAt' | 'editCount'>) => Promise<string | null>;
+  // Converts an Owner-approved Purchase Order into a GRN (store_invoices row)
+  // via convert_store_purchase_order_to_invoice_secure — same normalize +
+  // stock-sync path as createInvoice, but locked to the PO's own supplier.
+  convertPOToInvoice: (poId: string, data: {
+    deliveryDate: string;
+    lineItems: InvoiceLineItem[];
+    grandTotal: number;
+    notes: string;
+    supplierInvoiceNumber?: string;
+    supplierInvoiceDate?: string;
+    vehicleNumber?: string;
+  }) => Promise<{ invoice: { id: string; invoiceNumber: string } | null; error: string | null }>;
   updateStatus: (id: string, status: InvoiceStatus, reviewNote?: string) => Promise<string | null>;
   deleteInvoice: (id: string) => Promise<void>;
   pendingCount: () => number;
@@ -59,6 +85,10 @@ function mapLineItems(value: unknown): InvoiceLineItem[] {
     const quantity = toFiniteNumber(row.quantity);
     const pricePerUnit = toFiniteNumber(row.pricePerUnit ?? row.price_per_unit);
     const suppliedTotal = toFiniteNumber(row.totalPrice ?? row.total_price);
+    const itemCode = row.itemCode ?? row.item_code;
+    const acceptedQty = row.acceptedQty ?? row.accepted_qty;
+    const rejectedQty = row.rejectedQty ?? row.rejected_qty;
+    const remarks = row.remarks;
 
     return {
       itemName: String(row.itemName ?? row.item_name ?? ''),
@@ -66,6 +96,10 @@ function mapLineItems(value: unknown): InvoiceLineItem[] {
       unit: String(row.unit ?? ''),
       pricePerUnit,
       totalPrice: suppliedTotal || Number((quantity * pricePerUnit).toFixed(2)),
+      itemCode: itemCode ? String(itemCode) : undefined,
+      acceptedQty: acceptedQty != null ? toFiniteNumber(acceptedQty) : undefined,
+      rejectedQty: rejectedQty != null ? toFiniteNumber(rejectedQty) : undefined,
+      remarks: remarks ? String(remarks) : undefined,
     };
   });
 }
@@ -112,6 +146,7 @@ export function mapInvoiceRow(r: Record<string, unknown>): StoreInvoice {
     invoiceNumber: String(r.invoice_number ?? ''),
     supplierId: String(r.supplier_id ?? ''),
     supplierName: String(r.supplier_name ?? ''),
+    supplierAddress: r.supplier_address ? String(r.supplier_address) : undefined,
     deliveryDate: String(r.delivery_date ?? ''),
     lineItems: mapLineItems(r.line_items),
     // PostgreSQL numeric values are returned by PostgREST as strings in this
@@ -125,6 +160,12 @@ export function mapInvoiceRow(r: Record<string, unknown>): StoreInvoice {
     reviewNote: r.review_note ? String(r.review_note) : undefined,
     editedAt: r.edited_at ? String(r.edited_at) : undefined,
     editCount: r.edit_count ? Number(r.edit_count) : undefined,
+    supplierInvoiceNumber: r.supplier_invoice_number ? String(r.supplier_invoice_number) : undefined,
+    supplierInvoiceDate: r.supplier_invoice_date ? String(r.supplier_invoice_date) : undefined,
+    vehicleNumber: r.vehicle_number ? String(r.vehicle_number) : undefined,
+    poNumber: r.po_number ? String(r.po_number) : undefined,
+    poDate: r.po_date ? String(r.po_date) : undefined,
+    sourcePoId: r.source_po_id ? String(r.source_po_id) : undefined,
   };
 }
 
@@ -152,7 +193,7 @@ export const useInvoiceStore = create<InvoiceState>((set, get) => ({
         if (isMissingRpcError(error)) {
           const fallback = await supabase
             .from('store_invoices')
-            .select('id, invoice_number, supplier_id, supplier_name, delivery_date, line_items, grand_total, status, purchase_status, notes, synced_to_stock, created_at, reviewed_at, review_note, edited_at, edit_count')
+            .select('id, invoice_number, supplier_id, supplier_name, supplier_address, delivery_date, line_items, grand_total, status, purchase_status, notes, synced_to_stock, created_at, reviewed_at, review_note, edited_at, edit_count, supplier_invoice_number, supplier_invoice_date, vehicle_number, po_number, po_date, source_po_id')
             .order('created_at', { ascending: false });
           data = fallback.data as Record<string, unknown>[] | null;
           error = fallback.error;
@@ -160,7 +201,7 @@ export const useInvoiceStore = create<InvoiceState>((set, get) => ({
       } else {
         const result = await supabase
           .from('store_invoices')
-          .select('id, invoice_number, supplier_id, supplier_name, delivery_date, line_items, grand_total, status, purchase_status, notes, synced_to_stock, created_at, reviewed_at, review_note, edited_at, edit_count')
+          .select('id, invoice_number, supplier_id, supplier_name, supplier_address, delivery_date, line_items, grand_total, status, purchase_status, notes, synced_to_stock, created_at, reviewed_at, review_note, edited_at, edit_count, supplier_invoice_number, supplier_invoice_date, vehicle_number, po_number, po_date, source_po_id')
           .order('created_at', { ascending: false });
         data = result.data as Record<string, unknown>[] | null;
         error = result.error;
@@ -180,7 +221,10 @@ export const useInvoiceStore = create<InvoiceState>((set, get) => ({
 
   createInvoice: async (data) => {
     const rand = crypto.randomUUID().replace(/-/g, '').slice(0, 8).toUpperCase();
-    const invoiceNumber = `VRSNB-PENDING-${rand}`;
+    // Renamed from the old 'VRSNB-PENDING-' prefix (2026-08-06) now that this
+    // tab and its printed document are GRNs — this string is what actually
+    // prints as the "GRN No." on the receipt note.
+    const invoiceNumber = `GRN-${rand}`;
     const notes = data.notes.trim();
 
     const secureResult = await supabase.rpc('create_store_invoice_secure', {
@@ -191,6 +235,12 @@ export const useInvoiceStore = create<InvoiceState>((set, get) => ({
       p_line_items: data.lineItems,
       p_grand_total: data.grandTotal,
       p_notes: notes,
+      p_supplier_invoice_number: data.supplierInvoiceNumber?.trim() || null,
+      p_supplier_invoice_date: data.supplierInvoiceDate || null,
+      p_vehicle_number: data.vehicleNumber?.trim() || null,
+      p_po_number: data.poNumber?.trim() || null,
+      p_po_date: data.poDate || null,
+      p_source_po_id: data.sourcePoId || null,
     });
 
     if (!secureResult.error && secureResult.data) {
@@ -216,6 +266,39 @@ export const useInvoiceStore = create<InvoiceState>((set, get) => ({
     return { invoice: null, error: friendlyInvoiceWriteError(secureResult.error, 'create') };
   },
 
+  convertPOToInvoice: async (poId, data) => {
+    const rand = crypto.randomUUID().replace(/-/g, '').slice(0, 8).toUpperCase();
+    const invoiceNumber = `GRN-${rand}`;
+    const result = await supabase.rpc('convert_store_purchase_order_to_invoice_secure', {
+      p_po_id: poId,
+      p_invoice_number: invoiceNumber,
+      p_delivery_date: data.deliveryDate,
+      p_line_items: data.lineItems,
+      p_grand_total: data.grandTotal,
+      p_notes: data.notes.trim(),
+      p_supplier_invoice_number: data.supplierInvoiceNumber?.trim() || null,
+      p_supplier_invoice_date: data.supplierInvoiceDate || null,
+      p_vehicle_number: data.vehicleNumber?.trim() || null,
+    });
+
+    if (result.error) {
+      if (isMissingRpcError(result.error)) {
+        return { invoice: null, error: 'The Purchase Order conversion workflow is not installed in the database. Apply the latest Supabase migration first.' };
+      }
+      const message = result.error.message ?? '';
+      if (/PO_NOT_APPROVED/i.test(message)) return { invoice: null, error: 'This purchase order has not been approved by the Owner yet.' };
+      if (/PO_NOT_FOUND/i.test(message)) return { invoice: null, error: 'The purchase order could not be found. Refresh and try again.' };
+      return { invoice: null, error: friendlyInvoiceWriteError(result.error, 'create') };
+    }
+
+    const row = result.data as unknown as Record<string, unknown>;
+    await get().load();
+    return {
+      invoice: { id: String(row.id ?? ''), invoiceNumber: String(row.invoice_number ?? invoiceNumber) },
+      error: null,
+    };
+  },
+
   updateInvoice: async (id, data) => {
     const notes = data.notes.trim();
     const result = await supabase.rpc('update_store_invoice_secure', {
@@ -226,6 +309,9 @@ export const useInvoiceStore = create<InvoiceState>((set, get) => ({
       p_line_items: data.lineItems,
       p_grand_total: data.grandTotal,
       p_notes: notes,
+      p_supplier_invoice_number: data.supplierInvoiceNumber?.trim() || null,
+      p_supplier_invoice_date: data.supplierInvoiceDate || null,
+      p_vehicle_number: data.vehicleNumber?.trim() || null,
     });
 
     if (result.error && isMissingRpcError(result.error)) {
@@ -289,7 +375,7 @@ export const useInvoiceStore = create<InvoiceState>((set, get) => ({
         })
         .eq('id', id)
         .eq('status', 'pending_review')
-        .select('id, invoice_number, supplier_id, supplier_name, delivery_date, line_items, grand_total, status, purchase_status, notes, synced_to_stock, created_at, reviewed_at, review_note, edited_at, edit_count')
+        .select('id, invoice_number, supplier_id, supplier_name, supplier_address, delivery_date, line_items, grand_total, status, purchase_status, notes, synced_to_stock, created_at, reviewed_at, review_note, edited_at, edit_count, supplier_invoice_number, supplier_invoice_date, vehicle_number, po_number, po_date, source_po_id')
         .maybeSingle();
     }
 

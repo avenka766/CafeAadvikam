@@ -5,7 +5,7 @@
 // handing merged totals to Store, recording actual production, splitting and
 // dispatching to branches, tracking leftovers, and cake dispatch — plus the
 // migrated Transfer-In and Daily Closure tools from Packing.
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
   ClipboardList, Layers, Factory, Truck, Cake, PackageCheck,
@@ -87,6 +87,28 @@ interface MergedRow {
   totalRequested: number;
   perBranch: Partial<Record<MergeBucket, number>>;
   contributingOrderIds: string[];
+}
+
+// RETRY-SAFETY FIX (2026-08-06): submitDispatch used to mint a fresh UUID
+// for every dispatch entry inside itself, so a genuine client retry (e.g.
+// after a network timeout where the request actually succeeded server-side
+// but the response never reached the browser) always looked like a brand
+// new dispatch to every idempotency guard downstream — duplicating the
+// dispatch log entry, the branch_incoming row, and the Closing Stock ledger
+// debit. Every dispatch UI now generates its own id(s) via this hook,
+// keyed per order, and only clears them on confirmed success — so clicking
+// "Dispatch"/"Confirm" again after a failure reuses the SAME id(s), and the
+// (now-idempotent) server-side RPC + client-side checks correctly recognize
+// it as the same dispatch instead of a new one.
+function useStableDispatchIds() {
+  const ref = useRef<Map<string, string>>(new Map());
+  const getId = useCallback((key: string) => {
+    let id = ref.current.get(key);
+    if (!id) { id = crypto.randomUUID(); ref.current.set(key, id); }
+    return id;
+  }, []);
+  const reset = useCallback(() => { ref.current.clear(); }, []);
+  return { getId, reset };
 }
 
 // Item names can differ in case/spacing between orders placed by different
@@ -204,7 +226,14 @@ export default function PlannerDashboard() {
   // Union used by Production Entry + Dispatch: an order flips to 'produced' as soon as any
   // one item is recorded, but individual items may still be pending — both tabs need the
   // full set and decide per-item (per-row) visibility themselves.
-  const productionSourceOrders = useMemo(() => orders.filter(o => o.status === 'store_confirmed' || o.status === 'produced'), [orders]);
+  // WORKFLOW CHANGE (2026-08-06): Production Entry and Dispatch used to only
+  // source orders once Store had confirmed them (status 'store_confirmed'/
+  // 'produced') — owner explicitly asked for this gate removed: every order,
+  // at every stage (even still 'pending', never sent to Store at all), should
+  // be visible and workable in both tabs. No status filter at all now — both
+  // tabs decide their own per-row visibility (e.g. hiding fully-completed/
+  // fully-dispatched rows) independently, same as before.
+  const productionSourceOrders = orders;
   const activeLeftovers    = useMemo(() => orders.filter(o => (o.leftoverStatus ?? 'pending') === 'pending' && o.status === 'dispatched'), [orders]);
   const doneOrders         = useMemo(() => orders.filter(o => o.leftoverStatus === 'done'), [orders]);
 
@@ -2145,6 +2174,7 @@ function LeftoverDispatchButton({ row, orders, onDispatch, dispatchedBy, default
   const [qty, setQty] = useState('');
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const { getId, reset: resetDispatchIds } = useStableDispatchIds();
 
   if (!balance || balance.balance <= 0.001) return null;
 
@@ -2159,16 +2189,19 @@ function LeftoverDispatchButton({ row, orders, onDispatch, dispatchedBy, default
     // submitDispatch() itself (every dispatch, from any button, debits the
     // pool) — this button no longer needs its own separate ledger call, it
     // just checks the balance up front (above) as a UX guard before dispatching.
+    // Dispatch ids are held stable per contributing order (getId) so a retry
+    // after a failure reuses the same id instead of double-counting.
     try {
       const split = autoSplitForItem(entries, row.itemName, q);
       for (const order of entries) {
         const item = order.items.find(i => sameItem(i.itemName, row.itemName));
         const orderQty = split[order.id] ?? 0;
         if (!item || orderQty <= 0) continue;
-        await onDispatch(order.id, { itemName: item.itemName, quantity: orderQty, unit: item.dispatchUnit || 'kg', branch, dispatchedBy, dispatchedAt: new Date().toISOString() });
+        await onDispatch(order.id, { id: getId(order.id), itemName: item.itemName, quantity: orderQty, unit: item.dispatchUnit || 'kg', branch, dispatchedBy, dispatchedAt: new Date().toISOString() });
       }
       setResult({ ok: true, message: `Dispatched ${qtyFmt(q)} ${balance.unit} to ${branch} from leftover.` });
       setQty(''); setOpen(false);
+      resetDispatchIds();
       onDone();
     } catch (err) {
       setResult({ ok: false, message: (err instanceof Error ? err.message : 'Dispatch logging failed') + ' — leftover was already deducted, check the Dispatch tab before retrying.' });
@@ -2302,7 +2335,11 @@ function DispatchTab({ orders, allOrders }: { orders: BakeryOrder[]; allOrders: 
   const dateGroups = useMemo(() => groupOrdersByStoreDate(orders), [orders]);
   const visible = dateFilter === 'all' ? dateGroups : dateGroups.filter(g => g.dateKey === dateFilter);
   const exportRows = useMemo(() => dateGroups.flatMap(g => {
-    const rows = computeProductionRows(g.orders).filter(r => r.itemStatus !== 'not_started');
+    // WORKFLOW CHANGE (2026-08-06): used to hide items with zero production
+    // recorded ('not_started') — owner asked for Dispatch to list everything
+    // ordered, produced or not, so nothing waiting on Store/production is
+    // ever invisible here.
+    const rows = computeProductionRows(g.orders);
     return rows.map(row => {
       const dispatched = g.orders.filter(o => row.contributingOrderIds.includes(o.id))
         .reduce((s, o) => s + (o.dispatchLog || []).filter(d => sameItem(d.itemName, row.itemName)).reduce((s2, d) => s2 + d.quantity, 0), 0);
@@ -2348,7 +2385,10 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
   const currentUser = useAuthStore(s => s.currentUser);
   const { balances: leftoverBalances, refresh: refreshLeftover } = useLeftoverBalanceMap();
   const [open, setOpen] = useState(defaultOpen);
-  const rows = useMemo(() => computeProductionRows(orders).filter(r => r.itemStatus !== 'not_started'), [orders]);
+  // WORKFLOW CHANGE (2026-08-06): no longer filtering out 'not_started' rows
+  // — Dispatch now lists every item that's been ordered at all, even before
+  // any production has been recorded for it, per owner's explicit request.
+  const rows = useMemo(() => computeProductionRows(orders), [orders]);
   const [subTab, setSubTab] = useState<'active' | 'completed' | 'planned'>('active');
   const [checklistItem, setChecklistItem] = useState<ProductionRow | null>(null);
   // 'All' shows every item like before. Picking a branch filters to only items
@@ -2474,7 +2514,7 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
                     <input type="checkbox" className="size-4 accent-teal-600" checked={selected.has(row.itemName)} onChange={() => toggleSelect(row.itemName)} />
                   )}
                   <div className="min-w-0">
-                    <p className="truncate text-sm font-black text-foreground">{row.itemName} <span className={cn('ml-1 rounded-full px-1.5 py-0.5 text-[10px] font-black', row.itemStatus === 'completed' ? 'bg-teal-100 text-teal-700' : 'bg-amber-100 text-amber-700')}>{row.itemStatus === 'completed' ? 'Completed' : 'More to come'}</span></p>
+                    <p className="truncate text-sm font-black text-foreground">{row.itemName} <span className={cn('ml-1 rounded-full px-1.5 py-0.5 text-[10px] font-black', row.itemStatus === 'completed' ? 'bg-teal-100 text-teal-700' : row.itemStatus === 'not_started' ? 'bg-slate-200 text-slate-600' : 'bg-amber-100 text-amber-700')}>{row.itemStatus === 'completed' ? 'Completed' : row.itemStatus === 'not_started' ? 'Not produced yet' : 'More to come'}</span></p>
                     <p className="text-xs font-bold text-muted-foreground">Produced {row.preparedTotal} {row.unit}{dispatched > 0 ? ` · Dispatched ${dispatched} ${row.unit}` : ''}</p>
                   </div>
                 </div>
@@ -2575,6 +2615,7 @@ function PlannedDispatchPanel({ rows, orders, onDispatch, dispatchedBy }: {
   const [qtyFor, setQtyFor] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [result, setResult] = useState<Record<string, { ok: boolean; message: string }>>({});
+  const { getId, reset: resetDispatchIds } = useStableDispatchIds();
 
   if (rows.length === 0) return <EmptyState text="No planned-stock items waiting on a dispatch decision." />;
 
@@ -2595,10 +2636,11 @@ function PlannedDispatchPanel({ rows, orders, onDispatch, dispatchedBy }: {
         const item = order.items.find(i => sameItem(i.itemName, row.itemName));
         const orderQty = split[order.id] ?? 0;
         if (!item || orderQty <= 0) continue;
-        await onDispatch(order.id, { itemName: item.itemName, quantity: orderQty, unit: item.dispatchUnit || 'kg', branch, dispatchedBy, dispatchedAt: new Date().toISOString() });
+        await onDispatch(order.id, { id: getId(`${order.id}:${row.itemName}`), itemName: item.itemName, quantity: orderQty, unit: item.dispatchUnit || 'kg', branch, dispatchedBy, dispatchedAt: new Date().toISOString() });
       }
       setResult(r => ({ ...r, [row.itemName]: { ok: true, message: `Dispatched ${q} ${row.unit} of ${row.itemName} to ${branch}.` } }));
       setQtyFor(v => ({ ...v, [row.itemName]: '' }));
+      resetDispatchIds();
     } catch (err) {
       setResult(r => ({ ...r, [row.itemName]: { ok: false, message: err instanceof Error ? err.message : 'Failed to dispatch this item.' } }));
     } finally {
@@ -2669,6 +2711,7 @@ function BulkDispatchModal({ branch, rows, orders, onClose, onDispatch, dispatch
 
   const [qty, setQty] = useState<Record<string, string>>(() => Object.fromEntries(lines.map(l => [l.row.itemName, String(l.defaultQty)])));
   const [sending, setSending] = useState(false);
+  const { getId, reset: resetDispatchIds } = useStableDispatchIds();
 
   const qtyFor = (itemName: string) => Number(qty[itemName] || 0);
 
@@ -2684,9 +2727,10 @@ function BulkDispatchModal({ branch, rows, orders, onClose, onDispatch, dispatch
           const item = order.items.find(i => sameItem(i.itemName, row.itemName));
           const orderQty = split[order.id] ?? 0;
           if (!item || orderQty <= 0) continue;
-          await onDispatch(order.id, { itemName: item.itemName, quantity: orderQty, unit: item.dispatchUnit || 'kg', branch, dispatchedBy, dispatchedAt: new Date().toISOString() });
+          await onDispatch(order.id, { id: getId(`${order.id}:${row.itemName}`), itemName: item.itemName, quantity: orderQty, unit: item.dispatchUnit || 'kg', branch, dispatchedBy, dispatchedAt: new Date().toISOString() });
         }
       }
+      resetDispatchIds();
       onDone();
     } finally {
       setSending(false);
@@ -2755,6 +2799,7 @@ function DispatchChecklistModal({ row, orders, onClose, onDispatch, dispatchedBy
   const toggleBranch = (b: string) => setSelectedBranches(prev => prev.includes(b) ? prev.filter(x => x !== b) : [...prev, b]);
 
   const qtyFor = (orderId: string) => qty[orderId] !== undefined ? Number(qty[orderId] || 0) : Math.round((autoSplit[orderId] ?? 0) * 100) / 100;
+  const { getId, reset: resetDispatchIds } = useStableDispatchIds();
 
   const CHECKLIST_BY_BRANCH: Record<string, string[]> = {
     SNB: ['Verify SNB quantity matches this checklist', 'Cross-check SNB boxes/kg/pcs before loading', 'Check packaging is intact and labeled', 'Load onto SNB delivery vehicle', 'Hand over and get SNB counter sign-off'],
@@ -2771,9 +2816,10 @@ function DispatchChecklistModal({ row, orders, onClose, onDispatch, dispatchedBy
         for (const { order, item } of entries) {
           const q = qtyFor(order.id);
           if (q <= 0) continue;
-          await onDispatch(order.id, { itemName: item.itemName, quantity: q, unit: item.dispatchUnit || 'kg', branch: branch as Branch, dispatchedBy, dispatchedAt: new Date().toISOString() });
+          await onDispatch(order.id, { id: getId(`${order.id}:${item.itemName}`), itemName: item.itemName, quantity: q, unit: item.dispatchUnit || 'kg', branch: branch as Branch, dispatchedBy, dispatchedAt: new Date().toISOString() });
         }
       }
+      resetDispatchIds();
       setDone(true);
     } finally {
       setSending(false);

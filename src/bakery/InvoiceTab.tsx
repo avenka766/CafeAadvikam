@@ -16,12 +16,22 @@ import { useNotificationStore } from './notificationStore';
 import { searchItems } from './storeItemMaster';
 
 // ─── Print helper ─────────────────────────────────────────────────────────────
-// BUG FIX: this opened a real, visible `window.open(..., '_blank', ...)`
-// popup — a whole separate browser window/tab would appear before printing.
-// Switched to the same off-screen, aria-hidden iframe pattern already proven
-// in src/branch/printUtils.ts (printCounterBill) — the print job fires with
-// nothing ever shown on screen, no popup window at all.
-function printInvoice(invoice: StoreInvoice) {
+// GRN print layout (2026-08-06): rebuilt to match the "GOODS RECEIPT NOTE"
+// paper format exactly — Consignee (fixed, this business) / Supplier block,
+// GRN No./Date, Supplier Inv No./Date, PO No./Date, Vehicle No., an item
+// table of Sl.No/Item Code/Material Description/UOM/Recd./Acc./Rej. Qty/
+// Remarks (deliberately no rate/amount columns — a GRN is a physical
+// goods-receipt record, not a priced document), and a Prepared/Checked/
+// Approved By signature footer. Exported so AdminInvoicesTab.tsx's Admin
+// copy uses the exact same layout instead of a second, drifting copy.
+//
+// BUG FIX carried over: uses the off-screen aria-hidden iframe pattern
+// (src/branch/printUtils.ts) instead of a visible window.open() popup.
+const fmtDate = (value?: string | null) => value
+  ? new Date(`${value}T12:00:00`).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
+  : '—';
+
+export function printInvoice(invoice: StoreInvoice) {
   const frame = document.createElement('iframe');
   frame.setAttribute('aria-hidden', 'true');
   frame.style.position = 'fixed';
@@ -42,12 +52,15 @@ function printInvoice(invoice: StoreInvoice) {
   window.setTimeout(cleanup, 60_000);
 
   const rows = invoice.lineItems.map((li, i) => `
-    <tr style="border-bottom:1px solid #f0f0f0;">
-      <td style="padding:7px 8px;">${i + 1}</td>
-      <td style="padding:7px 8px;font-weight:600;">${li.itemName}</td>
-      <td style="padding:7px 8px;text-align:right;">${li.quantity} ${li.unit}</td>
-      <td style="padding:7px 8px;text-align:right;">₹${li.pricePerUnit.toFixed(2)}</td>
-      <td style="padding:7px 8px;text-align:right;font-weight:700;">₹${li.totalPrice.toFixed(2)}</td>
+    <tr>
+      <td class="c">${i + 1}</td>
+      <td>${li.itemCode || '—'}</td>
+      <td class="desc">${li.itemName}</td>
+      <td class="c">${li.unit}</td>
+      <td class="r">${li.quantity}</td>
+      <td class="r">${li.acceptedQty ?? li.quantity}</td>
+      <td class="r">${li.rejectedQty ?? 0}</td>
+      <td>${li.remarks || ''}</td>
     </tr>
   `).join('');
 
@@ -59,68 +72,99 @@ function printInvoice(invoice: StoreInvoice) {
   win.document.open();
   win.document.write(`
     <!DOCTYPE html><html><head>
-    <title>Invoice ${invoice.invoiceNumber}</title>
+    <title>${invoice.invoiceNumber}</title>
     <style>
-      @page { size: auto; margin: 6mm; }
+      @page { size: auto; margin: 8mm; }
       @media print { html, body { height: auto !important; } }
       * { margin:0; padding:0; box-sizing:border-box; }
       html, body { width: fit-content; height: fit-content; }
-      body { font-family:'Segoe UI',Arial,sans-serif; font-size:13px; color:#1a1a1a; padding:16px; }
-      .header { border-bottom:2px solid #e5e7eb; padding-bottom:16px; margin-bottom:20px; }
-      .logo { font-size:20px; font-weight:800; color:#2D7D6F; }
-      .sub { font-size:11px; color:#888; margin-top:2px; }
-      .inv-meta { display:flex; justify-content:space-between; margin-bottom:20px; }
-      .inv-meta div { font-size:12px; }
-      .inv-meta strong { display:block; font-size:15px; color:#1a1a1a; margin-bottom:2px; }
-      .status { display:inline-block; padding:3px 10px; border-radius:100px; font-size:11px;
+      body { font-family:'Segoe UI',Arial,sans-serif; font-size:12px; color:#1a1a1a; padding:10px; width:190mm; }
+      .title { text-align:center; font-size:17px; font-weight:800; letter-spacing:.04em; margin-bottom:10px; }
+      .status { float:right; display:inline-block; padding:2px 9px; border-radius:100px; font-size:10px;
                 font-weight:700; background:${statusColor}22; color:${statusColor}; border:1px solid ${statusColor}44; }
-      table { width:100%; border-collapse:collapse; margin-bottom:24px; }
-      thead th { background:#f9fafb; padding:8px; text-align:left; font-size:10px;
-                 text-transform:uppercase; letter-spacing:.05em; color:#666; border-bottom:2px solid #e5e7eb; }
-      thead th:nth-child(3), thead th:nth-child(4), thead th:nth-child(5) { text-align:right; }
-      .total-row td { padding:10px 8px; font-weight:800; font-size:15px; border-top:2px solid #e5e7eb; }
-      .total-row td:last-child { color:#2D7D6F; text-align:right; }
-      .footer { margin-top:28px; padding-top:12px; border-top:1px solid #e5e7eb;
-                font-size:10px; color:#aaa; text-align:center; }
-      .notes { background:#f9fafb; border:1px solid #e5e7eb; border-radius:8px;
-               padding:10px 14px; font-size:12px; color:#555; margin-bottom:16px; }
+      .parties { display:flex; border:1px solid #ccc; margin-bottom:10px; }
+      .parties > div { flex:1; padding:8px 10px; font-size:11.5px; line-height:1.5; }
+      .parties > div:first-child { border-right:1px solid #ccc; }
+      .parties b.lbl { display:block; font-size:9px; text-transform:uppercase; letter-spacing:.05em; color:#888; margin-bottom:3px; }
+      .parties .name { font-weight:700; font-size:12.5px; }
+      .meta { border:1px solid #ccc; border-top:none; margin-bottom:14px; }
+      .meta-row { display:flex; border-top:1px solid #eee; }
+      .meta-row:first-child { border-top:none; }
+      .meta-cell { flex:1; display:flex; padding:5px 10px; font-size:11.5px; }
+      .meta-cell:first-child { border-right:1px solid #eee; }
+      .meta-cell b { font-weight:700; min-width:120px; display:inline-block; }
+      table.items { width:100%; border-collapse:collapse; margin-bottom:22px; }
+      table.items th { background:#f2f2f2; border:1px solid #ccc; padding:6px 7px; text-align:left; font-size:10px;
+                        text-transform:uppercase; letter-spacing:.03em; }
+      table.items td { border:1px solid #ccc; padding:6px 7px; font-size:11.5px; vertical-align:top; }
+      table.items td.c, table.items th.c { text-align:center; }
+      table.items td.r, table.items th.r { text-align:right; }
+      table.items td.desc { font-weight:600; }
+      .sign { display:flex; margin-top:38px; }
+      .sign > div { flex:1; padding-top:8px; border-top:1px solid #333; margin-right:24px; font-size:11px; font-weight:700; }
+      .sign > div:last-child { margin-right:0; }
+      .notes { background:#f9fafb; border:1px solid #e5e7eb; border-radius:6px;
+               padding:8px 12px; font-size:11.5px; color:#555; margin-bottom:12px; }
+      .footer { margin-top:16px; padding-top:8px; border-top:1px solid #e5e7eb;
+                font-size:9px; color:#aaa; text-align:center; }
     </style>
     </head><body>
-    <div class="header">
-      <div class="logo">Cafe Aadvikam</div>
-      <div class="sub">Store Purchase Invoice</div>
-    </div>
+    <div class="title">GOODS RECEIPT NOTE <span class="status">${statusLabel}</span></div>
 
-    <div class="inv-meta">
+    <div class="parties">
       <div>
-        <strong>${invoice.invoiceNumber}</strong>
-        <span class="status">${statusLabel}</span>
-        <div style="margin-top:8px;color:#555;">
-          <div><b>Supplier:</b> ${invoice.supplierName}</div>
-          <div><b>Delivery Date:</b> ${new Date(invoice.deliveryDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'long', year: 'numeric' })}</div>
-          <div><b>Created:</b> ${new Date(invoice.createdAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</div>
-        </div>
+        <b class="lbl">Consignee</b>
+        <div class="name">VRSNB FOODS LLP</div>
+        <div># 109/1C, Bagalure to Berigai Main Road,</div>
+        <div>Berigai, Shoolagiri TK, Krishnagiri Dt - 635105</div>
+      </div>
+      <div>
+        <b class="lbl">Supplier</b>
+        <div class="name">${invoice.supplierName}</div>
+        <div>${invoice.supplierAddress || ''}</div>
       </div>
     </div>
 
-    <div className="table-scroll-container"><div className="table-inner-scroll"><table>
+    <div class="meta">
+      <div class="meta-row">
+        <div class="meta-cell"><b>GRN No.</b> ${invoice.invoiceNumber}</div>
+        <div class="meta-cell"><b>GRN Date</b> ${fmtDate(invoice.createdAt.slice(0, 10))}</div>
+      </div>
+      <div class="meta-row">
+        <div class="meta-cell"><b>Supplier Inv No.</b> ${invoice.supplierInvoiceNumber || '—'}</div>
+        <div class="meta-cell"><b>Inv Date</b> ${fmtDate(invoice.supplierInvoiceDate)}</div>
+      </div>
+      <div class="meta-row">
+        <div class="meta-cell"><b>Purchase Order No.</b> ${invoice.poNumber || '—'}</div>
+        <div class="meta-cell"><b>PO Date</b> ${fmtDate(invoice.poDate)}</div>
+      </div>
+      <div class="meta-row">
+        <div class="meta-cell"><b>Vehicle No.</b> ${invoice.vehicleNumber || '—'}</div>
+        <div class="meta-cell"><b>Delivery Date</b> ${fmtDate(invoice.deliveryDate)}</div>
+      </div>
+    </div>
+
+    <table class="items">
       <thead>
-        <tr><th>#</th><th>Item</th><th>Qty</th><th>Rate</th><th>Amount</th></tr>
+        <tr>
+          <th class="c">Sl.No</th><th>Item Code</th><th>Material Description</th><th class="c">UOM</th>
+          <th class="r">Recd. Qty</th><th class="r">Acc. Qty</th><th class="r">Rej. Qty</th><th>Remarks</th>
+        </tr>
       </thead>
       <tbody>${rows}</tbody>
-      <tfoot>
-        <tr class="total-row">
-          <td colspan="4">Grand Total</td>
-          <td>₹${invoice.grandTotal.toFixed(2)}</td>
-        </tr>
-      </tfoot>
-    </table></div></div>
+    </table>
 
     ${invoice.notes ? `<div class="notes"><b>Notes:</b> ${invoice.notes}</div>` : ''}
     ${invoice.reviewNote ? `<div class="notes" style="border-color:${statusColor}44;"><b>Admin Note:</b> ${invoice.reviewNote}</div>` : ''}
 
+    <div class="sign">
+      <div>Prepared By</div>
+      <div>Checked By</div>
+      <div>Approved By</div>
+    </div>
+
     <div class="footer">
-      Cafe Aadvikam · Store Purchase Invoice · ${invoice.syncedToStock ? 'Stock Synced ✓' : 'Stock not synced'}
+      Cafe Aadvikam · ${invoice.syncedToStock ? 'Stock Synced ✓' : 'Stock not synced'}
     </div>
     </body></html>
   `);
@@ -259,6 +303,13 @@ interface InvoiceLineDraft {
   quantity: string;
   unit: StockUnit;
   pricePerUnit: string;
+  // GRN receiving fields — itemCode is free text; acceptedQty/rejectedQty
+  // default to "everything received was accepted" until the store person
+  // marks some quantity as rejected (short delivery, damaged goods, etc).
+  itemCode: string;
+  acceptedQty: string;
+  rejectedQty: string;
+  remarks: string;
 }
 
 interface InvoiceItemSuggestion {
@@ -278,12 +329,34 @@ function invoiceUnit(raw?: string): StockUnit {
 }
 
 function createLineDraft(line?: InvoiceLineItem): InvoiceLineDraft {
+  const quantity = line ? String(line.quantity) : '1';
   return {
     rowId: crypto.randomUUID(),
     itemName: line?.itemName ?? '',
-    quantity: line ? String(line.quantity) : '1',
+    quantity,
     unit: invoiceUnit(line?.unit),
     pricePerUnit: line ? String(line.pricePerUnit) : '',
+    itemCode: line?.itemCode ?? '',
+    acceptedQty: line ? String(line.acceptedQty ?? line.quantity) : '',
+    rejectedQty: line ? String(line.rejectedQty ?? 0) : '',
+    remarks: line?.remarks ?? '',
+  };
+}
+
+// Used when seeding an Invoice/GRN draft from a Purchase Order line (which
+// has no price, item code, or accept/reject concept yet — those are filled
+// in for the first time at conversion).
+function createLineDraftFromPO(item: { itemName: string; quantity: number; unit: string }): InvoiceLineDraft {
+  return {
+    rowId: crypto.randomUUID(),
+    itemName: item.itemName,
+    quantity: String(item.quantity),
+    unit: invoiceUnit(item.unit),
+    pricePerUnit: '',
+    itemCode: '',
+    acceptedQty: String(item.quantity),
+    rejectedQty: '0',
+    remarks: '',
   };
 }
 
@@ -648,6 +721,52 @@ function InvoiceLineEditor({
         </button>
       </div>
 
+      {/* GRN receiving fields — Item Code, Accepted/Rejected Qty, Remarks.
+          A second row under the main line so the primary item/qty/rate/amount
+          grid above stays uncluttered. */}
+      <div className="mt-2 grid grid-cols-2 gap-2 border-t border-dashed border-border/70 pt-2 md:col-span-6 md:mt-2 md:grid-cols-[minmax(120px,1fr)_minmax(90px,.7fr)_minmax(90px,.7fr)_minmax(160px,1.4fr)]">
+        <div>
+          <label className="mb-1 block text-[9px] font-body font-bold uppercase text-muted-foreground">Item Code</label>
+          <input
+            value={line.itemCode}
+            onChange={event => onUpdate({ itemCode: event.target.value })}
+            placeholder="Optional"
+            className="h-9 w-full rounded-lg border border-border bg-background px-2 text-xs font-body focus:outline-none focus:ring-2 focus:ring-primary/30"
+          />
+        </div>
+        <div>
+          <label className="mb-1 block text-[9px] font-body font-bold uppercase text-muted-foreground">Acc. Qty</label>
+          <input
+            type="number" min="0" step="any"
+            value={line.acceptedQty}
+            onChange={event => onUpdate({ acceptedQty: event.target.value })}
+            placeholder={line.quantity || '0'}
+            inputMode="decimal"
+            className="h-9 w-full rounded-lg border border-border bg-background px-2 text-right text-xs font-body tabular-nums focus:outline-none focus:ring-2 focus:ring-primary/30"
+          />
+        </div>
+        <div>
+          <label className="mb-1 block text-[9px] font-body font-bold uppercase text-muted-foreground">Rej. Qty</label>
+          <input
+            type="number" min="0" step="any"
+            value={line.rejectedQty}
+            onChange={event => onUpdate({ rejectedQty: event.target.value })}
+            placeholder="0"
+            inputMode="decimal"
+            className="h-9 w-full rounded-lg border border-border bg-background px-2 text-right text-xs font-body tabular-nums focus:outline-none focus:ring-2 focus:ring-primary/30"
+          />
+        </div>
+        <div>
+          <label className="mb-1 block text-[9px] font-body font-bold uppercase text-muted-foreground">Remarks</label>
+          <input
+            value={line.remarks}
+            onChange={event => onUpdate({ remarks: event.target.value })}
+            placeholder="e.g. 2 pcs damaged in transit"
+            className="h-9 w-full rounded-lg border border-border bg-background px-2 text-xs font-body focus:outline-none focus:ring-2 focus:ring-primary/30"
+          />
+        </div>
+      </div>
+
       {errors.length > 0 && (
         <div className="mt-2 flex items-start gap-1.5 text-[11px] font-body text-red-700 md:col-span-6 md:mt-0">
           <AlertTriangle className="mt-0.5 size-3 shrink-0" />
@@ -658,29 +777,49 @@ function InvoiceLineEditor({
   );
 }
 
-function CreateInvoiceModal({
+export interface SourcePurchaseOrder {
+  id: string;
+  poNumber: string;
+  supplierId: string;
+  supplierName: string;
+  lineItems: { itemName: string; quantity: number; unit: string }[];
+}
+
+export function CreateInvoiceModal({
   onClose,
   onCreated,
   editingInvoice,
+  sourcePO,
 }: {
   onClose: () => void;
   onCreated: (invoiceNumber: string, mode: 'created' | 'updated') => void;
   editingInvoice?: StoreInvoice;
+  // When set, this modal is in "convert an Owner-approved Purchase Order into
+  // a GRN" mode: supplier is locked to the PO's supplier, items/quantities
+  // are seeded from the PO (price/item code/accept-reject filled in here for
+  // the first time), and saving calls convertPOToInvoice instead of
+  // createInvoice.
+  sourcePO?: SourcePurchaseOrder;
 }) {
   const { suppliers, loaded: suppLoaded, load: loadSuppliers } = useSupplierStore();
-  const { createInvoice, updateInvoice } = useInvoiceStore();
+  const { createInvoice, updateInvoice, convertPOToInvoice } = useInvoiceStore();
   const { items: stockItems, loaded: stockLoaded, load: loadStock } = useStoreStockStore();
   const { pushInvoicePending } = useNotificationStore();
 
   useEffect(() => { if (!suppLoaded) void loadSuppliers(); }, [suppLoaded, loadSuppliers]);
   useEffect(() => { if (!stockLoaded) void loadStock(); }, [stockLoaded, loadStock]);
 
-  const [supplierId, setSupplierId] = useState(editingInvoice?.supplierId ?? '');
-  const [supplierQuery, setSupplierQuery] = useState(editingInvoice?.supplierName ?? '');
+  const [supplierId, setSupplierId] = useState(editingInvoice?.supplierId ?? sourcePO?.supplierId ?? '');
+  const [supplierQuery, setSupplierQuery] = useState(editingInvoice?.supplierName ?? sourcePO?.supplierName ?? '');
   const [deliveryDate, setDeliveryDate] = useState(editingInvoice?.deliveryDate ?? businessDate());
   const [notes, setNotes] = useState(editingInvoice?.notes ?? '');
+  const [supplierInvoiceNumber, setSupplierInvoiceNumber] = useState(editingInvoice?.supplierInvoiceNumber ?? '');
+  const [supplierInvoiceDate, setSupplierInvoiceDate] = useState(editingInvoice?.supplierInvoiceDate ?? '');
+  const [vehicleNumber, setVehicleNumber] = useState(editingInvoice?.vehicleNumber ?? '');
   const [lines, setLines] = useState<InvoiceLineDraft[]>(() => {
-    const initialLines = editingInvoice?.lineItems.map(createLineDraft) ?? [createLineDraft()];
+    const initialLines = editingInvoice?.lineItems.map(createLineDraft)
+      ?? sourcePO?.lineItems.map(createLineDraftFromPO)
+      ?? [createLineDraft()];
     return initialLines.length > 0 ? initialLines : [createLineDraft()];
   });
   const [saving, setSaving] = useState(false);
@@ -759,12 +898,19 @@ function CreateInvoiceModal({
       const quantity = Number(line.quantity);
       const pricePerUnit = Number(line.pricePerUnit || '0');
       const key = normalizeItemName(itemName);
+      const acceptedQty = line.acceptedQty.trim() === '' ? quantity : Number(line.acceptedQty);
+      const rejectedQty = line.rejectedQty.trim() === '' ? 0 : Number(line.rejectedQty);
 
       if (!itemName) errors.push('Select or enter an item name.');
       if (!Number.isFinite(quantity) || quantity <= 0) errors.push('Quantity must be greater than zero.');
       if (!Number.isFinite(pricePerUnit) || pricePerUnit < 0) errors.push('Rate cannot be negative.');
       if (itemName && seenNames.has(key)) errors.push('This item is already present in another row.');
       if (itemName) seenNames.add(key);
+      if (!Number.isFinite(acceptedQty) || acceptedQty < 0) errors.push('Accepted quantity cannot be negative.');
+      if (!Number.isFinite(rejectedQty) || rejectedQty < 0) errors.push('Rejected quantity cannot be negative.');
+      if (Number.isFinite(quantity) && Number.isFinite(acceptedQty) && Number.isFinite(rejectedQty) && acceptedQty + rejectedQty > quantity + 0.001) {
+        errors.push('Accepted + Rejected quantity cannot exceed the received quantity.');
+      }
 
       if (errors.length > 0) nextLineErrors[line.rowId] = errors;
       normalizedLines.push({
@@ -773,6 +919,10 @@ function CreateInvoiceModal({
         unit: line.unit,
         pricePerUnit: Number.isFinite(pricePerUnit) ? pricePerUnit : 0,
         totalPrice: Number(((Number.isFinite(quantity) ? quantity : 0) * (Number.isFinite(pricePerUnit) ? pricePerUnit : 0)).toFixed(2)),
+        itemCode: line.itemCode.trim() || undefined,
+        acceptedQty: Number.isFinite(acceptedQty) ? acceptedQty : 0,
+        rejectedQty: Number.isFinite(rejectedQty) ? rejectedQty : 0,
+        remarks: line.remarks.trim() || undefined,
       });
     }
 
@@ -810,6 +960,9 @@ function CreateInvoiceModal({
           grandTotal: normalizedGrandTotal,
           notes: normalizedNotes,
           syncedToStock: editingInvoice.syncedToStock,
+          supplierInvoiceNumber: supplierInvoiceNumber.trim() || undefined,
+          supplierInvoiceDate: supplierInvoiceDate || undefined,
+          vehicleNumber: vehicleNumber.trim() || undefined,
         });
         if (updateError) { setError(updateError); return; }
 
@@ -824,6 +977,33 @@ function CreateInvoiceModal({
         return;
       }
 
+      if (sourcePO) {
+        const convertResult = await convertPOToInvoice(sourcePO.id, {
+          deliveryDate,
+          lineItems: invoiceLines,
+          grandTotal: normalizedGrandTotal,
+          notes: normalizedNotes,
+          supplierInvoiceNumber: supplierInvoiceNumber.trim() || undefined,
+          supplierInvoiceDate: supplierInvoiceDate || undefined,
+          vehicleNumber: vehicleNumber.trim() || undefined,
+        });
+
+        if (!convertResult.invoice) {
+          setError(convertResult.error ?? 'Failed to convert this purchase order. Please try again.');
+          return;
+        }
+
+        await loadStock();
+        try {
+          await pushInvoicePending(convertResult.invoice.id, convertResult.invoice.invoiceNumber, supplier.businessName, normalizedGrandTotal);
+        } catch (notificationError) {
+          console.warn('[InvoiceTab] PO converted, but the Admin notification refresh failed.', notificationError);
+        }
+        onCreated(convertResult.invoice.invoiceNumber, 'created');
+        onClose();
+        return;
+      }
+
       const createResult = await createInvoice({
         supplierId,
         supplierName: supplier.businessName,
@@ -832,6 +1012,9 @@ function CreateInvoiceModal({
         grandTotal: normalizedGrandTotal,
         notes: normalizedNotes,
         syncedToStock: false,
+        supplierInvoiceNumber: supplierInvoiceNumber.trim() || undefined,
+        supplierInvoiceDate: supplierInvoiceDate || undefined,
+        vehicleNumber: vehicleNumber.trim() || undefined,
       });
 
       if (!createResult.invoice) {
@@ -872,9 +1055,9 @@ function CreateInvoiceModal({
           <div className="mx-auto mb-3 h-1 w-10 rounded-full bg-border md:hidden" />
           <div className="flex items-start justify-between gap-3">
             <div>
-              <h3 className="font-display text-lg font-bold text-foreground md:text-xl">{editingInvoice ? `Edit ${editingInvoice.invoiceNumber}` : 'New Store Invoice'}</h3>
+              <h3 className="font-display text-lg font-bold text-foreground md:text-xl">{editingInvoice ? `Edit ${editingInvoice.invoiceNumber}` : sourcePO ? `Convert ${sourcePO.poNumber} to GRN` : 'New GRN'}</h3>
               <p className="text-[11px] font-body text-muted-foreground">
-                {editingInvoice ? 'Changes update the pending invoice and adjust inventory only by the quantity difference.' : 'Add supplier delivery items, update inventory and send the invoice to Admin.'}
+                {editingInvoice ? 'Changes update the pending GRN and adjust inventory only by the quantity difference.' : sourcePO ? 'Add pricing and receiving detail, then send this GRN to Admin.' : 'Add supplier delivery items, update inventory and send the GRN to Admin.'}
               </p>
             </div>
             <button type="button" onClick={onClose} disabled={saving} className="flex size-9 shrink-0 items-center justify-center rounded-xl hover:bg-muted disabled:opacity-50">
@@ -884,26 +1067,40 @@ function CreateInvoiceModal({
         </div>
 
         <div className="space-y-5 px-4 py-5 md:px-6">
+          {sourcePO && (
+            <div className="flex items-center gap-2 rounded-xl border border-primary/30 bg-primary/5 px-3 py-2.5 text-xs font-body text-primary">
+              <CheckCircle2 className="size-3.5 shrink-0" />
+              <span>Converting Owner-approved <strong>{sourcePO.poNumber}</strong> — supplier is locked to this purchase order.</span>
+            </div>
+          )}
           <section className="rounded-2xl border border-border bg-card p-4">
             <div className="mb-3 flex items-center justify-between">
               <div>
-                <h4 className="text-sm font-body font-bold text-foreground">Invoice details</h4>
+                <h4 className="text-sm font-body font-bold text-foreground">GRN details</h4>
                 <p className="text-[10px] font-body text-muted-foreground">Choose the supplier and delivery date first.</p>
               </div>
             </div>
             <div className="grid gap-3 md:grid-cols-2">
               <div>
                 <label className="mb-1.5 block text-[10px] font-body font-bold uppercase text-muted-foreground">Supplier *</label>
-                <SupplierPicker
-                  value={supplierQuery}
-                  supplierId={supplierId}
-                  suppliers={suppliers}
-                  onChange={value => { setSupplierQuery(value); if (!value) setSupplierId(''); }}
-                  onSelect={supplier => { setSupplierId(supplier.id); setSupplierQuery(supplier.businessName); setError(''); }}
-                  firstItemInputId={`inv-item-${lines[0]?.rowId}`}
-                />
-                {supplierId && selectedSupplier && (
-                  <p className="mt-1 flex items-center gap-1 text-[10px] font-body text-primary"><Check className="size-3" /> {selectedSupplier.businessName}</p>
+                {sourcePO ? (
+                  <p className="flex h-11 items-center gap-1.5 rounded-xl border border-border bg-muted/40 px-3 text-sm font-body font-semibold text-foreground">
+                    <Check className="size-3.5 text-primary" /> {sourcePO.supplierName}
+                  </p>
+                ) : (
+                  <>
+                    <SupplierPicker
+                      value={supplierQuery}
+                      supplierId={supplierId}
+                      suppliers={suppliers}
+                      onChange={value => { setSupplierQuery(value); if (!value) setSupplierId(''); }}
+                      onSelect={supplier => { setSupplierId(supplier.id); setSupplierQuery(supplier.businessName); setError(''); }}
+                      firstItemInputId={`inv-item-${lines[0]?.rowId}`}
+                    />
+                    {supplierId && selectedSupplier && (
+                      <p className="mt-1 flex items-center gap-1 text-[10px] font-body text-primary"><Check className="size-3" /> {selectedSupplier.businessName}</p>
+                    )}
+                  </>
                 )}
               </div>
 
@@ -919,6 +1116,44 @@ function CreateInvoiceModal({
                 />
                 <p className="mt-1 text-[10px] font-body text-muted-foreground">New dates are limited to today or yesterday.</p>
               </div>
+
+              <div>
+                <label className="mb-1.5 block text-[10px] font-body font-bold uppercase text-muted-foreground">Supplier Invoice No.</label>
+                <input
+                  value={supplierInvoiceNumber}
+                  onChange={event => { setSupplierInvoiceNumber(event.target.value); setError(''); }}
+                  placeholder="As printed on the supplier's bill"
+                  className="h-11 w-full rounded-xl border border-border bg-background px-3 text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30"
+                />
+              </div>
+
+              <div>
+                <label className="mb-1.5 block text-[10px] font-body font-bold uppercase text-muted-foreground">Supplier Invoice Date</label>
+                <input
+                  type="date"
+                  value={supplierInvoiceDate}
+                  max={today}
+                  onChange={event => { setSupplierInvoiceDate(event.target.value); setError(''); }}
+                  className="h-11 w-full rounded-xl border border-border bg-background px-3 text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30"
+                />
+              </div>
+
+              <div>
+                <label className="mb-1.5 block text-[10px] font-body font-bold uppercase text-muted-foreground">Vehicle No.</label>
+                <input
+                  value={vehicleNumber}
+                  onChange={event => { setVehicleNumber(event.target.value); setError(''); }}
+                  placeholder="e.g. TN 34 AB 1234"
+                  className="h-11 w-full rounded-xl border border-border bg-background px-3 text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30"
+                />
+              </div>
+
+              {sourcePO && (
+                <div>
+                  <label className="mb-1.5 block text-[10px] font-body font-bold uppercase text-muted-foreground">Purchase Order No.</label>
+                  <p className="flex h-11 items-center rounded-xl border border-border bg-muted/40 px-3 text-sm font-body font-semibold text-foreground">{sourcePO.poNumber}</p>
+                </div>
+              )}
             </div>
           </section>
 
@@ -988,7 +1223,7 @@ function CreateInvoiceModal({
               </div>
               <div className="mt-3 flex items-start gap-2 border-t border-primary/15 pt-3 text-[11px] font-body text-blue-700">
                 <Package className="mt-0.5 size-3.5 shrink-0" />
-                <span>{editingInvoice ? 'Inventory will be changed only by the difference between the original and edited quantities.' : 'Inventory is synchronized with this invoice when it is saved.'}</span>
+                <span>{editingInvoice ? 'Inventory will be changed only by the difference between the original and edited quantities.' : 'Inventory is synchronized with this GRN when it is saved.'}</span>
               </div>
             </div>
           </section>
@@ -1009,7 +1244,7 @@ function CreateInvoiceModal({
               disabled={saving}
               className="flex h-11 min-w-52 items-center justify-center gap-2 rounded-xl cafe-gradient px-5 text-sm font-body font-bold text-primary-foreground disabled:opacity-50 active:scale-[0.99]"
             >
-              {saving ? <><Loader2 className="size-4 animate-spin" /> Saving safely…</> : editingInvoice ? <><Send className="size-4" /> Update & Resubmit</> : <><Send className="size-4" /> Save & Send to Admin</>}
+              {saving ? <><Loader2 className="size-4 animate-spin" /> Saving safely…</> : editingInvoice ? <><Send className="size-4" /> Update & Resubmit</> : sourcePO ? <><Send className="size-4" /> Convert & Send to Admin</> : <><Send className="size-4" /> Save & Send to Admin</>}
             </button>
           </div>
         </div>
@@ -1083,7 +1318,7 @@ export default function InvoiceTab() {
           <input
             value={search}
             onChange={e => setSearch(e.target.value)}
-            placeholder="Search invoices…"
+            placeholder="Search GRNs…"
             className="w-full h-10 pl-9 pr-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30"
           />
         </div>
@@ -1125,7 +1360,7 @@ export default function InvoiceTab() {
         <div className="flex flex-col items-center py-16 gap-3 text-muted-foreground">
           <FileText className="size-10 opacity-20" />
           <p className="text-sm font-body">
-            {invoices.length === 0 ? 'No invoices yet — tap New to create one' : 'No matches'}
+            {invoices.length === 0 ? 'No GRNs yet — tap New to create one' : 'No matches'}
           </p>
         </div>
       ) : (

@@ -16,6 +16,8 @@ import { cn } from '@/lib/utils';
 import { exportToExcel } from '@/lib/exportExcel';
 import { dispatchReceiveAndBill } from './hosurBillingBridge';
 import { getPackingCounterStatus } from './packingCounter';
+import { notifyAdmin } from '@/pages/HosurDashboard';
+import { buildHosurOrderTag, buildHosurItemId, checkRecentDuplicateHosurOrder } from './hosurOrderShared';
 
 const money = (v: number | null | undefined) => 'Rs.' + (v ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
 const num = (v: number | null | undefined) => (v ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
@@ -211,6 +213,14 @@ function PlaceOrderSection({ shops, prices, userName, onSaved }: { shops: HosurS
         const items_ = Object.values(items);
         const shopSubtotal = items_.reduce((s, i) => s + i.lineTotal, 0);
 
+        // DUPLICATE-ORDER GUARD: same shop, same subtotal, submitted again
+        // within the last 90s (double-click, slow-network retry, etc.) —
+        // block it instead of silently creating a second identical order.
+        const dupeCheck = await checkRecentDuplicateHosurOrder(shop.id, shopSubtotal);
+        if (dupeCheck.isDuplicate) {
+          throw new Error(`${shop.shopName} already has a matching order (${dupeCheck.orderNumber}) placed moments ago — check Hosur order history before resending.`);
+        }
+
         const orderDate = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: '2-digit', month: '2-digit', day: '2-digit' }).format(new Date()).replace(/-/g, '');
         const orderNumber = 'HSR-ORD-' + orderDate + '-' + crypto.randomUUID().slice(0, 4).toUpperCase();
         // 'draft' — NOT yet ready to pack. This shop order first needs to go
@@ -242,17 +252,24 @@ function PlaceOrderSection({ shops, prices, userName, onSaved }: { shops: HosurS
         // Planner sees it in Incoming Orders, just like a VRSNB/SNB requirement.
         // bakeryStore's submitDispatch matches on the HOSUR_ORDER_ID tag in
         // notes to sync status back onto the hosur_orders row above.
+        // itemId/notes-tag scheme unified with HosurDashboard.tsx's NewOrderTab
+        // (both now go through hosurOrderShared.ts) so an order looks
+        // identical downstream regardless of which screen created it.
         const bakeryItems = items_.map(item => ({
-          itemId: `hosur-${normalize(item.itemName)}`,
+          itemId: buildHosurItemId(order.id, item.itemName),
           itemName: item.itemName,
           quantity: item.quantity,
+          originalPcs: item.unit === 'pcs' ? item.quantity : undefined,
           dispatchUnit: item.unit,
+          isCustom: item.isCustom ?? false,
         }));
         const { error: bakeryOrderError } = await supabase.from('bakery_orders').insert({
           items: bakeryItems, status: 'pending', created_by: userName, target_branch: 'Hosur',
-          notes: `HOSUR_ORDER_ID:${order.id}${notes.trim() ? ` | ${notes.trim()}` : ''}`,
+          notes: buildHosurOrderTag(order.id, orderNumber, shop.shopName, notes),
         });
         if (bakeryOrderError) throw bakeryOrderError;
+
+        void notifyAdmin('New Hosur shop order', `${shop.shopName} order ${orderNumber} created by ${userName} and sent to Store. Total ${money(shopSubtotal)}.`, order.id, orderNumber, { shopId: shop.id, subtotal: shopSubtotal });
       }
 
       setCartByShop({}); setNotes(''); onSaved();

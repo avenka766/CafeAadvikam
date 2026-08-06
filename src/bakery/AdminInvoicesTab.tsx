@@ -9,64 +9,64 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useInvoiceStore, type StoreInvoice, type InvoiceStatus } from './invoiceStore';
+// GRN print layout (2026-08-06): the Admin copy used to keep its own
+// duplicated, visible-popup print function that had already drifted from
+// the Store side's format. Now shares the single GRN-format implementation
+// in InvoiceTab.tsx so Store and Admin always print the identical document.
+import { printInvoice } from './InvoiceTab';
+import { useStorePurchaseOrderStore, type StorePurchaseOrder } from './storePurchaseOrderStore';
 
-// ─── Re-use print logic (duplicated inline to keep file self-contained) ───────
-function printInvoice(invoice: StoreInvoice) {
-  const win = window.open('', '_blank', 'width=480,height=700');
-  if (!win) return;
-  const rows = invoice.lineItems.map((li, i) => `
-    <tr style="border-bottom:1px solid #f0f0f0;">
-      <td style="padding:7px 8px;">${i + 1}</td>
-      <td style="padding:7px 8px;font-weight:600;">${li.itemName}</td>
-      <td style="padding:7px 8px;text-align:right;">${li.quantity} ${li.unit}</td>
-      <td style="padding:7px 8px;text-align:right;">₹${li.pricePerUnit.toFixed(2)}</td>
-      <td style="padding:7px 8px;text-align:right;font-weight:700;">₹${li.totalPrice.toFixed(2)}</td>
-    </tr>`).join('');
-  const statusColor = invoice.status === 'approved' ? '#16a34a' : invoice.status === 'rejected' ? '#dc2626' : '#d97706';
-  const statusLabel = invoice.status === 'approved' ? 'Approved' : invoice.status === 'rejected' ? 'Rejected' : 'Pending Review';
-  win.document.write(`<!DOCTYPE html><html><head>
-    <title>Invoice ${invoice.invoiceNumber}</title>
-    <style>
-      @page{size:auto;margin:6mm;}
-      @media print{html,body{height:auto !important;}}
-      *{margin:0;padding:0;box-sizing:border-box;}
-      html,body{width:fit-content;height:fit-content;}
-      body{font-family:'Segoe UI',Arial,sans-serif;font-size:13px;color:#1a1a1a;padding:16px;}
-      .logo{font-size:20px;font-weight:800;color:#2D7D6F;}
-      .sub{font-size:11px;color:#888;margin-top:2px;margin-bottom:16px;}
-      .status{display:inline-block;padding:3px 10px;border-radius:100px;font-size:11px;font-weight:700;background:${statusColor}22;color:${statusColor};border:1px solid ${statusColor}44;}
-      table{width:100%;border-collapse:collapse;margin:16px 0;}
-      thead th{background:#f9fafb;padding:8px;text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:#666;border-bottom:2px solid #e5e7eb;}
-      thead th:nth-child(3),thead th:nth-child(4),thead th:nth-child(5){text-align:right;}
-      .total-row td{padding:10px 8px;font-weight:800;font-size:15px;border-top:2px solid #e5e7eb;}
-      .total-row td:last-child{color:#2D7D6F;text-align:right;}
-      .footer{margin-top:24px;padding-top:12px;border-top:1px solid #e5e7eb;font-size:10px;color:#aaa;text-align:center;}
-    </style></head><body>
-    <div class="logo">Cafe Aadvikam</div>
-    <div class="sub">Store Purchase Invoice · Admin Copy</div>
-    <div><strong style="font-size:15px;">${invoice.invoiceNumber}</strong> &nbsp;<span class="status">${statusLabel}</span></div>
-    <div style="margin-top:10px;font-size:12px;color:#555;">
-      <div><b>Supplier:</b> ${invoice.supplierName}</div>
-      <div><b>Delivery Date:</b> ${new Date(invoice.deliveryDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'long', year: 'numeric' })}</div>
-      <div><b>Created:</b> ${new Date(invoice.createdAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</div>
+// ─── Linked Purchase Order block ───────────────────────────────────────────
+// When a GRN was created by converting an Owner-approved PO, Admin should be
+// able to see that PO right alongside the GRN — what was originally
+// requested, who raised it, and who on the Owner side approved it — rather
+// than only seeing the priced GRN in isolation.
+function LinkedPOBlock({ po }: { po: StorePurchaseOrder }) {
+  return (
+    <div className="rounded-xl border border-blue-200 bg-blue-50/60 px-3 py-2.5 space-y-2">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-xs font-body font-bold text-blue-800">
+          Converted from Purchase Order {po.poNumber}
+        </p>
+        <span className="text-[9px] font-body font-bold px-2 py-0.5 rounded-full border bg-emerald-100 text-emerald-700 border-emerald-300">
+          Owner Approved
+        </span>
+      </div>
+      <div className="rounded-lg border border-blue-200/70 bg-white/70 overflow-hidden">
+        <div className="grid grid-cols-12 px-2.5 py-1.5 bg-blue-100/50 text-[9px] font-body font-bold text-blue-800 uppercase">
+          <span className="col-span-8">Originally Requested</span>
+          <span className="col-span-4 text-right">Qty</span>
+        </div>
+        {po.lineItems.map((li, i) => (
+          <div key={i} className="grid grid-cols-12 px-2.5 py-1.5 border-t border-blue-100 text-[11px] font-body">
+            <span className="col-span-8 font-semibold text-foreground truncate">{li.itemName}</span>
+            <span className="col-span-4 text-right text-muted-foreground">{li.quantity} {li.unit}</span>
+          </div>
+        ))}
+      </div>
+      <p className="text-[11px] font-body text-blue-800">
+        Raised{po.createdByName ? ` by ${po.createdByName}` : ''} · Approved
+        {po.reviewedByName ? ` by ${po.reviewedByName}` : ''}
+        {po.reviewedAt ? ` on ${new Date(po.reviewedAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}` : ''}
+      </p>
+      {po.reviewNote && (
+        <p className="text-[11px] font-body text-blue-700 bg-white/60 rounded-lg px-2.5 py-1.5">
+          <span className="font-bold">Owner note: </span>{po.reviewNote}
+        </p>
+      )}
     </div>
-    <table><thead><tr><th>#</th><th>Item</th><th>Qty</th><th>Rate</th><th>Amount</th></tr></thead>
-    <tbody>${rows}</tbody>
-    <tfoot><tr class="total-row"><td colspan="4">Grand Total</td><td>₹${invoice.grandTotal.toFixed(2)}</td></tr></tfoot></table>
-    ${invoice.notes ? `<div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:10px 14px;font-size:12px;color:#555;margin-bottom:8px;"><b>Notes:</b> ${invoice.notes}</div>` : ''}
-    ${invoice.reviewNote ? `<div style="background:${statusColor}11;border:1px solid ${statusColor}44;border-radius:8px;padding:10px 14px;font-size:12px;color:${statusColor};"><b>Review Note:</b> ${invoice.reviewNote}</div>` : ''}
-    <div class="footer">Cafe Aadvikam · Admin Review Copy · ${invoice.syncedToStock ? 'Stock Synced ✓' : ''}</div>
-    </body></html>`);
-  win.document.close(); win.focus(); setTimeout(() => win.print(), 300);
+  );
 }
 
 // ─── Review Modal ─────────────────────────────────────────────────────────────
 function ReviewModal({
   invoice,
+  sourcePO,
   onClose,
   onReview,
 }: {
   invoice: StoreInvoice;
+  sourcePO?: StorePurchaseOrder;
   onClose: () => void;
   onReview: (id: string, status: InvoiceStatus, note: string) => Promise<string | null>;
 }) {
@@ -102,6 +102,8 @@ function ReviewModal({
             <X className="size-4" />
           </button>
         </div>
+
+        {sourcePO && <LinkedPOBlock po={sourcePO} />}
 
         {/* Summary */}
         <div className="rounded-xl border border-border overflow-hidden">
@@ -168,9 +170,11 @@ function ReviewModal({
 // ─── Admin Invoice Card ───────────────────────────────────────────────────────
 function AdminInvoiceCard({
   invoice,
+  sourcePO,
   onReview,
 }: {
   invoice: StoreInvoice;
+  sourcePO?: StorePurchaseOrder;
   onReview: (inv: StoreInvoice) => void;
 }) {
   const [expanded, setExpanded] = useState(invoice.status === 'pending_review');
@@ -207,6 +211,11 @@ function AdminInvoiceCard({
                 ✎ Edited{invoice.editCount && invoice.editCount > 1 ? ` ×${invoice.editCount}` : ''}
               </span>
             )}
+            {invoice.poNumber && (
+              <span className="text-[9px] font-body font-bold px-2 py-0.5 rounded-full border bg-blue-50 text-blue-700 border-blue-200">
+                From {invoice.poNumber}
+              </span>
+            )}
           </div>
           <p className="text-[11px] font-body text-muted-foreground mt-0.5 truncate">
             {invoice.supplierName} · ₹{invoice.grandTotal.toFixed(2)} · {new Date(invoice.deliveryDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}
@@ -230,6 +239,8 @@ function AdminInvoiceCard({
               <p className="font-semibold text-foreground">{new Date(invoice.deliveryDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</p>
             </div>
           </div>
+
+          {sourcePO && <LinkedPOBlock po={sourcePO} />}
 
           <div className="rounded-xl border border-border overflow-hidden">
             <div className="grid grid-cols-12 px-3 py-2 bg-muted/50 text-[9px] font-body font-bold text-muted-foreground uppercase">
@@ -301,11 +312,22 @@ function AdminInvoiceCard({
 // ─── Main Admin Invoices Tab ──────────────────────────────────────────────────
 export default function AdminInvoicesTab() {
   const { invoices, loaded, loading, error, load, updateStatus } = useInvoiceStore();
+  const { orders: purchaseOrders, loaded: poLoaded, load: loadPOs } = useStorePurchaseOrderStore();
   const [reviewInvoice, setReviewInvoice] = useState<StoreInvoice | null>(null);
   const [search, setSearch]               = useState('');
   const [filterStatus, setFilterStatus]   = useState<'all' | 'pending_review' | 'approved' | 'rejected'>('pending_review');
 
   useEffect(() => { if (!loaded) void load(); }, [loaded, load]);
+  // Admin's own PO-status tab already loads this same store; loading it here
+  // too (idempotent — `load` no-ops while in flight) lets each GRN card show
+  // its originating, Owner-approved PO without a second round of clicks.
+  useEffect(() => { if (!poLoaded) void loadPOs(); }, [poLoaded, loadPOs]);
+
+  const poById = useMemo(() => {
+    const map = new Map<string, StorePurchaseOrder>();
+    for (const po of purchaseOrders) map.set(po.id, po);
+    return map;
+  }, [purchaseOrders]);
 
   // Visibility refresh plus a slow recovery poll avoids background egress.
   useEffect(() => {
@@ -432,7 +454,12 @@ export default function AdminInvoicesTab() {
       ) : (
         <div className="space-y-3">
           {filtered.map(inv => (
-            <AdminInvoiceCard key={inv.id} invoice={inv} onReview={setReviewInvoice} />
+            <AdminInvoiceCard
+              key={inv.id}
+              invoice={inv}
+              sourcePO={inv.sourcePoId ? poById.get(inv.sourcePoId) : undefined}
+              onReview={setReviewInvoice}
+            />
           ))}
         </div>
       )}
@@ -440,6 +467,7 @@ export default function AdminInvoicesTab() {
       {reviewInvoice && (
         <ReviewModal
           invoice={reviewInvoice}
+          sourcePO={reviewInvoice.sourcePoId ? poById.get(reviewInvoice.sourcePoId) : undefined}
           onClose={() => setReviewInvoice(null)}
           onReview={handleReview}
         />
