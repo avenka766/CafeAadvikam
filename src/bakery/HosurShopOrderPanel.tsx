@@ -453,6 +453,20 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
   const currentUser = useAuthStore(s => s.currentUser);
   const [overrides, setOverrides] = useState<Record<string, string>>({});
   const [expanded, setExpanded] = useState<string | null>(null);
+  // BUG FIX: an order sits in this queue (status 'pending_packing') as soon
+  // as ANY one of its items has been dispatched from production — the other
+  // items on the same order might still be sitting at 0 dispatched. The
+  // form used to default every item's billable quantity to what was
+  // ORDERED, not what actually arrived, so opening an order here and
+  // clicking Dispatch could bill (and mark fully sent) items that were never
+  // physically produced/sent yet. Everything below now defaults to what
+  // production has actually dispatched (item.dispatchedQuantity), and a
+  // shop search narrows the queue down to one shop at a time.
+  const [shopSearch, setShopSearch] = useState('');
+  const filteredOrders = useMemo(() => {
+    const q = shopSearch.trim().toLowerCase();
+    return q ? orders.filter(o => o.shopName.toLowerCase().includes(q)) : orders;
+  }, [orders, shopSearch]);
   const [paymentType, setPaymentType] = useState<Record<string, 'full' | 'partial' | 'credit'>>({});
   const [paymentMode, setPaymentMode] = useState<Record<string, string>>({});
   const [paidAmount, setPaidAmount] = useState<Record<string, string>>({});
@@ -499,7 +513,7 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
   const orderTotal = (order: HosurOrder) => {
     const orderItems = items.filter(i => i.orderId === order.id);
     return orderItems.reduce((sum, item) => {
-      const qty = overrides[item.id] !== undefined ? Number(overrides[item.id] || 0) : item.quantity;
+      const qty = overrides[item.id] !== undefined ? Number(overrides[item.id] || 0) : item.dispatchedQuantity;
       return sum + qty * item.unitPrice;
     }, 0);
   };
@@ -517,7 +531,7 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
     try {
       const billItems = orderItems.map(item => ({
         id: item.id, itemName: item.itemName, unit: item.unit, quantity: item.quantity, unitPrice: item.unitPrice,
-        receivedQuantity: overrides[item.id] !== undefined ? Number(overrides[item.id] || 0) : item.quantity,
+        receivedQuantity: overrides[item.id] !== undefined ? Number(overrides[item.id] || 0) : item.dispatchedQuantity,
       }));
       const outcome = await dispatchReceiveAndBill({
         order: { id: order.id, orderNumber: order.orderNumber, shopId: order.shopId, shopName: order.shopName, shopWhatsapp: order.shopWhatsapp },
@@ -622,8 +636,8 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
         <button
           onClick={() => exportToExcel({
             filename: 'hosur-dispatch-queue', sheetName: 'Dispatch Queue', title: 'Hosur - Pending Dispatch',
-            columns: [{ header: 'Order #', key: 'orderNumber' }, { header: 'Shop', key: 'shop' }, { header: 'Item', key: 'item' }, { header: 'Qty', key: 'qty' }, { header: 'Unit', key: 'unit' }],
-            rows: orders.flatMap(o => items.filter(i => i.orderId === o.id).map(i => ({ orderNumber: o.orderNumber, shop: o.shopName, item: i.itemName, qty: i.quantity, unit: i.unit }))),
+            columns: [{ header: 'Order #', key: 'orderNumber' }, { header: 'Shop', key: 'shop' }, { header: 'Item', key: 'item' }, { header: 'Ordered', key: 'qty' }, { header: 'Dispatched', key: 'dispatched' }, { header: 'Unit', key: 'unit' }],
+            rows: filteredOrders.flatMap(o => items.filter(i => i.orderId === o.id).map(i => ({ orderNumber: o.orderNumber, shop: o.shopName, item: i.itemName, qty: i.quantity, dispatched: i.dispatchedQuantity, unit: i.unit }))),
           })}
           className="rounded-xl border border-teal bg-primary/5 px-3 py-1.5 text-xs font-bold text-primary hover:bg-primary/10"
         >Export Excel</button>
@@ -633,17 +647,46 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
           <AlertTriangle className="size-4 shrink-0" /> Planner's counter is closed — open today's counter in Daily Closure before billing any Hosur order.
         </div>
       )}
+      <div className="relative">
+        <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+        <input
+          value={shopSearch}
+          onChange={e => setShopSearch(e.target.value)}
+          placeholder="Select / search a shop..."
+          className="w-full max-w-sm rounded-xl border border-border bg-background py-2 pl-9 pr-3 text-sm font-body"
+        />
+      </div>
       {orders.length === 0 && <div className="rounded-2xl border border-dashed border-border p-10 text-center text-xs font-bold text-muted-foreground">No orders waiting on dispatch.</div>}
-      {orders.map(order => {
+      {orders.length > 0 && filteredOrders.length === 0 && <div className="rounded-2xl border border-dashed border-border p-10 text-center text-xs font-bold text-muted-foreground">No pending orders match "{shopSearch}".</div>}
+      {filteredOrders.map(order => {
         const orderItems = items.filter(i => i.orderId === order.id);
         const pType = paymentType[order.id] ?? 'full';
         const total = orderTotal(order);
         const res = result[order.id];
+        // At-a-glance dispatch completeness for this shop's order — this is
+        // the summary that used to be missing: an order can sit in this
+        // queue with only one of several items actually sent from
+        // production, and without this the collapsed card gave no hint of
+        // that before opening it.
+        const readyCount = orderItems.filter(i => i.dispatchedQuantity >= i.quantity - 0.01).length;
+        const partialCount = orderItems.filter(i => i.dispatchedQuantity > 0.01 && i.dispatchedQuantity < i.quantity - 0.01).length;
+        const notDispatchedCount = orderItems.filter(i => i.dispatchedQuantity <= 0.01).length;
         return (
           <div key={order.id} className="card-base p-4">
-            <button onClick={() => setExpanded(v => v === order.id ? null : order.id)} className="flex w-full items-center justify-between text-left">
+            <button onClick={() => setExpanded(v => v === order.id ? null : order.id)} className="flex w-full flex-wrap items-center justify-between gap-2 text-left">
               <span className="text-sm font-black text-foreground">{order.shopName} - #{order.orderNumber} <span className="ml-2 text-xs font-bold text-muted-foreground">{money(total)}</span></span>
-              <span className="rounded-full bg-muted px-2.5 py-1 text-[11px] font-bold text-muted-foreground">{expanded === order.id ? 'Hide' : 'Open'}</span>
+              <span className="flex items-center gap-1.5">
+                {notDispatchedCount > 0 && (
+                  <span className="rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-black text-red-700">{notDispatchedCount} not dispatched yet</span>
+                )}
+                {partialCount > 0 && (
+                  <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-black text-amber-700">{partialCount} partial</span>
+                )}
+                {readyCount > 0 && (
+                  <span className="rounded-full bg-teal-100 px-2 py-0.5 text-[10px] font-black text-teal-700">{readyCount} ready</span>
+                )}
+                <span className="rounded-full bg-muted px-2.5 py-1 text-[11px] font-bold text-muted-foreground">{expanded === order.id ? 'Hide' : 'Open'}</span>
+              </span>
             </button>
 
             {expanded === order.id && (
@@ -658,18 +701,26 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
                     // wrong/negative bill for a real shop. Clamp to >= 0 on
                     // entry, and flag (without hard-blocking — a shop's order
                     // can legitimately be corrected upward at dispatch time)
-                    // whenever the dispatched amount exceeds what was ordered.
+                    // whenever the billed amount exceeds what was ordered.
+                    // BUG FIX (this pass): default billable qty is now what
+                    // production has actually DISPATCHED for this item, not
+                    // the full originally-ordered amount — billing "whatever
+                    // was ordered" regardless of what physically arrived was
+                    // exactly what caused "dispatch one item and everything
+                    // looks ready to send" confusion.
                     const overrideVal = overrides[item.id];
-                    const overrideNum = overrideVal !== undefined ? Number(overrideVal) : item.quantity;
+                    const overrideNum = overrideVal !== undefined ? Number(overrideVal) : item.dispatchedQuantity;
                     const exceedsOrdered = Number.isFinite(overrideNum) && overrideNum > item.quantity + 0.001;
+                    const exceedsDispatched = Number.isFinite(overrideNum) && overrideNum > item.dispatchedQuantity + 0.001;
+                    const notYetDispatched = item.dispatchedQuantity <= 0.01;
                     return (
-                      <div key={item.id} className="rounded-lg bg-muted/40 px-3 py-1.5">
+                      <div key={item.id} className={cn('rounded-lg px-3 py-1.5', notYetDispatched ? 'bg-red-50' : 'bg-muted/40')}>
                         <div className="flex items-center justify-between text-xs font-bold">
-                          <span>{item.itemName} <span className="text-muted-foreground">(ordered {num(item.quantity)} {item.unit})</span></span>
+                          <span>{item.itemName} <span className="text-muted-foreground">(ordered {num(item.quantity)} {item.unit} · dispatched {num(item.dispatchedQuantity)} {item.unit})</span></span>
                           <input
                             type="number"
                             min={0}
-                            value={overrideVal ?? item.quantity}
+                            value={overrideVal ?? item.dispatchedQuantity}
                             onChange={e => {
                               const raw = e.target.value;
                               const n = Number(raw);
@@ -679,10 +730,12 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
                               if (raw !== '' && Number.isFinite(n) && n < 0) return;
                               setOverrides(v => ({ ...v, [item.id]: raw }));
                             }}
-                            className={cn('w-24 rounded-lg border bg-background px-2 py-1 text-right', exceedsOrdered ? 'border-amber-400' : 'border-border')}
+                            className={cn('w-24 rounded-lg border bg-background px-2 py-1 text-right', exceedsOrdered ? 'border-amber-400' : exceedsDispatched ? 'border-amber-300' : 'border-border')}
                           />
                         </div>
+                        {notYetDispatched && !applied && <p className="mt-0.5 text-[10px] font-black text-red-700">Not yet dispatched from production — billing this will send 0 unless you know it's already physically with this shop.</p>}
                         {exceedsOrdered && <p className="mt-0.5 text-[10px] font-black text-amber-700">More than ordered ({num(item.quantity)} {item.unit}) — double-check before dispatching.</p>}
+                        {!exceedsOrdered && exceedsDispatched && <p className="mt-0.5 text-[10px] font-black text-amber-700">More than what's been dispatched from production ({num(item.dispatchedQuantity)} {item.unit}) so far — double-check before dispatching.</p>}
                         {applied && <p className="mt-0.5 text-[10px] font-black text-teal-700">Using {num(applied.qty)} {item.unit} from leftover pool</p>}
                       </div>
                     );

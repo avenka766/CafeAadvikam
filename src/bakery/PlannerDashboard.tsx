@@ -223,17 +223,17 @@ export default function PlannerDashboard() {
   const mergeableOrders    = useMemo(() => orders.filter(o => o.status === 'pending'), [orders]);
   const readyForProduction = useMemo(() => orders.filter(o => o.status === 'store_confirmed'), [orders]);
   const producedOrders    = useMemo(() => orders.filter(o => o.status === 'produced'), [orders]);
-  // Union used by Production Entry + Dispatch: an order flips to 'produced' as soon as any
-  // one item is recorded, but individual items may still be pending — both tabs need the
-  // full set and decide per-item (per-row) visibility themselves.
-  // WORKFLOW CHANGE (2026-08-06): Production Entry and Dispatch used to only
-  // source orders once Store had confirmed them (status 'store_confirmed'/
-  // 'produced') — owner explicitly asked for this gate removed: every order,
-  // at every stage (even still 'pending', never sent to Store at all), should
-  // be visible and workable in both tabs. No status filter at all now — both
-  // tabs decide their own per-row visibility (e.g. hiding fully-completed/
-  // fully-dispatched rows) independently, same as before.
-  const productionSourceOrders = orders;
+  // WORKFLOW CHANGE (2026-08-10): reverted the 2026-08-06 "show everything"
+  // change — the owner found that orders never sent to Store (still
+  // 'pending'/'accepted') were showing up in Production Entry/Dispatch as if
+  // they were today's work, which was confusing since Store hadn't actually
+  // received them yet. Production Entry + Dispatch now only source orders
+  // once Store has combined + confirmed them (status 'store_confirmed' or
+  // later) — the same gate 'Sent'/Reports already use elsewhere.
+  const productionSourceOrders = useMemo(
+    () => orders.filter(o => ['store_confirmed', 'produced', 'dispatched'].includes(o.status)),
+    [orders],
+  );
   const activeLeftovers    = useMemo(() => orders.filter(o => (o.leftoverStatus ?? 'pending') === 'pending' && o.status === 'dispatched'), [orders]);
   const doneOrders         = useMemo(() => orders.filter(o => o.leftoverStatus === 'done'), [orders]);
 
@@ -855,6 +855,9 @@ function ProductionEntryTab({ orders }: { orders: BakeryOrder[] }) {
 function ProductionEntryDateGroup({ label, orders, rows, search, defaultOpen }: {
   dateKey: string; label: string; orders: BakeryOrder[]; rows: ProductionRow[]; search: string; defaultOpen: boolean;
 }) {
+  // Anything not dated "Today" is a past date still carrying pending items —
+  // flag it so it doesn't get mistaken for (or buried under) today's work.
+  const isPastDate = label !== 'Today';
   const { recordProduction } = useBakeryStore();
   const currentUser = useAuthStore(s => s.currentUser);
   const [open, setOpen] = useState(defaultOpen);
@@ -974,6 +977,11 @@ function ProductionEntryDateGroup({ label, orders, rows, search, defaultOpen }: 
           <CalendarDays className="size-4 text-muted-foreground" />
           <span className="text-sm font-black text-foreground">{label}</span>
           <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-bold text-muted-foreground">{rows.length} item{rows.length === 1 ? '' : 's'}</span>
+          {isPastDate && rows.length > 0 && (
+            <span className="flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-black text-red-700">
+              <AlertTriangle className="size-3" /> Past date — still pending
+            </span>
+          )}
         </div>
         <ChevronDown className={cn('size-4 text-muted-foreground transition-transform', open && 'rotate-180')} />
       </button>
@@ -2551,6 +2559,9 @@ function DispatchTab({ orders, allOrders }: { orders: BakeryOrder[]; allOrders: 
 function DispatchDateGroup({ label, orders, search, defaultOpen }: {
   dateKey: string; label: string; orders: BakeryOrder[]; allOrders: BakeryOrder[]; search: string; defaultOpen: boolean;
 }) {
+  // Anything not dated "Today" is a past date with items still awaiting
+  // dispatch — flag it so it's never mistaken for today's dispatch queue.
+  const isPastDate = label !== 'Today';
   const { submitDispatch } = useBakeryStore();
   const currentUser = useAuthStore(s => s.currentUser);
   const { balances: leftoverBalances, refresh: refreshLeftover } = useLeftoverBalanceMap();
@@ -2626,6 +2637,11 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
           <span className="text-sm font-black text-foreground">{label}</span>
           <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-bold text-muted-foreground">{activeRows.length} to dispatch</span>
           {completedRows.length > 0 && <span className="rounded-full bg-teal-100 px-2 py-0.5 text-[10px] font-bold text-teal-700">{completedRows.length} done</span>}
+          {isPastDate && activeRows.length > 0 && (
+            <span className="flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-black text-red-700">
+              <AlertTriangle className="size-3" /> Past date — still pending
+            </span>
+          )}
         </div>
         <ChevronDown className={cn('size-4 text-muted-foreground transition-transform', open && 'rotate-180')} />
       </button>
