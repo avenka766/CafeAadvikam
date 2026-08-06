@@ -252,7 +252,10 @@ export default function BranchBillingProTab({
   const [cart, setCart] = useState<BranchBillItem[]>([]);
   const [cartQuantityDrafts, setCartQuantityDrafts] = useState<Record<string, string>>({});
   const [salesperson, setSalesperson] = useState('');
-  const [paymentMode, setPaymentMode] = useState<PayMode>('cash');
+  // BUG FIX: was seeded to 'cash' and never cleared after a bill, so the
+  // last-used mode silently carried into the next customer's bill. Starts
+  // (and resets to) null so the cashier must actively pick a mode each time.
+  const [paymentMode, setPaymentMode] = useState<PayMode | null>(null);
   const [cashTendered, setCashTendered] = useState('');
   const [split, setSplit] = useState({ cash: '', upi: '', card: '' });
   const [creditCustomerName, setCreditCustomerName] = useState('');
@@ -409,7 +412,7 @@ export default function BranchBillingProTab({
     && walletAmount <= total
     && (walletRemainder <= 0 || walletOtherMode)
   );
-  const checkoutDisabled = saving || cart.length === 0 || !splitIsValid || !walletIsValid || (requiresSalesperson && !salesperson) || (paymentMode === 'cash' && Number(cashTendered || 0) < total);
+  const checkoutDisabled = saving || cart.length === 0 || !paymentMode || !splitIsValid || !walletIsValid || (requiresSalesperson && !salesperson) || (paymentMode === 'cash' && Number(cashTendered || 0) < total);
   const due = Math.max(0, total - tendered);
   const balance = paymentMode === 'credit' ? Math.max(0, total - tendered) : Math.max(0, tendered - total);
   const todayBills = bills.filter((b) => b.branch === branch && new Date(b.createdAt).toDateString() === new Date().toDateString());
@@ -537,7 +540,7 @@ export default function BranchBillingProTab({
   };
 
   const clear = useCallback(() => {
-    setCart([]); setCartQuantityDrafts({}); setCashTendered(''); setSplit({ cash: '', upi: '', card: '' }); setCreditCustomerName(''); setCreditCustomerMobile(''); setCreditDueDate(''); setCreditAmountPaid(''); setCreditPaidMode('cash'); setCreditRemarks(''); setDiscount(''); setError(''); setLastBill(null);
+    setCart([]); setCartQuantityDrafts({}); setCashTendered(''); setSplit({ cash: '', upi: '', card: '' }); setCreditCustomerName(''); setCreditCustomerMobile(''); setCreditDueDate(''); setCreditAmountPaid(''); setCreditPaidMode('cash'); setCreditRemarks(''); setDiscount(''); setError(''); setLastBill(null); setPaymentMode(null);
   }, []);
 
   const holdBill = useCallback(() => {
@@ -565,6 +568,12 @@ export default function BranchBillingProTab({
     }
     if (requiresSalesperson && !salesperson) return 'Salesperson selection is mandatory before billing.';
     if (!cart.length) return 'Cart is empty.';
+    // BUG FIX: payment mode used to carry over from the previous bill (state
+    // was never cleared after checkout), so a cashier who forgot to reselect
+    // could bill a cash customer against whatever mode the last customer
+    // paid with. paymentMode is now reset to null after every bill and the
+    // cashier must explicitly tap a mode before Final Bill is allowed.
+    if (!paymentMode) return 'Select a payment mode before billing.';
     for (const item of cart) {
       const catalogItem = items.find((catalog) => catalog.barcode === item.barcode || catalog.name === item.itemName);
       const available = Number(stockAvailable(branchStock, stockMap, item.itemName, item.barcode));
@@ -642,6 +651,11 @@ export default function BranchBillingProTab({
     }
     const validationError = validateCheckout();
     if (validationError) { setError(validationError); return; }
+    // Narrows paymentMode from PayMode|null to PayMode for the rest of this
+    // function — validateCheckout() above already guarantees this at
+    // runtime, this is just so TS carries the non-null type across the
+    // awaits below. Not expected to ever actually trigger.
+    if (!paymentMode) { setError('Select a payment mode before billing.'); return; }
     checkoutInFlightRef.current = true;
     setSaving(true);
     setError('');
@@ -692,8 +706,22 @@ export default function BranchBillingProTab({
       // the mismatch guard below and aborts the sale with "cart has been
       // refreshed" — flat/value discounts happened to already be whole
       // rupees most of the time, so only percentage discounts were affected.
-      const canonicalRawDiscount = roundMoney((canonicalSubtotal * discountPercent) / 100);
-      const canonicalManualDiscount = Math.min(canonicalSubtotal, canonicalRawDiscount);
+      // BUG FIX (2026-08-06, live SNB issue): canonicalManualDiscount used to
+      // be re-derived by converting the discount to a percentage (rounded to
+      // 2 decimal places) and back (value -> discountPercent ->
+      // canonicalRawDiscount). That round-trip is lossy enough that a plain
+      // flat-₹ discount on an "unfriendly" subtotal (e.g. ₹1 off ₹806 -> a
+      // rounded 0.12% -> back to ₹0.97, a 3-paisa gap) already exceeded the
+      // 1-paisa tolerance below and tripped the mismatch guard, aborting the
+      // sale with "cart has been refreshed" even though nothing had actually
+      // changed — this made ₹ discounts fail unpredictably in production.
+      // Recompute canonicalManualDiscount with the exact same formula used
+      // for the client-side discountValue above (against canonicalSubtotal
+      // instead of subtotal) instead of going through a percent round-trip,
+      // so when nothing actually changed the two values are identical.
+      const canonicalManualDiscount = discountMode === 'percent'
+        ? Math.min(canonicalSubtotal, roundMoney((canonicalSubtotal * clampPercentage(discountInput)) / 100))
+        : Math.min(canonicalSubtotal, roundMoney(discountInput));
       const canonicalPromotionDiscount = Math.min(Math.max(0, canonicalSubtotal - canonicalManualDiscount), promotionDiscount);
       const canonicalCombinedDiscount = roundMoney(Math.min(canonicalSubtotal, canonicalManualDiscount + canonicalPromotionDiscount));
       const canonicalAmountBeforeRoundOff = roundMoney(Math.max(0, canonicalSubtotal + canonicalTax - canonicalCombinedDiscount));
@@ -899,7 +927,7 @@ export default function BranchBillingProTab({
       // background branch refresh continue independently and any print
       // failure is still surfaced (just asynchronously, without blocking).
       checkoutIdempotencyRef.current = null;
-      setCart([]); setCartQuantityDrafts({}); setSalesperson(''); setCashTendered(''); setSplit({ cash: '', upi: '', card: '' }); setCreditCustomerName(''); setCreditCustomerMobile(''); setCreditDueDate(''); setCreditAmountPaid(''); setCreditPaidMode('cash'); setCreditRemarks(''); setSelectedWallet(null); setWalletAmount(0); setWalletOtherMode(null); setWalletAuthorizationSecret(''); setCouponCode(''); setDiscount('');
+      setCart([]); setCartQuantityDrafts({}); setSalesperson(''); setCashTendered(''); setSplit({ cash: '', upi: '', card: '' }); setCreditCustomerName(''); setCreditCustomerMobile(''); setCreditDueDate(''); setCreditAmountPaid(''); setCreditPaidMode('cash'); setCreditRemarks(''); setSelectedWallet(null); setWalletAmount(0); setWalletOtherMode(null); setWalletAuthorizationSecret(''); setCouponCode(''); setDiscount(''); setPaymentMode(null);
       focusSearch(true);
       window.setTimeout(() => focusSearch(false), 150);
 
