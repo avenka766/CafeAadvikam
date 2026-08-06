@@ -3530,8 +3530,18 @@
   .workspace-branch-billing [data-billing-dashboard] .biller-cart-header h3 {
     font-size: .9rem !important;
   }
+  /* BUG FIX: this was `min-height: 0 !important`, which — combined with this
+     region already being `flex-1 overflow-y-auto` in the component — let the
+     cart items list collapse to almost no visible height at all on short/
+     cramped viewports (small POS touch screens, browser chrome eating
+     vertical space). The header badge would correctly show "(1) item, ₹79"
+     while the actual item row was squeezed into a sliver too short to see
+     without knowing to scroll — items were never actually lost, just
+     effectively invisible. A small floor (still much smaller than the base
+     13rem for the non-compact layout) guarantees at least one item row is
+     always visible before scrolling kicks in. */
   .workspace-branch-billing [data-billing-dashboard] .biller-cart-items {
-    min-height: 0 !important;
+    min-height: 7rem !important;
     padding: .45rem .6rem !important;
     gap: .38rem !important;
   }
