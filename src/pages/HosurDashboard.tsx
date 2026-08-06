@@ -2,8 +2,11 @@
 // Hosur branch workflow dashboard: shop master, shop-wise pricing, receiving,
 // billing, credit, WhatsApp logs, reminders, disputes, daily closure and reports.
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import { useBakeryItemsStore } from '@/bakery/bakeryItemsStore';
+import { closestRecipeMatch } from '@/bakery/recipeNameMatch';
+import RecipeSpellingHint from '@/bakery/RecipeSpellingHint';
 import { jsPDF } from 'jspdf';
 import QRCode from 'qrcode';
 import {
@@ -1248,7 +1251,14 @@ export default function HosurDashboard({ hideNav = false }: { hideNav?: boolean 
     try {
       await fn();
       if (successMessage) setSuccess(successMessage);
-      await refresh();
+      // BUG FIX: refresh() with the default silent=false flips `loading` to
+      // true, which swaps the ENTIRE tab body (including the shop/item list
+      // being edited) for a small centered spinner. Collapsing the page's
+      // content height like that resets scroll to the top, so every add /
+      // update / delete on this dashboard visibly kicked the page back to
+      // the very top. A silent refresh re-fetches the same data in the
+      // background without unmounting the current view.
+      await refresh(true);
     } catch (err: any) {
       setError(err?.message ?? 'Action failed. Please try again.');
     } finally {
@@ -1732,7 +1742,29 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
   const [priceSearch, setPriceSearch] = useState('');
   const [priceEdits, setPriceEdits] = useState<Record<string, string>>({});
   const [customItem, setCustomItem] = useState({ itemName: '', unit: 'pcs' as 'pcs' | 'kg', unitPrice: '' });
+  const [showItemSuggestions, setShowItemSuggestions] = useState(false);
   const selectedShop = shops.find((s) => s.id === selectedShopId) ?? shops[0];
+
+  const { items: bakeryItems, loadAllItems } = useBakeryItemsStore();
+  useEffect(() => { void loadAllItems(); }, [loadAllItems]);
+  const recipeItemNames = useMemo(() => bakeryItems.filter((i) => i.enabled).map((i) => i.name), [bakeryItems]);
+
+  // Every item name already used across ANY shop's price list — surfaced as
+  // suggestions while typing a new item, so a shop's list doesn't quietly
+  // grow near-duplicate spellings of the same item ("Bun" vs "Buns").
+  const allHosurItemNames = useMemo(() => {
+    const seen = new Map<string, string>();
+    for (const p of prices) {
+      const key = normalize(p.itemName);
+      if (key && !seen.has(key)) seen.set(key, p.itemName);
+    }
+    return Array.from(seen.values()).sort((a, b) => a.localeCompare(b));
+  }, [prices]);
+  const itemNameSuggestions = useMemo(() => {
+    const q = normalize(customItem.itemName);
+    if (!q) return [];
+    return allHosurItemNames.filter((n) => normalize(n).includes(q) && normalize(n) !== q).slice(0, 8);
+  }, [customItem.itemName, allHosurItemNames]);
 
   useEffect(() => { if (!selectedShopId && shops[0]) setSelectedShopId(shops[0].id); }, [shops, selectedShopId]);
 
@@ -1906,7 +1938,31 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
             </div>
           </div>
           <div className="grid gap-2 rounded-2xl border bg-muted/20 p-3 md:grid-cols-[1fr_120px_140px_auto]">
-            <input className={inputClass} value={customItem.itemName} onChange={(e) => setCustomItem((prev) => ({ ...prev, itemName: e.target.value }))} placeholder="Add custom item name" />
+            <div className="relative">
+              <input
+                className={inputClass}
+                value={customItem.itemName}
+                onChange={(e) => { setCustomItem((prev) => ({ ...prev, itemName: e.target.value })); setShowItemSuggestions(true); }}
+                onFocus={() => setShowItemSuggestions(true)}
+                onBlur={() => setTimeout(() => setShowItemSuggestions(false), 150)}
+                placeholder="Add custom item name"
+              />
+              {showItemSuggestions && itemNameSuggestions.length > 0 && (
+                <div className="absolute top-full left-0 right-0 z-30 mt-1 max-h-48 overflow-y-auto rounded-xl border bg-card shadow-lg">
+                  {itemNameSuggestions.map((name) => (
+                    <button
+                      key={name}
+                      type="button"
+                      onMouseDown={(e) => { e.preventDefault(); setCustomItem((prev) => ({ ...prev, itemName: name })); setShowItemSuggestions(false); }}
+                      className="block w-full truncate px-3 py-1.5 text-left text-xs font-semibold text-foreground hover:bg-muted"
+                    >
+                      {name}
+                    </button>
+                  ))}
+                </div>
+              )}
+              <RecipeSpellingHint itemName={customItem.itemName} recipeItemNames={recipeItemNames} onApply={(name) => setCustomItem((prev) => ({ ...prev, itemName: name }))} />
+            </div>
             <select className={inputClass} value={customItem.unit} onChange={(e) => setCustomItem((prev) => ({ ...prev, unit: e.target.value as 'pcs' | 'kg' }))}><option value="pcs">pcs</option><option value="kg">kg</option></select>
             <input className={inputClass} type="number" value={customItem.unitPrice} onChange={(e) => setCustomItem((prev) => ({ ...prev, unitPrice: e.target.value }))} placeholder="Price" />
             <button className={primaryButton} disabled={!selectedShop || busy} onClick={() => withBusy(addCustomItem, 'Item added to shop list.')}>Add Item</button>
@@ -1921,7 +1977,8 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
                 {filteredItems.map((item) => {
                   const custom = selectedShop ? prices.find((p) => p.shopId === selectedShop.id && normalize(p.itemName) === normalize(item.name)) : null;
                   const current = selectedShop ? priceFor(selectedShop.id, item) : item.price;
-                  return <tr key={`${item.source}-${item.name}`} className="bg-card"><td className="px-3 py-2 font-semibold">{item.name}<p className="text-[10px] text-muted-foreground">{item.category} · {item.source === 'shop' ? 'shop item' : 'master item'}</p></td><td className="px-3 py-2">{item.uom === 'Kgs' ? 'kg' : 'pcs'}</td><td className="px-3 py-2">{item.source === 'master' ? money(item.price) : '—'}</td><td className="px-3 py-2"><input className="w-28 rounded-xl border px-2 py-1.5 text-sm" type="number" value={priceEdits[item.name] ?? String(current)} onChange={(e) => setPriceEdits((prev) => ({ ...prev, [item.name]: e.target.value }))} /></td><td className="px-3 py-2 text-right"><div className="flex justify-end gap-2"><button className={softButton} disabled={!selectedShop || busy} onClick={() => withBusy(() => savePrice(item), 'Price updated.')}>{custom?.isActive ? 'Update' : 'Save'}</button><button className="rounded-2xl bg-red-50 px-3 py-2 text-xs font-black text-red-700 hover:bg-red-100" disabled={!selectedShop || busy} onClick={() => withBusy(() => deletePrice(item), 'Item removed from this shop list.')}>Delete</button></div></td></tr>;
+                  const nameMismatch = closestRecipeMatch(item.name, recipeItemNames);
+                  return <tr key={`${item.source}-${item.name}`} className="bg-card"><td className="px-3 py-2 font-semibold">{item.name}{nameMismatch && !nameMismatch.exact && (<span title={`Recipe Management has "${nameMismatch.match}" — spelling doesn't match.`} className="ml-1.5 inline-flex items-center gap-1 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-700">recipe mismatch</span>)}<p className="text-[10px] text-muted-foreground">{item.category} · {item.source === 'shop' ? 'shop item' : 'master item'}</p></td><td className="px-3 py-2">{item.uom === 'Kgs' ? 'kg' : 'pcs'}</td><td className="px-3 py-2">{item.source === 'master' ? money(item.price) : '—'}</td><td className="px-3 py-2"><input className="w-28 rounded-xl border px-2 py-1.5 text-sm" type="number" value={priceEdits[item.name] ?? String(current)} onChange={(e) => setPriceEdits((prev) => ({ ...prev, [item.name]: e.target.value }))} /></td><td className="px-3 py-2 text-right"><div className="flex justify-end gap-2"><button className={softButton} disabled={!selectedShop || busy} onClick={() => withBusy(() => savePrice(item), 'Price updated.')}>{custom?.isActive ? 'Update' : 'Save'}</button><button className="rounded-2xl bg-red-50 px-3 py-2 text-xs font-black text-red-700 hover:bg-red-100" disabled={!selectedShop || busy} onClick={() => withBusy(() => deletePrice(item), 'Item removed from this shop list.')}>Delete</button></div></td></tr>;
                 })}
               </tbody>
             </table>
