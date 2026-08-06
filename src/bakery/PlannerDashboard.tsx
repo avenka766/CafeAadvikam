@@ -1428,10 +1428,46 @@ const REPORT_STATUS_COLOR: Record<ReportVarianceRow['status'], string> = {
   'Over-producing':  'bg-blue-100 text-blue-700',
 };
 
+// "Start Fresh" cutoff for Reports — same non-destructive pattern as the
+// Closing Stock cutoff in PlannerLeftoverTab: instead of deleting historical
+// orders/leftover-pool rows (which would destroy the audit trail), we store a
+// business-date cutoff in app_state and every data source this tab reads
+// filters out anything dated before it. Fully reversible, no data loss.
+const REPORTS_CUTOFF_KEY = 'planner_reports_cutoff';
+async function getReportsCutoff(): Promise<string | null> {
+  const { data } = await supabase.from('app_state').select('value').eq('key', REPORTS_CUTOFF_KEY).maybeSingle();
+  const cutoff = (data?.value as { cutoff?: string } | null)?.cutoff;
+  return cutoff ?? null;
+}
+async function setReportsCutoff(dateKey: string): Promise<void> {
+  await supabase.from('app_state').upsert({ key: REPORTS_CUTOFF_KEY, value: { cutoff: dateKey }, updated_at: new Date().toISOString() });
+}
+
 function ReportsTab({ orders }: { orders: BakeryOrder[] }) {
   const [quickRange, setQuickRange] = useState<'today' | '7d' | '30d' | 'custom'>('7d');
   const [dateFrom, setDateFrom] = useState(() => { const d = new Date(); d.setDate(d.getDate() - 6); return kolkataDateKey(d.toISOString()); });
   const [dateTo, setDateTo] = useState(() => kolkataDateKey(new Date().toISOString()));
+  const [reportsCutoff, setReportsCutoffState] = useState<string | null>(null);
+  const [confirmingReportsReset, setConfirmingReportsReset] = useState(false);
+  const [resettingReports, setResettingReports] = useState(false);
+
+  useEffect(() => { void getReportsCutoff().then(setReportsCutoffState); }, []);
+
+  const startReportsFresh = async () => {
+    if (!confirmingReportsReset) {
+      setConfirmingReportsReset(true);
+      setTimeout(() => setConfirmingReportsReset(false), 4000);
+      return;
+    }
+    setResettingReports(true);
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const tomorrowKey = kolkataDateKey(tomorrow.toISOString());
+    await setReportsCutoff(tomorrowKey);
+    setReportsCutoffState(tomorrowKey);
+    setConfirmingReportsReset(false);
+    setResettingReports(false);
+  };
 
   useEffect(() => {
     if (quickRange === 'custom') return;
@@ -1444,8 +1480,11 @@ function ReportsTab({ orders }: { orders: BakeryOrder[] }) {
   }, [quickRange]);
 
   const ordersInRange = useMemo(
-    () => orders.filter(o => { const key = groupDateKey(o); return key >= dateFrom && key <= dateTo; }),
-    [orders, dateFrom, dateTo],
+    () => orders.filter(o => {
+      const key = groupDateKey(o);
+      return key >= dateFrom && key <= dateTo && (!reportsCutoff || key >= reportsCutoff);
+    }),
+    [orders, dateFrom, dateTo, reportsCutoff],
   );
   // Orders actually placed in the window (any status) vs the subset that reached
   // Store/production — both matter: one shows demand, the other shows what moved.
@@ -1473,7 +1512,11 @@ function ReportsTab({ orders }: { orders: BakeryOrder[] }) {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const fromIso = `${dateFrom}T00:00:00`;
+      // Clamp the window's start to the "start fresh" cutoff (if set) so
+      // pre-cutoff Hosur leftover/adjustment activity never resurfaces here,
+      // regardless of what date range the user picks.
+      const effectiveFrom = reportsCutoff && reportsCutoff > dateFrom ? reportsCutoff : dateFrom;
+      const fromIso = `${effectiveFrom}T00:00:00`;
       const toIso = `${dateTo}T23:59:59`;
       const [leftoverRes, adjustmentRes] = await Promise.all([
         supabase.from('hosur_leftover_pool').select('item_name, unit, quantity, unit_price, source_shop_name, reason, status, created_at').gte('created_at', fromIso).lte('created_at', toIso).order('created_at', { ascending: false }),
@@ -1491,7 +1534,7 @@ function ReportsTab({ orders }: { orders: BakeryOrder[] }) {
       })));
     })();
     return () => { cancelled = true; };
-  }, [dateFrom, dateTo]);
+  }, [dateFrom, dateTo, reportsCutoff]);
   const hosurLeftoverAvailable = useMemo(() => hosurLeftovers.filter(l => l.status === 'available'), [hosurLeftovers]);
   const hosurLeftoverResolved = useMemo(() => hosurLeftovers.filter(l => l.status === 'resolved'), [hosurLeftovers]);
   const hosurShortfallCount = useMemo(() => hosurLeftovers.filter(l => l.reason === 'dispatch_shortfall').length, [hosurLeftovers]);
@@ -1675,8 +1718,24 @@ function ReportsTab({ orders }: { orders: BakeryOrder[] }) {
           <button onClick={exportPdfReport} className="flex items-center gap-1.5 rounded-xl border border-slate-300 bg-slate-50 px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-100">
             <FileText className="size-4" /> PDF Report
           </button>
+          <button
+            onClick={startReportsFresh}
+            disabled={resettingReports}
+            className={cn(
+              'flex items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-bold disabled:opacity-60',
+              confirmingReportsReset ? 'border-red-300 bg-red-50 text-red-700 hover:bg-red-100' : 'border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100',
+            )}
+          >
+            <RefreshCw className="size-4" /> {resettingReports ? 'Starting…' : confirmingReportsReset ? 'Confirm: clear all report data?' : 'Start Fresh'}
+          </button>
         </div>
       </div>
+
+      {reportsCutoff && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-700">
+          Showing data from {new Date(`${reportsCutoff}T00:00:00`).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })} onward — earlier report data has been cleared from view.
+        </div>
+      )}
 
       {/* Quick range pills — same convention as branch Sales Reports. */}
       <div className="flex flex-wrap items-center gap-2">

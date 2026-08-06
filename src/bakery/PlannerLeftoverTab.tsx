@@ -68,6 +68,26 @@ function mapLedgerRow(row: Record<string, unknown>): LeftoverLedgerRow {
   };
 }
 
+// ─── "Start fresh" cutoff ───────────────────────────────────────────────────
+// Clearing the leftover ledger by deleting rows would also erase the audit
+// trail the Daily Report and Movement Log are built on. Instead, a cutoff
+// timestamp (stored in app_state) hides everything recorded before it from
+// every view — balance, report, and log — without touching a single row in
+// the database. "Reset" just moves this cutoff forward; nothing is deleted
+// and it can never make history disappear for the wrong reason (a bug can't
+// accidentally DELETE real stock records).
+const CLOSING_STOCK_CUTOFF_KEY = 'planner_closing_stock_cutoff';
+
+export async function getClosingStockCutoff(): Promise<string | null> {
+  const { data } = await supabase.from('app_state').select('value').eq('key', CLOSING_STOCK_CUTOFF_KEY).maybeSingle();
+  const iso = (data?.value as { cutoff?: string } | null)?.cutoff;
+  return iso ?? null;
+}
+
+export async function setClosingStockCutoff(iso: string): Promise<void> {
+  await supabase.from('app_state').upsert({ key: CLOSING_STOCK_CUTOFF_KEY, value: { cutoff: iso }, updated_at: new Date().toISOString() });
+}
+
 // EGRESS NOTE: capped at 20,000 most-recent rows (fetched paged, 1000/page).
 // This is a brand-new table — at a realistic 30-60 manual entries/day that's
 // roughly a year of history before the cap matters. Raise the cap (or add a
@@ -77,12 +97,15 @@ export async function fetchLeftoverLedger(): Promise<{ rows: LeftoverLedgerRow[]
   const maxRows = 20000;
   const rows: Record<string, unknown>[] = [];
   let error = '';
+  const cutoff = await getClosingStockCutoff();
   for (let from = 0; from < maxRows; from += pageSize) {
-    const { data, error: pageError } = await supabase
+    let query = supabase
       .from('planner_leftover_ledger')
       .select('id, item_slug, item_name, unit, business_date, delta, reason, branch, order_id, order_number, recorded_by, notes, created_at')
       .order('created_at', { ascending: true })
       .range(from, from + pageSize - 1);
+    if (cutoff) query = query.gte('created_at', cutoff);
+    const { data, error: pageError } = await query;
     if (pageError) { error = pageError.message; break; }
     const page = data ?? [];
     rows.push(...page);
@@ -240,6 +263,19 @@ export default function PlannerLeftoverTab() {
     setLoading(false);
   }, []);
   useEffect(() => { void refresh(); }, [refresh]);
+
+  // ── Start fresh (hide everything before now, without deleting it) ───────
+  const [confirmingReset, setConfirmingReset] = useState(false);
+  const [resetting, setResetting] = useState(false);
+  const startFresh = async () => {
+    if (!confirmingReset) { setConfirmingReset(true); setTimeout(() => setConfirmingReset(false), 4000); return; }
+    setConfirmingReset(false);
+    setResetting(true); setError(''); setMessage('');
+    await setClosingStockCutoff(new Date().toISOString());
+    setResetting(false);
+    setMessage('Closing Stock cleared — balances, Daily Report, and Movement Log now start fresh from this moment. Nothing was deleted; past history is still safe.');
+    void refresh();
+  };
 
   // ── Add-to-leftover form ─────────────────────────────────────────────────
   const [itemQuery, setItemQuery] = useState('');
@@ -500,7 +536,20 @@ export default function PlannerLeftoverTab() {
             <h2 className="font-display text-3xl font-black">Closing Stock / Leftover</h2>
             <p className="mt-1 max-w-3xl text-sm text-white/60">Record what's physically left over at closing. This shared pool (not tied to any one branch) is available to dispatch first, before fresh production, the next time an order comes in.</p>
           </div>
-          <button onClick={refresh} className="inline-flex h-11 items-center gap-2 rounded-xl border border-white/15 bg-white/10 px-4 text-xs font-black"><RefreshCw className="size-4" />Refresh</button>
+          <div className="flex items-center gap-2">
+            <button onClick={refresh} className="inline-flex h-11 items-center gap-2 rounded-xl border border-white/15 bg-white/10 px-4 text-xs font-black"><RefreshCw className="size-4" />Refresh</button>
+            <button
+              onClick={startFresh}
+              disabled={resetting}
+              className={cn(
+                'inline-flex h-11 items-center gap-2 rounded-xl px-4 text-xs font-black disabled:opacity-50',
+                confirmingReset ? 'bg-red-500 text-white' : 'border border-white/15 bg-white/10',
+              )}
+            >
+              {resetting ? <Loader2 className="size-4 animate-spin" /> : <X className="size-4" />}
+              {confirmingReset ? 'Click again to confirm' : 'Start Fresh'}
+            </button>
+          </div>
         </div>
       </div>
 
