@@ -42,6 +42,7 @@ import {
   Smartphone,
   Menu,
   X,
+  Scale,
 } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
 import { cn } from '@/lib/utils';
@@ -187,6 +188,7 @@ function navForRole(role?: string): NavItem[] {
         { label: 'Cake Dispatch', path: '/bakery/planner?tab=cake', icon: <Cake className="size-4" />, group: 'Operations' },
         // Stock movement + reconciliation, grouped together.
         { label: 'Transfer In', path: '/bakery/planner?tab=transfer-in', icon: <ArrowRightLeft className="size-4" />, group: 'Stock' },
+        { label: 'Closing Stock', path: '/bakery/planner?tab=leftover-stock', icon: <Scale className="size-4" />, group: 'Stock' },
         { label: 'Leftover / Done', path: '/bakery/planner?tab=done', icon: <PackageCheck className="size-4" />, group: 'Stock' },
         // Walk-in billing (SNB+VRSNB dedup counter sales) — added alongside
         // the Reports tab below when the Planner Dashboard gained its own
