@@ -309,7 +309,11 @@ function ItemRow({ order, item, category, selectionEnabled = false, selected = f
   // here as "200 pcs · 4 batches" whenever a positive batch size is known.
   const recipe = useRecipeStore(useCallback(state => state.getRecipe(item.itemId, item.itemName), [item.itemId, item.itemName]));
   const batchSize = Number(recipe?.outputQty || 0);
-  const batchCount = batchSize > 0 ? Math.ceil(item.quantity / batchSize) : 0;
+  // BUG FIX: Math.ceil rounded every partial batch up to the next whole
+  // number (e.g. a 2.5kg batch yield against a 3kg order showed "2 batches"
+  // instead of the true 1.2) - store staff need the exact fractional batch
+  // count to plan production correctly. Round to 1 decimal place instead.
+  const batchCount = batchSize > 0 ? Math.round((item.quantity / batchSize) * 10) / 10 : 0;
 
   // Check each recipe material against current inventory
   const matStatus = useMemo(() => {
