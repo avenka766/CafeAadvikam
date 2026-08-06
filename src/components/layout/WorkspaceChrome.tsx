@@ -167,7 +167,14 @@ function navForRole(role?: string): NavItem[] {
         { label: 'History', path: '/bakery/store?tab=history', icon: <History className="size-4" />, group: 'Main' },
         { label: 'Inventory', path: '/bakery/store?tab=inventory', icon: <Store className="size-4" />, group: 'Operations' },
         { label: 'Suppliers', path: '/bakery/store?tab=suppliers', icon: <Users className="size-4" />, group: 'Operations' },
-        { label: 'Invoices', path: '/bakery/store?tab=invoices', icon: <FileText className="size-4" />, group: 'Operations' },
+        // BUG FIX (2026-08-06): this sidebar array is a completely separate
+        // nav list from Store Dashboard's own in-page tab bar (see the
+        // Closing Stock comment below for the same drift pattern) — the
+        // in-page tabs were renamed to Purchase Order + GRN, but this list
+        // still said "Invoices" with no Purchase Order link at all, so the
+        // rename never actually appeared in the sidebar users click.
+        { label: 'Purchase Order', path: '/bakery/store?tab=purchaseOrders', icon: <ShoppingCart className="size-4" />, group: 'Operations' },
+        { label: 'GRN', path: '/bakery/store?tab=invoices', icon: <FileText className="size-4" />, group: 'Operations' },
         { label: 'Analytics', path: '/bakery/store?tab=analytics', icon: <BarChart3 className="size-4" />, group: 'Reports' },
         { label: 'Custom Deduction', path: '/bakery/store?tab=custom', icon: <Sparkles className="size-4" />, group: 'Reports' },
         { label: 'Daily Closure', path: '/bakery/store?tab=closure', icon: <WalletCards className="size-4" />, group: 'Reports' },
