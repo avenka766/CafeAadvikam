@@ -2548,7 +2548,17 @@ function NewBillPanel() {
           dueDate: creditDueDate,
         });
 
-        if (savedOrder) printCreditBill(savedOrder, creditCustomerPhone.trim(), creditDueDate);
+        // BUG FIX (2026-08-06): this is the credit-sale sibling of the
+        // wallet/regular "no prior running order" checkout paths above
+        // (both of which correctly call printKotThenBill) — but this path
+        // only ever printed the credit bill, never a KOT. The kitchen never
+        // learned a credit-sale dine-in/takeaway order existed unless staff
+        // separately used "Send to Kitchen" first. Print the KOT here too,
+        // same "kitchen first, then the customer's slip" sequencing.
+        if (savedOrder) {
+          await printKotSlip(savedOrder);
+          printCreditBill(savedOrder, creditCustomerPhone.trim(), creditDueDate);
+        }
         clearCart();
         closeActiveTakeawayTicket();
         // BUG FIX: this credit-sale path (billing a table that never had a
@@ -4047,8 +4057,17 @@ export default function BillingDashboard() {
 
   const matchesStatusTab = useCallback((order: Order, status: OrderStatus) => {
     if (status === 'pending') return isUnpaidOpenOrder(order);
-    if (isUnpaidOpenOrder(order)) return false;
-    return order.status === status;
+    if (status === 'cancelled') return order.status === 'cancelled';
+    // BUG FIX: 'served' ("Completed") used to require order.status ===
+    // 'served' exactly — but paid orders only advance to 'served' when a
+    // staff member manually clicks through the kitchen-status buttons (or
+    // via the auto-promote safeguard when status reaches 'ready'). An order
+    // that's fully paid but whose kitchen status was never advanced past
+    // pending/preparing (e.g. a quick item nobody bothered clicking through)
+    // matched neither 'pending' (payment isn't unpaid) nor 'served' (status
+    // isn't there) — it vanished from every tab. A paid, non-cancelled order
+    // now always shows under Completed regardless of its exact kitchen status.
+    return !isUnpaidOpenOrder(order) && order.status !== 'cancelled';
   }, [isUnpaidOpenOrder]);
 
   const filtered = useMemo(() => {
