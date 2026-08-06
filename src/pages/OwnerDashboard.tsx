@@ -21,6 +21,7 @@ import type { Branch } from '@/branch/types';
 import { BRANCH_LABELS } from '@/branch/types';
 import { useInvoiceStore } from '@/bakery/invoiceStore';
 import { usePurchaseOrderStore } from '@/bakery/purchaseOrderStore';
+import { useStorePurchaseOrderStore, type StorePurchaseOrder } from '@/bakery/storePurchaseOrderStore';
 import { useBranchLedger } from '@/hooks/useBranchLedger';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/utils';
@@ -37,6 +38,7 @@ import {
   Utensils, Trash2, AlertTriangle, WalletCards, PackageSearch,
   Landmark, CheckCircle2, XCircle, Receipt, Bell, Package, Truck,
   Download, Printer, FileSpreadsheet, Filter, ShieldCheck, Factory, Search, RefreshCw,
+  ClipboardList, Loader2, ChevronDown, ChevronUp,
 } from 'lucide-react';
 
 const COLORS = ['#2D7D6F', '#C5973E', '#5BA3C9', '#E07B5B', '#8B5CF6', '#EC4899'];
@@ -2414,12 +2416,136 @@ function OwnerStockVarianceTab() {
   );
 }
 
+// ── Purchase Order Approvals ─────────────────────────────────────────────────
+// Owner-only actionable review for Store's "Purchase Order" tab (Store
+// Dashboard). Deliberately separate from OwnerPurchasesTab above, which is a
+// read-only register over GRNs/invoices and the *other*, unrelated
+// purchase_orders reorder feature — this one is the real approve/reject
+// action, gated server-side to the 'owner' role by
+// review_store_purchase_order_secure.
+function OwnerPOCard({ po, onReview }: { po: StorePurchaseOrder; onReview: (id: string, status: 'approved' | 'rejected', note: string) => Promise<string | null> }) {
+  const [expanded, setExpanded] = useState(false);
+  const [note, setNote] = useState('');
+  const [busy, setBusy] = useState<'approved' | 'rejected' | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  const statusMeta = {
+    pending_approval: { label: 'Pending Your Approval', color: 'bg-amber-50 text-amber-700 border-amber-200' },
+    approved: { label: 'Approved', color: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
+    rejected: { label: 'Rejected', color: 'bg-red-50 text-red-700 border-red-200' },
+    converted: { label: 'Approved · Converted to GRN', color: 'bg-blue-50 text-blue-700 border-blue-200' },
+  }[po.status];
+
+  const act = async (status: 'approved' | 'rejected') => {
+    setBusy(status);
+    setActionError(null);
+    const error = await onReview(po.id, status, note);
+    if (error) setActionError(error);
+    setBusy(null);
+  };
+
+  return (
+    <div className="owner-panel !p-0 overflow-hidden">
+      <button className="w-full flex items-center gap-3 px-4 py-3 text-left" onClick={() => setExpanded(v => !v)}>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-bold text-sm">{po.poNumber}</span>
+            <span className={cn('text-[10px] font-bold px-2 py-0.5 rounded-full border', statusMeta.color)}>{statusMeta.label}</span>
+          </div>
+          <p className="text-xs text-muted-foreground mt-0.5 truncate">{po.supplierName} · {po.lineItems.length} item{po.lineItems.length === 1 ? '' : 's'} · raised {new Date(po.createdAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}{po.createdByName ? ` by ${po.createdByName}` : ''}</p>
+        </div>
+        {expanded ? <ChevronUp className="size-4 text-muted-foreground shrink-0" /> : <ChevronDown className="size-4 text-muted-foreground shrink-0" />}
+      </button>
+
+      {expanded && (
+        <div className="border-t border-border/60 px-4 pb-4 pt-3 space-y-3">
+          <div className="rounded-xl border border-border overflow-hidden">
+            <div className="grid grid-cols-12 gap-1 px-3 py-2 bg-muted/40 text-[9px] font-bold text-muted-foreground uppercase">
+              <span className="col-span-8">Item</span><span className="col-span-4 text-right">Quantity</span>
+            </div>
+            {po.lineItems.map((li, i) => (
+              <div key={i} className="grid grid-cols-12 gap-1 px-3 py-2 border-t border-border/40 text-xs">
+                <span className="col-span-8 font-semibold truncate">{li.itemName}</span>
+                <span className="col-span-4 text-right text-muted-foreground">{li.quantity} {li.unit}</span>
+              </div>
+            ))}
+          </div>
+          {po.notes && <p className="text-xs bg-muted/40 rounded-xl px-3 py-2"><b>Store notes: </b>{po.notes}</p>}
+          {po.reviewNote && <p className="text-xs bg-muted/40 rounded-xl px-3 py-2"><b>Your note: </b>{po.reviewNote}</p>}
+
+          {po.status === 'pending_approval' && (
+            <>
+              <textarea value={note} onChange={e => setNote(e.target.value)} rows={2} placeholder="Optional note for the store (visible to them)…" className="w-full resize-none rounded-xl border border-border bg-background px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-primary/30" />
+              {actionError && <p className="text-xs text-red-600">{actionError}</p>}
+              <div className="flex gap-2">
+                <button onClick={() => void act('rejected')} disabled={busy !== null} className="flex-1 h-10 rounded-xl border border-red-300 bg-red-50 text-red-700 text-xs font-bold flex items-center justify-center gap-1.5 disabled:opacity-50">
+                  {busy === 'rejected' ? <Loader2 className="size-3.5 animate-spin" /> : <XCircle className="size-3.5" />} Reject
+                </button>
+                <button onClick={() => void act('approved')} disabled={busy !== null} className="flex-1 h-10 rounded-xl bg-emerald-600 text-white text-xs font-bold flex items-center justify-center gap-1.5 disabled:opacity-50">
+                  {busy === 'approved' ? <Loader2 className="size-3.5 animate-spin" /> : <CheckCircle2 className="size-3.5" />} Approve
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function OwnerPOApprovalsTab() {
+  const { orders, loaded, loading, load, reviewPO } = useStorePurchaseOrderStore();
+  const [filter, setFilter] = useState<'all' | 'pending_approval' | 'approved' | 'rejected' | 'converted'>('pending_approval');
+
+  useEffect(() => { void load(); }, [load]);
+
+  const filtered = filter === 'all' ? orders : orders.filter(po => po.status === filter);
+  const pending = orders.filter(po => po.status === 'pending_approval').length;
+
+  return (
+    <div className="owner-tab-stack">
+      <section className="owner-metric-grid">
+        <OwnerMetricCard icon={<ClipboardList className="size-5" />} label="Pending Your Approval" value={pending} tone={pending ? 'amber' : 'green'} sub="Store purchase orders" />
+        <OwnerMetricCard icon={<CheckCircle2 className="size-5" />} label="Approved" value={orders.filter(po => po.status === 'approved' || po.status === 'converted').length} tone="green" sub="Ready or already converted" />
+        <OwnerMetricCard icon={<XCircle className="size-5" />} label="Rejected" value={orders.filter(po => po.status === 'rejected').length} tone="red" sub="Declined purchase orders" />
+      </section>
+
+      <div className="flex flex-wrap gap-1.5">
+        {([
+          { id: 'pending_approval', label: '⏳ Pending' },
+          { id: 'approved', label: '✓ Approved' },
+          { id: 'rejected', label: '✗ Rejected' },
+          { id: 'converted', label: '→ Converted' },
+          { id: 'all', label: 'All' },
+        ] as const).map(f => (
+          <button key={f.id} onClick={() => setFilter(f.id)} className={cn('rounded-full border px-3 py-1.5 text-xs font-bold transition',
+            filter === f.id ? 'bg-slate-950 text-white border-slate-950' : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-100')}>
+            {f.label}
+          </button>
+        ))}
+        <button onClick={() => void load()} className="ml-auto rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-600 hover:bg-slate-100 flex items-center gap-1.5"><RefreshCw className="size-3.5" />Refresh</button>
+      </div>
+
+      {loading && !loaded ? (
+        <div className="flex justify-center py-12"><Loader2 className="size-5 animate-spin text-muted-foreground" /></div>
+      ) : filtered.length === 0 ? (
+        <EmptyOwnerState title="No purchase orders" message="Store hasn't raised any purchase orders matching this filter." />
+      ) : (
+        <div className="space-y-2">
+          {filtered.map(po => <OwnerPOCard key={po.id} po={po} onReview={reviewPO} />)}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main Export ───────────────────────────────────────────────────────────────
 type OwnerDashboardTab =
   | 'branches'
   | 'sales'
   | 'credit'
   | 'purchases'
+  | 'poApprovals'
   | 'closure'
   | 'variance'
   | 'alerts'
@@ -2431,7 +2557,7 @@ type OwnerDashboardTab =
 export default function OwnerDashboard() {
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedTab = searchParams.get('tab') as OwnerDashboardTab | null;
-  const ownerTabIds = useMemo<OwnerDashboardTab[]>(() => ['branches', 'sales', 'credit', 'purchases', 'closure', 'variance', 'alerts', 'attendance', 'waste', 'complaints', 'audit'], []);
+  const ownerTabIds = useMemo<OwnerDashboardTab[]>(() => ['branches', 'sales', 'credit', 'purchases', 'poApprovals', 'closure', 'variance', 'alerts', 'attendance', 'waste', 'complaints', 'audit'], []);
   const initialTab = requestedTab && ownerTabIds.includes(requestedTab) ? requestedTab : 'branches';
   const [tab, setTab] = useState<OwnerDashboardTab>(initialTab);
   const selectTab = (next: OwnerDashboardTab) => {
@@ -2450,6 +2576,7 @@ export default function OwnerDashboard() {
     { id: 'sales',      label: 'Sales & Profit',     icon: <BarChart3     className="size-4" />, hint: 'Trends and payment split' },
     { id: 'credit',     label: 'Credit Tracking',    icon: <IndianRupee   className="size-4" />, hint: 'Pending collections' },
     { id: 'purchases',  label: 'Store Purchases',    icon: <ShoppingBag   className="size-4" />, hint: 'Supplier and invoice view' },
+    { id: 'poApprovals', label: 'PO Approvals',      icon: <ClipboardList className="size-4" />, hint: 'Approve or reject Store purchase orders' },
     { id: 'closure',    label: 'Daily Closure',      icon: <WalletCards   className="size-4" />, hint: 'All unit closing status' },
     { id: 'variance',   label: 'Stock Variance',     icon: <AlertTriangle className="size-4" />, hint: 'Physical stock differences' },
     { id: 'alerts',     label: 'Owner Alerts',       icon: <Bell          className="size-4" />, hint: 'Actionable risks' },
@@ -2465,6 +2592,7 @@ export default function OwnerDashboard() {
       {tab === 'sales'      && <SalesOverviewTab />}
       {tab === 'credit'     && <OwnerCreditTab />}
       {tab === 'purchases'  && <OwnerPurchasesTab />}
+      {tab === 'poApprovals' && <OwnerPOApprovalsTab />}
       {tab === 'closure'    && <OwnerDailyClosureTab />}
       {tab === 'variance'   && <OwnerStockVarianceTab />}
       {tab === 'alerts'     && <OwnerAlertsTab />}

@@ -18,6 +18,7 @@ import AdminPlanningTab from '@/components/admin/AdminPlanningTab';
 import AdminWalletTab from '@/components/admin/AdminWalletTab';
 import AdminPromotionsTab from '@/components/admin/AdminPromotionsTab';
 import AdminInvoicesTab from '@/bakery/AdminInvoicesTab';
+import AdminPurchaseOrdersTab from '@/bakery/AdminPurchaseOrdersTab';
 import { useBranchLedger } from '@/hooks/useBranchLedger';
 import { useNotificationStore } from '@/bakery/notificationStore';
 import { supabase } from '@/lib/supabase';
@@ -38,7 +39,7 @@ const CHART_COLORS = ['#2563eb', '#d97706', '#059669', '#7c3aed', '#dc2626', '#0
 const PAYMENT_COLORS = ['#16a34a', '#2563eb', '#7c3aed', '#f97316', '#dc2626'];
 
 // CHANGE 3: Removed 'stock-alerts' from AdminTab union
-type AdminTab = 'public-orders' | 'planning' | 'wallet' | 'promotions' | 'overview' | 'cafe' | 'branches' | 'items' | 'daily-closure' | 'credits' | 'advance' | 'stock-disputes' | 'stock-variance' | 'waste' | 'audit' | 'invoices' | 'alerts' | 'complaints' | 'attendance';
+type AdminTab = 'public-orders' | 'planning' | 'wallet' | 'promotions' | 'overview' | 'cafe' | 'branches' | 'items' | 'daily-closure' | 'credits' | 'advance' | 'stock-disputes' | 'stock-variance' | 'waste' | 'audit' | 'invoices' | 'purchase-orders' | 'alerts' | 'complaints' | 'attendance';
 
 type SalesTxn = {
   id: string; branch: Branch; itemName: string; qty: number; revenue: number;
@@ -82,7 +83,8 @@ const NAV_ITEMS: Array<{ id: AdminTab; label: string; description: string; icon:
   { id: 'stock-variance', label: 'Stock Variance', description: 'Physical stock count differences from branches', icon: AlertTriangle, adminOnly: true },
   { id: 'waste', label: 'Waste & Loss', description: 'Waste deductions reported by every branch', icon: Trash2, adminOnly: true },
   { id: 'audit', label: 'Audit Logs', description: 'Sensitive action history', icon: ShieldCheck, adminOnly: true },
-  { id: 'invoices', label: 'Invoices', description: 'Store invoice review and approval', icon: FileSpreadsheet, adminOnly: true },
+  { id: 'invoices', label: 'GRN', description: 'Goods receipt review and approval', icon: FileSpreadsheet, adminOnly: true },
+  { id: 'purchase-orders', label: 'Purchase Orders', description: 'Status of Store purchase orders (Owner approves)', icon: ClipboardList, adminOnly: true },
   { id: 'alerts', label: 'Alerts', description: 'Business alerts (no low-stock)', icon: Bell, adminOnly: true },
   { id: 'complaints', label: 'Complaints', description: 'Branch admin complaints and issues', icon: ClipboardList, adminOnly: true },
   { id: 'attendance', label: 'Attendance & Payroll', description: 'Staff attendance and salary management', icon: CalendarClock, adminOnly: true },
@@ -1561,6 +1563,7 @@ function AdminDashboard() {
     waste: WasteTab,
     audit: AuditTab,
     invoices: <AdminInvoicesTab />,
+    'purchase-orders': <AdminPurchaseOrdersTab />,
     alerts: AlertsTab,
     complaints: ComplaintsTab,
     attendance: AttendanceTab,

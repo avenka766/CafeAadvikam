@@ -43,6 +43,7 @@ import { useAuthStore } from '@/stores/authStore';
 import { useBranchStore } from '@/branch/branchStore';
 import { useBranchCatalogStore, type BranchCatalogItem } from '@/stores/branchCatalogStore';
 import { HOSUR_VRSNB_PRICE_LIST } from '@/data/hosurVrsnbPriceList';
+import { buildHosurOrderTag, buildHosurItemId, checkRecentDuplicateHosurOrder } from '@/bakery/hosurOrderShared';
 
 export const BRANCH = 'Hosur' as const;
 const HOSUR_UPI_ID = '328969176350835@cnrb';
@@ -1976,6 +1977,14 @@ function NewOrderTab({ shops, prices, busy, withBusy, priceFor, userName }: {
   const saveOrder = async () => {
     if (!shop) throw new Error('Select a shop.');
     if (cartItems.length === 0) throw new Error('Add at least one item.');
+    // DUPLICATE-ORDER GUARD: same shop, same subtotal, submitted again within
+    // the last 90s — block instead of silently creating a second identical
+    // order. Shared with HosurShopOrderPanel.tsx's PlaceOrderSection so both
+    // order-creation screens apply the exact same guard.
+    const dupeCheck = await checkRecentDuplicateHosurOrder(shop.id, subtotal);
+    if (dupeCheck.isDuplicate) {
+      throw new Error(`${shop.shopName} already has a matching order (${dupeCheck.orderNumber}) placed moments ago — check order history before resending.`);
+    }
     const orderNumber = `HSR-ORD-${new Date().toISOString().slice(2, 10).replace(/-/g, '')}-${crypto.randomUUID().slice(0, 4).toUpperCase()}`;
     const { data: order, error: orderError } = await supabase.from('hosur_orders').insert({
       order_number: orderNumber,
@@ -2007,8 +2016,10 @@ function NewOrderTab({ shops, prices, busy, withBusy, priceFor, userName }: {
 
     // Route every Hosur shop order through the shared bakery workflow:
     // Store -> Baker -> Packing -> Hosur Received From Packing.
+    // itemId/notes-tag scheme unified with HosurShopOrderPanel.tsx's
+    // PlaceOrderSection via hosurOrderShared.ts.
     const bakeryItems = cartItems.map((item) => ({
-      itemId: `hosur-${order.id}-${normalize(item.itemName).replace(/\s+/g, '-')}`,
+      itemId: buildHosurItemId(order.id, item.itemName),
       itemName: item.itemName,
       quantity: item.quantity,
       originalPcs: item.unit === 'pcs' ? item.quantity : undefined,
@@ -2020,7 +2031,7 @@ function NewOrderTab({ shops, prices, busy, withBusy, priceFor, userName }: {
       status: 'pending',
       created_by: userName,
       target_branch: 'Hosur',
-      notes: `HOSUR_ORDER_ID:${order.id}|${orderNumber}|${shop.shopName}${notes.trim() ? `|${notes.trim()}` : ''}`,
+      notes: buildHosurOrderTag(order.id, orderNumber, shop.shopName, notes),
     });
     if (bakeryOrderError) {
       await supabase.from('hosur_order_items').delete().eq('order_id', order.id);
