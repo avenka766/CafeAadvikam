@@ -72,6 +72,9 @@ export interface PreparedItem {
   preparedAt: string;
   /** Mirrors dispatchUnit from the original order item — passed through so packing knows the unit. */
   dispatchUnit?: 'pcs' | 'kg';
+  /** Planner's Production Entry tab: 'pending' = more still to come, 'completed' = fully produced.
+   *  Was previously set dynamically without a type (see PlannerDashboard.tsx computeProductionRows/doSave). */
+  status?: 'pending' | 'completed';
 }
 
 export interface DispatchEntry {

@@ -47,6 +47,7 @@ export default function HosurShopOrderPanel({ section: controlledSection, onPend
   const [orders, setOrders] = useState<HosurOrder[]>([]);
   const [items, setItems] = useState<HosurOrderItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [localSection, setLocalSection] = useState<'place' | 'dispatch'>('place');
   const section = controlledSection ?? localSection;
 
@@ -57,6 +58,16 @@ export default function HosurShopOrderPanel({ section: controlledSection, onPend
       supabase.from('hosur_orders').select('id, order_number, shop_id, shop_name, shop_whatsapp, status, subtotal, created_at').order('created_at', { ascending: false }).limit(200),
       supabase.from('hosur_order_items').select('id, order_id, item_name, unit, quantity, unit_price, line_total, dispatched_quantity, received_quantity'),
     ]);
+    // BUG FIX: none of these 4 results' `.error` were ever checked — a
+    // failed fetch (RLS/network hiccup) rendered as an indistinguishable
+    // empty "No orders waiting" state instead of a visible error, so staff
+    // had no way to tell "genuinely nothing pending" apart from "the load
+    // silently failed."
+    const failed = [
+      shopsRes.error && 'shops', pricesRes.error && 'price lists',
+      ordersRes.error && 'orders', itemsRes.error && 'order items',
+    ].filter(Boolean) as string[];
+    setLoadError(failed.length > 0 ? `Failed to load Hosur ${failed.join(', ')} — check your connection and refresh.` : null);
     setShops((shopsRes.data ?? []).map(mapShop));
     setPrices((pricesRes.data ?? []).map(mapPrice));
     setOrders((ordersRes.data ?? []).map(mapOrder));
@@ -99,6 +110,11 @@ export default function HosurShopOrderPanel({ section: controlledSection, onPend
         </div>
       )}
 
+      {loadError && (
+        <div className="flex items-center gap-2 rounded-2xl border border-destructive/30 bg-destructive/10 p-3 text-xs font-bold text-destructive">
+          <AlertTriangle className="size-4 shrink-0" /> {loadError}
+        </div>
+      )}
       {loading ? (
         <div className="flex items-center justify-center gap-2 py-14 text-xs font-bold text-muted-foreground font-body">
           <Loader2 className="size-4 animate-spin" /> Loading shop data...
@@ -577,12 +593,38 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
                 <div className="space-y-1.5">
                   {orderItems.map(item => {
                     const applied = appliedLeftovers[`${order.id}::${item.id}`];
+                    // BUG FIX: this input had no validation at all — a
+                    // negative value or a stray extra digit flowed straight
+                    // into the bill total (orderTotal) and the receivedQuantity
+                    // sent to dispatchReceiveAndBill, silently producing a
+                    // wrong/negative bill for a real shop. Clamp to >= 0 on
+                    // entry, and flag (without hard-blocking — a shop's order
+                    // can legitimately be corrected upward at dispatch time)
+                    // whenever the dispatched amount exceeds what was ordered.
+                    const overrideVal = overrides[item.id];
+                    const overrideNum = overrideVal !== undefined ? Number(overrideVal) : item.quantity;
+                    const exceedsOrdered = Number.isFinite(overrideNum) && overrideNum > item.quantity + 0.001;
                     return (
                       <div key={item.id} className="rounded-lg bg-muted/40 px-3 py-1.5">
                         <div className="flex items-center justify-between text-xs font-bold">
                           <span>{item.itemName} <span className="text-muted-foreground">(ordered {num(item.quantity)} {item.unit})</span></span>
-                          <input type="number" value={overrides[item.id] ?? item.quantity} onChange={e => setOverrides(v => ({ ...v, [item.id]: e.target.value }))} className="w-24 rounded-lg border border-border bg-background px-2 py-1 text-right" />
+                          <input
+                            type="number"
+                            min={0}
+                            value={overrideVal ?? item.quantity}
+                            onChange={e => {
+                              const raw = e.target.value;
+                              const n = Number(raw);
+                              // Reject negative numbers outright; anything
+                              // else (including blank, mid-typing) passes
+                              // through as-is so typing isn't interrupted.
+                              if (raw !== '' && Number.isFinite(n) && n < 0) return;
+                              setOverrides(v => ({ ...v, [item.id]: raw }));
+                            }}
+                            className={cn('w-24 rounded-lg border bg-background px-2 py-1 text-right', exceedsOrdered ? 'border-amber-400' : 'border-border')}
+                          />
                         </div>
+                        {exceedsOrdered && <p className="mt-0.5 text-[10px] font-black text-amber-700">More than ordered ({num(item.quantity)} {item.unit}) — double-check before dispatching.</p>}
                         {applied && <p className="mt-0.5 text-[10px] font-black text-teal-700">Using {num(applied.qty)} {item.unit} from leftover pool</p>}
                       </div>
                     );
@@ -597,7 +639,10 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
                   const needsDueDate = pType !== 'full';
                   const dueDateMissing = needsDueDate && !dueDate[order.id];
                   const partialInvalid = pType === 'partial' && (!paidAmount[order.id] || paidNow <= 0 || paidNow >= total);
-                  const canDispatch = !dueDateMissing && !partialInvalid && counterOpen !== false;
+                  // BUG FIX: nothing previously stopped dispatching a $0 or
+                  // negative bill (e.g. every quantity zeroed/typo'd out) —
+                  // require a genuinely positive total.
+                  const canDispatch = !dueDateMissing && !partialInvalid && counterOpen !== false && total > 0.001;
                   return (
                     <>
                       <div className="rounded-xl border border-gold bg-accent/10 p-3 space-y-3">

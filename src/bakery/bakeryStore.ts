@@ -3,6 +3,23 @@ import { supabase } from '@/lib/supabase';
 import { makeSingletonSubscriber } from '@/lib/realtimeChannel';
 import type { BakeryOrder, BakeryOrderItem, PreparedItem, DispatchEntry, WorkflowStatus, Branch } from './types';
 import { useNotificationStore } from './notificationStore'; // BUG #16 FIX: needed to fire baker shortage notifications
+// CLOSING STOCK LINK (2026-08-06): submitDispatch is the single shared path
+// every dispatch button in the app goes through (regular dispatch, bulk
+// dispatch, planned-batch dispatch, and the "use leftover" button) — wiring
+// the pool debit in here, once, guarantees every dispatch is reflected in
+// the Closing Stock pool balance with no risk of a UI call site being missed.
+import { recordLeftoverMovement, kolkataToday } from './PlannerLeftoverTab';
+// MATERIAL DEDUCTION FIX (2026-08-06): mergeOrdersForStore now auto-confirms
+// stock (see below) instead of stopping at 'accepted' for a manual
+// "Confirm Stock" click on the Store Dashboard — but that manual click used
+// to be the ONLY place raw-material stock got deducted (StoreDashboard.tsx's
+// OrderCard.handleConfirmStock). Without this import, auto-confirm would
+// silently stop deducting Store's raw-material inventory for every merged
+// order. matForItem/combinedMaterialsForItems were moved out of
+// StoreDashboard.tsx into materialCalc.ts specifically so both places use
+// the exact same calculation.
+import { combinedMaterialsForItems } from './materialCalc';
+import { useStoreStockStore, type DeductionContext } from './storeStockStore';
 
 // Planner's "Planning" tab tags a proactive/extra-production batch with this
 // marker in `notes` (target_branch stays null since the destination branch
@@ -11,6 +28,26 @@ import { useNotificationStore } from './notificationStore'; // BUG #16 FIX: need
 export const PLANNED_STOCK_TAG = 'PLANNER_PLANNED_STOCK';
 export function isPlannedOrder(order: { notes?: string | null; targetBranch?: string | null }): boolean {
   return !order.targetBranch && String(order.notes ?? '').includes(PLANNED_STOCK_TAG);
+}
+
+// MATERIAL DEDUCTION FIX (2026-08-06): deducts Store's raw-material stock for
+// a set of order items, mirroring exactly what StoreDashboard.tsx's OrderCard
+// .handleConfirmStock used to do (and still does, for orders that arrive via
+// the individual per-order accept path rather than a merge). Deliberately
+// allowed to THROW — deduction failing should abort the send, same as the
+// original flow (an order was never supposed to reach 'store_confirmed'
+// without its materials being deducted first).
+async function deductForOrder(items: BakeryOrderItem[], orderId: string, orderNumber: number): Promise<void> {
+  const materials = combinedMaterialsForItems(items);
+  if (materials.length === 0) return;
+  const { useAuthStore } = await import('@/stores/authStore');
+  const deductedBy = useAuthStore.getState().currentUser?.displayName ?? 'Store';
+  const ctx: DeductionContext = { orderId, orderNumber, deductedBy };
+  const warn = await useStoreStockStore.getState().deductMaterials(
+    materials.map(m => ({ name: m.material, qty: m.quantity, unit: m.unit })),
+    ctx,
+  );
+  if (warn) console.warn('[mergeOrdersForStore] Stock deduction note:', warn);
 }
 
 interface BakeryState {
@@ -219,8 +256,35 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
       .filter((o): o is BakeryOrder => Boolean(o));
     if (group.length === 0) return;
 
+    // AUTO-CONFIRM (2026-08-06): sending (merged or single) orders to Store
+    // used to stop at status 'accepted', requiring a separate manual
+    // "Confirm Stock" click on the Store Dashboard before the order became
+    // visible in Production/Dispatch — with nothing telling anyone that
+    // step existed, so a sent order just appeared to vanish. Owner asked
+    // for this collapsed into one step: sending to Store now goes straight
+    // to 'store_confirmed', so it shows in Production/Dispatch immediately.
+    const now = new Date().toISOString();
+
     if (group.length === 1) {
-      await get().acceptOrder(group[0].id);
+      await deductForOrder(group[0].items, group[0].id, group[0].orderNumber);
+      const { error } = await supabase
+        .from('bakery_orders')
+        .update({ status: 'store_confirmed', store_confirmed_at: now })
+        .eq('id', group[0].id);
+      if (error) throw new Error('Failed to send order to Store — please try again.');
+      set(s => ({
+        orders: s.orders.map(o => o.id === group[0].id ? { ...o, status: 'store_confirmed' as WorkflowStatus, storeConfirmedAt: now } : o),
+      }));
+      const { useAuthStore } = await import('@/stores/authStore');
+      const user = useAuthStore.getState().currentUser;
+      if (user) {
+        const { useActivityLogStore } = await import('./activityLogStore');
+        void useActivityLogStore.getState().log({
+          staffId: user.id, staffName: user.displayName, role: user.role,
+          action: 'Sent To Store (Auto-Confirmed)', detail: `Order #${group[0].orderNumber} — sent to Store and stock auto-confirmed`,
+          branch: group[0].targetBranch,
+        });
+      }
       return;
     }
 
@@ -275,9 +339,11 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
         ? (primary.notes?.includes(PLANNED_STOCK_TAG) ? primary.notes : PLANNED_STOCK_TAG)
         : (primary.notes ?? null);
 
+    await deductForOrder(combined, primary.id, primary.orderNumber);
+
     const { error: updateError } = await supabase
       .from('bakery_orders')
-      .update({ items: combined, status: 'accepted', notes: mergedNotes })
+      .update({ items: combined, status: 'store_confirmed', store_confirmed_at: now, notes: mergedNotes })
       .eq('id', primary.id);
     if (updateError) throw new Error('Failed to merge orders for Store — please try again.');
 
@@ -292,8 +358,20 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     set(s => ({
       orders: s.orders
         .filter(o => !others.some(x => x.id === o.id))
-        .map(o => o.id === primary.id ? { ...o, items: combined, status: 'accepted' as WorkflowStatus, notes: mergedNotes ?? undefined } : o),
+        .map(o => o.id === primary.id ? { ...o, items: combined, status: 'store_confirmed' as WorkflowStatus, storeConfirmedAt: now, notes: mergedNotes ?? undefined } : o),
     }));
+
+    const { useAuthStore } = await import('@/stores/authStore');
+    const user = useAuthStore.getState().currentUser;
+    if (user) {
+      const { useActivityLogStore } = await import('./activityLogStore');
+      void useActivityLogStore.getState().log({
+        staffId: user.id, staffName: user.displayName, role: user.role,
+        action: 'Merged & Sent To Store (Auto-Confirmed)',
+        detail: `${group.length} orders merged into #${primary.orderNumber} — sent to Store and stock auto-confirmed`,
+        branch: primary.targetBranch,
+      });
+    }
   },
 
   updateExpectedOutput: async (orderId, qty) => {
@@ -541,6 +619,31 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
       throw new Error(error.message || 'Dispatch failed while saving the dispatch log.');
     }
 
+    // CLOSING STOCK LINK: every dispatch debits the shared leftover/closing
+    // stock pool, even if there isn't enough recorded stock to cover it —
+    // the DB guard (record_leftover_movement) allows reason='dispatch' to go
+    // negative (a visible "backorder") rather than blocking the real-world
+    // dispatch from happening. This is deliberately non-fatal: a ledger
+    // hiccup must never block goods that have actually gone out the door.
+    try {
+      const ledgerResult = await recordLeftoverMovement({
+        itemName: newEntry.itemName,
+        unit: newEntry.unit === 'pcs' ? 'pcs' : 'kg',
+        delta: -Math.abs(Number(newEntry.quantity) || 0),
+        businessDate: kolkataToday(),
+        reason: 'dispatch',
+        recordedBy: newEntry.dispatchedBy || 'Planner',
+        branch: newEntry.branch,
+        orderId,
+        orderNumber: freshOrder.order_number != null ? Number(freshOrder.order_number) : undefined,
+      });
+      if ('error' in ledgerResult) {
+        console.error('[submitDispatch] Closing Stock pool debit failed:', ledgerResult.error);
+      }
+    } catch (ledgerErr) {
+      console.error('[submitDispatch] Closing Stock pool debit threw:', ledgerErr);
+    }
+
     // Keep the Hosur shop-order record(s) behind the bakery workflow. It
     // becomes visible in the Hosur "Dispatch" sub-tab only after Packing has
     // actually dispatched it.
@@ -770,7 +873,10 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
       .from('bakery_orders')
       .update({ dispatch_log: updatedLog, status: newStatus, leftover_status: 'pending' })
       .eq('id', orderId);
-    if (error) return;
+    // BUG FIX: silently returning on error left the caller with no idea the
+    // undo failed — matches the same silent-failure pattern already fixed
+    // elsewhere in this file. Throw like every other action here does.
+    if (error) throw new Error(error.message || 'Failed to remove dispatch entry — please try again.');
 
     if (removedEntry) {
       // M-02 FIX: always call decrement_branch_stock regardless of whether the row exists.

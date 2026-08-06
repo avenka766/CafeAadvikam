@@ -35,6 +35,14 @@ import { canonicalItemSlug } from './itemMatcher';
 import { useBranchCatalogStore } from '@/stores/branchCatalogStore';
 import { supabase } from '@/lib/supabase';
 
+// TAB MERGE (2026-08-06): the old standalone 'done' tab ("Leftover / Done" —
+// a bare per-order yes/no checkbox with no quantity/item detail) has been
+// folded into 'leftover-stock' ("Closing Stock" — the real quantified
+// ledger). They were two disconnected systems tracking the same physical
+// event; only one tab now, with the order-level "awaiting reconciliation"
+// list rendered as a panel inside it. The 'done' key is kept in the type
+// (but no longer in TABS/nav) purely so any stale bookmarked URL still
+// resolves instead of erroring.
 type PlannerTab = 'incoming' | 'sent' | 'merged' | 'planning' | 'production' | 'dispatch' | 'hosur' | 'cake' | 'transfer-in' | 'closure' | 'leftover-stock' | 'invoice' | 'reports' | 'billing' | 'done';
 const TABS: { key: PlannerTab; label: string; icon: React.ReactNode }[] = [
   { key: 'incoming',    label: 'Incoming Orders',  icon: <ClipboardList className="size-4" /> },
@@ -51,7 +59,6 @@ const TABS: { key: PlannerTab; label: string; icon: React.ReactNode }[] = [
   { key: 'invoice',     label: 'Invoice',          icon: <Receipt className="size-4" /> },
   { key: 'billing',     label: 'Billing (Walk-in)', icon: <ShoppingCart className="size-4" /> },
   { key: 'reports',     label: 'Reports',          icon: <BarChart3 className="size-4" /> },
-  { key: 'done',        label: 'Leftover / Done',  icon: <PackageCheck className="size-4" /> },
 ];
 
 // 'Planned' is a synthetic bucket alongside the three real branches — proactive
@@ -218,11 +225,15 @@ export default function PlannerDashboard() {
             {tab === 'cake' && <PackingCakeOrdersTab />}
             {tab === 'transfer-in' && <PackingTransferInTab />}
             {tab === 'closure' && <PackingDailyClosureTab />}
-            {tab === 'leftover-stock' && <PlannerLeftoverTab />}
+            {tab === 'leftover-stock' && (
+              <div className="space-y-6">
+                <PlannerLeftoverTab />
+                <LeftoverDoneTab active={activeLeftovers} done={doneOrders} />
+              </div>
+            )}
             {tab === 'invoice' && <InvoiceTab orders={orders} />}
             {tab === 'billing' && <BillingTab />}
             {tab === 'reports' && <ReportsTab orders={orders} />}
-            {tab === 'done' && <LeftoverDoneTab active={activeLeftovers} done={doneOrders} />}
           </>
         )}
       </main>
@@ -475,9 +486,10 @@ function MergedSummaryTab({ orders }: { orders: BakeryOrder[] }) {
   const merged = useMemo(() => computeMergedSummary(orders), [orders]);
   const [sendingAll, setSendingAll] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [sendError, setSendError] = useState<string | null>(null);
 
   const handleSendToStore = async () => {
-    setSendingAll(true); setNotice(null);
+    setSendingAll(true); setNotice(null); setSendError(null);
     try {
       const ids = Array.from(new Set(merged.flatMap(r => r.contributingOrderIds)));
       const contributing = orders.filter(o => ids.includes(o.id) && o.status === 'pending');
@@ -494,6 +506,14 @@ function MergedSummaryTab({ orders }: { orders: BakeryOrder[] }) {
         await mergeOrdersForStore(branchOrderIds);
       }
       setNotice(`Combined order sent to Store for ${byBranch.size} branch${byBranch.size === 1 ? '' : 'es'}.`);
+    } catch (err) {
+      // BUG FIX: this had no catch at all — any Supabase failure (e.g. the
+      // material-deduction step inside mergeOrdersForStore throwing because
+      // Store is out of a raw material) became an unhandled promise
+      // rejection. The spinner just stopped with no notice and no error,
+      // same silent-failure class as the Combine Orders bug on Store
+      // Dashboard's sibling button.
+      setSendError(err instanceof Error ? err.message : 'Failed to send to Store — please try again.');
     } finally {
       setSendingAll(false);
     }
@@ -529,6 +549,7 @@ function MergedSummaryTab({ orders }: { orders: BakeryOrder[] }) {
         </div>
       </div>
       {notice && <div className="rounded-xl bg-teal-50 border border-teal-200 px-3 py-2 text-xs font-bold text-teal-700">{notice}</div>}
+      {sendError && <div className="rounded-xl bg-red-50 border border-red-200 px-3 py-2 text-xs font-bold text-red-700">{sendError}</div>}
       {merged.length === 0 ? <EmptyState text="No pending orders to merge yet." /> : (
         <div className="overflow-x-auto rounded-2xl border border-border bg-white shadow-sm">
           <table className="w-full text-sm">
@@ -806,9 +827,11 @@ function ProductionEntryDateGroup({ label, orders, rows, search, defaultOpen }: 
   dateKey: string; label: string; orders: BakeryOrder[]; rows: ProductionRow[]; search: string; defaultOpen: boolean;
 }) {
   const { recordProduction } = useBakeryStore();
+  const currentUser = useAuthStore(s => s.currentUser);
   const [open, setOpen] = useState(defaultOpen);
   const [qty, setQty] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
   // Single unified flow: Save -> ask Completed/Pending -> if Completed, ask again to confirm.
   const [askItem, setAskItem] = useState<ProductionRow | null>(null);
   const [confirmItem, setConfirmItem] = useState<ProductionRow | null>(null);
@@ -835,20 +858,75 @@ function ProductionEntryDateGroup({ label, orders, rows, search, defaultOpen }: 
   }, [filtered]);
 
   const doSave = async (row: ProductionRow, status: 'pending' | 'completed') => {
+    // BUG FIX: the modal buttons that call this had no disabled-while-saving
+    // guard, so a fast double-click/double-tap could invoke doSave twice
+    // concurrently for the same row before the first call's DB writes land —
+    // both calls would then see the same pre-save "not completed" state and
+    // both log the produced quantity into the Closing Stock pool, double
+    // counting it. Bail out immediately if a save for this exact row is
+    // already in flight.
+    if (saving === row.itemName) return;
     const enteredQty = qty[row.itemName] ? Number(qty[row.itemName]) : (status === 'completed' ? row.totalRequested : 0);
     if (enteredQty <= 0) return;
     setSaving(row.itemName);
+    setSaveError(null);
     try {
       const split = autoSplitForItem(orders, row.itemName, enteredQty);
+      // CLOSING STOCK LINK (2026-08-06): track how much of this save is a
+      // genuinely NEW completion (order+item transitioning to 'completed'
+      // for the first time) vs. a re-save of an order already logged
+      // earlier — only newly-completed quantity gets added to the pool, so
+      // if this row later picks up another contributing order and gets
+      // saved again, the orders already completed aren't double-counted.
+      let newlyCompletedQty = 0;
+      const failed: string[] = [];
       for (const orderId of row.contributingOrderIds) {
         const order = orders.find(o => o.id === orderId);
         const item = order?.items.find(i => sameItem(i.itemName, row.itemName));
         if (!order || !item) continue;
+        const wasAlreadyCompleted = (order.producedItems || []).find(p => p.itemId === item.itemId)?.status === 'completed';
         const others = (order.producedItems || []).filter(p => p.itemId !== item.itemId);
-        const merged: PreparedItem[] = [...others, { itemId: item.itemId, itemName: item.itemName, quantityPrepared: split[orderId] ?? 0, preparedAt: new Date().toISOString(), dispatchUnit: item.dispatchUnit, status }];
-        await recordProduction(order.id, merged);
+        const producedQty = split[orderId] ?? 0;
+        const merged: PreparedItem[] = [...others, { itemId: item.itemId, itemName: item.itemName, quantityPrepared: producedQty, preparedAt: new Date().toISOString(), dispatchUnit: item.dispatchUnit, status }];
+        // BUG FIX: this used to be a single un-guarded `await` inside the
+        // loop — if order 2 of 3 failed, the function threw immediately,
+        // leaving order 1 durably saved as 'completed' in the DB but its
+        // quantity never reaches the Closing Stock pool below (and it can
+        // never be recovered later, since the next save sees order 1 as
+        // already-completed and correctly skips re-logging it). Catching
+        // per-order lets every order that DID succeed still count toward
+        // the pool, and reports exactly which order(s) need a retry instead
+        // of silently losing that quantity.
+        try {
+          await recordProduction(order.id, merged);
+          if (status === 'completed' && !wasAlreadyCompleted) newlyCompletedQty += producedQty;
+        } catch {
+          failed.push(`#${order.orderNumber}`);
+        }
+      }
+      // Once production is marked complete, the produced quantity becomes
+      // available finished-goods stock in the shared Closing Stock pool —
+      // ready for Dispatch to draw down (even ahead of fresh production).
+      if (newlyCompletedQty > 0.001) {
+        const staffName = currentUser?.displayName || currentUser?.username || 'Planner';
+        const result = await recordLeftoverMovement({
+          itemName: row.itemName,
+          unit: row.unit as LeftoverUnit,
+          delta: newlyCompletedQty,
+          businessDate: kolkataToday(),
+          reason: 'production_carryover',
+          recordedBy: staffName,
+          notes: `Production completed — ${label}`,
+        });
+        if ('error' in result) {
+          console.error('[ProductionEntry] Failed to log production into Closing Stock pool:', result.error);
+          failed.push('Closing Stock pool update');
+        }
       }
       setQty(v => ({ ...v, [row.itemName]: '' }));
+      if (failed.length > 0) {
+        setSaveError(`"${row.itemName}" — saved, but ${failed.join(', ')} failed. Please retry so nothing goes missing.`);
+      }
     } finally {
       setSaving(null);
       setAskItem(null);
@@ -935,11 +1013,11 @@ function ProductionEntryDateGroup({ label, orders, rows, search, defaultOpen }: 
             <p className="text-sm font-black text-foreground">"{askItem.itemName}" — {qty[askItem.itemName]} {askItem.unit} entered</p>
             <p className="mt-1 text-xs font-semibold text-muted-foreground">Is the baker completely done with this item, or still baking more?</p>
             <div className="mt-4 flex justify-end gap-2">
-              <button onClick={() => setAskItem(null)} className="rounded-xl bg-muted px-4 py-2 text-xs font-bold text-muted-foreground hover:bg-slate-200">Cancel</button>
-              <button onClick={() => { doSave(askItem, 'pending'); }} className="flex items-center gap-1.5 rounded-xl bg-amber-500 px-4 py-2 text-xs font-bold text-white hover:bg-amber-600">
-                <Clock3 className="size-3.5" /> Pending — more coming
+              <button disabled={saving === askItem.itemName} onClick={() => setAskItem(null)} className="rounded-xl bg-muted px-4 py-2 text-xs font-bold text-muted-foreground hover:bg-slate-200 disabled:opacity-50">Cancel</button>
+              <button disabled={saving === askItem.itemName} onClick={() => { doSave(askItem, 'pending'); }} className="flex items-center gap-1.5 rounded-xl bg-amber-500 px-4 py-2 text-xs font-bold text-white hover:bg-amber-600 disabled:opacity-50">
+                {saving === askItem.itemName ? <Loader2 className="size-3.5 animate-spin" /> : <Clock3 className="size-3.5" />} Pending — more coming
               </button>
-              <button onClick={() => { setConfirmItem(askItem); setAskItem(null); }} className="flex items-center gap-1.5 rounded-xl bg-teal-600 px-4 py-2 text-xs font-bold text-white hover:bg-teal-700">
+              <button disabled={saving === askItem.itemName} onClick={() => { setConfirmItem(askItem); setAskItem(null); }} className="flex items-center gap-1.5 rounded-xl bg-teal-600 px-4 py-2 text-xs font-bold text-white hover:bg-teal-700 disabled:opacity-50">
                 <CheckCircle2 className="size-3.5" /> Completed
               </button>
             </div>
@@ -954,9 +1032,21 @@ function ProductionEntryDateGroup({ label, orders, rows, search, defaultOpen }: 
             <p className="text-sm font-black text-foreground">Confirm: mark "{confirmItem.itemName}" as Completed?</p>
             <p className="mt-1 text-xs font-semibold text-muted-foreground">This sends {qty[confirmItem.itemName] || confirmItem.totalRequested} {confirmItem.unit} to Dispatch and removes it from Production Entry. This can't be undone from here.</p>
             <div className="mt-4 flex justify-end gap-2">
-              <button onClick={() => setConfirmItem(null)} className="rounded-xl bg-muted px-4 py-2 text-xs font-bold text-muted-foreground hover:bg-slate-200">Go back</button>
-              <button onClick={() => doSave(confirmItem, 'completed')} className="rounded-xl bg-teal-600 px-4 py-2 text-xs font-bold text-white hover:bg-teal-700">Yes, Confirm Completed</button>
+              <button disabled={saving === confirmItem.itemName} onClick={() => setConfirmItem(null)} className="rounded-xl bg-muted px-4 py-2 text-xs font-bold text-muted-foreground hover:bg-slate-200 disabled:opacity-50">Go back</button>
+              <button disabled={saving === confirmItem.itemName} onClick={() => doSave(confirmItem, 'completed')} className="flex items-center gap-1.5 rounded-xl bg-teal-600 px-4 py-2 text-xs font-bold text-white hover:bg-teal-700 disabled:opacity-50">
+                {saving === confirmItem.itemName && <Loader2 className="size-3.5 animate-spin" />} Yes, Confirm Completed
+              </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {saveError && (
+        <div className="fixed inset-x-0 bottom-4 z-50 flex justify-center px-4">
+          <div className="flex max-w-md items-start gap-2 rounded-2xl border border-red-300 bg-red-50 px-4 py-3 text-xs font-bold text-red-700 shadow-xl">
+            <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+            <span className="flex-1">{saveError}</span>
+            <button onClick={() => setSaveError(null)} className="shrink-0"><X className="size-3.5" /></button>
           </div>
         </div>
       )}
@@ -2065,11 +2155,10 @@ function LeftoverDispatchButton({ row, orders, onDispatch, dispatchedBy, default
     const entries = orders.filter(o => o.targetBranch === branch && row.contributingOrderIds.includes(o.id));
     if (entries.length === 0) { setResult({ ok: false, message: `${branch} has no order waiting for ${row.itemName}.` }); return; }
     setBusy(true); setResult(null);
-    const consumed = await recordLeftoverMovement({
-      itemName: row.itemName, unit: balance.unit, delta: -q, businessDate: kolkataToday(),
-      reason: 'dispatch', recordedBy: dispatchedBy, branch, orderNumber: entries[0].orderNumber, orderId: entries[0].id,
-    });
-    if ('error' in consumed) { setBusy(false); setResult({ ok: false, message: consumed.error }); return; }
+    // NOTE: the Closing Stock pool debit now happens automatically inside
+    // submitDispatch() itself (every dispatch, from any button, debits the
+    // pool) — this button no longer needs its own separate ledger call, it
+    // just checks the balance up front (above) as a UX guard before dispatching.
     try {
       const split = autoSplitForItem(entries, row.itemName, q);
       for (const order of entries) {
@@ -2110,6 +2199,85 @@ function LeftoverDispatchButton({ row, orders, onDispatch, dispatchedBy, default
           {result && <p className={cn('mt-1.5 text-[11px] font-bold', result.ok ? 'text-teal-700' : 'text-red-700')}>{result.message}</p>}
         </div>
       )}
+    </div>
+  );
+}
+
+// Extracts every Hosur shop-order id tagged onto this row's contributing
+// bakery orders (HOSUR_ORDER_ID / HOSUR_ORDER_IDS in notes — see
+// mergeOrdersForStore's collectHosurIds for how these get written/merged).
+function collectHosurOrderIds(row: ProductionRow, orders: BakeryOrder[]): string[] {
+  const contributing = orders.filter(o => row.contributingOrderIds.includes(o.id) && o.targetBranch === 'Hosur');
+  const ids = new Set<string>();
+  for (const o of contributing) {
+    const text = String(o.notes ?? '');
+    const plural = text.match(/HOSUR_ORDER_IDS:([^|]+)/);
+    if (plural?.[1]) { plural[1].split(',').map(s => s.trim()).filter(Boolean).forEach(id => ids.add(id)); continue; }
+    const singular = text.match(/HOSUR_ORDER_ID:([^|]+)/);
+    if (singular?.[1]) ids.add(singular[1].trim());
+  }
+  return Array.from(ids);
+}
+
+// NEW: per-shop breakdown for a Hosur-filtered dispatch row — joins back to
+// the original hosur_orders/hosur_order_items via the tag above, so instead
+// of only a branch-wide total the planner sees exactly which shop asked for
+// how much of this item (e.g. "Shop A: 5 egg puffs requested, 3 sent").
+function HosurShopBreakdown({ row, orders }: { row: ProductionRow; orders: BakeryOrder[] }) {
+  const hosurOrderIds = useMemo(() => collectHosurOrderIds(row, orders), [row, orders]);
+  // BUG FIX: `orders` is a brand-new array reference every ~15s poll, and
+  // `row` is rebuilt fresh by computeProductionRows on every render, so
+  // `hosurOrderIds` (a useMemo keyed on those unstable references) also got
+  // a new array identity constantly even when its actual contents never
+  // changed — re-running the effect below and re-querying Supabase every
+  // poll tick while this row was visible. Depend on a stable joined-string
+  // key instead so the effect only re-fires when the ids genuinely change.
+  const hosurOrderIdsKey = hosurOrderIds.join(',');
+  const [shops, setShops] = useState<{ shopName: string; requested: number; dispatched: number }[] | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (hosurOrderIds.length === 0) { setShops([]); return; }
+    (async () => {
+      const [{ data: ordersData }, { data: itemsData }] = await Promise.all([
+        supabase.from('hosur_orders').select('id, shop_name').in('id', hosurOrderIds),
+        supabase.from('hosur_order_items').select('order_id, item_name, quantity, dispatched_quantity').in('order_id', hosurOrderIds),
+      ]);
+      if (cancelled) return;
+      const shopNameById = new Map<string, string>(
+        ((ordersData ?? []) as Record<string, unknown>[]).map((o) => [o.id as string, o.shop_name as string]),
+      );
+      const byShop = new Map<string, { requested: number; dispatched: number }>();
+      for (const item of (itemsData ?? []) as Record<string, unknown>[]) {
+        if (!sameItem(String(item.item_name ?? ''), row.itemName)) continue;
+        const shopName: string = shopNameById.get(item.order_id as string) ?? 'Unknown shop';
+        const current = byShop.get(shopName) ?? { requested: 0, dispatched: 0 };
+        current.requested += Number(item.quantity ?? 0);
+        current.dispatched += Number(item.dispatched_quantity ?? 0);
+        byShop.set(shopName, current);
+      }
+      setShops(Array.from(byShop.entries()).map(([shopName, v]) => ({ shopName, ...v })).sort((a, b) => a.shopName.localeCompare(b.shopName)));
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally
+    // keyed on the stable joined string, not the unstable array reference.
+  }, [hosurOrderIdsKey, row.itemName]);
+
+  if (hosurOrderIds.length === 0) return null;
+  if (shops === null) return <p className="mt-2 text-[11px] font-bold text-muted-foreground">Loading shop breakdown…</p>;
+  if (shops.length === 0) return null;
+
+  return (
+    <div className="mt-2 rounded-xl border border-indigo-200 bg-indigo-50 p-2.5">
+      <p className="mb-1.5 text-[10px] font-black uppercase tracking-wide text-indigo-700">By Shop</p>
+      <div className="space-y-1">
+        {shops.map(s => (
+          <div key={s.shopName} className="flex items-center justify-between text-[11px] font-bold text-indigo-900">
+            <span>{s.shopName}</span>
+            <span>{qtyFmt(s.requested)} {row.unit} requested{s.dispatched > 0 ? ` · ${qtyFmt(s.dispatched)} ${row.unit} sent` : ''}</span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -2340,6 +2508,7 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
                   );
                 })}
               </div>
+              {branchFilter === 'Hosur' && <HosurShopBreakdown row={row} orders={orders} />}
             </div>
           );
         })}
@@ -2712,13 +2881,19 @@ function DispatchChecklistModal({ row, orders, onClose, onDispatch, dispatchedBy
 }
 
 // ─── Tab: Leftover / Done ───────────────────────────────────────────────────
+// Folded into the Closing Stock tab (2026-08-06) — this is the older,
+// order-level "has someone physically checked on this order's leftover"
+// checklist. It's separate from the quantified Closing Stock pool above
+// (no item/qty detail, just a per-order flag), kept here as a simple
+// reconciliation checklist so nothing that used to work is lost.
 function LeftoverDoneTab({ active, done }: { active: BakeryOrder[]; done: BakeryOrder[] }) {
   const { markDone } = useBakeryStore();
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 rounded-2xl border border-border bg-white p-4 shadow-sm">
       <div>
+        <p className="mb-3 text-xs font-semibold text-muted-foreground">Order-level checklist — separate from the quantified pool above. Use this to confirm every dispatched order has been physically checked for leftovers.</p>
         <div className="mb-2 flex items-center justify-between">
-          <h2 className="text-sm font-black text-foreground">Active Leftovers ({active.length})</h2>
+          <h2 className="text-sm font-black text-foreground">Dispatched Orders Awaiting Reconciliation ({active.length})</h2>
           <ExportButton
             disabled={active.length === 0 && done.length === 0}
             onClick={() => exportToExcel({

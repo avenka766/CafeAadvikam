@@ -30,6 +30,7 @@ import { useAuthStore } from '@/stores/authStore';
 import { useNotificationStore } from './notificationStore';
 import type { DeductionContext } from './storeStockStore';
 import { itemNamesMatch, pcsToKg, resolveItemWeightGrams } from './itemMatcher';
+import { matForItem } from './materialCalc';
 import InvoiceTab from './InvoiceTab';
 import { SNB_ITEMS } from '@/branch/snbItems';
 import { VRSNB_ITEMS } from '@/branch/vrsnbItems';
@@ -66,41 +67,9 @@ function storeOrderCategory(item: BakeryOrder['items'][number], liveItems: Retur
 }
 
 // ─── Shared helpers ───────────────────────────────────────────────────────────
-
-function matForItem(item: BakeryOrder['items'][number]) {
-  const recipeStore = useRecipeStore.getState();
-  const recipe = recipeStore.getRecipe(item.itemId, item.itemName);
-  const weightGrams = item.weightGrams ?? resolveItemWeightGrams(item.itemId, item.itemName);
-  const recipeUsesWeight = recipe?.outputUnit === 'kg' && weightGrams != null;
-  const quantity = item.dispatchUnit === 'pcs'
-    ? recipeUsesWeight
-      ? item.weightGrams != null
-        ? item.quantity
-        : (pcsToKg(item.itemName, item.quantity, weightGrams) ?? item.quantity)
-      : (item.originalPcs ?? item.quantity)
-    : item.quantity;
-  const unit = item.dispatchUnit === 'pcs' && !recipeUsesWeight ? 'pcs' : 'kg';
-  const materials = recipeStore.calculateMaterials(item.itemId, item.itemName, quantity, unit);
-
-  return materials.map((material, index) => {
-    if (!/^eggs?$/i.test(material.material.trim())) return material;
-
-    const recipeMaterial = recipe?.materials[index];
-    const embeddedCount = recipeMaterial?.unit.match(/(\d+(?:\.\d+)?)\s*eggs?/i);
-    const countUnit = /^(nos?|pcs?|pieces?|eggs?)$/i.test(material.unit.trim()) || Boolean(embeddedCount);
-    if (!countUnit) return material;
-
-    const scaledCount = embeddedCount && recipeMaterial?.qty
-      ? Number(embeddedCount[1]) * (material.quantity / recipeMaterial.qty)
-      : material.quantity;
-    const base = Math.floor(scaledCount);
-    const wholeEggs = scaledCount > 0
-      ? Math.max(1, base + (scaledCount - base > 0.4 ? 1 : 0))
-      : 0;
-
-    return { ...material, quantity: wholeEggs, unit: 'nos' };
-  });
-}
+// matForItem moved to ./materialCalc.ts (2026-08-06) so bakeryStore.ts's
+// mergeOrdersForStore() can reuse the exact same calculation — see that
+// file's comment for why.
 
 function recipeIssueForItem(item: BakeryOrder['items'][number]): string | null {
   const recipe = useRecipeStore.getState().getRecipe(item.itemId, item.itemName);
@@ -1311,15 +1280,27 @@ function OrdersTab() {
     if (pending.length < 2 || merging) return;
     setMerging(true); setMergeError(null);
     try {
+      // BUG FIX (2026-08-06): orders with no targetBranch (e.g. Planner's own
+      // "planned stock" batches) used to be silently dropped here via a
+      // `continue`, so if pending orders had no branch tag — or each pending
+      // order targeted a *different* branch — every group ended up size 1,
+      // the merge loop below never fired, and nothing happened with no error
+      // shown. Group no-branch orders into their own bucket instead of
+      // discarding them, and surface a clear message when there's genuinely
+      // nothing to combine.
       const byBranch = new Map<string, string[]>();
       for (const o of pending) {
-        if (!o.targetBranch) continue;
-        const list = byBranch.get(o.targetBranch) ?? [];
+        const key = o.targetBranch ?? 'unassigned';
+        const list = byBranch.get(key) ?? [];
         list.push(o.id);
-        byBranch.set(o.targetBranch, list);
+        byBranch.set(key, list);
       }
+      let mergedAny = false;
       for (const ids of byBranch.values()) {
-        if (ids.length > 1) await mergeOrdersForStore(ids);
+        if (ids.length > 1) { await mergeOrdersForStore(ids); mergedAny = true; }
+      }
+      if (!mergedAny) {
+        setMergeError('Nothing to combine — each pending order already targets a different branch, so there\'s nothing to merge together.');
       }
     } catch (err) {
       setMergeError(err instanceof Error ? err.message : 'Failed to combine orders — please try again.');

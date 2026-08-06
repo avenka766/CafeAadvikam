@@ -302,7 +302,11 @@ export default function PlannerLeftoverTab() {
       if (row.createdAt > current.lastMovement) current.lastMovement = row.createdAt;
       map.set(key, current);
     });
-    return Array.from(map.values()).filter((row) => row.balance > 0.001).sort((a, b) => a.itemName.localeCompare(b.itemName));
+    // Negative balances are kept (not filtered out) — since dispatch is now
+    // allowed to draw the pool below zero, a negative balance is a real
+    // "backorder" signal (more was dispatched than was ever produced/added)
+    // that staff need to see, not just items currently in surplus.
+    return Array.from(map.values()).filter((row) => Math.abs(row.balance) > 0.001).sort((a, b) => a.itemName.localeCompare(b.itemName));
   }, [rows]);
 
   const todayRows = useMemo(() => rows.filter((row) => row.businessDate === kolkataToday()), [rows]);
@@ -311,15 +315,21 @@ export default function PlannerLeftoverTab() {
 
   // ── Daily report (opening / added / dispatched / closing per item) ──────
   const [reportDate, setReportDate] = useState(kolkataToday());
+  // Split what used to be a single "added" bucket into PRODUCED (from the
+  // Production Entry tab marking an item complete — reason
+  // 'production_carryover') and MANUALLY ADDED (a staff member typing a
+  // closing-stock entry directly into this tab — reason 'closing_stock'),
+  // so the owner can see exactly how much of today's stock came from actual
+  // production vs. a manual count, not just one merged number.
   const reportRows = useMemo(() => {
     const map = new Map<string, {
       itemSlug: string; itemName: string; unit: LeftoverUnit;
-      opening: number; added: number; dispatched: number; adjusted: number; closing: number;
+      opening: number; produced: number; closingStockEntry: number; dispatched: number; adjusted: number; closing: number;
       dispatchByBranch: Record<string, number>;
     }>();
     const ensure = (row: LeftoverLedgerRow) => {
       const key = `${row.itemSlug}|${row.unit}`;
-      const current = map.get(key) ?? { itemSlug: row.itemSlug, itemName: row.itemName, unit: row.unit, opening: 0, added: 0, dispatched: 0, adjusted: 0, closing: 0, dispatchByBranch: {} };
+      const current = map.get(key) ?? { itemSlug: row.itemSlug, itemName: row.itemName, unit: row.unit, opening: 0, produced: 0, closingStockEntry: 0, dispatched: 0, adjusted: 0, closing: 0, dispatchByBranch: {} };
       map.set(key, current);
       return current;
     };
@@ -335,23 +345,26 @@ export default function PlannerLeftoverTab() {
           entry.dispatchByBranch[branchKey] = (entry.dispatchByBranch[branchKey] || 0) + Math.abs(row.delta);
         } else if (row.reason === 'adjustment') {
           entry.adjusted += row.delta;
+        } else if (row.reason === 'production_carryover') {
+          entry.produced += row.delta;
         } else {
-          entry.added += row.delta;
+          entry.closingStockEntry += row.delta;
         }
       }
     });
     return Array.from(map.values())
-      .map((entry) => ({ ...entry, closing: entry.opening + entry.added - entry.dispatched + entry.adjusted }))
-      .filter((entry) => Math.abs(entry.opening) > 0.001 || Math.abs(entry.added) > 0.001 || Math.abs(entry.dispatched) > 0.001 || Math.abs(entry.adjusted) > 0.001)
+      .map((entry) => ({ ...entry, closing: entry.opening + entry.produced + entry.closingStockEntry - entry.dispatched + entry.adjusted }))
+      .filter((entry) => Math.abs(entry.opening) > 0.001 || Math.abs(entry.produced) > 0.001 || Math.abs(entry.closingStockEntry) > 0.001 || Math.abs(entry.dispatched) > 0.001 || Math.abs(entry.adjusted) > 0.001)
       .sort((a, b) => a.itemName.localeCompare(b.itemName));
   }, [rows, reportDate]);
 
   const reportMovements = useMemo(() => rows.filter((row) => row.businessDate === reportDate).sort((a, b) => a.createdAt.localeCompare(b.createdAt)), [rows, reportDate]);
 
   const reportTotals = useMemo(() => reportRows.reduce((sum, row) => ({
-    added: sum.added + (row.unit === 'kg' ? row.added : 0),
+    produced: sum.produced + (row.unit === 'kg' ? row.produced : 0),
+    added: sum.added + (row.unit === 'kg' ? row.closingStockEntry : 0),
     dispatched: sum.dispatched + (row.unit === 'kg' ? row.dispatched : 0),
-  }), { added: 0, dispatched: 0 }), [reportRows]);
+  }), { produced: 0, added: 0, dispatched: 0 }), [reportRows]);
 
   const exportExcel = () => {
     const wb = XLSX.utils.book_new();
@@ -365,7 +378,10 @@ export default function PlannerLeftoverTab() {
     ], 'Summary', 'No data');
     addSheet(reportRows.map((row) => ({
       Item: row.itemName, Unit: row.unit,
-      Opening: row.opening, 'Added Today': row.added, 'Dispatched Today': row.dispatched,
+      Opening: row.opening,
+      'Produced Today': row.produced,
+      'Added (Closing Stock Entry) Today': row.closingStockEntry,
+      'Dispatched Today': row.dispatched,
       ...Object.fromEntries(BRANCHES.map((b) => [`Dispatched to ${b}`, row.dispatchByBranch[b] || 0])),
       Adjusted: row.adjusted, Closing: row.closing,
     })), 'Daily Reconciliation', 'No leftover activity on this date');
@@ -396,7 +412,8 @@ export default function PlannerLeftoverTab() {
     doc.text('Summary', marginX, y); y += 10;
     const kpis: [string, string][] = [
       ['Items With Activity', String(reportRows.length)],
-      ['Added Today (Kg total)', qtyFmt(reportTotals.added)],
+      ['Produced Today (Kg total)', qtyFmt(reportTotals.produced)],
+      ['Manually Added Today (Kg total)', qtyFmt(reportTotals.added)],
       ['Dispatched From Leftover (Kg total)', qtyFmt(reportTotals.dispatched)],
       ['Items Currently In Pool', String(balances.length)],
     ];
@@ -441,9 +458,9 @@ export default function PlannerLeftoverTab() {
 
     drawTable(
       'Daily Reconciliation',
-      ['Item', 'Unit', 'Opening', 'Added', 'Dispatched', 'Adjusted', 'Closing'],
-      [150, 35, 60, 55, 65, 60, 60],
-      reportRows.map((row) => [row.itemName.slice(0, 26), row.unit, qtyFmt(row.opening), qtyFmt(row.added), qtyFmt(row.dispatched), qtyFmt(row.adjusted), qtyFmt(row.closing)]),
+      ['Item', 'Unit', 'Opening', 'Produced', 'Added', 'Dispatched', 'Adjusted', 'Closing'],
+      [125, 30, 50, 52, 52, 58, 52, 52],
+      reportRows.map((row) => [row.itemName.slice(0, 22), row.unit, qtyFmt(row.opening), qtyFmt(row.produced), qtyFmt(row.closingStockEntry), qtyFmt(row.dispatched), qtyFmt(row.adjusted), qtyFmt(row.closing)]),
       'No leftover activity recorded for this date.',
     );
 
@@ -529,19 +546,26 @@ export default function PlannerLeftoverTab() {
         </div>
 
         <div className="overflow-hidden rounded-2xl border bg-card">
-          <div className="border-b bg-muted/30 px-4 py-3"><h3 className="font-black">Current Leftover Balance</h3><p className="text-xs text-muted-foreground">Running total across all history — this is what's available to dispatch first.</p></div>
+          <div className="border-b bg-muted/30 px-4 py-3"><h3 className="font-black">Current Leftover Balance</h3><p className="text-xs text-muted-foreground">Running total across all history — this is what's available to dispatch first. A negative balance means more was dispatched than produced/added (a backorder) — it clears automatically once more is produced.</p></div>
           <div className="max-h-[420px] overflow-y-auto">
             <table className="min-w-full text-sm">
               <thead className="sticky top-0 bg-muted/50 text-[10px] font-black uppercase tracking-wide text-muted-foreground">
                 <tr><th className="px-4 py-2.5 text-left">Item</th><th className="px-4 py-2.5 text-right">Balance</th><th className="px-4 py-2.5 text-right">Adjust</th></tr>
               </thead>
               <tbody className="divide-y">
-                {balances.length ? balances.map((row) => (
-                  <tr key={`${row.itemSlug}|${row.unit}`}>
+                {balances.length ? balances.map((row) => {
+                  const isBackorder = row.balance < -0.001;
+                  return (
+                  <tr key={`${row.itemSlug}|${row.unit}`} className={isBackorder ? 'bg-red-50/60' : undefined}>
                     <td className="px-4 py-2.5 font-bold">{row.itemName}</td>
-                    <td className="px-4 py-2.5 text-right font-black">{qtyFmt(row.balance)} {row.unit}</td>
+                    <td className={cn('px-4 py-2.5 text-right font-black', isBackorder && 'text-red-700')}>
+                      {qtyFmt(row.balance)} {row.unit}
+                      {isBackorder && <span className="ml-1.5 rounded-full bg-red-100 px-1.5 py-0.5 text-[9px] font-black uppercase text-red-700">Backorder</span>}
+                    </td>
                     <td className="px-4 py-2.5 text-right">
-                      {adjustingSlug === `${row.itemSlug}|${row.unit}` ? (
+                      {isBackorder ? (
+                        <span className="text-[10px] font-bold text-muted-foreground">—</span>
+                      ) : adjustingSlug === `${row.itemSlug}|${row.unit}` ? (
                         <div className="flex items-center justify-end gap-1">
                           <input autoFocus type="number" min="0" step="0.001" value={adjustQty} onChange={(e) => setAdjustQty(e.target.value)} className="h-8 w-20 rounded-lg border bg-background px-2 text-xs" placeholder="qty" />
                           <button onClick={() => submitAdjustment(row)} disabled={adjustSaving} className="rounded-lg bg-red-600 px-2 py-1.5 text-[10px] font-black text-white">{adjustSaving ? '…' : 'Remove'}</button>
@@ -552,7 +576,8 @@ export default function PlannerLeftoverTab() {
                       )}
                     </td>
                   </tr>
-                )) : <tr><td colSpan={3} className="px-4 py-10 text-center text-muted-foreground">No leftover stock currently held.</td></tr>}
+                  );
+                }) : <tr><td colSpan={3} className="px-4 py-10 text-center text-muted-foreground">No leftover stock currently held.</td></tr>}
               </tbody>
             </table>
           </div>
@@ -577,6 +602,7 @@ export default function PlannerLeftoverTab() {
               <tr>
                 <th className="px-4 py-3 text-left">Item</th>
                 <th className="px-4 py-3 text-right">Opening</th>
+                <th className="px-4 py-3 text-right">Produced Today</th>
                 <th className="px-4 py-3 text-right">Added Today</th>
                 <th className="px-4 py-3 text-right">Dispatched Today</th>
                 <th className="px-4 py-3 text-left">Dispatched To</th>
@@ -589,13 +615,14 @@ export default function PlannerLeftoverTab() {
                 <tr key={`${row.itemSlug}|${row.unit}`}>
                   <td className="px-4 py-3 font-black">{row.itemName} <span className="text-[10px] font-bold text-muted-foreground">{row.unit}</span></td>
                   <td className="px-4 py-3 text-right">{qtyFmt(row.opening)}</td>
-                  <td className="px-4 py-3 text-right text-teal-700 font-bold">{row.added > 0 ? `+${qtyFmt(row.added)}` : '-'}</td>
+                  <td className="px-4 py-3 text-right text-blue-700 font-bold">{row.produced > 0 ? `+${qtyFmt(row.produced)}` : '-'}</td>
+                  <td className="px-4 py-3 text-right text-teal-700 font-bold">{row.closingStockEntry > 0 ? `+${qtyFmt(row.closingStockEntry)}` : '-'}</td>
                   <td className="px-4 py-3 text-right text-amber-700 font-bold">{row.dispatched > 0 ? `-${qtyFmt(row.dispatched)}` : '-'}</td>
                   <td className="px-4 py-3 text-xs text-muted-foreground">{Object.entries(row.dispatchByBranch).map(([b, q]) => `${b}: ${qtyFmt(q)}`).join(', ') || '-'}</td>
                   <td className="px-4 py-3 text-right">{row.adjusted !== 0 ? qtyFmt(row.adjusted) : '-'}</td>
                   <td className="px-4 py-3 text-right font-black">{qtyFmt(row.closing)}</td>
                 </tr>
-              )) : <tr><td colSpan={7} className="px-4 py-10 text-center text-muted-foreground">No leftover activity on {dateLabel(reportDate)}.</td></tr>}
+              )) : <tr><td colSpan={8} className="px-4 py-10 text-center text-muted-foreground">No leftover activity on {dateLabel(reportDate)}.</td></tr>}
             </tbody>
           </table>
         </div>
