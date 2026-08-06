@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { AlertCircle, Download, Hash, Pencil, Plus, Search, X } from 'lucide-react';
+import { AlertCircle, AlertTriangle, Download, Hash, Pencil, Plus, Search, X } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
 import { useBranchStore } from '@/branch/branchStore';
 import { downloadExcel } from '@/lib/excelDownload';
@@ -10,6 +10,9 @@ import {
   type CatalogBranch,
   type CatalogUom,
 } from '@/stores/branchCatalogStore';
+import { useBakeryItemsStore } from '@/bakery/bakeryItemsStore';
+import { closestRecipeMatch } from '@/bakery/recipeNameMatch';
+import RecipeSpellingHint from '@/bakery/RecipeSpellingHint';
 
 const money = (value: number) => `₹${value.toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
 const normal = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
@@ -21,11 +24,13 @@ function ItemDialog({
   branch,
   item,
   categories,
+  recipeItemNames,
   onClose,
 }: {
   branch: CatalogBranch;
   item: BranchCatalogItem | null;
   categories: string[];
+  recipeItemNames: string[];
   onClose: () => void;
 }) {
   const { currentUser } = useAuthStore();
@@ -68,6 +73,7 @@ function ItemDialog({
           <label className="block text-xs font-semibold">Item name
             <input className="mt-1 w-full rounded-xl border bg-background px-3 py-2.5 text-sm" value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} />
           </label>
+          <RecipeSpellingHint itemName={draft.name} recipeItemNames={recipeItemNames} onApply={(name) => setDraft({ ...draft, name })} />
           <div className="grid grid-cols-2 gap-3">
             <label className="block text-xs font-semibold">Price
               <input type="number" min="0" step="0.01" className="mt-1 w-full rounded-xl border bg-background px-3 py-2.5 text-sm" value={draft.price} onChange={(e) => setDraft({ ...draft, price: e.target.value })} />
@@ -97,6 +103,7 @@ function ItemDialog({
 export default function BranchItemsAdminTab({ branch }: { branch: CatalogBranch }) {
   const { items, errors, loadCatalog, subscribe } = useBranchCatalogStore();
   const { stock, fetchBranchData } = useBranchStore();
+  const { items: bakeryItems, loadAllItems } = useBakeryItemsStore();
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState('All');
   const [dialog, setDialog] = useState<BranchCatalogItem | 'new' | null>(null);
@@ -106,7 +113,9 @@ export default function BranchItemsAdminTab({ branch }: { branch: CatalogBranch 
     void fetchBranchData(branch);
     return subscribe(branch);
   }, [branch, fetchBranchData, loadCatalog, subscribe]);
+  useEffect(() => { void loadAllItems(); }, [loadAllItems]);
 
+  const recipeItemNames = useMemo(() => bakeryItems.filter((i) => i.enabled).map((i) => i.name), [bakeryItems]);
   const catalogue = items[branch];
   const categories = useMemo(() => catalogCategories(catalogue), [catalogue]);
   const filtered = useMemo(() => {
@@ -146,9 +155,10 @@ export default function BranchItemsAdminTab({ branch }: { branch: CatalogBranch 
       <table className="w-full min-w-[760px] text-sm"><thead className="bg-muted/60 text-left text-xs uppercase text-muted-foreground"><tr><th className="px-4 py-3">Barcode</th><th className="px-4 py-3">Item</th><th className="px-4 py-3">Category</th><th className="px-4 py-3">Unit</th><th className="px-4 py-3 text-right">Price</th><th className="px-4 py-3 text-right">Stock</th><th className="px-4 py-3">Status</th><th className="px-4 py-3" /></tr></thead>
       <tbody>{filtered.map((item) => {
         const row = stockByBarcode.get(item.barcode) ?? stock[branch].find((entry) => normal(entry.itemName) === normal(item.name));
-        return <tr key={item.barcode} className="border-t"><td className="px-4 py-3 font-mono text-xs"><Hash className="mr-1 inline size-3" />{item.barcode}</td><td className="px-4 py-3 font-semibold">{item.name}</td><td className="px-4 py-3">{item.category}</td><td className="px-4 py-3">{item.uom}</td><td className="px-4 py-3 text-right font-bold">{money(item.price)}</td><td className="px-4 py-3 text-right">{Number(row?.quantity ?? 0).toLocaleString('en-IN')}</td><td className="px-4 py-3"><span className={`rounded-full px-2 py-1 text-xs font-bold ${item.active ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-600'}`}>{item.active ? 'Active' : 'Inactive'}</span></td><td className="px-4 py-3 text-right"><button onClick={() => setDialog(item)} className="rounded-lg border p-2 hover:bg-muted"><Pencil className="size-4" /></button></td></tr>;
+        const nameMismatch = closestRecipeMatch(item.name, recipeItemNames);
+        return <tr key={item.barcode} className="border-t"><td className="px-4 py-3 font-mono text-xs"><Hash className="mr-1 inline size-3" />{item.barcode}</td><td className="px-4 py-3 font-semibold">{item.name}{nameMismatch && !nameMismatch.exact && (<span title={`Recipe Management has "${nameMismatch.match}" — spelling doesn't match.`} className="ml-1.5 inline-flex items-center gap-1 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-700"><AlertTriangle className="size-2.5" />recipe mismatch</span>)}</td><td className="px-4 py-3">{item.category}</td><td className="px-4 py-3">{item.uom}</td><td className="px-4 py-3 text-right font-bold">{money(item.price)}</td><td className="px-4 py-3 text-right">{Number(row?.quantity ?? 0).toLocaleString('en-IN')}</td><td className="px-4 py-3"><span className={`rounded-full px-2 py-1 text-xs font-bold ${item.active ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-600'}`}>{item.active ? 'Active' : 'Inactive'}</span></td><td className="px-4 py-3 text-right"><button onClick={() => setDialog(item)} className="rounded-lg border p-2 hover:bg-muted"><Pencil className="size-4" /></button></td></tr>;
       })}</tbody></table>
     </div>
-    {dialog && <ItemDialog branch={branch} item={dialog === 'new' ? null : dialog} categories={categories} onClose={() => setDialog(null)} />}
+    {dialog && <ItemDialog branch={branch} item={dialog === 'new' ? null : dialog} categories={categories} recipeItemNames={recipeItemNames} onClose={() => setDialog(null)} />}
   </div>;
 }
