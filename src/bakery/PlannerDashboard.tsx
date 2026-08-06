@@ -31,7 +31,7 @@ import HosurDashboard from '@/pages/HosurDashboard';
 import HosurShopOrderPanel, { leftoverReasonLabel } from './HosurShopOrderPanel';
 import PackingCakeOrdersTab from './PackingCakeOrdersTab';
 import PlannerLeftoverTab, { useLeftoverBalanceMap, recordLeftoverMovement, kolkataToday, qtyFmt, type LeftoverUnit } from './PlannerLeftoverTab';
-import { canonicalItemSlug } from './itemMatcher';
+import { canonicalItemSlug, parseWeightGrams, pcsToKg, resolveItemWeightGrams } from './itemMatcher';
 import { useBranchCatalogStore } from '@/stores/branchCatalogStore';
 import { supabase } from '@/lib/supabase';
 
@@ -121,8 +121,17 @@ const sameItem = (a: string, b: string) => a.trim().toLowerCase() === b.trim().t
 export function computeMergedSummary(orders: BakeryOrder[]): MergedRow[] {
   const rows = new Map<string, MergedRow>();
   for (const order of orders) {
-    const bucket: MergeBucket | null = order.targetBranch ?? (isPlannedOrder(order) ? 'Planned' : null);
-    if (!bucket) continue;
+    // DEFENSIVE FIX (audit 2026-08-07): this used to derive the bucket
+    // inline and `continue` (silently drop the whole order) whenever
+    // target_branch was null and the order wasn't tagged 'Planned' — even
+    // though the shared bucketFor() helper right above exists specifically
+    // so nothing here is ever silently mislabeled/dropped. Every normal
+    // flow (submitOrder, submitPlannedOrder) always sets one or the other,
+    // so this wasn't reachable in practice, but a legacy/manually-edited
+    // row with a null target_branch would vanish from Merged Summary /
+    // Send-to-Store with zero indication. Use bucketFor() so it's handled
+    // the same way everywhere instead of two different fallback rules.
+    const bucket: MergeBucket = bucketFor(order);
     for (const item of order.items) {
       const unit = item.dispatchUnit === 'pcs' ? 'pcs' : 'kg';
       const qty = unit === 'pcs' && item.originalPcs != null ? item.originalPcs : item.quantity;
@@ -144,6 +153,146 @@ export function computeMergedSummary(orders: BakeryOrder[]): MergedRow[] {
     }
   }
   return Array.from(rows.values()).sort((a, b) => b.totalRequested - a.totalRequested);
+}
+
+// Strip a trailing packet-weight suffix like "(200g)" / "(1kg)" from a display
+// name. Only used once quantities have already been normalised to kg — at
+// that point the weight suffix (which described a single packet, not the
+// merged total) would be misleading next to a combined multi-kg figure.
+function cleanItemDisplayName(name: string): string {
+  return name
+    .replace(/\(\s*\d+(?:\.\d+)?\s*(?:g|gm|gms|kg|ml|l)\s*\)/i, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
+function mergeGroupToken(token: string): string {
+  if (token.length <= 3) return token;
+  if (token.endsWith('ies') && token.length > 4) return `${token.slice(0, -3)}y`;
+  if (/(ches|shes|xes|zes)$/.test(token)) return token.slice(0, -2);
+  if (token.endsWith('s') && !token.endsWith('ss')) return token.slice(0, -1);
+  return token;
+}
+
+// Grouping key for computeMergedSummaryDisplay only (audit 2026-08-07
+// hardening) — deliberately NOT itemMatcher's canonicalItemSlug(), which
+// strips the content of ANY parenthetical (weight, pack size, or a real
+// qualifier like "(Diwali Pack)"). That's the right behaviour for recipe-key
+// lookups, but reused here it would risk silently merging two genuinely
+// different catalogue items that only differ by a non-weight qualifier —
+// no such collision exists in the catalogue today, but nothing stops one
+// being added later. Only weight-pattern parens are stripped; anything else
+// stays part of the key, alongside the same case/plural normalisation
+// canonicalItemSlug uses, so "Garlic nippat (200g)" and "GARLIC NIPPAT"
+// still merge, but "X (Diwali Pack)" and "X (Family Pack)" never would.
+function mergeGroupKey(name: string): string {
+  const withoutWeight = name.replace(/\(\s*\d+(?:\.\d+)?\s*(?:g|gm|gms|kg|ml|l)\s*\)/gi, '');
+  return withoutWeight
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .split(' ')
+    .filter(Boolean)
+    .map(mergeGroupToken)
+    .join('-');
+}
+
+// DISPLAY-ONLY merge for the Merged Summary / Sent tabs (2026-08-07 fix).
+//
+// Bug: the same physical item can be ordered in different units by different
+// branches — e.g. VRSNB always orders cookies/snacks as packets, so "Garlic
+// nippat (200g)" arrives with dispatchUnit 'pcs', while SNB/Hosur/Planning
+// enter "GARLIC NIPPAT" directly in kg. computeMergedSummary() above keys
+// rows by `name__unit`, so these landed as two disconnected rows (10 pcs
+// under VRSNB vs 5 kg under SNB) even though they're the same item.
+//
+// computeMergedSummary() itself is intentionally left untouched — it also
+// feeds computeProductionRows() (Production Entry / Dispatch), where
+// autoSplitForItem's proportional split and the pcs↔kg round-trip in
+// Packing genuinely depend on one unit per row. Folding units together there
+// would silently corrupt produced/dispatched quantities.
+//
+// Here, for the read-only "what did branches order" summary, it's safe (and
+// correct) to fold pcs entries into kg using the packet weight — parsed from
+// the item name (e.g. "(200g)") or resolved via resolveItemWeightGrams for
+// VRSNB catalogue items that don't spell it out — and show one row per item.
+// If a pcs entry's weight genuinely can't be resolved, it's kept as its own
+// row rather than guessed at, so a bad conversion never silently appears.
+export function computeMergedSummaryDisplay(orders: BakeryOrder[]): MergedRow[] {
+  interface RawEntry {
+    itemId: string;
+    itemName: string;
+    unit: 'pcs' | 'kg';
+    qty: number;
+    grams: number | null; // per-packet grams, only meaningful when unit === 'pcs'
+    bucket: MergeBucket;
+    orderId: string;
+  }
+  const groups = new Map<string, RawEntry[]>();
+  for (const order of orders) {
+    // See matching note in computeMergedSummary above — use the canonical
+    // bucketFor() helper instead of a local null-prone fallback.
+    const bucket: MergeBucket = bucketFor(order);
+    for (const item of order.items) {
+      const unit = item.dispatchUnit === 'pcs' ? 'pcs' : 'kg';
+      const qty = unit === 'pcs' && item.originalPcs != null ? item.originalPcs : item.quantity;
+      const grams = unit === 'pcs'
+        ? (item.weightGrams ?? parseWeightGrams(item.itemName) ?? resolveItemWeightGrams(item.itemId, item.itemName))
+        : null;
+      const key = mergeGroupKey(item.itemName) || item.itemName.trim().toLowerCase();
+      const list = groups.get(key) ?? [];
+      list.push({ itemId: item.itemId, itemName: item.itemName, unit, qty, grams, bucket, orderId: order.id });
+      groups.set(key, list);
+    }
+  }
+
+  const rows: MergedRow[] = [];
+  const mergeGroup = (list: RawEntry[], unit: 'pcs' | 'kg', convertPcsToKg: boolean) => {
+    if (list.length === 0) return;
+    let totalRequested = 0;
+    const perBranch: Partial<Record<MergeBucket, number>> = {};
+    const contributingOrderIds: string[] = [];
+    for (const e of list) {
+      const qty = convertPcsToKg && e.unit === 'pcs' && e.grams != null
+        ? (pcsToKg(e.itemName, e.qty, e.grams) ?? e.qty)
+        : e.qty;
+      totalRequested += qty;
+      perBranch[e.bucket] = Math.round(((perBranch[e.bucket] || 0) + qty) * 1000) / 1000;
+      if (!contributingOrderIds.includes(e.orderId)) contributingOrderIds.push(e.orderId);
+    }
+    // Prefer the kg-native name for the merged label (already unit-agnostic);
+    // fall back to the first entry, stripping any packet-weight suffix once
+    // the row has been converted to kg so it doesn't read like a per-packet
+    // figure next to a multi-item total.
+    const nameSource = list.find(e => e.unit === 'kg') ?? list[0];
+    const itemName = convertPcsToKg ? cleanItemDisplayName(nameSource.itemName) : nameSource.itemName;
+    rows.push({
+      itemName,
+      unit,
+      totalRequested: Math.round(totalRequested * 1000) / 1000,
+      perBranch,
+      contributingOrderIds,
+    });
+  };
+
+  for (const entries of groups.values()) {
+    const kgEntries = entries.filter(e => e.unit === 'kg');
+    const convertiblePcs = entries.filter(e => e.unit === 'pcs' && e.grams != null);
+    const unresolvedPcs = entries.filter(e => e.unit === 'pcs' && e.grams == null);
+
+    if (kgEntries.length > 0 && convertiblePcs.length > 0) {
+      // Mixed units and every pcs entry has a resolvable packet weight —
+      // merge into a single kg row. This is the Garlic Nippat case.
+      mergeGroup([...kgEntries, ...convertiblePcs], 'kg', true);
+    } else {
+      mergeGroup(kgEntries, 'kg', false);
+      mergeGroup(convertiblePcs, 'pcs', false);
+    }
+    // Never guess a conversion — anything whose packet weight couldn't be
+    // resolved stays as its own untouched pcs row.
+    mergeGroup(unresolvedPcs, 'pcs', false);
+  }
+  return rows.sort((a, b) => b.totalRequested - a.totalRequested);
 }
 
 // Category lookup (Sweets / Savouries / Bakery / Cookies / Other) by item name.
@@ -277,6 +426,15 @@ function IncomingOrdersTab({ orders, onAdd }: { orders: BakeryOrder[]; onAdd: Re
   const [itemName, setItemName] = useState('');
   const [qty, setQty] = useState('');
   const [unit, setUnit] = useState<'pcs' | 'kg'>('kg');
+  // BUG FIX (audit 2026-08-07): a manually-added pcs item had no way to
+  // record its packet weight unless the planner happened to type it into
+  // the name itself (e.g. "Garlic Nippat (200g)") — without it, Merged
+  // Summary/Sent can't convert this item to kg when the same item also
+  // shows up in kg from another branch, so it stays stuck as its own
+  // disconnected row (the exact bug fixed today, reopened through this one
+  // entry path). Optional field, only shown for pcs, so kg entries and
+  // names that already include a weight are unaffected.
+  const [packWeightGrams, setPackWeightGrams] = useState('');
   const [saving, setSaving] = useState(false);
   const currentUser = useAuthStore(s => s.currentUser);
 
@@ -290,9 +448,10 @@ function IncomingOrdersTab({ orders, onAdd }: { orders: BakeryOrder[]; onAdd: Re
         quantity: unit === 'pcs' ? Number(qty) : Number(qty),
         dispatchUnit: unit,
         originalPcs: unit === 'pcs' ? Number(qty) : undefined,
+        weightGrams: unit === 'pcs' && packWeightGrams && Number(packWeightGrams) > 0 ? Number(packWeightGrams) : undefined,
       };
       await onAdd([item], currentUser?.displayName || 'Planner', branch, 'Added directly by Planner');
-      setItemName(''); setQty(''); setShowAdd(false);
+      setItemName(''); setQty(''); setPackWeightGrams(''); setShowAdd(false);
     } finally {
       setSaving(false);
     }
@@ -345,6 +504,15 @@ function IncomingOrdersTab({ orders, onAdd }: { orders: BakeryOrder[]; onAdd: Re
                 <option value="pcs">pcs</option>
               </select>
             </div>
+            {unit === 'pcs' && !/\(\s*\d+(?:\.\d+)?\s*(?:g|gm|gms|kg|ml|l)\s*\)/i.test(itemName) && (
+              <input
+                value={packWeightGrams}
+                onChange={e => setPackWeightGrams(e.target.value)}
+                type="number"
+                placeholder="Pack weight in g (optional, e.g. 200)"
+                className="rounded-xl border border-border px-3 py-2 text-sm sm:col-span-4"
+              />
+            )}
           </div>
           <button onClick={handleAdd} disabled={saving} className="mt-3 flex items-center gap-1.5 rounded-xl bg-teal-600 px-4 py-2 text-xs font-bold text-white hover:bg-teal-700 disabled:opacity-50">
             {saving ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />} Submit Order
@@ -449,7 +617,7 @@ function SentOrdersTab({ orders }: { orders: BakeryOrder[] }) {
 
 // One collapsible "sent date" entry — expands to show only items sent to store that day.
 function SentDayGroup({ dayKey, label, orders, open, onToggle }: { dayKey: string; label: string; orders: BakeryOrder[]; open: boolean; onToggle: () => void }) {
-  const merged = useMemo(() => computeMergedSummary(orders), [orders]);
+  const merged = useMemo(() => computeMergedSummaryDisplay(orders), [orders]);
 
   return (
     <div className="overflow-hidden rounded-2xl border border-border bg-white shadow-sm">
@@ -512,7 +680,7 @@ function SentDayGroup({ dayKey, label, orders, open, onToggle }: { dayKey: strin
 // ─── Tab: Merged Summary ────────────────────────────────────────────────────
 function MergedSummaryTab({ orders }: { orders: BakeryOrder[] }) {
   const { mergeOrdersForStore } = useBakeryStore();
-  const merged = useMemo(() => computeMergedSummary(orders), [orders]);
+  const merged = useMemo(() => computeMergedSummaryDisplay(orders), [orders]);
   const [sendingAll, setSendingAll] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
@@ -898,25 +1066,56 @@ function ProductionEntryDateGroup({ label, orders, rows, search, defaultOpen }: 
     // counting it. Bail out immediately if a save for this exact row is
     // already in flight.
     if (saving === row.itemName) return;
-    const enteredQty = qty[row.itemName] ? Number(qty[row.itemName]) : (status === 'completed' ? row.totalRequested : 0);
+    // CRITICAL BUG FIX (audit 2026-08-07): this used to loop over EVERY
+    // contributing order and unconditionally overwrite its producedItems
+    // entry (quantity + status) with a freshly recomputed proportional
+    // split — including orders that were already marked 'completed' in an
+    // earlier save. Production Entry rows are recomputed live from
+    // whichever orders currently match this item, so an item that had
+    // already been fully produced and marked Completed could later pick up
+    // a brand-new contributing order (e.g. Store just confirmed another
+    // branch's order for the same item) and reappear here as "pending".
+    // Saving again then silently rewrote the already-completed order(s)'
+    // real produced quantity down to a new, smaller proportional share —
+    // and if this save was "Pending" (because only the new order needed
+    // more baking), it flipped their status back to 'pending' too, even
+    // though that stock was already produced and possibly already
+    // dispatched. Orders already 'completed' for this item are now locked:
+    // excluded entirely from the split and never written to again. Only
+    // orders that are still open (never completed) are touched.
+    const lockedOrderIds = new Set(
+      row.contributingOrderIds.filter(id => {
+        const order = orders.find(o => o.id === id);
+        const item = order?.items.find(i => sameItem(i.itemName, row.itemName));
+        const prod = item ? order?.producedItems?.find(p => p.itemId === item.itemId) : undefined;
+        return prod?.status === 'completed';
+      }),
+    );
+    const openOrderIds = row.contributingOrderIds.filter(id => !lockedOrderIds.has(id));
+    if (openOrderIds.length === 0) return; // whole row already locked-completed — nothing left to save
+    // Default fill (Completed tapped with no typed qty) should only cover
+    // what's still outstanding — locked orders' share is already counted
+    // in row.preparedTotal, so subtract it instead of re-quoting the full
+    // row total (which would double-count what's already been produced).
+    const remainingRequested = Math.max(0, Math.round((row.totalRequested - row.preparedTotal) * 100) / 100);
+    const enteredQty = qty[row.itemName] ? Number(qty[row.itemName]) : (status === 'completed' ? remainingRequested : 0);
     if (enteredQty <= 0) return;
     setSaving(row.itemName);
     setSaveError(null);
     try {
-      const split = autoSplitForItem(orders, row.itemName, enteredQty);
-      // CLOSING STOCK LINK (2026-08-06): track how much of this save is a
-      // genuinely NEW completion (order+item transitioning to 'completed'
-      // for the first time) vs. a re-save of an order already logged
-      // earlier — only newly-completed quantity gets added to the pool, so
-      // if this row later picks up another contributing order and gets
-      // saved again, the orders already completed aren't double-counted.
+      const openOrders = orders.filter(o => openOrderIds.includes(o.id));
+      const split = autoSplitForItem(openOrders, row.itemName, enteredQty);
+      // CLOSING STOCK LINK (2026-08-06): every order processed below is, by
+      // construction, transitioning fresh (locked/already-completed orders
+      // are excluded above) — so any 'completed' save here is always a
+      // genuinely new completion, safe to add to the pool without a
+      // separate double-count guard.
       let newlyCompletedQty = 0;
       const failed: string[] = [];
-      for (const orderId of row.contributingOrderIds) {
+      for (const orderId of openOrderIds) {
         const order = orders.find(o => o.id === orderId);
         const item = order?.items.find(i => sameItem(i.itemName, row.itemName));
         if (!order || !item) continue;
-        const wasAlreadyCompleted = (order.producedItems || []).find(p => p.itemId === item.itemId)?.status === 'completed';
         const others = (order.producedItems || []).filter(p => p.itemId !== item.itemId);
         const producedQty = split[orderId] ?? 0;
         const merged: PreparedItem[] = [...others, { itemId: item.itemId, itemName: item.itemName, quantityPrepared: producedQty, preparedAt: new Date().toISOString(), dispatchUnit: item.dispatchUnit, status }];
@@ -931,7 +1130,7 @@ function ProductionEntryDateGroup({ label, orders, rows, search, defaultOpen }: 
         // of silently losing that quantity.
         try {
           await recordProduction(order.id, merged);
-          if (status === 'completed' && !wasAlreadyCompleted) newlyCompletedQty += producedQty;
+          if (status === 'completed') newlyCompletedQty += producedQty;
         } catch {
           failed.push(`#${order.orderNumber}`);
         }

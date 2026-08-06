@@ -62,7 +62,15 @@ export function resolveItemWeightGrams(itemId: string, itemName: string): number
   if (vrsnbBarcode && VRSNB_ITEMS.some(item =>
     item.barcode === barcode && item.category === 'COOKIES'
   )) return 200;
-  if (vrsnbBarcode && BAKERY_ITEMS.some(item =>
+  // BUG FIX (audit 2026-08-07): this was gated behind `vrsnbBarcode &&`, but
+  // BAKERY_ITEMS is a NAME-keyed catalogue with no relation to VRSNB barcode
+  // ids — the guard made this branch unreachable for anything whose itemId
+  // doesn't already match `vrsnb-<digits>` (which the two checks above
+  // already handle), including manually-entered pcs items from Incoming
+  // Orders (itemId like `manual-<timestamp>`). Match purely by name so any
+  // pcs item recognised as a Cookies-category catalogue item resolves its
+  // 200g packet weight regardless of how it was entered.
+  if (BAKERY_ITEMS.some(item =>
     item.category === 'Cookies' && itemNamesMatch(item.name, itemName)
   )) return 200;
 

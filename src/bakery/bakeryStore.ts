@@ -754,76 +754,114 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
           .eq('id', entry.targetHosurOrderId);
         if (hosurOrderError) throw new Error(`Hosur order status sync failed: ${hosurOrderError.message}`);
       } else {
-      const itemDispatchTotal = updatedLog
-        .filter(d => d.branch === 'Hosur' && d.itemName === entry.itemName)
-        .reduce((sum, d) => sum + Number(d.quantity || 0), 0);
+        // UNTARGETED (PROPORTIONAL) PATH.
+        //
+        // CRITICAL BUG FIX (audit, 2026-08-07): this used to recompute an
+        // absolute "total dispatched so far" purely from THIS order's own
+        // dispatch_log JSONB column and write that recomputed number as an
+        // absolute dispatched_quantity for every untargeted shop. But the
+        // same item routinely lives on MORE THAN ONE bakery_orders row —
+        // e.g. confirmStockSelected splits one Store order into two rows on
+        // a partial confirm, both tagged with the same Hosur shop group —
+        // and dispatch_log is a per-row column, so each row's log is blind
+        // to dispatches recorded through a sibling row. Dispatching the same
+        // item from order A, then order B (an entirely ordinary sequence —
+        // e.g. two clicks inside the same Bulk Dispatch), meant order B's
+        // absolute recompute (from its own log alone) silently overwrote
+        // whatever order A's call had just written to hosur_order_items,
+        // discarding real dispatched quantity with no error, no trace, and
+        // a real risk of the same goods being physically dispatched twice.
+        //
+        // Fixed by treating every call as purely additive: split THIS
+        // call's own entry.quantity (never a recomputed historical total)
+        // across untargeted shops by their requested share, and INCREMENT
+        // each shop's live dispatched_quantity by its piece of that delta —
+        // correct regardless of how many separate bakery_orders rows end up
+        // contributing the same item.
+        //
+        // Also gathers targeted allocations from every sibling order
+        // sharing this Hosur shop group (not just this order's own log) so
+        // a shop that was targeted via a DIFFERENT bakery_orders row is
+        // still correctly excluded from this redistribution.
+        const { data: siblingOrders, error: siblingErr } = await supabase
+          .from('bakery_orders')
+          .select('id, dispatch_log')
+          .eq('target_branch', 'Hosur')
+          .or(hosurOrderIds.map(id => `notes.ilike.%${id}%`).join(','));
+        if (siblingErr) throw new Error(`Hosur dispatch sync failed: ${siblingErr.message}`);
+        const allKnownLogEntries: DispatchEntry[] = [
+          ...updatedLog,
+          ...((siblingOrders ?? [])
+            .filter(o => o.id !== orderId) // this order's own log is already in updatedLog
+            .flatMap(o => (o.dispatch_log as DispatchEntry[]) || [])),
+        ];
 
-      // BUG FIX (audit): this proportional recompute used to redistribute
-      // itemDispatchTotal across EVERY shop tagged on the batch, including
-      // shops that already have an explicit targeted allocation from the
-      // By-Shop dispatch panel — silently overwriting (usually shrinking)
-      // that shop's dispatched_quantity the next time anyone dispatched
-      // this same item untargeted (e.g. from the older By-Item flow).
-      // Exclude targeted shops' log entries from the pool being
-      // redistributed, and exclude those shops themselves from the
-      // proportional-share write below, so an explicit per-shop allocation
-      // is never clawed back by a later untargeted dispatch.
-      const targetedTotalsByShop = new Map<string, number>();
-      for (const d of updatedLog) {
-        if (d.branch === 'Hosur' && d.itemName === entry.itemName && d.targetHosurOrderId) {
-          targetedTotalsByShop.set(
-            d.targetHosurOrderId,
-            (targetedTotalsByShop.get(d.targetHosurOrderId) ?? 0) + Number(d.quantity || 0),
-          );
+        // BUG FIX (audit): this proportional split used to redistribute
+        // across EVERY shop tagged on the batch, including shops that
+        // already have an explicit targeted allocation from the By-Shop
+        // dispatch panel — silently overwriting (usually shrinking) that
+        // shop's dispatched_quantity the next time anyone dispatched this
+        // same item untargeted (e.g. from the older By-Item flow). Exclude
+        // targeted shops from the pool being redistributed, and from the
+        // proportional-share write below, so an explicit per-shop
+        // allocation is never clawed back by a later untargeted dispatch.
+        const targetedTotalsByShop = new Map<string, number>();
+        for (const d of allKnownLogEntries) {
+          if (d.branch === 'Hosur' && d.itemName === entry.itemName && d.targetHosurOrderId) {
+            targetedTotalsByShop.set(
+              d.targetHosurOrderId,
+              (targetedTotalsByShop.get(d.targetHosurOrderId) ?? 0) + Number(d.quantity || 0),
+            );
+          }
         }
-      }
-      const targetedTotal = Array.from(targetedTotalsByShop.values()).reduce((s, v) => s + v, 0);
-      const untargetedTotal = Math.max(0, Math.round((itemDispatchTotal - targetedTotal) * 100) / 100);
 
-      // Split this item's total dispatched quantity across every
-      // contributing shop, weighted by that shop's own originally-ordered
-      // quantity — same proportional-split idea used for VRSNB/SNB
-      // (autoSplitForItem), so a merged multi-shop batch still attributes
-      // dispatch correctly to each shop instead of dumping it all on one.
-      const { data: itemRows, error: itemRowsError } = await supabase
-        .from('hosur_order_items')
-        .select('order_id, quantity')
-        .in('order_id', hosurOrderIds)
-        .eq('item_name', entry.itemName);
-      if (itemRowsError) throw new Error(`Hosur dispatch sync failed: ${itemRowsError.message}`);
-      const rows = itemRows ?? [];
-      const untargetedRows = rows.filter(r => !targetedTotalsByShop.has(r.order_id as string));
-      const totalRequested = untargetedRows.reduce((s, r) => s + Number(r.quantity || 0), 0) || 1;
-
-      for (const row of rows) {
-        const orderId = row.order_id as string;
-        if (targetedTotalsByShop.has(orderId)) continue; // leave this shop's explicit allocation alone
-        const share = Math.round(untargetedTotal * (Number(row.quantity || 0) / totalRequested) * 100) / 100;
-        const { error: hosurItemError } = await supabase
+        // Split this dispatch's quantity across every contributing shop,
+        // weighted by that shop's own originally-ordered quantity — same
+        // proportional-split idea used for VRSNB/SNB (autoSplitForItem), so
+        // a merged multi-shop batch still attributes dispatch correctly to
+        // each shop instead of dumping it all on one. dispatched_quantity is
+        // read fresh here and incremented, never replaced, so this is safe
+        // to call repeatedly across sibling orders without clobbering.
+        const { data: itemRows, error: itemRowsError } = await supabase
           .from('hosur_order_items')
-          .update({ dispatched_quantity: share })
-          .eq('order_id', orderId)
+          .select('order_id, quantity, dispatched_quantity')
+          .in('order_id', hosurOrderIds)
           .eq('item_name', entry.itemName);
-        if (hosurItemError) throw new Error(`Hosur dispatch sync failed: ${hosurItemError.message}`);
-      }
+        if (itemRowsError) throw new Error(`Hosur dispatch sync failed: ${itemRowsError.message}`);
+        const rows = itemRows ?? [];
+        const untargetedRows = rows.filter(r => !targetedTotalsByShop.has(r.order_id as string));
+        const totalRequested = untargetedRows.reduce((s, r) => s + Number(r.quantity || 0), 0) || 1;
 
-      // Each shop's hosur_orders row only flips to 'dispatched' once every
-      // ONE of its own items is fully covered — not just the item that was
-      // just dispatched (a merged batch's other items may still be pending).
-      for (const hosurOrderId of hosurOrderIds) {
-        const { data: allItems, error: allItemsError } = await supabase
-          .from('hosur_order_items')
-          .select('quantity, dispatched_quantity')
-          .eq('order_id', hosurOrderId);
-        if (allItemsError) throw new Error(`Hosur order status sync failed: ${allItemsError.message}`);
-        const fullyDone = (allItems ?? []).length > 0 &&
-          (allItems ?? []).every(r => Number(r.dispatched_quantity || 0) >= Number(r.quantity || 0) - 0.01);
-        const { error: hosurOrderError } = await supabase
-          .from('hosur_orders')
-          .update({ status: fullyDone ? 'dispatched' : 'pending_packing' })
-          .eq('id', hosurOrderId);
-        if (hosurOrderError) throw new Error(`Hosur order status sync failed: ${hosurOrderError.message}`);
-      }
+        for (const row of untargetedRows) {
+          const shopOrderId = row.order_id as string;
+          const deltaShare = Math.round(Number(entry.quantity || 0) * (Number(row.quantity || 0) / totalRequested) * 100) / 100;
+          if (deltaShare <= 0) continue;
+          const newDispatched = Math.round((Number(row.dispatched_quantity || 0) + deltaShare) * 100) / 100;
+          const { error: hosurItemError } = await supabase
+            .from('hosur_order_items')
+            .update({ dispatched_quantity: newDispatched })
+            .eq('order_id', shopOrderId)
+            .eq('item_name', entry.itemName);
+          if (hosurItemError) throw new Error(`Hosur dispatch sync failed: ${hosurItemError.message}`);
+        }
+
+        // Each shop's hosur_orders row only flips to 'dispatched' once every
+        // ONE of its own items is fully covered — not just the item that was
+        // just dispatched (a merged batch's other items may still be pending).
+        for (const hosurOrderId of hosurOrderIds) {
+          const { data: allItems, error: allItemsError } = await supabase
+            .from('hosur_order_items')
+            .select('quantity, dispatched_quantity')
+            .eq('order_id', hosurOrderId);
+          if (allItemsError) throw new Error(`Hosur order status sync failed: ${allItemsError.message}`);
+          const fullyDone = (allItems ?? []).length > 0 &&
+            (allItems ?? []).every(r => Number(r.dispatched_quantity || 0) >= Number(r.quantity || 0) - 0.01);
+          const { error: hosurOrderError } = await supabase
+            .from('hosur_orders')
+            .update({ status: fullyDone ? 'dispatched' : 'pending_packing' })
+            .eq('id', hosurOrderId);
+          if (hosurOrderError) throw new Error(`Hosur order status sync failed: ${hosurOrderError.message}`);
+        }
       }
     }
 
