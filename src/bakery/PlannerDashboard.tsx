@@ -13,7 +13,7 @@ import {
   ChevronDown, ChevronUp, X, RefreshCw, AlertTriangle, FileSpreadsheet, Clock3,
   Store, CreditCard, WalletCards, MessageCircle, Bell, CalendarDays, ShieldCheck,
   Search, Printer, Receipt, ListPlus, BarChart3, FileText, Minus, IndianRupee,
-  ShoppingCart, Percent, Trash2,
+  ShoppingCart, Percent, Trash2, Scale,
 } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import * as XLSX from 'xlsx';
@@ -30,10 +30,12 @@ import { exportToExcel } from '@/lib/exportExcel';
 import HosurDashboard from '@/pages/HosurDashboard';
 import HosurShopOrderPanel, { leftoverReasonLabel } from './HosurShopOrderPanel';
 import PackingCakeOrdersTab from './PackingCakeOrdersTab';
+import PlannerLeftoverTab, { useLeftoverBalanceMap, recordLeftoverMovement, kolkataToday, qtyFmt, type LeftoverUnit } from './PlannerLeftoverTab';
+import { canonicalItemSlug } from './itemMatcher';
 import { useBranchCatalogStore } from '@/stores/branchCatalogStore';
 import { supabase } from '@/lib/supabase';
 
-type PlannerTab = 'incoming' | 'sent' | 'merged' | 'planning' | 'production' | 'dispatch' | 'hosur' | 'cake' | 'transfer-in' | 'closure' | 'invoice' | 'reports' | 'billing' | 'done';
+type PlannerTab = 'incoming' | 'sent' | 'merged' | 'planning' | 'production' | 'dispatch' | 'hosur' | 'cake' | 'transfer-in' | 'closure' | 'leftover-stock' | 'invoice' | 'reports' | 'billing' | 'done';
 const TABS: { key: PlannerTab; label: string; icon: React.ReactNode }[] = [
   { key: 'incoming',    label: 'Incoming Orders',  icon: <ClipboardList className="size-4" /> },
   { key: 'sent',        label: 'Sent',             icon: <Send className="size-4" /> },
@@ -45,6 +47,7 @@ const TABS: { key: PlannerTab; label: string; icon: React.ReactNode }[] = [
   { key: 'cake',        label: 'Cake Dispatch',    icon: <Cake className="size-4" /> },
   { key: 'transfer-in', label: 'Transfer In',      icon: <ArrowRightLeft className="size-4" /> },
   { key: 'closure',     label: 'Daily Closure',    icon: <Calendar className="size-4" /> },
+  { key: 'leftover-stock', label: 'Closing Stock', icon: <Scale className="size-4" /> },
   { key: 'invoice',     label: 'Invoice',          icon: <Receipt className="size-4" /> },
   { key: 'billing',     label: 'Billing (Walk-in)', icon: <ShoppingCart className="size-4" /> },
   { key: 'reports',     label: 'Reports',          icon: <BarChart3 className="size-4" /> },
@@ -215,6 +218,7 @@ export default function PlannerDashboard() {
             {tab === 'cake' && <PackingCakeOrdersTab />}
             {tab === 'transfer-in' && <PackingTransferInTab />}
             {tab === 'closure' && <PackingDailyClosureTab />}
+            {tab === 'leftover-stock' && <PlannerLeftoverTab />}
             {tab === 'invoice' && <InvoiceTab orders={orders} />}
             {tab === 'billing' && <BillingTab />}
             {tab === 'reports' && <ReportsTab orders={orders} />}
@@ -2032,6 +2036,84 @@ function branchDispatchedForRow(row: ProductionRow, branch: Branch, orders: Bake
 // Same idea as branchDispatchedForRow, but for the "Planned" bucket (Planning
 // tab batches) — these orders have no fixed branch, so we track their
 // dispatch progress by order id instead of by targetBranch.
+// NEW FEATURE: lets the planner draw down the shared Closing Stock / leftover
+// pool (recorded in the "Closing Stock" tab) against a real branch order
+// instead of only dispatching fresh production. Consumes the leftover ledger
+// first (guarded server-side against over-drawing), then logs the dispatch
+// through the exact same submitDispatch() path every other dispatch button
+// uses, split across contributing orders the same way BulkDispatchModal does
+// — so it shows up identically everywhere downstream (branch_incoming,
+// order.dispatchLog, Daily Closure dispatch totals).
+function LeftoverDispatchButton({ row, orders, onDispatch, dispatchedBy, defaultBranch, balance, onDone }: {
+  row: ProductionRow; orders: BakeryOrder[];
+  onDispatch: ReturnType<typeof useBakeryStore.getState>['submitDispatch']; dispatchedBy: string;
+  defaultBranch: Branch | 'All'; balance: { unit: LeftoverUnit; balance: number } | undefined;
+  onDone: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [branch, setBranch] = useState<Branch>(defaultBranch === 'All' ? 'SNB' : defaultBranch);
+  const [qty, setQty] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
+
+  if (!balance || balance.balance <= 0.001) return null;
+
+  const confirm = async () => {
+    const q = Number(qty);
+    if (!Number.isFinite(q) || q <= 0) { setResult({ ok: false, message: 'Enter a valid quantity.' }); return; }
+    if (q > balance.balance + 0.001) { setResult({ ok: false, message: `Only ${qtyFmt(balance.balance)} ${balance.unit} available in leftover.` }); return; }
+    const entries = orders.filter(o => o.targetBranch === branch && row.contributingOrderIds.includes(o.id));
+    if (entries.length === 0) { setResult({ ok: false, message: `${branch} has no order waiting for ${row.itemName}.` }); return; }
+    setBusy(true); setResult(null);
+    const consumed = await recordLeftoverMovement({
+      itemName: row.itemName, unit: balance.unit, delta: -q, businessDate: kolkataToday(),
+      reason: 'dispatch', recordedBy: dispatchedBy, branch, orderNumber: entries[0].orderNumber, orderId: entries[0].id,
+    });
+    if ('error' in consumed) { setBusy(false); setResult({ ok: false, message: consumed.error }); return; }
+    try {
+      const split = autoSplitForItem(entries, row.itemName, q);
+      for (const order of entries) {
+        const item = order.items.find(i => sameItem(i.itemName, row.itemName));
+        const orderQty = split[order.id] ?? 0;
+        if (!item || orderQty <= 0) continue;
+        await onDispatch(order.id, { itemName: item.itemName, quantity: orderQty, unit: item.dispatchUnit || 'kg', branch, dispatchedBy, dispatchedAt: new Date().toISOString() });
+      }
+      setResult({ ok: true, message: `Dispatched ${qtyFmt(q)} ${balance.unit} to ${branch} from leftover.` });
+      setQty(''); setOpen(false);
+      onDone();
+    } catch (err) {
+      setResult({ ok: false, message: (err instanceof Error ? err.message : 'Dispatch logging failed') + ' — leftover was already deducted, check the Dispatch tab before retrying.' });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="mt-2">
+      {!open ? (
+        <button onClick={() => setOpen(true)} className="inline-flex items-center gap-1.5 rounded-xl border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-[11px] font-black text-amber-800">
+          <PackageCheck className="size-3.5" /> {qtyFmt(balance.balance)} {balance.unit} in leftover — Use it
+        </button>
+      ) : (
+        <div className="rounded-xl border border-amber-300 bg-amber-50 p-2.5">
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex gap-1">
+              {BRANCHES.map(b => (
+                <button key={b} onClick={() => setBranch(b)} className={cn('rounded-lg px-2 py-1 text-[11px] font-bold', branch === b ? 'bg-amber-700 text-white' : 'border border-amber-300 bg-white text-amber-800')}>{b}</button>
+              ))}
+            </div>
+            <input type="number" min="0" step="0.001" placeholder={`max ${qtyFmt(balance.balance)}`} value={qty} onChange={e => setQty(e.target.value)} className="w-24 rounded-lg border border-amber-300 bg-white px-2 py-1 text-right text-xs font-bold" />
+            <span className="text-[10px] font-bold text-amber-800">{balance.unit}</span>
+            <button onClick={confirm} disabled={busy} className="inline-flex items-center gap-1 rounded-lg bg-amber-700 px-2.5 py-1.5 text-[11px] font-black text-white disabled:opacity-50">{busy ? <Loader2 className="size-3 animate-spin" /> : <Truck className="size-3" />}Confirm</button>
+            <button onClick={() => { setOpen(false); setResult(null); }} className="rounded-lg bg-white px-2 py-1.5"><X className="size-3" /></button>
+          </div>
+          {result && <p className={cn('mt-1.5 text-[11px] font-bold', result.ok ? 'text-teal-700' : 'text-red-700')}>{result.message}</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function plannedContributingOrders(row: ProductionRow, orders: BakeryOrder[]): BakeryOrder[] {
   return orders.filter(o => bucketFor(o) === 'Planned' && row.contributingOrderIds.includes(o.id));
 }
@@ -2096,6 +2178,7 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
 }) {
   const { submitDispatch } = useBakeryStore();
   const currentUser = useAuthStore(s => s.currentUser);
+  const { balances: leftoverBalances, refresh: refreshLeftover } = useLeftoverBalanceMap();
   const [open, setOpen] = useState(defaultOpen);
   const rows = useMemo(() => computeProductionRows(orders).filter(r => r.itemStatus !== 'not_started'), [orders]);
   const [subTab, setSubTab] = useState<'active' | 'completed' | 'planned'>('active');
@@ -2233,6 +2316,17 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
                   </button>
                 )}
               </div>
+              {subTab === 'active' && (
+                <LeftoverDispatchButton
+                  row={row}
+                  orders={orders}
+                  onDispatch={submitDispatch}
+                  dispatchedBy={currentUser?.displayName || currentUser?.username || 'Planner'}
+                  defaultBranch={branchFilter}
+                  balance={leftoverBalances.get(canonicalItemSlug(row.itemName))}
+                  onDone={refreshLeftover}
+                />
+              )}
               {/* Every branch that actually ordered this item — only shown if they
                   really requested it — so a combined item shows its full picture. */}
               <div className="mt-2 flex flex-wrap gap-2 text-[11px] font-bold text-muted-foreground">

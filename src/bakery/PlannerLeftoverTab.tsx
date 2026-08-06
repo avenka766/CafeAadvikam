@@ -1,0 +1,628 @@
+// src/bakery/PlannerLeftoverTab.tsx
+// NEW FEATURE: "Closing Stock" — a manually-recorded leftover/finished-goods
+// pool for the Planner kitchen. Staff search for an item (merged across the
+// SNB + VRSNB catalogues, deduplicated by name), enter what's physically
+// left over in Kg or Pcs, and it's recorded as a dated ledger movement.
+// Tomorrow, the Dispatch tab can draw down this same pool before touching
+// fresh production. Every movement (added / dispatched / adjusted) is kept
+// as its own row in planner_leftover_ledger — nothing is ever summarized
+// away — so the Daily Report below can reconstruct an exact opening /
+// added / dispatched / closing reconciliation for any date, and the
+// PDF/Excel exports are a full audit trail, not just a snapshot.
+import { useState, useEffect, useMemo, useCallback } from 'react';
+import {
+  Search, Plus, Minus, PackageCheck, History, FileSpreadsheet, Printer,
+  Loader2, AlertTriangle, CheckCircle2, CalendarDays, Scale, X, RefreshCw,
+} from 'lucide-react';
+import * as XLSX from 'xlsx';
+import jsPDF from 'jspdf';
+import { cn } from '@/lib/utils';
+import { supabase } from '@/lib/supabase';
+import { useAuthStore } from '@/stores/authStore';
+import { useBranchCatalogStore } from '@/stores/branchCatalogStore';
+import { canonicalItemSlug } from './itemMatcher';
+import { BRANCHES } from './types';
+import type { Branch } from './types';
+
+export type LeftoverUnit = 'kg' | 'pcs';
+export type LeftoverReason = 'closing_stock' | 'production_carryover' | 'dispatch' | 'adjustment';
+
+export interface LeftoverLedgerRow {
+  id: string;
+  itemSlug: string;
+  itemName: string;
+  unit: LeftoverUnit;
+  businessDate: string;
+  delta: number;
+  reason: LeftoverReason;
+  branch: Branch | null;
+  orderId: string | null;
+  orderNumber: number | null;
+  recordedBy: string;
+  notes: string | null;
+  createdAt: string;
+}
+
+export const kolkataToday = () =>
+  new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+
+export const qtyFmt = (v: number) => Number(v || 0).toLocaleString('en-IN', { maximumFractionDigits: 3 });
+const dateLabel = (value: string) => new Date(`${value}T00:00:00`).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+const reasonLabel = (r: LeftoverReason) => r === 'closing_stock' ? 'Closing stock entry' : r === 'production_carryover' ? 'Unused production' : r === 'dispatch' ? 'Dispatched' : 'Adjustment';
+
+function mapLedgerRow(row: Record<string, unknown>): LeftoverLedgerRow {
+  return {
+    id: String(row.id),
+    itemSlug: String(row.item_slug ?? ''),
+    itemName: String(row.item_name ?? ''),
+    unit: (row.unit as LeftoverUnit) ?? 'kg',
+    businessDate: String(row.business_date ?? ''),
+    delta: Number(row.delta ?? 0),
+    reason: (row.reason as LeftoverReason) ?? 'adjustment',
+    branch: (row.branch as Branch | null) ?? null,
+    orderId: row.order_id ? String(row.order_id) : null,
+    orderNumber: row.order_number == null ? null : Number(row.order_number),
+    recordedBy: String(row.recorded_by ?? ''),
+    notes: row.notes ? String(row.notes) : null,
+    createdAt: String(row.created_at ?? ''),
+  };
+}
+
+// EGRESS NOTE: capped at 20,000 most-recent rows (fetched paged, 1000/page).
+// This is a brand-new table — at a realistic 30-60 manual entries/day that's
+// roughly a year of history before the cap matters. Raise the cap (or add a
+// periodic "opening balance snapshot" row) if this table grows past that.
+export async function fetchLeftoverLedger(): Promise<{ rows: LeftoverLedgerRow[]; error: string }> {
+  const pageSize = 1000;
+  const maxRows = 20000;
+  const rows: Record<string, unknown>[] = [];
+  let error = '';
+  for (let from = 0; from < maxRows; from += pageSize) {
+    const { data, error: pageError } = await supabase
+      .from('planner_leftover_ledger')
+      .select('id, item_slug, item_name, unit, business_date, delta, reason, branch, order_id, order_number, recorded_by, notes, created_at')
+      .order('created_at', { ascending: true })
+      .range(from, from + pageSize - 1);
+    if (pageError) { error = pageError.message; break; }
+    const page = data ?? [];
+    rows.push(...page);
+    if (page.length < pageSize) break;
+  }
+  return { rows: rows.map(mapLedgerRow), error };
+}
+
+// Shared entry point used by both this tab (manual add/adjust) and the
+// Dispatch tab (consuming leftover against an order) — see task wiring in
+// PlannerDashboard.tsx's DispatchTab. Throws with a readable message on the
+// INSUFFICIENT_LEFTOVER_STOCK guard raised by the RPC.
+export async function recordLeftoverMovement(params: {
+  itemName: string;
+  unit: LeftoverUnit;
+  delta: number;
+  businessDate: string;
+  reason: LeftoverReason;
+  recordedBy: string;
+  branch?: Branch | null;
+  orderId?: string | null;
+  orderNumber?: number | null;
+  notes?: string | null;
+}): Promise<{ newBalance: number } | { error: string }> {
+  const slug = canonicalItemSlug(params.itemName);
+  if (!slug) return { error: 'Enter an item name.' };
+  const { data, error } = await supabase.rpc('record_leftover_movement', {
+    p_item_slug: slug,
+    p_item_name: params.itemName.trim(),
+    p_unit: params.unit,
+    p_delta: params.delta,
+    p_business_date: params.businessDate,
+    p_reason: params.reason,
+    p_recorded_by: params.recordedBy,
+    p_branch: params.branch ?? null,
+    p_order_id: params.orderId ?? null,
+    p_order_number: params.orderNumber ?? null,
+    p_notes: params.notes ?? null,
+  });
+  if (error) {
+    const insufficient = error.message.match(/INSUFFICIENT_LEFTOVER_STOCK: (.+)/);
+    return { error: insufficient ? insufficient[1] : error.message };
+  }
+  return { newBalance: Number((data as { newBalance?: number })?.newBalance ?? 0) };
+}
+
+// Lightweight balance lookup for the Dispatch tab's "Dispatch from Leftover"
+// action — keyed by item slug (not slug+unit, since in practice each item
+// only ever carries a balance in one unit at a time).
+export function useLeftoverBalanceMap(): { balances: Map<string, { itemName: string; unit: LeftoverUnit; balance: number }>; refresh: () => void } {
+  const [rows, setRows] = useState<LeftoverLedgerRow[]>([]);
+  const refresh = useCallback(() => { void fetchLeftoverLedger().then(({ rows: fetched }) => setRows(fetched)); }, []);
+  useEffect(() => { refresh(); }, [refresh]);
+  const balances = useMemo(() => {
+    const map = new Map<string, { itemName: string; unit: LeftoverUnit; balance: number }>();
+    rows.forEach((row) => {
+      const current = map.get(row.itemSlug) ?? { itemName: row.itemName, unit: row.unit, balance: 0 };
+      current.balance += row.delta;
+      current.itemName = row.itemName;
+      map.set(row.itemSlug, current);
+    });
+    for (const [slug, entry] of map) if (entry.balance <= 0.001) map.delete(slug);
+    return map;
+  }, [rows]);
+  return { balances, refresh };
+}
+
+// ─── Merged, deduplicated SNB + VRSNB item search ──────────────────────────
+export interface MergedCatalogItem { slug: string; name: string; branches: Branch[] }
+
+export function useMergedLeftoverCatalog(): MergedCatalogItem[] {
+  const { items: catalogItems, loadCatalog } = useBranchCatalogStore();
+  useEffect(() => { void loadCatalog('SNB'); void loadCatalog('VRSNB'); }, [loadCatalog]);
+  return useMemo(() => {
+    const map = new Map<string, MergedCatalogItem>();
+    (['SNB', 'VRSNB'] as const).forEach((branch) => {
+      (catalogItems[branch] ?? []).filter((item) => item.active).forEach((item) => {
+        const slug = canonicalItemSlug(item.name);
+        if (!slug) return;
+        const existing = map.get(slug);
+        if (existing) { if (!existing.branches.includes(branch)) existing.branches.push(branch); }
+        else map.set(slug, { slug, name: item.name, branches: [branch] });
+      });
+    });
+    return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
+  }, [catalogItems]);
+}
+
+function StatCard({ label, value, helper, icon, tone = 'slate' }: {
+  label: string; value: React.ReactNode; helper?: string; icon: React.ReactNode; tone?: 'slate' | 'emerald' | 'blue' | 'amber' | 'red';
+}) {
+  const tones = { slate: 'bg-slate-100 text-slate-700', emerald: 'bg-teal-100 text-teal-700', blue: 'bg-blue-100 text-blue-700', amber: 'bg-amber-100 text-amber-700', red: 'bg-red-100 text-red-700' };
+  return <div className="rounded-2xl border border-border bg-card p-4 shadow-sm"><div className="flex items-start justify-between gap-3"><div><p className="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">{label}</p><p className="mt-2 text-2xl font-display font-black text-foreground">{value}</p>{helper && <p className="mt-1 text-xs text-muted-foreground">{helper}</p>}</div><span className={cn('grid size-10 place-items-center rounded-xl', tones[tone])}>{icon}</span></div></div>;
+}
+
+// Search-as-you-type item picker. Typing a name with no catalogue match is
+// still accepted (free text) — the closing-stock book has items (bulk mixes,
+// packaging variants) that don't always exist as a sellable branch item.
+function ItemSearchPicker({ value, onChange, onSelect, items }: {
+  value: string; onChange: (v: string) => void; onSelect: (item: MergedCatalogItem) => void; items: MergedCatalogItem[];
+}) {
+  const [open, setOpen] = useState(false);
+  const query = value.trim().toLowerCase();
+  const results = useMemo(() => {
+    if (!query) return items.slice(0, 25);
+    return items.filter((item) => item.name.toLowerCase().includes(query)).slice(0, 25);
+  }, [items, query]);
+  return (
+    <div className="relative">
+      <div className="relative">
+        <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+        <input
+          value={value}
+          onChange={(e) => { onChange(e.target.value); setOpen(true); }}
+          onFocus={() => setOpen(true)}
+          onBlur={() => setTimeout(() => setOpen(false), 150)}
+          placeholder="Search item (SNB + VRSNB, no duplicates)…"
+          className="h-11 w-full rounded-xl border border-border bg-background pl-9 pr-3 text-sm font-bold"
+        />
+      </div>
+      {open && results.length > 0 && (
+        <div className="absolute left-0 right-0 top-full z-30 mt-1 max-h-64 overflow-y-auto rounded-xl border border-border bg-card shadow-xl">
+          {results.map((item) => (
+            <button
+              key={item.slug}
+              type="button"
+              onMouseDown={(e) => { e.preventDefault(); onSelect(item); setOpen(false); }}
+              className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm hover:bg-muted/60"
+            >
+              <span className="font-bold">{item.name}</span>
+              <span className="text-[10px] font-black uppercase text-muted-foreground">{item.branches.join(' + ')}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function PlannerLeftoverTab() {
+  const { currentUser } = useAuthStore();
+  const staffName = currentUser?.displayName || currentUser?.username || 'Planner Staff';
+  const catalog = useMergedLeftoverCatalog();
+
+  const [rows, setRows] = useState<LeftoverLedgerRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
+
+  const refresh = useCallback(async () => {
+    setLoading(true); setError('');
+    const { rows: fetched, error: fetchError } = await fetchLeftoverLedger();
+    setRows(fetched);
+    if (fetchError) setError(fetchError);
+    setLoading(false);
+  }, []);
+  useEffect(() => { void refresh(); }, [refresh]);
+
+  // ── Add-to-leftover form ─────────────────────────────────────────────────
+  const [itemQuery, setItemQuery] = useState('');
+  const [selectedItem, setSelectedItem] = useState<MergedCatalogItem | null>(null);
+  const [qty, setQty] = useState('');
+  const [unit, setUnit] = useState<LeftoverUnit>('kg');
+  const [entryDate, setEntryDate] = useState(kolkataToday());
+  const [saving, setSaving] = useState(false);
+
+  const resetForm = () => { setItemQuery(''); setSelectedItem(null); setQty(''); setUnit('kg'); setMessage(''); };
+
+  const addLeftover = async () => {
+    setError(''); setMessage('');
+    const name = (selectedItem?.name || itemQuery).trim();
+    const amount = Number(qty);
+    if (!name) { setError('Search and pick (or type) an item first.'); return; }
+    if (!Number.isFinite(amount) || amount <= 0) { setError('Enter a quantity greater than zero.'); return; }
+    setSaving(true);
+    const result = await recordLeftoverMovement({
+      itemName: name, unit, delta: amount, businessDate: entryDate,
+      reason: 'closing_stock', recordedBy: staffName,
+    });
+    setSaving(false);
+    if ('error' in result) { setError(result.error); return; }
+    setMessage(`${name}: ${qtyFmt(amount)} ${unit} added to leftover (new balance ${qtyFmt(result.newBalance)} ${unit}).`);
+    resetForm();
+    void refresh();
+  };
+
+  // ── Write-off / correction ───────────────────────────────────────────────
+  const [adjustingSlug, setAdjustingSlug] = useState<string | null>(null);
+  const [adjustQty, setAdjustQty] = useState('');
+  const [adjustNote, setAdjustNote] = useState('');
+  const [adjustSaving, setAdjustSaving] = useState(false);
+
+  const submitAdjustment = async (balanceRow: { itemName: string; unit: LeftoverUnit; balance: number }) => {
+    const amount = Number(adjustQty);
+    if (!Number.isFinite(amount) || amount <= 0) { setError('Enter a quantity to remove.'); return; }
+    if (amount > balanceRow.balance + 0.001) { setError(`Cannot remove more than the ${qtyFmt(balanceRow.balance)} ${balanceRow.unit} available.`); return; }
+    setAdjustSaving(true); setError('');
+    const result = await recordLeftoverMovement({
+      itemName: balanceRow.itemName, unit: balanceRow.unit, delta: -amount, businessDate: kolkataToday(),
+      reason: 'adjustment', recordedBy: staffName, notes: adjustNote || 'Write-off / correction',
+    });
+    setAdjustSaving(false);
+    if ('error' in result) { setError(result.error); return; }
+    setMessage(`${balanceRow.itemName}: ${qtyFmt(amount)} ${balanceRow.unit} removed (spoilage/correction).`);
+    setAdjustingSlug(null); setAdjustQty(''); setAdjustNote('');
+    void refresh();
+  };
+
+  // ── Current running balance (all-time sum per item+unit) ────────────────
+  const balances = useMemo(() => {
+    const map = new Map<string, { itemSlug: string; itemName: string; unit: LeftoverUnit; balance: number; lastMovement: string }>();
+    rows.forEach((row) => {
+      const key = `${row.itemSlug}|${row.unit}`;
+      const current = map.get(key) ?? { itemSlug: row.itemSlug, itemName: row.itemName, unit: row.unit, balance: 0, lastMovement: row.createdAt };
+      current.balance += row.delta;
+      current.itemName = row.itemName; // keep most-recent display spelling
+      if (row.createdAt > current.lastMovement) current.lastMovement = row.createdAt;
+      map.set(key, current);
+    });
+    return Array.from(map.values()).filter((row) => row.balance > 0.001).sort((a, b) => a.itemName.localeCompare(b.itemName));
+  }, [rows]);
+
+  const todayRows = useMemo(() => rows.filter((row) => row.businessDate === kolkataToday()), [rows]);
+  const addedTodayTotal = todayRows.filter((row) => row.delta > 0).length;
+  const dispatchedTodayTotal = todayRows.filter((row) => row.reason === 'dispatch').length;
+
+  // ── Daily report (opening / added / dispatched / closing per item) ──────
+  const [reportDate, setReportDate] = useState(kolkataToday());
+  const reportRows = useMemo(() => {
+    const map = new Map<string, {
+      itemSlug: string; itemName: string; unit: LeftoverUnit;
+      opening: number; added: number; dispatched: number; adjusted: number; closing: number;
+      dispatchByBranch: Record<string, number>;
+    }>();
+    const ensure = (row: LeftoverLedgerRow) => {
+      const key = `${row.itemSlug}|${row.unit}`;
+      const current = map.get(key) ?? { itemSlug: row.itemSlug, itemName: row.itemName, unit: row.unit, opening: 0, added: 0, dispatched: 0, adjusted: 0, closing: 0, dispatchByBranch: {} };
+      map.set(key, current);
+      return current;
+    };
+    rows.forEach((row) => {
+      if (row.businessDate < reportDate) {
+        ensure(row).opening += row.delta;
+      } else if (row.businessDate === reportDate) {
+        const entry = ensure(row);
+        entry.itemName = row.itemName;
+        if (row.reason === 'dispatch') {
+          entry.dispatched += Math.abs(row.delta);
+          const branchKey = row.branch || 'Unspecified';
+          entry.dispatchByBranch[branchKey] = (entry.dispatchByBranch[branchKey] || 0) + Math.abs(row.delta);
+        } else if (row.reason === 'adjustment') {
+          entry.adjusted += row.delta;
+        } else {
+          entry.added += row.delta;
+        }
+      }
+    });
+    return Array.from(map.values())
+      .map((entry) => ({ ...entry, closing: entry.opening + entry.added - entry.dispatched + entry.adjusted }))
+      .filter((entry) => Math.abs(entry.opening) > 0.001 || Math.abs(entry.added) > 0.001 || Math.abs(entry.dispatched) > 0.001 || Math.abs(entry.adjusted) > 0.001)
+      .sort((a, b) => a.itemName.localeCompare(b.itemName));
+  }, [rows, reportDate]);
+
+  const reportMovements = useMemo(() => rows.filter((row) => row.businessDate === reportDate).sort((a, b) => a.createdAt.localeCompare(b.createdAt)), [rows, reportDate]);
+
+  const reportTotals = useMemo(() => reportRows.reduce((sum, row) => ({
+    added: sum.added + (row.unit === 'kg' ? row.added : 0),
+    dispatched: sum.dispatched + (row.unit === 'kg' ? row.dispatched : 0),
+  }), { added: 0, dispatched: 0 }), [reportRows]);
+
+  const exportExcel = () => {
+    const wb = XLSX.utils.book_new();
+    const addSheet = (data: Record<string, unknown>[], name: string, fallback: string) => {
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(data.length ? data : [{ Note: fallback }]), name.slice(0, 31));
+    };
+    addSheet([
+      { Metric: 'Business Date', Value: dateLabel(reportDate) },
+      { Metric: 'Items with activity', Value: reportRows.length },
+      { Metric: 'Items currently in leftover pool', Value: balances.length },
+    ], 'Summary', 'No data');
+    addSheet(reportRows.map((row) => ({
+      Item: row.itemName, Unit: row.unit,
+      Opening: row.opening, 'Added Today': row.added, 'Dispatched Today': row.dispatched,
+      ...Object.fromEntries(BRANCHES.map((b) => [`Dispatched to ${b}`, row.dispatchByBranch[b] || 0])),
+      Adjusted: row.adjusted, Closing: row.closing,
+    })), 'Daily Reconciliation', 'No leftover activity on this date');
+    addSheet(reportMovements.map((row) => ({
+      Time: new Date(row.createdAt).toLocaleString('en-IN'), Item: row.itemName, Unit: row.unit,
+      Quantity: row.delta, Type: reasonLabel(row.reason), Branch: row.branch || '-',
+      'Order #': row.orderNumber ?? '-', 'Recorded By': row.recordedBy, Notes: row.notes || '-',
+    })), 'Movement Log', 'No movements on this date');
+    addSheet(balances.map((row) => ({ Item: row.itemName, Unit: row.unit, 'Current Balance': row.balance })), 'Current Balance (All Items)', 'No leftover stock currently held');
+    XLSX.writeFile(wb, `planner-closing-stock-${reportDate}.xlsx`);
+  };
+
+  const exportPdf = () => {
+    const doc = new jsPDF({ unit: 'pt', format: 'a4' });
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const marginX = 40;
+    let y = 48;
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(18); doc.setTextColor(20);
+    doc.text('Cafe Aadvikam — Closing Stock / Leftover Report', marginX, y);
+    y += 18;
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(100);
+    doc.text(`Business Date: ${dateLabel(reportDate)}  ·  Generated: ${new Date().toLocaleString('en-IN')}`, marginX, y);
+    doc.setTextColor(0); y += 26;
+
+    const ensureRoom = (needed: number) => { if (y + needed > 780) { doc.addPage(); y = 50; } };
+
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(12);
+    doc.text('Summary', marginX, y); y += 10;
+    const kpis: [string, string][] = [
+      ['Items With Activity', String(reportRows.length)],
+      ['Added Today (Kg total)', qtyFmt(reportTotals.added)],
+      ['Dispatched From Leftover (Kg total)', qtyFmt(reportTotals.dispatched)],
+      ['Items Currently In Pool', String(balances.length)],
+    ];
+    const kpiColWidth = (pageWidth - marginX * 2) / 2;
+    kpis.forEach(([label, value], i) => {
+      const col = i % 2; const row = Math.floor(i / 2);
+      const x = marginX + col * kpiColWidth;
+      const yy = y + 16 + row * 36;
+      doc.setDrawColor(210); doc.rect(x, yy - 14, kpiColWidth - 8, 32);
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(120);
+      doc.text(label, x + 6, yy - 3);
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(13); doc.setTextColor(0);
+      doc.text(value, x + 6, yy + 12);
+    });
+    y += 16 + Math.ceil(kpis.length / 2) * 36 + 14;
+
+    const drawTable = (title: string, headers: string[], colWidths: number[], dataRows: string[][], emptyText: string) => {
+      ensureRoom(40);
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(12); doc.setTextColor(0);
+      doc.text(title, marginX, y); y += 14;
+      const totalWidth = colWidths.reduce((a, b) => a + b, 0);
+      const drawHeader = () => {
+        doc.setFillColor(238); doc.setDrawColor(220);
+        doc.rect(marginX, y - 10, totalWidth, 16, 'F');
+        doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(40);
+        let x = marginX;
+        headers.forEach((h, i) => { doc.text(h, x + 4, y); x += colWidths[i]; });
+        y += 12;
+      };
+      drawHeader();
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5); doc.setTextColor(30);
+      for (const cells of dataRows) {
+        if (y > 770) { doc.addPage(); y = 50; drawHeader(); doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5); doc.setTextColor(30); }
+        let x = marginX;
+        cells.forEach((c, i) => { doc.text(c, x + 4, y); x += colWidths[i]; });
+        doc.setDrawColor(235); doc.line(marginX, y + 4, marginX + totalWidth, y + 4);
+        y += 14;
+      }
+      if (dataRows.length === 0) { doc.setFont('helvetica', 'italic'); doc.setFontSize(9); doc.setTextColor(120); doc.text(emptyText, marginX, y); y += 14; doc.setTextColor(0); }
+      y += 12;
+    };
+
+    drawTable(
+      'Daily Reconciliation',
+      ['Item', 'Unit', 'Opening', 'Added', 'Dispatched', 'Adjusted', 'Closing'],
+      [150, 35, 60, 55, 65, 60, 60],
+      reportRows.map((row) => [row.itemName.slice(0, 26), row.unit, qtyFmt(row.opening), qtyFmt(row.added), qtyFmt(row.dispatched), qtyFmt(row.adjusted), qtyFmt(row.closing)]),
+      'No leftover activity recorded for this date.',
+    );
+
+    drawTable(
+      'Movement Log',
+      ['Time', 'Item', 'Qty', 'Type', 'Branch', 'Order #', 'By'],
+      [70, 130, 50, 75, 55, 50, 90],
+      reportMovements.map((row) => [
+        new Date(row.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
+        row.itemName.slice(0, 22), `${row.delta > 0 ? '+' : ''}${qtyFmt(row.delta)}${row.unit}`,
+        reasonLabel(row.reason), row.branch || '-', row.orderNumber ? String(row.orderNumber) : '-', row.recordedBy.slice(0, 16),
+      ]),
+      'No movements on this date.',
+    );
+
+    drawTable(
+      'Current Leftover Balance (All Items)',
+      ['Item', 'Unit', 'Balance'],
+      [300, 60, 100],
+      balances.map((row) => [row.itemName.slice(0, 48), row.unit, qtyFmt(row.balance)]),
+      'No leftover stock currently held.',
+    );
+
+    doc.save(`planner-closing-stock-${reportDate}.pdf`);
+  };
+
+  if (loading) return <div className="flex min-h-[55vh] items-center justify-center"><Loader2 className="size-7 animate-spin text-teal-600" /></div>;
+
+  return (
+    <section className="space-y-5">
+      <div className="overflow-hidden rounded-3xl border border-slate-800 bg-gradient-to-br from-slate-950 via-teal-950 to-slate-900 text-white shadow-xl">
+        <div className="flex flex-col gap-4 p-5 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <div className="mb-2 flex flex-wrap items-center gap-2">
+              <span className="rounded-full bg-teal-400/15 px-3 py-1 text-[10px] font-black uppercase tracking-[0.2em] text-teal-200">Kitchen finished-goods pool</span>
+            </div>
+            <h2 className="font-display text-3xl font-black">Closing Stock / Leftover</h2>
+            <p className="mt-1 max-w-3xl text-sm text-white/60">Record what's physically left over at closing. This shared pool (not tied to any one branch) is available to dispatch first, before fresh production, the next time an order comes in.</p>
+          </div>
+          <button onClick={refresh} className="inline-flex h-11 items-center gap-2 rounded-xl border border-white/15 bg-white/10 px-4 text-xs font-black"><RefreshCw className="size-4" />Refresh</button>
+        </div>
+      </div>
+
+      {error && <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-bold text-red-700"><AlertTriangle className="mr-2 inline size-4" />{error}</div>}
+      {message && <div className="rounded-2xl border border-teal-200 bg-teal-50 px-4 py-3 text-sm font-bold text-teal-700"><CheckCircle2 className="mr-2 inline size-4" />{message}</div>}
+
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <StatCard label="Items In Leftover Pool" value={balances.length} icon={<PackageCheck className="size-5" />} tone="emerald" />
+        <StatCard label="Added Today" value={addedTodayTotal} helper="Entries recorded today" icon={<Plus className="size-5" />} tone="blue" />
+        <StatCard label="Dispatched From Leftover Today" value={dispatchedTodayTotal} icon={<Scale className="size-5" />} tone="amber" />
+        <StatCard label="Total Movements Logged" value={rows.length} icon={<History className="size-5" />} tone="slate" />
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-[1fr_1.1fr]">
+        <div className="rounded-2xl border bg-card p-4">
+          <h3 className="font-black">Record Leftover / Closing Stock</h3>
+          <p className="mt-1 text-xs text-muted-foreground">Search picks up items from both SNB and VRSNB catalogues (shown once each). Typing a name not in either catalogue is still accepted.</p>
+          <div className="mt-3 space-y-3">
+            <ItemSearchPicker
+              value={selectedItem ? selectedItem.name : itemQuery}
+              onChange={(v) => { setItemQuery(v); setSelectedItem(null); }}
+              onSelect={(item) => { setSelectedItem(item); setItemQuery(item.name); }}
+              items={catalog}
+            />
+            <div className="grid grid-cols-2 gap-3">
+              <label className="space-y-1">
+                <span className="text-xs font-black text-muted-foreground">Quantity</span>
+                <input type="number" min="0" step="0.001" value={qty} onChange={(e) => setQty(e.target.value)} className="h-11 w-full rounded-xl border bg-background px-3 text-sm font-bold" placeholder="0" />
+              </label>
+              <label className="space-y-1">
+                <span className="text-xs font-black text-muted-foreground">Business Date</span>
+                <input type="date" value={entryDate} onChange={(e) => setEntryDate(e.target.value)} className="h-11 w-full rounded-xl border bg-background px-3 text-sm font-bold" />
+              </label>
+            </div>
+            <div className="flex gap-2">
+              <button onClick={() => setUnit('kg')} className={cn('flex-1 rounded-xl border py-2.5 text-sm font-black', unit === 'kg' ? 'border-teal-700 bg-teal-700 text-white' : 'bg-background')}>Kg / Weight</button>
+              <button onClick={() => setUnit('pcs')} className={cn('flex-1 rounded-xl border py-2.5 text-sm font-black', unit === 'pcs' ? 'border-teal-700 bg-teal-700 text-white' : 'bg-background')}>Pcs / Pieces</button>
+            </div>
+            <button onClick={addLeftover} disabled={saving} className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-teal-700 text-sm font-black text-white disabled:opacity-50">
+              {saving ? <Loader2 className="size-4 animate-spin" /> : <Plus className="size-4" />}Add To Leftover
+            </button>
+          </div>
+        </div>
+
+        <div className="overflow-hidden rounded-2xl border bg-card">
+          <div className="border-b bg-muted/30 px-4 py-3"><h3 className="font-black">Current Leftover Balance</h3><p className="text-xs text-muted-foreground">Running total across all history — this is what's available to dispatch first.</p></div>
+          <div className="max-h-[420px] overflow-y-auto">
+            <table className="min-w-full text-sm">
+              <thead className="sticky top-0 bg-muted/50 text-[10px] font-black uppercase tracking-wide text-muted-foreground">
+                <tr><th className="px-4 py-2.5 text-left">Item</th><th className="px-4 py-2.5 text-right">Balance</th><th className="px-4 py-2.5 text-right">Adjust</th></tr>
+              </thead>
+              <tbody className="divide-y">
+                {balances.length ? balances.map((row) => (
+                  <tr key={`${row.itemSlug}|${row.unit}`}>
+                    <td className="px-4 py-2.5 font-bold">{row.itemName}</td>
+                    <td className="px-4 py-2.5 text-right font-black">{qtyFmt(row.balance)} {row.unit}</td>
+                    <td className="px-4 py-2.5 text-right">
+                      {adjustingSlug === `${row.itemSlug}|${row.unit}` ? (
+                        <div className="flex items-center justify-end gap-1">
+                          <input autoFocus type="number" min="0" step="0.001" value={adjustQty} onChange={(e) => setAdjustQty(e.target.value)} className="h-8 w-20 rounded-lg border bg-background px-2 text-xs" placeholder="qty" />
+                          <button onClick={() => submitAdjustment(row)} disabled={adjustSaving} className="rounded-lg bg-red-600 px-2 py-1.5 text-[10px] font-black text-white">{adjustSaving ? '…' : 'Remove'}</button>
+                          <button onClick={() => { setAdjustingSlug(null); setAdjustQty(''); setAdjustNote(''); }} className="rounded-lg bg-muted px-1.5 py-1.5"><X className="size-3" /></button>
+                        </div>
+                      ) : (
+                        <button onClick={() => setAdjustingSlug(`${row.itemSlug}|${row.unit}`)} className="inline-flex items-center gap-1 rounded-lg bg-red-50 px-2 py-1 text-[10px] font-black text-red-700"><Minus className="size-3" />Write-off</button>
+                      )}
+                    </td>
+                  </tr>
+                )) : <tr><td colSpan={3} className="px-4 py-10 text-center text-muted-foreground">No leftover stock currently held.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div className="overflow-hidden rounded-2xl border bg-card">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b bg-muted/30 px-4 py-3">
+          <div>
+            <h3 className="font-black">Daily Report</h3>
+            <p className="text-xs text-muted-foreground">Opening balance, what was added, what was dispatched from leftover, and the closing balance — for any business date.</p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-1.5 rounded-xl border bg-background px-3 py-2"><CalendarDays className="size-4 text-muted-foreground" /><input type="date" value={reportDate} onChange={(e) => setReportDate(e.target.value)} className="bg-transparent text-sm font-bold" /></div>
+            <button onClick={exportExcel} className="inline-flex h-10 items-center gap-2 rounded-xl border bg-card px-3 text-xs font-black"><FileSpreadsheet className="size-4" />Excel</button>
+            <button onClick={exportPdf} className="inline-flex h-10 items-center gap-2 rounded-xl bg-slate-950 px-3 text-xs font-black text-white"><Printer className="size-4" />PDF</button>
+          </div>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-sm">
+            <thead className="bg-muted/50 text-[10px] font-black uppercase tracking-wide text-muted-foreground">
+              <tr>
+                <th className="px-4 py-3 text-left">Item</th>
+                <th className="px-4 py-3 text-right">Opening</th>
+                <th className="px-4 py-3 text-right">Added Today</th>
+                <th className="px-4 py-3 text-right">Dispatched Today</th>
+                <th className="px-4 py-3 text-left">Dispatched To</th>
+                <th className="px-4 py-3 text-right">Adjusted</th>
+                <th className="px-4 py-3 text-right">Closing</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y">
+              {reportRows.length ? reportRows.map((row) => (
+                <tr key={`${row.itemSlug}|${row.unit}`}>
+                  <td className="px-4 py-3 font-black">{row.itemName} <span className="text-[10px] font-bold text-muted-foreground">{row.unit}</span></td>
+                  <td className="px-4 py-3 text-right">{qtyFmt(row.opening)}</td>
+                  <td className="px-4 py-3 text-right text-teal-700 font-bold">{row.added > 0 ? `+${qtyFmt(row.added)}` : '-'}</td>
+                  <td className="px-4 py-3 text-right text-amber-700 font-bold">{row.dispatched > 0 ? `-${qtyFmt(row.dispatched)}` : '-'}</td>
+                  <td className="px-4 py-3 text-xs text-muted-foreground">{Object.entries(row.dispatchByBranch).map(([b, q]) => `${b}: ${qtyFmt(q)}`).join(', ') || '-'}</td>
+                  <td className="px-4 py-3 text-right">{row.adjusted !== 0 ? qtyFmt(row.adjusted) : '-'}</td>
+                  <td className="px-4 py-3 text-right font-black">{qtyFmt(row.closing)}</td>
+                </tr>
+              )) : <tr><td colSpan={7} className="px-4 py-10 text-center text-muted-foreground">No leftover activity on {dateLabel(reportDate)}.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="overflow-hidden rounded-2xl border bg-card">
+        <div className="border-b bg-muted/30 px-4 py-3"><h3 className="font-black">Movement Log — {dateLabel(reportDate)}</h3><p className="text-xs text-muted-foreground">Every individual entry, for full traceability.</p></div>
+        <div className="max-h-80 overflow-y-auto">
+          <table className="min-w-full text-sm">
+            <thead className="sticky top-0 bg-muted/50 text-[10px] font-black uppercase tracking-wide text-muted-foreground">
+              <tr><th className="px-4 py-2.5 text-left">Time</th><th className="px-4 py-2.5 text-left">Item</th><th className="px-4 py-2.5 text-right">Qty</th><th className="px-4 py-2.5 text-left">Type</th><th className="px-4 py-2.5 text-left">Branch / Order</th><th className="px-4 py-2.5 text-left">By</th></tr>
+            </thead>
+            <tbody className="divide-y">
+              {reportMovements.length ? reportMovements.map((row) => (
+                <tr key={row.id}>
+                  <td className="px-4 py-2 text-xs text-muted-foreground">{new Date(row.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</td>
+                  <td className="px-4 py-2 font-bold">{row.itemName}</td>
+                  <td className={cn('px-4 py-2 text-right font-black', row.delta > 0 ? 'text-teal-700' : 'text-red-700')}>{row.delta > 0 ? '+' : ''}{qtyFmt(row.delta)} {row.unit}</td>
+                  <td className="px-4 py-2 text-xs">{reasonLabel(row.reason)}</td>
+                  <td className="px-4 py-2 text-xs text-muted-foreground">{[row.branch, row.orderNumber ? `#${row.orderNumber}` : null].filter(Boolean).join(' · ') || '-'}</td>
+                  <td className="px-4 py-2 text-xs text-muted-foreground">{row.recordedBy}</td>
+                </tr>
+              )) : <tr><td colSpan={6} className="px-4 py-10 text-center text-muted-foreground">No movements on this date.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  );
+}
