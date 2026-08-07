@@ -40,8 +40,9 @@ import {
   Utensils, Trash2, AlertTriangle, WalletCards, PackageSearch,
   Landmark, CheckCircle2, XCircle, Receipt, Bell, Package, Truck,
   Download, Printer, FileSpreadsheet, Filter, ShieldCheck, Factory, Search, RefreshCw,
-  ClipboardList, Loader2, ChevronDown, ChevronUp,
+  ClipboardList, Loader2, ChevronDown, ChevronUp, LogOut, UserCircle2, Scale,
 } from 'lucide-react';
+import { isNativeApp } from '@/lib/platform';
 
 const COLORS = ['#2D7D6F', '#C5973E', '#5BA3C9', '#E07B5B', '#8B5CF6', '#EC4899'];
 
@@ -147,6 +148,22 @@ function ownerFmtDateTime(iso: string | null | undefined) {
   return d.toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
 }
 
+// Native app home-screen hero (2026-08-07): time-of-day greeting + a
+// long-form "Friday, 7 August" date, used only on the Everything tab's
+// hero card so opening the app feels like a personal briefing rather than
+// a generic report screen.
+function ownerGreeting() {
+  const h = new Date().getHours();
+  if (h < 5) return 'Still up';
+  if (h < 12) return 'Good morning';
+  if (h < 17) return 'Good afternoon';
+  if (h < 21) return 'Good evening';
+  return 'Good night';
+}
+function ownerLongDate() {
+  return new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' });
+}
+
 function ownerCsvDownload(filename: string, rows: Array<Record<string, string | number>>) {
   const safeRows = rows.length ? rows : [{ Note: 'No records available for selected filters' }];
   const headers = Object.keys(safeRows[0]);
@@ -198,14 +215,19 @@ function moneyNumber(value: number | null | undefined) {
   return Number(value || 0);
 }
 
-function OwnerMetricCard({ icon, label, value, sub, tone = 'slate' }: { icon: React.ReactNode; label: string; value: React.ReactNode; sub?: React.ReactNode; tone?: 'green' | 'amber' | 'red' | 'blue' | 'purple' | 'slate' }) {
+function OwnerMetricCard({ icon, label, value, sub, tone = 'slate', onClick }: { icon: React.ReactNode; label: string; value: React.ReactNode; sub?: React.ReactNode; tone?: 'green' | 'amber' | 'red' | 'blue' | 'purple' | 'slate'; onClick?: () => void }) {
+  const Comp = onClick ? 'button' : 'div';
   return (
-    <div className={cn('owner-metric-card', `tone-${tone}`)}>
+    <Comp
+      type={onClick ? 'button' : undefined}
+      onClick={onClick}
+      className={cn('owner-metric-card', `tone-${tone}`, onClick && 'owner-metric-card-clickable')}
+    >
       <div className="owner-metric-icon">{icon}</div>
       <span>{label}</span>
       <strong>{value}</strong>
       {sub && <p>{sub}</p>}
-    </div>
+    </Comp>
   );
 }
 
@@ -2599,6 +2621,14 @@ interface OwnerEverythingExtras {
   pendingHosurShopOrders: number;
   outstandingAdvances: number;
   recentNotifications: { id: string; type: string; title: string; body: string; createdAt: string }[];
+  // Backfilled from the older Owner app build (2026-08-07) — this exact data
+  // already exists as dedicated tabs (Waste & Loss, Complaints, Stock
+  // Variance) but wasn't yet surfaced on the single-screen "Everything" view,
+  // so it never made it into the Owner's first glance at the app.
+  openComplaints: { id: string; branch: string; subject: string; priority: string; createdAt: string }[];
+  wasteEntriesToday: number;
+  varianceTodayCount: number;
+  varianceTodayShort: number;
 }
 
 const EMPTY_EVERYTHING_EXTRAS: OwnerEverythingExtras = {
@@ -2606,21 +2636,32 @@ const EMPTY_EVERYTHING_EXTRAS: OwnerEverythingExtras = {
   leftoverLowItems: [], leftoverActiveItems: 0,
   pendingBakeryOrders: 0, inProductionOrders: 0, readyToDispatchOrders: 0, pendingHosurShopOrders: 0,
   outstandingAdvances: 0, recentNotifications: [],
+  openComplaints: [], wasteEntriesToday: 0, varianceTodayCount: 0, varianceTodayShort: 0,
 };
 
 async function fetchOwnerEverythingExtras(): Promise<{ data: OwnerEverythingExtras; error: string | null }> {
   const todayStr = ownerDateInput();
   try {
-    const [hosurBillsRes, leftoverRes, bakeryOrdersRes, hosurOrdersRes, advancesRes, notifRes] = await Promise.all([
+    const [
+      hosurBillsRes, leftoverRes, bakeryOrdersRes, hosurOrdersRes, advancesRes, notifRes,
+      complaintsRes, kitchenWasteRes, branchWasteRes, varianceRes,
+    ] = await Promise.all([
       supabase.from('hosur_bills').select('credit_amount, due_date').gt('credit_amount', 0),
       supabase.from('planner_leftover_ledger').select('item_name, unit, delta'),
       supabase.from('bakery_orders').select('status'),
       supabase.from('hosur_orders').select('status'),
       supabase.from('salary_advances').select('amount').eq('cleared', false),
       supabase.from('admin_notifications').select('id, type, title, body, created_at').order('created_at', { ascending: false }).limit(8),
+      supabase.from('branch_complaint_tickets').select('id, branch, subject, priority, status, created_at').not('status', 'in', '("Resolved","Closed")').order('created_at', { ascending: false }).limit(10),
+      supabase.from('kitchen_waste_log').select('id, logged_at').gte('logged_at', `${todayStr}T00:00:00`).lte('logged_at', `${todayStr}T23:59:59`),
+      supabase.from('branch_waste_logs').select('id, created_at').gte('created_at', `${todayStr}T00:00:00`).lte('created_at', `${todayStr}T23:59:59`),
+      supabase.from('branch_stock_variance_records').select('id, difference, created_at').gte('created_at', `${todayStr}T00:00:00`).lte('created_at', `${todayStr}T23:59:59`),
     ]);
     const firstError = hosurBillsRes.error || leftoverRes.error || bakeryOrdersRes.error || hosurOrdersRes.error || advancesRes.error || notifRes.error;
     if (firstError) return { data: EMPTY_EVERYTHING_EXTRAS, error: firstError.message };
+    // Complaints/waste/variance are treated as best-effort (never let a
+    // missing/renamed table on an older deployment blank out the rest of
+    // the Everything screen — they simply show as 0/empty instead).
 
     const hosurBills = hosurBillsRes.data ?? [];
     const overdueBills = hosurBills.filter(b => b.due_date && String(b.due_date) < todayStr);
@@ -2638,6 +2679,7 @@ async function fetchOwnerEverythingExtras(): Promise<{ data: OwnerEverythingExtr
     const bakeryOrders = bakeryOrdersRes.data ?? [];
     const hosurOrders = hosurOrdersRes.data ?? [];
     const advances = advancesRes.data ?? [];
+    const varianceRows = varianceRes.data ?? [];
 
     return {
       error: null,
@@ -2653,6 +2695,10 @@ async function fetchOwnerEverythingExtras(): Promise<{ data: OwnerEverythingExtr
         pendingHosurShopOrders: hosurOrders.filter(o => o.status !== 'dispatched').length,
         outstandingAdvances: advances.reduce((s, a) => s + Number(a.amount || 0), 0),
         recentNotifications: (notifRes.data ?? []).map(n => ({ id: n.id as string, type: n.type as string, title: n.title as string, body: (n.body as string) || '', createdAt: n.created_at as string })),
+        openComplaints: (complaintsRes.data ?? []).map(c => ({ id: c.id as string, branch: c.branch as string, subject: c.subject as string, priority: (c.priority as string) || 'Normal', createdAt: c.created_at as string })),
+        wasteEntriesToday: (kitchenWasteRes.data ?? []).length + (branchWasteRes.data ?? []).length,
+        varianceTodayCount: varianceRows.length,
+        varianceTodayShort: varianceRows.filter(v => Number(v.difference || 0) < 0).length,
       },
     };
   } catch (err) {
@@ -2666,6 +2712,13 @@ function OwnerEverythingTab() {
   const { orders: poOrders, load: loadPOs } = useStorePurchaseOrderStore();
   const today = ownerDateInput();
   const ownerLedger = useBranchLedger(today, today, ['VRSNB', 'SNB', 'Hosur']);
+  // Jumps to a detail tab — shares the same ?tab= query param the parent
+  // OwnerDashboard already reads, so this works whether the surrounding
+  // chrome is the desktop sidebar or the native app's tab strip.
+  const [, setEverythingSearchParams] = useSearchParams();
+  const goToTab = (id: string) => setEverythingSearchParams({ tab: id });
+  const heroUser = useAuthStore(s => s.currentUser);
+  const native = isNativeApp();
 
   const [extras, setExtras] = useState<OwnerEverythingExtras>(EMPTY_EVERYTHING_EXTRAS);
   const [extrasLoading, setExtrasLoading] = useState(true);
@@ -2708,6 +2761,8 @@ function OwnerEverythingTab() {
   if (extras.leftoverLowItems.length > 0) attentionItems.push({ icon: <PackageSearch className="size-4" />, title: `${extras.leftoverLowItems.length} item${extras.leftoverLowItems.length === 1 ? '' : 's'} out of Closing Stock`, detail: extras.leftoverLowItems.map(i => i.itemName).slice(0, 4).join(', '), tone: 'warning' });
   if (extras.readyToDispatchOrders > 0) attentionItems.push({ icon: <Truck className="size-4" />, title: `${extras.readyToDispatchOrders} order${extras.readyToDispatchOrders === 1 ? '' : 's'} produced and waiting to be dispatched`, detail: 'Sitting in Planner Dispatch right now.', tone: 'neutral' });
   if (extras.outstandingAdvances > 0) attentionItems.push({ icon: <Users className="size-4" />, title: `${formatCurrency(extras.outstandingAdvances)} in staff salary advances not yet cleared`, detail: 'Across all employees — see Staff & Payroll.', tone: 'neutral' });
+  if (extras.openComplaints.length > 0) attentionItems.push({ icon: <AlertTriangle className="size-4" />, title: `${extras.openComplaints.length} open complaint${extras.openComplaints.length === 1 ? '' : 's'} from branch admins`, detail: extras.openComplaints.slice(0, 3).map(c => `${c.branch}: ${c.subject}`).join(' · '), tone: extras.openComplaints.some(c => /high|urgent/i.test(c.priority)) ? 'danger' : 'warning' });
+  if (extras.varianceTodayShort > 0) attentionItems.push({ icon: <AlertTriangle className="size-4" />, title: `${extras.varianceTodayShort} stock item${extras.varianceTodayShort === 1 ? '' : 's'} short on today's physical count`, detail: `${extras.varianceTodayCount} variance line${extras.varianceTodayCount === 1 ? '' : 's'} recorded today in total — see Stock Variance.`, tone: 'warning' });
   extras.recentNotifications.slice(0, 5).forEach(n => attentionItems.push({ icon: <Bell className="size-4" />, title: n.title || n.type, detail: `${n.body ? n.body + ' — ' : ''}${ownerFmtDateTime(n.createdAt)}`, tone: 'neutral' }));
 
   // Android app: fire a local notification the moment a genuinely NEW
@@ -2743,6 +2798,30 @@ function OwnerEverythingTab() {
 
   return (
     <div className="owner-tab-stack">
+      {native && (
+        <section className="owner-hero-card">
+          <div className="owner-hero-top">
+            <div>
+              <p className="owner-hero-greeting">{ownerGreeting()}, {heroUser?.displayName || heroUser?.username || 'Owner'}</p>
+              <span className="owner-hero-date">{ownerLongDate()}</span>
+            </div>
+            <span className={cn('owner-hero-status', attentionItems.some(a => a.tone === 'danger') ? 'is-danger' : attentionItems.length ? 'is-warning' : 'is-clear')}>
+              {attentionItems.some(a => a.tone === 'danger') ? <span className="owner-hero-status-dot" /> : null}
+              {attentionItems.length === 0 ? 'All clear' : `${attentionItems.length} to review`}
+            </span>
+          </div>
+          <div className="owner-hero-figures">
+            <div className="owner-hero-figure">
+              <span>Net Sales Today</span>
+              <strong>{formatCurrency(totals.netSales)}</strong>
+            </div>
+            <div className="owner-hero-figure secondary">
+              <span>Cash Position</span>
+              <strong className={netCashPosition < 0 ? 'is-negative' : ''}>{formatCurrency(netCashPosition)}</strong>
+            </div>
+          </div>
+        </section>
+      )}
       <OwnerToolbar>
         <span className="text-xs font-bold text-muted-foreground">Everything as of right now — {ownerFmtDateTime(new Date().toISOString())}</span>
         <button type="button" onClick={() => { void loadExtras(); void ownerLedger.refresh(); void loadPOs(); }} disabled={extrasLoading} className="ml-auto inline-flex items-center gap-1.5 disabled:opacity-60">
@@ -2807,6 +2886,37 @@ function OwnerEverythingTab() {
         </div>
         <p className="mt-2 text-[11px] font-semibold text-muted-foreground">{extras.leftoverActiveItems} item{extras.leftoverActiveItems === 1 ? '' : 's'} currently sitting in Closing Stock, ready to dispatch without new production.</p>
       </section>
+
+      <section>
+        <h3 className="mb-2 text-sm font-black text-foreground">Compliance &amp; Risk</h3>
+        <div className="owner-metric-grid">
+          <OwnerMetricCard
+            icon={<Trash2 className="size-5" />}
+            label="Waste Logged Today"
+            value={extras.wasteEntriesToday}
+            tone={extras.wasteEntriesToday > 0 ? 'amber' : 'green'}
+            sub="Kitchen + branch waste log"
+            onClick={() => goToTab('waste')}
+          />
+          <OwnerMetricCard
+            icon={<AlertTriangle className="size-5" />}
+            label="Open Complaints"
+            value={extras.openComplaints.length}
+            tone={extras.openComplaints.length > 0 ? 'red' : 'green'}
+            sub={extras.openComplaints.length > 0 ? extras.openComplaints.slice(0, 2).map(c => c.branch).join(', ') : 'None open'}
+            onClick={() => goToTab('complaints')}
+          />
+          <OwnerMetricCard
+            icon={<Scale className="size-5" />}
+            label="Stock Variance Today"
+            value={extras.varianceTodayCount}
+            tone={extras.varianceTodayShort > 0 ? 'red' : extras.varianceTodayCount > 0 ? 'amber' : 'green'}
+            sub={extras.varianceTodayShort > 0 ? `${extras.varianceTodayShort} short` : 'Nothing short'}
+            onClick={() => goToTab('variance')}
+          />
+        </div>
+        <p className="mt-2 text-[11px] font-semibold text-muted-foreground">Tap a card to jump straight to that tab.</p>
+      </section>
     </div>
   );
 }
@@ -2848,9 +2958,20 @@ export default function OwnerDashboard() {
   // token once per session. A complete no-op on the web build — see
   // src/lib/nativeNotifications.ts.
   const currentUser = useAuthStore(s => s.currentUser);
+  const logout = useAuthStore(s => s.logout);
   useEffect(() => {
     void initNativeNotifications(currentUser?.displayName || currentUser?.username || null);
   }, [currentUser]);
+
+  // Native app (2026-08-07): App.tsx skips WorkspaceChrome/Header/BottomNav
+  // entirely for the native build, since a dedicated single-purpose Owner
+  // app has no use for the desktop multi-app sidebar — so this page renders
+  // its own compact top bar + horizontal tab strip below instead. The `tabs`
+  // array already existed (label/icon/hint per section) but used to be dead
+  // code once WorkspaceChrome's own sidebar took over web navigation; it's
+  // now the single source of truth for both.
+  const native = isNativeApp();
+  const [profileOpen, setProfileOpen] = useState(false);
 
   const tabs: Array<{ id: OwnerDashboardTab; label: string; icon: React.ReactNode; hint: string }> = [
     { id: 'everything', label: 'Everything',         icon: <Layers        className="size-4" />, hint: 'Your full business, one screen' },
@@ -2868,8 +2989,8 @@ export default function OwnerDashboard() {
     { id: 'audit',      label: 'Audit Logs',          icon: <ShieldCheck   className="size-4" />, hint: 'Sensitive action history' },
   ];
 
-  return (
-    <main className="owner-dashboard-body px-4 py-5 sm:px-6 xl:px-8">
+  const content = (
+    <>
       {tab === 'everything' && <OwnerEverythingTab />}
       {tab === 'branches'   && <BranchOverviewTab />}
       {tab === 'sales'      && <SalesOverviewTab />}
@@ -2883,6 +3004,59 @@ export default function OwnerDashboard() {
       {tab === 'waste'      && <WasteLogsTab />}
       {tab === 'complaints' && <OwnerComplaintsTab />}
       {tab === 'audit'      && <OwnerAuditTab />}
-    </main>
+    </>
+  );
+
+  if (!native) {
+    return <main className="owner-dashboard-body px-4 py-5 sm:px-6 xl:px-8">{content}</main>;
+  }
+
+  const activeTab = tabs.find(t => t.id === tab) ?? tabs[0];
+
+  return (
+    <div className="owner-native-shell">
+      <header className="owner-native-topbar">
+        <div className="owner-native-brand">
+          <span className="owner-native-mark">CA</span>
+          <div>
+            <strong>Cafe Aadvikam</strong>
+            <span>Owner · {activeTab.label}</span>
+          </div>
+        </div>
+        <div className="owner-native-profile-wrap">
+          <button type="button" className="owner-native-avatar" onClick={() => setProfileOpen(v => !v)} aria-label="Account">
+            <UserCircle2 className="size-6" />
+          </button>
+          {profileOpen && (
+            <>
+              <button type="button" className="owner-native-profile-scrim" aria-label="Close" onClick={() => setProfileOpen(false)} />
+              <div className="owner-native-profile-card">
+                <p className="name">{currentUser?.displayName || currentUser?.username || 'Owner'}</p>
+                <p className="role">Owner access</p>
+                <button type="button" className="owner-native-logout" onClick={() => { setProfileOpen(false); logout(); }}>
+                  <LogOut className="size-4" /> Log out
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      </header>
+
+      <nav className="owner-native-tabstrip" aria-label="Owner sections">
+        {tabs.map(t => (
+          <button
+            key={t.id}
+            type="button"
+            onClick={() => selectTab(t.id)}
+            className={cn('owner-native-tabchip', tab === t.id && 'is-active')}
+          >
+            {t.icon}
+            <span>{t.label}</span>
+          </button>
+        ))}
+      </nav>
+
+      <main className="owner-native-body workspace-redesign">{content}</main>
+    </div>
   );
 }

@@ -670,7 +670,7 @@ function printAdvanceSalesSlip(order: Order, mobile: string, orderDate: string, 
     ${receiptItemTable(order)}
     ${receiptTotals(order, fullAmount, `
       ${kvRow(['', 'Tender Amount', advance.toFixed(2)])}
-      ${kvRow(['', 'Change Due', balance.toFixed(2)])}
+      ${kvRow(['', 'Balance Due', balance.toFixed(2)])}
     `)}
     <div>Paid via ${safeHtml(PAYMENT_LABELS_PRINT[order.advancePaidBy || ''] || order.advancePaidBy || '-')}</div>
     <div>Advances from Sales Order: ${moneyHtml(advance)}</div>
@@ -1013,14 +1013,18 @@ interface CustomLineItem { id: string; name: string; price: number; qty: number;
 
 function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void; advanceOrders: Order[] }) {
   const { items, loadMenu } = useMenuStore();
+  // BUG FIX (audit): bound to the dedicated `advanceCart` slice instead of
+  // the shared `cart` NewBillPanel uses for its dine-in/takeaway drafts —
+  // see the `advanceCart` field comment in orderStore.ts for why sharing one
+  // cart between these two permanently-mounted panels was unsafe.
   const { cart, addToCart, updateCartQuantity, clearCart, getCartTotal, getCartCount, submitAdvanceOrder } = useOrderStore(
     useShallow(s => ({
-      cart: s.cart,
-      addToCart: s.addToCart,
-      updateCartQuantity: s.updateCartQuantity,
-      clearCart: s.clearCart,
-      getCartTotal: s.getCartTotal,
-      getCartCount: s.getCartCount,
+      cart: s.advanceCart,
+      addToCart: s.addToAdvanceCart,
+      updateCartQuantity: s.updateAdvanceCartQuantity,
+      clearCart: s.clearAdvanceCart,
+      getCartTotal: s.getAdvanceCartTotal,
+      getCartCount: s.getAdvanceCartCount,
       submitAdvanceOrder: s.submitAdvanceOrder,
     }))
   );
@@ -1081,6 +1085,12 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
     const q = parseInt(customQty) || 1;
     if (!n) { setCustomError('Enter item name'); return; }
     if (isNaN(p) || p <= 0) { setCustomError('Enter a valid price'); return; }
+    // BUG FIX (audit): the qty field is `<input type="number" min="1">`, but
+    // `min` is only a browser hint — this runs from a plain button onClick,
+    // not a form submit, so nothing ever enforced it. Typing a negative
+    // quantity directly (e.g. -5) created a custom line that subtracted from
+    // the bill total instead of adding to it.
+    if (isNaN(q) || q <= 0) { setCustomError('Enter a valid quantity'); return; }
     setCustomError('');
     setCustomItems(prev => {
       const existing = prev.find(c => c.name.toLowerCase() === n.toLowerCase());
@@ -1149,7 +1159,11 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
       setCustomItems([]); setCustomName(''); setCustomPrice(''); setCustomQty('1');
       setTimeout(() => { setShowSuccess(false); onCreated(); }, 1800);
     } catch (err) {
-      clearCart();
+      // BUG FIX (audit): submitAdvanceOrder's own catch already restores the
+      // cart from its pre-submit snapshot when the insert fails, precisely
+      // so a transient error doesn't discard the custom items just added
+      // above — this was overriding that restoration and wiping the cart
+      // anyway, forcing the biller to re-enter everything.
       setAdvanceError(err instanceof Error ? err.message : 'Failed to submit order - please try again.');
     } finally {
       setSubmitting(false);
@@ -2263,6 +2277,12 @@ function NewBillPanel() {
     const q = parseInt(customQty) || 1;
     if (!n) { setCustomError('Enter item name'); return; }
     if (isNaN(p) || p <= 0) { setCustomError('Enter a valid price'); return; }
+    // BUG FIX (audit): the qty field is `<input type="number" min="1">`, but
+    // `min` is only a browser hint — this runs from a plain button onClick,
+    // not a form submit, so nothing ever enforced it. Typing a negative
+    // quantity directly (e.g. -5) created a custom line that subtracted from
+    // the bill total instead of adding to it.
+    if (isNaN(q) || q <= 0) { setCustomError('Enter a valid quantity'); return; }
     setCustomError('');
     setCustomItems(prev => {
       const existing = prev.find(c => c.name.toLowerCase() === n.toLowerCase());
@@ -2576,9 +2596,23 @@ function NewBillPanel() {
         setCustomItems([]); setCustomName(''); setCustomPrice(''); setCustomQty('1');
         setCreditCustomerPhone(''); setCreditDueDate('');
         setPaymentMode('regular');
+        // BUG FIX (audit): every other successful-checkout path resets these
+        // three so the next bill's modal doesn't reopen pre-filled with a
+        // stale value from a prior transaction — this credit-sale-with-no-
+        // running-order path was the one place that got missed, so a "Cash
+        // Tendered 500" left over from an earlier cash bill could silently
+        // carry into the very next cash bill after a credit sale in between.
+        setCashTendered(''); setBillMethod('cash'); setSplitPayment({ cash: '', upi: '', card: '' });
         setTimeout(() => setShowSuccess(false), 2200);
       } catch (err) {
-        clearCart();
+        // BUG FIX (audit): unlike this, the wallet and regular/promotion
+        // checkout catch blocks deliberately do NOT clear the cart on
+        // failure — orderStore's submitOrder/submitAdvanceOrder already
+        // restore the cart from a snapshot when the insert fails, precisely
+        // so a transient error doesn't discard everything the biller typed.
+        // This path was overriding that safety net and wiping the cart
+        // anyway, forcing a full manual re-entry (e.g. a whole dine-in
+        // table) after a simple network blip.
         setSubmitError(err instanceof Error ? err.message : 'Failed to record credit sale.');
       } finally {
         setSubmitting(false);
