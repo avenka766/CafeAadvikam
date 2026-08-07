@@ -2418,7 +2418,7 @@ function ReportsTab({ orders }: { orders: BakeryOrder[] }) {
       doc.text(title, marginX, y); y += 14;
       const totalWidth = colWidths.reduce((a, b) => a + b, 0);
       const drawHeader = () => {
-        doc.setFillColor(238); doc.setDrawColor(220);
+        doc.setFillColor(238, 238, 238); doc.setDrawColor(220);
         doc.rect(marginX, y - 10, totalWidth, 16, 'F');
         doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(40);
         let x = marginX;
@@ -3887,7 +3887,7 @@ function BranchFlatDispatchPanel({ branch, rows, orders, leftoverBalances, onDis
       <div className="sticky bottom-2 z-10 flex justify-center pt-2">
         <button
           onClick={openReview}
-          disabled={sending || selectedCount === 0}
+          disabled={selectedCount === 0}
           className="flex items-center gap-2 rounded-2xl bg-foreground px-5 py-3 text-sm font-black text-white shadow-xl disabled:opacity-50"
         >
           <Truck className="size-4" /> Dispatch {selectedCount} selected item{selectedCount === 1 ? '' : 's'} to {branch}
@@ -4392,8 +4392,8 @@ function PlannedDispatchPanel({ rows, orders, onDispatch, dispatchedBy }: {
                   className="w-24 rounded-lg border border-border bg-background px-2 py-1.5 text-right text-xs font-bold"
                 />
                 <span className="text-[11px] font-bold text-muted-foreground">{row.unit} · {qtyFmt(remainingPlanned)} owed</span>
-                <button onClick={() => dispatchRow(row)} disabled={busy === row.itemName} className="flex items-center gap-1.5 rounded-xl cafe-gradient px-3 py-2 text-xs font-bold text-white shadow-teal disabled:opacity-50">
-                  {busy === row.itemName ? <Loader2 className="size-3.5 animate-spin" /> : <Truck className="size-3.5" />} Dispatch to {branch}
+                <button onClick={() => buildReview(row)} className="flex items-center gap-1.5 rounded-xl cafe-gradient px-3 py-2 text-xs font-bold text-white shadow-teal disabled:opacity-50">
+                  <Truck className="size-3.5" /> Dispatch to {branch}
                 </button>
               </div>
             </div>
@@ -4766,7 +4766,7 @@ export interface PendingDispatchAction {
   orderId: string;
   itemName: string;
   quantity: number;
-  unit: string;
+  unit: 'pcs' | 'kg';
   dispatchEntryId: string;
   targetHosurOrderId?: string;
   isExtra?: boolean;
