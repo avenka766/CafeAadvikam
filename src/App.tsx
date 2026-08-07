@@ -10,6 +10,7 @@ import OfflineBanner from '@/components/layout/OfflineBanner';
 import DataHealthBanner from '@/components/layout/DataHealthBanner';
 import WorkspaceChrome from '@/components/layout/WorkspaceChrome';
 import { getRoleDefaultPath } from '@/lib/routing';
+import { isNativeApp } from '@/lib/platform';
 import { useMenuStore } from '@/stores/menuStore';
 import Landing from '@/pages/Landing';
 import Login from '@/pages/Login';
@@ -80,6 +81,7 @@ function AppRoutes() {
   const publicRoutes = ['/', '/login', '/menu', '/digital-menu', '/order', '/order/track', '/cafe-order', '/cafe-order/track'];
   const isPublicRoute = publicRoutes.includes(location.pathname);
   const { currentUser } = useAuthStore();
+  const native = isNativeApp();
   const [hydrated, setHydrated] = useState(
     () => useAuthStore.persist.hasHydrated()
   );
@@ -156,13 +158,27 @@ function AppRoutes() {
     </Suspense>
   );
 
+  // Owner Android app (2026-08-07): this build is single-purpose (Owner
+  // only, appId com.cafeaadvikam.owner) — the public marketing Landing page
+  // and the multi-app WorkspaceChrome sidebar (built for switching between
+  // Cafe billing, Planner, Store, Admin, etc. on a desktop) don't belong in
+  // it. Not logged in → straight to the login screen, no Landing detour.
+  // Logged in → OwnerDashboard renders its own dedicated native top bar and
+  // tab strip (see OwnerDashboard.tsx), so Header/WorkspaceChrome/BottomNav
+  // are skipped entirely rather than stacking a second, desktop-oriented
+  // layer of navigation on top. None of this touches the web build, which
+  // keeps its existing Header/WorkspaceChrome/BottomNav exactly as before.
+  if (native && !currentUser && location.pathname === '/') {
+    return <Navigate to="/login" replace />;
+  }
+
   return (
     <>
-      {!isLandingRoute && <Header />}
-      {currentUser && !isPublicRoute ? (
+      {!native && !isLandingRoute && <Header />}
+      {!native && currentUser && !isPublicRoute ? (
         <WorkspaceChrome>{routes}</WorkspaceChrome>
       ) : routes}
-      {currentUser && <BottomNav />}
+      {!native && currentUser && <BottomNav />}
     </>
   );
 }

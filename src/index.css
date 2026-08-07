@@ -2938,6 +2938,122 @@
     color: #fff;
   }
 
+  /* Native app home-screen hero (2026-08-07) — a personal-briefing header
+     for the Everything tab: greeting, date, today's headline number in
+     gradient type, and a status chip that summarizes whether anything
+     needs the owner's attention, all before they scroll to the metric
+     grid below. Desktop never renders this (native-only, see OwnerDashboard.tsx). */
+  .workspace-redesign .owner-hero-card {
+    position: relative;
+    overflow: hidden;
+    border-radius: 1.5rem;
+    padding: 1.15rem 1.25rem 1.3rem;
+    background:
+      radial-gradient(circle at 100% 0%, rgba(212,147,47,.35), transparent 60%),
+      linear-gradient(135deg, var(--owner-green), var(--owner-green-dark));
+    box-shadow: 0 20px 46px rgba(13,58,48,.30), inset 0 1px 0 rgba(255,255,255,.14);
+    color: #fff;
+    animation: ownerFadeSlideUp .5s ease both;
+  }
+  .workspace-redesign .owner-hero-top {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: .75rem;
+  }
+  .workspace-redesign .owner-hero-greeting {
+    margin: 0;
+    font-size: 1.05rem;
+    font-weight: 900;
+    letter-spacing: -.01em;
+  }
+  .workspace-redesign .owner-hero-date {
+    display: block;
+    margin-top: .15rem;
+    font-size: .74rem;
+    font-weight: 700;
+    color: rgba(255,255,255,.72);
+  }
+  .workspace-redesign .owner-hero-status {
+    display: inline-flex;
+    align-items: center;
+    gap: .35rem;
+    flex-shrink: 0;
+    padding: .35rem .65rem;
+    border-radius: 999px;
+    font-size: .68rem;
+    font-weight: 900;
+    text-transform: uppercase;
+    letter-spacing: .03em;
+    background: rgba(255,255,255,.16);
+    border: 1px solid rgba(255,255,255,.22);
+  }
+  .workspace-redesign .owner-hero-status.is-clear { color: #d7f5e6; }
+  .workspace-redesign .owner-hero-status.is-warning { color: #ffe8b8; }
+  .workspace-redesign .owner-hero-status.is-danger { color: #ffd6d6; background: rgba(220,38,38,.28); border-color: rgba(255,255,255,.3); }
+  .workspace-redesign .owner-hero-status-dot {
+    width: .4rem;
+    height: .4rem;
+    border-radius: 999px;
+    background: #fff;
+    animation: ownerPulseDot 1.6s ease-in-out infinite;
+  }
+  .workspace-redesign .owner-hero-figures {
+    display: flex;
+    align-items: flex-end;
+    gap: 1.5rem;
+    margin-top: 1.1rem;
+  }
+  .workspace-redesign .owner-hero-figure span {
+    display: block;
+    font-size: .68rem;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    color: rgba(255,255,255,.68);
+  }
+  .workspace-redesign .owner-hero-figure strong {
+    display: block;
+    margin-top: .2rem;
+    font-size: clamp(1.7rem, 6vw, 2.35rem);
+    font-weight: 950;
+    letter-spacing: -.03em;
+    line-height: 1;
+    background: linear-gradient(120deg, #fff, #fff4da 60%, #ffd77a);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  .workspace-redesign .owner-hero-figure.secondary strong {
+    font-size: clamp(1.1rem, 4vw, 1.4rem);
+    background: none;
+    -webkit-background-clip: unset;
+    color: #fff;
+  }
+  .workspace-redesign .owner-hero-figure.secondary strong.is-negative { color: #ffb4b4; }
+
+  @keyframes ownerFadeSlideUp {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes ownerPulseDot {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: .45; transform: scale(1.35); }
+  }
+  /* Staggered entrance for the metric/business/alert cards right under the
+     hero — small, cheap, and makes the home screen feel considered rather
+     than a plain data dump. Runs once on mount; no perf cost afterward. */
+  .workspace-redesign .owner-metric-card,
+  .workspace-redesign .owner-business-card,
+  .workspace-redesign .owner-alert-card {
+    animation: ownerFadeSlideUp .45s ease both;
+  }
+  .workspace-redesign .owner-metric-grid > *:nth-child(1) { animation-delay: .03s; }
+  .workspace-redesign .owner-metric-grid > *:nth-child(2) { animation-delay: .08s; }
+  .workspace-redesign .owner-metric-grid > *:nth-child(3) { animation-delay: .13s; }
+  .workspace-redesign .owner-metric-grid > *:nth-child(4) { animation-delay: .18s; }
+  .workspace-redesign .owner-metric-grid > *:nth-child(5) { animation-delay: .23s; }
+
   .workspace-redesign .owner-search {
     min-height: 2.65rem;
     min-width: min(20rem, 100%);
@@ -3016,6 +3132,20 @@
   .workspace-redesign .owner-metric-card.tone-amber .owner-metric-icon { background: rgba(245,158,11,.13); color: #b45309; }
   .workspace-redesign .owner-metric-card.tone-red .owner-metric-icon { background: rgba(220,38,38,.10); color: #b91c1c; }
   .workspace-redesign .owner-metric-card.tone-purple .owner-metric-icon { background: rgba(124,58,237,.10); color: #7c3aed; }
+  button.owner-metric-card {
+    width: 100%;
+    text-align: left;
+    font-family: inherit;
+    cursor: pointer;
+    transition: transform .12s ease, box-shadow .12s ease;
+  }
+  .workspace-redesign .owner-metric-card-clickable:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 20px 52px rgba(48,29,8,.10), inset 0 1px 0 rgba(255,255,255,.82);
+  }
+  .workspace-redesign .owner-metric-card-clickable:active {
+    transform: translateY(0);
+  }
 
   .workspace-redesign .owner-business-grid {
     display: grid;
@@ -3672,4 +3802,166 @@
   .order-receiver-workspace .gap-4 {
     gap: .65rem !important;
   }
+}
+
+/* ==========================================================================
+   Owner Android app — dedicated native shell (2026-08-07)
+   Only ever rendered when running inside the Capacitor native build (see
+   isNativeApp() in OwnerDashboard.tsx) — App.tsx skips Header/WorkspaceChrome/
+   BottomNav entirely for that build, so this is the Owner's *entire* app
+   frame: a slim branded top bar, a horizontal section tab strip standing in
+   for WorkspaceChrome's desktop sidebar, and the same premium
+   ".workspace-redesign .owner-*" card system already used on the web
+   dashboard for the actual content (re-activated below by putting the
+   `workspace-redesign` class on .owner-native-body).
+   ========================================================================== */
+.owner-native-shell {
+  --owner-native-ink: #1c1208;
+  --owner-native-green: #126d52;
+  --owner-native-green-dark: #0a3a30;
+  --owner-native-gold: #d4932f;
+  --owner-native-soft: #fff7ea;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  background:
+    radial-gradient(circle at top left, rgba(18,109,82,.14), transparent 30rem),
+    radial-gradient(circle at 90% 0%, rgba(212,147,47,.16), transparent 24rem),
+    linear-gradient(160deg, #fffaf2, #fbf1e2 55%, #f7ebd9);
+}
+
+.owner-native-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .75rem;
+  padding: calc(env(safe-area-inset-top, 0px) + .85rem) 1.1rem .85rem;
+  background:
+    linear-gradient(135deg, rgba(17,95,73,.99), rgba(9,54,44,.99)),
+    radial-gradient(circle at top right, rgba(255,194,92,.32), transparent 18rem);
+  box-shadow: 0 14px 34px rgba(13,58,48,.28);
+  border-bottom: 1px solid rgba(212,147,47,.55);
+}
+
+.owner-native-brand { display: flex; align-items: center; gap: .65rem; min-width: 0; }
+.owner-native-mark {
+  display: grid;
+  place-items: center;
+  width: 2.3rem;
+  height: 2.3rem;
+  border-radius: .85rem;
+  background: linear-gradient(150deg, var(--owner-native-gold), #b9781f);
+  color: #241305;
+  font-weight: 900;
+  font-size: .8rem;
+  letter-spacing: .02em;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.5), 0 4px 10px rgba(0,0,0,.18);
+  flex-shrink: 0;
+}
+.owner-native-brand strong { display: block; color: #fff; font-size: .95rem; font-weight: 900; letter-spacing: -.01em; }
+.owner-native-brand span { display: block; color: rgba(255,255,255,.72); font-size: .68rem; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+
+.owner-native-profile-wrap { position: relative; flex-shrink: 0; }
+.owner-native-avatar {
+  display: grid;
+  place-items: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 999px;
+  background: rgba(255,255,255,.14);
+  color: #fff;
+  border: 1px solid rgba(255,255,255,.22);
+  transition: transform .1s ease, background .1s ease;
+}
+.owner-native-avatar:active { background: rgba(255,255,255,.24); transform: scale(.93); }
+
+.owner-native-profile-scrim { position: fixed; inset: 0; z-index: 30; background: transparent; border: 0; padding: 0; }
+.owner-native-profile-card {
+  position: absolute;
+  right: 0;
+  top: calc(100% + .55rem);
+  z-index: 31;
+  min-width: 12rem;
+  border-radius: 1.1rem;
+  background: #fff;
+  border: 1px solid var(--owner-native-gold, rgba(116,76,31,.14));
+  border-color: rgba(116,76,31,.16);
+  box-shadow: 0 20px 50px rgba(30,18,4,.22);
+  padding: .85rem .9rem .6rem;
+}
+.owner-native-profile-card .name { font-size: .85rem; font-weight: 900; color: var(--owner-native-ink); }
+.owner-native-profile-card .role { margin-top: .1rem; font-size: .68rem; font-weight: 700; color: rgba(28,18,8,.55); text-transform: uppercase; letter-spacing: .03em; }
+.owner-native-logout {
+  margin-top: .65rem;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: .4rem;
+  padding: .55rem .5rem;
+  border-radius: .75rem;
+  border-top: 1px solid rgba(116,76,31,.14);
+  border-left: 0; border-right: 0; border-bottom: 0;
+  background: transparent;
+  color: #b91c1c;
+  font-size: .78rem;
+  font-weight: 800;
+}
+.owner-native-logout:active { background: rgba(185,28,28,.08); }
+
+.owner-native-tabstrip {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  gap: .5rem;
+  overflow-x: auto;
+  padding: .7rem .9rem;
+  background: rgba(255,250,242,.92);
+  backdrop-filter: blur(6px);
+  border-bottom: 1px solid rgba(116,76,31,.12);
+  scrollbar-width: none;
+}
+.owner-native-tabstrip::-webkit-scrollbar { display: none; }
+
+.owner-native-tabchip {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: .4rem;
+  padding: .5rem .85rem;
+  border-radius: 999px;
+  border: 1px solid rgba(116,76,31,.16);
+  background: #fff;
+  color: rgba(28,18,8,.65);
+  font-size: .76rem;
+  font-weight: 800;
+  white-space: nowrap;
+  transition: transform .1s ease, box-shadow .1s ease;
+}
+.owner-native-tabchip:active { transform: scale(.96); }
+.owner-native-tabchip svg { width: 1rem; height: 1rem; }
+.owner-native-tabchip.is-active {
+  background: linear-gradient(135deg, var(--owner-native-green), var(--owner-native-green-dark));
+  border-color: transparent;
+  color: #fff;
+  box-shadow: 0 8px 18px rgba(18,109,82,.30);
+}
+
+.owner-native-body {
+  flex: 1;
+  min-width: 0;
+  padding: 1rem 1rem calc(env(safe-area-inset-bottom, 0px) + 1.75rem);
+}
+
+/* Z Flip 5 cover-screen / very narrow width safety net — the app is built
+   to run on the main unfolded display, but if it's ever opened while
+   folded, keep the top bar and tab chips usable instead of overflowing. */
+@media (max-width: 360px) {
+  .owner-native-topbar { padding-left: .8rem; padding-right: .8rem; }
+  .owner-native-brand span { display: none; }
+  .owner-native-body { padding-left: .7rem; padding-right: .7rem; }
 }
