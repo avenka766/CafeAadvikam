@@ -49,6 +49,18 @@ const kolkataDateKey = (iso: string) =>
 const kolkataDateLabel = (iso: string) =>
   new Intl.DateTimeFormat('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short' }).format(new Date(iso));
 
+// BUG FIX (2026-08-07): Planner's "Send to Store" (mergeOrdersForStore) sets
+// status straight to 'store_confirmed' — it never passes through 'accepted'.
+// The Orders tab used to filter on status === 'accepted' only, so every
+// order Planner merged and sent skipped Orders entirely and landed only in
+// History, even the moment it was sent. Store staff had no "new, needs my
+// attention" view for same-day sends. Fix: an order sent to Store TODAY
+// (Kolkata calendar day) still counts as a fresh "Order"; it only rolls into
+// History once the day it was sent has passed (or it moves further along to
+// produced/dispatched).
+const wasSentToStoreToday = (o: BakeryOrder) =>
+  !!o.storeConfirmedAt && kolkataDateKey(o.storeConfirmedAt) === kolkataDateKey(new Date().toISOString());
+
 type StoreDashboardTab = 'orders' | 'history' | 'inventory' | 'suppliers' | 'purchaseOrders' | 'invoices' | 'analytics' | 'custom' | 'closure' | 'report';
 const STORE_TABS: StoreDashboardTab[] = ['orders', 'history', 'inventory', 'suppliers', 'purchaseOrders', 'invoices', 'analytics', 'custom', 'closure', 'report'];
 const CORE_RECIPE_CATEGORIES: ProductionCategory[] = ['Sweets', 'Savouries', 'Bakery', 'Cookies', 'Others'];
@@ -1276,7 +1288,7 @@ function OrdersTab() {
     return () => { unsubOrders(); unsubStock(); unsubBakeryItems(); };
   }, [fetchOrders, loadStock, loadAllItems, subscribeOrders, subscribeStock, subscribeBakeryItems]);
 
-  const pending = orders.filter(o => o.status === 'accepted');
+  const pending = orders.filter(o => o.status === 'accepted' || (o.status === 'store_confirmed' && wasSentToStoreToday(o)));
 
   const handleMergeAll = async () => {
     if (pending.length < 2 || merging) return;
@@ -1463,7 +1475,12 @@ function StoreHistoryTab() {
     return () => unsubOrders();
   }, [fetchOrders, subscribeOrders]);
 
-  const historyOrders = orders.filter(o => ['store_confirmed', 'produced', 'dispatched'].includes(o.status));
+  // Mirror of OrdersTab's `pending` split: an order sent to Store today stays
+  // visible in Orders as "new"; it only falls back here once that day has
+  // passed (or once production/dispatch has moved it further along anyway).
+  const historyOrders = orders.filter(o =>
+    o.status === 'produced' || o.status === 'dispatched' ||
+    (o.status === 'store_confirmed' && !wasSentToStoreToday(o)));
 
   if (initialLoading) return <div className="flex justify-center py-16"><Loader2 className="size-6 animate-spin text-muted-foreground" /></div>;
 
@@ -2160,8 +2177,13 @@ export default function StoreDashboard() {
 
   const requestedTab = searchParams.get('tab') as StoreDashboardTab | null;
   const tab: StoreDashboardTab = requestedTab && STORE_TABS.includes(requestedTab) ? requestedTab : 'orders';
-  const pending = orders.filter(o => o.status === 'accepted');
-  const sentOrders = orders.filter(o => ['store_confirmed','produced','dispatched'].includes(o.status));
+  // Kept in sync with OrdersTab/StoreHistoryTab's own filters (see
+  // wasSentToStoreToday above) so the header counters and tab badges never
+  // disagree with what each tab actually shows.
+  const pending = orders.filter(o => o.status === 'accepted' || (o.status === 'store_confirmed' && wasSentToStoreToday(o)));
+  const sentOrders = orders.filter(o =>
+    o.status === 'produced' || o.status === 'dispatched' ||
+    (o.status === 'store_confirmed' && !wasSentToStoreToday(o)));
   const uniqueStockItems = useMemo(() => {
     const byName = new Map<string, typeof stockItems[number]>();
     stockItems.forEach((item) => {
@@ -2175,8 +2197,8 @@ export default function StoreDashboard() {
   const poPendingCount = purchaseOrders.filter(po => po.status === 'pending_approval').length;
   const poApprovedCount = purchaseOrders.filter(po => po.status === 'approved').length;
   const tabs = [
-    { id: 'orders',    label: 'Orders',             description: 'Handled by Planner',  icon: Package,     badge: null, badgeColor: 'bg-amber-500' },
-    { id: 'history',   label: 'Sent by Planner',    description: 'Ready to confirm stock', icon: History,     badge: sentOrders.length > 0 ? String(sentOrders.length) : null, badgeColor: 'bg-emerald-500' },
+    { id: 'orders',    label: 'Orders',             description: 'Pending + sent today', icon: Package,     badge: pending.length > 0 ? String(pending.length) : null, badgeColor: 'bg-amber-500' },
+    { id: 'history',   label: 'Sent by Planner',    description: 'Past orders & follow-up', icon: History,     badge: sentOrders.length > 0 ? String(sentOrders.length) : null, badgeColor: 'bg-emerald-500' },
     { id: 'inventory', label: 'Inventory',          description: 'Raw stock control',  icon: Warehouse,   badge: lowStock.length > 0 ? String(lowStock.length) : null, badgeColor: 'bg-red-500' },
     { id: 'suppliers', label: 'Suppliers',          description: 'Vendor directory',   icon: Truck,       badge: suppliers.length > 0 ? String(suppliers.length) : null, badgeColor: 'bg-primary' },
     { id: 'purchaseOrders', label: 'Purchase Order', description: 'Raise & track Owner approval', icon: ClipboardList, badge: poPendingCount > 0 ? String(poPendingCount) : poApprovedCount > 0 ? String(poApprovedCount) : null, badgeColor: poPendingCount > 0 ? 'bg-amber-500' : 'bg-emerald-500' },

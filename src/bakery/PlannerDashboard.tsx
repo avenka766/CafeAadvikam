@@ -578,21 +578,17 @@ function DayGroupedOrderList({ orders, badgeLabel, badgeTone }: { orders: Bakery
 
 // ─── Tab: Sent ──────────────────────────────────────────────────────────────
 function SentOrdersTab({ orders }: { orders: BakeryOrder[] }) {
-  // Group sent orders by the calendar day they were sent, newest first.
-  const dayGroups = useMemo(() => {
-    const map = new Map<string, { label: string; orders: BakeryOrder[] }>();
-    for (const order of orders) {
-      const d = new Date(order.createdAt);
-      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-      const label = d.toLocaleDateString('en-IN', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' });
-      if (!map.has(key)) map.set(key, { label, orders: [] });
-      map.get(key)!.orders.push(order);
-    }
-    return Array.from(map.entries()).map(([key, v]) => ({ key, ...v })).sort((a, b) => b.key.localeCompare(a.key));
-  }, [orders]);
+  // Group sent orders by the calendar day they were actually SENT to Store
+  // (storeConfirmedAt), not the day the underlying order was originally
+  // created — same primitive used by Production Entry/Dispatch (see
+  // groupOrdersByStoreDate above). A merged order can combine a branch
+  // request raised yesterday with one raised today; what matters for "Sent"
+  // is the single day the merge was sent to Store, so it must not get split
+  // across two date headers.
+  const dayGroups = useMemo(() => groupOrdersByStoreDate(orders), [orders]);
 
   const [openKey, setOpenKey] = useState<string>('');
-  const activeKey = openKey || dayGroups[0]?.key || '';
+  const activeKey = openKey || dayGroups[0]?.dateKey || '';
 
   return (
     <div className="space-y-4">
@@ -601,12 +597,12 @@ function SentOrdersTab({ orders }: { orders: BakeryOrder[] }) {
         <div className="space-y-3">
           {dayGroups.map(group => (
             <SentDayGroup
-              key={group.key}
-              dayKey={group.key}
+              key={group.dateKey}
+              dayKey={group.dateKey}
               label={group.label}
               orders={group.orders}
-              open={activeKey === group.key}
-              onToggle={() => setOpenKey(activeKey === group.key ? 'none' : group.key)}
+              open={activeKey === group.dateKey}
+              onToggle={() => setOpenKey(activeKey === group.dateKey ? 'none' : group.dateKey)}
             />
           ))}
         </div>
