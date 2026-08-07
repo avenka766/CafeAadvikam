@@ -3593,6 +3593,9 @@ function HosurShopDispatchPanel({ rows, mode, orders, leftoverBalances, onDispat
                     </div>
                   );
                 })}
+                {mode === 'completed' && (
+                  <RecentDispatchInvoices scope="Hosur" hosurShopId={card.shopId ?? undefined} title={`${card.shopName} Invoices`} />
+                )}
                 {(extraItemsByCard[card.orderId] ?? []).map((extra, idx) => (
                   <div key={`extra-${idx}-${extra.itemName}`} className="flex items-center justify-between gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-1.5">
                     <span className="text-xs font-bold text-foreground">{extra.itemName} <span className="text-muted-foreground">({qtyFmt(extra.quantity)} {extra.unit} · extra item)</span></span>
@@ -3964,6 +3967,65 @@ function DispatchTab({ orders, allOrders }: { orders: BakeryOrder[]; allOrders: 
   );
 }
 
+// FEATURE (2026-08-08): "we are unable to take the print the bills again if
+// we need the bills again there is no option to print the bill again" — the
+// Dispatched sub-tab showed items/shop cards but never linked back to the
+// dispatch_invoices row(s) created when they were sent, so once the modal's
+// own success screen was closed there was no way back to that invoice short
+// of hunting through the separate Invoice tab. This pulls the branch's (or
+// one Hosur shop's) recent invoices straight into the Dispatched view with
+// one-tap thermal/A4 reprint, as many times as needed.
+function RecentDispatchInvoices({ scope, hosurShopId, title }: { scope: Branch; hosurShopId?: string; title?: string }) {
+  const [invoices, setInvoices] = useState<DispatchInvoiceRecord[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const to = new Date(); to.setDate(to.getDate() + 1);
+      const from = new Date(); from.setDate(from.getDate() - 90);
+      const records = await listDispatchInvoices({ fromDate: from.toISOString(), toDate: to.toISOString(), scope });
+      setInvoices(hosurShopId ? records.filter(r => r.hosurShopId === hosurShopId) : records);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not load recent invoices.');
+      setInvoices([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [scope, hosurShopId]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  if (loading && invoices === null) return <p className="text-[11px] font-bold text-muted-foreground">Loading recent invoices…</p>;
+  if (error) return <p className="text-[11px] font-bold text-red-700">{error}</p>;
+  if (!invoices || invoices.length === 0) return null;
+
+  return (
+    <div className="rounded-2xl border border-border bg-white p-3">
+      <div className="flex items-center justify-between">
+        <p className="text-xs font-black text-foreground">{title ?? 'Recent Invoices'} <span className="font-bold text-muted-foreground">— reprint any time</span></p>
+        <button onClick={load} className="flex items-center gap-1 text-[10px] font-bold text-teal-700 hover:underline"><RefreshCw className="size-3" /> Refresh</button>
+      </div>
+      <div className="mt-2 max-h-64 space-y-1.5 overflow-auto pr-1">
+        {invoices.map(inv => (
+          <div key={inv.id} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border/70 px-2.5 py-1.5">
+            <div className="min-w-0">
+              <p className="truncate text-[11px] font-black text-foreground">{inv.invoiceNo}{inv.hosurShopName ? ` — ${inv.hosurShopName}` : ''}</p>
+              <p className="text-[10px] font-bold text-muted-foreground">{new Date(inv.createdAt).toLocaleString('en-IN')} · Rs. {inv.total.toFixed(2)}</p>
+            </div>
+            <div className="flex gap-1.5">
+              <button onClick={() => printDispatchInvoice(inv, 'thermal')} className="flex items-center gap-1 rounded-lg bg-muted px-2 py-1 text-[10px] font-bold text-muted-foreground hover:bg-slate-200"><Printer className="size-3" /> Thermal</button>
+              <button onClick={() => printDispatchInvoice(inv, 'a4')} className="flex items-center gap-1 rounded-lg bg-muted px-2 py-1 text-[10px] font-bold text-muted-foreground hover:bg-slate-200"><Printer className="size-3" /> A4</button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function DispatchDateGroup({ label, orders, search, defaultOpen }: {
   dateKey: string; label: string; orders: BakeryOrder[]; allOrders: BakeryOrder[]; search: string; defaultOpen: boolean;
 }) {
@@ -4099,6 +4161,14 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
         <button onClick={() => setSubTab('completed')} className={cn('rounded-xl px-3 py-1.5 text-xs font-bold', subTab === 'completed' ? 'bg-foreground text-white' : 'bg-muted text-muted-foreground')}>Dispatched ({completedRows.length})</button>
         <button onClick={() => setSubTab('planned')} className={cn('rounded-xl px-3 py-1.5 text-xs font-bold', subTab === 'planned' ? 'cafe-gradient text-white shadow-teal' : 'bg-primary/10 text-primary')}>Planned ({plannedRows.length})</button>
       </div>
+
+      {/* Reprint access for anything already sent — only relevant once a
+          specific branch is picked (scope) and only on the Dispatched tab.
+          The Hosur "By Shop" view gets its own per-shop version further
+          down; this covers VRSNB/SNB and Hosur's "By Item" view. */}
+      {subTab === 'completed' && branchFilter !== 'All' && !(branchFilter === 'Hosur' && hosurView === 'shop') && (
+        <RecentDispatchInvoices scope={branchFilter} title={`${branchFilter} Invoices`} />
+      )}
 
       {subTab === 'planned' ? (
         <PlannedDispatchPanel rows={plannedRows} orders={orders} onDispatch={submitDispatch} dispatchedBy={currentUser?.displayName || 'Planner'} />
