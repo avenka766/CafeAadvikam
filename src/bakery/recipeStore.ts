@@ -151,8 +151,21 @@ export const useRecipeStore = create<RecipeState>((set, get) => ({
     const recipeKey = resolveRecipeKey(get().recipes, itemId, itemName);
     const recipe = recipeKey ? get().recipes[recipeKey] ?? null : null;
     if (!recipe || !recipe.outputQty || quantity <= 0) return [];
-    const seedOutputUnit = recipeKey ? RECIPE_DEFINITIONS[recipeKey]?.outputUnit : undefined;
-    const pieceCompatible = unit === 'pcs' && (recipe.outputUnit === 'loaf' || seedOutputUnit === null);
+    // BUG FIX (audit): this used to also allow pcs-orders through whenever
+    // the SEED definition (RECIPE_DEFINITIONS, frozen at authoring time) had
+    // no outputUnit — but the live, DB-edited recipe.outputUnit is what
+    // actually matters. A recipe seeded with no unit and later edited in
+    // Recipe Management to 'kg' would still slip through here as
+    // "pieceCompatible", silently computing materials at the wrong scale
+    // (treating a piece-count as if it were the same number of kg) for an
+    // order in pcs — while StoreDashboard's own recipeIssueForItem check
+    // (which reads the live recipe, not the seed) correctly flags this exact
+    // case as "packet weight is missing" and tells the user stock won't be
+    // deducted. The two disagreed. Only 'loaf' output units are genuinely
+    // piece-compatible by definition; a live-null outputUnit already passes
+    // through the check below on its own (the `recipe.outputUnit &&` short-
+    // circuits), so dropping the seed-based fallback doesn't lose anything.
+    const pieceCompatible = unit === 'pcs' && recipe.outputUnit === 'loaf';
     if (recipe.outputUnit && recipe.outputUnit !== unit && !pieceCompatible) return [];
     const scaleFactor = quantity / recipe.outputQty;
     return recipe.materials.map((material) => ({

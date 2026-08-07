@@ -207,7 +207,16 @@ export default function PackingDailyClosureTab({ onCounterStatusChange }: { onCo
   }, [dayDispatches]);
 
   const leftoverRows = useMemo(() => orders.flatMap(order => {
-    if (!['partially_packed','packed','dispatched'].includes(order.status)) return [];
+    // BUG FIX (2026-08-07 re-audit): 'partially_packed'/'packed' are not
+    // valid WorkflowStatus values (see types.ts — only pending/accepted/
+    // store_confirmed/produced/dispatched exist), so this filter only ever
+    // matched 'dispatched' orders in practice. A fully 'dispatched' order by
+    // definition has nothing left undispatched (submitDispatch only sets
+    // that status once every prepared item is fully sent), so this whole
+    // "Leftover / Undispatched" panel was silently showing ~empty even when
+    // real leftover existed on 'produced' (partially-dispatched) orders —
+    // exactly the status that should have been included here.
+    if (!['produced', 'dispatched'].includes(order.status)) return [];
     return (order.preparedItems ?? []).flatMap(prepared => {
       const source = order.items.find(item => item.itemId === prepared.itemId || item.itemName === prepared.itemName);
       const dispatches = (order.dispatchLog ?? []).filter(entry => entry.itemName === prepared.itemName);

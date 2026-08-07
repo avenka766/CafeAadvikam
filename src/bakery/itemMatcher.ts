@@ -130,6 +130,39 @@ export function canonicalItemSlug(name: string): string {
     .join('-');
 }
 
+// Same weight-pattern-only parenthetical stripping computeMergedSummaryDisplay
+// already uses — see its comment for the reasoning. Exported here so it's the
+// one place any *pooled quantity* (not just display) matching lives, instead
+// of being duplicated.
+const WEIGHT_PAREN = /\(\s*\d+(?:\.\d+)?\s*(?:g|gm|gms|kg|ml|l)\s*\)/gi;
+
+/**
+ * BUG FIX (2026-08-07): the Closing Stock leftover pool used
+ * canonicalItemSlug() for matching a dispatched/produced item to its pooled
+ * balance — but canonicalItemSlug() strips ANY parenthetical content
+ * (nameToSlug's `\([^)]*\)`), not just weight/pack-size qualifiers. That's
+ * correct for recipe-key matching (a recipe generally doesn't care about
+ * pack size), but it's wrong for the leftover pool: "Egg Puff (Full Egg)",
+ * "Egg Puff (Half)", and plain "Egg Puff" are three different physical
+ * items (different recipes, different prices) that all collapsed to the
+ * same "egg-puff" slug and were silently sharing ONE Closing Stock balance
+ * — dispatching one drew down stock that was actually meant to represent a
+ * different item, corrupting the balance shown for both. Only a genuine
+ * weight/size qualifier like "(200g)" should be ignored; anything else in
+ * parentheses is part of the item's real identity and must stay in the key.
+ */
+export function closingStockItemSlug(name: string): string {
+  const withoutWeight = name.replace(WEIGHT_PAREN, '');
+  return withoutWeight
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .split('-')
+    .filter(Boolean)
+    .map(canonicalToken)
+    .join('-');
+}
+
 export function itemNamesMatch(left: string, right: string): boolean {
   const leftSlug = canonicalItemSlug(left);
   return Boolean(leftSlug) && leftSlug === canonicalItemSlug(right);

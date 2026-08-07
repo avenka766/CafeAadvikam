@@ -20,7 +20,7 @@ import { cn } from '@/lib/utils';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/stores/authStore';
 import { useBranchCatalogStore } from '@/stores/branchCatalogStore';
-import { canonicalItemSlug } from './itemMatcher';
+import { canonicalItemSlug, closingStockItemSlug } from './itemMatcher';
 import { BRANCHES } from './types';
 import type { Branch } from './types';
 
@@ -130,7 +130,13 @@ export async function recordLeftoverMovement(params: {
   orderNumber?: number | null;
   notes?: string | null;
 }): Promise<{ newBalance: number } | { error: string }> {
-  const slug = canonicalItemSlug(params.itemName);
+  // BUG FIX (2026-08-07): the pooled Closing Stock balance is keyed by this
+  // slug — canonicalItemSlug() strips ANY parenthetical, which was silently
+  // merging genuinely different items (e.g. "Egg Puff (Full Egg)" and "Egg
+  // Puff (Half)") into one shared balance. closingStockItemSlug() only
+  // strips a real weight/pack-size qualifier like "(200g)". See its comment
+  // in itemMatcher.ts for the full story.
+  const slug = closingStockItemSlug(params.itemName);
   if (!slug) return { error: 'Enter an item name.' };
   const { data, error } = await supabase.rpc('record_leftover_movement', {
     p_item_slug: slug,
@@ -682,7 +688,7 @@ export default function PlannerLeftoverTab() {
         <div className="max-h-80 overflow-y-auto">
           <table className="min-w-full text-sm">
             <thead className="sticky top-0 bg-muted/50 text-[10px] font-black uppercase tracking-wide text-muted-foreground">
-              <tr><th className="px-4 py-2.5 text-left">Time</th><th className="px-4 py-2.5 text-left">Item</th><th className="px-4 py-2.5 text-right">Qty</th><th className="px-4 py-2.5 text-left">Type</th><th className="px-4 py-2.5 text-left">Branch / Order</th><th className="px-4 py-2.5 text-left">By</th></tr>
+              <tr><th className="px-4 py-2.5 text-left">Time</th><th className="px-4 py-2.5 text-left">Item</th><th className="px-4 py-2.5 text-right">Qty</th><th className="px-4 py-2.5 text-left">Type</th><th className="px-4 py-2.5 text-left">Branch / Order / Shop</th><th className="px-4 py-2.5 text-left">By</th></tr>
             </thead>
             <tbody className="divide-y">
               {reportMovements.length ? reportMovements.map((row) => (
@@ -691,7 +697,7 @@ export default function PlannerLeftoverTab() {
                   <td className="px-4 py-2 font-bold">{row.itemName}</td>
                   <td className={cn('px-4 py-2 text-right font-black', row.delta > 0 ? 'text-teal-700' : 'text-red-700')}>{row.delta > 0 ? '+' : ''}{qtyFmt(row.delta)} {row.unit}</td>
                   <td className="px-4 py-2 text-xs">{reasonLabel(row.reason)}</td>
-                  <td className="px-4 py-2 text-xs text-muted-foreground">{[row.branch, row.orderNumber ? `#${row.orderNumber}` : null].filter(Boolean).join(' · ') || '-'}</td>
+                  <td className="px-4 py-2 text-xs text-muted-foreground">{[row.branch, row.orderNumber ? `#${row.orderNumber}` : null, row.notes].filter(Boolean).join(' · ') || '-'}</td>
                   <td className="px-4 py-2 text-xs text-muted-foreground">{row.recordedBy}</td>
                 </tr>
               )) : <tr><td colSpan={6} className="px-4 py-10 text-center text-muted-foreground">No movements on this date.</td></tr>}

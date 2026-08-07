@@ -31,7 +31,7 @@ import HosurDashboard from '@/pages/HosurDashboard';
 import HosurShopOrderPanel, { leftoverReasonLabel } from './HosurShopOrderPanel';
 import PackingCakeOrdersTab from './PackingCakeOrdersTab';
 import PlannerLeftoverTab, { useLeftoverBalanceMap, recordLeftoverMovement, kolkataToday, qtyFmt, type LeftoverUnit } from './PlannerLeftoverTab';
-import { canonicalItemSlug, parseWeightGrams, pcsToKg, resolveItemWeightGrams } from './itemMatcher';
+import { canonicalItemSlug, closingStockItemSlug, parseWeightGrams, pcsToKg, resolveItemWeightGrams } from './itemMatcher';
 import { useBranchCatalogStore } from '@/stores/branchCatalogStore';
 import { supabase } from '@/lib/supabase';
 
@@ -1738,6 +1738,23 @@ function ReportsTab({ orders }: { orders: BakeryOrder[] }) {
     })();
     return () => { cancelled = true; };
   }, [dateFrom, dateTo, reportsCutoff]);
+  // FEATURE (2026-08-07): "Sometimes the planner will dispatch additional
+  // items from the requested items... This should show as in report" —
+  // extra/non-requested dispatches (DispatchEntry.isExtra) live inside each
+  // order's own dispatch_log and were never part of computeProductionRows
+  // (which is built purely from ordered items), so they'd otherwise be
+  // completely invisible to this report. Pulled directly from ordersInRange
+  // so the date-range picker and Start Fresh cutoff above apply here too.
+  const extraDispatchRows = useMemo(() => ordersInRange.flatMap(o =>
+    (o.dispatchLog || [])
+      .filter(d => d.isExtra)
+      .map(d => ({
+        itemName: d.itemName, quantity: d.quantity, unit: d.unit || 'kg',
+        branch: d.branch, dispatchedAt: d.dispatchedAt, dispatchedBy: d.dispatchedBy,
+        orderNumber: o.orderNumber,
+      })),
+  ).sort((a, b) => b.dispatchedAt.localeCompare(a.dispatchedAt)), [ordersInRange]);
+
   const hosurLeftoverAvailable = useMemo(() => hosurLeftovers.filter(l => l.status === 'available'), [hosurLeftovers]);
   const hosurLeftoverResolved = useMemo(() => hosurLeftovers.filter(l => l.status === 'resolved'), [hosurLeftovers]);
   const hosurShortfallCount = useMemo(() => hosurLeftovers.filter(l => l.reason === 'dispatch_shortfall').length, [hosurLeftovers]);
@@ -1779,6 +1796,11 @@ function ReportsTab({ orders }: { orders: BakeryOrder[] }) {
       Requested: r.requested, Produced: r.produced, Dispatched: r.dispatched,
       'Production Variance %': r.prodVariancePct, 'Dispatch Variance %': r.dispatchVariancePct, Status: r.status,
     })), 'Production & Dispatch', 'No data');
+    addSheet(extraDispatchRows.map(r => ({
+      Item: r.itemName, Quantity: r.quantity, Unit: r.unit, Branch: r.branch,
+      'Order #': r.orderNumber, 'Dispatched By': r.dispatchedBy,
+      Date: new Date(r.dispatchedAt).toLocaleString('en-IN'),
+    })), 'Extra Non-Requested Items', 'No extra/non-requested dispatches in this range');
     addSheet(hosurLeftovers.map(l => ({
       Item: l.itemName, Unit: l.unit, Quantity: l.quantity, 'Unit Price': l.unitPrice,
       Shop: l.sourceShopName || '', Reason: leftoverReasonLabel(l.reason),
@@ -2071,6 +2093,31 @@ function ReportsTab({ orders }: { orders: BakeryOrder[] }) {
                   <p className="text-[11px] font-bold text-muted-foreground">{new Date(o.createdAt).toLocaleString('en-IN')} · {o.items.length} item{o.items.length === 1 ? '' : 's'}</p>
                 </div>
                 <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-black text-muted-foreground">{o.status.replace('_', ' ')}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Extra / Non-Requested Items Dispatched — items the planner sent to a
+          branch/shop beyond (or outside of) what was originally ordered, sent
+          via the "Dispatch an extra item" form on Dispatch/Hosur panels. */}
+      <div className="overflow-hidden rounded-2xl border border-amber-200 bg-white shadow-sm">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-amber-200 bg-amber-50 px-4 py-3">
+          <p className="text-sm font-black text-foreground">Extra / Non-Requested Items Dispatched</p>
+          <span className="rounded-full bg-amber-100 px-2 py-1 text-[10px] font-black text-amber-800">{extraDispatchRows.length} sent</span>
+        </div>
+        {extraDispatchRows.length === 0 ? <div className="p-4"><EmptyState text="No extra/non-requested items dispatched in this range." /></div> : (
+          <div className="max-h-96 divide-y divide-border overflow-y-auto">
+            {extraDispatchRows.map((r, i) => (
+              <div key={i} className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5">
+                <div className="min-w-0">
+                  <p className="text-xs font-black text-foreground">{r.itemName} — {qtyFmt(r.quantity)} {r.unit}</p>
+                  <p className="text-[11px] font-bold text-muted-foreground">
+                    {r.branch} · Order #{r.orderNumber} · {r.dispatchedBy} · {new Date(r.dispatchedAt).toLocaleString('en-IN')}
+                  </p>
+                </div>
+                <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-black text-amber-800">Extra</span>
               </div>
             ))}
           </div>
@@ -2584,6 +2631,104 @@ function useHosurShopOrders(rows: ProductionRow[], orders: BakeryOrder[]) {
   return { shopOrders, reload: () => setReloadTick(t => t + 1) };
 }
 
+// FEATURE (2026-08-07): "Sometimes the planner will dispatch additional
+// items from the requested items" — a shared, reusable mini-form for sending
+// an item a branch/shop did NOT request (or more of an item than was ever
+// requested). Every send through here is tagged isExtra=true on the
+// DispatchEntry, which:
+//   - shows up in the Closing Stock Movement Log/Daily Report tagged
+//     "EXTRA (non-requested item)" (see submitDispatch's extraNote), and
+//   - is exported in the Dispatch Excel report's own Type column (see
+//     DispatchTab's exportRows / dispatch log export below).
+// Deliberately bypasses the "remaining = requested − dispatched" capping
+// every normal dispatch line uses — there IS no requested quantity for an
+// item that was never ordered, so the planner's typed quantity is sent as-is
+// (still requires it to be a real positive number).
+function ExtraItemDispatchForm({ branch, anchorOrderId, targetHosurOrderId, onDispatch, dispatchedBy, onDone, contextLabel }: {
+  branch: Branch;
+  anchorOrderId: string | null;
+  targetHosurOrderId?: string;
+  onDispatch: ReturnType<typeof useBakeryStore.getState>['submitDispatch'];
+  dispatchedBy: string;
+  onDone: () => void;
+  contextLabel: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState('');
+  const [qty, setQty] = useState('');
+  const [unit, setUnit] = useState<'kg' | 'pcs'>('kg');
+  const [sending, setSending] = useState(false);
+  const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
+
+  const send = async () => {
+    const trimmedName = name.trim();
+    const amount = Number(qty);
+    if (!trimmedName || !qty || amount <= 0) return;
+    if (!anchorOrderId) {
+      setResult({ ok: false, message: `No active order for ${contextLabel} to attach this extra dispatch to.` });
+      return;
+    }
+    setSending(true); setResult(null);
+    try {
+      await onDispatch(anchorOrderId, {
+        id: crypto.randomUUID(),
+        itemName: trimmedName,
+        quantity: amount,
+        unit,
+        branch,
+        dispatchedBy,
+        dispatchedAt: new Date().toISOString(),
+        ...(targetHosurOrderId ? { targetHosurOrderId } : {}),
+        isExtra: true,
+      });
+      setResult({ ok: true, message: `Sent extra "${trimmedName}" (${amount} ${unit}) — tagged as non-requested in the report and Closing Stock.` });
+      setName(''); setQty('');
+      onDone();
+    } catch (err) {
+      setResult({ ok: false, message: err instanceof Error ? err.message : 'Failed to send extra item.' });
+    } finally {
+      setSending(false);
+    }
+  };
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-dashed border-amber-300 bg-amber-50 px-3 py-2 text-[11px] font-black text-amber-800 hover:bg-amber-100"
+      >
+        <Plus className="size-3.5" /> Dispatch an extra / non-requested item to {contextLabel}
+      </button>
+    );
+  }
+
+  return (
+    <div className="rounded-xl border border-amber-300 bg-amber-50 p-3">
+      <div className="mb-2 flex items-center justify-between">
+        <span className="text-[11px] font-black uppercase tracking-wide text-amber-800">Extra item — not requested by {contextLabel}</span>
+        <button type="button" onClick={() => { setOpen(false); setResult(null); }} className="text-[11px] font-bold text-amber-700 hover:underline">Close</button>
+      </div>
+      <div className="grid gap-2 sm:grid-cols-[1fr_auto_auto_auto]">
+        <input value={name} onChange={e => setName(e.target.value)} placeholder="Item name" className="rounded-lg border border-amber-300 bg-white px-2.5 py-1.5 text-xs font-bold" />
+        <input value={qty} onChange={e => setQty(e.target.value)} type="number" min={0} placeholder="Qty" className="w-20 rounded-lg border border-amber-300 bg-white px-2.5 py-1.5 text-xs font-bold" />
+        <select value={unit} onChange={e => setUnit(e.target.value as 'kg' | 'pcs')} className="rounded-lg border border-amber-300 bg-white px-2 py-1.5 text-xs font-bold">
+          <option value="kg">kg</option>
+          <option value="pcs">pcs</option>
+        </select>
+        <button
+          onClick={() => void send()}
+          disabled={sending || !name.trim() || !qty || Number(qty) <= 0}
+          className="flex items-center justify-center gap-1.5 rounded-lg bg-amber-700 px-3 py-1.5 text-xs font-black text-white hover:bg-amber-800 disabled:opacity-50"
+        >
+          {sending ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />} Send
+        </button>
+      </div>
+      {result && <p className={cn('mt-1.5 text-[11px] font-bold', result.ok ? 'text-teal-700' : 'text-red-700')}>{result.message}</p>}
+    </div>
+  );
+}
+
 // The real "select a shop, edit its order, remove an item, send the whole
 // shop's order in one go" workflow — replaces the old read-only By-Shop
 // breakdown. Quantities default to what's actually available to send right
@@ -2606,7 +2751,7 @@ function HosurShopDispatchPanel({ rows, orders, leftoverBalances, onDispatch, di
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
   const { getId, reset: resetDispatchIds } = useStableDispatchIds();
 
-  const availableFor = (itemName: string) => Math.max(0, leftoverBalances.get(canonicalItemSlug(itemName))?.balance ?? 0);
+  const availableFor = (itemName: string) => Math.max(0, leftoverBalances.get(closingStockItemSlug(itemName))?.balance ?? 0);
 
   const openCard = (card: HosurShopOrderCard) => {
     setSelectedOrderId(card.orderId);
@@ -2618,6 +2763,16 @@ function HosurShopDispatchPanel({ rows, orders, leftoverBalances, onDispatch, di
     }
     setQtyDraft(draft);
     setResult(null);
+    // BUG FIX (2026-08-07): force a fresh fetch of this shop's dispatched
+    // totals the moment its card opens, not just after a send succeeds.
+    // Live evidence: the same item got sent to the same shop 2-3 times in a
+    // row within seconds of each other, pushing dispatched_quantity well
+    // past what was ever requested (e.g. 30 sent against 10 ordered) —
+    // consistent with the card being reopened before the previous send's
+    // reload had landed, still suggesting the full original amount instead
+    // of 0. This narrows that staleness window; the hard per-item cap in
+    // sendCard below is what actually makes over-dispatch impossible.
+    reload();
   };
   const cancel = () => { setSelectedOrderId(null); setQtyDraft({}); setResult(null); };
   const removeItem = (itemName: string) => setQtyDraft(v => ({ ...v, [itemName]: '0' }));
@@ -2628,8 +2783,21 @@ function HosurShopDispatchPanel({ rows, orders, leftoverBalances, onDispatch, di
     try {
       let sentAny = false;
       let skippedNoLink = false;
+      let clampedAny = false;
       for (const item of card.items) {
-        const qty = Number(qtyDraft[item.itemName] || 0);
+        // CRITICAL BUG FIX (2026-08-07): this used to send whatever was
+        // typed in the box, with no ceiling — if the card's "already
+        // dispatched" figure was even slightly stale (or the planner just
+        // retyped the full ordered amount without checking), the same item
+        // could be sent to the same shop repeatedly, well past what that
+        // shop ever ordered. Hard-cap every send to this item's true
+        // remaining balance (requested − already dispatched, from the
+        // freshest card data available) — dispatching more than a shop
+        // ordered should never be possible from this screen.
+        const remaining = Math.max(0, Math.round((item.requested - item.dispatched) * 100) / 100);
+        const typed = Number(qtyDraft[item.itemName] || 0);
+        const qty = Math.min(typed, remaining);
+        if (typed > remaining + 0.01) clampedAny = true;
         if (qty <= 0.001) continue;
         const row = rowsByName.get(item.itemName);
         if (!row) { skippedNoLink = true; continue; }
@@ -2663,11 +2831,18 @@ function HosurShopDispatchPanel({ rows, orders, leftoverBalances, onDispatch, di
           ok: false,
           message: skippedNoLink
             ? "Couldn't send — one or more items couldn't be linked back to this shop's order. Refresh the page and try again; if it keeps happening, this order's data may need attention."
-            : 'Nothing to send — every item is set to 0.',
+            : clampedAny
+              ? "Nothing to send — every item here is already fully dispatched to this shop."
+              : 'Nothing to send — every item is set to 0.',
         });
         return;
       }
-      setResult({ ok: true, message: `Sent ${card.shopName}'s order to Hosur dispatch.` });
+      setResult({
+        ok: true,
+        message: clampedAny
+          ? `Sent ${card.shopName}'s order — capped one or more items at what this shop actually still owed (some had already been sent).`
+          : `Sent ${card.shopName}'s order to Hosur dispatch.`,
+      });
       resetDispatchIds();
       setSelectedOrderId(null);
       setQtyDraft({});
@@ -2713,23 +2888,50 @@ function HosurShopDispatchPanel({ rows, orders, leftoverBalances, onDispatch, di
                   const available = availableFor(item.itemName);
                   const val = qtyDraft[item.itemName] ?? '0';
                   const done = remaining <= 0.01;
+                  // BUG FIX (2026-08-07): once an item has nothing left owed
+                  // to this shop, its quantity field is locked instead of
+                  // staying open for another entry — this is what actually
+                  // stops the "already fully sent" item from being re-sent
+                  // a second or third time, whatever the stale-suggestion
+                  // cause was. sendCard's own hard cap is the backstop; this
+                  // is the visible, can't-even-try-it front line.
                   return (
                     <div key={item.itemName} className={cn('rounded-lg px-3 py-1.5', done ? 'bg-teal-50' : 'bg-muted/40')}>
                       <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-bold">
                         <span>{item.itemName} <span className="text-muted-foreground">(ordered {qtyFmt(item.requested)} {item.unit} · sent {qtyFmt(item.dispatched)} {item.unit})</span></span>
-                        <div className="flex items-center gap-1.5">
-                          <input
-                            type="number" min={0} value={val}
-                            onChange={e => setQtyDraft(v => ({ ...v, [item.itemName]: e.target.value }))}
-                            className="w-20 rounded-lg border border-border bg-background px-2 py-1 text-right"
-                          />
-                          <button onClick={() => removeItem(item.itemName)} className="rounded-lg border border-border px-2 py-1 text-[10px] font-black text-muted-foreground hover:bg-muted" title="Not sending this item — set to 0">Remove</button>
-                        </div>
+                        {done ? (
+                          <span className="flex items-center gap-1 rounded-full bg-teal-100 px-2.5 py-1 text-[10px] font-black text-teal-700">
+                            <PackageCheck className="size-3.5" /> Fully sent
+                          </span>
+                        ) : (
+                          <div className="flex items-center gap-1.5">
+                            <input
+                              type="number" min={0} max={remaining} value={val}
+                              onChange={e => setQtyDraft(v => ({ ...v, [item.itemName]: e.target.value }))}
+                              className="w-20 rounded-lg border border-border bg-background px-2 py-1 text-right"
+                            />
+                            <button onClick={() => removeItem(item.itemName)} className="rounded-lg border border-border px-2 py-1 text-[10px] font-black text-muted-foreground hover:bg-muted" title="Not sending this item — set to 0">Remove</button>
+                          </div>
+                        )}
                       </div>
-                      <p className="mt-0.5 text-[10px] font-bold text-muted-foreground">{qtyFmt(available)} {item.unit} available now (produced + leftover){Number(val) > available + 0.01 ? ' — you\'re sending more than what\'s currently available, double-check before sending.' : ''}</p>
+                      {!done && (
+                        <p className="mt-0.5 text-[10px] font-bold text-muted-foreground">
+                          {qtyFmt(Math.min(remaining, available))} {item.unit} available to send now (capped at {qtyFmt(remaining)} {item.unit} still owed)
+                          {Number(val) > remaining + 0.01 ? " — this will be capped at what's still owed when you send." : ''}
+                        </p>
+                      )}
                     </div>
                   );
                 })}
+                <ExtraItemDispatchForm
+                  branch="Hosur"
+                  anchorOrderId={orders.find(o => o.targetBranch === 'Hosur' && bakeryOrderCoversHosurShopOrder(o, card.orderId))?.id ?? null}
+                  targetHosurOrderId={card.orderId}
+                  onDispatch={onDispatch}
+                  dispatchedBy={dispatchedBy}
+                  onDone={() => { reload(); onDone(); }}
+                  contextLabel={card.shopName}
+                />
                 <div className="flex flex-wrap justify-end gap-2 pt-1">
                   <button onClick={cancel} className="rounded-xl border border-border px-3 py-2 text-xs font-bold text-muted-foreground hover:bg-muted">Cancel</button>
                   <button onClick={() => sendCard(card)} disabled={sending} className="flex items-center gap-1.5 rounded-xl bg-teal-600 px-3 py-2 text-xs font-bold text-white hover:bg-teal-700 disabled:opacity-50">
@@ -2755,36 +2957,54 @@ function HosurShopDispatchPanel({ rows, orders, leftoverBalances, onDispatch, di
 // hasn't received), a "Remove" button to drop one item from this batch, and
 // a single button that dispatches everything left with a quantity > 0 in
 // one action. No per-item modal, no separate checkbox-then-bulk-modal step.
-function BranchFlatDispatchPanel({ branch, rows, orders, leftoverBalances, onDispatch, dispatchedBy, onDone }: {
+function BranchFlatDispatchPanel({ branch, rows, orders, leftoverBalances, onDispatch, dispatchedBy, onDone, search = '' }: {
   branch: Branch; rows: ProductionRow[]; orders: BakeryOrder[];
   leftoverBalances: Map<string, { itemName: string; unit: LeftoverUnit; balance: number }>;
   onDispatch: ReturnType<typeof useBakeryStore.getState>['submitDispatch']; dispatchedBy: string;
   onDone: () => void;
+  // BUG FIX (2026-08-07): `rows` must be the branch's full active list,
+  // untouched by the item search box — search only narrows what's
+  // *displayed* below (via this prop), never what quantity/selection state
+  // is tracked for. Previously the caller passed the already search-filtered
+  // list straight in, so every keystroke shrank `lines`, which changed
+  // `seedKey`, which wiped every quantity you'd just typed and every
+  // checkbox you'd just ticked for items outside the current search text.
+  search?: string;
 }) {
   const lines = useMemo(() => rows.map(row => {
     const requested = row.perBranch[branch] ?? 0;
     const alreadySent = branchDispatchedForRow(row, branch, orders);
     const remaining = Math.max(0, Math.round((requested - alreadySent) * 100) / 100);
-    const leftoverBalance = Math.max(0, leftoverBalances.get(canonicalItemSlug(row.itemName))?.balance ?? 0);
+    const leftoverBalance = Math.max(0, leftoverBalances.get(closingStockItemSlug(row.itemName))?.balance ?? 0);
     const available = Math.max(row.preparedTotal, leftoverBalance);
     const defaultQty = Math.round(Math.min(remaining, available) * 100) / 100;
     return { row, requested, alreadySent, remaining, available, defaultQty };
   }), [rows, branch, orders, leftoverBalances]);
 
   const [qty, setQty] = useState<Record<string, string>>({});
-  // Explicit checkbox selection — every item starts checked (matching the
-  // previous "everything with a quantity goes" default), but the planner can
-  // untick any item and it's excluded from Dispatch regardless of its
-  // quantity field. Re-seeded alongside the quantity drafts below so a newly
-  // appeared item is selected by default too.
+  // BUG FIX (2026-08-07): used to default every item to checked. Planner
+  // asked for nothing pre-selected — you tick only what you actually mean
+  // to send, so a moment's inattention can't blast out items you never
+  // meant to dispatch.
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  // Tracks which quantity fields the planner has hand-edited, so the reseed
+  // effect below only ever fills in a *fresh* default for an item it's
+  // never touched — it will never overwrite a value you typed, no matter
+  // how many times the search box (or available stock) changes afterward.
+  const touchedRef = useRef<Set<string>>(new Set());
   // Re-seed drafts whenever the actual set of default quantities changes
-  // (date group opened, an item's available stock changed, etc.) — but not
-  // on every render, so an in-progress hand edit is never clobbered.
+  // (date group opened, an item's available stock changed, etc.) — merges
+  // into existing state rather than replacing it, so this is safe to run
+  // on every lines change without clobbering anything already entered.
   const seedKey = lines.map(l => `${l.row.itemName}:${l.defaultQty}`).join('|');
   useEffect(() => {
-    setQty(Object.fromEntries(lines.map(l => [l.row.itemName, String(l.defaultQty)])));
-    setSelected(new Set(lines.map(l => l.row.itemName)));
+    setQty(prev => {
+      const next = { ...prev };
+      for (const l of lines) {
+        if (!touchedRef.current.has(l.row.itemName)) next[l.row.itemName] = String(l.defaultQty);
+      }
+      return next;
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [seedKey]);
 
@@ -2799,14 +3019,26 @@ function BranchFlatDispatchPanel({ branch, rows, orders, leftoverBalances, onDis
     return next;
   });
   const selectedCount = lines.filter(l => selected.has(l.row.itemName) && qtyFor(l.row.itemName) > 0.001).length;
+  // Search narrows what's rendered only — `lines` (and therefore qty/
+  // selection state) always covers the branch's full active set.
+  const visibleLines = search.trim()
+    ? lines.filter(l => l.row.itemName.toLowerCase().includes(search.trim().toLowerCase()))
+    : lines;
 
   const dispatchAll = async () => {
     setSending(true); setResult(null);
     let sentAny = false;
+    let clampedAny = false;
     try {
-      for (const { row } of lines) {
+      for (const { row, remaining } of lines) {
         if (!selected.has(row.itemName)) continue;
-        const q = qtyFor(row.itemName);
+        // CRITICAL BUG FIX (2026-08-07): hard-cap at what this branch
+        // actually still has coming (see the matching fix + explanation in
+        // HosurShopDispatchPanel.sendCard) — a typed or stale-suggested
+        // quantity larger than `remaining` used to go out in full.
+        const typed = qtyFor(row.itemName);
+        const q = Math.min(typed, remaining);
+        if (typed > remaining + 0.01) clampedAny = true;
         if (q <= 0.001) continue;
         const entries = orders.filter(o => o.targetBranch === branch && row.contributingOrderIds.includes(o.id));
         if (entries.length === 0) continue;
@@ -2827,7 +3059,12 @@ function BranchFlatDispatchPanel({ branch, rows, orders, leftoverBalances, onDis
         setResult({ ok: false, message: 'Nothing to send — check the items you want and make sure their quantity is above 0.' });
         return;
       }
-      setResult({ ok: true, message: `Sent to ${branch}.` });
+      setResult({
+        ok: true,
+        message: clampedAny
+          ? `Sent to ${branch} — capped one or more items at what's still owed (some had already been sent).`
+          : `Sent to ${branch}.`,
+      });
       resetDispatchIds();
       onDone();
     } catch (err) {
@@ -2837,9 +3074,22 @@ function BranchFlatDispatchPanel({ branch, rows, orders, leftoverBalances, onDis
     }
   };
 
-  if (lines.length === 0) return <EmptyState text="Nothing waiting on dispatch." />;
+  // Anchor order for the "extra / non-requested item" form below — any
+  // active order already targeting this branch works, since a DispatchEntry
+  // is keyed by its own itemName/quantity, not by which order's row it lives
+  // in (see ExtraItemDispatchForm's comment for why this is safe).
+  const anchorOrderId = orders.find(o => o.targetBranch === branch)?.id ?? null;
 
-  const allSelected = lines.every(l => selected.has(l.row.itemName));
+  if (lines.length === 0) {
+    return (
+      <div className="space-y-2.5">
+        <EmptyState text="Nothing waiting on dispatch." />
+        <ExtraItemDispatchForm branch={branch} anchorOrderId={anchorOrderId} onDispatch={onDispatch} dispatchedBy={dispatchedBy} onDone={onDone} contextLabel={branch} />
+      </div>
+    );
+  }
+
+  const allVisibleSelected = visibleLines.length > 0 && visibleLines.every(l => selected.has(l.row.itemName));
 
   return (
     <div className="space-y-2.5">
@@ -2847,16 +3097,24 @@ function BranchFlatDispatchPanel({ branch, rows, orders, leftoverBalances, onDis
         <span className="text-[11px] font-black text-muted-foreground">{selected.size} of {lines.length} selected</span>
         <button
           type="button"
-          onClick={() => setSelected(allSelected ? new Set() : new Set(lines.map(l => l.row.itemName)))}
+          onClick={() => setSelected(prev => {
+            const next = new Set(prev);
+            for (const l of visibleLines) {
+              if (allVisibleSelected) next.delete(l.row.itemName); else next.add(l.row.itemName);
+            }
+            return next;
+          })}
           className="rounded-lg border border-border px-2.5 py-1 text-[11px] font-black text-muted-foreground hover:bg-muted"
         >
-          {allSelected ? 'Deselect all' : 'Select all'}
+          {allVisibleSelected ? 'Deselect all' : 'Select all'}
         </button>
       </div>
+      {visibleLines.length === 0 && <EmptyState text="No items match your search." />}
       <div className="space-y-2">
-        {lines.map(({ row, requested, alreadySent, available }) => {
+        {visibleLines.map(({ row, requested, alreadySent, available, remaining }) => {
           const val = qty[row.itemName] ?? '0';
           const over = Number(val) > available + 0.01;
+          const overRemaining = Number(val) > remaining + 0.01;
           const isChecked = selected.has(row.itemName);
           return (
             <div key={row.itemName} className={cn('rounded-2xl border bg-white p-3 shadow-sm', isChecked ? 'border-teal-300 ring-1 ring-teal-200' : 'border-border opacity-60')}>
@@ -2871,14 +3129,14 @@ function BranchFlatDispatchPanel({ branch, rows, orders, leftoverBalances, onDis
                   </p>
                 </label>
                 <input
-                  type="number" min={0} value={val}
-                  onChange={e => setQty(v => ({ ...v, [row.itemName]: e.target.value }))}
+                  type="number" min={0} max={remaining} value={val}
+                  onChange={e => { touchedRef.current.add(row.itemName); setQty(v => ({ ...v, [row.itemName]: e.target.value })); }}
                   className="w-24 rounded-lg border border-border bg-background px-2 py-1.5 text-right text-sm font-bold"
                 />
               </div>
               <p className="mt-1 pl-[26px] text-[11px] font-bold text-muted-foreground">
-                {qtyFmt(available)} {row.unit} available now (produced + leftover)
-                {over ? " — you're sending more than what's currently available, double-check before sending." : ''}
+                {qtyFmt(available)} {row.unit} available now (produced + leftover) · {qtyFmt(remaining)} {row.unit} still owed
+                {overRemaining ? ' — this will be capped at what\'s still owed when you send.' : over ? " — you're sending more than what's currently available, double-check before sending." : ''}
               </p>
             </div>
           );
@@ -2894,6 +3152,7 @@ function BranchFlatDispatchPanel({ branch, rows, orders, leftoverBalances, onDis
         </button>
       </div>
       {result && <p className={cn('text-center text-xs font-bold', result.ok ? 'text-teal-700' : 'text-red-700')}>{result.message}</p>}
+      <ExtraItemDispatchForm branch={branch} anchorOrderId={anchorOrderId} onDispatch={onDispatch} dispatchedBy={dispatchedBy} onDone={onDone} contextLabel={branch} />
     </div>
   );
 }
@@ -2987,6 +3246,11 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
   // shop-first per the planner's request, since that's how shop orders are
   // actually organized in their head.
   const [hosurView, setHosurView] = useState<'shop' | 'item'>('shop');
+  // Planner asked for a way to collapse the "Still In Progress" summary —
+  // on a busy day with many partially-dispatched items it can push the
+  // actual dispatch list too far down the screen. Defaults open (it's
+  // useful context), but can be dismissed per date-group.
+  const [showInProgress, setShowInProgress] = useState(true);
 
   useEffect(() => { setSelected(new Set()); }, [branchFilter]);
 
@@ -3014,6 +3278,16 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
     .sort((a, b) => (dispatchedQtyForItem(b) > 0 ? 1 : 0) - (dispatchedQtyForItem(a) > 0 ? 1 : 0));
   const completedRows = filtered.filter(r => fullyDispatched(r));
   const shown = subTab === 'active' ? activeRows : completedRows;
+  // BUG FIX (2026-08-07): search-independent version of activeRows, for the
+  // VRSNB/SNB flat dispatch panel only. That panel keeps its own
+  // quantity/selection state keyed by item name and re-seeds it whenever its
+  // `rows` prop's contents change — feeding it the search-filtered list
+  // meant every keystroke in the search box shrank the set, which reset any
+  // quantity you'd already typed for items outside the current search text.
+  const flatPanelRows = rows
+    .filter(r => branchFilter === 'All' || !!r.perBranch[branchFilter])
+    .filter(r => !fullyDispatched(r))
+    .sort((a, b) => (dispatchedQtyForItem(b) > 0 ? 1 : 0) - (dispatchedQtyForItem(a) > 0 ? 1 : 0));
   // Items with a "Planned" (Planning-tab) component still awaiting a
   // branch + quantity decision at dispatch time.
   const plannedRows = useMemo(
@@ -3080,20 +3354,32 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
           always at the top regardless of sub-tab, with each branch's required vs dispatched. */}
       {inProgressRows.length > 0 && (
         <div className="rounded-2xl border border-amber-300 bg-amber-50 p-3 shadow-sm">
-          <p className="mb-2 text-xs font-black uppercase tracking-wide text-amber-700">Still In Progress — More To Come ({inProgressRows.length})</p>
-          <div className="space-y-2">
-            {inProgressRows.map(row => (
-              <div key={row.itemName} className="rounded-xl bg-white p-2.5">
-                <p className="text-sm font-black text-foreground">{row.itemName}</p>
-                <div className="mt-1 flex flex-wrap gap-2 text-[11px] font-bold text-muted-foreground">
-                  {BRANCHES.filter(b => row.perBranch[b]).map(b => {
-                    const branchDispatched = branchDispatchedForRow(row, b, orders);
-                    return <span key={b} className="rounded-lg bg-amber-100 px-2 py-1">{b}: required {row.perBranch[b]} {row.unit} · dispatched {branchDispatched} {row.unit}</span>;
-                  })}
+          <button
+            type="button"
+            onClick={() => setShowInProgress(v => !v)}
+            className="flex w-full items-center justify-between gap-2 text-left"
+          >
+            <span className="text-xs font-black uppercase tracking-wide text-amber-700">Still In Progress — More To Come ({inProgressRows.length})</span>
+            <span className="flex items-center gap-1 rounded-lg border border-amber-300 bg-white px-2 py-1 text-[10px] font-black text-amber-700">
+              {showInProgress ? 'Hide' : 'Show'}
+              <ChevronDown className={cn('size-3.5 transition-transform', showInProgress && 'rotate-180')} />
+            </span>
+          </button>
+          {showInProgress && (
+            <div className="mt-2 space-y-2">
+              {inProgressRows.map(row => (
+                <div key={row.itemName} className="rounded-xl bg-white p-2.5">
+                  <p className="text-sm font-black text-foreground">{row.itemName}</p>
+                  <div className="mt-1 flex flex-wrap gap-2 text-[11px] font-bold text-muted-foreground">
+                    {BRANCHES.filter(b => row.perBranch[b]).map(b => {
+                      const branchDispatched = branchDispatchedForRow(row, b, orders);
+                      return <span key={b} className="rounded-lg bg-amber-100 px-2 py-1">{b}: required {row.perBranch[b]} {row.unit} · dispatched {branchDispatched} {row.unit}</span>;
+                    })}
+                  </div>
                 </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -3129,8 +3415,21 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
         // capped at what's still owed), editable in place, "Remove" to skip
         // one, and a single button to send everything left checked.
         <BranchFlatDispatchPanel
+          // CRITICAL BUG FIX (2026-08-07, found while re-checking the SNB
+          // "dispatch one item, multiple went out" report): with no `key`,
+          // switching the branch filter between VRSNB and SNB reused the
+          // SAME component instance — its internal `selected`/`qty`/
+          // `touchedRef` state (all keyed by item name) survived the switch.
+          // An item checked/typed while viewing VRSNB stayed checked with
+          // its stale quantity when you flipped to SNB, so an item name
+          // shared by both branches (e.g. "Bread") could silently ride along
+          // on a dispatch the planner only meant to send to SNB. Keying by
+          // branch forces a full remount — and therefore a clean state —
+          // every time the branch filter changes.
+          key={branchFilter}
           branch={branchFilter}
-          rows={activeRows}
+          rows={flatPanelRows}
+          search={search}
           orders={orders}
           leftoverBalances={leftoverBalances}
           onDispatch={submitDispatch}
@@ -3168,7 +3467,7 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
                 // DispatchChecklistModal's leftoverBalance prop). This is just
                 // a visible confirmation of what's already going to be used,
                 // so nothing has to be manually chosen/applied first.
-                const balance = leftoverBalances.get(canonicalItemSlug(row.itemName));
+                const balance = leftoverBalances.get(closingStockItemSlug(row.itemName));
                 if (!balance || balance.balance <= 0.001) return null;
                 return (
                   <p className="mt-2 inline-flex items-center gap-1.5 rounded-xl border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-[11px] font-black text-amber-800">
@@ -3247,7 +3546,7 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
           onClose={() => setChecklistItem(null)}
           onDispatch={submitDispatch}
           dispatchedBy={currentUser?.displayName || 'Planner'}
-          leftoverBalance={leftoverBalances.get(canonicalItemSlug(checklistItem.itemName))?.balance ?? 0}
+          leftoverBalance={leftoverBalances.get(closingStockItemSlug(checklistItem.itemName))?.balance ?? 0}
         />
       )}
 
@@ -3288,7 +3587,13 @@ function PlannedDispatchPanel({ rows, orders, onDispatch, dispatchedBy }: {
     const alreadySent = plannedDispatchedForRow(row, orders);
     const remainingPlanned = Math.max(0, plannedRequested - alreadySent);
     const defaultQty = Math.round(Math.min(remainingPlanned, row.preparedTotal) * 100) / 100;
-    const q = qtyFor[row.itemName] !== undefined ? Number(qtyFor[row.itemName] || 0) : defaultQty;
+    const typed = qtyFor[row.itemName] !== undefined ? Number(qtyFor[row.itemName] || 0) : defaultQty;
+    // CRITICAL BUG FIX (audit): this was the only remaining dispatch entry
+    // point with no ceiling against what's still owed — every other panel
+    // (BranchFlatDispatchPanel, HosurShopDispatchPanel, BulkDispatchModal,
+    // DispatchChecklistModal) hard-caps the typed quantity at `remaining`.
+    const q = Math.min(typed, remainingPlanned);
+    const clamped = typed > remainingPlanned + 0.01;
     if (q <= 0) return;
     setBusy(row.itemName);
     setResult(r => ({ ...r, [row.itemName]: undefined as any }));
@@ -3301,7 +3606,7 @@ function PlannedDispatchPanel({ rows, orders, onDispatch, dispatchedBy }: {
         if (!item || orderQty <= 0) continue;
         await onDispatch(order.id, { id: getId(`${order.id}:${row.itemName}`), itemName: item.itemName, quantity: orderQty, unit: item.dispatchUnit || 'kg', branch, dispatchedBy, dispatchedAt: new Date().toISOString() });
       }
-      setResult(r => ({ ...r, [row.itemName]: { ok: true, message: `Dispatched ${q} ${row.unit} of ${row.itemName} to ${branch}.` } }));
+      setResult(r => ({ ...r, [row.itemName]: { ok: true, message: `Dispatched ${q} ${row.unit} of ${row.itemName} to ${branch}.${clamped ? ` (Capped at ${remainingPlanned} ${row.unit} still owed.)` : ''}` } }));
       setQtyFor(v => ({ ...v, [row.itemName]: '' }));
       resetDispatchIds();
     } catch (err) {
@@ -3337,12 +3642,13 @@ function PlannedDispatchPanel({ rows, orders, onDispatch, dispatchedBy }: {
                 </div>
                 <input
                   type="number"
+                  max={remainingPlanned}
                   placeholder={String(defaultQty)}
                   value={qtyFor[row.itemName] ?? ''}
                   onChange={e => setQtyFor(v => ({ ...v, [row.itemName]: e.target.value }))}
                   className="w-24 rounded-lg border border-border bg-background px-2 py-1.5 text-right text-xs font-bold"
                 />
-                <span className="text-[11px] font-bold text-muted-foreground">{row.unit}</span>
+                <span className="text-[11px] font-bold text-muted-foreground">{row.unit} · {qtyFmt(remainingPlanned)} owed</span>
                 <button onClick={() => dispatchRow(row)} disabled={busy === row.itemName} className="flex items-center gap-1.5 rounded-xl cafe-gradient px-3 py-2 text-xs font-bold text-white shadow-teal disabled:opacity-50">
                   {busy === row.itemName ? <Loader2 className="size-3.5 animate-spin" /> : <Truck className="size-3.5" />} Dispatch to {branch}
                 </button>
@@ -3369,7 +3675,7 @@ function BulkDispatchModal({ branch, rows, orders, onClose, onDispatch, dispatch
     const alreadySent = branchDispatchedForRow(row, branch, orders);
     const remainingRequested = Math.max(requested - alreadySent, 0);
     const defaultQty = Math.round(Math.min(remainingRequested, row.preparedTotal) * 100) / 100;
-    return { row, requested, alreadySent, defaultQty };
+    return { row, requested, alreadySent, remaining: remainingRequested, defaultQty };
   }), [rows, branch, orders]);
 
   const [qty, setQty] = useState<Record<string, string>>(() => Object.fromEntries(lines.map(l => [l.row.itemName, String(l.defaultQty)])));
@@ -3388,9 +3694,18 @@ function BulkDispatchModal({ branch, rows, orders, onClose, onDispatch, dispatch
     setSending(true);
     setError(null);
     let dispatchedCount = 0;
+    let clampedAny = false;
     try {
-      for (const { row } of lines) {
-        const q = qtyFor(row.itemName);
+      for (const { row, remaining } of lines) {
+        // CRITICAL BUG FIX (2026-08-07 re-audit): every other dispatch entry
+        // point (BranchFlatDispatchPanel, HosurShopDispatchPanel,
+        // DispatchChecklistModal) was hard-capped at `remaining` in an
+        // earlier round — this modal (reachable via Hosur's "By Item" view
+        // multi-select) was missed and had NO ceiling at all, letting the
+        // planner type any quantity and send more than was ever requested.
+        const typed = qtyFor(row.itemName);
+        const q = Math.min(typed, remaining);
+        if (typed > remaining + 0.01) clampedAny = true;
         if (q <= 0) continue;
         const entries = orders.filter(o => o.targetBranch === branch && row.contributingOrderIds.includes(o.id));
         const split = autoSplitForItem(entries, row.itemName, q);
@@ -3404,6 +3719,14 @@ function BulkDispatchModal({ branch, rows, orders, onClose, onDispatch, dispatch
       }
       resetDispatchIds();
       onDone();
+      if (clampedAny) {
+        // Modal closes via onDone() right after this — there's no persistent
+        // banner in this flow to show a "capped" notice in, so at least
+        // leave a trace in the console for support/debugging. The actual
+        // safety fix (Math.min against `remaining` above) is what matters:
+        // nothing physically over-dispatches regardless of what was typed.
+        console.info('[BulkDispatchModal] one or more items were capped at what was still owed.');
+      }
     } catch (err) {
       setError(
         (err instanceof Error ? err.message : 'Failed to dispatch.') +
@@ -3419,23 +3742,30 @@ function BulkDispatchModal({ branch, rows, orders, onClose, onDispatch, dispatch
       <div className="w-full max-w-lg rounded-2xl bg-white p-5 shadow-xl">
         <p className="text-sm font-black text-foreground">Dispatch {lines.length} item{lines.length > 1 ? 's' : ''} to {branch}</p>
         <div className="mt-3 max-h-[50vh] space-y-2 overflow-auto pr-1">
-          {lines.map(({ row, requested, alreadySent }) => (
+          {lines.map(({ row, requested, alreadySent, remaining }) => {
+            const val = qty[row.itemName] ?? '';
+            const overRemaining = Number(val) > remaining + 0.01;
+            return (
             <div key={row.itemName} className="rounded-xl border border-border p-2.5">
               <div className="flex items-center justify-between gap-2">
                 <p className="text-sm font-black text-foreground">{row.itemName}</p>
                 <div className="flex items-center gap-1">
                   <input
-                    type="number"
-                    value={qty[row.itemName] ?? ''}
+                    type="number" max={remaining}
+                    value={val}
                     onChange={e => setQty(prev => ({ ...prev, [row.itemName]: e.target.value }))}
                     className="w-20 rounded-lg border border-border px-2 py-1 text-right text-xs font-bold"
                   />
                   <span className="text-[11px] font-bold text-muted-foreground">{row.unit}</span>
                 </div>
               </div>
-              <p className="mt-1 text-[11px] font-bold text-muted-foreground">Requested {requested} {row.unit}{alreadySent > 0 ? ` · already sent ${alreadySent} ${row.unit}` : ''} · Produced {row.preparedTotal} {row.unit}</p>
+              <p className="mt-1 text-[11px] font-bold text-muted-foreground">
+                Requested {requested} {row.unit}{alreadySent > 0 ? ` · already sent ${alreadySent} ${row.unit}` : ''} · Produced {row.preparedTotal} {row.unit} · {qtyFmt(remaining)} {row.unit} still owed
+                {overRemaining ? " — this will be capped at what's still owed when you send." : ''}
+              </p>
             </div>
-          ))}
+            );
+          })}
         </div>
         {error && <p className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700">{error}</p>}
         <div className="mt-4 flex justify-end gap-2">
@@ -3513,7 +3843,22 @@ function DispatchChecklistModal({ row, orders, branchFilter, onClose, onDispatch
         for (const { order, item } of entries) {
           const q = qtyFor(order.id);
           if (q <= 0) continue;
-          await onDispatch(order.id, { id: getId(`${order.id}:${item.itemName}`), itemName: item.itemName, quantity: q, unit: item.dispatchUnit || 'kg', branch: branch as Branch, dispatchedBy, dispatchedAt: new Date().toISOString() });
+          // CRITICAL BUG FIX (2026-08-07): the suggested quantity above
+          // (autoSplit) is computed purely from `availableToDispatch`
+          // (produced total / leftover balance) split by each order's
+          // REQUESTED share — it never subtracted what this specific
+          // order-item had already been sent. Reopening this modal for an
+          // item that was already fully (or partially) dispatched would
+          // keep re-suggesting — and, if confirmed, re-sending — the same
+          // stock. Hard-cap every send here at what this order-item
+          // genuinely still has outstanding, same defensive rule now
+          // applied to the Hosur and VRSNB/SNB dispatch panels.
+          const requestedForOrder = item.dispatchUnit === 'pcs' && item.originalPcs != null ? item.originalPcs : item.quantity;
+          const alreadyForOrder = (order.dispatchLog || []).filter(d => sameItem(d.itemName, item.itemName)).reduce((s, d) => s + d.quantity, 0);
+          const remainingForOrder = Math.max(0, Math.round((requestedForOrder - alreadyForOrder) * 100) / 100);
+          const cappedQ = Math.min(q, remainingForOrder);
+          if (cappedQ <= 0.001) continue;
+          await onDispatch(order.id, { id: getId(`${order.id}:${item.itemName}`), itemName: item.itemName, quantity: cappedQ, unit: item.dispatchUnit || 'kg', branch: branch as Branch, dispatchedBy, dispatchedAt: new Date().toISOString() });
         }
       }
       resetDispatchIds();

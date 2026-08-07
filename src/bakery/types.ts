@@ -94,6 +94,14 @@ export interface DispatchEntry {
    * batch on the next proportional-split recompute.
    */
   targetHosurOrderId?: string;
+  /**
+   * Set when the planner dispatched this item to the branch even though the
+   * branch never requested it (or dispatched more of it than was ordered).
+   * Surfaced separately in the Dispatch report and Closing Stock Movement Log
+   * as "Extra / Non-requested" so it doesn't get silently folded into normal
+   * fulfilment numbers.
+   */
+  isExtra?: boolean;
 }
 
 export type Branch = 'VRSNB' | 'SNB' | 'Hosur';

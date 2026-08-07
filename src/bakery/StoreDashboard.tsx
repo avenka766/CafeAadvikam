@@ -553,8 +553,21 @@ function OrderCard({ order }: { order: BakeryOrder }) {
   }, [selectedEntries, stockItems]);
 
   const handleConfirmStock = async () => {
-    if (sent || selectedIndexes.length === 0) return;
+    // BUG FIX (audit): this was the one save-handler in this file with no
+    // re-entrancy guard of its own — every sibling handler (InvoiceTab.save,
+    // StorePurchaseOrderTab.save, OrdersTab.handleMergeAll) self-guards on
+    // its own in-flight flag instead of relying solely on the button's
+    // `disabled` prop, which has a narrow but real window on rapid/double
+    // taps before React flushes state.
+    if (sent || selectedIndexes.length === 0 || sending) return;
     setSending(true); setSendError(null); setSendNotice(null);
+    // Deduction and the status write below are two separate awaits, not one
+    // atomic transaction — if the status write fails after deduction already
+    // committed, a blind retry would deduct the same materials a second
+    // time. Track that explicitly so a failure here can say so plainly and
+    // force the planner to make a conscious decision instead of just
+    // clicking the same button again.
+    let deducted = false;
     try {
       // Deduct stock for the selected lines, then hand the order to Planner.
       if (allMats.length > 0) {
@@ -567,6 +580,7 @@ function OrderCard({ order }: { order: BakeryOrder }) {
           allMats.map(m => ({ name: m.material, qty: m.quantity, unit: m.unit })),
           ctx,
         );
+        deducted = true;
         if (warn) console.warn('Stock deduction note:', warn);
       }
       await confirmStockSelected(order.id, selectedIndexes, currentUser?.displayName ?? 'Store');
@@ -577,7 +591,17 @@ function OrderCard({ order }: { order: BakeryOrder }) {
         ? `${selectedEntries.length} item${selectedEntries.length === 1 ? '' : 's'} confirmed and sent to Planner for production.`
         : `${selectedEntries.length} item${selectedEntries.length === 1 ? '' : 's'} sent to Planner. ${remainingCount} item${remainingCount === 1 ? '' : 's'} still pending here.`);
     } catch (sendFailure) {
-      setSendError(sendFailure instanceof Error ? sendFailure.message : 'Failed to confirm stock. Please try again.');
+      const baseMsg = sendFailure instanceof Error ? sendFailure.message : 'Failed to confirm stock.';
+      if (deducted) {
+        // Materials were already deducted from stock before this failed —
+        // clear the selection instead of leaving it primed for an easy
+        // re-click, so re-sending this same batch is a conscious choice,
+        // not a reflex tap that deducts the same materials twice.
+        setSelectedIndexes([]);
+        setSendError(`${baseMsg} Stock was already deducted for these items before this failed — do NOT just retry the same items. Check Inventory, and only re-select what still genuinely needs to go to Planner.`);
+      } else {
+        setSendError(`${baseMsg} Please try again.`);
+      }
     } finally {
       setSending(false);
     }

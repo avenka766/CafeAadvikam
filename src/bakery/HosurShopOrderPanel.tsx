@@ -18,6 +18,7 @@ import { dispatchReceiveAndBill } from './hosurBillingBridge';
 import { getPackingCounterStatus } from './packingCounter';
 import { notifyAdmin } from '@/pages/HosurDashboard';
 import { buildHosurOrderTag, buildHosurItemId, checkRecentDuplicateHosurOrder } from './hosurOrderShared';
+import { closestRecipeMatch } from './recipeNameMatch';
 
 const money = (v: number | null | undefined) => 'Rs.' + (v ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
 const num = (v: number | null | undefined) => (v ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
@@ -159,6 +160,21 @@ function PlaceOrderSection({ shops, prices, userName, onSaved }: { shops: HosurS
     const q = normalize(customName);
     if (!q) return [];
     return allHosurItemNames.filter(n => normalize(n).includes(q) && normalize(n) !== q).slice(0, 8);
+  }, [customName, allHosurItemNames]);
+  // BUG FIX (audit): the substring-only suggestion list above misses genuine
+  // typos/spelling variants (transpositions, missing letters — neither
+  // string is a substring of the other), which is exactly how this table
+  // fragmented before ("Egg Puff" vs "Egg Puff (Full Egg)" vs "Egg Puff
+  // Full" all silently became separate items across Production/Dispatch/
+  // Closing Stock, requiring a manual data cleanup). Reuse the same
+  // Levenshtein matcher already used for Recipe Management mismatches, but
+  // compare against this shop's OWN existing item names instead — flags a
+  // near-duplicate spelling before it's added, without nagging about names
+  // that are legitimately new (that's the common, fine case).
+  const customNameNearDuplicate = useMemo(() => {
+    if (!customName.trim()) return null;
+    const result = closestRecipeMatch(customName, allHosurItemNames);
+    return result && result.status === 'mismatch' ? result.match : null;
   }, [customName, allHosurItemNames]);
   const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
@@ -382,6 +398,16 @@ function PlaceOrderSection({ shops, prices, userName, onSaved }: { shops: HosurS
                     </button>
                   ))}
                 </div>
+              )}
+              {customNameNearDuplicate && (
+                <p className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] font-semibold text-amber-700">
+                  <AlertTriangle className="size-3 shrink-0" />
+                  Close to an existing item — did you mean{' '}
+                  <button type="button" onMouseDown={e => { e.preventDefault(); setCustomName(customNameNearDuplicate); }} className="underline decoration-dotted underline-offset-2 hover:text-amber-900">
+                    "{customNameNearDuplicate}"
+                  </button>
+                  ? Using a new spelling will list it separately everywhere (Production, Dispatch, Closing Stock).
+                </p>
               )}
             </div>
             <input value={customQty} onChange={e => setCustomQty(e.target.value)} type="number" placeholder="Qty" className="rounded-lg border border-border bg-background px-2 py-1.5 text-xs font-bold" />

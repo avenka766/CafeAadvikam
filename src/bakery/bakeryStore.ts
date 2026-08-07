@@ -671,6 +671,35 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     // above) so a retried dispatch doesn't debit the pool a second time.
     if (!isDuplicateDispatch) {
       try {
+        // BUG FIX (2026-08-07): a Hosur dispatch used to hit the Closing
+        // Stock ledger tagged only with branch='Hosur' — indistinguishable
+        // from any other Hosur shop's dispatch of the same item on the same
+        // day. Planner asked for the Movement Log / Daily Report to show
+        // exactly which shop a dispatch went to, not just "Hosur" — so when
+        // this dispatch is shop-targeted, look up that shop's name once and
+        // stamp it into the ledger row's notes. Best-effort: a lookup
+        // failure here must never block the real dispatch or its ledger
+        // debit, so it silently falls back to no shop name.
+        let hosurShopNote: string | null = null;
+        if (newEntry.branch === 'Hosur' && newEntry.targetHosurOrderId) {
+          try {
+            const { data: shopRow } = await supabase
+              .from('hosur_orders')
+              .select('shop_name')
+              .eq('id', newEntry.targetHosurOrderId)
+              .maybeSingle();
+            const shopName = (shopRow as { shop_name?: string } | null)?.shop_name;
+            if (shopName) hosurShopNote = `Dispatched to ${shopName}`;
+          } catch { /* best-effort only */ }
+        }
+        // FEATURE (extra/non-requested dispatch): when the planner sends more
+        // of an item than the branch actually ordered (or an item the branch
+        // never ordered at all), the dispatch UI tags the entry isExtra=true.
+        // Stamp that into the ledger notes too so the Closing Stock Movement
+        // Log/report can call it out distinctly instead of it silently
+        // looking like an ordinary fulfilment debit.
+        const extraNote = newEntry.isExtra ? 'EXTRA (non-requested item)' : null;
+        const combinedNote = [hosurShopNote, extraNote].filter(Boolean).join(' · ') || null;
         const ledgerResult = await recordLeftoverMovement({
           itemName: newEntry.itemName,
           unit: newEntry.unit === 'pcs' ? 'pcs' : 'kg',
@@ -681,6 +710,7 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
           branch: newEntry.branch,
           orderId,
           orderNumber: freshOrder.order_number != null ? Number(freshOrder.order_number) : undefined,
+          notes: combinedNote,
         });
         if ('error' in ledgerResult) {
           console.error('[submitDispatch] Closing Stock pool debit failed:', ledgerResult.error);
