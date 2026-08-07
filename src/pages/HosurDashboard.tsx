@@ -47,6 +47,7 @@ import { useBranchStore } from '@/branch/branchStore';
 import { useBranchCatalogStore, type BranchCatalogItem } from '@/stores/branchCatalogStore';
 import { HOSUR_VRSNB_PRICE_LIST } from '@/data/hosurVrsnbPriceList';
 import { buildHosurOrderTag, buildHosurItemId, checkRecentDuplicateHosurOrder } from '@/bakery/hosurOrderShared';
+import { getPackingCounterStatus } from '@/bakery/packingCounter';
 
 export const BRANCH = 'Hosur' as const;
 const HOSUR_UPI_ID = '328969176350835@cnrb';
@@ -55,18 +56,22 @@ const TODAY_ISO = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolka
 
 type HosurCounterStatus = { isOpen: boolean; isClosed: boolean; openingCash: number };
 
-export async function getHosurCounterStatus(date = TODAY_ISO()): Promise<HosurCounterStatus> {
-  const { data, error } = await supabase.rpc('get_hosur_counter_status', { p_business_date: date });
-  if (error) throw error;
-  const status = data as {
-    session?: { status?: string; opening_cash?: number } | null;
-    closure?: Record<string, unknown> | null;
-  } | null;
-  const closureStatus = typeof status?.closure?.status === 'string' ? status.closure.status : null;
+// WORKFLOW CHANGE (2026-08-08): "in Hosur tab there is daily closure tab and
+// in planner dashboard also there is daily closure -> cashier closure. There
+// should be only one — remove the daily closure subtab in hosur tab." Hosur
+// billing/collection used to gate off its own separate hosur_counter_sessions
+// counter (opened/closed from a Hosur-only Daily Closure sub-tab). It now
+// gates off the SAME single counter every other branch and Planner's own
+// Dispatch tab uses — Planner's top-level "Daily Closure" tab
+// (packingCounter.ts) — so there is exactly one counter to open each day.
+// The old hosur_counter_sessions RPCs/table are left untouched in the DB
+// (harmless, unused) in case historical closure records need to be read.
+export async function getHosurCounterStatus(): Promise<HosurCounterStatus> {
+  const status = await getPackingCounterStatus();
   return {
-    isOpen: status?.session?.status === 'open',
-    isClosed: status?.session?.status === 'closed' || closureStatus === 'closed',
-    openingCash: Number(status?.session?.opening_cash ?? 0),
+    isOpen: status.isOpen,
+    isClosed: status.isFinalized,
+    openingCash: status.openingCash,
   };
 }
 
@@ -1072,7 +1077,7 @@ export default function HosurDashboard({ hideNav = false }: { hideNav?: boolean 
     const status = await getHosurCounterStatus();
     setHosurCounterOpen(status.isOpen);
     setHosurCounterLoading(false);
-    if (!status.isOpen) throw new Error('Hosur cashier counter is closed. Open today’s counter in Daily Closure before confirming any bill.');
+    if (!status.isOpen) throw new Error("Planner's Daily Closure counter is closed. Open it from Planner's top-level Daily Closure tab before confirming any bill.");
   }, []);
 
   const handleHosurCounterChange = useCallback((isOpen: boolean) => {
@@ -1080,6 +1085,17 @@ export default function HosurDashboard({ hideNav = false }: { hideNav?: boolean 
     setHosurCounterLoading(false);
     setHosurCounterError('');
   }, []);
+
+  // WORKFLOW CHANGE (2026-08-08): "Open Counter" from Billing/Payment
+  // Collection now jumps to Planner's own top-level Daily Closure tab (the
+  // one counter that actually gates this screen) instead of Hosur's own
+  // now-removed Daily Closure sub-tab.
+  const goToPlannerDailyClosure = useCallback(() => {
+    const params = new URLSearchParams(searchParams);
+    params.set('tab', 'closure');
+    params.delete('hosurTab');
+    setSearchParams(params, { replace: true });
+  }, [searchParams, setSearchParams]);
 
 
   const isAdminRef = useRef(isAdmin);
@@ -1752,9 +1768,9 @@ export default function HosurDashboard({ hideNav = false }: { hideNav?: boolean 
               {tab === 'shops' && <ShopMasterTab shops={shops} prices={prices} busy={busy} withBusy={withBusy} priceFor={priceFor} />}
               {tab === 'newOrder' && <NewOrderTab shops={activeShops} prices={prices} busy={busy} withBusy={withBusy} priceFor={priceFor} userName={userName} />}
               {tab === 'receiving' && <ReceivingTab orders={orders} orderItems={orderItems} busy={busy} withBusy={withBusy} createDraftBill={createDraftBill} userName={userName} />}
-              {tab === 'billing' && <BillingTab bills={bills} billItems={billItems} busy={busy} withBusy={withBusy} confirmBill={confirmBill} resendBillWhatsapp={resendBillWhatsapp} counterOpen={hosurCounterOpen} counterLoading={hosurCounterLoading} counterError={hosurCounterError} openCounter={() => setTab('closure')} />}
+              {tab === 'billing' && <BillingTab bills={bills} billItems={billItems} busy={busy} withBusy={withBusy} confirmBill={confirmBill} resendBillWhatsapp={resendBillWhatsapp} counterOpen={hosurCounterOpen} counterLoading={hosurCounterLoading} counterError={hosurCounterError} openCounter={goToPlannerDailyClosure} />}
               {tab === 'credit' && <CreditLedgerTab credits={credits} payments={payments} shops={shops} />}
-              {tab === 'collection' && <PaymentCollectionTab credits={openCredits} busy={busy} withBusy={withBusy} collectCredit={collectCredit} counterOpen={hosurCounterOpen} counterLoading={hosurCounterLoading} counterError={hosurCounterError} openCounter={() => setTab('closure')} />}
+              {tab === 'collection' && <PaymentCollectionTab credits={openCredits} busy={busy} withBusy={withBusy} collectCredit={collectCredit} counterOpen={hosurCounterOpen} counterLoading={hosurCounterLoading} counterError={hosurCounterError} openCounter={goToPlannerDailyClosure} />}
               {tab === 'whatsapp' && <WhatsappLogsTab logs={whatsappLogs} busy={busy} withBusy={withBusy} sendWhatsapp={sendWhatsapp} />}
               {tab === 'reminders' && <ReminderHistoryTab reminders={reminders} credits={openCredits} busy={busy} withBusy={withBusy} runDueReminders={runDueReminders} />}
               {tab === 'closure' && <DailyClosureTab actorId={currentUser?.id ?? ''} actorName={currentUser?.displayName || currentUser?.username || 'Hosur Staff'} orders={orders} bills={bills} credits={credits} payments={payments} disputes={disputes} logs={whatsappLogs} onCounterStatusChange={handleHosurCounterChange} />}
@@ -2476,8 +2492,8 @@ function BillingTab({ bills, billItems, busy, withBusy, confirmBill, resendBillW
 
   return (
     <div className="space-y-4">
-      <SectionTitle icon={<Receipt className="size-5" />} title="Billing" subtitle="Open today’s cashier counter before confirming, printing, or sending any bill." />
-      {!counterOpen && <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-amber-900"><div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div><p className="font-black">Billing Counter Locked</p><p className="mt-1 text-sm font-semibold">{counterLoading ? 'Checking today’s counter status…' : counterError || 'Open today’s Hosur counter in Daily Closure before billing.'}</p></div><button type="button" className={primaryButton} onClick={openCounter} disabled={counterLoading}><ShieldCheck className="size-4" /> Open Counter</button></div></div>}
+      <SectionTitle icon={<Receipt className="size-5" />} title="Billing" subtitle="Open Planner's Daily Closure counter before confirming, printing, or sending any bill." />
+      {!counterOpen && <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-amber-900"><div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div><p className="font-black">Billing Locked</p><p className="mt-1 text-sm font-semibold">{counterLoading ? 'Checking today’s counter status…' : counterError || "Planner's top-level Daily Closure counter is closed — open it before billing."}</p></div><button type="button" className={primaryButton} onClick={openCounter} disabled={counterLoading}><ShieldCheck className="size-4" /> Open Planner's Daily Closure</button></div></div>}
       {draftBills.length === 0 ? <EmptyState icon={<Receipt className="size-6" />} title="No bill drafts" subtitle="Confirm received shop orders to generate bill drafts automatically." /> : draftBills.map((bill) => {
         const items = billItems[bill.id] ?? [];
         const pType = paymentType[bill.id] ?? 'full';
@@ -2580,8 +2596,8 @@ function PaymentCollectionTab({ credits, busy, withBusy, collectCredit, counterO
   const exportExcel = () => downloadWorkbook(`hosur-payment-collection-${TODAY_ISO()}.xls`, [{ name: 'Pending Collection', rows: credits.map((c) => ({ Shop: c.shopName, Bill: c.billNo, 'Opening Amount': c.openingAmount, 'Paid Amount': c.paidAmount, 'Balance Amount': c.balanceAmount, 'Due Date': c.dueDate ?? '', Status: c.status })) }]);
   return (
     <div className="space-y-4">
-      <SectionTitle icon={<WalletCards className="size-5" />} title="Payment Collection" subtitle="Open today’s cashier counter before recording any cash, UPI, card, or bank collection." action={<button className={softButton} onClick={exportExcel}><FileSpreadsheet className="size-4" /> Excel Report</button>} />
-      {!counterOpen && <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-amber-900"><div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div><p className="font-black">Collection Counter Locked</p><p className="mt-1 text-sm font-semibold">{counterLoading ? 'Checking today’s counter status…' : counterError || 'Open today’s Hosur counter in Daily Closure before recording a collection.'}</p></div><button type="button" className={primaryButton} onClick={openCounter} disabled={counterLoading}><ShieldCheck className="size-4" /> Open Counter</button></div></div>}
+      <SectionTitle icon={<WalletCards className="size-5" />} title="Payment Collection" subtitle="Open Planner's Daily Closure counter before recording any cash, UPI, card, or bank collection." action={<button className={softButton} onClick={exportExcel}><FileSpreadsheet className="size-4" /> Excel Report</button>} />
+      {!counterOpen && <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-amber-900"><div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div><p className="font-black">Collection Locked</p><p className="mt-1 text-sm font-semibold">{counterLoading ? 'Checking today’s counter status…' : counterError || "Planner's top-level Daily Closure counter is closed — open it before recording a collection."}</p></div><button type="button" className={primaryButton} onClick={openCounter} disabled={counterLoading}><ShieldCheck className="size-4" /> Open Planner's Daily Closure</button></div></div>}
       {credits.length === 0 ? <EmptyState icon={<WalletCards className="size-6" />} title="No pending credit to collect" /> : credits.map((credit) => {
         const d = getDraft(credit.id);
         return <Card key={credit.id} className="space-y-3"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="font-black">{credit.shopName}</p><p className="text-xs text-muted-foreground">Bill {credit.billNo} · Balance {money(credit.balanceAmount)} · Due {toDateLabel(credit.dueDate)}</p></div><Badge tone={credit.dueDate && daysBetween(credit.dueDate) > 0 ? 'red' : 'amber'}>{credit.dueDate && daysBetween(credit.dueDate) > 0 ? 'overdue' : 'pending'}</Badge></div><div className="grid gap-3 md:grid-cols-4"><Field label="Amount collected"><input className={inputClass} type="number" value={d.paidAmount} disabled={!counterOpen || counterLoading} onChange={(e) => setDraft((p) => ({ ...p, [credit.id]: { ...getDraft(credit.id), paidAmount: e.target.value } }))} placeholder="Amount" /></Field><Field label="Payment mode"><select className={inputClass} value={d.paymentMode} disabled={!counterOpen || counterLoading} onChange={(e) => setDraft((p) => ({ ...p, [credit.id]: { ...getDraft(credit.id), paymentMode: e.target.value as PaymentMode } }))}><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option><option value="bank">Bank</option><option value="mixed">Mixed</option></select></Field><Field label="Remarks"><input className={inputClass} value={d.remarks} disabled={!counterOpen || counterLoading} onChange={(e) => setDraft((p) => ({ ...p, [credit.id]: { ...getDraft(credit.id), remarks: e.target.value } }))} placeholder="Optional" /></Field><div className="flex items-end"><button className={primaryButton} disabled={busy || !counterOpen || counterLoading} onClick={() => withBusy(() => collectCredit(credit, d), 'Credit payment recorded.')}>{busy ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />} Collect</button></div></div></Card>;
