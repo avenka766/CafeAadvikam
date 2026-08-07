@@ -2746,6 +2746,130 @@ function HosurShopDispatchPanel({ rows, orders, leftoverBalances, onDispatch, di
   );
 }
 
+// ─── Flat "all items, one screen" dispatch panel (VRSNB / SNB) ─────────────
+// Mirrors HosurShopDispatchPanel's already-expanded card layout: every
+// requested item for this branch is listed right away with an editable
+// quantity pre-filled from what's actually available (produced total or the
+// shared leftover ledger balance, whichever is larger — same logic
+// DispatchChecklistModal already uses — capped at what this branch still
+// hasn't received), a "Remove" button to drop one item from this batch, and
+// a single button that dispatches everything left with a quantity > 0 in
+// one action. No per-item modal, no separate checkbox-then-bulk-modal step.
+function BranchFlatDispatchPanel({ branch, rows, orders, leftoverBalances, onDispatch, dispatchedBy, onDone }: {
+  branch: Branch; rows: ProductionRow[]; orders: BakeryOrder[];
+  leftoverBalances: Map<string, { itemName: string; unit: LeftoverUnit; balance: number }>;
+  onDispatch: ReturnType<typeof useBakeryStore.getState>['submitDispatch']; dispatchedBy: string;
+  onDone: () => void;
+}) {
+  const lines = useMemo(() => rows.map(row => {
+    const requested = row.perBranch[branch] ?? 0;
+    const alreadySent = branchDispatchedForRow(row, branch, orders);
+    const remaining = Math.max(0, Math.round((requested - alreadySent) * 100) / 100);
+    const leftoverBalance = Math.max(0, leftoverBalances.get(canonicalItemSlug(row.itemName))?.balance ?? 0);
+    const available = Math.max(row.preparedTotal, leftoverBalance);
+    const defaultQty = Math.round(Math.min(remaining, available) * 100) / 100;
+    return { row, requested, alreadySent, remaining, available, defaultQty };
+  }), [rows, branch, orders, leftoverBalances]);
+
+  const [qty, setQty] = useState<Record<string, string>>({});
+  // Re-seed drafts whenever the actual set of default quantities changes
+  // (date group opened, an item's available stock changed, etc.) — but not
+  // on every render, so an in-progress hand edit is never clobbered.
+  const seedKey = lines.map(l => `${l.row.itemName}:${l.defaultQty}`).join('|');
+  useEffect(() => {
+    setQty(Object.fromEntries(lines.map(l => [l.row.itemName, String(l.defaultQty)])));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seedKey]);
+
+  const [sending, setSending] = useState(false);
+  const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const { getId, reset: resetDispatchIds } = useStableDispatchIds();
+
+  const qtyFor = (itemName: string) => Number(qty[itemName] ?? '0');
+  const removeItem = (itemName: string) => setQty(v => ({ ...v, [itemName]: '0' }));
+  const selectedCount = lines.filter(l => qtyFor(l.row.itemName) > 0.001).length;
+
+  const dispatchAll = async () => {
+    setSending(true); setResult(null);
+    let sentAny = false;
+    try {
+      for (const { row } of lines) {
+        const q = qtyFor(row.itemName);
+        if (q <= 0.001) continue;
+        const entries = orders.filter(o => o.targetBranch === branch && row.contributingOrderIds.includes(o.id));
+        if (entries.length === 0) continue;
+        const split = autoSplitForItem(entries, row.itemName, q);
+        for (const order of entries) {
+          const item = order.items.find(i => sameItem(i.itemName, row.itemName));
+          const orderQty = split[order.id] ?? 0;
+          if (!item || orderQty <= 0) continue;
+          await onDispatch(order.id, {
+            id: getId(`${order.id}:${row.itemName}`),
+            itemName: item.itemName, quantity: orderQty, unit: item.dispatchUnit || 'kg',
+            branch, dispatchedBy, dispatchedAt: new Date().toISOString(),
+          });
+          sentAny = true;
+        }
+      }
+      if (!sentAny) {
+        setResult({ ok: false, message: 'Nothing to send — every item is set to 0.' });
+        return;
+      }
+      setResult({ ok: true, message: `Sent to ${branch}.` });
+      resetDispatchIds();
+      onDone();
+    } catch (err) {
+      setResult({ ok: false, message: err instanceof Error ? err.message : 'Failed to dispatch.' });
+    } finally {
+      setSending(false);
+    }
+  };
+
+  if (lines.length === 0) return <EmptyState text="Nothing waiting on dispatch." />;
+
+  return (
+    <div className="space-y-2.5">
+      <div className="space-y-2">
+        {lines.map(({ row, requested, alreadySent, available }) => {
+          const val = qty[row.itemName] ?? '0';
+          const over = Number(val) > available + 0.01;
+          return (
+            <div key={row.itemName} className="rounded-2xl border border-border bg-white p-3 shadow-sm">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-sm font-black text-foreground">
+                  {row.itemName} <span className="font-bold text-muted-foreground">(ordered {qtyFmt(requested)} {row.unit} · sent {qtyFmt(alreadySent)} {row.unit})</span>
+                </p>
+                <div className="flex items-center gap-1.5">
+                  <input
+                    type="number" min={0} value={val}
+                    onChange={e => setQty(v => ({ ...v, [row.itemName]: e.target.value }))}
+                    className="w-24 rounded-lg border border-border bg-background px-2 py-1.5 text-right text-sm font-bold"
+                  />
+                  <button onClick={() => removeItem(row.itemName)} className="rounded-lg border border-border px-2.5 py-1.5 text-[11px] font-black text-muted-foreground hover:bg-muted">Remove</button>
+                </div>
+              </div>
+              <p className="mt-1 text-[11px] font-bold text-muted-foreground">
+                {qtyFmt(available)} {row.unit} available now (produced + leftover)
+                {over ? " — you're sending more than what's currently available, double-check before sending." : ''}
+              </p>
+            </div>
+          );
+        })}
+      </div>
+      <div className="sticky bottom-2 z-10 flex justify-center pt-2">
+        <button
+          onClick={() => void dispatchAll()}
+          disabled={sending || selectedCount === 0}
+          className="flex items-center gap-2 rounded-2xl bg-foreground px-5 py-3 text-sm font-black text-white shadow-xl disabled:opacity-50"
+        >
+          {sending ? <Loader2 className="size-4 animate-spin" /> : <Truck className="size-4" />} Dispatch {selectedCount} item{selectedCount === 1 ? '' : 's'} to {branch}
+        </button>
+      </div>
+      {result && <p className={cn('text-center text-xs font-bold', result.ok ? 'text-teal-700' : 'text-red-700')}>{result.message}</p>}
+    </div>
+  );
+}
+
 function plannedContributingOrders(row: ProductionRow, orders: BakeryOrder[]): BakeryOrder[] {
   return orders.filter(o => bucketFor(o) === 'Planned' && row.contributingOrderIds.includes(o.id));
 }
@@ -2967,6 +3091,24 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
             />
           )}
         </>
+      ) : subTab === 'active' && (branchFilter === 'VRSNB' || branchFilter === 'SNB') ? (
+        // WORKFLOW CHANGE (2026-08-07): VRSNB/SNB used to require opening
+        // each item individually (or ticking checkboxes one by one, then a
+        // separate bulk-dispatch modal) to send anything. Planner asked for
+        // the same flat, all-at-once layout the Hosur shop cards already
+        // use: every requested item listed right here with its quantity
+        // pre-filled from what's actually available (produced + leftover,
+        // capped at what's still owed), editable in place, "Remove" to skip
+        // one, and a single button to send everything left checked.
+        <BranchFlatDispatchPanel
+          branch={branchFilter}
+          rows={activeRows}
+          orders={orders}
+          leftoverBalances={leftoverBalances}
+          onDispatch={submitDispatch}
+          dispatchedBy={currentUser?.displayName || currentUser?.username || 'Planner'}
+          onDone={refreshLeftover}
+        />
       ) : (
       <>
       {shown.length === 0 && <EmptyState text={subTab === 'active' ? 'Nothing waiting on dispatch.' : 'Nothing dispatched yet.'} />}
