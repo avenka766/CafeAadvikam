@@ -1425,8 +1425,22 @@ function ProductionEntryDateGroup({ label, orders, rows, search, defaultOpen }: 
 type HosurSubTab = 'place' | 'dispatch' | 'shops' | 'credit' | 'collection' | 'whatsapp' | 'reminders' | 'closure' | 'reports' | 'notifications';
 const HOSUR_SUB_TAB_GROUPS: { label: string; tabs: { key: HosurSubTab; label: string; icon: React.ReactNode; ownedByPanel: boolean }[] }[] = [
   { label: 'Orders', tabs: [
-    { key: 'place',    label: 'Place Order', icon: <Store className="size-3.5" />, ownedByPanel: true },
-    { key: 'dispatch', label: 'Dispatch',    icon: <Truck className="size-3.5" />, ownedByPanel: true },
+    { key: 'place',    label: 'Place Order',       icon: <Store className="size-3.5" />, ownedByPanel: true },
+    // WORKFLOW CHANGE (2026-08-07): "the orders dispatched from Planner
+    // dashboard dispatch tab should come here and here only — bill, send
+    // via WhatsApp, and take a physical bill, all from one tab." This used
+    // to be three separate stops: this "Dispatch" tab only showed orders
+    // Planner's Dispatch tab hadn't yet finished sending (status
+    // 'pending_packing'); the moment the last item went out, the order
+    // flipped to 'dispatched' and dropped out of here, landing in
+    // HosurDashboard's separate Receiving tab, which itself only created a
+    // draft bill and needed a third tab (Billing) to actually send it.
+    // HosurShopOrderPanel's DispatchSection now pulls in 'dispatched'
+    // orders alongside 'pending_packing' ones (see pendingOrders below), and
+    // its existing dispatch+bill+WhatsApp+physical-print action already
+    // works regardless of which of those two statuses an order starts at —
+    // so this one tab now covers the whole post-Planner-dispatch lifecycle.
+    { key: 'dispatch', label: 'Dispatch & Billing', icon: <Truck className="size-3.5" />, ownedByPanel: true },
   ] },
   { label: 'Money', tabs: [
     { key: 'credit',     label: 'Credit Ledger',      icon: <CreditCard className="size-3.5" />, ownedByPanel: false },
@@ -1515,7 +1529,9 @@ function HosurUnifiedSection() {
 // ─── Tab: Invoice ───────────────────────────────────────────────────────────
 // Tracks everything actually dispatched to a branch (VRSNB / SNB / Hosur) on
 // a given date, prices it using that branch's catalog, and produces a
-// printable invoice with a flat 10% discount.
+// printable invoice with a per-branch editable discount rate. Only SNB's
+// prices aren't pre-discounted, so it defaults to 15%; VRSNB and Hosur
+// (whose shop price lists are already discounted) default to 0%.
 const invoiceMoney = (v: number) => 'Rs. ' + (Math.round(v * 100) / 100).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const normalizeItemName = (s: string) => s.trim().toLowerCase();
 const kolkataDateKey = (iso: string) =>
@@ -1529,6 +1545,11 @@ function InvoiceTab({ orders }: { orders: BakeryOrder[] }) {
   const [branch, setBranch] = useState<Branch | null>(null);
   const [hosurPrices, setHosurPrices] = useState<Record<string, number>>({});
   const [loadingPrices, setLoadingPrices] = useState(true);
+  // SNB's catalog prices are pre-discount, so SNB gets a real discount
+  // (15% by default). VRSNB's catalog prices are already the sell price,
+  // and Hosur's shop price lists are already discounted — both default to
+  // 0% so nothing gets double-discounted. Editable per branch before print.
+  const [discountPct, setDiscountPct] = useState<Record<Branch, number>>({ VRSNB: 0, SNB: 15, Hosur: 0 });
 
   useEffect(() => {
     loadCatalog('SNB').catch(() => {});
@@ -1603,13 +1624,66 @@ function InvoiceTab({ orders }: { orders: BakeryOrder[] }) {
   }, [orders, date, priceFor]);
 
   const subtotalFor = (b: Branch) => perBranchRows[b].reduce((s, r) => s + r.lineTotal, 0);
-  const DISCOUNT_RATE = 0.10;
 
-  const printInvoice = (b: Branch) => {
-    const win = window.open('', '_blank'); if (!win) return;
-    const rows = perBranchRows[b];
-    const subtotal = subtotalFor(b);
-    const discount = Math.round(subtotal * DISCOUNT_RATE * 100) / 100;
+  // Hosur dispatch_log entries only carry a hosur_orders.id (targetHosurOrderId),
+  // not a shop name — resolve the distinct ids seen on the selected date to
+  // shop names in one batch query (same pattern used in ReportsTab) so each
+  // shop can get its own individual invoice.
+  const hosurTargetOrderIdsForDate = useMemo(() => {
+    const ids = new Set<string>();
+    for (const order of orders) {
+      for (const entry of order.dispatchLog || []) {
+        if (entry.branch === 'Hosur' && entry.targetHosurOrderId && kolkataDateKey(entry.dispatchedAt) === date) {
+          ids.add(entry.targetHosurOrderId);
+        }
+      }
+    }
+    return Array.from(ids);
+  }, [orders, date]);
+  const hosurTargetOrderIdsForDateKey = hosurTargetOrderIdsForDate.join(',');
+  const [hosurShopNameById, setHosurShopNameById] = useState<Map<string, string>>(new Map());
+  useEffect(() => {
+    let cancelled = false;
+    if (hosurTargetOrderIdsForDate.length === 0) { setHosurShopNameById(new Map()); return; }
+    (async () => {
+      const { data } = await supabase.from('hosur_orders').select('id, shop_name').in('id', hosurTargetOrderIdsForDate);
+      if (cancelled) return;
+      setHosurShopNameById(new Map(((data ?? []) as Record<string, unknown>[]).map(o => [o.id as string, String(o.shop_name ?? 'Unknown shop')])));
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the
+    // stable joined string, not the unstable array reference.
+  }, [hosurTargetOrderIdsForDateKey]);
+
+  const hosurShopRows = useMemo(() => {
+    const byShop = new Map<string, Map<string, { quantity: number; unit: string }>>();
+    for (const order of orders) {
+      for (const entry of order.dispatchLog || []) {
+        if (entry.branch !== 'Hosur') continue;
+        if (kolkataDateKey(entry.dispatchedAt) !== date) continue;
+        const shopName = entry.targetHosurOrderId ? (hosurShopNameById.get(entry.targetHosurOrderId) ?? 'Unknown shop') : 'Unassigned (not shop-tagged)';
+        const items = byShop.get(shopName) ?? new Map<string, { quantity: number; unit: string }>();
+        const key = `${entry.itemName}__${entry.unit || 'kg'}`;
+        const cur = items.get(key) ?? { quantity: 0, unit: entry.unit || 'kg' };
+        cur.quantity += entry.quantity;
+        items.set(key, cur);
+        byShop.set(shopName, items);
+      }
+    }
+    return Array.from(byShop.entries()).map(([shopName, items]) => {
+      const rows: InvoiceRow[] = Array.from(items.entries()).map(([key, { quantity, unit }]) => {
+        const itemName = key.slice(0, key.lastIndexOf('__'));
+        const unitPrice = priceFor('Hosur', itemName);
+        return { itemName, unit, quantity: Math.round(quantity * 1000) / 1000, unitPrice, lineTotal: Math.round(quantity * unitPrice * 100) / 100 };
+      }).sort((a, c) => a.itemName.localeCompare(c.itemName));
+      const subtotal = rows.reduce((s, r) => s + r.lineTotal, 0);
+      return { shopName, rows, subtotal };
+    }).sort((a, b) => a.shopName.localeCompare(b.shopName));
+  }, [orders, date, hosurShopNameById, priceFor]);
+
+  const renderInvoiceHtml = (docTitle: string, metaHtml: string, rows: InvoiceRow[], discountPctValue: number) => {
+    const subtotal = rows.reduce((s, r) => s + r.lineTotal, 0);
+    const discount = Math.round(subtotal * (discountPctValue / 100) * 100) / 100;
     const total = Math.round((subtotal - discount) * 100) / 100;
     const rowsHtml = rows.map(r => `
       <tr>
@@ -1618,8 +1692,8 @@ function InvoiceTab({ orders }: { orders: BakeryOrder[] }) {
         <td style="text-align:right">${invoiceMoney(r.unitPrice)}</td>
         <td style="text-align:right">${invoiceMoney(r.lineTotal)}</td>
       </tr>`).join('');
-    win.document.write(`
-      <html><head><title>Invoice — ${b} — ${date}</title>
+    return `
+      <html><head><title>${docTitle}</title>
       <style>
         @page { size: auto; margin: 10mm; }
         @media print { html, body { height: auto !important; } }
@@ -1636,18 +1710,43 @@ function InvoiceTab({ orders }: { orders: BakeryOrder[] }) {
       </style></head>
       <body>
         <h1>Cafe Aadvikam — Invoice</h1>
-        <div class="meta">Branch: <b>${b}</b> &nbsp;·&nbsp; Date: <b>${date}</b> &nbsp;·&nbsp; Generated: ${new Date().toLocaleString('en-IN')}</div>
+        <div class="meta">${metaHtml} &nbsp;·&nbsp; Generated: ${new Date().toLocaleString('en-IN')}</div>
         <table>
           <thead><tr><th>Item</th><th style="text-align:right">Qty</th><th style="text-align:right">Unit Price</th><th style="text-align:right">Line Total</th></tr></thead>
           <tbody>${rowsHtml || '<tr><td colspan="4" style="text-align:center;color:#888">No items dispatched on this date</td></tr>'}</tbody>
         </table>
         <div class="totals">
           <div><span>Subtotal</span><span>${invoiceMoney(subtotal)}</span></div>
-          <div class="discount"><span>Discount (10%)</span><span>- ${invoiceMoney(discount)}</span></div>
+          <div class="discount"><span>Discount (${discountPctValue}%)</span><span>- ${invoiceMoney(discount)}</span></div>
           <div class="grand"><span>Total Payable</span><span>${invoiceMoney(total)}</span></div>
         </div>
-      </body></html>`);
+      </body></html>`;
+  };
+
+  const printInvoice = (b: Branch) => {
+    const win = window.open('', '_blank'); if (!win) return;
+    win.document.write(renderInvoiceHtml(
+      `Invoice — ${b} — ${date}`,
+      `Branch: <b>${b}</b> &nbsp;·&nbsp; Date: <b>${date}</b>`,
+      perBranchRows[b],
+      discountPct[b],
+    ));
     win.document.close(); win.print();
+  };
+
+  const printHosurShopInvoice = (shopName: string, rows: InvoiceRow[]) => {
+    const win = window.open('', '_blank'); if (!win) return;
+    win.document.write(renderInvoiceHtml(
+      `Invoice — Hosur — ${shopName} — ${date}`,
+      `Branch: <b>Hosur</b> &nbsp;·&nbsp; Shop: <b>${shopName}</b> &nbsp;·&nbsp; Date: <b>${date}</b>`,
+      rows,
+      discountPct.Hosur,
+    ));
+    win.document.close(); win.print();
+  };
+
+  const printAllHosurShops = () => {
+    for (const s of hosurShopRows) printHosurShopInvoice(s.shopName, s.rows);
   };
 
   return (
@@ -1669,7 +1768,7 @@ function InvoiceTab({ orders }: { orders: BakeryOrder[] }) {
         {BRANCHES.map(b => {
           const rows = perBranchRows[b];
           const subtotal = subtotalFor(b);
-          const discount = subtotal * DISCOUNT_RATE;
+          const discount = subtotal * (discountPct[b] / 100);
           const total = subtotal - discount;
           return (
             <button
@@ -1683,7 +1782,9 @@ function InvoiceTab({ orders }: { orders: BakeryOrder[] }) {
               <p className={cn('text-sm font-black', BRANCH_META[b].text)}>{BRANCH_META[b].icon} {b}</p>
               <p className="mt-1 text-[11px] font-bold text-muted-foreground">{rows.length} item{rows.length === 1 ? '' : 's'} dispatched</p>
               <p className="mt-2 text-lg font-black text-foreground">{invoiceMoney(total)}</p>
-              <p className="text-[10px] font-bold text-muted-foreground">after 10% discount · subtotal {invoiceMoney(subtotal)}</p>
+              <p className="text-[10px] font-bold text-muted-foreground">
+                {discountPct[b] > 0 ? `after ${discountPct[b]}% discount · ` : ''}subtotal {invoiceMoney(subtotal)}
+              </p>
             </button>
           );
         })}
@@ -1695,12 +1796,29 @@ function InvoiceTab({ orders }: { orders: BakeryOrder[] }) {
         <div className="rounded-2xl border border-border bg-white p-4 shadow-sm">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h3 className={cn('text-sm font-black', BRANCH_META[branch].text)}>{BRANCH_META[branch].icon} {branch} — Invoice for {date}</h3>
-            <button
-              onClick={() => printInvoice(branch)}
-              className="flex items-center gap-1.5 rounded-xl bg-muted px-4 py-2 text-xs font-bold text-muted-foreground hover:bg-slate-200"
-            >
-              <Printer className="size-3.5" /> Print Invoice
-            </button>
+            <div className="flex items-center gap-2">
+              <label className="flex items-center gap-1.5 text-[11px] font-bold text-muted-foreground">
+                Discount %
+                <input
+                  type="number"
+                  min={0}
+                  max={100}
+                  step={0.5}
+                  value={discountPct[branch]}
+                  onChange={e => {
+                    const v = Math.max(0, Math.min(100, Number(e.target.value) || 0));
+                    setDiscountPct(p => ({ ...p, [branch]: v }));
+                  }}
+                  className="w-16 rounded-lg border border-border px-2 py-1 text-xs font-bold text-foreground"
+                />
+              </label>
+              <button
+                onClick={() => printInvoice(branch)}
+                className="flex items-center gap-1.5 rounded-xl bg-muted px-4 py-2 text-xs font-bold text-muted-foreground hover:bg-slate-200"
+              >
+                <Printer className="size-3.5" /> Print Invoice
+              </button>
+            </div>
           </div>
 
           {perBranchRows[branch].length === 0 ? (
@@ -1732,9 +1850,49 @@ function InvoiceTab({ orders }: { orders: BakeryOrder[] }) {
 
           <div className="mt-4 ml-auto w-full max-w-xs space-y-1 text-sm">
             <div className="flex justify-between font-bold text-muted-foreground"><span>Subtotal</span><span>{invoiceMoney(subtotalFor(branch))}</span></div>
-            <div className="flex justify-between font-bold text-red-600"><span>Discount (10%)</span><span>- {invoiceMoney(subtotalFor(branch) * DISCOUNT_RATE)}</span></div>
-            <div className="flex justify-between border-t border-border pt-1.5 text-base font-black text-foreground"><span>Total Payable</span><span>{invoiceMoney(subtotalFor(branch) * (1 - DISCOUNT_RATE))}</span></div>
+            <div className="flex justify-between font-bold text-red-600"><span>Discount ({discountPct[branch]}%)</span><span>- {invoiceMoney(subtotalFor(branch) * (discountPct[branch] / 100))}</span></div>
+            <div className="flex justify-between border-t border-border pt-1.5 text-base font-black text-foreground"><span>Total Payable</span><span>{invoiceMoney(subtotalFor(branch) * (1 - discountPct[branch] / 100))}</span></div>
           </div>
+
+          {branch === 'Hosur' && (
+            <div className="mt-5 border-t border-border pt-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h4 className="text-xs font-black text-foreground">By Shop — individual invoices</h4>
+                {hosurShopRows.length > 0 && (
+                  <button
+                    onClick={printAllHosurShops}
+                    className="flex items-center gap-1.5 rounded-xl bg-muted px-3 py-1.5 text-[11px] font-bold text-muted-foreground hover:bg-slate-200"
+                  >
+                    <Printer className="size-3" /> Print All Shops Separately
+                  </button>
+                )}
+              </div>
+              {hosurShopRows.length === 0 ? (
+                <div className="mt-2"><EmptyState text="No Hosur dispatches on this date to break out by shop." /></div>
+              ) : (
+                <div className="mt-2 space-y-2">
+                  {hosurShopRows.map(s => {
+                    const disc = s.subtotal * (discountPct.Hosur / 100);
+                    const total = s.subtotal - disc;
+                    return (
+                      <div key={s.shopName} className="flex items-center justify-between rounded-xl border border-border px-3 py-2">
+                        <div>
+                          <p className="text-xs font-black text-foreground">{s.shopName}</p>
+                          <p className="text-[10px] font-bold text-muted-foreground">{s.rows.length} item{s.rows.length === 1 ? '' : 's'} · {invoiceMoney(total)}{discountPct.Hosur > 0 ? ` (after ${discountPct.Hosur}% discount)` : ''}</p>
+                        </div>
+                        <button
+                          onClick={() => printHosurShopInvoice(s.shopName, s.rows)}
+                          className="flex items-center gap-1.5 rounded-xl bg-muted px-3 py-1.5 text-[11px] font-bold text-muted-foreground hover:bg-slate-200"
+                        >
+                          <Printer className="size-3" /> Print
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -3599,7 +3757,14 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
   if (search.trim() && filtered.length === 0) return null;
 
   return (
-    <div className="overflow-hidden rounded-2xl border border-border bg-white shadow-sm">
+    // BUG FIX (2026-08-07): this stayed `overflow-hidden` even while expanded
+    // (only needed so the collapsed header's corners stay rounded) — every
+    // absolutely-positioned dropdown inside the expanded body (the extra-item
+    // ItemSearchPicker suggestion list, in particular) got silently clipped
+    // the moment it extended past this box, which is exactly what "the
+    // dropdown is blocked, we're unable to see the item" looks like. Only
+    // clip while collapsed; the expanded body doesn't need it.
+    <div className={cn('rounded-2xl border border-border bg-white shadow-sm', !open && 'overflow-hidden')}>
       <button type="button" onClick={() => setOpen(v => !v)} className="flex w-full items-center justify-between px-4 py-3 text-left hover:bg-muted/40">
         <div className="flex items-center gap-2">
           <CalendarDays className="size-4 text-muted-foreground" />

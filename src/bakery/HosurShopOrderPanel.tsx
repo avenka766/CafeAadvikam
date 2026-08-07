@@ -1,8 +1,23 @@
 // src/bakery/HosurShopOrderPanel.tsx
 // Planner's Hosur shop-order placement (price-list dropdown + custom item)
-// and the Dispatch step that was previously missing entirely -- this is what
-// moves a shop order from 'pending_packing' to 'dispatched', after which the
-// embedded Hosur receiving/billing/WhatsApp flow (in HosurDashboard) takes over.
+// and the Dispatch step that was previously missing entirely.
+//
+// WORKFLOW CHANGE (2026-08-07): "the orders dispatched from Planner
+// dashboard dispatch tab should come here and here only — we have to bill
+// and send the bill through WhatsApp and be able to take a physical bill
+// too." DispatchSection below now covers a shop order's entire post-Planner
+// lifecycle in one screen: it used to only show orders still at
+// 'pending_packing' (dispatch in progress), which meant that the instant
+// Planner's own Dispatch tab finished sending every item — flipping the
+// order to 'dispatched' — it fell out of this queue and only surfaced in
+// HosurDashboard's separate Receiving/Billing tabs (which were themselves
+// unreachable from this app's Hosur nav until a moment ago). Now
+// DispatchSection shows both 'pending_packing' AND 'dispatched' orders, and
+// dispatchAndBill/dispatchReceiveAndBill (which never assumed a specific
+// starting status) confirms receipt, creates the bill, captures payment,
+// sends the WhatsApp bill, and enables the "Print Physical Bill" button —
+// all from this one tab. HosurDashboard's ReceivingTab/BillingTab still
+// exist in code but are no longer wired into Hosur's shared nav bar.
 //
 // UI/UX NOTE: restyled to the app's premium brand system (cafe-teal / gold,
 // font-display headings, card-base/shadow-teal/shadow-gold conventions) in
@@ -80,7 +95,13 @@ export default function HosurShopOrderPanel({ section: controlledSection, onPend
 
   useEffect(() => { load(); }, [load]);
 
-  const pendingOrders = useMemo(() => orders.filter(o => o.status === 'pending_packing'), [orders]);
+  // WORKFLOW CHANGE (2026-08-07): include 'dispatched' alongside
+  // 'pending_packing' — see the file header comment. 'pending_packing' is a
+  // shop order Planner's Dispatch tab is still in the middle of sending;
+  // 'dispatched' is one it's fully finished sending. Both still need this
+  // screen's receive+bill+WhatsApp+physical-print step, so both belong in
+  // the same queue instead of the fully-dispatched ones disappearing.
+  const pendingOrders = useMemo(() => orders.filter(o => o.status === 'pending_packing' || o.status === 'dispatched'), [orders]);
   useEffect(() => { onPendingCountChange?.(pendingOrders.length); }, [pendingOrders.length, onPendingCountChange]);
 
   return (
@@ -717,8 +738,8 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
             <Truck className="size-5" />
           </span>
           <div>
-            <h3 className="font-display text-xl font-bold text-foreground">Dispatch Queue</h3>
-            <p className="text-xs font-bold text-muted-foreground font-body">Auto-filled from what's actually been dispatched from production (not just ordered). Dispatching also creates the bill, captures payment, and sends the WhatsApp bill — one click.</p>
+            <h3 className="font-display text-xl font-bold text-foreground">Dispatch &amp; Billing Queue</h3>
+            <p className="text-xs font-bold text-muted-foreground font-body">Every shop order Planner's Dispatch tab has sent — partially or fully — lands here and only here. Auto-filled from what's actually been dispatched from production (not just ordered). One click confirms receipt, creates the bill, captures payment, sends the WhatsApp bill, and unlocks Print Physical Bill.</p>
           </div>
         </div>
         <button
