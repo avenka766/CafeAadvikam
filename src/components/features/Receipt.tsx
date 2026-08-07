@@ -16,11 +16,26 @@ const CAFE = {
 
 function fmt(n: number) { return n.toFixed(2); }
 
-// GST 5% inclusive → split CGST 2.5% + SGST 2.5%
-function calcGst(total: number) {
-  const base = Math.round((total / 1.05) * 100) / 100;
-  const half = Math.round(((total - base) / 2) * 100) / 100;
-  return { base, cgst: half, sgst: half };
+// GST 5% inclusive → split CGST 2.5% + SGST 2.5%.
+// BUG FIX (audit): this used to run on `order.total` (post-discount, minus
+// parcel charges) — but the bill actually printed at checkout time
+// (BillingDashboard.tsx's receiptTotals/taxableAmount/gstParts) computes the
+// Sub Total/CGST/SGST split from the PRE-discount gross of each line
+// (price * qty), summed per item, with any discount shown as its own
+// separate line below. For a discounted order those two calculations don't
+// agree — the checkout bill and this "View Receipt"/"Print Duplicate" view
+// of the SAME order would print different Sub Total/CGST/SGST figures,
+// which matters for GST reconciliation. Mirrors the checkout math exactly
+// so both are always the same number for the same order.
+function taxableAmount(total: number): number {
+  return Math.round((Number(total || 0) / 1.05) * 100) / 100;
+}
+function gstParts(total: number) {
+  const taxable = taxableAmount(total);
+  const tax = Math.max(0, Number(total || 0) - taxable);
+  const cgst = Math.round((tax / 2) * 100) / 100;
+  const sgst = Math.round((tax - cgst) * 100) / 100;
+  return { taxable, cgst, sgst };
 }
 
 interface ReceiptProps {
@@ -29,11 +44,33 @@ interface ReceiptProps {
 }
 
 export default function Receipt({ order, onClose }: ReceiptProps) {
+  // BUG FIX (audit): this used to open a real, visible `window.open(...)`
+  // popup for every print — a whole separate browser window flashing on
+  // screen. BillingDashboard.tsx's printCounterSlip already solved this for
+  // every other Cafe print (KOT, bill, credit slip, advance slip) with an
+  // off-screen, aria-hidden 1x1 iframe that's never visible at any point —
+  // that fix never reached this component, which every "View Receipt" /
+  // "Print Duplicate" action in OrderCard still routes through. Same silent
+  // pattern here now.
   const handlePrint = () => {
     const el = document.getElementById('receipt-print-area');
     if (!el) return;
-    const win = window.open('', '_blank', 'width=380,height=700');
-    if (!win) return;
+    const frame = document.createElement('iframe');
+    frame.setAttribute('aria-hidden', 'true');
+    frame.style.position = 'fixed';
+    frame.style.left = '-10000px';
+    frame.style.bottom = '0';
+    frame.style.width = '1px';
+    frame.style.height = '1px';
+    frame.style.border = '0';
+    frame.style.opacity = '0';
+    frame.style.pointerEvents = 'none';
+    document.body.appendChild(frame);
+
+    const win = frame.contentWindow;
+    if (!win) { frame.remove(); return; }
+
+    win.document.open();
     win.document.write(`<!DOCTYPE html><html><head><title>Bill #${order.orderNumber}</title>
 <style>
 @page{margin:4mm;size:80mm auto}
@@ -44,7 +81,12 @@ body{font-family:'Courier New',monospace;width:76mm;font-size:12px;color:#000}
 table{width:100%;border-collapse:collapse}td{padding:1px 2px;vertical-align:top}
 </style></head><body>${el.innerHTML}</body></html>`);
     win.document.close();
-    setTimeout(() => { win.print(); win.close(); }, 400);
+
+    let cleaned = false;
+    const finish = () => { if (cleaned) return; cleaned = true; frame.remove(); };
+    win.onafterprint = finish;
+    window.setTimeout(finish, 60_000);
+    setTimeout(() => { try { win.focus(); win.print(); } catch { finish(); } }, 350);
   };
 
   const dateObj = new Date(order.createdAt);
@@ -58,10 +100,13 @@ table{width:100%;border-collapse:collapse}td{padding:1px 2px;vertical-align:top}
   const orderLabel = order.orderType === 'dine_in' && order.tableNumber
     ? `Table ${order.tableNumber}` : 'Pick Up';
 
-  // C-06 FIX: compute GST only on food total — parcel charges are not subject to food GST
+  // C-06 FIX: compute GST only on food total — parcel charges are not subject
+  // to food GST (naturally excluded here since only order.items are summed;
+  // parcelCharges is a separate field, never part of this total).
   const parcelCharges = order.parcelCharges ?? 0;
-  const foodTotal = order.total - parcelCharges;
-  const { base, cgst, sgst } = calcGst(foodTotal);
+  const grossFoodTotal = order.items.reduce((s, ci) => s + ci.menuItem.price * ci.quantity, 0);
+  const base = order.items.reduce((s, ci) => s + taxableAmount(ci.menuItem.price * ci.quantity), 0);
+  const { cgst, sgst } = gstParts(grossFoodTotal);
   const totalQty = order.items.reduce((s, ci) => s + ci.quantity, 0);
   const cashierName = order.billedBy || order.createdBy || 'biller';
 
