@@ -11,7 +11,7 @@ import {
   ClipboardList, Layers, Factory, Truck, Cake, PackageCheck,
   ArrowRightLeft, Calendar, Plus, Send, CheckCircle2, Loader2,
   ChevronDown, ChevronUp, X, RefreshCw, AlertTriangle, FileSpreadsheet, Clock3,
-  Store, CreditCard, WalletCards, MessageCircle, Bell, CalendarDays, ShieldCheck,
+  Store, CreditCard, WalletCards, MessageCircle, Bell, CalendarDays,
   Search, Printer, Receipt, ListPlus, BarChart3, FileText, Minus, IndianRupee,
   ShoppingCart, Percent, Trash2, Scale,
 } from 'lucide-react';
@@ -33,7 +33,12 @@ import PackingCakeOrdersTab from './PackingCakeOrdersTab';
 import PlannerLeftoverTab, { useLeftoverBalanceMap, recordLeftoverMovement, kolkataToday, qtyFmt, type LeftoverUnit, useMergedLeftoverCatalog, useBranchOnlyCatalog, ItemSearchPicker, type MergedCatalogItem } from './PlannerLeftoverTab';
 import { canonicalItemSlug, closingStockItemSlug, parseWeightGrams, pcsToKg, resolveItemWeightGrams } from './itemMatcher';
 import { useBranchCatalogStore } from '@/stores/branchCatalogStore';
+import {
+  businessFor, defaultDiscountPct, saveDispatchInvoice, printDispatchInvoice, listDispatchInvoices,
+  type DispatchInvoiceRecord, type DispatchInvoiceItem,
+} from './dispatchInvoice';
 import { supabase } from '@/lib/supabase';
+import { getPackingCounterStatus } from './packingCounter';
 
 // TAB MERGE (2026-08-06): the old standalone 'done' tab ("Leftover / Done" —
 // a bare per-order yes/no checkbox with no quantity/item detail) has been
@@ -1422,7 +1427,7 @@ function ProductionEntryDateGroup({ label, orders, rows, search, defaultOpen }: 
 // ─── Tab: Hosur — one unified, grouped sub-tab bar controlling shop
 // ordering/dispatch (this component) and the embedded billing/credit/
 // reports panel (HosurDashboard), instead of two separate stacked tab bars.
-type HosurSubTab = 'place' | 'dispatch' | 'shops' | 'credit' | 'collection' | 'whatsapp' | 'reminders' | 'closure' | 'reports' | 'notifications';
+type HosurSubTab = 'place' | 'dispatch' | 'shops' | 'credit' | 'collection' | 'whatsapp' | 'reminders' | 'reports';
 const HOSUR_SUB_TAB_GROUPS: { label: string; tabs: { key: HosurSubTab; label: string; icon: React.ReactNode; ownedByPanel: boolean }[] }[] = [
   { label: 'Orders', tabs: [
     { key: 'place',    label: 'Place Order',       icon: <Store className="size-3.5" />, ownedByPanel: true },
@@ -1445,17 +1450,15 @@ const HOSUR_SUB_TAB_GROUPS: { label: string; tabs: { key: HosurSubTab; label: st
   { label: 'Money', tabs: [
     { key: 'credit',     label: 'Credit Ledger',      icon: <CreditCard className="size-3.5" />, ownedByPanel: false },
     { key: 'collection', label: 'Payment Collection', icon: <WalletCards className="size-3.5" />, ownedByPanel: false },
-    // BUG FIX (2026-08-07): 'closure' was in the HosurSubTab type and
-    // HosurDashboard's own tab set, but had NO nav button anywhere in this
-    // shared bar — the only way in was clicking "Open Counter" inside
-    // Payment Collection, which sets the URL's hosurTab=closure, but this
-    // component's own activeTab fallback (below) only recognizes keys that
-    // appear in HOSUR_SUB_TAB_GROUPS, so it silently bounced back to "Place
-    // Order" instead. Since the Hosur cash counter must be open before
-    // Payment Collection will accept anything, that made Payment Collection
-    // permanently unusable. Direct nav entry fixes both the dead-end and
-    // lets staff open/close the counter proactively instead of only via error.
-    { key: 'closure',    label: 'Daily Closure',      icon: <Calendar className="size-3.5" />, ownedByPanel: false },
+    // WORKFLOW CHANGE (2026-08-08): "There should be only one [Daily
+    // Closure] — remove the daily closure subtab in hosur tab." Hosur used
+    // to have its own separate Daily Closure sub-tab (a second, independent
+    // cash counter from Planner's top-level one), which is exactly the kind
+    // of two-counters confusion diagnosed in the 2026-08-07 disabled-button
+    // fix below. That nav entry is removed — Payment Collection and Billing
+    // now gate off Planner's single top-level Daily Closure counter instead
+    // (see getHosurCounterStatus in HosurDashboard.tsx), and their "Open
+    // Counter" buttons jump straight to Planner's own Daily Closure tab.
   ] },
   { label: 'Communication', tabs: [
     { key: 'whatsapp',  label: 'WhatsApp Logs',    icon: <MessageCircle className="size-3.5" />, ownedByPanel: false },
@@ -1464,7 +1467,8 @@ const HOSUR_SUB_TAB_GROUPS: { label: string; tabs: { key: HosurSubTab; label: st
   { label: 'Admin', tabs: [
     { key: 'shops',         label: 'Shop Master',   icon: <Store className="size-3.5" />, ownedByPanel: false },
     { key: 'reports',       label: 'Reports',       icon: <FileSpreadsheet className="size-3.5" />, ownedByPanel: false },
-    { key: 'notifications', label: 'Notifications', icon: <ShieldCheck className="size-3.5" />, ownedByPanel: false },
+    // FEATURE (2026-08-08): "remove notification in hosur tab" — Notifications
+    // sub-tab removed from nav per owner's explicit request.
   ] },
 ];
 
@@ -1555,6 +1559,90 @@ function InvoiceTab({ orders }: { orders: BakeryOrder[] }) {
     loadCatalog('SNB').catch(() => {});
     loadCatalog('VRSNB').catch(() => {});
   }, [loadCatalog]);
+
+  // FEATURE (2026-08-08): "if once batch is send it should store as one
+  // batch — if we click on it, it should show. Under each branch we should
+  // be able to take the pdf and I need date range filter — if I select
+  // month and select the branch I should be able to download that month
+  // complete data." Every confirmed dispatch (branch flat, per-shop Hosur,
+  // cake) now writes one dispatch_invoices row via saveDispatchInvoice —
+  // this section browses those stored batches, separate from the ad-hoc
+  // by-date summary above (which recomputes from dispatchLog and predates
+  // batch storage).
+  const [batchMonth, setBatchMonth] = useState(() => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date()).slice(0, 7));
+  const [batchBranch, setBatchBranch] = useState<Branch | 'All'>('All');
+  const [batches, setBatches] = useState<DispatchInvoiceRecord[] | null>(null);
+  const [batchError, setBatchError] = useState('');
+  const [openBatchId, setOpenBatchId] = useState<string | null>(null);
+
+  const monthRange = useMemo(() => {
+    const [y, m] = batchMonth.split('-').map(Number);
+    const from = `${batchMonth}-01T00:00:00+05:30`;
+    const nextMonth = m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, '0')}`;
+    const to = `${nextMonth}-01T00:00:00+05:30`;
+    return { from, to };
+  }, [batchMonth]);
+
+  const loadBatches = useCallback(async () => {
+    setBatchError('');
+    try {
+      const records = await listDispatchInvoices({
+        fromDate: monthRange.from, toDate: monthRange.to,
+        scope: batchBranch === 'All' ? undefined : batchBranch,
+      });
+      setBatches(records);
+    } catch (err) {
+      setBatchError(err instanceof Error ? err.message : 'Failed to load dispatch batches.');
+      setBatches([]);
+    }
+  }, [monthRange, batchBranch]);
+
+  useEffect(() => { void loadBatches(); }, [loadBatches]);
+
+  const batchesByBranch = useMemo(() => {
+    const map = new Map<Branch, DispatchInvoiceRecord[]>();
+    for (const record of batches ?? []) {
+      const list = map.get(record.scope) ?? [];
+      list.push(record);
+      map.set(record.scope, list);
+    }
+    return map;
+  }, [batches]);
+
+  const downloadMonthExcel = () => {
+    const rows: Record<string, unknown>[] = [];
+    for (const record of batches ?? []) {
+      for (const item of record.items) {
+        rows.push({
+          invoiceNo: record.invoiceNo,
+          branch: record.scope,
+          shop: record.hosurShopName ?? '',
+          date: new Date(record.createdAt).toLocaleDateString('en-IN'),
+          dispatchedBy: record.dispatchedBy,
+          itemName: item.itemName,
+          quantity: item.quantity,
+          unit: item.unit,
+          unitPrice: item.unitPrice,
+          lineTotal: item.lineTotal,
+          discountPct: record.discountPct,
+          invoiceTotal: record.total,
+        });
+      }
+    }
+    exportToExcel({
+      filename: `dispatch-invoices-${batchMonth}-${batchBranch}`,
+      sheetName: 'Dispatch Invoices',
+      title: `Dispatch Invoices — ${batchBranch === 'All' ? 'All Branches' : batchBranch} — ${batchMonth}`,
+      columns: [
+        { header: 'Invoice No', key: 'invoiceNo' }, { header: 'Branch', key: 'branch' }, { header: 'Shop', key: 'shop' },
+        { header: 'Date', key: 'date' }, { header: 'Dispatched By', key: 'dispatchedBy' },
+        { header: 'Item', key: 'itemName' }, { header: 'Qty', key: 'quantity' }, { header: 'Unit', key: 'unit' },
+        { header: 'Unit Price', key: 'unitPrice' }, { header: 'Line Total', key: 'lineTotal' },
+        { header: 'Discount %', key: 'discountPct' }, { header: 'Invoice Total', key: 'invoiceTotal' },
+      ],
+      rows,
+    });
+  };
 
   // Hosur bakery orders don't have their own item catalog like SNB/VRSNB —
   // price them off the shop price lists (average unit price per item name
@@ -1895,6 +1983,96 @@ function InvoiceTab({ orders }: { orders: BakeryOrder[] }) {
           )}
         </div>
       )}
+
+      <div className="rounded-2xl border border-border bg-white p-4 shadow-sm">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h3 className="text-sm font-black text-foreground">Dispatch Batches</h3>
+            <p className="text-[11px] font-bold text-muted-foreground">Every confirmed dispatch is stored here as one batch — click a batch to reprint its invoice.</p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              type="month" value={batchMonth}
+              onChange={e => setBatchMonth(e.target.value || batchMonth)}
+              className="rounded-xl border border-border px-3 py-2 text-xs font-bold text-muted-foreground"
+            />
+            <select
+              value={batchBranch}
+              onChange={e => setBatchBranch(e.target.value as Branch | 'All')}
+              className="rounded-xl border border-border px-3 py-2 text-xs font-bold text-muted-foreground"
+            >
+              <option value="All">All Branches</option>
+              {BRANCHES.map(b => <option key={b} value={b}>{b}</option>)}
+            </select>
+            <button
+              onClick={downloadMonthExcel}
+              disabled={!batches || batches.length === 0}
+              className="flex items-center gap-1.5 rounded-xl border border-teal-200 bg-teal-50 px-3 py-2 text-xs font-bold text-teal-700 hover:bg-teal-100 disabled:opacity-40"
+            >
+              <FileSpreadsheet className="size-3.5" /> Download Month
+            </button>
+          </div>
+        </div>
+
+        {batchError && <p className="mt-3 text-xs font-bold text-red-700">{batchError}</p>}
+
+        {batches === null ? (
+          <p className="mt-3 text-[11px] font-bold text-muted-foreground">Loading batches…</p>
+        ) : batches.length === 0 ? (
+          <div className="mt-3"><EmptyState text="No dispatch batches stored for this month yet." /></div>
+        ) : (
+          <div className="mt-3 space-y-4">
+            {BRANCHES.filter(b => batchesByBranch.has(b)).map(b => (
+              <div key={b}>
+                <h4 className={cn('text-xs font-black', BRANCH_META[b].text)}>{BRANCH_META[b].icon} {b} — {batchesByBranch.get(b)!.length} batch{batchesByBranch.get(b)!.length === 1 ? '' : 'es'}</h4>
+                <div className="mt-1.5 space-y-1.5">
+                  {batchesByBranch.get(b)!.map(record => (
+                    <div key={record.id} className="rounded-xl border border-border">
+                      <button
+                        type="button"
+                        onClick={() => setOpenBatchId(v => v === record.id ? null : record.id)}
+                        className="flex w-full flex-wrap items-center justify-between gap-2 px-3 py-2 text-left"
+                      >
+                        <span className="text-xs font-bold text-foreground">
+                          {record.invoiceNo}{record.hosurShopName ? ` — ${record.hosurShopName}` : ''}
+                          <span className="ml-1.5 text-muted-foreground">· {new Date(record.createdAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</span>
+                        </span>
+                        <span className="text-xs font-black text-foreground">{invoiceMoney(record.total)}</span>
+                      </button>
+                      {openBatchId === record.id && (
+                        <div className="border-t border-border px-3 py-2.5">
+                          <div className="overflow-x-auto rounded-lg border border-border">
+                            <table className="w-full text-xs">
+                              <thead className="bg-muted/40 text-left font-black uppercase text-muted-foreground">
+                                <tr><th className="px-2 py-1.5">Item</th><th className="px-2 py-1.5 text-right">Qty</th><th className="px-2 py-1.5 text-right">Rate</th><th className="px-2 py-1.5 text-right">Total</th></tr>
+                              </thead>
+                              <tbody>
+                                {record.items.map(item => (
+                                  <tr key={item.itemName} className="border-t border-border">
+                                    <td className="px-2 py-1.5 font-bold text-foreground">{item.itemName}</td>
+                                    <td className="px-2 py-1.5 text-right text-muted-foreground">{item.quantity} {item.unit}</td>
+                                    <td className="px-2 py-1.5 text-right text-muted-foreground">{invoiceMoney(item.unitPrice)}</td>
+                                    <td className="px-2 py-1.5 text-right font-black text-foreground">{invoiceMoney(item.lineTotal)}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                          <p className="mt-1.5 text-[10px] font-bold text-muted-foreground">Dispatched by {record.dispatchedBy} · Discount {record.discountPct}% · Subtotal {invoiceMoney(record.subtotal)}</p>
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            <button onClick={() => printDispatchInvoice(record, 'thermal')} className="flex items-center gap-1.5 rounded-xl bg-muted px-3 py-1.5 text-[11px] font-bold text-muted-foreground hover:bg-slate-200"><Printer className="size-3" /> Print / PDF (Thermal)</button>
+                            <button onClick={() => printDispatchInvoice(record, 'a4')} className="flex items-center gap-1.5 rounded-xl bg-muted px-3 py-1.5 text-[11px] font-bold text-muted-foreground hover:bg-slate-200"><Printer className="size-3" /> Print / PDF (A4)</button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -2644,6 +2822,32 @@ function BillingTab() {
   const [recent, setRecent] = useState<WalkinBillRow[]>([]);
   const [loadingRecent, setLoadingRecent] = useState(true);
 
+  // BUG FIX (2026-08-08): "the daily closure -> cashier closure opens only I
+  // should be able to send the bills for hosur shops and I should be able to
+  // make sales in billing (walk in) tab" — this screen had NO counter gate
+  // at all, so a walk-in sale could be recorded even with the day's counter
+  // never opened. Now gated by the same single Planner Daily Closure counter
+  // (packingCounter.ts) that already gates Hosur dispatch/billing, with the
+  // same 15s-poll-while-visible pattern used there so this doesn't go stale
+  // for a screen that stays mounted all session.
+  const [counterOpen, setCounterOpen] = useState<boolean | null>(null);
+  const [counterError, setCounterError] = useState('');
+  const refreshCounter = useCallback(async () => {
+    try {
+      const status = await getPackingCounterStatus();
+      setCounterOpen(status.isOpen);
+      setCounterError('');
+    } catch (err) {
+      setCounterOpen(false);
+      setCounterError(err instanceof Error ? err.message : 'Could not check the Daily Closure counter status.');
+    }
+  }, []);
+  useEffect(() => {
+    void refreshCounter();
+    const interval = window.setInterval(() => { if (!document.hidden) void refreshCounter(); }, 15_000);
+    return () => window.clearInterval(interval);
+  }, [refreshCounter]);
+
   useEffect(() => { loadCatalog('SNB').catch(() => {}); loadCatalog('VRSNB').catch(() => {}); }, [loadCatalog]);
 
   const loadRecent = useCallback(async () => {
@@ -2693,6 +2897,14 @@ function BillingTab() {
 
   const saveBill = async () => {
     if (cartLines.length === 0) { setError('Add at least one item.'); return; }
+    // Defense in depth: re-check right before saving, not just at the button
+    // level, in case the counter got closed since the poll last ran.
+    const status = await getPackingCounterStatus().catch(() => null);
+    if (!status?.isOpen) {
+      setCounterOpen(false);
+      setError("Planner's Daily Closure counter is closed — open it from the Daily Closure tab before billing.");
+      return;
+    }
     setSaving(true); setError('');
     try {
       // BUG FIX: `Date.now().toString().slice(-8)` looked unique but is just
@@ -2738,6 +2950,13 @@ function BillingTab() {
           </div>
         </div>
       </div>
+
+      {counterOpen === false && (
+        <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs font-bold text-amber-900">
+          <AlertTriangle className="size-4 shrink-0" />
+          {counterError || "Planner's Daily Closure counter is closed — open it from the Daily Closure tab before billing."}
+        </div>
+      )}
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_22rem]">
         <section className="space-y-3 card-base p-5">
@@ -2821,7 +3040,7 @@ function BillingTab() {
 
           {error && <p className="rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs font-bold text-destructive">{error}</p>}
 
-          <button onClick={saveBill} disabled={saving || cartLines.length === 0} className="flex h-11 w-full items-center justify-center gap-2 rounded-xl cafe-gradient text-sm font-black text-white shadow-teal disabled:opacity-40">
+          <button onClick={saveBill} disabled={saving || cartLines.length === 0 || counterOpen === false} className="flex h-11 w-full items-center justify-center gap-2 rounded-xl cafe-gradient text-sm font-black text-white shadow-teal disabled:opacity-40">
             {saving ? <Loader2 className="size-4 animate-spin" /> : <IndianRupee className="size-4" />} Save Bill{cartLines.length > 0 ? ` (${invoiceMoney(total)})` : ''}
           </button>
 
@@ -2985,6 +3204,8 @@ interface HosurShopOrderCard {
   orderId: string;
   orderNumber: string;
   shopName: string;
+  shopId: string | null;
+  shopPhone: string | null;
   items: { itemName: string; unit: string; requested: number; dispatched: number }[];
 }
 
@@ -3014,12 +3235,30 @@ function useHosurShopOrders(rows: ProductionRow[], orders: BakeryOrder[]) {
     if (hosurOrderIds.length === 0) { setShopOrders([]); return; }
     (async () => {
       const [{ data: ordersData }, { data: itemsData }] = await Promise.all([
-        supabase.from('hosur_orders').select('id, order_number, shop_name').in('id', hosurOrderIds),
+        supabase.from('hosur_orders').select('id, order_number, shop_name, shop_id').in('id', hosurOrderIds),
         supabase.from('hosur_order_items').select('order_id, item_name, unit, quantity, dispatched_quantity').in('order_id', hosurOrderIds),
       ]);
       if (cancelled) return;
-      const metaById = new Map<string, { orderNumber: string; shopName: string }>(
-        ((ordersData ?? []) as Record<string, unknown>[]).map((o) => [o.id as string, { orderNumber: String(o.order_number ?? ''), shopName: String(o.shop_name ?? '') }]),
+      // Invoice needs the shop's phone number ("if it's Hosur mention the
+      // shop name and number") — hosur_orders itself only stores shop_id, so
+      // resolve phone via a second lookup against hosur_shops.
+      const shopIds = Array.from(new Set(((ordersData ?? []) as Record<string, unknown>[]).map(o => o.shop_id as string | null).filter((id): id is string => !!id)));
+      const phoneByShopId = new Map<string, string>();
+      if (shopIds.length > 0) {
+        const { data: shopsData } = await supabase.from('hosur_shops').select('id, whatsapp_number').in('id', shopIds);
+        for (const s of (shopsData ?? []) as Record<string, unknown>[]) {
+          phoneByShopId.set(s.id as string, String(s.whatsapp_number ?? ''));
+        }
+      }
+      if (cancelled) return;
+      const metaById = new Map<string, { orderNumber: string; shopName: string; shopId: string | null; shopPhone: string | null }>(
+        ((ordersData ?? []) as Record<string, unknown>[]).map((o) => {
+          const shopId = (o.shop_id as string | null) ?? null;
+          return [o.id as string, {
+            orderNumber: String(o.order_number ?? ''), shopName: String(o.shop_name ?? ''),
+            shopId, shopPhone: shopId ? (phoneByShopId.get(shopId) || null) : null,
+          }];
+        }),
       );
       const byOrder = new Map<string, { itemName: string; unit: string; requested: number; dispatched: number }[]>();
       for (const item of (itemsData ?? []) as Record<string, unknown>[]) {
@@ -3044,7 +3283,11 @@ function useHosurShopOrders(rows: ProductionRow[], orders: BakeryOrder[]) {
       for (const [orderId, items] of byOrder) {
         const meta = metaById.get(orderId);
         if (!meta || items.length === 0) continue;
-        cards.push({ orderId, orderNumber: meta.orderNumber, shopName: meta.shopName, items: items.sort((a, b) => a.itemName.localeCompare(b.itemName)) });
+        cards.push({
+          orderId, orderNumber: meta.orderNumber, shopName: meta.shopName,
+          shopId: meta.shopId, shopPhone: meta.shopPhone,
+          items: items.sort((a, b) => a.itemName.localeCompare(b.itemName)),
+        });
       }
       cards.sort((a, b) => a.shopName.localeCompare(b.shopName));
       setShopOrders(cards);
@@ -3059,25 +3302,22 @@ function useHosurShopOrders(rows: ProductionRow[], orders: BakeryOrder[]) {
 }
 
 // FEATURE (2026-08-07): "Sometimes the planner will dispatch additional
-// items from the requested items" — a shared, reusable mini-form for sending
+// items from the requested items" — a shared, reusable mini-form for adding
 // an item a branch/shop did NOT request (or more of an item than was ever
-// requested). Every send through here is tagged isExtra=true on the
-// DispatchEntry, which:
+// requested) into this session's pending dispatch. Every item added here is
+// tagged isExtra=true once it's actually dispatched, which:
 //   - shows up in the Closing Stock Movement Log/Daily Report tagged
 //     "EXTRA (non-requested item)" (see submitDispatch's extraNote), and
 //   - is exported in the Dispatch Excel report's own Type column (see
 //     DispatchTab's exportRows / dispatch log export below).
-// Deliberately bypasses the "remaining = requested − dispatched" capping
-// every normal dispatch line uses — there IS no requested quantity for an
-// item that was never ordered, so the planner's typed quantity is sent as-is
-// (still requires it to be a real positive number).
-function ExtraItemDispatchForm({ branch, anchorOrderId, targetHosurOrderId, onDispatch, dispatchedBy, onDone, contextLabel, suggestions }: {
-  branch: Branch;
-  anchorOrderId: string | null;
-  targetHosurOrderId?: string;
-  onDispatch: ReturnType<typeof useBakeryStore.getState>['submitDispatch'];
-  dispatchedBy: string;
-  onDone: () => void;
+// WORKFLOW CHANGE (2026-08-08): "when we add an extra item it should
+// display in To Dispatch sub tab" — this used to send the moment "Send" was
+// clicked, straight to branch_incoming with no review step. It now only
+// stages the item into the parent's pending list (onAdd) so it shows up
+// right alongside the normal requested items, and only actually goes out
+// once the planner reviews everything together in DispatchReviewModal and
+// confirms — same as every other line here.
+function ExtraItemDispatchForm({ contextLabel, suggestions, onAdd }: {
   contextLabel: string;
   // BUG FIX/FEATURE (audit): this field used to be bare free text with zero
   // suggestions. Planner asked for branch-scoped suggestions — VRSNB items
@@ -3085,44 +3325,22 @@ function ExtraItemDispatchForm({ branch, anchorOrderId, targetHosurOrderId, onDi
   // create a name that never matches the branch's real catalogue. Free text
   // is still fully allowed (an empty/undefined list just means no dropdown).
   suggestions?: MergedCatalogItem[];
+  onAdd: (item: { itemName: string; unit: 'kg' | 'pcs'; quantity: number }) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState('');
   const [selectedSuggestion, setSelectedSuggestion] = useState<MergedCatalogItem | null>(null);
   const [qty, setQty] = useState('');
   const [unit, setUnit] = useState<'kg' | 'pcs'>('kg');
-  const [sending, setSending] = useState(false);
-  const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const [added, setAdded] = useState<string | null>(null);
 
-  const send = async () => {
+  const add = () => {
     const trimmedName = name.trim();
     const amount = Number(qty);
     if (!trimmedName || !qty || amount <= 0) return;
-    if (!anchorOrderId) {
-      setResult({ ok: false, message: `No active order for ${contextLabel} to attach this extra dispatch to.` });
-      return;
-    }
-    setSending(true); setResult(null);
-    try {
-      await onDispatch(anchorOrderId, {
-        id: crypto.randomUUID(),
-        itemName: trimmedName,
-        quantity: amount,
-        unit,
-        branch,
-        dispatchedBy,
-        dispatchedAt: new Date().toISOString(),
-        ...(targetHosurOrderId ? { targetHosurOrderId } : {}),
-        isExtra: true,
-      });
-      setResult({ ok: true, message: `Sent extra "${trimmedName}" (${amount} ${unit}) — tagged as non-requested in the report and Closing Stock.` });
-      setName(''); setSelectedSuggestion(null); setQty('');
-      onDone();
-    } catch (err) {
-      setResult({ ok: false, message: err instanceof Error ? err.message : 'Failed to send extra item.' });
-    } finally {
-      setSending(false);
-    }
+    onAdd({ itemName: trimmedName, unit, quantity: amount });
+    setAdded(`Added "${trimmedName}" (${amount} ${unit}) to the list below — dispatch it along with everything else when you're ready.`);
+    setName(''); setSelectedSuggestion(null); setQty('');
   };
 
   if (!open) {
@@ -3132,7 +3350,7 @@ function ExtraItemDispatchForm({ branch, anchorOrderId, targetHosurOrderId, onDi
         onClick={() => setOpen(true)}
         className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-dashed border-amber-300 bg-amber-50 px-3 py-2 text-[11px] font-black text-amber-800 hover:bg-amber-100"
       >
-        <Plus className="size-3.5" /> Dispatch an extra / non-requested item to {contextLabel}
+        <Plus className="size-3.5" /> Add an extra / non-requested item to {contextLabel}
       </button>
     );
   }
@@ -3141,7 +3359,7 @@ function ExtraItemDispatchForm({ branch, anchorOrderId, targetHosurOrderId, onDi
     <div className="rounded-xl border border-amber-300 bg-amber-50 p-3">
       <div className="mb-2 flex items-center justify-between">
         <span className="text-[11px] font-black uppercase tracking-wide text-amber-800">Extra item — not requested by {contextLabel}</span>
-        <button type="button" onClick={() => { setOpen(false); setResult(null); }} className="text-[11px] font-bold text-amber-700 hover:underline">Close</button>
+        <button type="button" onClick={() => { setOpen(false); setAdded(null); }} className="text-[11px] font-bold text-amber-700 hover:underline">Close</button>
       </div>
       <div className="grid gap-2 sm:grid-cols-[1fr_auto_auto_auto]">
         <ItemSearchPicker
@@ -3157,14 +3375,14 @@ function ExtraItemDispatchForm({ branch, anchorOrderId, targetHosurOrderId, onDi
           <option value="pcs">pcs</option>
         </select>
         <button
-          onClick={() => void send()}
-          disabled={sending || !name.trim() || !qty || Number(qty) <= 0}
+          onClick={add}
+          disabled={!name.trim() || !qty || Number(qty) <= 0}
           className="flex items-center justify-center gap-1.5 rounded-lg bg-amber-700 px-3 py-1.5 text-xs font-black text-white hover:bg-amber-800 disabled:opacity-50"
         >
-          {sending ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />} Send
+          <Plus className="size-3.5" /> Add
         </button>
       </div>
-      {result && <p className={cn('mt-1.5 text-[11px] font-bold', result.ok ? 'text-teal-700' : 'text-red-700')}>{result.message}</p>}
+      {added && <p className="mt-1.5 text-[11px] font-bold text-teal-700">{added}</p>}
     </div>
   );
 }
@@ -3192,9 +3410,21 @@ function HosurShopDispatchPanel({ rows, mode, orders, leftoverBalances, onDispat
   const [shopSearch, setShopSearch] = useState('');
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
   const [qtyDraft, setQtyDraft] = useState<Record<string, string>>({});
-  const [sending, setSending] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
   const { getId, reset: resetDispatchIds } = useStableDispatchIds();
+
+  // WORKFLOW CHANGE (2026-08-08): same review-before-dispatch treatment as
+  // BranchFlatDispatchPanel — extra items stage per-card (keyed by orderId
+  // since only one card is open at a time) instead of dispatching instantly,
+  // and "Send" opens DispatchReviewModal instead of calling onDispatch.
+  const [extraItemsByCard, setExtraItemsByCard] = useState<Record<string, { itemName: string; unit: 'kg' | 'pcs'; quantity: number }[]>>({});
+  const addExtraItem = (orderId: string, item: { itemName: string; unit: 'kg' | 'pcs'; quantity: number }) => {
+    setExtraItemsByCard(v => ({ ...v, [orderId]: [...(v[orderId] ?? []), item] }));
+  };
+  const removeExtraItem = (orderId: string, idx: number) => {
+    setExtraItemsByCard(v => ({ ...v, [orderId]: (v[orderId] ?? []).filter((_, i) => i !== idx) }));
+  };
+  const [review, setReview] = useState<{ actions: PendingDispatchAction[]; card: HosurShopOrderCard } | null>(null);
 
   const availableFor = (itemName: string) => Math.max(0, leftoverBalances.get(closingStockItemSlug(itemName))?.balance ?? 0);
 
@@ -3222,82 +3452,72 @@ function HosurShopDispatchPanel({ rows, mode, orders, leftoverBalances, onDispat
   const cancel = () => { setSelectedOrderId(null); setQtyDraft({}); setResult(null); };
   const removeItem = (itemName: string) => setQtyDraft(v => ({ ...v, [itemName]: '0' }));
 
-  const sendCard = async (card: HosurShopOrderCard) => {
-    setSending(true);
+  // WORKFLOW CHANGE (2026-08-08): "when we select the item and click on
+  // dispatch it should open the checklist... I should also get the invoice."
+  // This used to call onDispatch immediately per item; it now only builds
+  // the pending action list and opens DispatchReviewModal — that modal is
+  // the sole place submitDispatch actually runs, on explicit confirm.
+  const openReviewForCard = (card: HosurShopOrderCard) => {
     setResult(null);
-    try {
-      let sentAny = false;
-      let skippedNoLink = false;
-      let clampedAny = false;
-      for (const item of card.items) {
-        // CRITICAL BUG FIX (2026-08-07): this used to send whatever was
-        // typed in the box, with no ceiling — if the card's "already
-        // dispatched" figure was even slightly stale (or the planner just
-        // retyped the full ordered amount without checking), the same item
-        // could be sent to the same shop repeatedly, well past what that
-        // shop ever ordered. Hard-cap every send to this item's true
-        // remaining balance (requested − already dispatched, from the
-        // freshest card data available) — dispatching more than a shop
-        // ordered should never be possible from this screen.
-        const remaining = Math.max(0, Math.round((item.requested - item.dispatched) * 100) / 100);
-        const typed = Number(qtyDraft[item.itemName] || 0);
-        const qty = Math.min(typed, remaining);
-        if (typed > remaining + 0.01) clampedAny = true;
-        if (qty <= 0.001) continue;
-        const row = rowsByName.get(item.itemName);
-        if (!row) { skippedNoLink = true; continue; }
-        const targetEntries = orders.filter(o => row.contributingOrderIds.includes(o.id) && bakeryOrderCoversHosurShopOrder(o, card.orderId));
-        // BUG FIX (audit): this used to fall through silently when no
-        // bakery_orders row could be matched back to this shop's tag (e.g.
-        // stale/edited notes) — the planner would just see the generic
-        // "every item is set to 0" message even though they'd entered a
-        // real quantity, which is misleading about what actually went wrong.
-        if (targetEntries.length === 0) { skippedNoLink = true; continue; }
-        const split = autoSplitForItem(targetEntries, row.itemName, qty);
-        for (const order of targetEntries) {
-          const orderItem = order.items.find(i => sameItem(i.itemName, row.itemName));
-          const orderQty = split[order.id] ?? 0;
-          if (!orderItem || orderQty <= 0) continue;
-          await onDispatch(order.id, {
-            id: getId(`${order.id}:${row.itemName}:${card.orderId}`),
-            itemName: orderItem.itemName,
-            quantity: orderQty,
-            unit: orderItem.dispatchUnit || 'kg',
-            branch: 'Hosur',
-            dispatchedBy,
-            dispatchedAt: new Date().toISOString(),
-            targetHosurOrderId: card.orderId,
-          });
-          sentAny = true;
-        }
-      }
-      if (!sentAny) {
-        setResult({
-          ok: false,
-          message: skippedNoLink
-            ? "Couldn't send — one or more items couldn't be linked back to this shop's order. Refresh the page and try again; if it keeps happening, this order's data may need attention."
-            : clampedAny
-              ? "Nothing to send — every item here is already fully dispatched to this shop."
-              : 'Nothing to send — every item is set to 0.',
+    const actions: PendingDispatchAction[] = [];
+    let skippedNoLink = false;
+    let clampedAny = false;
+    for (const item of card.items) {
+      // CRITICAL BUG FIX (2026-08-07, preserved): hard-cap every send to
+      // this item's true remaining balance (requested − already dispatched)
+      // — dispatching more than a shop ordered should never be possible.
+      const remaining = Math.max(0, Math.round((item.requested - item.dispatched) * 100) / 100);
+      const typed = Number(qtyDraft[item.itemName] || 0);
+      const qty = Math.min(typed, remaining);
+      if (typed > remaining + 0.01) clampedAny = true;
+      if (qty <= 0.001) continue;
+      const row = rowsByName.get(item.itemName);
+      if (!row) { skippedNoLink = true; continue; }
+      const targetEntries = orders.filter(o => row.contributingOrderIds.includes(o.id) && bakeryOrderCoversHosurShopOrder(o, card.orderId));
+      if (targetEntries.length === 0) { skippedNoLink = true; continue; }
+      const split = autoSplitForItem(targetEntries, row.itemName, qty);
+      for (const order of targetEntries) {
+        const orderItem = order.items.find(i => sameItem(i.itemName, row.itemName));
+        const orderQty = split[order.id] ?? 0;
+        if (!orderItem || orderQty <= 0) continue;
+        actions.push({
+          orderId: order.id, itemName: orderItem.itemName, quantity: orderQty, unit: orderItem.dispatchUnit || 'kg',
+          dispatchEntryId: getId(`${order.id}:${row.itemName}:${card.orderId}`), targetHosurOrderId: card.orderId,
         });
+      }
+    }
+    const anchorOrderId = orders.find(o => bakeryOrderCoversHosurShopOrder(o, card.orderId))?.id ?? null;
+    const extras = extraItemsByCard[card.orderId] ?? [];
+    if (extras.length > 0) {
+      // BUG FIX (2026-08-08 audit): same silent-drop issue as
+      // BranchFlatDispatchPanel — without a linked bakery_orders row, extra
+      // items had nowhere to attach and used to just vanish with a generic
+      // error. Should be rare for a Hosur shop card (it only exists because
+      // a linked order was created), but fail loudly instead of silently.
+      if (!anchorOrderId) {
+        setResult({ ok: false, message: `Can't send extra items — no linked order found for ${card.shopName}'s order. Refresh and try again.` });
         return;
       }
-      setResult({
-        ok: true,
-        message: clampedAny
-          ? `Sent ${card.shopName}'s order — capped one or more items at what this shop actually still owed (some had already been sent).`
-          : `Sent ${card.shopName}'s order to Hosur dispatch.`,
-      });
-      resetDispatchIds();
-      setSelectedOrderId(null);
-      setQtyDraft({});
-      reload();
-      onDone();
-    } catch (err) {
-      setResult({ ok: false, message: err instanceof Error ? err.message : "Failed to send this shop's order." });
-    } finally {
-      setSending(false);
+      for (const [idx, extra] of extras.entries()) {
+        actions.push({
+          orderId: anchorOrderId, itemName: extra.itemName, quantity: extra.quantity, unit: extra.unit,
+          dispatchEntryId: getId(`extra:${card.orderId}:${idx}:${extra.itemName}`), targetHosurOrderId: card.orderId, isExtra: true,
+        });
+      }
     }
+    if (actions.length === 0) {
+      setResult({
+        ok: false,
+        message: skippedNoLink
+          ? "Couldn't send — one or more items couldn't be linked back to this shop's order. Refresh the page and try again; if it keeps happening, this order's data may need attention."
+          : clampedAny
+            ? "Nothing to send — every item here is already fully dispatched to this shop."
+            : 'Nothing to send — every item is set to 0.',
+      });
+      return;
+    }
+    setResult(clampedAny ? { ok: true, message: "One or more items were capped at what this shop actually still owed (some had already been sent)." } : null);
+    setReview({ actions, card });
   };
 
   if (shopOrders === null) return <p className="text-xs font-bold text-muted-foreground">Loading shop orders…</p>;
@@ -3373,19 +3593,20 @@ function HosurShopDispatchPanel({ rows, mode, orders, leftoverBalances, onDispat
                     </div>
                   );
                 })}
+                {(extraItemsByCard[card.orderId] ?? []).map((extra, idx) => (
+                  <div key={`extra-${idx}-${extra.itemName}`} className="flex items-center justify-between gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-1.5">
+                    <span className="text-xs font-bold text-foreground">{extra.itemName} <span className="text-muted-foreground">({qtyFmt(extra.quantity)} {extra.unit} · extra item)</span></span>
+                    <button type="button" onClick={() => removeExtraItem(card.orderId, idx)} className="rounded-lg border border-amber-300 px-2 py-0.5 text-[10px] font-black text-amber-800 hover:bg-amber-100">Remove</button>
+                  </div>
+                ))}
                 <ExtraItemDispatchForm
-                  branch="Hosur"
-                  anchorOrderId={orders.find(o => o.targetBranch === 'Hosur' && bakeryOrderCoversHosurShopOrder(o, card.orderId))?.id ?? null}
-                  targetHosurOrderId={card.orderId}
-                  onDispatch={onDispatch}
-                  dispatchedBy={dispatchedBy}
-                  onDone={() => { reload(); onDone(); }}
                   contextLabel={card.shopName}
+                  onAdd={item => addExtraItem(card.orderId, item)}
                 />
                 <div className="flex flex-wrap justify-end gap-2 pt-1">
                   <button onClick={cancel} className="rounded-xl border border-border px-3 py-2 text-xs font-bold text-muted-foreground hover:bg-muted">Cancel</button>
-                  <button onClick={() => sendCard(card)} disabled={sending} className="flex items-center gap-1.5 rounded-xl bg-teal-600 px-3 py-2 text-xs font-bold text-white hover:bg-teal-700 disabled:opacity-50">
-                    {sending ? <Loader2 className="size-3.5 animate-spin" /> : <Truck className="size-3.5" />} Send {card.shopName}'s Order
+                  <button onClick={() => openReviewForCard(card)} className="flex items-center gap-1.5 rounded-xl bg-teal-600 px-3 py-2 text-xs font-bold text-white hover:bg-teal-700 disabled:opacity-50">
+                    <Truck className="size-3.5" /> Send {card.shopName}'s Order
                   </button>
                 </div>
                 {result && <p className={cn('text-[11px] font-bold', result.ok ? 'text-teal-700' : 'text-red-700')}>{result.message}</p>}
@@ -3394,6 +3615,25 @@ function HosurShopDispatchPanel({ rows, mode, orders, leftoverBalances, onDispat
           </div>
         );
       })}
+      {review && (
+        <DispatchReviewModal
+          scope="Hosur"
+          hosurShop={{ id: review.card.shopId ?? '', name: review.card.shopName, phone: review.card.shopPhone ?? '' }}
+          actions={review.actions}
+          dispatchedBy={dispatchedBy}
+          onDispatch={onDispatch}
+          onClose={() => setReview(null)}
+          onDone={() => {
+            resetDispatchIds();
+            setExtraItemsByCard(v => ({ ...v, [review.card.orderId]: [] }));
+            setSelectedOrderId(null);
+            setQtyDraft({});
+            setResult({ ok: true, message: `Sent ${review.card.shopName}'s order to Hosur dispatch.` });
+            reload();
+            onDone();
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -3462,9 +3702,18 @@ function BranchFlatDispatchPanel({ branch, rows, orders, leftoverBalances, onDis
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [seedKey]);
 
-  const [sending, setSending] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
   const { getId, reset: resetDispatchIds } = useStableDispatchIds();
+
+  // WORKFLOW CHANGE (2026-08-08): items added via ExtraItemDispatchForm now
+  // stage here instead of dispatching instantly — they show up as ordinary
+  // rows in this same "To Dispatch" list, selected by default, until the
+  // planner clicks Dispatch and reviews everything together.
+  const [extraItems, setExtraItems] = useState<{ itemName: string; unit: 'kg' | 'pcs'; quantity: number }[]>([]);
+  const addExtraItem = (item: { itemName: string; unit: 'kg' | 'pcs'; quantity: number }) => {
+    setExtraItems(prev => [...prev, item]);
+  };
+  const removeExtraItem = (idx: number) => setExtraItems(prev => prev.filter((_, i) => i !== idx));
 
   const qtyFor = (itemName: string) => Number(qty[itemName] ?? '0');
   const toggleSelect = (itemName: string) => setSelected(prev => {
@@ -3472,60 +3721,69 @@ function BranchFlatDispatchPanel({ branch, rows, orders, leftoverBalances, onDis
     if (next.has(itemName)) next.delete(itemName); else next.add(itemName);
     return next;
   });
-  const selectedCount = lines.filter(l => selected.has(l.row.itemName) && qtyFor(l.row.itemName) > 0.001).length;
+  const selectedCount = lines.filter(l => selected.has(l.row.itemName) && qtyFor(l.row.itemName) > 0.001).length + extraItems.length;
   // Search narrows what's rendered only — `lines` (and therefore qty/
   // selection state) always covers the branch's full active set.
   const visibleLines = search.trim()
     ? lines.filter(l => l.row.itemName.toLowerCase().includes(search.trim().toLowerCase()))
     : lines;
 
-  const dispatchAll = async () => {
-    setSending(true); setResult(null);
-    let sentAny = false;
+  // WORKFLOW CHANGE (2026-08-08): "when we select the item and click on
+  // dispatch, it should not directly go to SNB orders dashboard — it should
+  // open the checklist along with the items I selected and its quantity for
+  // double check." Clicking Dispatch used to call submitDispatch immediately
+  // for every selected line; it now only builds the list of pending actions
+  // and opens DispatchReviewModal, which is the sole place submitDispatch
+  // actually gets called (on explicit confirm there).
+  const [reviewActions, setReviewActions] = useState<PendingDispatchAction[] | null>(null);
+
+  const openReview = () => {
+    setResult(null);
+    const actions: PendingDispatchAction[] = [];
     let clampedAny = false;
-    try {
-      for (const { row, remaining } of lines) {
-        if (!selected.has(row.itemName)) continue;
-        // CRITICAL BUG FIX (2026-08-07): hard-cap at what this branch
-        // actually still has coming (see the matching fix + explanation in
-        // HosurShopDispatchPanel.sendCard) — a typed or stale-suggested
-        // quantity larger than `remaining` used to go out in full.
-        const typed = qtyFor(row.itemName);
-        const q = Math.min(typed, remaining);
-        if (typed > remaining + 0.01) clampedAny = true;
-        if (q <= 0.001) continue;
-        const entries = orders.filter(o => o.targetBranch === branch && row.contributingOrderIds.includes(o.id));
-        if (entries.length === 0) continue;
-        const split = autoSplitForItem(entries, row.itemName, q);
-        for (const order of entries) {
-          const item = order.items.find(i => sameItem(i.itemName, row.itemName));
-          const orderQty = split[order.id] ?? 0;
-          if (!item || orderQty <= 0) continue;
-          await onDispatch(order.id, {
-            id: getId(`${order.id}:${row.itemName}`),
-            itemName: item.itemName, quantity: orderQty, unit: item.dispatchUnit || 'kg',
-            branch, dispatchedBy, dispatchedAt: new Date().toISOString(),
-          });
-          sentAny = true;
-        }
+    for (const { row, remaining } of lines) {
+      if (!selected.has(row.itemName)) continue;
+      const typed = qtyFor(row.itemName);
+      const q = Math.min(typed, remaining);
+      if (typed > remaining + 0.01) clampedAny = true;
+      if (q <= 0.001) continue;
+      const entries = orders.filter(o => o.targetBranch === branch && row.contributingOrderIds.includes(o.id));
+      if (entries.length === 0) continue;
+      const split = autoSplitForItem(entries, row.itemName, q);
+      for (const order of entries) {
+        const item = order.items.find(i => sameItem(i.itemName, row.itemName));
+        const orderQty = split[order.id] ?? 0;
+        if (!item || orderQty <= 0) continue;
+        actions.push({
+          orderId: order.id, itemName: item.itemName, quantity: orderQty, unit: item.dispatchUnit || 'kg',
+          dispatchEntryId: getId(`${order.id}:${row.itemName}`),
+        });
       }
-      if (!sentAny) {
-        setResult({ ok: false, message: 'Nothing to send — check the items you want and make sure their quantity is above 0.' });
+    }
+    if (extraItems.length > 0) {
+      // BUG FIX (2026-08-08 audit): extra items need a real bakery_orders row
+      // to attach their dispatch entry to (submitDispatch always writes
+      // against an orderId). If this branch has zero orders at all,
+      // anchorOrderId is null and extra items used to be silently dropped
+      // here with no explanation — the planner just saw a generic "nothing
+      // to send" message with no idea why. Surface the real reason instead.
+      if (!anchorOrderId) {
+        setResult({ ok: false, message: `Can't send extra items — ${branch} has no order to attach them to yet. Create or receive at least one ${branch} order first.` });
         return;
       }
-      setResult({
-        ok: true,
-        message: clampedAny
-          ? `Sent to ${branch} — capped one or more items at what's still owed (some had already been sent).`
-          : `Sent to ${branch}.`,
-      });
-      resetDispatchIds();
-      onDone();
-    } catch (err) {
-      setResult({ ok: false, message: err instanceof Error ? err.message : 'Failed to dispatch.' });
-    } finally {
-      setSending(false);
+      for (const [idx, extra] of extraItems.entries()) {
+        actions.push({
+          orderId: anchorOrderId, itemName: extra.itemName, quantity: extra.quantity, unit: extra.unit,
+          dispatchEntryId: getId(`extra:${idx}:${extra.itemName}`), isExtra: true,
+        });
+      }
     }
+    if (actions.length === 0) {
+      setResult({ ok: false, message: 'Nothing to send — check the items you want and make sure their quantity is above 0.' });
+      return;
+    }
+    setResult(clampedAny ? { ok: true, message: "One or more items were capped at what's still owed (some had already been sent)." } : null);
+    setReviewActions(actions);
   };
 
   // Anchor order for the "extra / non-requested item" form below — any
@@ -3534,11 +3792,31 @@ function BranchFlatDispatchPanel({ branch, rows, orders, leftoverBalances, onDis
   // in (see ExtraItemDispatchForm's comment for why this is safe).
   const anchorOrderId = orders.find(o => o.targetBranch === branch)?.id ?? null;
 
-  if (lines.length === 0) {
+  const reviewModal = reviewActions && (
+    <DispatchReviewModal
+      scope={branch}
+      actions={reviewActions}
+      dispatchedBy={dispatchedBy}
+      onDispatch={onDispatch}
+      onClose={() => setReviewActions(null)}
+      onDone={() => {
+        // Modal stays open (its own success screen has reprint buttons —
+        // planner may want to print the invoice up to 3x before closing);
+        // it closes itself via onClose when the planner clicks "Done" there.
+        resetDispatchIds();
+        setExtraItems([]);
+        setResult({ ok: true, message: `Sent to ${branch}.` });
+        onDone();
+      }}
+    />
+  );
+
+  if (lines.length === 0 && extraItems.length === 0) {
     return (
       <div className="space-y-2.5">
         <EmptyState text="Nothing waiting on dispatch." />
-        <ExtraItemDispatchForm branch={branch} anchorOrderId={anchorOrderId} onDispatch={onDispatch} dispatchedBy={dispatchedBy} onDone={onDone} contextLabel={branch} suggestions={branchCatalog} />
+        <ExtraItemDispatchForm contextLabel={branch} suggestions={branchCatalog} onAdd={addExtraItem} />
+        {reviewModal}
       </div>
     );
   }
@@ -3595,18 +3873,29 @@ function BranchFlatDispatchPanel({ branch, rows, orders, leftoverBalances, onDis
             </div>
           );
         })}
+        {extraItems.map((extra, idx) => (
+          <div key={`extra-${idx}-${extra.itemName}`} className="flex items-center justify-between gap-2 rounded-2xl border border-amber-300 bg-amber-50 p-3 shadow-sm">
+            <p className="text-sm font-black text-foreground">
+              {extra.itemName} <span className="font-bold text-muted-foreground">({qtyFmt(extra.quantity)} {extra.unit} · extra item)</span>
+            </p>
+            <button type="button" onClick={() => removeExtraItem(idx)} className="rounded-lg border border-amber-300 px-2 py-1 text-[11px] font-black text-amber-800 hover:bg-amber-100">
+              Remove
+            </button>
+          </div>
+        ))}
       </div>
       <div className="sticky bottom-2 z-10 flex justify-center pt-2">
         <button
-          onClick={() => void dispatchAll()}
+          onClick={openReview}
           disabled={sending || selectedCount === 0}
           className="flex items-center gap-2 rounded-2xl bg-foreground px-5 py-3 text-sm font-black text-white shadow-xl disabled:opacity-50"
         >
-          {sending ? <Loader2 className="size-4 animate-spin" /> : <Truck className="size-4" />} Dispatch {selectedCount} selected item{selectedCount === 1 ? '' : 's'} to {branch}
+          <Truck className="size-4" /> Dispatch {selectedCount} selected item{selectedCount === 1 ? '' : 's'} to {branch}
         </button>
       </div>
       {result && <p className={cn('text-center text-xs font-bold', result.ok ? 'text-teal-700' : 'text-red-700')}>{result.message}</p>}
-      <ExtraItemDispatchForm branch={branch} anchorOrderId={anchorOrderId} onDispatch={onDispatch} dispatchedBy={dispatchedBy} onDone={onDone} contextLabel={branch} suggestions={branchCatalog} />
+      <ExtraItemDispatchForm contextLabel={branch} suggestions={branchCatalog} onAdd={addExtraItem} />
+      {reviewModal}
     </div>
   );
 }
@@ -4004,13 +4293,19 @@ function PlannedDispatchPanel({ rows, orders, onDispatch, dispatchedBy }: {
 }) {
   const [branchFor, setBranchFor] = useState<Record<string, Branch>>({});
   const [qtyFor, setQtyFor] = useState<Record<string, string>>({});
-  const [busy, setBusy] = useState<string | null>(null);
   const [result, setResult] = useState<Record<string, { ok: boolean; message: string }>>({});
   const { getId, reset: resetDispatchIds } = useStableDispatchIds();
+  // WORKFLOW CHANGE (2026-08-08 audit): this was the last remaining dispatch
+  // entry point that still called onDispatch directly with no review, price,
+  // or invoice step. "Dispatch to <branch>" now only builds one
+  // PendingDispatchAction batch for this row's branch and opens
+  // DispatchReviewModal — that modal is the sole place submitDispatch
+  // actually gets called, after price/discount entry.
+  const [review, setReview] = useState<{ itemName: string; branch: Branch; actions: PendingDispatchAction[] } | null>(null);
 
   if (rows.length === 0) return <EmptyState text="No planned-stock items waiting on a dispatch decision." />;
 
-  const dispatchRow = async (row: ProductionRow) => {
+  const buildReview = (row: ProductionRow) => {
     const branch = branchFor[row.itemName] ?? 'SNB';
     const plannedRequested = row.perBranch.Planned ?? 0;
     const alreadySent = plannedDispatchedForRow(row, orders);
@@ -4023,27 +4318,46 @@ function PlannedDispatchPanel({ rows, orders, onDispatch, dispatchedBy }: {
     // DispatchChecklistModal) hard-caps the typed quantity at `remaining`.
     const q = Math.min(typed, remainingPlanned);
     const clamped = typed > remainingPlanned + 0.01;
-    if (q <= 0) return;
-    setBusy(row.itemName);
-    setResult(r => ({ ...r, [row.itemName]: undefined as any }));
-    try {
-      const entries = plannedContributingOrders(row, orders);
-      const split = autoSplitForItem(entries, row.itemName, q);
-      for (const order of entries) {
-        const item = order.items.find(i => sameItem(i.itemName, row.itemName));
-        const orderQty = split[order.id] ?? 0;
-        if (!item || orderQty <= 0) continue;
-        await onDispatch(order.id, { id: getId(`${order.id}:${row.itemName}`), itemName: item.itemName, quantity: orderQty, unit: item.dispatchUnit || 'kg', branch, dispatchedBy, dispatchedAt: new Date().toISOString() });
-      }
-      setResult(r => ({ ...r, [row.itemName]: { ok: true, message: `Dispatched ${q} ${row.unit} of ${row.itemName} to ${branch}.${clamped ? ` (Capped at ${remainingPlanned} ${row.unit} still owed.)` : ''}` } }));
-      setQtyFor(v => ({ ...v, [row.itemName]: '' }));
-      resetDispatchIds();
-    } catch (err) {
-      setResult(r => ({ ...r, [row.itemName]: { ok: false, message: err instanceof Error ? err.message : 'Failed to dispatch this item.' } }));
-    } finally {
-      setBusy(null);
+    if (q <= 0) {
+      setResult(r => ({ ...r, [row.itemName]: { ok: false, message: 'Nothing to send — quantity must be above 0.' } }));
+      return;
     }
+    const entries = plannedContributingOrders(row, orders);
+    const split = autoSplitForItem(entries, row.itemName, q);
+    const actions: PendingDispatchAction[] = [];
+    for (const order of entries) {
+      const item = order.items.find(i => sameItem(i.itemName, row.itemName));
+      const orderQty = split[order.id] ?? 0;
+      if (!item || orderQty <= 0) continue;
+      actions.push({ orderId: order.id, itemName: item.itemName, quantity: orderQty, unit: item.dispatchUnit || 'kg', dispatchEntryId: getId(`${order.id}:${row.itemName}`) });
+    }
+    if (actions.length === 0) {
+      setResult(r => ({ ...r, [row.itemName]: { ok: false, message: 'Nothing to send — no matching order found.' } }));
+      return;
+    }
+    setResult(r => ({ ...r, [row.itemName]: clamped ? { ok: true, message: `Capped at ${remainingPlanned} ${row.unit} still owed.` } : undefined as any }));
+    setReview({ itemName: row.itemName, branch, actions });
   };
+
+  if (review) {
+    return (
+      <DispatchReviewModal
+        scope={review.branch}
+        actions={review.actions}
+        dispatchedBy={dispatchedBy}
+        onDispatch={onDispatch}
+        onClose={() => setReview(null)}
+        onDone={() => {
+          // Modal stays open (its own success screen has reprint buttons —
+          // planner may want to print the invoice up to 3x before closing);
+          // it closes itself via onClose when the planner clicks "Done" there.
+          resetDispatchIds();
+          setQtyFor(v => ({ ...v, [review.itemName]: '' }));
+          setResult(r => ({ ...r, [review.itemName]: { ok: true, message: `Sent to ${review.branch}.` } }));
+        }}
+      />
+    );
+  }
 
   return (
     <div className="space-y-2 pb-16">
@@ -4108,63 +4422,79 @@ function BulkDispatchModal({ branch, rows, orders, onClose, onDispatch, dispatch
   }), [rows, branch, orders]);
 
   const [qty, setQty] = useState<Record<string, string>>(() => Object.fromEntries(lines.map(l => [l.row.itemName, String(l.defaultQty)])));
-  const [sending, setSending] = useState(false);
-  // BUG FIX (audit): confirmAll had try/finally with no catch — if
-  // onDispatch threw partway through (e.g. a network hiccup on item 2 of
-  // 5), the error became an unhandled rejection with zero feedback in this
-  // modal, and items already dispatched before the failure had no visible
-  // record of what succeeded vs what didn't.
   const [error, setError] = useState<string | null>(null);
   const { getId, reset: resetDispatchIds } = useStableDispatchIds();
 
   const qtyFor = (itemName: string) => Number(qty[itemName] || 0);
 
-  const confirmAll = async () => {
-    setSending(true);
+  // WORKFLOW CHANGE (2026-08-08 audit): this was the last multi-item
+  // dispatch surface still calling onDispatch directly with no review,
+  // price, or invoice step — every other panel (BranchFlatDispatchPanel,
+  // HosurShopDispatchPanel, DispatchChecklistModal) now routes through
+  // DispatchReviewModal. "Confirm Dispatch" now only builds the pending
+  // action list; DispatchReviewModal is the sole place submitDispatch
+  // actually gets called, after price/discount entry.
+  const [reviewActions, setReviewActions] = useState<PendingDispatchAction[] | null>(null);
+  // BulkDispatchModal is itself a modal whose onClose/onDone props are
+  // provided by the caller (Cancel vs. "dispatch succeeded, close and clear
+  // selection"). DispatchReviewModal shows its own success/reprint screen
+  // before it's dismissed, so its onClose fires twice in different states —
+  // once if the planner cancels before confirming (nothing dispatched yet,
+  // should behave like plain Cancel) and once when they click "Done" on the
+  // success screen (dispatch already happened, should clear selection).
+  // This flag distinguishes the two so the right parent callback fires.
+  const [dispatchDone, setDispatchDone] = useState(false);
+
+  const buildReview = () => {
     setError(null);
-    let dispatchedCount = 0;
+    const actions: PendingDispatchAction[] = [];
     let clampedAny = false;
-    try {
-      for (const { row, remaining } of lines) {
-        // CRITICAL BUG FIX (2026-08-07 re-audit): every other dispatch entry
-        // point (BranchFlatDispatchPanel, HosurShopDispatchPanel,
-        // DispatchChecklistModal) was hard-capped at `remaining` in an
-        // earlier round — this modal (reachable via Hosur's "By Item" view
-        // multi-select) was missed and had NO ceiling at all, letting the
-        // planner type any quantity and send more than was ever requested.
-        const typed = qtyFor(row.itemName);
-        const q = Math.min(typed, remaining);
-        if (typed > remaining + 0.01) clampedAny = true;
-        if (q <= 0) continue;
-        const entries = orders.filter(o => o.targetBranch === branch && row.contributingOrderIds.includes(o.id));
-        const split = autoSplitForItem(entries, row.itemName, q);
-        for (const order of entries) {
-          const item = order.items.find(i => sameItem(i.itemName, row.itemName));
-          const orderQty = split[order.id] ?? 0;
-          if (!item || orderQty <= 0) continue;
-          await onDispatch(order.id, { id: getId(`${order.id}:${row.itemName}`), itemName: item.itemName, quantity: orderQty, unit: item.dispatchUnit || 'kg', branch, dispatchedBy, dispatchedAt: new Date().toISOString() });
-          dispatchedCount += 1;
-        }
+    for (const { row, remaining } of lines) {
+      // CRITICAL BUG FIX (2026-08-07 re-audit): every other dispatch entry
+      // point (BranchFlatDispatchPanel, HosurShopDispatchPanel,
+      // DispatchChecklistModal) was hard-capped at `remaining` in an
+      // earlier round — this modal (reachable via Hosur's "By Item" view
+      // multi-select) was missed and had NO ceiling at all, letting the
+      // planner type any quantity and send more than was ever requested.
+      const typed = qtyFor(row.itemName);
+      const q = Math.min(typed, remaining);
+      if (typed > remaining + 0.01) clampedAny = true;
+      if (q <= 0) continue;
+      const entries = orders.filter(o => o.targetBranch === branch && row.contributingOrderIds.includes(o.id));
+      const split = autoSplitForItem(entries, row.itemName, q);
+      for (const order of entries) {
+        const item = order.items.find(i => sameItem(i.itemName, row.itemName));
+        const orderQty = split[order.id] ?? 0;
+        if (!item || orderQty <= 0) continue;
+        actions.push({ orderId: order.id, itemName: item.itemName, quantity: orderQty, unit: item.dispatchUnit || 'kg', dispatchEntryId: getId(`${order.id}:${row.itemName}`) });
       }
-      resetDispatchIds();
-      onDone();
-      if (clampedAny) {
-        // Modal closes via onDone() right after this — there's no persistent
-        // banner in this flow to show a "capped" notice in, so at least
-        // leave a trace in the console for support/debugging. The actual
-        // safety fix (Math.min against `remaining` above) is what matters:
-        // nothing physically over-dispatches regardless of what was typed.
-        console.info('[BulkDispatchModal] one or more items were capped at what was still owed.');
-      }
-    } catch (err) {
-      setError(
-        (err instanceof Error ? err.message : 'Failed to dispatch.') +
-        (dispatchedCount > 0 ? ` — ${dispatchedCount} item${dispatchedCount === 1 ? '' : 's'} already went through before this failed; check the Dispatch tab before retrying to avoid double-sending.` : ''),
-      );
-    } finally {
-      setSending(false);
     }
+    if (actions.length === 0) {
+      setError('Nothing to send — check the quantities above are above 0.');
+      return;
+    }
+    setError(clampedAny ? "One or more items were capped at what's still owed (some had already been sent)." : null);
+    setReviewActions(actions);
   };
+
+  if (reviewActions) {
+    return (
+      <DispatchReviewModal
+        scope={branch}
+        actions={reviewActions}
+        dispatchedBy={dispatchedBy}
+        onDispatch={onDispatch}
+        onClose={() => (dispatchDone ? onDone() : onClose())}
+        onDone={() => {
+          // Modal stays open (its own success screen has reprint buttons —
+          // planner may want to print the invoice up to 3x before closing);
+          // it closes via the onClose above, once the planner clicks "Done".
+          resetDispatchIds();
+          setDispatchDone(true);
+        }}
+      />
+    );
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
@@ -4198,9 +4528,9 @@ function BulkDispatchModal({ branch, rows, orders, onClose, onDispatch, dispatch
         </div>
         {error && <p className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700">{error}</p>}
         <div className="mt-4 flex justify-end gap-2">
-          <button onClick={onClose} disabled={sending} className="rounded-xl bg-muted px-4 py-2 text-xs font-bold text-muted-foreground">Cancel</button>
-          <button onClick={confirmAll} disabled={sending} className="flex items-center gap-1.5 rounded-xl bg-teal-600 px-4 py-2 text-xs font-bold text-white">
-            {sending ? <Loader2 className="size-3.5 animate-spin" /> : <Truck className="size-3.5" />} Confirm Dispatch
+          <button onClick={onClose} className="rounded-xl bg-muted px-4 py-2 text-xs font-bold text-muted-foreground">Cancel</button>
+          <button onClick={buildReview} className="flex items-center gap-1.5 rounded-xl bg-teal-600 px-4 py-2 text-xs font-bold text-white">
+            <Truck className="size-3.5" /> Review &amp; Dispatch
           </button>
         </div>
       </div>
@@ -4245,8 +4575,6 @@ function DispatchChecklistModal({ row, orders, branchFilter, onClose, onDispatch
   const availableToDispatch = Math.max(row.preparedTotal, leftoverBalance);
   const autoSplit = useMemo(() => autoSplitForItem(orders, row.itemName, availableToDispatch), [orders, row, availableToDispatch]);
   const [qty, setQty] = useState<Record<string, string>>({});
-  const [sending, setSending] = useState(false);
-  const [done, setDone] = useState(false);
   const branchKeys = useMemo(() => Array.from(branchOrders.keys()), [branchOrders]);
   // Which branches to actually dispatch right now — defaults to all, but the
   // planner can dispatch just VRSNB, just SNB, or both together.
@@ -4264,37 +4592,42 @@ function DispatchChecklistModal({ row, orders, branchFilter, onClose, onDispatch
   };
   const checklistFor = (branch: string) => CHECKLIST_BY_BRANCH[branch] || CHECKLIST_BY_BRANCH.SNB;
 
-  const confirmDispatch = async () => {
-    setSending(true);
-    try {
-      for (const [branch, entries] of branchOrders) {
-        if (!selectedBranches.includes(branch)) continue;
-        for (const { order, item } of entries) {
-          const q = qtyFor(order.id);
-          if (q <= 0) continue;
-          // CRITICAL BUG FIX (2026-08-07): the suggested quantity above
-          // (autoSplit) is computed purely from `availableToDispatch`
-          // (produced total / leftover balance) split by each order's
-          // REQUESTED share — it never subtracted what this specific
-          // order-item had already been sent. Reopening this modal for an
-          // item that was already fully (or partially) dispatched would
-          // keep re-suggesting — and, if confirmed, re-sending — the same
-          // stock. Hard-cap every send here at what this order-item
-          // genuinely still has outstanding, same defensive rule now
-          // applied to the Hosur and VRSNB/SNB dispatch panels.
-          const requestedForOrder = item.dispatchUnit === 'pcs' && item.originalPcs != null ? item.originalPcs : item.quantity;
-          const alreadyForOrder = (order.dispatchLog || []).filter(d => sameItem(d.itemName, item.itemName)).reduce((s, d) => s + d.quantity, 0);
-          const remainingForOrder = Math.max(0, Math.round((requestedForOrder - alreadyForOrder) * 100) / 100);
-          const cappedQ = Math.min(q, remainingForOrder);
-          if (cappedQ <= 0.001) continue;
-          await onDispatch(order.id, { id: getId(`${order.id}:${item.itemName}`), itemName: item.itemName, quantity: cappedQ, unit: item.dispatchUnit || 'kg', branch: branch as Branch, dispatchedBy, dispatchedAt: new Date().toISOString() });
-        }
+  // WORKFLOW CHANGE (2026-08-08 audit): this was the one remaining dispatch
+  // entry point in the whole tab that still called onDispatch directly —
+  // every other surface (BranchFlatDispatchPanel, HosurShopDispatchPanel,
+  // BulkDispatchModal below) now routes through DispatchReviewModal for
+  // price/discount entry + invoice generation. This modal can span more
+  // than one branch at once (e.g. an item both SNB and VRSNB ordered), so
+  // "Confirm Dispatch" now builds one PendingDispatchAction batch per
+  // selected branch and steps through DispatchReviewModal once per branch —
+  // physical checklist printing above is unchanged, this only replaces the
+  // final instant-dispatch step with the same review+price+invoice step
+  // used everywhere else.
+  const [reviewQueue, setReviewQueue] = useState<{ scope: Branch; actions: PendingDispatchAction[] }[] | null>(null);
+
+  const buildReviewQueue = () => {
+    const queue: { scope: Branch; actions: PendingDispatchAction[] }[] = [];
+    for (const [branch, entries] of branchOrders) {
+      if (!selectedBranches.includes(branch)) continue;
+      const actions: PendingDispatchAction[] = [];
+      for (const { order, item } of entries) {
+        const q = qtyFor(order.id);
+        if (q <= 0) continue;
+        // CRITICAL BUG FIX (2026-08-07, preserved): the suggested quantity
+        // above (autoSplit) never subtracted what this specific order-item
+        // had already been sent — hard-cap every send at what's genuinely
+        // still outstanding for this order.
+        const requestedForOrder = item.dispatchUnit === 'pcs' && item.originalPcs != null ? item.originalPcs : item.quantity;
+        const alreadyForOrder = (order.dispatchLog || []).filter(d => sameItem(d.itemName, item.itemName)).reduce((s, d) => s + d.quantity, 0);
+        const remainingForOrder = Math.max(0, Math.round((requestedForOrder - alreadyForOrder) * 100) / 100);
+        const cappedQ = Math.min(q, remainingForOrder);
+        if (cappedQ <= 0.001) continue;
+        actions.push({ orderId: order.id, itemName: item.itemName, quantity: cappedQ, unit: item.dispatchUnit || 'kg', dispatchEntryId: getId(`${order.id}:${item.itemName}`) });
       }
-      resetDispatchIds();
-      setDone(true);
-    } finally {
-      setSending(false);
+      if (actions.length > 0) queue.push({ scope: branch as Branch, actions });
     }
+    if (queue.length === 0) return;
+    setReviewQueue(queue);
   };
 
   const printChecklist = (mode: 'thermal' | 'a4') => {
@@ -4335,12 +4668,32 @@ function DispatchChecklistModal({ row, orders, branchFilter, onClose, onDispatch
     win.document.close(); win.print();
   };
 
+  if (reviewQueue) {
+    if (reviewQueue.length === 0) {
+      // Queue fully drained (every selected branch dispatched + invoiced) —
+      // nothing left to review, close the whole checklist flow.
+      resetDispatchIds();
+      onClose();
+      return null;
+    }
+    const current = reviewQueue[0];
+    return (
+      <DispatchReviewModal
+        scope={current.scope}
+        actions={current.actions}
+        dispatchedBy={dispatchedBy}
+        onDispatch={onDispatch}
+        onClose={() => setReviewQueue(q => (q ?? []).slice(1))}
+        onDone={() => {}}
+      />
+    );
+  }
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
       <div className="w-full max-w-lg rounded-2xl bg-white p-5 shadow-xl">
         <p className="text-sm font-black text-foreground">Dispatch Checklist — {row.itemName}</p>
-        {!done ? (
-          <>
+        <>
             {leftoverBalance > row.preparedTotal + 0.01 && (
               <p className="mt-1.5 flex items-center gap-1.5 rounded-lg border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-[11px] font-black text-amber-800">
                 <PackageCheck className="size-3.5 shrink-0" /> {qtyFmt(leftoverBalance)} {row.unit} available in leftover — already included in the quantities below.
@@ -4386,15 +4739,268 @@ function DispatchChecklistModal({ row, orders, branchFilter, onClose, onDispatch
               <button onClick={() => printChecklist('thermal')} className="flex items-center gap-1.5 rounded-xl bg-muted px-4 py-2 text-xs font-bold text-muted-foreground hover:bg-slate-200"><Printer className="size-3.5" /> Print Thermal</button>
               <button onClick={() => printChecklist('a4')} className="flex items-center gap-1.5 rounded-xl bg-muted px-4 py-2 text-xs font-bold text-muted-foreground hover:bg-slate-200"><Printer className="size-3.5" /> Print A4</button>
               <button onClick={onClose} className="rounded-xl bg-muted px-4 py-2 text-xs font-bold text-muted-foreground hover:bg-slate-200">Cancel</button>
-              <button onClick={confirmDispatch} disabled={sending || selectedBranches.length === 0} className="flex items-center gap-1.5 rounded-xl bg-teal-600 px-4 py-2 text-xs font-bold text-white hover:bg-teal-700 disabled:opacity-50">
-                {sending ? <Loader2 className="size-4 animate-spin" /> : <Truck className="size-4" />} Confirm Dispatch{selectedBranches.length > 1 ? ` (${selectedBranches.join(' + ')})` : ''}
+              <button onClick={buildReviewQueue} disabled={selectedBranches.length === 0} className="flex items-center gap-1.5 rounded-xl bg-teal-600 px-4 py-2 text-xs font-bold text-white hover:bg-teal-700 disabled:opacity-50">
+                <Truck className="size-4" /> Review &amp; Dispatch{selectedBranches.length > 1 ? ` (${selectedBranches.join(' + ')})` : ''}
+              </button>
+            </div>
+        </>
+      </div>
+    </div>
+  );
+}
+
+// ─── Dispatch review — checklist + price/discount + invoice, one screen ───
+// WORKFLOW CHANGE (2026-08-08): "when we select the item and click on
+// dispatch, it should not directly go to SNB orders dashboard" — every
+// multi-item dispatch surface (BranchFlatDispatchPanel, HosurShopDispatchPanel,
+// extra-item sends) used to call submitDispatch the instant "Dispatch" was
+// clicked, which writes straight to branch_incoming (the branch's own live
+// order dashboard) with zero review step. This modal is now the ONLY place
+// any of those surfaces actually calls submitDispatch — every "Dispatch"
+// button just opens this instead. Nothing reaches the branch until the
+// planner reviews the checklist here, confirms price + discount, and clicks
+// Confirm. Confirming also generates and stores an invoice (dispatch_invoices
+// table) so it can be reprinted later — the same batch can be printed 2-3
+// times if needed, per "sometimes I should print the bill 3 times."
+export interface PendingDispatchAction {
+  orderId: string;
+  itemName: string;
+  quantity: number;
+  unit: string;
+  dispatchEntryId: string;
+  targetHosurOrderId?: string;
+  isExtra?: boolean;
+}
+
+function DispatchReviewModal({ scope, hosurShop, actions, dispatchedBy, onDispatch, onClose, onDone }: {
+  scope: Branch;
+  hosurShop?: { id: string; name: string; phone: string } | null;
+  actions: PendingDispatchAction[];
+  dispatchedBy: string;
+  onDispatch: ReturnType<typeof useBakeryStore.getState>['submitDispatch'];
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const { items: catalogItems, loadCatalog } = useBranchCatalogStore();
+  const [hosurPrices, setHosurPrices] = useState<Record<string, number>>({});
+  const [loadingPrices, setLoadingPrices] = useState(scope !== 'Hosur');
+  const [priceOverrides, setPriceOverrides] = useState<Record<string, string>>({});
+  const [discountPct, setDiscountPct] = useState(defaultDiscountPct(scope));
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<DispatchInvoiceRecord | null>(null);
+
+  useEffect(() => {
+    if (scope === 'Hosur') return;
+    loadCatalog(scope).catch(() => {});
+  }, [scope, loadCatalog]);
+
+  useEffect(() => {
+    if (scope !== 'Hosur' || !hosurShop) return;
+    let cancelled = false;
+    (async () => {
+      setLoadingPrices(true);
+      const { data, error: err } = await supabase.from('hosur_shop_price_lists').select('item_name, unit_price').eq('shop_id', hosurShop.id).eq('is_active', true);
+      if (cancelled) return;
+      if (!err && data) {
+        const map: Record<string, number> = {};
+        for (const row of data as { item_name: string; unit_price: number }[]) {
+          map[row.item_name.trim().toLowerCase()] = Number(row.unit_price) || 0;
+        }
+        setHosurPrices(map);
+      }
+      setLoadingPrices(false);
+    })();
+    return () => { cancelled = true; };
+  }, [scope, hosurShop]);
+
+  // One line per distinct item name — multiple actions can share an item
+  // (e.g. the same item split across two bakery_orders rows), but the
+  // checklist/invoice should show one combined line for it.
+  const displayItems = useMemo(() => {
+    const byName = new Map<string, { itemName: string; unit: string; quantity: number }>();
+    for (const a of actions) {
+      const cur = byName.get(a.itemName) ?? { itemName: a.itemName, unit: a.unit, quantity: 0 };
+      cur.quantity = Math.round((cur.quantity + a.quantity) * 1000) / 1000;
+      byName.set(a.itemName, cur);
+    }
+    return Array.from(byName.values()).sort((a, b) => a.itemName.localeCompare(b.itemName));
+  }, [actions]);
+
+  const priceFor = (itemName: string): number | null => {
+    const override = priceOverrides[itemName];
+    if (override !== undefined && override.trim() !== '') return Number(override) || 0;
+    if (scope === 'Hosur') {
+      const p = hosurPrices[itemName.trim().toLowerCase()];
+      return p !== undefined && p > 0 ? p : null;
+    }
+    const list = catalogItems[scope as 'SNB' | 'VRSNB'] ?? [];
+    const match = list.find(i => i.name.trim().toLowerCase() === itemName.trim().toLowerCase());
+    return match && match.price > 0 ? match.price : null;
+  };
+
+  const invoiceLines: DispatchInvoiceItem[] = displayItems.map(d => {
+    const price = priceFor(d.itemName);
+    const unitPrice = price ?? 0;
+    return { itemName: d.itemName, unit: d.unit, quantity: d.quantity, unitPrice, lineTotal: Math.round(d.quantity * unitPrice * 100) / 100 };
+  });
+  const missingPriceItems = displayItems.filter(d => priceFor(d.itemName) === null);
+  const subtotal = invoiceLines.reduce((s, i) => s + i.lineTotal, 0);
+  const discountAmount = Math.round(subtotal * (discountPct / 100) * 100) / 100;
+  const total = Math.round(subtotal - discountAmount);
+
+  const printChecklist = (mode: 'thermal' | 'a4') => {
+    const win = window.open('', '_blank'); if (!win) return;
+    const business = businessFor(scope);
+    const title = scope === 'Hosur' && hosurShop ? `${scope} — ${hosurShop.name}` : scope;
+    const rows = displayItems.map(d => `<div class="order-line">${d.itemName} — ${d.quantity} ${d.unit}</div>`).join('');
+    const style = mode === 'thermal'
+      ? `@page { size: 80mm auto; margin: 4mm; } body { font-family: monospace; font-size: 11px; width: 72mm; }`
+      : `@page { size: auto; margin: 12mm; } body { font-family: sans-serif; font-size: 14px; }`;
+    win.document.write(`<html><head><title>Dispatch Checklist — ${title}</title><style>${style}
+      body { padding: 12px; } h2 { margin: 0 0 4px; } .meta { font-size: 11px; color: #555; margin-bottom: 8px; }
+      .order-line { padding: 3px 0; border-bottom: 1px dashed #ccc; }
+      .check { display:block; margin: 4px 0; } .sign { margin-top: 16px; border-top: 1px dashed #999; padding-top: 10px; }
+      .sign-box { margin-top: 6px; }
+    </style></head><body>
+      <h2>${business.name} — Dispatch Checklist</h2>
+      <div class="meta">${title} &nbsp;·&nbsp; ${new Date().toLocaleString('en-IN')} &nbsp;·&nbsp; ${displayItems.length} item${displayItems.length === 1 ? '' : 's'}</div>
+      ${rows}
+      <div class="sign">
+        <label class="check"><input type="checkbox" /> Quantity verified against this checklist</label>
+        <label class="check"><input type="checkbox" /> Packaging intact and labeled</label>
+        <div class="sign-box">Dispatched By: ${dispatchedBy} ______________________</div>
+        <div class="sign-box">Received By (Sign): ______________________</div>
+      </div>
+    </body></html>`);
+    win.document.close(); win.print();
+  };
+
+  const confirm = async () => {
+    if (missingPriceItems.length > 0) {
+      setError(`Enter a price for: ${missingPriceItems.map(i => i.itemName).join(', ')} before dispatching.`);
+      return;
+    }
+    setSending(true);
+    setError(null);
+    try {
+      for (const a of actions) {
+        await onDispatch(a.orderId, {
+          id: a.dispatchEntryId,
+          itemName: a.itemName,
+          quantity: a.quantity,
+          unit: a.unit,
+          branch: scope,
+          dispatchedBy,
+          dispatchedAt: new Date().toISOString(),
+          ...(a.targetHosurOrderId ? { targetHosurOrderId: a.targetHosurOrderId } : {}),
+          ...(a.isExtra ? { isExtra: true } : {}),
+        });
+      }
+      const record = await saveDispatchInvoice({
+        scope,
+        hosurShopId: hosurShop?.id ?? null,
+        hosurShopName: hosurShop?.name ?? null,
+        hosurShopPhone: hosurShop?.phone ?? null,
+        dispatchedBy,
+        items: invoiceLines,
+        discountPct,
+        dispatchEntryIds: actions.map(a => ({ orderId: a.orderId, dispatchEntryId: a.dispatchEntryId })),
+      });
+      setResult(record);
+      onDone();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to dispatch.');
+    } finally {
+      setSending(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white p-5 shadow-xl">
+        {!result ? (
+          <>
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-sm font-black text-foreground">
+                Dispatch Review — {scope}{scope === 'Hosur' && hosurShop ? ` · ${hosurShop.name}` : ''}
+              </p>
+              <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="size-4" /></button>
+            </div>
+            <p className="mt-1 text-[11px] font-bold text-muted-foreground">Double-check quantities, confirm prices, then dispatch. Nothing is sent to {scope} until you confirm below.</p>
+
+            <div className="mt-3 overflow-x-auto rounded-xl border border-border">
+              <table className="w-full text-xs">
+                <thead className="bg-muted/40 text-left font-black uppercase text-muted-foreground">
+                  <tr>
+                    <th className="px-3 py-2">Item</th>
+                    <th className="px-3 py-2 text-right">Qty</th>
+                    <th className="px-3 py-2 text-right">Price</th>
+                    <th className="px-3 py-2 text-right">Line Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {displayItems.map(d => {
+                    const price = priceFor(d.itemName);
+                    const missing = price === null;
+                    return (
+                      <tr key={d.itemName} className={cn('border-t border-border', missing && 'bg-red-50')}>
+                        <td className="px-3 py-2 font-bold text-foreground">
+                          {d.itemName}
+                          {missing && <span className="ml-1.5 rounded-full bg-red-100 px-1.5 py-0.5 text-[9px] font-black text-red-700">NO PRICE — enter below</span>}
+                        </td>
+                        <td className="px-3 py-2 text-right text-muted-foreground">{d.quantity} {d.unit}</td>
+                        <td className="px-3 py-2 text-right">
+                          <input
+                            type="number" min={0} placeholder={loadingPrices ? '…' : '0.00'}
+                            value={priceOverrides[d.itemName] ?? (price !== null ? String(price) : '')}
+                            onChange={e => setPriceOverrides(v => ({ ...v, [d.itemName]: e.target.value }))}
+                            className={cn('w-20 rounded-lg border px-2 py-1 text-right', missing ? 'border-red-400 bg-white' : 'border-border')}
+                          />
+                        </td>
+                        <td className="px-3 py-2 text-right font-black text-foreground">{(price ?? 0) > 0 ? `Rs. ${(d.quantity * (price ?? 0)).toFixed(2)}` : '—'}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+              <label className="flex items-center gap-1.5 text-[11px] font-bold text-muted-foreground">
+                <Percent className="size-3.5" /> Discount %
+                <input
+                  type="number" min={0} max={100} step={0.5} value={discountPct}
+                  onChange={e => setDiscountPct(Math.max(0, Math.min(100, Number(e.target.value) || 0)))}
+                  className="w-16 rounded-lg border border-border px-2 py-1 text-right text-xs font-bold"
+                />
+              </label>
+              <div className="text-right text-xs font-bold text-muted-foreground">
+                Subtotal Rs. {subtotal.toFixed(2)} &nbsp;·&nbsp; Discount Rs. {discountAmount.toFixed(2)} &nbsp;·&nbsp;
+                <span className="text-sm font-black text-foreground"> Total Rs. {total.toFixed(2)}</span>
+              </div>
+            </div>
+
+            {error && <p className="mt-2 text-[11px] font-bold text-red-700">{error}</p>}
+
+            <div className="mt-4 flex flex-wrap justify-end gap-2">
+              <button onClick={() => printChecklist('thermal')} className="flex items-center gap-1.5 rounded-xl bg-muted px-3 py-2 text-xs font-bold text-muted-foreground hover:bg-slate-200"><Printer className="size-3.5" /> Checklist (Thermal)</button>
+              <button onClick={() => printChecklist('a4')} className="flex items-center gap-1.5 rounded-xl bg-muted px-3 py-2 text-xs font-bold text-muted-foreground hover:bg-slate-200"><Printer className="size-3.5" /> Checklist (A4)</button>
+              <button onClick={onClose} className="rounded-xl border border-border px-3 py-2 text-xs font-bold text-muted-foreground hover:bg-muted">Cancel</button>
+              <button onClick={confirm} disabled={sending} className="flex items-center gap-1.5 rounded-xl bg-teal-600 px-4 py-2 text-xs font-bold text-white hover:bg-teal-700 disabled:opacity-50">
+                {sending ? <Loader2 className="size-3.5 animate-spin" /> : <CheckCircle2 className="size-3.5" />} Confirm Dispatch
               </button>
             </div>
           </>
         ) : (
           <>
-            <p className="mt-2 text-xs font-semibold text-teal-600">Dispatched. This item now shows in the Dispatched sub-tab{row.itemStatus === 'pending' ? ' — still marked pending, more expected from the baker.' : '.'}</p>
-            <div className="mt-4 flex justify-end"><button onClick={onClose} className="rounded-xl bg-foreground px-4 py-2 text-xs font-bold text-white">Close</button></div>
+            <p className="text-sm font-black text-teal-700">Dispatched — Invoice {result.invoiceNo} created (Rs. {result.total.toFixed(2)}).</p>
+            <p className="mt-1 text-[11px] font-bold text-muted-foreground">Stored under this batch — reprint any time from the Invoice tab.</p>
+            <div className="mt-4 flex flex-wrap justify-end gap-2">
+              <button onClick={() => printDispatchInvoice(result, 'thermal')} className="flex items-center gap-1.5 rounded-xl bg-muted px-3 py-2 text-xs font-bold text-muted-foreground hover:bg-slate-200"><Printer className="size-3.5" /> Invoice (Thermal)</button>
+              <button onClick={() => printDispatchInvoice(result, 'a4')} className="flex items-center gap-1.5 rounded-xl bg-muted px-3 py-2 text-xs font-bold text-muted-foreground hover:bg-slate-200"><Printer className="size-3.5" /> Invoice (A4)</button>
+              <button onClick={onClose} className="rounded-xl bg-foreground px-4 py-2 text-xs font-bold text-white">Done</button>
+            </div>
           </>
         )}
       </div>

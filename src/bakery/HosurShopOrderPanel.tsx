@@ -559,11 +559,20 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
   // proactively so it's clear upfront, before any billing details are
   // entered — matches "should only be able to bill once the counter is
   // opened".
+  // BUG FIX (2026-08-07): this only ever fetched ONCE on mount (empty deps).
+  // Because this whole Hosur section stays mounted (just CSS-hidden) the
+  // entire session, opening Planner's counter in a different tab afterward
+  // never updated this already-mounted copy — the Dispatch/Bill button
+  // stayed permanently disabled until a full page reload, with no visible
+  // explanation once the one-time banner above scrolled out of view. Poll it
+  // like every other live figure in this app so it self-corrects.
   const [counterOpen, setCounterOpen] = useState<boolean | null>(null);
   useEffect(() => {
     let cancelled = false;
-    getPackingCounterStatus().then(s => { if (!cancelled) setCounterOpen(s.isOpen); }).catch(() => { if (!cancelled) setCounterOpen(null); });
-    return () => { cancelled = true; };
+    const check = () => getPackingCounterStatus().then(s => { if (!cancelled) setCounterOpen(s.isOpen); }).catch(() => { if (!cancelled) setCounterOpen(null); });
+    check();
+    const interval = setInterval(() => { if (!document.hidden) check(); }, 15_000);
+    return () => { cancelled = true; clearInterval(interval); };
   }, []);
 
   // Leftover pool rows the planner has chosen to apply against a currently
@@ -753,7 +762,15 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
       </div>
       {counterOpen === false && (
         <div className="flex items-center gap-2 rounded-2xl border border-destructive/30 bg-destructive/10 p-4 text-sm font-bold text-destructive">
-          <AlertTriangle className="size-4 shrink-0" /> Planner's counter is closed — open today's counter in Daily Closure before billing any Hosur order.
+          {/* BUG FIX (2026-08-07): "Daily Closure" on its own is ambiguous
+              inside this merged Hosur tab — the Hosur nav bar has its OWN
+              "Daily Closure" sub-tab (Money group) that opens a completely
+              different counter (hosur_counter_sessions) and does nothing
+              for this gate. This checks Planner's own packing counter
+              (app_state "packing-daily-closure:<date>"), opened from the
+              top-level Planner "Daily Closure" tab — name both explicitly
+              so staff don't open the wrong one and stay stuck. */}
+          <AlertTriangle className="size-4 shrink-0" /> Planner's counter is closed — open today's counter from Planner's own "Daily Closure" tab (top nav, not the Hosur "Daily Closure" sub-tab) before billing any Hosur order.
         </div>
       )}
       <div className="relative">
@@ -931,6 +948,16 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
                         {dueDateMissing && <p className="text-[10px] font-bold text-destructive">Due date is required for {pType} payment.</p>}
                         {partialInvalid && !dueDateMissing && <p className="text-[10px] font-bold text-destructive">Enter a paid amount less than the bill total.</p>}
                       </div>
+
+                      {/* BUG FIX (2026-08-07): repeat the counter-closed reason right
+                          next to the button it disables — the banner up top is easy to
+                          scroll past on a long order, which is exactly what made this
+                          look like "the button just doesn't work" with no visible cause. */}
+                      {counterOpen === false && (
+                        <p className="flex items-center gap-1.5 text-[11px] font-bold text-destructive">
+                          <AlertTriangle className="size-3.5 shrink-0" /> Disabled — Planner's counter is closed. Open it from the top-level "Daily Closure" tab (not the Hosur one).
+                        </p>
+                      )}
 
                       {res && (
                         <div className="space-y-2">
