@@ -419,6 +419,32 @@ export default function PlannerDashboard() {
   );
 }
 
+// Reusable manual-refresh control for tabs that read from the shared
+// `orders` store — the store already auto-polls every 15s in the
+// background, but staff asked for a way to pull fresh data on demand
+// instead of waiting for the next poll tick. silent+force bypasses the
+// freshness throttle without flipping the store's global `loading` flag
+// (which would otherwise blank the whole tab behind a full-page spinner).
+function RefreshOrdersButton({ className }: { className?: string }) {
+  const fetchOrders = useBakeryStore(s => s.fetchOrders);
+  const [refreshing, setRefreshing] = useState(false);
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    try { await fetchOrders(true, true); } finally { setRefreshing(false); }
+  };
+  return (
+    <button
+      type="button"
+      onClick={() => void handleRefresh()}
+      disabled={refreshing}
+      title="Refresh orders"
+      className={cn('flex items-center gap-1.5 rounded-xl border border-border bg-card px-3 py-2 text-xs font-bold text-muted-foreground hover:bg-muted disabled:cursor-wait disabled:opacity-60', className)}
+    >
+      <RefreshCw className={cn('size-3.5', refreshing && 'animate-spin')} /> Refresh
+    </button>
+  );
+}
+
 // ─── Tab: Incoming Orders ───────────────────────────────────────────────────
 function IncomingOrdersTab({ orders, onAdd }: { orders: BakeryOrder[]; onAdd: ReturnType<typeof useBakeryStore.getState>['submitOrder'] }) {
   const [showAdd, setShowAdd] = useState(false);
@@ -462,6 +488,7 @@ function IncomingOrdersTab({ orders, onAdd }: { orders: BakeryOrder[]; onAdd: Re
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-black text-foreground">Incoming Orders ({orders.length})</h2>
         <div className="flex gap-2">
+          <RefreshOrdersButton />
           <ExportButton
             disabled={orders.length === 0}
             onClick={() => exportToExcel({
@@ -592,7 +619,10 @@ function SentOrdersTab({ orders }: { orders: BakeryOrder[] }) {
 
   return (
     <div className="space-y-4">
-      <h2 className="text-sm font-black text-foreground">Sent — By Date ({dayGroups.length} day{dayGroups.length === 1 ? '' : 's'})</h2>
+      <div className="flex items-center justify-between gap-2">
+        <h2 className="text-sm font-black text-foreground">Sent — By Date ({dayGroups.length} day{dayGroups.length === 1 ? '' : 's'})</h2>
+        <RefreshOrdersButton />
+      </div>
       {dayGroups.length === 0 ? <EmptyState text="Nothing sent yet." /> : (
         <div className="space-y-3">
           {dayGroups.map(group => (
@@ -717,6 +747,7 @@ function MergedSummaryTab({ orders }: { orders: BakeryOrder[] }) {
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-black text-foreground">Merged Summary</h2>
         <div className="flex gap-2">
+          <RefreshOrdersButton />
           <ExportButton
             disabled={merged.length === 0}
             onClick={() => exportToExcel({
@@ -864,6 +895,7 @@ function PlanningTab({ orders }: { orders: BakeryOrder[] }) {
             <p className="text-xs font-bold text-muted-foreground font-body">Plan extra production ahead of actual orders. Pick a branch and quantity for each item only when you dispatch it.</p>
           </div>
         </div>
+        <RefreshOrdersButton />
       </div>
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_22rem]">
@@ -996,6 +1028,7 @@ function ProductionEntryTab({ orders }: { orders: BakeryOrder[] }) {
             <option value="all">All dates</option>
             {dateGroups.map(g => <option key={g.dateKey} value={g.dateKey}>{g.label}</option>)}
           </select>
+          <RefreshOrdersButton />
           <ExportButton
             disabled={totalPending === 0}
             onClick={() => exportToExcel({
@@ -1398,6 +1431,17 @@ const HOSUR_SUB_TAB_GROUPS: { label: string; tabs: { key: HosurSubTab; label: st
   { label: 'Money', tabs: [
     { key: 'credit',     label: 'Credit Ledger',      icon: <CreditCard className="size-3.5" />, ownedByPanel: false },
     { key: 'collection', label: 'Payment Collection', icon: <WalletCards className="size-3.5" />, ownedByPanel: false },
+    // BUG FIX (2026-08-07): 'closure' was in the HosurSubTab type and
+    // HosurDashboard's own tab set, but had NO nav button anywhere in this
+    // shared bar — the only way in was clicking "Open Counter" inside
+    // Payment Collection, which sets the URL's hosurTab=closure, but this
+    // component's own activeTab fallback (below) only recognizes keys that
+    // appear in HOSUR_SUB_TAB_GROUPS, so it silently bounced back to "Place
+    // Order" instead. Since the Hosur cash counter must be open before
+    // Payment Collection will accept anything, that made Payment Collection
+    // permanently unusable. Direct nav entry fixes both the dead-end and
+    // lets staff open/close the counter proactively instead of only via error.
+    { key: 'closure',    label: 'Daily Closure',      icon: <Calendar className="size-3.5" />, ownedByPanel: false },
   ] },
   { label: 'Communication', tabs: [
     { key: 'whatsapp',  label: 'WhatsApp Logs',    icon: <MessageCircle className="size-3.5" />, ownedByPanel: false },
@@ -1610,12 +1654,15 @@ function InvoiceTab({ orders }: { orders: BakeryOrder[] }) {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-sm font-black text-foreground">Invoice</h2>
-        <input
-          type="date"
-          value={date}
-          onChange={e => setDate(e.target.value)}
-          className="rounded-xl border border-border px-3 py-2 text-xs font-bold text-muted-foreground"
-        />
+        <div className="flex items-center gap-2">
+          <input
+            type="date"
+            value={date}
+            onChange={e => setDate(e.target.value)}
+            className="rounded-xl border border-border px-3 py-2 text-xs font-bold text-muted-foreground"
+          />
+          <RefreshOrdersButton />
+        </div>
       </div>
 
       <div className="grid gap-3 sm:grid-cols-3">
@@ -1750,26 +1797,21 @@ function ReportsTab({ orders }: { orders: BakeryOrder[] }) {
   const [quickRange, setQuickRange] = useState<'today' | '7d' | '30d' | 'custom'>('7d');
   const [dateFrom, setDateFrom] = useState(() => { const d = new Date(); d.setDate(d.getDate() - 6); return kolkataDateKey(d.toISOString()); });
   const [dateTo, setDateTo] = useState(() => kolkataDateKey(new Date().toISOString()));
+  // Start Fresh control removed (2026-08-07) per request — reportsCutoff is
+  // still loaded read-only so any cutoff set previously keeps clamping the
+  // report window and the "Showing data from X onward" banner below still
+  // explains it, but there's no longer a way to set a new one from this tab.
   const [reportsCutoff, setReportsCutoffState] = useState<string | null>(null);
-  const [confirmingReportsReset, setConfirmingReportsReset] = useState(false);
-  const [resettingReports, setResettingReports] = useState(false);
-
   useEffect(() => { void getReportsCutoff().then(setReportsCutoffState); }, []);
-
-  const startReportsFresh = async () => {
-    if (!confirmingReportsReset) {
-      setConfirmingReportsReset(true);
-      setTimeout(() => setConfirmingReportsReset(false), 4000);
-      return;
-    }
-    setResettingReports(true);
-    const tomorrow = new Date();
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    const tomorrowKey = kolkataDateKey(tomorrow.toISOString());
-    await setReportsCutoff(tomorrowKey);
-    setReportsCutoffState(tomorrowKey);
-    setConfirmingReportsReset(false);
-    setResettingReports(false);
+  // Manual refresh — bumping this re-runs the Hosur leftover/adjustment
+  // fetch below (which otherwise only re-fires when the date range changes)
+  // alongside a forced re-fetch of the shared `orders` store.
+  const [refreshTick, setRefreshTick] = useState(0);
+  const fetchOrdersForRefresh = useBakeryStore(s => s.fetchOrders);
+  const [refreshingReport, setRefreshingReport] = useState(false);
+  const refreshReport = async () => {
+    setRefreshingReport(true);
+    try { await Promise.all([fetchOrdersForRefresh(true, true), Promise.resolve(setRefreshTick(t => t + 1))]); } finally { setRefreshingReport(false); }
   };
 
   useEffect(() => {
@@ -1837,7 +1879,7 @@ function ReportsTab({ orders }: { orders: BakeryOrder[] }) {
       })));
     })();
     return () => { cancelled = true; };
-  }, [dateFrom, dateTo, reportsCutoff]);
+  }, [dateFrom, dateTo, reportsCutoff, refreshTick]);
   // FEATURE (2026-08-07): "Sometimes the planner will dispatch additional
   // items from the requested items... This should show as in report" —
   // extra/non-requested dispatches (DispatchEntry.isExtra) live inside each
@@ -2080,7 +2122,7 @@ function ReportsTab({ orders }: { orders: BakeryOrder[] }) {
       'Orders Placed',
       ['Order #', 'Branch', 'Status', 'Placed On', 'Items'],
       [70, 55, 75, 105, 205],
-      placedOrders.map(o => [o.orderNumber, bucketFor(o), o.status.replace('_', ' '), new Date(o.createdAt).toLocaleDateString('en-IN'), o.items.map(i => i.itemName).join(', ').slice(0, 60)]),
+      placedOrders.map(o => [String(o.orderNumber), bucketFor(o), o.status.replace('_', ' '), new Date(o.createdAt).toLocaleDateString('en-IN'), o.items.map(i => i.itemName).join(', ').slice(0, 60)]),
       'No orders placed in this range.',
     );
 
@@ -2096,7 +2138,7 @@ function ReportsTab({ orders }: { orders: BakeryOrder[] }) {
       'Extra / Non-Requested Items Dispatched',
       ['Item', 'Qty', 'Unit', 'Branch', 'Shop', 'Order #', 'By', 'Date'],
       [110, 40, 35, 55, 90, 55, 70, 90],
-      extraDispatchRows.map(r => [r.itemName.slice(0, 20), String(r.quantity), r.unit, r.branch, (r.shopName || '-').slice(0, 16), r.orderNumber, r.dispatchedBy.slice(0, 12), new Date(r.dispatchedAt).toLocaleDateString('en-IN')]),
+      extraDispatchRows.map(r => [r.itemName.slice(0, 20), String(r.quantity), r.unit, r.branch, (r.shopName || '-').slice(0, 16), String(r.orderNumber), r.dispatchedBy.slice(0, 12), new Date(r.dispatchedAt).toLocaleDateString('en-IN')]),
       'No extra/non-requested dispatches in this range.',
     );
 
@@ -2124,21 +2166,18 @@ function ReportsTab({ orders }: { orders: BakeryOrder[] }) {
           </div>
         </div>
         <div className="flex flex-wrap gap-2">
+          <button
+            onClick={() => void refreshReport()}
+            disabled={refreshingReport}
+            className="flex items-center gap-1.5 rounded-xl border border-border bg-card px-3 py-2 text-xs font-bold text-muted-foreground hover:bg-muted disabled:cursor-wait disabled:opacity-60"
+          >
+            <RefreshCw className={cn('size-4', refreshingReport && 'animate-spin')} /> Refresh
+          </button>
           <button onClick={exportExcelReport} className="flex items-center gap-1.5 rounded-xl border border-teal-200 bg-teal-50 px-3 py-2 text-xs font-bold text-teal-700 hover:bg-teal-100">
             <FileSpreadsheet className="size-4" /> Excel Report
           </button>
           <button onClick={exportPdfReport} className="flex items-center gap-1.5 rounded-xl border border-slate-300 bg-slate-50 px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-100">
             <FileText className="size-4" /> PDF Report
-          </button>
-          <button
-            onClick={startReportsFresh}
-            disabled={resettingReports}
-            className={cn(
-              'flex items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-bold disabled:opacity-60',
-              confirmingReportsReset ? 'border-red-300 bg-red-50 text-red-700 hover:bg-red-100' : 'border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100',
-            )}
-          >
-            <RefreshCw className="size-4" /> {resettingReports ? 'Starting…' : confirmingReportsReset ? 'Confirm: clear all report data?' : 'Start Fresh'}
           </button>
         </div>
       </div>
@@ -2640,7 +2679,18 @@ function BillingTab() {
       </div>
 
       <div className="overflow-hidden rounded-2xl border border-border bg-white shadow-sm">
-        <div className="border-b border-border bg-muted/40 px-4 py-3"><p className="text-sm font-black text-foreground">Recent Bills</p></div>
+        <div className="flex items-center justify-between border-b border-border bg-muted/40 px-4 py-3">
+          <p className="text-sm font-black text-foreground">Recent Bills</p>
+          <button
+            type="button"
+            title="Refresh recent bills"
+            onClick={() => void loadRecent()}
+            disabled={loadingRecent}
+            className="flex items-center gap-1.5 rounded-xl border border-border bg-card px-3 py-1.5 text-xs font-bold text-muted-foreground hover:bg-muted disabled:cursor-wait disabled:opacity-60"
+          >
+            <RefreshCw className={cn('size-3.5', loadingRecent && 'animate-spin')} /> Refresh
+          </button>
+        </div>
         {loadingRecent ? (
           <div className="flex justify-center py-8"><Loader2 className="size-5 animate-spin text-muted-foreground" /></div>
         ) : recent.length === 0 ? (
@@ -2968,8 +3018,13 @@ function ExtraItemDispatchForm({ branch, anchorOrderId, targetHosurOrderId, onDi
 // today's production plus any carryover — see the balance/leftover note in
 // DispatchChecklistModal), so leftover no longer needs a separate manual
 // "Use it" step: opening a shop's order already has it applied.
-function HosurShopDispatchPanel({ rows, orders, leftoverBalances, onDispatch, dispatchedBy, onDone }: {
-  rows: ProductionRow[]; orders: BakeryOrder[];
+function HosurShopDispatchPanel({ rows, mode, orders, leftoverBalances, onDispatch, dispatchedBy, onDone }: {
+  // `rows` must be the full Hosur-scoped row set (both fully- and
+  // not-yet-fully-dispatched items), NOT pre-split by active/completed —
+  // this component does its own per-CARD completion check below so a shop
+  // moves to "Dispatched" based on its own order, not a shared item's
+  // global status across every other shop.
+  rows: ProductionRow[]; mode: 'active' | 'completed'; orders: BakeryOrder[];
   leftoverBalances: Map<string, { itemName: string; unit: LeftoverUnit; balance: number }>;
   onDispatch: ReturnType<typeof useBakeryStore.getState>['submitDispatch']; dispatchedBy: string;
   onDone: () => void;
@@ -3088,10 +3143,15 @@ function HosurShopDispatchPanel({ rows, orders, leftoverBalances, onDispatch, di
   };
 
   if (shopOrders === null) return <p className="text-xs font-bold text-muted-foreground">Loading shop orders…</p>;
+  // A card belongs to "Dispatched" only once every item ON THAT SHOP'S OWN
+  // ORDER has been fully sent — independent of whether some other shop
+  // sharing the same item still has a balance owed to it.
+  const isCardComplete = (card: HosurShopOrderCard) => card.items.length > 0 && card.items.every(i => i.dispatched >= i.requested - 0.01);
+  const bucketed = shopOrders.filter(c => (mode === 'completed') === isCardComplete(c));
   const filtered = shopSearch.trim()
-    ? shopOrders.filter(c => c.shopName.toLowerCase().includes(shopSearch.trim().toLowerCase()))
-    : shopOrders;
-  if (shopOrders.length === 0) return <EmptyState text="No Hosur shop orders here." />;
+    ? bucketed.filter(c => c.shopName.toLowerCase().includes(shopSearch.trim().toLowerCase()))
+    : bucketed;
+  if (bucketed.length === 0) return <EmptyState text={mode === 'active' ? 'Nothing waiting on dispatch.' : 'Nothing dispatched yet.'} />;
 
   return (
     <div className="space-y-2.5">
@@ -3438,6 +3498,7 @@ function DispatchTab({ orders, allOrders }: { orders: BakeryOrder[]; allOrders: 
             <option value="all">All dates</option>
             {dateGroups.map(g => <option key={g.dateKey} value={g.dateKey}>{g.label}</option>)}
           </select>
+          <RefreshOrdersButton />
           <ExportButton
             disabled={exportRows.length === 0}
             onClick={() => exportToExcel({
@@ -3482,11 +3543,6 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
   // shop-first per the planner's request, since that's how shop orders are
   // actually organized in their head.
   const [hosurView, setHosurView] = useState<'shop' | 'item'>('shop');
-  // Planner asked for a way to collapse the "Still In Progress" summary —
-  // on a busy day with many partially-dispatched items it can push the
-  // actual dispatch list too far down the screen. Defaults open (it's
-  // useful context), but can be dismissed per date-group.
-  const [showInProgress, setShowInProgress] = useState(true);
 
   useEffect(() => { setSelected(new Set()); }, [branchFilter]);
 
@@ -3530,8 +3586,6 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
     () => rows.filter(r => (r.perBranch.Planned ?? 0) > 0 && plannedDispatchedForRow(r, orders) < (r.perBranch.Planned ?? 0) - 0.01),
     [rows, orders],
   );
-
-  const inProgressRows = filtered.filter(r => !fullyDispatched(r) && dispatchedQtyForItem(r) > 0);
 
   const toggleSelect = (itemName: string) => setSelected(prev => {
     const next = new Set(prev);
@@ -3586,39 +3640,6 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
         )}
       </div>
 
-      {/* Pinned summary — partially dispatched items with more still coming from the baker,
-          always at the top regardless of sub-tab, with each branch's required vs dispatched. */}
-      {inProgressRows.length > 0 && (
-        <div className="rounded-2xl border border-amber-300 bg-amber-50 p-3 shadow-sm">
-          <button
-            type="button"
-            onClick={() => setShowInProgress(v => !v)}
-            className="flex w-full items-center justify-between gap-2 text-left"
-          >
-            <span className="text-xs font-black uppercase tracking-wide text-amber-700">Still In Progress — More To Come ({inProgressRows.length})</span>
-            <span className="flex items-center gap-1 rounded-lg border border-amber-300 bg-white px-2 py-1 text-[10px] font-black text-amber-700">
-              {showInProgress ? 'Hide' : 'Show'}
-              <ChevronDown className={cn('size-3.5 transition-transform', showInProgress && 'rotate-180')} />
-            </span>
-          </button>
-          {showInProgress && (
-            <div className="mt-2 space-y-2">
-              {inProgressRows.map(row => (
-                <div key={row.itemName} className="rounded-xl bg-white p-2.5">
-                  <p className="text-sm font-black text-foreground">{row.itemName}</p>
-                  <div className="mt-1 flex flex-wrap gap-2 text-[11px] font-bold text-muted-foreground">
-                    {BRANCHES.filter(b => row.perBranch[b]).map(b => {
-                      const branchDispatched = branchDispatchedForRow(row, b, orders);
-                      return <span key={b} className="rounded-lg bg-amber-100 px-2 py-1">{b}: required {row.perBranch[b]} {row.unit} · dispatched {branchDispatched} {row.unit}</span>;
-                    })}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
       <div className="flex gap-2">
         <button onClick={() => setSubTab('active')} className={cn('rounded-xl px-3 py-1.5 text-xs font-bold', subTab === 'active' ? 'bg-foreground text-white' : 'bg-muted text-muted-foreground')}>To Dispatch ({activeRows.length})</button>
         <button onClick={() => setSubTab('completed')} className={cn('rounded-xl px-3 py-1.5 text-xs font-bold', subTab === 'completed' ? 'bg-foreground text-white' : 'bg-muted text-muted-foreground')}>Dispatched ({completedRows.length})</button>
@@ -3628,19 +3649,26 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
       {subTab === 'planned' ? (
         <PlannedDispatchPanel rows={plannedRows} orders={orders} onDispatch={submitDispatch} dispatchedBy={currentUser?.displayName || 'Planner'} />
       ) : branchFilter === 'Hosur' && hosurView === 'shop' ? (
-        <>
-          {shown.length === 0 && <EmptyState text={subTab === 'active' ? 'Nothing waiting on dispatch.' : 'Nothing dispatched yet.'} />}
-          {shown.length > 0 && (
-            <HosurShopDispatchPanel
-              rows={shown}
-              orders={orders}
-              leftoverBalances={leftoverBalances}
-              onDispatch={submitDispatch}
-              dispatchedBy={currentUser?.displayName || currentUser?.username || 'Planner'}
-              onDone={refreshLeftover}
-            />
-          )}
-        </>
+        // BUG FIX (2026-08-07): this used to pass `shown` (activeRows/
+        // completedRows — item-level rows already filtered by whether that
+        // ITEM is fully dispatched across ALL Hosur shops combined). A shop
+        // whose own order was 100% sent still showed under "To Dispatch"
+        // whenever some OTHER shop hadn't yet received its share of the same
+        // shared item, because the item itself stayed "active" globally.
+        // Pass the full (subTab-independent) Hosur-scoped row set instead —
+        // HosurShopDispatchPanel now builds every shop card from this and
+        // buckets each card into To Dispatch/Dispatched by that card's OWN
+        // completion (every item on that specific shop's order fully sent),
+        // not by whether some unrelated shop still needs more of an item.
+        <HosurShopDispatchPanel
+          rows={filtered}
+          mode={subTab === 'completed' ? 'completed' : 'active'}
+          orders={orders}
+          leftoverBalances={leftoverBalances}
+          onDispatch={submitDispatch}
+          dispatchedBy={currentUser?.displayName || currentUser?.username || 'Planner'}
+          onDone={refreshLeftover}
+        />
       ) : subTab === 'active' && (branchFilter === 'VRSNB' || branchFilter === 'SNB') ? (
         // WORKFLOW CHANGE (2026-08-07): VRSNB/SNB used to require opening
         // each item individually (or ticking checkboxes one by one, then a
@@ -4223,6 +4251,8 @@ function LeftoverDoneTab({ active, done }: { active: BakeryOrder[]; done: Bakery
         <p className="mb-3 text-xs font-semibold text-muted-foreground">Order-level checklist — separate from the quantified pool above. Use this to confirm every dispatched order has been physically checked for leftovers.</p>
         <div className="mb-2 flex items-center justify-between">
           <h2 className="text-sm font-black text-foreground">Dispatched Orders Awaiting Reconciliation ({active.length})</h2>
+          <div className="flex gap-2">
+          <RefreshOrdersButton />
           <ExportButton
             disabled={active.length === 0 && done.length === 0}
             onClick={() => exportToExcel({
@@ -4234,6 +4264,7 @@ function LeftoverDoneTab({ active, done }: { active: BakeryOrder[]; done: Bakery
               ],
             })}
           />
+          </div>
         </div>
         {active.length === 0 ? <EmptyState text="No leftovers pending reconciliation." /> : (
           <div className="space-y-2">

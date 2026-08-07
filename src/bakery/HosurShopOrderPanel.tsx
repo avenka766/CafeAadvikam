@@ -9,7 +9,7 @@
 // place of the previous generic slate/emerald/indigo Tailwind palette. No
 // business logic, data fetching, or handler behaviour was changed below.
 import { useState, useEffect, useMemo, useCallback } from 'react';
-import { Store, Search, X, ShoppingCart, Send, Loader2, Plus, Truck, CheckCircle2, AlertTriangle, Printer, PackageX, RotateCcw, ChevronDown } from 'lucide-react';
+import { Store, Search, X, ShoppingCart, Send, Loader2, Plus, Truck, CheckCircle2, AlertTriangle, Printer, PackageX, RotateCcw, ChevronDown, RefreshCw } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/stores/authStore';
 import { cn } from '@/lib/utils';
@@ -85,33 +85,44 @@ export default function HosurShopOrderPanel({ section: controlledSection, onPend
 
   return (
     <div className="space-y-4">
-      {controlledSection === undefined && (
-        <div className="flex gap-2">
-          <button
-            onClick={() => setLocalSection('place')}
-            className={cn(
-              'rounded-xl px-4 py-2.5 text-xs font-bold font-body transition-all duration-150',
-              section === 'place' ? 'cafe-gradient text-white shadow-teal' : 'bg-secondary text-secondary-foreground hover:bg-muted',
-            )}
-          >
-            <Store className="mr-1 inline size-3.5" /> Place Order
-          </button>
-          <button
-            onClick={() => setLocalSection('dispatch')}
-            className={cn(
-              'rounded-xl px-4 py-2.5 text-xs font-bold font-body transition-all duration-150',
-              section === 'dispatch' ? 'cafe-gradient text-white shadow-teal' : 'bg-secondary text-secondary-foreground hover:bg-muted',
-            )}
-          >
-            <Truck className="mr-1 inline size-3.5" /> Dispatch
-            {pendingOrders.length > 0 && (
-              <span className="ml-1.5 inline-flex min-w-[1.1rem] items-center justify-center rounded-full bg-accent px-1.5 py-0.5 text-[10px] font-black text-accent-foreground">
-                {pendingOrders.length}
-              </span>
-            )}
-          </button>
-        </div>
-      )}
+      <div className="flex items-center justify-between gap-2">
+        {controlledSection === undefined ? (
+          <div className="flex gap-2">
+            <button
+              onClick={() => setLocalSection('place')}
+              className={cn(
+                'rounded-xl px-4 py-2.5 text-xs font-bold font-body transition-all duration-150',
+                section === 'place' ? 'cafe-gradient text-white shadow-teal' : 'bg-secondary text-secondary-foreground hover:bg-muted',
+              )}
+            >
+              <Store className="mr-1 inline size-3.5" /> Place Order
+            </button>
+            <button
+              onClick={() => setLocalSection('dispatch')}
+              className={cn(
+                'rounded-xl px-4 py-2.5 text-xs font-bold font-body transition-all duration-150',
+                section === 'dispatch' ? 'cafe-gradient text-white shadow-teal' : 'bg-secondary text-secondary-foreground hover:bg-muted',
+              )}
+            >
+              <Truck className="mr-1 inline size-3.5" /> Dispatch
+              {pendingOrders.length > 0 && (
+                <span className="ml-1.5 inline-flex min-w-[1.1rem] items-center justify-center rounded-full bg-accent px-1.5 py-0.5 text-[10px] font-black text-accent-foreground">
+                  {pendingOrders.length}
+                </span>
+              )}
+            </button>
+          </div>
+        ) : <div />}
+        <button
+          type="button"
+          title="Refresh Hosur shop data"
+          onClick={() => { setLoading(true); void load(); }}
+          disabled={loading}
+          className="grid size-9 shrink-0 place-items-center rounded-xl border border-border text-muted-foreground hover:bg-muted disabled:cursor-wait disabled:opacity-60"
+        >
+          <RefreshCw className={cn('size-3.5', loading && 'animate-spin')} />
+        </button>
+      </div>
 
       {loadError && (
         <div className="flex items-center gap-2 rounded-2xl border border-destructive/30 bg-destructive/10 p-3 text-xs font-bold text-destructive">
@@ -280,7 +291,16 @@ function PlaceOrderSection({ shops, prices, userName, onSaved }: { shops: HosurS
         const customRows = items_.filter(i => i.isCustom).map(i => ({
           shop_id: shop.id, item_name: i.itemName, item_unit: i.unit, unit_price: i.unitPrice, is_active: true,
         }));
-        if (customRows.length > 0) await supabase.from('hosur_shop_price_lists').upsert(customRows, { onConflict: 'shop_id,item_name' });
+        // BUG FIX (2026-08-07): this upsert's error was never checked — a
+        // failed write silently let the order go through while the custom
+        // item never actually got added to the shop's permanent price list,
+        // so it wouldn't show as a priced item next time and couldn't be
+        // caught by the near-duplicate-name check later. Not fatal to the
+        // order itself, so this only warns rather than aborting the send.
+        if (customRows.length > 0) {
+          const { error: priceListError } = await supabase.from('hosur_shop_price_lists').upsert(customRows, { onConflict: 'shop_id,item_name' });
+          if (priceListError) console.warn(`[HosurShopOrderPanel] Failed to register custom item(s) in ${shop.shopName}'s price list:`, priceListError.message);
+        }
 
         // Push this shop's requirement into the central bakery workflow so
         // Planner sees it in Incoming Orders, just like a VRSNB/SNB requirement.
@@ -301,7 +321,20 @@ function PlaceOrderSection({ shops, prices, userName, onSaved }: { shops: HosurS
           items: bakeryItems, status: 'pending', created_by: userName, target_branch: 'Hosur',
           notes: buildHosurOrderTag(order.id, orderNumber, shop.shopName, notes),
         });
-        if (bakeryOrderError) throw bakeryOrderError;
+        // BUG FIX (2026-08-07): if this insert failed, the hosur_orders +
+        // hosur_order_items rows created just above were left behind as an
+        // orphaned 'draft' — invisible to the Dispatch queue (which only
+        // shows 'pending_packing') and to the Leftover panel's recent-orders
+        // query (which only shows dispatched/received_confirmed/billed), yet
+        // still blocking a retry: checkRecentDuplicateHosurOrder matches on
+        // 'draft' status too, so resending within 90s got rejected as a
+        // false "duplicate" of an order that never actually went anywhere.
+        // Mirror the same cleanup the items-insert failure above already does.
+        if (bakeryOrderError) {
+          await supabase.from('hosur_order_items').delete().eq('order_id', order.id);
+          await supabase.from('hosur_orders').delete().eq('id', order.id);
+          throw bakeryOrderError;
+        }
 
         void notifyAdmin('New Hosur shop order', `${shop.shopName} order ${orderNumber} created by ${userName} and sent to Store. Total ${money(shopSubtotal)}.`, order.id, orderNumber, { shopId: shop.id, subtotal: shopSubtotal });
       }
@@ -523,15 +556,25 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
   // recomputing it here from the raw leftover.quantity would ignore any
   // amount already applied to a DIFFERENT pending order and could promise
   // more stock than really exists in the pool.
+  // CRITICAL BUG FIX (2026-08-07): this used to SUBTRACT the applied leftover
+  // from the billed quantity (and fall back to item.quantity — the full
+  // ORDERED amount — as its baseline when no manual override existed yet,
+  // even though the visible field and every other billed-quantity read in
+  // this file default to item.dispatchedQuantity). Net effect: clicking
+  // "Apply" reduced what the shop was billed while the leftover stock still
+  // physically went out to them on top of production's dispatch — giving
+  // away real stock unbilled, sometimes by a lot (e.g. ordered 20kg, only
+  // 15kg produced, applying an 8kg leftover set the bill to 20-8=12kg
+  // instead of the correct 15+8=23kg... capped at the 20kg ordered).
+  // Leftover stock is a real, billable top-up on what production already
+  // sent — applying it must ADD to the bill, capped at what's still owed on
+  // this line (ordered − already billed), never subtract from it.
   const applyLeftoverToItem = (leftover: LeftoverRow, order: HosurOrder, item: HosurOrderItem, maxApplyQty: number) => {
-    // BUG FIX: base the reduction on whatever qty is currently entered for
-    // this item (a manual override the planner may have already typed in),
-    // not the original ordered quantity — otherwise applying a leftover
-    // silently discards any manual edit made before it.
-    const currentQty = overrides[item.id] !== undefined ? Number(overrides[item.id] || 0) : item.quantity;
-    const applyQty = Math.round(Math.max(0, Math.min(maxApplyQty, currentQty)) * 1000) / 1000;
+    const currentQty = overrides[item.id] !== undefined ? Number(overrides[item.id] || 0) : item.dispatchedQuantity;
+    const remainingOwed = Math.max(0, Math.round((item.quantity - currentQty) * 1000) / 1000);
+    const applyQty = Math.round(Math.max(0, Math.min(maxApplyQty, remainingOwed)) * 1000) / 1000;
     if (applyQty <= 0) return;
-    setOverrides(v => ({ ...v, [item.id]: String(Math.max(0, Math.round((currentQty - applyQty) * 1000) / 1000)) }));
+    setOverrides(v => ({ ...v, [item.id]: String(Math.round((currentQty + applyQty) * 1000) / 1000) }));
     setAppliedLeftovers(v => ({ ...v, [`${order.id}::${item.id}`]: { leftoverId: leftover.id, qty: applyQty } }));
     setExpanded(order.id);
   };
@@ -583,17 +626,14 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
       // Whatever was ordered but not actually sent (planner reduced the qty
       // below what was ordered) goes into the leftover pool — never silently
       // dropped, so it can be offered to the same shop's next matching order.
-      // BUG FIX: if some of that reduction was because the planner applied an
-      // EXISTING leftover to this item (via appliedLeftovers), that portion
-      // is already being consumed from the pool a few lines below — without
-      // this subtraction it would also get re-counted here as a brand-new
-      // shortfall, doubling the same stock in the pool.
+      // BUG FIX (2026-08-07): `i.receivedQuantity` (== billItems' quantity)
+      // now already INCLUDES any applied leftover (applyLeftoverToItem adds
+      // it on top of the dispatched baseline, and it's what's actually
+      // billed) — so it must NOT also be subtracted here separately, or a
+      // real shortfall gets understated by exactly the applied amount every
+      // time leftover was used on this line.
       const shortfalls = billItems
-        .map(i => {
-          const applied = appliedLeftovers[`${order.id}::${i.id}`]?.qty ?? 0;
-          const shortfall = Math.round((i.quantity - i.receivedQuantity - applied) * 1000) / 1000;
-          return { ...i, shortfall };
-        })
+        .map(i => ({ ...i, shortfall: Math.round((i.quantity - i.receivedQuantity) * 1000) / 1000 }))
         .filter(i => i.shortfall > 0.01);
       if (shortfalls.length > 0) {
         await supabase.from('hosur_leftover_pool').insert(shortfalls.map(s => ({
@@ -605,8 +645,22 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
       // reduce the pool row by what was used, or resolve it fully if used up.
       const appliedForOrder = (Object.entries(appliedLeftovers) as [string, { leftoverId: string; qty: number }][]).filter(([key]) => key.startsWith(`${order.id}::`));
       for (const [key, applied] of appliedForOrder) {
-        const { data: leftoverRow } = await supabase.from('hosur_leftover_pool').select('quantity').eq('id', applied.leftoverId).maybeSingle();
-        const currentQty = Number(leftoverRow?.quantity ?? 0);
+        const { data: leftoverRow, error: leftoverReadError } = await supabase.from('hosur_leftover_pool').select('quantity').eq('id', applied.leftoverId).maybeSingle();
+        // BUG FIX (2026-08-07): a failed read here used to fall through
+        // `?? 0`, making a real leftover row's quantity look like it was
+        // already zero — the code below would then mark it "resolved" with
+        // quantity 0, permanently destroying tracked stock that was never
+        // actually consumed, with no error shown (the bill/WhatsApp send had
+        // already succeeded by this point, so the planner saw a clean
+        // success message). Skip the write instead and warn, leaving the
+        // pool row untouched so it can be reconciled manually rather than
+        // silently corrupted.
+        if (leftoverReadError || !leftoverRow) {
+          console.warn(`[HosurShopOrderPanel] Could not read leftover pool row ${applied.leftoverId} to consume it — left untouched to avoid corrupting real stock:`, leftoverReadError?.message);
+          setAppliedLeftovers(v => { const next = { ...v }; delete next[key]; return next; });
+          continue;
+        }
+        const currentQty = Number(leftoverRow.quantity ?? 0);
         const remaining = Math.round((currentQty - applied.qty) * 1000) / 1000;
         if (remaining <= 0.01) {
           await supabase.from('hosur_leftover_pool').update({
@@ -625,7 +679,15 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
     } catch (err) {
       setResult(r => ({ ...r, [order.id]: { ok: false, message: err instanceof Error ? err.message : 'Failed to dispatch and bill this order.' } }));
     } finally {
-      setBusy(null);
+      // BUG FIX (2026-08-07): unconditionally nulling `busy` here let a
+      // still-in-flight dispatch for a DIFFERENT order get re-enabled the
+      // moment any other order's request finished — e.g. dispatch order A,
+      // switch to order B before A resolves, click B (busy='B'); if A then
+      // finishes, this used to null busy globally, re-enabling B's button
+      // while B's own request was still pending, risking a double
+      // dispatch/double bill/double WhatsApp send for B. Only clear it if
+      // it's still pointing at the order whose request just finished.
+      setBusy(b => (b === order.id ? null : b));
     }
   };
 
@@ -876,6 +938,7 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
         pendingOrders={orders}
         pendingItems={items}
         appliedLeftovers={appliedLeftovers}
+        overrides={overrides}
         onApply={applyLeftoverToItem}
         refreshTick={leftoverTick}
         shops={shops}
@@ -921,9 +984,14 @@ function mapLeftover(r: Record<string, unknown>): LeftoverRow {
 
 interface RecentDispatchedOrder { id: string; orderNumber: string; shopName: string; createdAt: string; billId: string | null; billStatus: string | null; creditAmount: number; }
 
-function HosurLeftoverAndCancelPanel({ pendingOrders, pendingItems, appliedLeftovers, onApply, refreshTick, shops }: {
+function HosurLeftoverAndCancelPanel({ pendingOrders, pendingItems, appliedLeftovers, overrides, onApply, refreshTick, shops }: {
   pendingOrders: HosurOrder[]; pendingItems: HosurOrderItem[];
   appliedLeftovers: Record<string, { leftoverId: string; qty: number }>;
+  // Needed so the "Apply" button's displayed/actual cap matches what
+  // applyLeftoverToItem will really do (remaining owed = ordered − already
+  // billed), instead of the old display-only cap of the full ordered
+  // quantity, which could overstate how much would actually get applied.
+  overrides: Record<string, string>;
   onApply: (leftover: LeftoverRow, order: HosurOrder, item: HosurOrderItem, maxApplyQty: number) => void;
   refreshTick: number;
   shops: HosurShop[];
@@ -1053,6 +1121,13 @@ function HosurLeftoverAndCancelPanel({ pendingOrders, pendingItems, appliedLefto
 
   const addManualLeftover = async () => {
     if (!addItemName.trim() || !addQty || Number(addQty) <= 0) { setAddError('Enter an item name and a valid quantity.'); return; }
+    // BUG FIX (2026-08-07): `Number(addPrice) || 0` treats a negative price
+    // string as truthy, so it passed straight through unvalidated — unlike
+    // the "Dispatch Leftover to Shop" form below, which explicitly rejects
+    // price < 0. A negative price here would pre-fill that other form's
+    // price field the next time this row is dispatched, and show a negative
+    // "Total" if opened without editing it first.
+    if (addPrice.trim() !== '' && Number(addPrice) < 0) { setAddError('Price cannot be negative.'); return; }
     setAddSaving(true); setAddError('');
     try {
       const { error } = await supabase.from('hosur_leftover_pool').insert({
@@ -1075,8 +1150,20 @@ function HosurLeftoverAndCancelPanel({ pendingOrders, pendingItems, appliedLefto
   // Reduces (or fully resolves) a leftover pool row by whatever quantity was
   // just actually sent out — same consumption logic used when an "Apply to a
   // pending order" match gets dispatched, just triggered from here instead.
+  // BUG FIX (2026-08-07): this used to compute `remaining` from `row.quantity`
+  // — a value from React state that may be stale relative to the DB if this
+  // same leftover row was consumed by something else since the last `load()`
+  // (the sibling consumption path inside dispatchAndBill guards against
+  // exactly this by re-reading the current quantity first). Re-read fresh
+  // here too so two near-simultaneous consumptions of the same row can't
+  // compute the wrong remaining balance.
   const consumeLeftover = async (row: LeftoverRow, qty: number, orderId: string, shopName: string) => {
-    const remaining = Math.round((row.quantity - qty) * 1000) / 1000;
+    const { data: freshRow, error: freshReadError } = await supabase.from('hosur_leftover_pool').select('quantity').eq('id', row.id).maybeSingle();
+    if (freshReadError || !freshRow) {
+      console.warn(`[HosurShopOrderPanel] Could not read leftover pool row ${row.id} to consume it — left untouched to avoid corrupting real stock:`, freshReadError?.message);
+      return;
+    }
+    const remaining = Math.round((Number(freshRow.quantity ?? 0) - qty) * 1000) / 1000;
     if (remaining <= 0.01) {
       await supabase.from('hosur_leftover_pool').update({
         status: 'resolved', quantity: Math.max(0, remaining), resolved_at: new Date().toISOString(),
@@ -1217,7 +1304,14 @@ function HosurLeftoverAndCancelPanel({ pendingOrders, pendingItems, appliedLefto
       setCancelQty(v => ({ ...v, [item.id]: '' }));
       load();
     } finally {
-      setBusyItemId(null);
+      // BUG FIX (2026-08-07): same shape of bug as HosurShopOrderPanel's
+      // dispatch `busy` flag — unconditionally nulling here let a still-in-
+      // flight cancel on item A get re-enabled by item B's cancel finishing
+      // first, allowing a second click on A to re-run cancelItem against the
+      // same stale item.cancelledQuantity/selectedOrder.creditAmount
+      // snapshot (neither is an atomic server-side increment), risking a
+      // lost update — a double leftover-pool insert or a wrong credit total.
+      setBusyItemId(id => (id === item.id ? null : id));
     }
   };
 
@@ -1363,7 +1457,7 @@ function HosurLeftoverAndCancelPanel({ pendingOrders, pendingItems, appliedLefto
                                 <div key={`${order.id}-${item.id}`} className="flex items-center justify-between gap-2 rounded-lg bg-white px-2.5 py-1.5">
                                   <span className="text-[11px] font-bold text-foreground">{order.shopName} — #{order.orderNumber} needs {num(item.quantity)} {item.unit}</span>
                                   <button onClick={() => onApply(row, order, item, remainingFor(row))} className="rounded-lg bg-teal-600 px-2 py-1 text-[10px] font-bold text-white hover:bg-teal-700">
-                                    Apply {num(Math.min(remainingFor(row), item.quantity))} {row.unit}
+                                    Apply {num(Math.min(remainingFor(row), Math.max(0, item.quantity - (overrides[item.id] !== undefined ? Number(overrides[item.id] || 0) : item.dispatchedQuantity))))} {row.unit}
                                   </button>
                                 </div>
                               ))}

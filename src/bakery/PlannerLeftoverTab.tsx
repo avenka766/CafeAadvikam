@@ -308,19 +308,6 @@ export default function PlannerLeftoverTab() {
   }, []);
   useEffect(() => { void refresh(); }, [refresh]);
 
-  // ── Start fresh (hide everything before now, without deleting it) ───────
-  const [confirmingReset, setConfirmingReset] = useState(false);
-  const [resetting, setResetting] = useState(false);
-  const startFresh = async () => {
-    if (!confirmingReset) { setConfirmingReset(true); setTimeout(() => setConfirmingReset(false), 4000); return; }
-    setConfirmingReset(false);
-    setResetting(true); setError(''); setMessage('');
-    await setClosingStockCutoff(new Date().toISOString());
-    setResetting(false);
-    setMessage('Closing Stock cleared — balances, Daily Report, and Movement Log now start fresh from this moment. Nothing was deleted; past history is still safe.');
-    void refresh();
-  };
-
   // ── Add-to-leftover form ─────────────────────────────────────────────────
   const [itemQuery, setItemQuery] = useState('');
   const [selectedItem, setSelectedItem] = useState<MergedCatalogItem | null>(null);
@@ -588,30 +575,8 @@ export default function PlannerLeftoverTab() {
 
   return (
     <section className="space-y-5">
-      <div className="overflow-hidden rounded-3xl border border-slate-800 bg-gradient-to-br from-slate-950 via-teal-950 to-slate-900 text-white shadow-xl">
-        <div className="flex flex-col gap-4 p-5 lg:flex-row lg:items-center lg:justify-between">
-          <div>
-            <div className="mb-2 flex flex-wrap items-center gap-2">
-              <span className="rounded-full bg-teal-400/15 px-3 py-1 text-[10px] font-black uppercase tracking-[0.2em] text-teal-200">Kitchen finished-goods pool</span>
-            </div>
-            <h2 className="font-display text-3xl font-black">Closing Stock / Leftover</h2>
-            <p className="mt-1 max-w-3xl text-sm text-white/60">Record what's physically left over at closing. This shared pool (not tied to any one branch) is available to dispatch first, before fresh production, the next time an order comes in.</p>
-          </div>
-          <div className="flex items-center gap-2">
-            <button onClick={refresh} className="inline-flex h-11 items-center gap-2 rounded-xl border border-white/15 bg-white/10 px-4 text-xs font-black"><RefreshCw className="size-4" />Refresh</button>
-            <button
-              onClick={startFresh}
-              disabled={resetting}
-              className={cn(
-                'inline-flex h-11 items-center gap-2 rounded-xl px-4 text-xs font-black disabled:opacity-50',
-                confirmingReset ? 'bg-red-500 text-white' : 'border border-white/15 bg-white/10',
-              )}
-            >
-              {resetting ? <Loader2 className="size-4 animate-spin" /> : <X className="size-4" />}
-              {confirmingReset ? 'Click again to confirm' : 'Start Fresh'}
-            </button>
-          </div>
-        </div>
+      <div className="flex justify-end">
+        <button onClick={refresh} className="inline-flex h-9 items-center gap-2 rounded-xl border border-border bg-card px-3 text-xs font-black text-muted-foreground hover:bg-muted"><RefreshCw className="size-3.5" />Refresh</button>
       </div>
 
       {error && <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-bold text-red-700"><AlertTriangle className="mr-2 inline size-4" />{error}</div>}
