@@ -47,6 +47,17 @@ function validateCart(cart: CartItem[]) {
 interface OrderState {
   orders: Order[];
   cart: CartItem[];
+  // BUG FIX (audit): AdvanceOrderPanel used to share this exact `cart` array
+  // with NewBillPanel's dine-in/takeaway draft cart — both panels stay
+  // permanently mounted (see BillingDashboard's "STATE-LOSS FIX"), and
+  // NewBillPanel only snapshots the shared cart into its own per-table/
+  // per-ticket drafts when switching table/order-type INSIDE that panel, not
+  // when the biller switches the top-level New Bill <-> Advance tab. So an
+  // unsent dine-in table's draft items could still be sitting in `cart` when
+  // Advance was opened, showing up (and being submittable/wipeable) as if
+  // they belonged to the advance order. `advanceCart` is a fully separate
+  // slice so the two flows can never see or clobber each other's items.
+  advanceCart: CartItem[];
   loading: boolean;
   polling: boolean;
   pollTimer: ReturnType<typeof setInterval> | null;
@@ -62,6 +73,12 @@ interface OrderState {
   setCart: (items: CartItem[]) => void;
   getCartTotal: () => number;
   getCartCount: () => number;
+
+  addToAdvanceCart: (item: MenuItem) => void;
+  updateAdvanceCartQuantity: (itemId: string, quantity: number) => void;
+  clearAdvanceCart: () => void;
+  getAdvanceCartTotal: () => number;
+  getAdvanceCartCount: () => number;
 
   loadOrders: (days?: number) => Promise<void>;
   submitOrder: (params: { tableNumber?: number; orderType: OrderType; notes?: string; customerName?: string; createdBy: string; orderSource?: OrderSource; parcelCharges?: number; paymentType?: PaymentType; paymentBreakdown?: PaymentBreakdown; billedBy?: string; status?: OrderStatus; }) => Promise<string>;
@@ -122,6 +139,7 @@ export function dbRowToOrder(row: Record<string, unknown>): Order {
 export const useOrderStore = create<OrderState>()((set, get) => ({
   orders: [],
   cart: [],
+  advanceCart: [],
   loading: false,
   polling: false,
   pollTimer: null,
@@ -151,6 +169,27 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
   setCart: (items: CartItem[]) => set({ cart: items }),
   getCartTotal: () => get().cart.reduce((sum, c) => sum + c.menuItem.price * c.quantity, 0),
   getCartCount: () => get().cart.reduce((sum, c) => sum + c.quantity, 0),
+
+  // Mirrors the addToCart/updateCartQuantity/clearCart/getCartTotal/
+  // getCartCount above exactly, just against `advanceCart` instead of
+  // `cart` — see the `advanceCart` field comment for why this needs to be
+  // a fully separate slice.
+  addToAdvanceCart: (item: MenuItem) =>
+    set((state) => {
+      const existing = state.advanceCart.find((c) => c.menuItem.id === item.id);
+      if (existing) return { advanceCart: state.advanceCart.map((c) => c.menuItem.id === item.id ? { ...c, quantity: c.quantity + 1 } : c) };
+      return { advanceCart: [...state.advanceCart, { menuItem: item, quantity: 1 }] };
+    }),
+
+  updateAdvanceCartQuantity: (itemId, quantity) =>
+    set((state) => {
+      if (quantity <= 0) return { advanceCart: state.advanceCart.filter((c) => c.menuItem.id !== itemId) };
+      return { advanceCart: state.advanceCart.map((c) => c.menuItem.id === itemId ? { ...c, quantity } : c) };
+    }),
+
+  clearAdvanceCart: () => set({ advanceCart: [] }),
+  getAdvanceCartTotal: () => get().advanceCart.reduce((sum, c) => sum + c.menuItem.price * c.quantity, 0),
+  getAdvanceCartCount: () => get().advanceCart.reduce((sum, c) => sum + c.quantity, 0),
 
   loadOrders: async (days = 60) => {
     if (orderFetchInFlight) return;
@@ -285,7 +324,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
   submitAdvanceOrder: async (params) => {
     await useMenuStore.getState().loadMenu(true);
     const latestMenu = useMenuStore.getState().items;
-    const cart = get().cart.map((cartItem) => {
+    const cart = get().advanceCart.map((cartItem) => {
       const latest = latestMenu.find((item) => item.id === cartItem.menuItem.id);
       return latest ? { ...cartItem, menuItem: latest } : cartItem;
     });
@@ -320,7 +359,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     const orderNumber = numData as number;
 
     const cartSnapshot = [...cart];
-    set({ cart: [] });
+    set({ advanceCart: [] });
 
     const order: Order = {
       id: orderId, orderNumber, tableNumber: params.tableNumber, orderType: params.orderType,
@@ -362,7 +401,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
 
     const { error } = await supabase.from('orders').insert(payload);
     if (error) {
-      set((state) => ({ orders: state.orders.filter((o) => o.id !== orderId), cart: cartSnapshot }));
+      set((state) => ({ orders: state.orders.filter((o) => o.id !== orderId), advanceCart: cartSnapshot }));
       console.error('[submitAdvanceOrder] Supabase insert failed:', error);
       throw new Error(`Failed to submit advance order: ${error.message}`);
     }

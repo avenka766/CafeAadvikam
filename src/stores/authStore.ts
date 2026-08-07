@@ -4,10 +4,29 @@ import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import { supabase } from '@/lib/supabase';
 import { clearAppSession, saveAppSession } from '@/lib/appSession';
+import { isNativeApp } from '@/lib/platform';
 import type { User, UserRole } from '@/types';
 
-const SESSION_TIMEOUT_MS = 8 * 60 * 60 * 1000; // 8 hours
+const SESSION_TIMEOUT_MS = 8 * 60 * 60 * 1000; // 8 hours — web
+// Owner Android app (2026-08-07): the point of the native build is that the
+// two Owners never see a login screen again after the first time. The real
+// enforcement of "how long can this session live unattended" is server-side
+// (app_staff_sessions.expires_at, kept rolling forward by
+// extend_staff_session_secure — see extendNativeSessionIfNeeded below); this
+// local timer is just a client-side safety net so a native session doesn't
+// silently log itself out mid-use. 30 days comfortably covers "opens the app
+// most days" without ever nagging for a password.
+const NATIVE_SESSION_TIMEOUT_MS = 30 * 24 * 60 * 60 * 1000;
 const AUTH_STORAGE_KEY = 'cafe-aadvikam-auth';
+
+// Best-effort — pushes the server-side session expiry out to 30 days from
+// now. Safe to call anytime a valid token exists; refuses to extend a
+// missing/expired/revoked one (see the RPC), so this can never resurrect a
+// session that was legitimately logged out elsewhere. Never throws.
+async function extendNativeSessionIfNeeded(): Promise<void> {
+  if (!isNativeApp()) return;
+  try { await supabase.rpc('extend_staff_session_secure'); } catch { /* best-effort */ }
+}
 
 interface AuthState {
   currentUser: User | null;
@@ -47,7 +66,7 @@ export const useAuthStore = create<AuthState>()(
       _resetSessionTimer: () => {
         const existing = get()._sessionTimer;
         if (existing) clearTimeout(existing);
-        const timer = setTimeout(() => { get().logout(); }, SESSION_TIMEOUT_MS);
+        const timer = setTimeout(() => { get().logout(); }, isNativeApp() ? NATIVE_SESSION_TIMEOUT_MS : SESSION_TIMEOUT_MS);
         set({ _sessionTimer: timer });
       },
 
@@ -68,6 +87,7 @@ export const useAuthStore = create<AuthState>()(
         set({ currentUser: user, sessionExpiresAt: expiresAt });
         get()._resetSessionTimer();
         _attachActivityListeners();
+        void extendNativeSessionIfNeeded();
         return true;
       },
 
@@ -218,7 +238,14 @@ export const useAuthStore = create<AuthState>()(
     }),
     {
       name: AUTH_STORAGE_KEY,
-      storage: createJSONStorage(() => sessionStorage),
+      // Owner Android app (2026-08-07): sessionStorage doesn't survive
+      // Android killing the app process, which defeats "never see a login
+      // screen again". createJSONStorage re-invokes this getter on every
+      // access (not just once at module load), so it correctly picks
+      // localStorage only when actually running inside the native shell —
+      // the web app (including this exact same bundle on Vercel) keeps
+      // using sessionStorage exactly as before.
+      storage: createJSONStorage(() => (isNativeApp() ? localStorage : sessionStorage)),
       partialize: (state) => ({ currentUser: state.currentUser ? { ...state.currentUser, password: '' } : null, sessionExpiresAt: state.sessionExpiresAt }),
       // BUG #21 FIX: _sessionTimer is not persisted (correctly excluded by partialize),
       // but that means after a page reload the 8-hour auto-logout timer is never restarted.
@@ -240,6 +267,11 @@ export const useAuthStore = create<AuthState>()(
             // M-03 FIX: attach sliding-session activity listeners after rehydration so that
             // staff who are actively using the app never get kicked mid-shift.
             _attachActivityListeners();
+            // Owner Android app: every time the native app is (re)opened
+            // with a still-valid restored session, push its server-side
+            // expiry another 30 days out — this is what makes "opens the
+            // app most days" equal to "never has to log in again".
+            void extendNativeSessionIfNeeded();
           });
         }
       },
