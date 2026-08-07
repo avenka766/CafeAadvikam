@@ -3036,6 +3036,26 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
           and only the topmost one would actually be clickable. `sticky`
           keeps it pinned to the bottom of the viewport only while its own
           card is in view, so two open cards never fight for the same spot. */}
+      {/* BUG FIX (2026-08-07): the only feedback that anything was selected
+          used to be a teal ring around each card, easy to lose track of once
+          you'd ticked a few items scattered down a long list. Show exactly
+          what's selected, by name, with a one-tap way to remove one before
+          committing to the bulk dispatch. */}
+      {branchFilter !== 'All' && selected.size > 0 && (
+        <div className="rounded-2xl border border-teal-200 bg-teal-50/60 p-3">
+          <p className="mb-2 text-[11px] font-black uppercase tracking-wide text-teal-700">Selected for {branchFilter} ({selected.size})</p>
+          <div className="flex flex-wrap gap-2">
+            {selectedRows.map(row => (
+              <span key={row.itemName} className="flex items-center gap-1.5 rounded-full border border-teal-300 bg-white px-2.5 py-1 text-[11px] font-bold text-teal-800">
+                {row.itemName}
+                <button type="button" onClick={() => toggleSelect(row.itemName)} aria-label={`Remove ${row.itemName} from selection`} className="text-teal-500 hover:text-teal-800">
+                  <X className="size-3" />
+                </button>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
       {branchFilter !== 'All' && selected.size > 0 && (
         <div className="sticky bottom-2 z-10 flex justify-center pt-2">
           <button
@@ -3053,6 +3073,7 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
         <DispatchChecklistModal
           row={checklistItem}
           orders={orders}
+          branchFilter={branchFilter}
           onClose={() => setChecklistItem(null)}
           onDispatch={submitDispatch}
           dispatchedBy={currentUser?.displayName || 'Planner'}
@@ -3258,22 +3279,31 @@ function BulkDispatchModal({ branch, rows, orders, onClose, onDispatch, dispatch
   );
 }
 
-function DispatchChecklistModal({ row, orders, onClose, onDispatch, dispatchedBy, leftoverBalance }: {
-  row: ProductionRow; orders: BakeryOrder[]; onClose: () => void;
+function DispatchChecklistModal({ row, orders, branchFilter, onClose, onDispatch, dispatchedBy, leftoverBalance }: {
+  row: ProductionRow; orders: BakeryOrder[]; branchFilter: 'All' | Branch; onClose: () => void;
   onDispatch: ReturnType<typeof useBakeryStore.getState>['submitDispatch']; dispatchedBy: string;
   leftoverBalance: number;
 }) {
+  // BUG FIX (2026-08-07): this always built a checklist entry for every
+  // branch that ordered the item, regardless of which branch tab the
+  // planner was actually working from. Clicking "Dispatch" while filtered
+  // to VRSNB still opened a modal pre-selecting VRSNB *and* SNB (or
+  // whichever other branches also ordered that item) — an easy way to
+  // accidentally dispatch to a branch you weren't even looking at. When
+  // the page is scoped to one branch, scope this modal to that same branch;
+  // only the unfiltered "All" view still shows every requesting branch.
   const branchOrders = useMemo(() => {
     const map = new Map<string, { order: BakeryOrder; item: BakeryOrderItem }[]>();
     for (const orderId of row.contributingOrderIds) {
       const order = orders.find(o => o.id === orderId);
       const item = order?.items.find(i => sameItem(i.itemName, row.itemName));
       if (!order || !item || !order.targetBranch) continue;
+      if (branchFilter !== 'All' && order.targetBranch !== branchFilter) continue;
       if (!map.has(order.targetBranch)) map.set(order.targetBranch, []);
       map.get(order.targetBranch)!.push({ order, item });
     }
     return map;
-  }, [row, orders]);
+  }, [row, orders, branchFilter]);
 
   // Suggested quantity now automatically factors in the shared Closing
   // Stock/leftover balance — previously this only defaulted from today's

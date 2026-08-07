@@ -621,8 +621,16 @@ function OrderCard({ order }: { order: BakeryOrder }) {
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="font-display font-bold text-sm text-foreground">Order #{order.orderNumber}</span>
+            {/* BUG FIX (2026-08-07): once already-sent orders started showing
+                in this tab too, this badge kept showing the order's original
+                createdAt — which can be an earlier day than the merge that
+                actually sent it. A same-day merged order could show
+                yesterday's date, making one "today" send look like it
+                belonged to two different days. Show the date it was sent
+                (storeConfirmedAt) once it's sent; otherwise the date it was
+                raised, same as before. */}
             <span className="flex items-center gap-1 text-[9px] font-body font-bold px-2 py-0.5 rounded-full border bg-muted/60 text-muted-foreground border-border">
-              <Calendar className="size-2.5" />{kolkataDateLabel(order.createdAt)}
+              <Calendar className="size-2.5" />{kolkataDateLabel((sent && order.storeConfirmedAt) ? order.storeConfirmedAt : order.createdAt)}
             </span>
             {order.targetBranch && (
               <span className={cn('text-[9px] font-body font-bold px-2 py-0.5 rounded-full border', branchColor[order.targetBranch] ?? 'bg-muted text-muted-foreground border-border')}>
@@ -1288,10 +1296,24 @@ function OrdersTab() {
     return () => { unsubOrders(); unsubStock(); unsubBakeryItems(); };
   }, [fetchOrders, loadStock, loadAllItems, subscribeOrders, subscribeStock, subscribeBakeryItems]);
 
+  // `pending` = everything shown on this tab (still-actionable 'accepted'
+  // orders + today's already-sent 'store_confirmed' ones, so store staff can
+  // see what just went out — see wasSentToStoreToday above).
+  //
+  // BUG FIX (2026-08-07): "Combine Into One" used to run its byBranch
+  // grouping over this SAME `pending` list. Once today's already-sent
+  // orders were added to `pending` for display, the merge action started
+  // pulling them back in too — regrouping an already-store_confirmed order
+  // together with a fresh 'accepted' one for the same branch and re-running
+  // mergeOrdersForStore on it, which deducts stock a second time and can
+  // silently drop/duplicate items. Only genuinely unsent 'accepted' orders
+  // are ever eligible to merge; `mergeable` keeps that separate from what's
+  // merely displayed.
   const pending = orders.filter(o => o.status === 'accepted' || (o.status === 'store_confirmed' && wasSentToStoreToday(o)));
+  const mergeable = orders.filter(o => o.status === 'accepted');
 
   const handleMergeAll = async () => {
-    if (pending.length < 2 || merging) return;
+    if (mergeable.length < 2 || merging) return;
     setMerging(true); setMergeError(null);
     try {
       // BUG FIX (2026-08-06): orders with no targetBranch (e.g. Planner's own
@@ -1303,7 +1325,7 @@ function OrdersTab() {
       // discarding them, and surface a clear message when there's genuinely
       // nothing to combine.
       const byBranch = new Map<string, string[]>();
-      for (const o of pending) {
+      for (const o of mergeable) {
         const key = o.targetBranch ?? 'unassigned';
         const list = byBranch.get(key) ?? [];
         list.push(o.id);
@@ -1437,7 +1459,7 @@ function OrdersTab() {
         >
           <Printer className="size-3.5 text-primary" /> Print All
         </button>
-        {pending.length > 1 && (
+        {mergeable.length > 1 && (
           <button
             onClick={() => void handleMergeAll()}
             disabled={merging}
