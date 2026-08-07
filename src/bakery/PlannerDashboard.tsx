@@ -2772,12 +2772,19 @@ function BranchFlatDispatchPanel({ branch, rows, orders, leftoverBalances, onDis
   }), [rows, branch, orders, leftoverBalances]);
 
   const [qty, setQty] = useState<Record<string, string>>({});
+  // Explicit checkbox selection — every item starts checked (matching the
+  // previous "everything with a quantity goes" default), but the planner can
+  // untick any item and it's excluded from Dispatch regardless of its
+  // quantity field. Re-seeded alongside the quantity drafts below so a newly
+  // appeared item is selected by default too.
+  const [selected, setSelected] = useState<Set<string>>(new Set());
   // Re-seed drafts whenever the actual set of default quantities changes
   // (date group opened, an item's available stock changed, etc.) — but not
   // on every render, so an in-progress hand edit is never clobbered.
   const seedKey = lines.map(l => `${l.row.itemName}:${l.defaultQty}`).join('|');
   useEffect(() => {
     setQty(Object.fromEntries(lines.map(l => [l.row.itemName, String(l.defaultQty)])));
+    setSelected(new Set(lines.map(l => l.row.itemName)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [seedKey]);
 
@@ -2786,14 +2793,19 @@ function BranchFlatDispatchPanel({ branch, rows, orders, leftoverBalances, onDis
   const { getId, reset: resetDispatchIds } = useStableDispatchIds();
 
   const qtyFor = (itemName: string) => Number(qty[itemName] ?? '0');
-  const removeItem = (itemName: string) => setQty(v => ({ ...v, [itemName]: '0' }));
-  const selectedCount = lines.filter(l => qtyFor(l.row.itemName) > 0.001).length;
+  const toggleSelect = (itemName: string) => setSelected(prev => {
+    const next = new Set(prev);
+    if (next.has(itemName)) next.delete(itemName); else next.add(itemName);
+    return next;
+  });
+  const selectedCount = lines.filter(l => selected.has(l.row.itemName) && qtyFor(l.row.itemName) > 0.001).length;
 
   const dispatchAll = async () => {
     setSending(true); setResult(null);
     let sentAny = false;
     try {
       for (const { row } of lines) {
+        if (!selected.has(row.itemName)) continue;
         const q = qtyFor(row.itemName);
         if (q <= 0.001) continue;
         const entries = orders.filter(o => o.targetBranch === branch && row.contributingOrderIds.includes(o.id));
@@ -2812,7 +2824,7 @@ function BranchFlatDispatchPanel({ branch, rows, orders, leftoverBalances, onDis
         }
       }
       if (!sentAny) {
-        setResult({ ok: false, message: 'Nothing to send — every item is set to 0.' });
+        setResult({ ok: false, message: 'Nothing to send — check the items you want and make sure their quantity is above 0.' });
         return;
       }
       setResult({ ok: true, message: `Sent to ${branch}.` });
@@ -2827,28 +2839,44 @@ function BranchFlatDispatchPanel({ branch, rows, orders, leftoverBalances, onDis
 
   if (lines.length === 0) return <EmptyState text="Nothing waiting on dispatch." />;
 
+  const allSelected = lines.every(l => selected.has(l.row.itemName));
+
   return (
     <div className="space-y-2.5">
+      <div className="flex items-center justify-between">
+        <span className="text-[11px] font-black text-muted-foreground">{selected.size} of {lines.length} selected</span>
+        <button
+          type="button"
+          onClick={() => setSelected(allSelected ? new Set() : new Set(lines.map(l => l.row.itemName)))}
+          className="rounded-lg border border-border px-2.5 py-1 text-[11px] font-black text-muted-foreground hover:bg-muted"
+        >
+          {allSelected ? 'Deselect all' : 'Select all'}
+        </button>
+      </div>
       <div className="space-y-2">
         {lines.map(({ row, requested, alreadySent, available }) => {
           const val = qty[row.itemName] ?? '0';
           const over = Number(val) > available + 0.01;
+          const isChecked = selected.has(row.itemName);
           return (
-            <div key={row.itemName} className="rounded-2xl border border-border bg-white p-3 shadow-sm">
+            <div key={row.itemName} className={cn('rounded-2xl border bg-white p-3 shadow-sm', isChecked ? 'border-teal-300 ring-1 ring-teal-200' : 'border-border opacity-60')}>
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <p className="text-sm font-black text-foreground">
-                  {row.itemName} <span className="font-bold text-muted-foreground">(ordered {qtyFmt(requested)} {row.unit} · sent {qtyFmt(alreadySent)} {row.unit})</span>
-                </p>
-                <div className="flex items-center gap-1.5">
+                <label className="flex min-w-0 items-center gap-2.5">
                   <input
-                    type="number" min={0} value={val}
-                    onChange={e => setQty(v => ({ ...v, [row.itemName]: e.target.value }))}
-                    className="w-24 rounded-lg border border-border bg-background px-2 py-1.5 text-right text-sm font-bold"
+                    type="checkbox" checked={isChecked} onChange={() => toggleSelect(row.itemName)}
+                    className="size-4 shrink-0 accent-teal-600"
                   />
-                  <button onClick={() => removeItem(row.itemName)} className="rounded-lg border border-border px-2.5 py-1.5 text-[11px] font-black text-muted-foreground hover:bg-muted">Remove</button>
-                </div>
+                  <p className="text-sm font-black text-foreground">
+                    {row.itemName} <span className="font-bold text-muted-foreground">(ordered {qtyFmt(requested)} {row.unit} · sent {qtyFmt(alreadySent)} {row.unit})</span>
+                  </p>
+                </label>
+                <input
+                  type="number" min={0} value={val}
+                  onChange={e => setQty(v => ({ ...v, [row.itemName]: e.target.value }))}
+                  className="w-24 rounded-lg border border-border bg-background px-2 py-1.5 text-right text-sm font-bold"
+                />
               </div>
-              <p className="mt-1 text-[11px] font-bold text-muted-foreground">
+              <p className="mt-1 pl-[26px] text-[11px] font-bold text-muted-foreground">
                 {qtyFmt(available)} {row.unit} available now (produced + leftover)
                 {over ? " — you're sending more than what's currently available, double-check before sending." : ''}
               </p>
@@ -2862,7 +2890,7 @@ function BranchFlatDispatchPanel({ branch, rows, orders, leftoverBalances, onDis
           disabled={sending || selectedCount === 0}
           className="flex items-center gap-2 rounded-2xl bg-foreground px-5 py-3 text-sm font-black text-white shadow-xl disabled:opacity-50"
         >
-          {sending ? <Loader2 className="size-4 animate-spin" /> : <Truck className="size-4" />} Dispatch {selectedCount} item{selectedCount === 1 ? '' : 's'} to {branch}
+          {sending ? <Loader2 className="size-4 animate-spin" /> : <Truck className="size-4" />} Dispatch {selectedCount} selected item{selectedCount === 1 ? '' : 's'} to {branch}
         </button>
       </div>
       {result && <p className={cn('text-center text-xs font-bold', result.ok ? 'text-teal-700' : 'text-red-700')}>{result.message}</p>}
