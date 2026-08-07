@@ -30,7 +30,7 @@ import { exportToExcel } from '@/lib/exportExcel';
 import HosurDashboard from '@/pages/HosurDashboard';
 import HosurShopOrderPanel, { leftoverReasonLabel } from './HosurShopOrderPanel';
 import PackingCakeOrdersTab from './PackingCakeOrdersTab';
-import PlannerLeftoverTab, { useLeftoverBalanceMap, recordLeftoverMovement, kolkataToday, qtyFmt, type LeftoverUnit } from './PlannerLeftoverTab';
+import PlannerLeftoverTab, { useLeftoverBalanceMap, recordLeftoverMovement, kolkataToday, qtyFmt, type LeftoverUnit, useMergedLeftoverCatalog, useBranchOnlyCatalog, ItemSearchPicker, type MergedCatalogItem } from './PlannerLeftoverTab';
 import { canonicalItemSlug, closingStockItemSlug, parseWeightGrams, pcsToKg, resolveItemWeightGrams } from './itemMatcher';
 import { useBranchCatalogStore } from '@/stores/branchCatalogStore';
 import { supabase } from '@/lib/supabase';
@@ -1006,10 +1006,110 @@ function ProductionEntryTab({ orders }: { orders: BakeryOrder[] }) {
           />
         </div>
       </div>
+      <ExtraProducedItemForm />
       {dateGroups.length === 0 && <EmptyState text="No items waiting on production entry." />}
       {visible.map((g, idx) => (
         <ProductionEntryDateGroup key={g.dateKey} dateKey={g.dateKey} label={g.label} orders={g.orders} rows={g.rows} search={search} defaultOpen={idx === 0} />
       ))}
+    </div>
+  );
+}
+
+// FEATURE (Production Entry — extra/unordered item): every row above this
+// form is tied to a real order's items[] — recordProduction has no path for
+// something that got made but was never ordered by anyone (see
+// computeMergedSummary, which only ever iterates order.items). This form is
+// that missing path: it writes straight into the shared Closing Stock pool
+// (reason='production_carryover', isExtra=true) instead of onto any specific
+// order, so it (a) doesn't need an order to attach to, (b) is immediately
+// available for Dispatch to draw from tomorrow, exactly like normal
+// production carry-over, and (c) is clearly flagged "extra" everywhere the
+// Closing Stock ledger is read — Daily Report, Movement Log, and the Reports
+// tab — instead of silently blending into ordinary production totals.
+function ExtraProducedItemForm() {
+  const currentUser = useAuthStore(s => s.currentUser);
+  const staffName = currentUser?.displayName || currentUser?.username || 'Planner Staff';
+  const catalog = useMergedLeftoverCatalog();
+  const [open, setOpen] = useState(false);
+  const [itemQuery, setItemQuery] = useState('');
+  const [selectedItem, setSelectedItem] = useState<MergedCatalogItem | null>(null);
+  const [qty, setQty] = useState('');
+  const [unit, setUnit] = useState<LeftoverUnit>('kg');
+  const [entryDate, setEntryDate] = useState(kolkataToday());
+  const [reason, setReason] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
+
+  const resetForm = () => { setItemQuery(''); setSelectedItem(null); setQty(''); setUnit('kg'); setReason(''); };
+
+  const submit = async () => {
+    setError(''); setMessage('');
+    const name = (selectedItem?.name || itemQuery).trim();
+    const amount = Number(qty);
+    if (!name) { setError('Search and pick (or type) an item first.'); return; }
+    if (!Number.isFinite(amount) || amount <= 0) { setError('Enter a quantity greater than zero.'); return; }
+    setSaving(true);
+    const result = await recordLeftoverMovement({
+      itemName: name, unit, delta: amount, businessDate: entryDate,
+      reason: 'production_carryover', recordedBy: staffName, isExtra: true,
+      notes: reason.trim() ? `Extra item — ${reason.trim()}` : 'Extra item made but not on any order',
+    });
+    setSaving(false);
+    if ('error' in result) { setError(result.error); return; }
+    setMessage(`${name}: ${qtyFmt(amount)} ${unit} recorded as extra production (added to Closing Stock, new balance ${qtyFmt(result.newBalance)} ${unit}).`);
+    resetForm();
+  };
+
+  if (!open) {
+    return (
+      <button onClick={() => setOpen(true)} className="flex items-center gap-1.5 rounded-xl border border-dashed border-border bg-card px-3 py-2 text-xs font-bold text-accent hover:bg-muted/40">
+        <Plus className="size-3.5" /> Record an item that was made but isn't on any order
+      </button>
+    );
+  }
+
+  return (
+    <div className="rounded-2xl border border-gold bg-accent/10 p-4">
+      <div className="flex items-center justify-between gap-2">
+        <div>
+          <h3 className="text-sm font-black text-foreground">Record Extra Produced Item</h3>
+          <p className="text-xs text-muted-foreground">For something made that isn't tied to any order — suggestions come from both SNB and VRSNB catalogues (no duplicates). It's added to Closing Stock immediately and marked "extra" everywhere it's reported.</p>
+        </div>
+        <button onClick={() => { setOpen(false); resetForm(); setError(''); }} className="rounded-lg p-1.5 hover:bg-muted"><X className="size-4" /></button>
+      </div>
+      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+        <div className="sm:col-span-2">
+          <ItemSearchPicker
+            value={selectedItem ? selectedItem.name : itemQuery}
+            onChange={(v) => { setItemQuery(v); setSelectedItem(null); }}
+            onSelect={(item) => { setSelectedItem(item); setItemQuery(item.name); }}
+            items={catalog}
+            placeholder="Search item (SNB + VRSNB, no duplicates)…"
+          />
+        </div>
+        <label className="space-y-1">
+          <span className="text-xs font-black text-muted-foreground">Quantity</span>
+          <input type="number" min="0" step="0.001" value={qty} onChange={e => setQty(e.target.value)} className="h-11 w-full rounded-xl border border-border bg-background px-3 text-sm font-bold" placeholder="0" />
+        </label>
+        <label className="space-y-1">
+          <span className="text-xs font-black text-muted-foreground">Date</span>
+          <input type="date" value={entryDate} onChange={e => setEntryDate(e.target.value)} className="h-11 w-full rounded-xl border border-border bg-background px-3 text-sm font-bold" />
+        </label>
+        <div className="flex gap-2 sm:col-span-2">
+          <button onClick={() => setUnit('kg')} className={cn('flex-1 rounded-xl border py-2.5 text-sm font-black', unit === 'kg' ? 'border-teal-700 bg-teal-700 text-white' : 'bg-background')}>Kg / Weight</button>
+          <button onClick={() => setUnit('pcs')} className={cn('flex-1 rounded-xl border py-2.5 text-sm font-black', unit === 'pcs' ? 'border-teal-700 bg-teal-700 text-white' : 'bg-background')}>Pcs / Pieces</button>
+        </div>
+        <label className="space-y-1 sm:col-span-2">
+          <span className="text-xs font-black text-muted-foreground">Why was this extra made? (optional, shown in the report)</span>
+          <input value={reason} onChange={e => setReason(e.target.value)} placeholder="e.g. batch ran over, made for a walk-in sample" className="h-11 w-full rounded-xl border border-border bg-background px-3 text-sm font-bold" />
+        </label>
+      </div>
+      {error && <p className="mt-2 rounded-lg bg-red-50 px-3 py-2 text-xs font-bold text-red-700">{error}</p>}
+      {message && <p className="mt-2 rounded-lg bg-teal-50 px-3 py-2 text-xs font-bold text-teal-700">{message}</p>}
+      <button onClick={submit} disabled={saving} className="mt-3 inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl gold-gradient text-sm font-black text-white shadow-gold disabled:opacity-50">
+        {saving ? <Loader2 className="size-4 animate-spin" /> : <PackageCheck className="size-4" />} Record Extra Production
+      </button>
     </div>
   );
 }
@@ -1745,15 +1845,80 @@ function ReportsTab({ orders }: { orders: BakeryOrder[] }) {
   // (which is built purely from ordered items), so they'd otherwise be
   // completely invisible to this report. Pulled directly from ordersInRange
   // so the date-range picker and Start Fresh cutoff above apply here too.
+  // FEATURE (2026-08-07 cont'd): "for hosur shops its showing as combine as
+  // hosur I need the shop name were the stock was dispatched" — every Hosur
+  // dispatch_log entry only carries a hosur_orders.id (targetHosurOrderId),
+  // not a shop name, so we resolve the distinct ids seen in this window to
+  // shop names in one batch query (same pattern as HosurShopBreakdown above)
+  // and use that map both for the Extra Items rows and the new by-shop table.
+  const hosurTargetOrderIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const o of ordersInRange) {
+      for (const d of o.dispatchLog || []) {
+        if (d.branch === 'Hosur' && d.targetHosurOrderId) ids.add(d.targetHosurOrderId);
+      }
+    }
+    return Array.from(ids);
+  }, [ordersInRange]);
+  const hosurTargetOrderIdsKey = hosurTargetOrderIds.join(',');
+  const [hosurShopNameById, setHosurShopNameById] = useState<Map<string, string>>(new Map());
+  useEffect(() => {
+    let cancelled = false;
+    if (hosurTargetOrderIds.length === 0) { setHosurShopNameById(new Map()); return; }
+    (async () => {
+      const { data } = await supabase.from('hosur_orders').select('id, shop_name').in('id', hosurTargetOrderIds);
+      if (cancelled) return;
+      setHosurShopNameById(new Map(((data ?? []) as Record<string, unknown>[]).map(o => [o.id as string, String(o.shop_name ?? 'Unknown shop')])));
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the
+    // stable joined string, not the unstable array reference (see HosurShopBreakdown).
+  }, [hosurTargetOrderIdsKey]);
+  const resolveHosurShopName = (d: { branch: string; targetHosurOrderId?: string }): string | null => {
+    if (d.branch !== 'Hosur') return null;
+    if (!d.targetHosurOrderId) return 'Unassigned (not shop-tagged)';
+    return hosurShopNameById.get(d.targetHosurOrderId) ?? 'Unknown shop';
+  };
+
   const extraDispatchRows = useMemo(() => ordersInRange.flatMap(o =>
     (o.dispatchLog || [])
       .filter(d => d.isExtra)
       .map(d => ({
         itemName: d.itemName, quantity: d.quantity, unit: d.unit || 'kg',
         branch: d.branch, dispatchedAt: d.dispatchedAt, dispatchedBy: d.dispatchedBy,
+        orderNumber: o.orderNumber, shopName: resolveHosurShopName(d),
+      })),
+  ).sort((a, b) => b.dispatchedAt.localeCompare(a.dispatchedAt)), [ordersInRange, hosurShopNameById]);
+
+  // Every Hosur dispatch (not just extras) broken out by the actual shop it
+  // went to, so "Hosur" stops being one combined bucket in the report.
+  const hosurShopDispatchRows = useMemo(() => ordersInRange.flatMap(o =>
+    (o.dispatchLog || [])
+      .filter(d => d.branch === 'Hosur')
+      .map(d => ({
+        shopName: resolveHosurShopName(d) || 'Unassigned (not shop-tagged)',
+        itemName: d.itemName, quantity: d.quantity, unit: d.unit || 'kg',
+        isExtra: Boolean(d.isExtra), dispatchedAt: d.dispatchedAt, dispatchedBy: d.dispatchedBy,
         orderNumber: o.orderNumber,
       })),
-  ).sort((a, b) => b.dispatchedAt.localeCompare(a.dispatchedAt)), [ordersInRange]);
+  ), [ordersInRange, hosurShopNameById]);
+
+  const hosurShopSummary = useMemo(() => {
+    const byShop = new Map<string, { shopName: string; totalDispatches: number; extraCount: number; items: Map<string, { itemName: string; unit: string; quantity: number }> }>();
+    for (const r of hosurShopDispatchRows) {
+      const entry = byShop.get(r.shopName) ?? { shopName: r.shopName, totalDispatches: 0, extraCount: 0, items: new Map() };
+      entry.totalDispatches += 1;
+      if (r.isExtra) entry.extraCount += 1;
+      const itemKey = `${r.itemName}|${r.unit}`;
+      const itemEntry = entry.items.get(itemKey) ?? { itemName: r.itemName, unit: r.unit, quantity: 0 };
+      itemEntry.quantity += r.quantity;
+      entry.items.set(itemKey, itemEntry);
+      byShop.set(r.shopName, entry);
+    }
+    return Array.from(byShop.values())
+      .map(s => ({ ...s, items: Array.from(s.items.values()).sort((a, b) => a.itemName.localeCompare(b.itemName)) }))
+      .sort((a, b) => a.shopName.localeCompare(b.shopName));
+  }, [hosurShopDispatchRows]);
 
   const hosurLeftoverAvailable = useMemo(() => hosurLeftovers.filter(l => l.status === 'available'), [hosurLeftovers]);
   const hosurLeftoverResolved = useMemo(() => hosurLeftovers.filter(l => l.status === 'resolved'), [hosurLeftovers]);
@@ -1798,9 +1963,13 @@ function ReportsTab({ orders }: { orders: BakeryOrder[] }) {
     })), 'Production & Dispatch', 'No data');
     addSheet(extraDispatchRows.map(r => ({
       Item: r.itemName, Quantity: r.quantity, Unit: r.unit, Branch: r.branch,
-      'Order #': r.orderNumber, 'Dispatched By': r.dispatchedBy,
+      Shop: r.shopName || '', 'Order #': r.orderNumber, 'Dispatched By': r.dispatchedBy,
       Date: new Date(r.dispatchedAt).toLocaleString('en-IN'),
+      'How This Was Added': 'Sent via the "Dispatch an extra item" form — an item the branch/shop never ordered (or more of it than was ordered).',
     })), 'Extra Non-Requested Items', 'No extra/non-requested dispatches in this range');
+    addSheet(hosurShopSummary.flatMap(s => s.items.map(it => ({
+      Shop: s.shopName, Item: it.itemName, Quantity: it.quantity, Unit: it.unit,
+    }))), 'Hosur Dispatch By Shop', 'No Hosur dispatches in this range');
     addSheet(hosurLeftovers.map(l => ({
       Item: l.itemName, Unit: l.unit, Quantity: l.quantity, 'Unit Price': l.unitPrice,
       Shop: l.sourceShopName || '', Reason: leftoverReasonLabel(l.reason),
@@ -1846,6 +2015,8 @@ function ReportsTab({ orders }: { orders: BakeryOrder[] }) {
       ['Not Started', String(notStartedRows.length)],
       ['Hosur Leftover (pool)', String(hosurLeftoverAvailable.length)],
       ['Hosur Cancelled Value', `Rs.${hosurCancelledValue}`],
+      ['Extra / Non-Requested Sent', String(extraDispatchRows.length)],
+      ['Hosur Shops Dispatched To', String(hosurShopSummary.length)],
     ];
     const kpiColWidth = (pageWidth - marginX * 2) / 3;
     kpis.forEach(([label, value], i) => {
@@ -1919,6 +2090,22 @@ function ReportsTab({ orders }: { orders: BakeryOrder[] }) {
       [140, 35, 45, 110, 130, 90],
       hosurLeftovers.map(l => [l.itemName.slice(0, 22), l.unit, String(l.quantity), (l.sourceShopName || '-').slice(0, 18), leftoverReasonLabel(l.reason), l.status === 'available' ? 'In pool' : 'Resolved']),
       'No leftover or cancellation activity in this range.',
+    );
+
+    drawTable(
+      'Extra / Non-Requested Items Dispatched',
+      ['Item', 'Qty', 'Unit', 'Branch', 'Shop', 'Order #', 'By', 'Date'],
+      [110, 40, 35, 55, 90, 55, 70, 90],
+      extraDispatchRows.map(r => [r.itemName.slice(0, 20), String(r.quantity), r.unit, r.branch, (r.shopName || '-').slice(0, 16), r.orderNumber, r.dispatchedBy.slice(0, 12), new Date(r.dispatchedAt).toLocaleDateString('en-IN')]),
+      'No extra/non-requested dispatches in this range.',
+    );
+
+    drawTable(
+      'Hosur Dispatch by Shop',
+      ['Shop', 'Item', 'Quantity', 'Unit'],
+      [150, 210, 90, 95],
+      hosurShopSummary.flatMap(s => s.items.map(it => [s.shopName.slice(0, 26), it.itemName.slice(0, 38), String(it.quantity), it.unit])),
+      'No Hosur dispatches in this range.',
     );
 
     doc.save(`planner-report-${dateFrom}_to_${dateTo}.pdf`);
@@ -2114,10 +2301,42 @@ function ReportsTab({ orders }: { orders: BakeryOrder[] }) {
                 <div className="min-w-0">
                   <p className="text-xs font-black text-foreground">{r.itemName} — {qtyFmt(r.quantity)} {r.unit}</p>
                   <p className="text-[11px] font-bold text-muted-foreground">
-                    {r.branch} · Order #{r.orderNumber} · {r.dispatchedBy} · {new Date(r.dispatchedAt).toLocaleString('en-IN')}
+                    {r.shopName ? `${r.branch} · ${r.shopName}` : r.branch} · Order #{r.orderNumber} · {r.dispatchedBy} · {new Date(r.dispatchedAt).toLocaleString('en-IN')}
                   </p>
                 </div>
                 <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-black text-amber-800">Extra</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Hosur Dispatch by Shop — "for hosur shops its showing as combine as
+          hosur I need the shop name were the stock was dispatched." Every
+          Hosur dispatch in the window, grouped by the actual shop it went to
+          instead of one combined "Hosur" total. */}
+      <div className="overflow-hidden rounded-2xl border border-indigo-200 bg-white shadow-sm">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-indigo-200 bg-indigo-50 px-4 py-3">
+          <p className="text-sm font-black text-foreground">Hosur Dispatch by Shop</p>
+          <span className="rounded-full bg-indigo-100 px-2 py-1 text-[10px] font-black text-indigo-800">{hosurShopSummary.length} shop{hosurShopSummary.length === 1 ? '' : 's'}</span>
+        </div>
+        {hosurShopSummary.length === 0 ? <div className="p-4"><EmptyState text="No Hosur dispatches in this range." /></div> : (
+          <div className="max-h-96 divide-y divide-border overflow-y-auto">
+            {hosurShopSummary.map(s => (
+              <div key={s.shopName} className="px-4 py-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-xs font-black text-foreground">{s.shopName}</p>
+                  <span className="text-[10px] font-black text-muted-foreground">
+                    {s.totalDispatches} dispatch{s.totalDispatches === 1 ? '' : 'es'}{s.extraCount > 0 ? ` · ${s.extraCount} extra` : ''}
+                  </span>
+                </div>
+                <div className="mt-1 space-y-0.5 pl-2">
+                  {s.items.map(it => (
+                    <p key={`${it.itemName}|${it.unit}`} className="text-[11px] font-bold text-muted-foreground">
+                      {it.itemName} — {qtyFmt(it.quantity)} {it.unit}
+                    </p>
+                  ))}
+                </div>
               </div>
             ))}
           </div>
@@ -2644,7 +2863,7 @@ function useHosurShopOrders(rows: ProductionRow[], orders: BakeryOrder[]) {
 // every normal dispatch line uses — there IS no requested quantity for an
 // item that was never ordered, so the planner's typed quantity is sent as-is
 // (still requires it to be a real positive number).
-function ExtraItemDispatchForm({ branch, anchorOrderId, targetHosurOrderId, onDispatch, dispatchedBy, onDone, contextLabel }: {
+function ExtraItemDispatchForm({ branch, anchorOrderId, targetHosurOrderId, onDispatch, dispatchedBy, onDone, contextLabel, suggestions }: {
   branch: Branch;
   anchorOrderId: string | null;
   targetHosurOrderId?: string;
@@ -2652,9 +2871,16 @@ function ExtraItemDispatchForm({ branch, anchorOrderId, targetHosurOrderId, onDi
   dispatchedBy: string;
   onDone: () => void;
   contextLabel: string;
+  // BUG FIX/FEATURE (audit): this field used to be bare free text with zero
+  // suggestions. Planner asked for branch-scoped suggestions — VRSNB items
+  // on the VRSNB panel, SNB items on the SNB panel — so a typo can't quietly
+  // create a name that never matches the branch's real catalogue. Free text
+  // is still fully allowed (an empty/undefined list just means no dropdown).
+  suggestions?: MergedCatalogItem[];
 }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState('');
+  const [selectedSuggestion, setSelectedSuggestion] = useState<MergedCatalogItem | null>(null);
   const [qty, setQty] = useState('');
   const [unit, setUnit] = useState<'kg' | 'pcs'>('kg');
   const [sending, setSending] = useState(false);
@@ -2682,7 +2908,7 @@ function ExtraItemDispatchForm({ branch, anchorOrderId, targetHosurOrderId, onDi
         isExtra: true,
       });
       setResult({ ok: true, message: `Sent extra "${trimmedName}" (${amount} ${unit}) — tagged as non-requested in the report and Closing Stock.` });
-      setName(''); setQty('');
+      setName(''); setSelectedSuggestion(null); setQty('');
       onDone();
     } catch (err) {
       setResult({ ok: false, message: err instanceof Error ? err.message : 'Failed to send extra item.' });
@@ -2710,7 +2936,13 @@ function ExtraItemDispatchForm({ branch, anchorOrderId, targetHosurOrderId, onDi
         <button type="button" onClick={() => { setOpen(false); setResult(null); }} className="text-[11px] font-bold text-amber-700 hover:underline">Close</button>
       </div>
       <div className="grid gap-2 sm:grid-cols-[1fr_auto_auto_auto]">
-        <input value={name} onChange={e => setName(e.target.value)} placeholder="Item name" className="rounded-lg border border-amber-300 bg-white px-2.5 py-1.5 text-xs font-bold" />
+        <ItemSearchPicker
+          value={selectedSuggestion ? selectedSuggestion.name : name}
+          onChange={(v) => { setName(v); setSelectedSuggestion(null); }}
+          onSelect={(item) => { setSelectedSuggestion(item); setName(item.name); }}
+          items={suggestions ?? []}
+          placeholder={`Item name (${contextLabel})`}
+        />
         <input value={qty} onChange={e => setQty(e.target.value)} type="number" min={0} placeholder="Qty" className="w-20 rounded-lg border border-amber-300 bg-white px-2.5 py-1.5 text-xs font-bold" />
         <select value={unit} onChange={e => setUnit(e.target.value as 'kg' | 'pcs')} className="rounded-lg border border-amber-300 bg-white px-2 py-1.5 text-xs font-bold">
           <option value="kg">kg</option>
@@ -2971,6 +3203,10 @@ function BranchFlatDispatchPanel({ branch, rows, orders, leftoverBalances, onDis
   // checkbox you'd just ticked for items outside the current search text.
   search?: string;
 }) {
+  // Branch-scoped suggestions for the extra-item form below — VRSNB items
+  // only on the VRSNB panel, SNB items only on the SNB panel (never merged,
+  // and never the other branch's items).
+  const branchCatalog = useBranchOnlyCatalog(branch === 'VRSNB' || branch === 'SNB' ? branch : null);
   const lines = useMemo(() => rows.map(row => {
     const requested = row.perBranch[branch] ?? 0;
     const alreadySent = branchDispatchedForRow(row, branch, orders);
@@ -3084,7 +3320,7 @@ function BranchFlatDispatchPanel({ branch, rows, orders, leftoverBalances, onDis
     return (
       <div className="space-y-2.5">
         <EmptyState text="Nothing waiting on dispatch." />
-        <ExtraItemDispatchForm branch={branch} anchorOrderId={anchorOrderId} onDispatch={onDispatch} dispatchedBy={dispatchedBy} onDone={onDone} contextLabel={branch} />
+        <ExtraItemDispatchForm branch={branch} anchorOrderId={anchorOrderId} onDispatch={onDispatch} dispatchedBy={dispatchedBy} onDone={onDone} contextLabel={branch} suggestions={branchCatalog} />
       </div>
     );
   }
@@ -3152,7 +3388,7 @@ function BranchFlatDispatchPanel({ branch, rows, orders, leftoverBalances, onDis
         </button>
       </div>
       {result && <p className={cn('text-center text-xs font-bold', result.ok ? 'text-teal-700' : 'text-red-700')}>{result.message}</p>}
-      <ExtraItemDispatchForm branch={branch} anchorOrderId={anchorOrderId} onDispatch={onDispatch} dispatchedBy={dispatchedBy} onDone={onDone} contextLabel={branch} />
+      <ExtraItemDispatchForm branch={branch} anchorOrderId={anchorOrderId} onDispatch={onDispatch} dispatchedBy={dispatchedBy} onDone={onDone} contextLabel={branch} suggestions={branchCatalog} />
     </div>
   );
 }

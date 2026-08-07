@@ -41,6 +41,14 @@ export interface LeftoverLedgerRow {
   recordedBy: string;
   notes: string | null;
   createdAt: string;
+  // Real, structured columns (added alongside the "extra items" feature) —
+  // previously "was this an extra/non-requested item" and "which Hosur shop"
+  // only existed as free text inside `notes`, so nothing downstream (Daily
+  // Report, Reports tab) could reliably filter or sum them separately from
+  // normal production/dispatch. See the migration comment on
+  // planner_leftover_ledger.is_extra / .shop_name for the full story.
+  isExtra: boolean;
+  shopName: string | null;
 }
 
 export const kolkataToday = () =>
@@ -65,6 +73,8 @@ function mapLedgerRow(row: Record<string, unknown>): LeftoverLedgerRow {
     recordedBy: String(row.recorded_by ?? ''),
     notes: row.notes ? String(row.notes) : null,
     createdAt: String(row.created_at ?? ''),
+    isExtra: Boolean(row.is_extra),
+    shopName: row.shop_name ? String(row.shop_name) : null,
   };
 }
 
@@ -101,7 +111,7 @@ export async function fetchLeftoverLedger(): Promise<{ rows: LeftoverLedgerRow[]
   for (let from = 0; from < maxRows; from += pageSize) {
     let query = supabase
       .from('planner_leftover_ledger')
-      .select('id, item_slug, item_name, unit, business_date, delta, reason, branch, order_id, order_number, recorded_by, notes, created_at')
+      .select('id, item_slug, item_name, unit, business_date, delta, reason, branch, order_id, order_number, recorded_by, notes, created_at, is_extra, shop_name')
       .order('created_at', { ascending: true })
       .range(from, from + pageSize - 1);
     if (cutoff) query = query.gte('created_at', cutoff);
@@ -129,6 +139,12 @@ export async function recordLeftoverMovement(params: {
   orderId?: string | null;
   orderNumber?: number | null;
   notes?: string | null;
+  // True for an item that was NOT originally ordered/requested — an extra
+  // item produced or dispatched on top of the normal order. shopName is
+  // Hosur-dispatch-only: the specific shop this stock went to, so Hosur
+  // reporting isn't just one combined bucket.
+  isExtra?: boolean;
+  shopName?: string | null;
 }): Promise<{ newBalance: number } | { error: string }> {
   // BUG FIX (2026-08-07): the pooled Closing Stock balance is keyed by this
   // slug — canonicalItemSlug() strips ANY parenthetical, which was silently
@@ -150,6 +166,8 @@ export async function recordLeftoverMovement(params: {
     p_order_id: params.orderId ?? null,
     p_order_number: params.orderNumber ?? null,
     p_notes: params.notes ?? null,
+    p_is_extra: params.isExtra ?? false,
+    p_shop_name: params.shopName ?? null,
   });
   if (error) {
     const insufficient = error.message.match(/INSUFFICIENT_LEFTOVER_STOCK: (.+)/);
@@ -182,6 +200,23 @@ export function useLeftoverBalanceMap(): { balances: Map<string, { itemName: str
 // ─── Merged, deduplicated SNB + VRSNB item search ──────────────────────────
 export interface MergedCatalogItem { slug: string; name: string; branches: Branch[] }
 
+// Single-branch variant of the hook above — for the Dispatch tab's extra-item
+// field, which the planner asked to suggest ONLY that specific branch's
+// items (VRSNB items on the VRSNB panel, SNB items on the SNB panel), not a
+// merged SNB+VRSNB list. Wrapped in the same MergedCatalogItem shape so it
+// can feed the same <ItemSearchPicker> without a separate component.
+export function useBranchOnlyCatalog(branch: Branch | null): MergedCatalogItem[] {
+  const { items: catalogItems, loadCatalog } = useBranchCatalogStore();
+  useEffect(() => { if (branch === 'SNB' || branch === 'VRSNB') void loadCatalog(branch); }, [branch, loadCatalog]);
+  return useMemo(() => {
+    if (branch !== 'SNB' && branch !== 'VRSNB') return [];
+    return (catalogItems[branch] ?? [])
+      .filter((item) => item.active)
+      .map((item) => ({ slug: canonicalItemSlug(item.name) || item.name.toLowerCase(), name: item.name, branches: [branch] }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [catalogItems, branch]);
+}
+
 export function useMergedLeftoverCatalog(): MergedCatalogItem[] {
   const { items: catalogItems, loadCatalog } = useBranchCatalogStore();
   useEffect(() => { void loadCatalog('SNB'); void loadCatalog('VRSNB'); }, [loadCatalog]);
@@ -210,8 +245,11 @@ function StatCard({ label, value, helper, icon, tone = 'slate' }: {
 // Search-as-you-type item picker. Typing a name with no catalogue match is
 // still accepted (free text) — the closing-stock book has items (bulk mixes,
 // packaging variants) that don't always exist as a sellable branch item.
-function ItemSearchPicker({ value, onChange, onSelect, items }: {
-  value: string; onChange: (v: string) => void; onSelect: (item: MergedCatalogItem) => void; items: MergedCatalogItem[];
+// Exported so other Planner tabs (Production Entry's "extra produced item"
+// field, Dispatch tab's branch-scoped "extra item" field) can reuse the same
+// search-as-you-type picker instead of building their own.
+export function ItemSearchPicker({ value, onChange, onSelect, items, placeholder }: {
+  value: string; onChange: (v: string) => void; onSelect: (item: MergedCatalogItem) => void; items: MergedCatalogItem[]; placeholder?: string;
 }) {
   const [open, setOpen] = useState(false);
   const query = value.trim().toLowerCase();
@@ -228,7 +266,7 @@ function ItemSearchPicker({ value, onChange, onSelect, items }: {
           onChange={(e) => { onChange(e.target.value); setOpen(true); }}
           onFocus={() => setOpen(true)}
           onBlur={() => setTimeout(() => setOpen(false), 150)}
-          placeholder="Search item (SNB + VRSNB, no duplicates)…"
+          placeholder={placeholder ?? 'Search item (SNB + VRSNB, no duplicates)…'}
           className="h-11 w-full rounded-xl border border-border bg-background pl-9 pr-3 text-sm font-bold"
         />
       </div>
@@ -354,6 +392,7 @@ export default function PlannerLeftoverTab() {
   const todayRows = useMemo(() => rows.filter((row) => row.businessDate === kolkataToday()), [rows]);
   const addedTodayTotal = todayRows.filter((row) => row.delta > 0).length;
   const dispatchedTodayTotal = todayRows.filter((row) => row.reason === 'dispatch').length;
+  const extraTodayTotal = todayRows.filter((row) => row.isExtra).length;
 
   // ── Daily report (opening / added / dispatched / closing per item) ──────
   const [reportDate, setReportDate] = useState(kolkataToday());
@@ -366,12 +405,16 @@ export default function PlannerLeftoverTab() {
   const reportRows = useMemo(() => {
     const map = new Map<string, {
       itemSlug: string; itemName: string; unit: LeftoverUnit;
-      opening: number; produced: number; closingStockEntry: number; dispatched: number; adjusted: number; closing: number;
+      opening: number; produced: number; extraProduced: number; closingStockEntry: number;
+      dispatched: number; extraDispatched: number; adjusted: number; closing: number;
       dispatchByBranch: Record<string, number>;
+      // Hosur only — which shop actually received each dispatched quantity,
+      // instead of every Hosur dispatch collapsing into one combined number.
+      dispatchByShop: Record<string, number>;
     }>();
     const ensure = (row: LeftoverLedgerRow) => {
       const key = `${row.itemSlug}|${row.unit}`;
-      const current = map.get(key) ?? { itemSlug: row.itemSlug, itemName: row.itemName, unit: row.unit, opening: 0, produced: 0, closingStockEntry: 0, dispatched: 0, adjusted: 0, closing: 0, dispatchByBranch: {} };
+      const current = map.get(key) ?? { itemSlug: row.itemSlug, itemName: row.itemName, unit: row.unit, opening: 0, produced: 0, extraProduced: 0, closingStockEntry: 0, dispatched: 0, extraDispatched: 0, adjusted: 0, closing: 0, dispatchByBranch: {}, dispatchByShop: {} };
       map.set(key, current);
       return current;
     };
@@ -383,12 +426,15 @@ export default function PlannerLeftoverTab() {
         entry.itemName = row.itemName;
         if (row.reason === 'dispatch') {
           entry.dispatched += Math.abs(row.delta);
+          if (row.isExtra) entry.extraDispatched += Math.abs(row.delta);
           const branchKey = row.branch || 'Unspecified';
           entry.dispatchByBranch[branchKey] = (entry.dispatchByBranch[branchKey] || 0) + Math.abs(row.delta);
+          if (row.shopName) entry.dispatchByShop[row.shopName] = (entry.dispatchByShop[row.shopName] || 0) + Math.abs(row.delta);
         } else if (row.reason === 'adjustment') {
           entry.adjusted += row.delta;
         } else if (row.reason === 'production_carryover') {
           entry.produced += row.delta;
+          if (row.isExtra) entry.extraProduced += row.delta;
         } else {
           entry.closingStockEntry += row.delta;
         }
@@ -406,7 +452,9 @@ export default function PlannerLeftoverTab() {
     produced: sum.produced + (row.unit === 'kg' ? row.produced : 0),
     added: sum.added + (row.unit === 'kg' ? row.closingStockEntry : 0),
     dispatched: sum.dispatched + (row.unit === 'kg' ? row.dispatched : 0),
-  }), { produced: 0, added: 0, dispatched: 0 }), [reportRows]);
+    extraProduced: sum.extraProduced + (row.unit === 'kg' ? row.extraProduced : 0),
+    extraDispatched: sum.extraDispatched + (row.unit === 'kg' ? row.extraDispatched : 0),
+  }), { produced: 0, added: 0, dispatched: 0, extraProduced: 0, extraDispatched: 0 }), [reportRows]);
 
   const exportExcel = () => {
     const wb = XLSX.utils.book_new();
@@ -422,14 +470,19 @@ export default function PlannerLeftoverTab() {
       Item: row.itemName, Unit: row.unit,
       Opening: row.opening,
       'Produced Today': row.produced,
+      'Of Which Extra (Not Ordered)': row.extraProduced,
       'Added (Closing Stock Entry) Today': row.closingStockEntry,
       'Dispatched Today': row.dispatched,
+      'Of Which Extra (Not Ordered) ': row.extraDispatched,
       ...Object.fromEntries(BRANCHES.map((b) => [`Dispatched to ${b}`, row.dispatchByBranch[b] || 0])),
+      'Dispatched By Hosur Shop': Object.entries(row.dispatchByShop).map(([shop, q]) => `${shop}: ${q}`).join(', ') || '-',
       Adjusted: row.adjusted, Closing: row.closing,
     })), 'Daily Reconciliation', 'No leftover activity on this date');
     addSheet(reportMovements.map((row) => ({
       Time: new Date(row.createdAt).toLocaleString('en-IN'), Item: row.itemName, Unit: row.unit,
-      Quantity: row.delta, Type: reasonLabel(row.reason), Branch: row.branch || '-',
+      Quantity: row.delta, Type: reasonLabel(row.reason),
+      'Extra / Non-Requested': row.isExtra ? 'Yes' : 'No',
+      Branch: row.branch || '-', 'Hosur Shop': row.shopName || '-',
       'Order #': row.orderNumber ?? '-', 'Recorded By': row.recordedBy, Notes: row.notes || '-',
     })), 'Movement Log', 'No movements on this date');
     addSheet(balances.map((row) => ({ Item: row.itemName, Unit: row.unit, 'Current Balance': row.balance })), 'Current Balance (All Items)', 'No leftover stock currently held');
@@ -457,6 +510,8 @@ export default function PlannerLeftoverTab() {
       ['Produced Today (Kg total)', qtyFmt(reportTotals.produced)],
       ['Manually Added Today (Kg total)', qtyFmt(reportTotals.added)],
       ['Dispatched From Leftover (Kg total)', qtyFmt(reportTotals.dispatched)],
+      ['Extra Produced (Kg, not ordered)', qtyFmt(reportTotals.extraProduced)],
+      ['Extra Dispatched (Kg, not ordered)', qtyFmt(reportTotals.extraDispatched)],
       ['Items Currently In Pool', String(balances.length)],
     ];
     const kpiColWidth = (pageWidth - marginX * 2) / 2;
@@ -500,20 +555,20 @@ export default function PlannerLeftoverTab() {
 
     drawTable(
       'Daily Reconciliation',
-      ['Item', 'Unit', 'Opening', 'Produced', 'Added', 'Dispatched', 'Adjusted', 'Closing'],
-      [125, 30, 50, 52, 52, 58, 52, 52],
-      reportRows.map((row) => [row.itemName.slice(0, 22), row.unit, qtyFmt(row.opening), qtyFmt(row.produced), qtyFmt(row.closingStockEntry), qtyFmt(row.dispatched), qtyFmt(row.adjusted), qtyFmt(row.closing)]),
+      ['Item', 'Unit', 'Opening', 'Produced', 'Extra Prod.', 'Added', 'Dispatched', 'Extra Disp.', 'Adjusted', 'Closing'],
+      [95, 26, 42, 46, 44, 42, 48, 44, 42, 44],
+      reportRows.map((row) => [row.itemName.slice(0, 18), row.unit, qtyFmt(row.opening), qtyFmt(row.produced), row.extraProduced > 0 ? qtyFmt(row.extraProduced) : '-', qtyFmt(row.closingStockEntry), qtyFmt(row.dispatched), row.extraDispatched > 0 ? qtyFmt(row.extraDispatched) : '-', qtyFmt(row.adjusted), qtyFmt(row.closing)]),
       'No leftover activity recorded for this date.',
     );
 
     drawTable(
       'Movement Log',
-      ['Time', 'Item', 'Qty', 'Type', 'Branch', 'Order #', 'By'],
-      [70, 130, 50, 75, 55, 50, 90],
+      ['Time', 'Item', 'Qty', 'Type', 'Extra', 'Branch', 'Hosur Shop', 'Order #', 'By'],
+      [55, 95, 42, 58, 34, 42, 65, 40, 65],
       reportMovements.map((row) => [
         new Date(row.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
-        row.itemName.slice(0, 22), `${row.delta > 0 ? '+' : ''}${qtyFmt(row.delta)}${row.unit}`,
-        reasonLabel(row.reason), row.branch || '-', row.orderNumber ? String(row.orderNumber) : '-', row.recordedBy.slice(0, 16),
+        row.itemName.slice(0, 16), `${row.delta > 0 ? '+' : ''}${qtyFmt(row.delta)}${row.unit}`,
+        reasonLabel(row.reason), row.isExtra ? 'Yes' : '-', row.branch || '-', row.shopName || '-', row.orderNumber ? String(row.orderNumber) : '-', row.recordedBy.slice(0, 14),
       ]),
       'No movements on this date.',
     );
@@ -562,10 +617,11 @@ export default function PlannerLeftoverTab() {
       {error && <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-bold text-red-700"><AlertTriangle className="mr-2 inline size-4" />{error}</div>}
       {message && <div className="rounded-2xl border border-teal-200 bg-teal-50 px-4 py-3 text-sm font-bold text-teal-700"><CheckCircle2 className="mr-2 inline size-4" />{message}</div>}
 
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
         <StatCard label="Items In Leftover Pool" value={balances.length} icon={<PackageCheck className="size-5" />} tone="emerald" />
         <StatCard label="Added Today" value={addedTodayTotal} helper="Entries recorded today" icon={<Plus className="size-5" />} tone="blue" />
         <StatCard label="Dispatched From Leftover Today" value={dispatchedTodayTotal} icon={<Scale className="size-5" />} tone="amber" />
+        <StatCard label="Extra / Non-Requested Today" value={extraTodayTotal} helper="Produced or dispatched beyond what was ordered" icon={<AlertTriangle className="size-5" />} tone="red" />
         <StatCard label="Total Movements Logged" value={rows.length} icon={<History className="size-5" />} tone="slate" />
       </div>
 
@@ -670,10 +726,31 @@ export default function PlannerLeftoverTab() {
                 <tr key={`${row.itemSlug}|${row.unit}`}>
                   <td className="px-4 py-3 font-black">{row.itemName} <span className="text-[10px] font-bold text-muted-foreground">{row.unit}</span></td>
                   <td className="px-4 py-3 text-right">{qtyFmt(row.opening)}</td>
-                  <td className="px-4 py-3 text-right text-blue-700 font-bold">{row.produced > 0 ? `+${qtyFmt(row.produced)}` : '-'}</td>
+                  <td className="px-4 py-3 text-right text-blue-700 font-bold">
+                    {row.produced > 0 ? `+${qtyFmt(row.produced)}` : '-'}
+                    {row.extraProduced > 0 && (
+                      <span className="ml-1.5 rounded-full bg-fuchsia-100 px-1.5 py-0.5 text-[9px] font-black uppercase text-fuchsia-700" title="Not tied to any order — recorded via the Production Entry tab's extra-item field.">
+                        +{qtyFmt(row.extraProduced)} extra
+                      </span>
+                    )}
+                  </td>
                   <td className="px-4 py-3 text-right text-teal-700 font-bold">{row.closingStockEntry > 0 ? `+${qtyFmt(row.closingStockEntry)}` : '-'}</td>
-                  <td className="px-4 py-3 text-right text-amber-700 font-bold">{row.dispatched > 0 ? `-${qtyFmt(row.dispatched)}` : '-'}</td>
-                  <td className="px-4 py-3 text-xs text-muted-foreground">{Object.entries(row.dispatchByBranch).map(([b, q]) => `${b}: ${qtyFmt(q)}`).join(', ') || '-'}</td>
+                  <td className="px-4 py-3 text-right text-amber-700 font-bold">
+                    {row.dispatched > 0 ? `-${qtyFmt(row.dispatched)}` : '-'}
+                    {row.extraDispatched > 0 && (
+                      <span className="ml-1.5 rounded-full bg-fuchsia-100 px-1.5 py-0.5 text-[9px] font-black uppercase text-fuchsia-700" title="Dispatched on top of what was actually ordered, via the Dispatch tab's extra/non-requested item field.">
+                        {qtyFmt(row.extraDispatched)} extra
+                      </span>
+                    )}
+                  </td>
+                  <td className="px-4 py-3 text-xs text-muted-foreground">
+                    {Object.entries(row.dispatchByBranch).map(([b, q]) => `${b}: ${qtyFmt(q)}`).join(', ') || '-'}
+                    {Object.keys(row.dispatchByShop).length > 0 && (
+                      <div className="mt-0.5 text-[10px] text-muted-foreground/80">
+                        {Object.entries(row.dispatchByShop).map(([shop, q]) => `${shop}: ${qtyFmt(q)}`).join(', ')}
+                      </div>
+                    )}
+                  </td>
                   <td className="px-4 py-3 text-right">{row.adjusted !== 0 ? qtyFmt(row.adjusted) : '-'}</td>
                   <td className="px-4 py-3 text-right font-black">{qtyFmt(row.closing)}</td>
                 </tr>
@@ -692,12 +769,24 @@ export default function PlannerLeftoverTab() {
             </thead>
             <tbody className="divide-y">
               {reportMovements.length ? reportMovements.map((row) => (
-                <tr key={row.id}>
+                <tr key={row.id} className={row.isExtra ? 'bg-fuchsia-50/50' : undefined}>
                   <td className="px-4 py-2 text-xs text-muted-foreground">{new Date(row.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</td>
                   <td className="px-4 py-2 font-bold">{row.itemName}</td>
                   <td className={cn('px-4 py-2 text-right font-black', row.delta > 0 ? 'text-teal-700' : 'text-red-700')}>{row.delta > 0 ? '+' : ''}{qtyFmt(row.delta)} {row.unit}</td>
                   <td className="px-4 py-2 text-xs">{reasonLabel(row.reason)}</td>
-                  <td className="px-4 py-2 text-xs text-muted-foreground">{[row.branch, row.orderNumber ? `#${row.orderNumber}` : null, row.notes].filter(Boolean).join(' · ') || '-'}</td>
+                  <td className="px-4 py-2 text-xs text-muted-foreground">
+                    <div className="flex flex-wrap items-center gap-1">
+                      {row.isExtra && (
+                        <span className="rounded-full bg-fuchsia-100 px-1.5 py-0.5 text-[9px] font-black uppercase text-fuchsia-700" title="Not tied to any order — an extra/non-requested item.">
+                          Extra
+                        </span>
+                      )}
+                      {row.shopName && (
+                        <span className="rounded-full bg-emerald-100 px-1.5 py-0.5 text-[9px] font-black text-emerald-700">{row.shopName}</span>
+                      )}
+                      <span>{[row.branch, row.orderNumber ? `#${row.orderNumber}` : null, row.notes].filter(Boolean).join(' · ') || (row.isExtra || row.shopName ? '' : '-')}</span>
+                    </div>
+                  </td>
                   <td className="px-4 py-2 text-xs text-muted-foreground">{row.recordedBy}</td>
                 </tr>
               )) : <tr><td colSpan={6} className="px-4 py-10 text-center text-muted-foreground">No movements on this date.</td></tr>}
