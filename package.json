@@ -9,7 +9,7 @@
     "build:dev": "vite build --mode development",
     "lint": "eslint .",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit -p tsconfig.app.json",
     "test": "vitest run",
     "test:audit": "node scripts/audit-regression.mjs",
     "test:wallet-promotions": "node --no-warnings --experimental-strip-types --experimental-specifier-resolution=node scripts/wallet-promotions-regression.mjs",
