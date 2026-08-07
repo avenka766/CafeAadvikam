@@ -12,9 +12,17 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:audit": "node scripts/audit-regression.mjs",
-    "test:wallet-promotions": "node --no-warnings --experimental-strip-types --experimental-specifier-resolution=node scripts/wallet-promotions-regression.mjs"
+    "test:wallet-promotions": "node --no-warnings --experimental-strip-types --experimental-specifier-resolution=node scripts/wallet-promotions-regression.mjs",
+    "android:init": "npx cap add android",
+    "android:sync": "npm run build && npx cap sync android",
+    "android:open": "npx cap open android"
   },
   "dependencies": {
+    "@capacitor/android": "^8.0.0",
+    "@capacitor/app": "^8.1.1",
+    "@capacitor/core": "^8.5.0",
+    "@capacitor/local-notifications": "^8.0.0",
+    "@capacitor/push-notifications": "^8.1.2",
     "@hookform/resolvers": "^3.9.0",
     "@radix-ui/react-accordion": "^1.2.0",
     "@radix-ui/react-alert-dialog": "^1.1.1",
@@ -81,6 +89,7 @@
     "zustand": "^5.0.8"
   },
   "devDependencies": {
+    "@capacitor/cli": "^8.0.0",
     "@eslint/js": "^9.9.0",
     "@tailwindcss/typography": "^0.5.15",
     "@tanstack/react-query-devtools": "^5.90.2",
