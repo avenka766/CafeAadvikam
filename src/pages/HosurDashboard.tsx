@@ -1191,6 +1191,22 @@ export default function HosurDashboard({ hideNav = false }: { hideNav?: boolean 
     setTabState((current) => current === nextTab ? current : nextTab);
   }, [searchParams]);
 
+  // BUG FIX (2026-08-07): when embedded (hideNav), this is the only place
+  // besides the manual Refresh button that can pull in fresh data — Planner
+  // dispatches write bills/credit/WhatsApp logs through a separate path
+  // (hosurBillingBridge) that this component has no other way of knowing
+  // about. Re-fetch whenever the planner actually navigates INTO one of this
+  // component's own tabs (not on every render, and not on the very first
+  // mount — that's already covered by the effect above), so switching to
+  // e.g. Credit Ledger right after dispatching an order shows the new bill
+  // instead of what was loaded when the Hosur section first opened.
+  const didMountRef = useRef(false);
+  useEffect(() => {
+    if (!hideNav) return;
+    if (!didMountRef.current) { didMountRef.current = true; return; }
+    void refreshRef.current();
+  }, [tab, hideNav]);
+
   useEffect(() => {
     if (tab === 'billing' || tab === 'collection' || tab === 'closure') void refreshHosurCounter();
   }, [tab, refreshHosurCounter]);
@@ -1649,11 +1665,35 @@ export default function HosurDashboard({ hideNav = false }: { hideNav?: boolean 
       if (!ledger.dueDate || daysBetween(ledger.dueDate) <= 0) return false;
       const history = reminders.filter((reminder) => reminder.ledgerId === ledger.id).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
       if (history.length === 0) return true;
-      return daysBetween(history[0].createdAt.slice(0, 10)) >= 10;
+      // BUG FIX (2026-08-07): `.slice(0, 10)` took the first 10 characters of
+      // a raw UTC ISO timestamp instead of converting to the app's Kolkata
+      // business date (businessDate(), used consistently everywhere else in
+      // this file) — for a reminder logged between ~12:00–5:29am IST,
+      // slicing raw UTC lands on the previous calendar day, shifting the
+      // "repeat every 10 days" eligibility by a day at that boundary.
+      return daysBetween(businessDate(history[0].createdAt)) >= 10;
     });
     if (due.length === 0) throw new Error('No due reminders are eligible today. Reminders repeat every 10 days after due date.');
 
+    // BUG FIX (2026-08-07): eligibility above is computed purely from
+    // client-side `reminders` state, with no server-side lock — unlike
+    // collectCredit (see its comment), which was moved to an atomic RPC
+    // specifically because two near-simultaneous client reads/writes could
+    // silently double up. Two staff/admin sessions both clicking "Send Due
+    // Reminders Now" around the same time (before either has reloaded) could
+    // independently compute the same "due" set and both send a duplicate
+    // WhatsApp reminder to the same shop. A full atomic-RPC fix mirrors
+    // collectCredit's scope; as a lighter guard here, re-check against the
+    // DB (not this possibly-stale in-memory list) immediately before sending
+    // each one, and skip it if a reminder already landed in the meantime.
     for (const ledger of due) {
+      const { data: veryRecent } = await supabase
+        .from('hosur_payment_reminders')
+        .select('id')
+        .eq('credit_sale_id', ledger.id)
+        .gte('created_at', new Date(Date.now() - 5 * 60_000).toISOString())
+        .limit(1);
+      if (veryRecent && veryRecent.length > 0) continue;
       const shop = shops.find((s) => s.id === ledger.shopId);
       const reminderNo = reminders.filter((r) => r.ledgerId === ledger.id).length + 1;
       const body = buildReminderMessage(ledger);
@@ -1680,11 +1720,24 @@ export default function HosurDashboard({ hideNav = false }: { hideNav?: boolean 
   return (
     <div className="dashboard-screen min-h-[calc(100dvh-72px)] min-w-0 overflow-x-hidden bg-slate-50/50">
       <main className="min-w-0 p-3 sm:p-4 md:p-5 xl:p-6">
-          <div className={cn('mb-3 flex flex-wrap items-center justify-between gap-2', hideNav && 'hidden')}>
-            <div className="min-w-0 flex-1 rounded-2xl border border-border bg-slate-50 p-2 overflow-x-auto">
+          {/* BUG FIX (2026-08-07): this whole row — including the manual
+              Refresh button — used to be hidden together whenever hideNav is
+              set. This component is ONLY ever mounted with hideNav (embedded
+              in Planner's Hosur section), and its data is fetched once on
+              mount with no polling (deliberately — see the comment on the
+              refresh() effect above about polling disrupting in-progress
+              edits). Meanwhile Planner's Dispatch action writes bills/credit/
+              WhatsApp logs straight to the DB via a completely separate path
+              (hosurBillingBridge.dispatchReceiveAndBill), so Credit Ledger,
+              Payment Collection, Reports, Notifications, and WhatsApp Logs
+              could all silently show stale data with no way to pull fresh
+              data short of a full page reload. Keep the tab switcher hidden
+              (Planner's own nav drives that), but always show Refresh. */}
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <div className={cn('min-w-0 flex-1 rounded-2xl border border-border bg-slate-50 p-2 overflow-x-auto', hideNav && 'hidden')}>
               <Sidebar tabs={filteredTabs} active={tab} setActive={setTab} />
             </div>
-            <button className={softButton} disabled={loading || busy} onClick={() => void refresh()}>
+            <button className={softButton} disabled={loading || busy} onClick={() => void refresh()} title="Reload the latest bills, credit, and log data — this screen doesn't auto-refresh.">
               {loading ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
               Refresh
             </button>
