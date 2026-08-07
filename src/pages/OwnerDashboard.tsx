@@ -23,6 +23,8 @@ import { useInvoiceStore } from '@/bakery/invoiceStore';
 import { usePurchaseOrderStore } from '@/bakery/purchaseOrderStore';
 import { useStorePurchaseOrderStore, type StorePurchaseOrder } from '@/bakery/storePurchaseOrderStore';
 import { useBranchLedger } from '@/hooks/useBranchLedger';
+import { useAuthStore } from '@/stores/authStore';
+import { initNativeNotifications, notifyLocal } from '@/lib/nativeNotifications';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/utils';
 import { cn } from '@/lib/utils';
@@ -1814,21 +1816,27 @@ function BranchOverviewTab() {
 }
 
 // ── Daily Closure Tab ────────────────────────────────────────────────────────
-function OwnerDailyClosureTab() {
-  const { orders, startPolling, stopPolling } = useOrderStore();
-  const { bills, returns, purchasePayments, bankDeposits, cashierClosures, cashMovements, fetchBillsInRange } = useBranchOpsStore();
-  const [date, setDate] = useState(ownerDateInput());
-  const [branch, setBranch] = useState<'all' | Branch>('all');
-  // The in-memory `bills` array is capped for performance. Fetch the exact
-  // selected day directly so this closure report is never silently clipped.
-  useEffect(() => {
-    void fetchBillsInRange(date, date);
-  }, [date, fetchBillsInRange]);
-  const ownerLedger = useBranchLedger(date, date, ['VRSNB', 'SNB', 'Hosur']);
-
-  useEffect(() => { startPolling(60); return () => stopPolling(); }, [startPolling, stopPolling]);
-
-  const rows: OwnerClosureRow[] = useMemo(() => OWNER_FULL_BRANCHES.map(b => {
+// Extracted from OwnerDailyClosureTab (2026-08-07) so the new "Everything"
+// overview tab can reuse the exact same cash-flow math instead of
+// duplicating it — two slightly-different copies of this logic would be a
+// guaranteed way to end up with numbers that silently disagree with each
+// other across tabs.
+function buildOwnerClosureRows(
+  date: string,
+  branchFilter: 'all' | Branch,
+  deps: {
+    orders: ReturnType<typeof useOrderStore.getState>['orders'];
+    ownerLedger: ReturnType<typeof useBranchLedger>;
+    bills: ReturnType<typeof useBranchOpsStore.getState>['bills'];
+    returns: ReturnType<typeof useBranchOpsStore.getState>['returns'];
+    purchasePayments: ReturnType<typeof useBranchOpsStore.getState>['purchasePayments'];
+    bankDeposits: ReturnType<typeof useBranchOpsStore.getState>['bankDeposits'];
+    cashierClosures: ReturnType<typeof useBranchOpsStore.getState>['cashierClosures'];
+    cashMovements: ReturnType<typeof useBranchOpsStore.getState>['cashMovements'];
+  },
+): OwnerClosureRow[] {
+  const { orders, ownerLedger, bills, returns, purchasePayments, bankDeposits, cashierClosures, cashMovements } = deps;
+  return OWNER_FULL_BRANCHES.map(b => {
     if (b === 'Cafe') {
       const dayOrders = orders.filter(o => ownerLocalDay(o.createdAt) === date && o.status === 'served');
       const gross = dayOrders.reduce((sum, o) => sum + moneyNumber(o.total), 0);
@@ -1854,7 +1862,17 @@ function OwnerDailyClosureTab() {
       const credit = ownerLedger.toNumber(ledger.credit_billed);
       const expenses = ownerLedger.toNumber(savedLedgerClosure?.expenses || 0);
       const purchasePayments = ownerLedger.toNumber(savedLedgerClosure?.purchase_payments || 0);
-      const bankDeposits = ownerLedger.toNumber(savedLedgerClosure?.bank_deposits || 0);
+      // BUG FIX (audit 2026-08-07): this read `savedLedgerClosure?.bank_deposits`, a
+      // field that has never existed on the `branch_daily_closures` table (confirmed
+      // against the live schema) — a pre-existing dead reference that always silently
+      // evaluated to 0, and only surfaced now as a real TS error once this file was
+      // typechecked. Harmless for the actual mismatch math below (expectedCash/
+      // difference are read directly from the branch's own submitted, authoritative
+      // expected_cash/difference values whenever a saved closure exists — this
+      // variable only feeds the "(−) Bank Deposit" display line), but worth being
+      // honest that a submitted closure's bank-deposit figure isn't tracked here at
+      // all today rather than silently referencing a column that doesn't exist.
+      const bankDeposits = 0;
       const expectedCash = savedLedgerClosure ? ownerLedger.toNumber(savedLedgerClosure.expected_cash) : Math.max(0, cash - expenses - purchasePayments - bankDeposits);
       const countedCash = savedLedgerClosure ? ownerLedger.toNumber(savedLedgerClosure.actual_cash) : 0;
       const difference = savedLedgerClosure ? ownerLedger.toNumber(savedLedgerClosure.difference) : 0;
@@ -1886,7 +1904,27 @@ function OwnerDailyClosureTab() {
       status: (closure ? (Math.abs(difference) > 0 ? 'Difference' : 'Completed') : 'Pending') as OwnerClosureRow['status'],
       closedBy: closure?.cashier || 'Pending', closedAt: closure?.createdAt || '', remarks: closure?.notes || (closure ? 'Closed' : 'Closure not submitted'),
     };
-  }).filter(row => branch === 'all' || row.branch === ownerBranchDisplay(branch)), [ownerLedger, orders, bills, returns, purchasePayments, bankDeposits, cashierClosures, cashMovements, date, branch]);
+  }).filter(row => branchFilter === 'all' || row.branch === ownerBranchDisplay(branchFilter));
+}
+
+function OwnerDailyClosureTab() {
+  const { orders, startPolling, stopPolling } = useOrderStore();
+  const { bills, returns, purchasePayments, bankDeposits, cashierClosures, cashMovements, fetchBillsInRange } = useBranchOpsStore();
+  const [date, setDate] = useState(ownerDateInput());
+  const [branch, setBranch] = useState<'all' | Branch>('all');
+  // The in-memory `bills` array is capped for performance. Fetch the exact
+  // selected day directly so this closure report is never silently clipped.
+  useEffect(() => {
+    void fetchBillsInRange(date, date);
+  }, [date, fetchBillsInRange]);
+  const ownerLedger = useBranchLedger(date, date, ['VRSNB', 'SNB', 'Hosur']);
+
+  useEffect(() => { startPolling(60); return () => stopPolling(); }, [startPolling, stopPolling]);
+
+  const rows: OwnerClosureRow[] = useMemo(
+    () => buildOwnerClosureRows(date, branch, { orders, ownerLedger, bills, returns, purchasePayments, bankDeposits, cashierClosures, cashMovements }),
+    [ownerLedger, orders, bills, returns, purchasePayments, bankDeposits, cashierClosures, cashMovements, date, branch],
+  );
 
   const totals = rows.reduce((acc, r) => ({ net: acc.net + r.netSales, cash: acc.cash + r.cash, diff: acc.diff + r.difference, pending: acc.pending + (r.status === 'Pending' ? 1 : 0) }), { net: 0, cash: 0, diff: 0, pending: 0 });
 
@@ -2539,8 +2577,243 @@ function OwnerPOApprovalsTab() {
   );
 }
 
+// ── Everything Tab (2026-08-07) ─────────────────────────────────────────────
+// The Owner asked for one screen where absolutely everything that needs his
+// attention shows up — not just what already has a dedicated tab. This is
+// the landing screen of the Android app: today's money position across every
+// unit (reusing buildOwnerClosureRows so the numbers always agree with the
+// Daily Closure tab), plus a "Needs Your Attention" feed pulling from
+// domains that previously had NO owner-facing view at all — Hosur overdue
+// credit, Closing Stock / production levels from Planner, and the
+// admin_notifications feed (packing discrepancies, low stock, price
+// changes, etc.) that today only reaches admin/receiver roles, never owner.
+interface OwnerEverythingExtras {
+  hosurOutstandingCredit: number;
+  hosurOverdueCredit: number;
+  hosurOverdueCount: number;
+  leftoverLowItems: { itemName: string; unit: string; balance: number }[];
+  leftoverActiveItems: number;
+  pendingBakeryOrders: number;
+  inProductionOrders: number;
+  readyToDispatchOrders: number;
+  pendingHosurShopOrders: number;
+  outstandingAdvances: number;
+  recentNotifications: { id: string; type: string; title: string; body: string; createdAt: string }[];
+}
+
+const EMPTY_EVERYTHING_EXTRAS: OwnerEverythingExtras = {
+  hosurOutstandingCredit: 0, hosurOverdueCredit: 0, hosurOverdueCount: 0,
+  leftoverLowItems: [], leftoverActiveItems: 0,
+  pendingBakeryOrders: 0, inProductionOrders: 0, readyToDispatchOrders: 0, pendingHosurShopOrders: 0,
+  outstandingAdvances: 0, recentNotifications: [],
+};
+
+async function fetchOwnerEverythingExtras(): Promise<{ data: OwnerEverythingExtras; error: string | null }> {
+  const todayStr = ownerDateInput();
+  try {
+    const [hosurBillsRes, leftoverRes, bakeryOrdersRes, hosurOrdersRes, advancesRes, notifRes] = await Promise.all([
+      supabase.from('hosur_bills').select('credit_amount, due_date').gt('credit_amount', 0),
+      supabase.from('planner_leftover_ledger').select('item_name, unit, delta'),
+      supabase.from('bakery_orders').select('status'),
+      supabase.from('hosur_orders').select('status'),
+      supabase.from('salary_advances').select('amount').eq('cleared', false),
+      supabase.from('admin_notifications').select('id, type, title, body, created_at').order('created_at', { ascending: false }).limit(8),
+    ]);
+    const firstError = hosurBillsRes.error || leftoverRes.error || bakeryOrdersRes.error || hosurOrdersRes.error || advancesRes.error || notifRes.error;
+    if (firstError) return { data: EMPTY_EVERYTHING_EXTRAS, error: firstError.message };
+
+    const hosurBills = hosurBillsRes.data ?? [];
+    const overdueBills = hosurBills.filter(b => b.due_date && String(b.due_date) < todayStr);
+
+    const leftoverRows = leftoverRes.data ?? [];
+    const balances = new Map<string, { itemName: string; unit: string; balance: number }>();
+    for (const row of leftoverRows) {
+      const key = `${row.item_name}__${row.unit}`;
+      const existing = balances.get(key) ?? { itemName: row.item_name as string, unit: row.unit as string, balance: 0 };
+      existing.balance = Math.round((existing.balance + Number(row.delta || 0)) * 1000) / 1000;
+      balances.set(key, existing);
+    }
+    const allBalances = Array.from(balances.values());
+
+    const bakeryOrders = bakeryOrdersRes.data ?? [];
+    const hosurOrders = hosurOrdersRes.data ?? [];
+    const advances = advancesRes.data ?? [];
+
+    return {
+      error: null,
+      data: {
+        hosurOutstandingCredit: hosurBills.reduce((s, b) => s + Number(b.credit_amount || 0), 0),
+        hosurOverdueCredit: overdueBills.reduce((s, b) => s + Number(b.credit_amount || 0), 0),
+        hosurOverdueCount: overdueBills.length,
+        leftoverLowItems: allBalances.filter(b => b.balance <= 0.01).sort((a, b) => a.balance - b.balance).slice(0, 6),
+        leftoverActiveItems: allBalances.filter(b => b.balance > 0.01).length,
+        pendingBakeryOrders: bakeryOrders.filter(o => o.status === 'pending' || o.status === 'accepted').length,
+        inProductionOrders: bakeryOrders.filter(o => o.status === 'store_confirmed').length,
+        readyToDispatchOrders: bakeryOrders.filter(o => o.status === 'produced').length,
+        pendingHosurShopOrders: hosurOrders.filter(o => o.status !== 'dispatched').length,
+        outstandingAdvances: advances.reduce((s, a) => s + Number(a.amount || 0), 0),
+        recentNotifications: (notifRes.data ?? []).map(n => ({ id: n.id as string, type: n.type as string, title: n.title as string, body: (n.body as string) || '', createdAt: n.created_at as string })),
+      },
+    };
+  } catch (err) {
+    return { data: EMPTY_EVERYTHING_EXTRAS, error: err instanceof Error ? err.message : 'Failed to load extras' };
+  }
+}
+
+function OwnerEverythingTab() {
+  const { orders, startPolling, stopPolling } = useOrderStore();
+  const { bills, returns, purchasePayments, bankDeposits, cashierClosures, cashMovements, fetchBillsInRange } = useBranchOpsStore();
+  const { orders: poOrders, load: loadPOs } = useStorePurchaseOrderStore();
+  const today = ownerDateInput();
+  const ownerLedger = useBranchLedger(today, today, ['VRSNB', 'SNB', 'Hosur']);
+
+  const [extras, setExtras] = useState<OwnerEverythingExtras>(EMPTY_EVERYTHING_EXTRAS);
+  const [extrasLoading, setExtrasLoading] = useState(true);
+  const [extrasError, setExtrasError] = useState<string | null>(null);
+
+  const loadExtras = useCallback(async () => {
+    setExtrasLoading(true);
+    const { data, error } = await fetchOwnerEverythingExtras();
+    setExtras(data);
+    setExtrasError(error);
+    setExtrasLoading(false);
+  }, []);
+
+  useEffect(() => { startPolling(60); return () => stopPolling(); }, [startPolling, stopPolling]);
+  useEffect(() => { void fetchBillsInRange(today, today); }, [today, fetchBillsInRange]);
+  useEffect(() => { void loadPOs(); }, [loadPOs]);
+  useEffect(() => { void loadExtras(); }, [loadExtras]);
+
+  const rows = useMemo(
+    () => buildOwnerClosureRows(today, 'all', { orders, ownerLedger, bills, returns, purchasePayments, bankDeposits, cashierClosures, cashMovements }),
+    [ownerLedger, orders, bills, returns, purchasePayments, bankDeposits, cashierClosures, cashMovements, today],
+  );
+  const totals = rows.reduce((acc, r) => ({
+    netSales: acc.netSales + r.netSales,
+    cash: acc.cash + r.cash,
+    expenses: acc.expenses + r.expenses,
+    credit: acc.credit + r.credit,
+    diff: acc.diff + r.difference,
+    mismatches: acc.mismatches + (r.status === 'Difference' ? 1 : 0),
+    pendingClosures: acc.pendingClosures + (r.status === 'Pending' ? 1 : 0),
+  }), { netSales: 0, cash: 0, expenses: 0, credit: 0, diff: 0, mismatches: 0, pendingClosures: 0 });
+  const netCashPosition = totals.cash - totals.expenses;
+  const pendingPOs = poOrders.filter(po => po.status === 'pending_approval').length;
+
+  const attentionItems: { icon: React.ReactNode; title: string; detail: string; tone: OwnerAlertTone }[] = [];
+  if (totals.mismatches > 0) attentionItems.push({ icon: <AlertTriangle className="size-4" />, title: `${totals.mismatches} branch${totals.mismatches === 1 ? '' : 'es'} closed with a cash difference today`, detail: `Total difference ${formatCurrency(totals.diff)} — check Daily Closure for which branch.`, tone: 'danger' });
+  if (totals.pendingClosures > 0) attentionItems.push({ icon: <Clock className="size-4" />, title: `${totals.pendingClosures} branch${totals.pendingClosures === 1 ? '' : 'es'} haven't closed out today yet`, detail: 'No closing-cash count submitted for today.', tone: 'warning' });
+  if (pendingPOs > 0) attentionItems.push({ icon: <ClipboardList className="size-4" />, title: `${pendingPOs} purchase order${pendingPOs === 1 ? '' : 's'} waiting on your approval`, detail: 'Store raised these and is blocked until you review them.', tone: 'warning' });
+  if (extras.hosurOverdueCount > 0) attentionItems.push({ icon: <IndianRupee className="size-4" />, title: `${extras.hosurOverdueCount} Hosur shop bill${extras.hosurOverdueCount === 1 ? '' : 's'} overdue`, detail: `${formatCurrency(extras.hosurOverdueCredit)} past its due date, out of ${formatCurrency(extras.hosurOutstandingCredit)} total credit outstanding.`, tone: 'danger' });
+  if (extras.leftoverLowItems.length > 0) attentionItems.push({ icon: <PackageSearch className="size-4" />, title: `${extras.leftoverLowItems.length} item${extras.leftoverLowItems.length === 1 ? '' : 's'} out of Closing Stock`, detail: extras.leftoverLowItems.map(i => i.itemName).slice(0, 4).join(', '), tone: 'warning' });
+  if (extras.readyToDispatchOrders > 0) attentionItems.push({ icon: <Truck className="size-4" />, title: `${extras.readyToDispatchOrders} order${extras.readyToDispatchOrders === 1 ? '' : 's'} produced and waiting to be dispatched`, detail: 'Sitting in Planner Dispatch right now.', tone: 'neutral' });
+  if (extras.outstandingAdvances > 0) attentionItems.push({ icon: <Users className="size-4" />, title: `${formatCurrency(extras.outstandingAdvances)} in staff salary advances not yet cleared`, detail: 'Across all employees — see Staff & Payroll.', tone: 'neutral' });
+  extras.recentNotifications.slice(0, 5).forEach(n => attentionItems.push({ icon: <Bell className="size-4" />, title: n.title || n.type, detail: `${n.body ? n.body + ' — ' : ''}${ownerFmtDateTime(n.createdAt)}`, tone: 'neutral' }));
+
+  // Android app: fire a local notification the moment a genuinely NEW
+  // urgent ('danger') item shows up — e.g. a fresh cash mismatch or newly
+  // overdue Hosur credit — rather than making the Owner have to open the
+  // app to find out. Tracked by title so a repeat fetch of the same
+  // still-open issue doesn't re-notify every refresh; only a title that
+  // wasn't in the previous set fires. No-op on the web build.
+  const seenDangerTitlesRef = useRef<Set<string>>(new Set());
+  const hasRunOnceRef = useRef(false);
+  const dangerTitlesKey = attentionItems.filter(a => a.tone === 'danger').map(a => a.title).join('|');
+  useEffect(() => {
+    if (extrasLoading) return;
+    const dangerTitles = dangerTitlesKey ? dangerTitlesKey.split('|') : [];
+    const seen = seenDangerTitlesRef.current;
+    const isFirstRun = !hasRunOnceRef.current;
+    for (const title of dangerTitles) {
+      if (!seen.has(title) && !isFirstRun) {
+        void notifyLocal('Needs your attention', title);
+      }
+      seen.add(title);
+    }
+    hasRunOnceRef.current = true;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dangerTitlesKey, extrasLoading]);
+
+  const toneClass: Record<OwnerAlertTone, string> = {
+    danger: 'border-red-200 bg-red-50 text-red-800',
+    warning: 'border-amber-200 bg-amber-50 text-amber-800',
+    neutral: 'border-slate-200 bg-slate-50 text-slate-700',
+    success: 'border-emerald-200 bg-emerald-50 text-emerald-800',
+  };
+
+  return (
+    <div className="owner-tab-stack">
+      <OwnerToolbar>
+        <span className="text-xs font-bold text-muted-foreground">Everything as of right now — {ownerFmtDateTime(new Date().toISOString())}</span>
+        <button type="button" onClick={() => { void loadExtras(); void ownerLedger.refresh(); void loadPOs(); }} disabled={extrasLoading} className="ml-auto inline-flex items-center gap-1.5 disabled:opacity-60">
+          <RefreshCw className={cn('size-4', extrasLoading && 'animate-spin')} />Refresh
+        </button>
+      </OwnerToolbar>
+
+      {extrasError && <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700">Some data failed to load: {extrasError}</div>}
+
+      <section className="owner-metric-grid">
+        <OwnerMetricCard icon={<Receipt className="size-5" />} label="Net Sales Today" value={formatCurrency(totals.netSales)} tone="green" sub="Cafe + SNB + VRSNB + Hosur" />
+        <OwnerMetricCard icon={<Banknote className="size-5" />} label="Cash Position" value={formatCurrency(netCashPosition)} tone={netCashPosition >= 0 ? 'blue' : 'red'} sub="Cash collected minus expenses" />
+        <OwnerMetricCard icon={<IndianRupee className="size-5" />} label="Hosur Credit Outstanding" value={formatCurrency(extras.hosurOutstandingCredit)} tone={extras.hosurOverdueCount > 0 ? 'red' : 'amber'} sub={extras.hosurOverdueCount > 0 ? `${formatCurrency(extras.hosurOverdueCredit)} overdue` : 'Nothing overdue'} />
+        <OwnerMetricCard icon={<AlertTriangle className="size-5" />} label="Needs Attention" value={attentionItems.length} tone={attentionItems.some(a => a.tone === 'danger') ? 'red' : attentionItems.length ? 'amber' : 'green'} sub={attentionItems.length ? 'Scroll down for the full list' : 'Nothing urgent right now'} />
+      </section>
+
+      <section>
+        <h3 className="mb-2 text-sm font-black text-foreground">Needs Your Attention</h3>
+        {attentionItems.length === 0 ? (
+          <EmptyOwnerState title="All clear" message="No mismatches, no overdue credit, no pending approvals, no stock-outs right now." />
+        ) : (
+          <div className="space-y-2">
+            {attentionItems.map((item, i) => (
+              <div key={i} className={cn('flex items-start gap-2.5 rounded-xl border px-3 py-2.5', toneClass[item.tone])}>
+                <span className="mt-0.5 shrink-0">{item.icon}</span>
+                <div className="min-w-0">
+                  <p className="text-xs font-black leading-snug">{item.title}</p>
+                  {item.detail && <p className="mt-0.5 text-[11px] font-semibold opacity-80">{item.detail}</p>}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
+      <section>
+        <h3 className="mb-2 text-sm font-black text-foreground">Every Branch, Right Now</h3>
+        <div className="owner-business-grid">
+          {rows.map(row => (
+            <article key={row.branch} className={cn('owner-business-card closure', row.status === 'Completed' ? 'border-l-4 border-emerald-500' : row.status === 'Difference' ? 'border-l-4 border-red-500' : 'border-l-4 border-amber-400')}>
+              <div className="owner-business-card-head">
+                <div><span>{row.branch}</span><strong>{formatCurrency(row.netSales)}</strong></div>
+                <em className={cn(row.status === 'Pending' && 'warn', row.status === 'Difference' && 'danger')}>{row.status}</em>
+              </div>
+              <div className="mt-2 grid grid-cols-3 gap-2 text-[11px]">
+                <p className="flex flex-col"><span className="text-muted-foreground">Cash</span><b>{formatCurrency(row.cash)}</b></p>
+                <p className="flex flex-col"><span className="text-muted-foreground">Credit</span><b>{formatCurrency(row.credit)}</b></p>
+                <p className="flex flex-col"><span className="text-muted-foreground">Expenses</span><b>{formatCurrency(row.expenses)}</b></p>
+              </div>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section>
+        <h3 className="mb-2 text-sm font-black text-foreground">Production &amp; Dispatch (Planner)</h3>
+        <div className="owner-metric-grid">
+          <OwnerMetricCard icon={<Factory className="size-5" />} label="Not Yet Sent to Baker" value={extras.pendingBakeryOrders} tone={extras.pendingBakeryOrders ? 'amber' : 'green'} />
+          <OwnerMetricCard icon={<Package className="size-5" />} label="In Production" value={extras.inProductionOrders} tone="blue" />
+          <OwnerMetricCard icon={<Truck className="size-5" />} label="Ready to Dispatch" value={extras.readyToDispatchOrders} tone={extras.readyToDispatchOrders ? 'amber' : 'green'} />
+          <OwnerMetricCard icon={<Store className="size-5" />} label="Hosur Shop Orders Open" value={extras.pendingHosurShopOrders} tone={extras.pendingHosurShopOrders ? 'blue' : 'green'} />
+        </div>
+        <p className="mt-2 text-[11px] font-semibold text-muted-foreground">{extras.leftoverActiveItems} item{extras.leftoverActiveItems === 1 ? '' : 's'} currently sitting in Closing Stock, ready to dispatch without new production.</p>
+      </section>
+    </div>
+  );
+}
+
 // ── Main Export ───────────────────────────────────────────────────────────────
 type OwnerDashboardTab =
+  | 'everything'
   | 'branches'
   | 'sales'
   | 'credit'
@@ -2557,12 +2830,12 @@ type OwnerDashboardTab =
 export default function OwnerDashboard() {
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedTab = searchParams.get('tab') as OwnerDashboardTab | null;
-  const ownerTabIds = useMemo<OwnerDashboardTab[]>(() => ['branches', 'sales', 'credit', 'purchases', 'poApprovals', 'closure', 'variance', 'alerts', 'attendance', 'waste', 'complaints', 'audit'], []);
-  const initialTab = requestedTab && ownerTabIds.includes(requestedTab) ? requestedTab : 'branches';
+  const ownerTabIds = useMemo<OwnerDashboardTab[]>(() => ['everything', 'branches', 'sales', 'credit', 'purchases', 'poApprovals', 'closure', 'variance', 'alerts', 'attendance', 'waste', 'complaints', 'audit'], []);
+  const initialTab = requestedTab && ownerTabIds.includes(requestedTab) ? requestedTab : 'everything';
   const [tab, setTab] = useState<OwnerDashboardTab>(initialTab);
   const selectTab = (next: OwnerDashboardTab) => {
     setTab(next);
-    setSearchParams(next === 'branches' ? {} : { tab: next });
+    setSearchParams(next === 'everything' ? {} : { tab: next });
   };
 
   useEffect(() => {
@@ -2571,7 +2844,16 @@ export default function OwnerDashboard() {
     }
   }, [requestedTab, ownerTabIds, tab]);
 
+  // Android app: request notification permission and register the push
+  // token once per session. A complete no-op on the web build — see
+  // src/lib/nativeNotifications.ts.
+  const currentUser = useAuthStore(s => s.currentUser);
+  useEffect(() => {
+    void initNativeNotifications(currentUser?.displayName || currentUser?.username || null);
+  }, [currentUser]);
+
   const tabs: Array<{ id: OwnerDashboardTab; label: string; icon: React.ReactNode; hint: string }> = [
+    { id: 'everything', label: 'Everything',         icon: <Layers        className="size-4" />, hint: 'Your full business, one screen' },
     { id: 'branches',   label: 'Branch Overview',    icon: <Store         className="size-4" />, hint: 'Cafe, SNB, VRSNB, Hosur' },
     { id: 'sales',      label: 'Sales & Profit',     icon: <BarChart3     className="size-4" />, hint: 'Trends and payment split' },
     { id: 'credit',     label: 'Credit Tracking',    icon: <IndianRupee   className="size-4" />, hint: 'Pending collections' },
@@ -2588,6 +2870,7 @@ export default function OwnerDashboard() {
 
   return (
     <main className="owner-dashboard-body px-4 py-5 sm:px-6 xl:px-8">
+      {tab === 'everything' && <OwnerEverythingTab />}
       {tab === 'branches'   && <BranchOverviewTab />}
       {tab === 'sales'      && <SalesOverviewTab />}
       {tab === 'credit'     && <OwnerCreditTab />}
