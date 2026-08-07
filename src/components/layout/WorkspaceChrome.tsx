@@ -132,10 +132,12 @@ function navForRole(role?: string): NavItem[] {
       ];
     case 'owner':
       return [
+        { label: 'Everything', path: '/owner', icon: <Layers className="size-4" />, group: 'Main' },
         { label: 'Branch Overview', path: '/owner?tab=branches', icon: <Store className="size-4" />, group: 'Main' },
         { label: 'Sales & Profit', path: '/owner?tab=sales', icon: <BarChart3 className="size-4" />, group: 'Reports' },
         { label: 'Credit Tracking', path: '/owner?tab=credit', icon: <CreditCard className="size-4" />, group: 'Reports' },
         { label: 'Store Purchases', path: '/owner?tab=purchases', icon: <ShoppingCart className="size-4" />, group: 'Operations' },
+        { label: 'PO Approvals', path: '/owner?tab=poApprovals', icon: <ClipboardList className="size-4" />, group: 'Operations' },
         { label: 'Daily Closure', path: '/owner?tab=closure', icon: <WalletCards className="size-4" />, group: 'Reports' },
         { label: 'Stock Variance', path: '/owner?tab=variance', icon: <AlertTriangle className="size-4" />, group: 'Reports' },
         { label: 'Owner Alerts', path: '/owner?tab=alerts', icon: <Bell className="size-4" />, group: 'Reports' },
