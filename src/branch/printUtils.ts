@@ -161,6 +161,7 @@ function printVrsnbReceiptBill(bill: BranchBillRecord, duplicate = false, target
 // ─── Full-format counter bill (SNB style / tax invoice) ───────────────────────
 function printSnbCounterBill(bill: BranchBillRecord, duplicate = false, target?: Window | null) {
   const returnBill = bill as BranchBillRecord & { _isReturn?: boolean; _originalBillNo?: string; _returnReason?: string };
+  const advanceInfo = bill as BranchBillRecord & { _advanceAmount?: number; _advancePaymentMode?: string };
   const title = returnBill._isReturn ? 'RETURN BILL' : duplicate ? 'DUPLICATE BILL' : 'ORIGINAL BILL';
   const business = {
     name: 'Sri Nanjundeshwara Bakery',
@@ -186,7 +187,7 @@ function printSnbCounterBill(bill: BranchBillRecord, duplicate = false, target?:
       ${bill.items.map((i, idx) => `<tr><td>${idx + 1}</td><td>${i.itemName}</td><td class="num">${i.quantity.toFixed(i.unit === 'kg' ? 2 : 0)}</td><td class="num">${i.price.toFixed(2)}</td><td class="num">${i.lineTotal.toFixed(2)}</td></tr>`).join('')}
       <tr class="total-row"><td></td><td>Total</td><td class="num">${bill.items.reduce((s, i) => s + i.quantity, 0).toFixed(2)}</td><td></td><td class="num">${bill.subtotal.toFixed(2)}</td></tr>
     </tbody></table>
-    <div class="summary"><div class="row"><span>${discountLabel(bill)} :</span><span>${bill.discount.toFixed(2)}</span></div><div class="row"><span>Additional Charges :</span><span>${Number(bill.additionalCharges || 0).toFixed(2)}</span></div><div class="row"><span>GST :</span><span>${bill.tax.toFixed(2)}</span></div><div class="row"><span>Amount Before Round-Off :</span><span>${(bill.amountBeforeRoundOff ?? Math.max(0, bill.subtotal + bill.tax - bill.discount)).toFixed(2)}</span></div><div class="row"><span>Round-Off :</span><span>${billRoundOff(bill) >= 0 ? '+' : ''}${billRoundOff(bill).toFixed(2)}</span></div><div class="row net"><span>Net Bill Amount :</span><span>Rs ${bill.total.toFixed(2)}</span></div></div>
+    <div class="summary"><div class="row"><span>${discountLabel(bill)} :</span><span>${bill.discount.toFixed(2)}</span></div><div class="row"><span>Additional Charges :</span><span>${Number(bill.additionalCharges || 0).toFixed(2)}</span></div><div class="row"><span>GST :</span><span>${bill.tax.toFixed(2)}</span></div><div class="row"><span>Amount Before Round-Off :</span><span>${(bill.amountBeforeRoundOff ?? Math.max(0, bill.subtotal + bill.tax - bill.discount)).toFixed(2)}</span></div><div class="row"><span>Round-Off :</span><span>${billRoundOff(bill) >= 0 ? '+' : ''}${billRoundOff(bill).toFixed(2)}</span></div><div class="row net"><span>Net Bill Amount :</span><span>Rs ${bill.total.toFixed(2)}</span></div>${Number(advanceInfo._advanceAmount || 0) > 0 ? `<div class="row"><span>Advance Amount :</span><span>${Number(advanceInfo._advanceAmount).toFixed(2)}</span></div><div class="row"><span>Balance Paid Now :</span><span>${Math.max(0, bill.total - Number(advanceInfo._advanceAmount)).toFixed(2)}</span></div>` : ''}</div>
     <div class="paybox"><div class="paytitle">Payment Details</div>${paymentRows}${cashTenderedChangeHtml(bill, 'pay')}${bill.walletTransactionId ? `<div class="pay"><span>WALLET BALANCE</span><span>${Number(bill.walletBalanceRemaining || 0).toFixed(2)}</span></div>` : ''}${Number(bill.walletCashback || 0) > 0 ? `<div class="pay"><span>WALLET CASHBACK</span><span>${Number(bill.walletCashback).toFixed(2)}</span></div>` : ''}${Number(bill.refundAmount || 0) > 0 ? `<div class="pay"><span>REFUND ${String(bill.refundMode || '').toUpperCase()}</span><span>-${Number(bill.refundAmount).toFixed(2)}</span></div>` : ''}</div>
     ${bill.paymentMode === 'credit' ? `<div class="dash"></div><div class="row"><span>Credit Customer</span><span>${bill.creditCustomerName || '-'}</span></div><div class="row"><span>Mobile</span><span>${bill.creditCustomerMobile || '-'}</span></div><div class="row"><span>Due Date</span><span>${bill.creditDueDate || '-'}</span></div><div class="row"><span>Credit Due</span><span>${bill.balance.toFixed(2)}</span></div>` : ''}
     <div class="c small">Salesperson : ${bill.salesperson}</div>
@@ -629,9 +630,19 @@ export function printCounterCloseSlip(input: {
   expected: number; counted: number; difference: number;
   billsCount: number;
   closedAt?: string;
+  // Closing cash denomination count (note/coin breakdown counted at close),
+  // same shape as printCounterOpenSlip's opening `denominations` - previously
+  // missing here entirely, so the thermal close slip showed only the total
+  // physical cash with no way to verify the note/coin count against it.
+  closingDenominations?: Record<string, string | number>;
 }) {
   const closedAt = input.closedAt ? new Date(input.closedAt) : new Date();
   const totalCollection = input.cash + input.upi + input.card;
+  const denomRows = Object.entries(input.closingDenominations || {})
+    .filter(([, count]) => Number(count) > 0)
+    .sort(([a], [b]) => Number(b) - Number(a))
+    .map(([denom, count]) => `<div class="row"><span>₹${safeHtml(denom)} × ${safeHtml(count)}</span><b>${safeHtml(inr(Number(denom) * Number(count)))}</b></div>`)
+    .join('');
   const html = `<!doctype html><html><head><title>Counter Close ${safeHtml(input.branch)}</title><style>${THERMAL_SLIP_STYLE}</style></head><body>
     <div class="brand">${safeHtml(BRANCH_LABELS[input.branch])}</div>
     <div class="c">Cashier Counter</div>
@@ -654,6 +665,7 @@ export function printCounterCloseSlip(input: {
     <div class="row"><span>Expected Cash</span><span>${safeHtml(inr(input.expected))}</span></div>
     <div class="row"><span>Physical Cash</span><span>${safeHtml(inr(input.counted))}</span></div>
     <div class="row bold"><span>Difference</span><span>${safeHtml(inr(input.difference))}</span></div>
+    ${denomRows ? `<div class="dash"></div><div class="row bold"><span>Closing Cash Denominations</span><span></span></div>${denomRows}` : ''}
     <div class="dash"></div>
     <div class="foot">Counter closed. Signature: ____________________</div>
     <script>window.onload=()=>window.print()</script>

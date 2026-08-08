@@ -166,6 +166,8 @@ export interface CakeAdvanceOrder {
   designCharge?: number;
   drawingCharge?: number;
   photoCharge?: number;
+  topperCharge?: number;
+  toyCharges?: number;
   messageOnCake: string;
   designNotes: string;
   attachmentName?: string;
@@ -702,6 +704,12 @@ interface BranchOpsState {
   addBankDeposit: (
     deposit: Omit<BankDeposit, "id" | "createdAt">,
   ) => BankDeposit;
+  // Password-gated in the UI (verify_staff_password RPC) before this is called.
+  updateBankDeposit: (
+    id: string,
+    updates: Partial<Omit<BankDeposit, "id" | "branch" | "createdAt">>,
+    user: string,
+  ) => void;
   // For admin/owner report screens: guarantees ALL bills in a chosen date
   // range are present in state, regardless of the general hydration cap
   // (see getItem's opQuery limit). Call this whenever an admin picks/changes
@@ -735,6 +743,13 @@ interface BranchOpsState {
   addExpense: (
     expense: Omit<ExpenseRecord, "id" | "createdAt">,
   ) => ExpenseRecord;
+  // Password-gated in the UI (verify_staff_password RPC) before this is called —
+  // the store action itself just performs the mutation once authorized.
+  updateExpense: (
+    id: string,
+    updates: Partial<Omit<ExpenseRecord, "id" | "branch" | "createdAt">>,
+    user: string,
+  ) => void;
   addComplaint: (
     complaint: Omit<ComplaintRecord, "id" | "createdAt" | "updatedAt" | "status">,
   ) => ComplaintRecord;
@@ -1348,6 +1363,24 @@ export const useBranchOpsStore = create<BranchOpsState>()(
         });
         return newExpense;
       },
+      updateExpense: (id, updates, user) =>
+        set((state) => {
+          const previous = state.expenses.find((expense) => expense.id === id);
+          if (!previous) return state;
+          const updated: ExpenseRecord = { ...previous, ...updates, amount: Number(updates.amount ?? previous.amount) };
+          mirrorOperationRecord(previous.branch, "expense", id, updated, {
+            recordNo: id,
+            amount: updated.amount,
+            actor: user,
+          });
+          return {
+            expenses: state.expenses.map((expense) => expense.id === id ? updated : expense),
+            auditLogs: [
+              audit(previous.branch, user, "Expense Edited", `${previous.category} ${previous.amount}`, `${updated.category} ${updated.amount}`),
+              ...state.auditLogs,
+            ],
+          };
+        }),
       addComplaint: (complaint) => {
         const now = new Date().toISOString();
         const newComplaint: ComplaintRecord = {
@@ -2828,6 +2861,24 @@ export const useBranchOpsStore = create<BranchOpsState>()(
         });
         return newDeposit;
       },
+      updateBankDeposit: (id, updates, user) =>
+        set((state) => {
+          const previous = state.bankDeposits.find((deposit) => deposit.id === id);
+          if (!previous) return state;
+          const updated: BankDeposit = { ...previous, ...updates, amount: Number(updates.amount ?? previous.amount) };
+          mirrorOperationRecord(previous.branch, "bank_deposit", id, updated, {
+            recordNo: updated.transactionRef || updated.slipNo,
+            amount: updated.amount,
+            actor: user,
+          });
+          return {
+            bankDeposits: state.bankDeposits.map((deposit) => deposit.id === id ? updated : deposit),
+            auditLogs: [
+              audit(previous.branch, user, "Bank Deposit Edited", `${previous.bankAccount} ${previous.amount}`, `${updated.bankAccount} ${updated.amount}`),
+              ...state.auditLogs,
+            ],
+          };
+        }),
       addCashierClosure: (closure) => {
         const newClosure = {
           ...closure,
