@@ -323,6 +323,12 @@ function navForRole(role?: string): NavItem[] {
         { label: 'Cashier Closure', path: '/admin-snb?tab=cashier-closure', icon: <WalletCards className="size-4" />, group: 'Reports' },
         { label: 'Daily Closure Report', path: '/admin-snb?tab=closure', icon: <WalletCards className="size-4" />, group: 'Reports' },
         { label: 'Branch Reports', path: '/admin-snb?tab=reports', icon: <FileText className="size-4" />, group: 'Reports' },
+        // BUG FIX (2026-08-08): this sidebar array is a completely separate
+        // nav list from AdminSNBDashboard's own in-page tab bar (same drift
+        // pattern documented elsewhere in this file for 'store'/'planner') —
+        // the "Daily Sales" in-page tab was added without a matching entry
+        // here, so it had no quick-access sidebar link at all.
+        { label: 'Daily Sales', path: '/admin-snb?tab=daily-sales', icon: <BarChart3 className="size-4" />, group: 'Reports' },
         { label: 'Stock Audit', path: '/admin-snb?tab=audit-stock', icon: <ClipboardCheck className="size-4" />, group: 'Reports' },
         { label: 'History', path: '/admin-snb?tab=history', icon: <History className="size-4" />, group: 'Reports' },
         { label: 'Advance Order Closing Report', path: '/admin-snb?tab=advance-closing', icon: <FileText className="size-4" />, group: 'Reports' },
