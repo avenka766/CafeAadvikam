@@ -1625,6 +1625,14 @@ function NewBillPanel() {
   const [itemMode, setItemMode] = useState<'menu' | 'custom'>('menu');
   const [orderType, setOrderType] = useState<OrderType>('dine_in');
   const [tableNumber, setTableNumber] = useState<number | null>(null);
+  // FEATURE (2026-08-08): "remove the parcel charges and add a button - and +
+  // should appear and its should show the number for each one number added
+  // the additional 10 rs should be added to the takeaway bill" — parcel
+  // charge used to be auto-computed from total item quantity, which doesn't
+  // match reality (a customer might want 2 items packed into 1 parcel, or
+  // vice versa). Replaced with a manual +/- counter, takeaway-only.
+  const [parcelCount, setParcelCount] = useState(0);
+  useEffect(() => { if (orderType !== 'takeaway') setParcelCount(0); }, [orderType]);
 
   // TABLE-SYNC FIX: orders placed by the Order Pad (order-taker staff) or by a
   // customer scanning the table's QR code go through submitOrder() and land in
@@ -1908,6 +1916,7 @@ function NewBillPanel() {
       clearTableDraft(tableNumber);
       setRunningOrder(null);
       clearCart();
+      setParcelCount(0);
       setCustomItems([]); setCustomName(''); setCustomPrice(''); setCustomQty('1');
       void loadTableBoard();
     } catch (err) {
@@ -1973,6 +1982,7 @@ function NewBillPanel() {
       });
 
       clearCart();
+      setParcelCount(0);
       setCustomItems([]); setCustomName(''); setCustomPrice(''); setCustomQty('1');
       if (tableNumber != null) clearTableDraft(tableNumber);
       await refreshRunningOrder(tableNumber);
@@ -2157,6 +2167,7 @@ function NewBillPanel() {
       clearTableDraft(tableNumber);
       void loadTableBoard();
       clearCart();
+      setParcelCount(0);
       setCustomItems([]); setCustomName(''); setCustomPrice(''); setCustomQty('1');
       setShowCombineBillModal(false);
       setCombineCreditPhone(''); setCombineCreditDueDate(''); setCombineBillMethod('cash');
@@ -2233,11 +2244,11 @@ function NewBillPanel() {
   const runningSubtotal = (orderType === 'dine_in' && runningOrder)
     ? runningOrder.items.reduce((s, ci) => s + ci.menuItem.price * ci.quantity, 0) : 0;
   const itemsSubtotal = menuTotal + customTotal + runningSubtotal;
-  // Parcel charges: Rs 10 per item quantity for takeaway
-  const PARCEL_CHARGE_PER_ITEM = 10;
+  // Parcel charges: manual +/- count, Rs 10 each, takeaway only (see parcelCount above)
+  const PARCEL_CHARGE_PER_PARCEL = 10;
   const totalItemQty  = cart.reduce((s, c) => s + c.quantity, 0)
                       + customItems.reduce((s, c) => s + c.qty, 0);
-  const parcelCharges = orderType === 'takeaway' ? totalItemQty * PARCEL_CHARGE_PER_ITEM : 0;
+  const parcelCharges = orderType === 'takeaway' ? parcelCount * PARCEL_CHARGE_PER_PARCEL : 0;
   const promotionDiscount = paymentMode === 'credit' ? 0 : Math.min(itemsSubtotal, Number(promotionEvaluation.discount || 0));
   const grossTotal = itemsSubtotal + parcelCharges;
   const total = Math.max(0, grossTotal - promotionDiscount);
@@ -2435,6 +2446,7 @@ function NewBillPanel() {
           if (tableNumber != null) clearTableDraft(tableNumber);
           void loadTableBoard();
           clearCart();
+          setParcelCount(0);
           setShowBillModal(false);
           setShowSuccess(true);
           setNotes(''); setCustomerName(''); setTableNumber(null);
@@ -2488,6 +2500,7 @@ function NewBillPanel() {
         if (tableNumber != null) clearTableDraft(tableNumber);
         void loadTableBoard();
         clearCart();
+        setParcelCount(0);
         setShowBillModal(false);
         setShowSuccess(true);
         setNotes(''); setCustomerName(''); setTableNumber(null);
@@ -2588,6 +2601,7 @@ function NewBillPanel() {
           printCreditBill(savedOrder, creditCustomerPhone.trim(), creditDueDate);
         }
         clearCart();
+        setParcelCount(0);
         closeActiveTakeawayTicket();
         // BUG FIX: this credit-sale path (billing a table that never had a
         // KOT sent, so there's no `runningOrder`) never purged the table's
@@ -2737,6 +2751,7 @@ function NewBillPanel() {
         printKotThenBill({ ...printable, walletBalanceRemaining: Number(result.walletBalanceRemaining || printable.walletBalanceRemaining || 0) }, 'original');
         checkoutIdempotencyRef.current = null;
         clearCart();
+        setParcelCount(0);
         closeActiveTakeawayTicket();
         // BUG FIX: same missing clearTableDraft() as the credit-sale path above —
         // without it, a table paid via wallet here would still show its old
@@ -2830,6 +2845,7 @@ function NewBillPanel() {
       printKotThenBill(printable, 'original', billMethod === 'cash' ? Number(cashTendered || 0) || undefined : undefined);
       checkoutIdempotencyRef.current = null;
       clearCart();
+      setParcelCount(0);
       closeActiveTakeawayTicket();
       // BUG FIX: this is the most common checkout path (regular cash/UPI/card/
       // split bill for a table with no prior KOT) and it had the same missing
@@ -3211,7 +3227,7 @@ function NewBillPanel() {
             )
           )}
           {!allEmpty && (
-            <button onClick={() => { clearCart(); setCustomItems([]); }}
+            <button onClick={() => { clearCart(); setParcelCount(0); setCustomItems([]); }}
               className="ml-auto flex shrink-0 items-center gap-1 text-[10px] font-body font-semibold text-destructive bg-destructive/10 px-2 py-1 rounded-lg active:scale-95 border border-destructive/15">
               Clear ({cartCount + customItems.length})
             </button>
@@ -3682,10 +3698,17 @@ function NewBillPanel() {
                   <span>Promotion discount</span><span className="tabular-nums font-bold">-{formatCurrency(promotionDiscount)}</span>
                 </div>
               )}
-              {parcelCharges > 0 && (
-                <div className="flex justify-between text-xs font-body text-amber-600 bg-amber-50 px-2 py-1.5 rounded-lg border border-amber-200">
-                  <span className="flex items-center gap-1">Parcel ({totalItemQty} x Rs 10)</span>
-                  <span className="tabular-nums font-bold">+{formatCurrency(parcelCharges)}</span>
+              {orderType === 'takeaway' && (
+                <div className="flex items-center justify-between text-xs font-body bg-amber-50 px-2 py-1.5 rounded-lg border border-amber-200">
+                  <span className="text-amber-700 font-semibold">Parcel (Rs {PARCEL_CHARGE_PER_PARCEL} each)</span>
+                  <div className="flex items-center gap-2">
+                    <button type="button" onClick={() => setParcelCount(c => Math.max(0, c - 1))}
+                      className="size-6 rounded-full bg-white border border-amber-300 text-amber-700 font-bold leading-none flex items-center justify-center active:scale-90">−</button>
+                    <span className="w-4 text-center font-bold text-amber-800 tabular-nums">{parcelCount}</span>
+                    <button type="button" onClick={() => setParcelCount(c => c + 1)}
+                      className="size-6 rounded-full bg-white border border-amber-300 text-amber-700 font-bold leading-none flex items-center justify-center active:scale-90">+</button>
+                    {parcelCharges > 0 && <span className="tabular-nums font-bold text-amber-700">+{formatCurrency(parcelCharges)}</span>}
+                  </div>
                 </div>
               )}
               <div className="flex items-center justify-between">
