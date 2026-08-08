@@ -132,9 +132,18 @@ export const useMenuStore = create<MenuState>()((set, get) => ({
   },
 
   addItem: async (item) => {
+    // BUG FIX (2026-08-08): "we are unable to add items to the cafe items
+    // we are getting an error" — null value in column "id" of relation
+    // "menu_items" violates not-null constraint. menu_items.id is a plain
+    // `text` primary key with no database default (no auto-generated
+    // uuid), so it must be supplied by the app on insert. This never did.
+    // Build a readable, unique slug-based id from the item name instead.
+    const slug = item.name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+    const id = `custom-${slug || 'item'}-${Date.now().toString(36)}`;
     const { data, error } = await supabase
       .from('menu_items')
       .insert({
+        id,
         name:       item.name.trim(),
         price:      item.price,
         category:   item.category,
