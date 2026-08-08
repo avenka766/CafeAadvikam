@@ -35,13 +35,20 @@ function ItemDialog({
 }) {
   const { currentUser } = useAuthStore();
   const { addItem, updateItem } = useBranchCatalogStore();
+  // BUG FIX (2026-08-08): "for bakery items when we add items the category
+  // is pre selected as bakery so we are unable to change the category there
+  // should not be category pre filled we have to select it" — new items
+  // used to default to `categories[0]` (alphabetically first existing
+  // category, which is "Bakery" for VRSNB). It was always an editable text
+  // field, but a pre-filled value read as locked. New items now start with
+  // no category at all — save is blocked below until one is chosen.
   const [draft, setDraft] = useState<Draft>(() => item ? {
     name: item.name,
     price: String(item.price),
     uom: item.uom,
     category: item.category,
     active: item.active,
-  } : blankDraft(categories[0] ?? 'Other'));
+  } : blankDraft(''));
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
 
@@ -49,6 +56,7 @@ function ItemDialog({
     const price = Number(draft.price);
     if (!draft.name.trim()) return setError('Item name is required.');
     if (!Number.isFinite(price) || price <= 0) return setError('Enter a valid price.');
+    if (!draft.category.trim()) return setError('Select or enter a category.');
     setSaving(true);
     const updatedBy = currentUser?.displayName || currentUser?.username || 'Admin';
     const message = item
@@ -85,7 +93,7 @@ function ItemDialog({
             </label>
           </div>
           <label className="block text-xs font-semibold">Category
-            <input list={`${branch}-categories`} className="mt-1 w-full rounded-xl border bg-background px-3 py-2.5 text-sm" value={draft.category} onChange={(e) => setDraft({ ...draft, category: e.target.value })} />
+            <input list={`${branch}-categories`} placeholder="Type or select a category" className="mt-1 w-full rounded-xl border bg-background px-3 py-2.5 text-sm" value={draft.category} onChange={(e) => setDraft({ ...draft, category: e.target.value })} />
             <datalist id={`${branch}-categories`}>{categories.map((category) => <option key={category} value={category} />)}</datalist>
           </label>
           {item && <label className="flex items-center gap-2 text-sm font-semibold"><input type="checkbox" checked={draft.active} onChange={(e) => setDraft({ ...draft, active: e.target.checked })} /> Active in operational screens</label>}
