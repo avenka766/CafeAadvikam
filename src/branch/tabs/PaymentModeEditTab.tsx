@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { CheckCircle2, CreditCard, Lock, Search } from 'lucide-react';
+import { CheckCircle2, CreditCard, Lock, Search, X } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { cn } from '@/lib/utils';
 import { useAuthStore } from '@/stores/authStore';
@@ -63,6 +63,7 @@ export function PaymentModeEditTab({ branch }: { branch: Branch }) {
   const [savingId, setSavingId] = useState<string | null>(null);
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(true);
+  const [convertingRow, setConvertingRow] = useState<BillPayment | null>(null);
 
   const loadRows = useCallback(async () => {
     setLoading(true);
@@ -191,11 +192,137 @@ export function PaymentModeEditTab({ branch }: { branch: Branch }) {
             return <tr key={row.id} className="border-t border-slate-100 align-middle">
               <td className="p-2 font-black text-slate-950">{row.billNo}</td><td className="p-2 text-xs text-slate-600">{new Date(row.createdAt).toLocaleString('en-IN')}</td>{!isVRSNB && <td className="p-2 font-bold">{row.salesperson}</td>}<td className="p-2">{row.biller}</td><td className="p-2 text-right font-black">{money(row.total)}</td><td className="p-2"><span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-black uppercase text-slate-700">{row.mode}</span></td>
               <td className="p-2">{row.editable ? <div><div className="grid grid-cols-3 gap-1">{editableModes.map((mode) => <div key={mode} className="flex overflow-hidden rounded-lg border"><input type="number" min="0" max={row.total} value={drafts[row.id]?.[mode] || ''} onChange={(event) => setDrafts((current) => ({ ...current, [row.id]: { ...(current[row.id] || { cash:'',upi:'',card:'' }), [mode]: event.target.value } }))} placeholder={mode.toUpperCase()} className="h-8 min-w-0 flex-1 px-2 text-xs font-black outline-none"/><button type="button" onClick={() => fillRemaining(row, mode)} className="border-l bg-slate-100 px-1 text-[8px] font-black">REST</button></div>)}</div><p className={cn('mt-1 text-[10px] font-black', valid ? 'text-emerald-600' : 'text-red-600')}>{money(draftTotal(row.id))} / {money(row.total)}</p></div> : <span className="inline-flex items-center gap-1 text-xs font-black text-slate-400"><Lock className="size-3.5" /> Credit or returned bill</span>}</td>
-              <td className="p-2 text-right"><button onClick={() => void save(row)} disabled={!row.editable || !valid || savingId === row.id} className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-blue-600 px-3 text-xs font-black text-white disabled:cursor-not-allowed disabled:opacity-40"><CheckCircle2 className="size-4" />{savingId === row.id ? 'Saving' : 'Update'}</button></td>
+              <td className="p-2 text-right"><div className="flex flex-col items-end gap-1"><button onClick={() => void save(row)} disabled={!row.editable || !valid || savingId === row.id} className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-blue-600 px-3 text-xs font-black text-white disabled:cursor-not-allowed disabled:opacity-40"><CheckCircle2 className="size-4" />{savingId === row.id ? 'Saving' : 'Update'}</button>{row.editable && <button onClick={() => setConvertingRow(row)} className="inline-flex h-8 items-center gap-1.5 rounded-xl border border-amber-300 bg-amber-50 px-3 text-xs font-black text-amber-700">Convert to Credit</button>}</div></td>
             </tr>;
           })}</tbody>
         </table>
       </div>
+      {convertingRow && (
+        <ConvertToCreditModal
+          branch={branch}
+          row={convertingRow}
+          onClose={() => setConvertingRow(null)}
+          onConverted={(text) => { setConvertingRow(null); setMessage(text); void loadRows(); }}
+        />
+      )}
     </section>
+  );
+}
+
+function ConvertToCreditModal({ branch, row, onClose, onConverted }: {
+  branch: Branch;
+  row: BillPayment;
+  onClose: () => void;
+  onConverted: (message: string) => void;
+}) {
+  const { currentUser } = useAuthStore();
+  const [customerName, setCustomerName] = useState('');
+  const [customerMobile, setCustomerMobile] = useState('');
+  const [dueDate, setDueDate] = useState('');
+  const [amountPaid, setAmountPaid] = useState('0');
+  const [amountPaidMode, setAmountPaidMode] = useState<EditableMode>('cash');
+  const [reason, setReason] = useState('');
+  const [password, setPassword] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  const amountPaidNum = Math.max(0, Math.min(row.total, Number(amountPaid) || 0));
+  const creditAmount = roundMoney(row.total - amountPaidNum);
+
+  const submit = async () => {
+    if (!customerName.trim() || !customerMobile.trim() || !dueDate) {
+      setError('Customer name, mobile and due date are required for a credit bill.');
+      return;
+    }
+    if (!reason.trim() || !password) {
+      setError('Reason and login password are required.');
+      return;
+    }
+    if (creditAmount <= 0) {
+      setError('Nothing left to convert - reduce the amount already collected.');
+      return;
+    }
+    setSaving(true);
+    setError('');
+    const actor = currentUser?.username || currentUser?.displayName || 'Branch Staff';
+    const { error: rpcError } = await supabase.rpc('convert_branch_bill_to_credit_secure', {
+      p_branch: branch,
+      p_bill_id: row.id,
+      p_customer_name: customerName.trim(),
+      p_customer_phone: customerMobile.trim(),
+      p_due_date: dueDate,
+      p_amount_paid: amountPaidNum,
+      p_amount_paid_mode: amountPaidMode,
+      p_reason: reason.trim(),
+      p_password: password,
+      p_changed_by: actor,
+    });
+    setSaving(false);
+    if (rpcError) {
+      if (rpcError.message.includes('INVALID_PASSWORD')) { setError('Incorrect login password.'); return; }
+      if (/convert_branch_bill_to_credit_secure|could not find the function|does not exist|schema cache/i.test(rpcError.message)) {
+        setError('The convert-to-credit migration is not installed. Apply the latest Supabase migration before using this action.');
+        return;
+      }
+      setError(rpcError.message);
+      return;
+    }
+    onConverted(`${row.billNo} was converted to a credit bill (${money(creditAmount)} owed).`);
+  };
+
+  return (
+    <div className="fixed inset-0 z-[210] flex items-center justify-center bg-slate-950/60 p-3">
+      <div className="max-h-[calc(100dvh-1.5rem)] w-full max-w-md overflow-y-auto rounded-2xl bg-white p-4 shadow-2xl sm:p-5">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h3 className="text-lg font-black text-slate-950">Convert to Credit Bill</h3>
+            <p className="text-sm font-bold text-slate-500">{row.billNo} - {money(row.total)}</p>
+          </div>
+          <button type="button" onClick={onClose} className="grid size-9 place-items-center rounded-xl bg-slate-100"><X className="size-4" /></button>
+        </div>
+        <div className="mt-4 space-y-3">
+          <div>
+            <label className="block text-[10px] font-black uppercase tracking-wide text-slate-500">Customer Name *</label>
+            <input value={customerName} onChange={(e) => setCustomerName(e.target.value)} className="mt-1 h-9 w-full rounded-xl border-2 border-slate-200 bg-slate-50 px-3 text-sm font-bold outline-none focus:border-amber-400" />
+          </div>
+          <div>
+            <label className="block text-[10px] font-black uppercase tracking-wide text-slate-500">Customer Mobile *</label>
+            <input value={customerMobile} onChange={(e) => setCustomerMobile(e.target.value)} className="mt-1 h-9 w-full rounded-xl border-2 border-slate-200 bg-slate-50 px-3 text-sm font-bold outline-none focus:border-amber-400" />
+          </div>
+          <div>
+            <label className="block text-[10px] font-black uppercase tracking-wide text-slate-500">Due Date *</label>
+            <input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} className="mt-1 h-9 w-full rounded-xl border-2 border-slate-200 bg-slate-50 px-3 text-sm font-bold outline-none focus:border-amber-400" />
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="block text-[10px] font-black uppercase tracking-wide text-slate-500">Already Collected</label>
+              <input type="number" min="0" max={row.total} step="0.01" value={amountPaid} onChange={(e) => setAmountPaid(e.target.value)} className="mt-1 h-9 w-full rounded-xl border-2 border-slate-200 bg-slate-50 px-3 text-sm font-bold outline-none focus:border-amber-400" />
+            </div>
+            {amountPaidNum > 0 && (
+              <div>
+                <label className="block text-[10px] font-black uppercase tracking-wide text-slate-500">Collected Via</label>
+                <select value={amountPaidMode} onChange={(e) => setAmountPaidMode(e.target.value as EditableMode)} className="mt-1 h-9 w-full rounded-xl border-2 border-slate-200 bg-slate-50 px-3 text-sm font-bold outline-none focus:border-amber-400">
+                  {editableModes.map((mode) => <option key={mode} value={mode}>{mode.toUpperCase()}</option>)}
+                </select>
+              </div>
+            )}
+          </div>
+          <div className="rounded-xl bg-amber-50 p-3 text-sm font-black text-amber-800">Credit amount owed: {money(creditAmount)}</div>
+          <div>
+            <label className="block text-[10px] font-black uppercase tracking-wide text-slate-500">Reason *</label>
+            <input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Why is this being converted to a credit bill?" className="mt-1 h-9 w-full rounded-xl border-2 border-slate-200 bg-slate-50 px-3 text-sm font-bold outline-none focus:border-amber-400" />
+          </div>
+          <div>
+            <label className="block text-[10px] font-black uppercase tracking-wide text-slate-500">Login Password *</label>
+            <input type="password" autoComplete="off" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" value={password} onChange={(e) => setPassword(e.target.value)} className="mt-1 h-9 w-full rounded-xl border-2 border-slate-200 bg-slate-50 px-3 text-sm font-bold outline-none focus:border-amber-400" />
+          </div>
+          {error && <p className="rounded-xl bg-red-50 p-3 text-xs font-bold text-red-700">{error}</p>}
+          <div className="grid grid-cols-2 gap-2">
+            <button type="button" onClick={onClose} disabled={saving} className="h-10 rounded-xl border border-slate-200 bg-white text-sm font-black text-slate-700">Back</button>
+            <button type="button" onClick={() => void submit()} disabled={saving} className="inline-flex h-10 items-center justify-center gap-1.5 rounded-xl bg-amber-600 text-sm font-black text-white disabled:opacity-50">{saving ? 'Converting...' : 'Convert to Credit'}</button>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }

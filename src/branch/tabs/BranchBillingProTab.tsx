@@ -216,6 +216,7 @@ export default function BranchBillingProTab({
   const salespeople = useBranchOpsStore((s) => s.salespeople);
   const counterOpenings = useBranchOpsStore((s) => s.counterOpenings);
   const addBill = useBranchOpsStore((s) => s.addBill);
+  const addAuditLog = useBranchOpsStore((s) => s.addAuditLog);
   const addHold = useBranchOpsStore((s) => s.addHold);
   const removeHold = useBranchOpsStore((s) => s.removeHold);
   const addNotification = useBranchOpsStore((s) => s.addNotification);
@@ -226,6 +227,31 @@ export default function BranchBillingProTab({
   // screen is opened, so a stale/incomplete persisted snapshot can never
   // block billing by leaving the dropdown empty.
   useEffect(() => { void refreshSalespeople(branch); }, [branch, refreshSalespeople]);
+
+  // BUG FIX (2026-08-08): "even though the counter is opened still its
+  // saying to open the counter for billing" — this screen used to decide
+  // whether the counter was open purely from the local `counterOpenings`
+  // mirror in branchOpsStore (only ever populated by the *local* openCounter
+  // call in this browser session). The counter's real source of truth is
+  // the `branch_counter_sessions` table, already fetched this same way by
+  // the Daily Closure tab's `loadOpenSession`. If that local mirror was
+  // ever empty/stale here — page reload, a different tab/device, a cleared
+  // local snapshot — billing incorrectly showed "open the counter" even
+  // though a real, active session existed in the database. Fetch it
+  // directly here too, same as Daily Closure does, and trust either source.
+  const [dbCounterSession, setDbCounterSession] = useState<{ id: string } | null>(null);
+  useEffect(() => {
+    let active = true;
+    if (!currentUser?.id) { setDbCounterSession(null); return; }
+    (async () => {
+      const { data, error } = await supabase.rpc('get_my_branch_counter_session_secure', { p_branch: branch });
+      if (!active) return;
+      if (error) { setDbCounterSession(null); return; }
+      const row = data && typeof data === 'object' ? data as Record<string, unknown> : null;
+      setDbCounterSession(row?.id ? { id: String(row.id) } : null);
+    })();
+    return () => { active = false; };
+  }, [branch, currentUser?.id]);
 
   const userName = currentUser?.username || currentUser?.displayName || 'Branch Staff';
   const isAdmin = ['admin', 'admin_snb', 'admin_vrsnb', 'owner'].includes(currentUser?.role || '');
@@ -273,6 +299,9 @@ export default function BranchBillingProTab({
   const checkoutIdempotencyRef = useRef<string | null>(null);
   const [discount, setDiscount] = useState('');
   const [discountMode, setDiscountMode] = useState<DiscountMode>('percent');
+  const [discountReason, setDiscountReason] = useState('');
+  const [packingCharge, setPackingCharge] = useState('');
+  const [deliveryCharge, setDeliveryCharge] = useState('');
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
@@ -372,7 +401,7 @@ export default function BranchBillingProTab({
 
   const todayKey = businessDate();
   const activeCounterRecord = counterOpenings.find((record) => record.branch === branch && record.date === todayKey && record.active !== false && (currentUser?.id ? record.cashierUserId === currentUser.id : record.cashier === userName));
-  const counterOpenedToday = Boolean(activeCounterRecord);
+  const counterOpenedToday = Boolean(activeCounterRecord) || Boolean(dbCounterSession);
   const isCounterOpen = useCallback(() => counterOpenedToday, [counterOpenedToday]);
   const openQtyPopup = (item: BillingItem) => {
     setQtyPopupItem(item);
@@ -390,7 +419,16 @@ export default function BranchBillingProTab({
   const promotionDiscount = Math.min(Math.max(0, subtotal - discountValue), roundMoney(promotionEvaluation.discount));
   const totalDiscountValue = roundMoney(Math.min(subtotal, discountValue + promotionDiscount));
   const tax = useMemo(() => roundMoney(cart.reduce((s, i) => s + i.tax, 0)), [cart]);
-  const amountBeforeRoundOff = roundMoney(Math.max(0, subtotal + tax - totalDiscountValue));
+  // Packing/Delivery charges are collected as part of this same bill (SNB
+  // request) but are added AFTER the checkout RPC returns, via a separate
+  // additive RPC (add_branch_bill_extra_charges_secure) - the core checkout
+  // pipeline (stock deduction, discount, tax, promotions) is left untouched.
+  // They still need to be folded into `total`/`due` here so the cashier is
+  // prompted for the right cash-tendered amount up front.
+  const packingChargeValue = Math.max(0, roundMoney(Number(packingCharge || 0)));
+  const deliveryChargeValue = Math.max(0, roundMoney(Number(deliveryCharge || 0)));
+  const extraChargesValue = roundMoney(packingChargeValue + deliveryChargeValue);
+  const amountBeforeRoundOff = roundMoney(Math.max(0, subtotal + tax - totalDiscountValue + extraChargesValue));
   const total = roundWholeRupee(amountBeforeRoundOff);
   const roundOff = roundMoney(total - amountBeforeRoundOff);
   const itemCount = cart.length;
@@ -540,7 +578,7 @@ export default function BranchBillingProTab({
   };
 
   const clear = useCallback(() => {
-    setCart([]); setCartQuantityDrafts({}); setCashTendered(''); setSplit({ cash: '', upi: '', card: '' }); setCreditCustomerName(''); setCreditCustomerMobile(''); setCreditDueDate(''); setCreditAmountPaid(''); setCreditPaidMode('cash'); setCreditRemarks(''); setDiscount(''); setError(''); setLastBill(null); setPaymentMode(null);
+    setCart([]); setCartQuantityDrafts({}); setCashTendered(''); setSplit({ cash: '', upi: '', card: '' }); setCreditCustomerName(''); setCreditCustomerMobile(''); setCreditDueDate(''); setCreditAmountPaid(''); setCreditPaidMode('cash'); setCreditRemarks(''); setDiscount(''); setError(''); setLastBill(null); setPaymentMode(null); setPackingCharge(''); setDeliveryCharge(''); setDiscountReason('');
   }, []);
 
   const holdBill = useCallback(() => {
@@ -588,6 +626,7 @@ export default function BranchBillingProTab({
     if (paymentMode === 'credit' && !creditDueDate) return 'Due date is required for credit sale.';
     if (discountMode === 'percent' && discountInput > 100) return 'Discount percentage must be between 0 and 100.';
     if (discountMode === 'value' && discountInput > subtotal) return 'Discount value cannot exceed the subtotal.';
+    if (discountValue > 0 && !discountReason.trim()) return 'Discount reason is required whenever a discount is applied.';
     if (paymentMode === 'credit' && Number(creditAmountPaid || 0) > total) return 'Credit upfront amount cannot exceed bill total.';
     if (paymentMode === 'wallet' && !selectedWallet) return 'Select a wallet customer before checkout.';
     if (paymentMode === 'wallet' && selectedWallet?.status !== 'active') return 'This wallet is not active.';
@@ -882,10 +921,24 @@ export default function BranchBillingProTab({
             lineTotal: 0,
           })).filter((freeItem) => freeItem.quantity > 0)
         : [];
-      const billedItems = [...canonicalItems, ...serverFreeItems];
+      // Packing/Delivery charge line items - not part of canonicalItems (the
+      // checkout RPC never saw them), added here purely for the local bill
+      // record/print/reports.
+      const chargeLineItems: BranchBillItem[] = [
+        ...(packingChargeValue > 0 ? [{ itemName: 'Packing Charge', quantity: 1, unit: 'pcs' as const, price: packingChargeValue, tax: 0, discount: 0, lineTotal: packingChargeValue }] : []),
+        ...(deliveryChargeValue > 0 ? [{ itemName: 'Delivery Charge', quantity: 1, unit: 'pcs' as const, price: deliveryChargeValue, tax: 0, discount: 0, lineTotal: deliveryChargeValue }] : []),
+      ];
+      const billedItems = [...canonicalItems, ...serverFreeItems, ...chargeLineItems];
       const serverTotal = roundMoney(Number(result.total ?? canonicalTotal));
       const serverCombinedDiscount = roundMoney(Math.min(canonicalSubtotal, canonicalManualDiscount + serverPromotionDiscount));
       const serverAmountBeforeRoundOff = roundMoney(Math.max(0, canonicalSubtotal + canonicalTax - serverCombinedDiscount));
+      // Fold the extra charges into what's actually stored/printed locally -
+      // the checkout RPC only knows about real catalog items, so its own
+      // `total` doesn't include them; add_branch_bill_extra_charges_secure
+      // (called below once billId is known) is what makes the DB row match.
+      const localAmountBeforeRoundOff = roundMoney(serverAmountBeforeRoundOff + extraChargesValue);
+      const localTotal = roundWholeRupee(localAmountBeforeRoundOff);
+      const localRoundOff = roundMoney(localTotal - localAmountBeforeRoundOff);
       const walletSplit = paymentMode === 'wallet'
         ? {
             wallet: roundMoney(walletAmount),
@@ -893,8 +946,9 @@ export default function BranchBillingProTab({
           }
         : undefined;
       const saved = existingBill ?? addBill({
-        branch, billNo: result.billNo, invoiceNo: result.invoiceNo, items: billedItems, subtotal: canonicalSubtotal, discount: serverCombinedDiscount, discountPercent, tax: canonicalTax, roundOff: roundMoney(serverTotal - serverAmountBeforeRoundOff), amountBeforeRoundOff: serverAmountBeforeRoundOff, total: serverTotal,
-        tendered: paymentMode === 'cash' || paymentMode === 'split' || paymentMode === 'credit' ? tendered : serverTotal,
+        branch, billNo: result.billNo, invoiceNo: result.invoiceNo, items: billedItems, subtotal: canonicalSubtotal, discount: serverCombinedDiscount, discountPercent, tax: canonicalTax, roundOff: localRoundOff, amountBeforeRoundOff: localAmountBeforeRoundOff, total: localTotal,
+        additionalCharges: extraChargesValue || undefined,
+        tendered: paymentMode === 'cash' || paymentMode === 'split' || paymentMode === 'credit' ? tendered : localTotal,
         balance: paymentMode === 'cash' || paymentMode === 'split' || paymentMode === 'credit' ? balance : 0,
         paymentMode,
         creditCustomerName: paymentMode === 'credit' ? creditCustomerName.trim() : paymentMode === 'wallet' ? selectedWallet?.customerName : undefined,
@@ -916,6 +970,34 @@ export default function BranchBillingProTab({
       });
       setLastBill(saved);
 
+      // Best-effort: persist the packing/delivery charges server-side so the
+      // stored bill total/notes match what was printed, and log the discount
+      // reason to the audit trail. Neither of these blocks the sale (which
+      // already committed above) - failures here are surfaced via setError
+      // but the bill itself stays valid.
+      if (extraChargesValue > 0) {
+        void supabase.rpc('add_branch_bill_extra_charges_secure', {
+          p_branch: branch,
+          p_bill_id: saved.id,
+          p_packing_charge: packingChargeValue,
+          p_delivery_charge: deliveryChargeValue,
+          p_notes: null,
+        }).then(({ error: chargesError }) => {
+          if (chargesError) {
+            setError(`Bill ${saved.billNo} saved, but packing/delivery charge sync failed: ${chargesError.message}. Amounts were still printed and recorded locally.`);
+          }
+        });
+      }
+      if (discountReason.trim()) {
+        addAuditLog({
+          branch,
+          user: userName,
+          action: 'Discount Applied',
+          previousValue: `Bill ${saved.billNo}`,
+          newValue: `Discount ${money(serverCombinedDiscount)} - Reason: ${discountReason.trim()}`,
+        });
+      }
+
       // PERF FIX: the sale is already committed (checkout RPC above
       // succeeded) — everything from here on is a side effect, not part of
       // the sale itself. This used to `await printCounterBill(...)` (which
@@ -927,7 +1009,7 @@ export default function BranchBillingProTab({
       // background branch refresh continue independently and any print
       // failure is still surfaced (just asynchronously, without blocking).
       checkoutIdempotencyRef.current = null;
-      setCart([]); setCartQuantityDrafts({}); setSalesperson(''); setCashTendered(''); setSplit({ cash: '', upi: '', card: '' }); setCreditCustomerName(''); setCreditCustomerMobile(''); setCreditDueDate(''); setCreditAmountPaid(''); setCreditPaidMode('cash'); setCreditRemarks(''); setSelectedWallet(null); setWalletAmount(0); setWalletOtherMode(null); setWalletAuthorizationSecret(''); setCouponCode(''); setDiscount(''); setPaymentMode(null);
+      setCart([]); setCartQuantityDrafts({}); setSalesperson(''); setCashTendered(''); setSplit({ cash: '', upi: '', card: '' }); setCreditCustomerName(''); setCreditCustomerMobile(''); setCreditDueDate(''); setCreditAmountPaid(''); setCreditPaidMode('cash'); setCreditRemarks(''); setSelectedWallet(null); setWalletAmount(0); setWalletOtherMode(null); setWalletAuthorizationSecret(''); setCouponCode(''); setDiscount(''); setPaymentMode(null); setPackingCharge(''); setDeliveryCharge(''); setDiscountReason('');
       focusSearch(true);
       window.setTimeout(() => focusSearch(false), 150);
 
@@ -1082,6 +1164,22 @@ export default function BranchBillingProTab({
                 {branchPeople.map((p) => <option key={p} value={p}>{p}</option>)}
               </select>
               {isAdmin && <p className="text-[10px] font-semibold text-slate-500">Admin can manage names in Salesperson Report.</p>}
+              <div className="grid grid-cols-2 gap-1.5 pt-1">
+                <div>
+                  <label className="block text-[10px] font-black uppercase tracking-wide text-slate-500">Packing Charge</label>
+                  <input type="number" min="0" step="0.01" value={packingCharge} onChange={(e) => setPackingCharge(e.target.value)} placeholder="0" className="h-7 w-full rounded-lg border border-slate-200 bg-slate-50 px-2 text-xs font-black outline-none focus:border-amber-400" />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-black uppercase tracking-wide text-slate-500">Delivery Charge</label>
+                  <input type="number" min="0" step="0.01" value={deliveryCharge} onChange={(e) => setDeliveryCharge(e.target.value)} placeholder="0" className="h-7 w-full rounded-lg border border-slate-200 bg-slate-50 px-2 text-xs font-black outline-none focus:border-amber-400" />
+                </div>
+              </div>
+              {discountValue > 0 && (
+                <div className="pt-1">
+                  <label className="block text-[10px] font-black uppercase tracking-wide text-red-600">Discount Reason <span className="text-red-500">*</span></label>
+                  <input value={discountReason} onChange={(e) => setDiscountReason(e.target.value)} placeholder="Why is a discount being applied?" className="h-7 w-full rounded-lg border border-red-200 bg-red-50 px-2 text-xs font-bold outline-none focus:border-red-400" />
+                </div>
+              )}
             </div>
           ) : (
             <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-3 py-2">

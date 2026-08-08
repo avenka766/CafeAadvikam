@@ -22,7 +22,7 @@ import {
   type CakeAdvanceOrder, type PurchaseOrderRecord,
 } from '../branchOpsStore';
 import { useBranchCatalogStore, type BranchCatalogItem } from '@/stores/branchCatalogStore';
-import { printCounterBill, printHtml, printBranchCashierClosure, printCounterOpenSlip } from '../printUtils';
+import { printCounterBill, printHtml, printBranchCashierClosure, printCounterOpenSlip, printCounterCloseSlip } from '../printUtils';
 import { CAKE_DESIGNS, CAKE_DRAWING_CHARGE, CAKE_PHOTO_CHARGE, cakeTypesFor, calculateCakePrice, findCakeType, type CakeCreamType, type CakeDesignType } from '../cakePricing';
 
 type ModuleProps = { branch: Branch; branchStock: StockItem[]; branchSales?: SaleRecord[]; onOpenTab?: (tab: string) => void; source?: 'branch' | 'snb-order' };
@@ -60,6 +60,65 @@ type LedgerBillRow = {
     amount: number | string;
   }>;
 };
+
+// Shared by BranchBillHistoryProTab's initial load AND its reprint() action -
+// factored out so a duplicate-print can re-fetch and re-map a single fresh
+// row (picking up any Payment Mode Edit / credit conversion made after the
+// tab first loaded) instead of reusing the stale snapshot from mount time.
+function mapLedgerBillRow(row: LedgerBillRow, branch: Branch): BranchBillRecord {
+  const items = (row.branch_bill_items || []).map((item) => ({
+    itemName: item.item_name,
+    quantity: num(item.quantity),
+    unit: item.unit,
+    price: num(item.unit_price),
+    discount: num(item.discount),
+    tax: num(item.tax),
+    lineTotal: num(item.line_total),
+  }));
+  const payments = row.branch_sale_payments || [];
+  const splitTotals = payments.reduce<Record<string, number>>((acc, payment) => {
+    acc[payment.payment_mode] = (acc[payment.payment_mode] || 0) + num(payment.amount);
+    return acc;
+  }, {});
+  const modes = Object.keys(splitTotals).filter((mode) => splitTotals[mode] > 0);
+  const paymentMode = row.bill_type === 'credit'
+    ? 'credit'
+    : modes.length > 1
+      ? 'split'
+      : ((modes[0] || 'cash') as BranchBillRecord['paymentMode']);
+  const split = {
+    cash: splitTotals.cash || 0,
+    upi: splitTotals.upi || 0,
+    card: splitTotals.card || 0,
+  };
+
+  return {
+    id: row.id,
+    branch,
+    billNo: row.bill_no,
+    invoiceNo: num(row.invoice_no),
+    items,
+    subtotal: num(row.subtotal),
+    discount: num(row.discount),
+    discountPercent: row.discount_percent == null ? undefined : num(row.discount_percent),
+    tax: num(row.tax),
+    roundOff: row.round_off == null ? undefined : num(row.round_off),
+    amountBeforeRoundOff: roundMoney(num(row.total) - num(row.round_off)),
+    total: num(row.total),
+    tendered: num(row.tendered),
+    balance: num(row.balance),
+    paymentMode,
+    creditCustomerName: row.customer_name || undefined,
+    creditCustomerMobile: row.customer_phone || undefined,
+    split: paymentMode === 'split' || row.bill_type === 'credit' ? split : undefined,
+    salesperson: row.salesperson || 'Staff',
+    biller: row.biller || 'Staff',
+    createdAt: row.created_at,
+    printCount: row.status === 'duplicate_printed' ? 2 : 1,
+    status: row.status === 'duplicate_printed' ? 'Duplicate Bill' : row.status === 'returned' ? 'Returned' : 'Original Bill',
+    source: row.bill_type === 'advance_final' ? 'advance-final' : 'counter',
+  } as BranchBillRecord;
+}
 
 type ClosureLedgerRow = {
   branch: Branch;
@@ -182,6 +241,8 @@ function printAdvanceSalesOrder(payload: {
     designCharge: number;
     drawingCharge: number;
     photoCharge: number;
+    topperCharge?: number;
+    toyCharges?: number;
     messageOnCake?: string;
   };
 }) {
@@ -193,7 +254,7 @@ function printAdvanceSalesOrder(payload: {
   const qtyTotal = payload.items.reduce((sum, item) => sum + item.quantity, 0);
   const docTitle = payload.fullyPaid ? 'SALES ORDER SLIP' : 'ADVANCE SALES ORDER';
   const cakeDetailsHtml = payload.cakeDetails ? `<div class="dash"></div><div class="small"><b>Cake:</b> ${payload.cakeDetails.creamType} - ${payload.cakeDetails.cakeType}<br/><b>Flavor:</b> ${payload.cakeDetails.flavor} - <b>Weight:</b> ${payload.cakeDetails.weightKg} kg - <b>Shape:</b> ${payload.cakeDetails.shape}<br/><b>Design:</b> ${payload.cakeDetails.design}${payload.cakeDetails.messageOnCake ? `<br/><b>Message:</b> ${payload.cakeDetails.messageOnCake}` : ''}</div>` : '';
-  const cakePriceHtml = payload.cakeDetails ? `<div class="dash"></div><div class="row"><span>Base (${payload.cakeDetails.weightKg === 0.5 ? '0.5 kg special rate' : `Rs ${payload.cakeDetails.baseRate.toFixed(2)}/kg`}):</span><span>Rs ${payload.cakeDetails.baseAmount.toFixed(2)}</span></div>${payload.cakeDetails.designCharge > 0 ? `<div class="row"><span>${payload.cakeDetails.design}:</span><span>+Rs ${payload.cakeDetails.designCharge.toFixed(2)}</span></div>` : ''}${payload.cakeDetails.drawingCharge > 0 ? `<div class="row"><span>Drawing/design work:</span><span>+Rs ${payload.cakeDetails.drawingCharge.toFixed(2)}</span></div>` : ''}${payload.cakeDetails.photoCharge > 0 ? `<div class="row"><span>Photo work:</span><span>+Rs ${payload.cakeDetails.photoCharge.toFixed(2)}</span></div>` : ''}` : '';
+  const cakePriceHtml = payload.cakeDetails ? `<div class="dash"></div><div class="row"><span>Base (${payload.cakeDetails.weightKg === 0.5 ? '0.5 kg special rate' : `Rs ${payload.cakeDetails.baseRate.toFixed(2)}/kg`}):</span><span>Rs ${payload.cakeDetails.baseAmount.toFixed(2)}</span></div>${payload.cakeDetails.designCharge > 0 ? `<div class="row"><span>${payload.cakeDetails.design}:</span><span>+Rs ${payload.cakeDetails.designCharge.toFixed(2)}</span></div>` : ''}${payload.cakeDetails.drawingCharge > 0 ? `<div class="row"><span>Drawing/design work:</span><span>+Rs ${payload.cakeDetails.drawingCharge.toFixed(2)}</span></div>` : ''}${payload.cakeDetails.photoCharge > 0 ? `<div class="row"><span>Photo work:</span><span>+Rs ${payload.cakeDetails.photoCharge.toFixed(2)}</span></div>` : ''}${(payload.cakeDetails.topperCharge || 0) > 0 ? `<div class="row"><span>Cake Topper Charge:</span><span>+Rs ${(payload.cakeDetails.topperCharge || 0).toFixed(2)}</span></div>` : ''}${(payload.cakeDetails.toyCharges || 0) > 0 ? `<div class="row"><span>Toy Charges:</span><span>+Rs ${(payload.cakeDetails.toyCharges || 0).toFixed(2)}</span></div>` : ''}` : '';
   const html = `<!doctype html><html><head><title>${payload.orderNo}</title><style>@page{size:80mm auto;margin:3mm}body{font-family:Arial,sans-serif;font-size:11px;color:#111}.c{text-align:center}.brand{font-size:20px;font-weight:900}.small{font-size:10px}.doc{font-size:14px;font-weight:900;margin:8px 0}.row{display:flex;justify-content:space-between;gap:8px}.dash{border-top:1px solid #111;margin:5px 0}table{width:100%;border-collapse:collapse}th{border-top:1px solid #111;border-bottom:1px solid #111;font-size:11px;text-align:left;padding:3px 2px}td{padding:3px 2px;vertical-align:top}.num{text-align:right}.total-row td{border-top:1px solid #111;font-weight:900}.net{border-top:1px solid #111;border-bottom:1px solid #111;font-size:14px;font-weight:900;margin-top:4px;padding:4px 0;display:flex;justify-content:space-between}.stamp{border:2px solid #111;padding:4px 8px;text-align:center;font-weight:900;font-size:13px;margin:4px 0}.footer{margin-top:10px;text-align:center;font-size:13px;font-weight:800}</style></head><body><div class="c brand">${business.name}</div><div class="c small">${business.lines.join('<br/>')}</div><div class="c doc">${docTitle}</div>${payload.fullyPaid ? '<div class="stamp">PAID IN FULL</div>' : ''}<div class="dash"></div><div class="row"><span>Order No: ${payload.orderNo}</span><span>Date: ${now.toLocaleDateString('en-GB')}</span></div>${payload.slipNumber ? `<div class="row"><span>Slip No:</span><span>${payload.slipNumber}</span></div>` : ''}<div class="row"><span>Customer: ${payload.customerName}</span><span>${payload.mobile}</span></div><div class="row"><span>Delivery: ${payload.deliveryDate} ${payload.deliveryTime || ''}</span></div>${cakeDetailsHtml}<div class="dash"></div><table><thead><tr><th>Sn</th><th>Item Name</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">Amt</th></tr></thead><tbody>${itemRows}<tr class="total-row"><td></td><td>Total Qty: ${qtyTotal.toFixed(0)}</td><td></td><td class="num">Sub Total</td><td class="num">&#x20B9;${payload.orderValue.toFixed(2)}</td></tr></tbody></table>${cakePriceHtml}<div class="net"><span>Grand Total</span><span>&#x20B9;${payload.orderValue.toFixed(2)}</span></div><div class="row"><span>Advance Paid:</span><span>&#x20B9;${payload.advanceAmount.toFixed(2)} (${payload.paymentMode.toUpperCase()})</span></div>${!payload.fullyPaid ? `<div class="row"><span>Balance Due:</span><span>&#x20B9;${payload.balanceAmount.toFixed(2)}</span></div>` : ''}<div class="dash"></div><div class="c small">${payload.branch === 'SNB' ? 'Salesperson' : 'Cashier'}: ${payload.staffName}</div><div class="footer">Thank You &amp; Visit Again...!!!</div><script>window.onload=()=>window.print()</script></body></html>`;
   const win = window.open('', '_blank', 'width=420,height=680');
   if (win) { win.document.write(html); win.document.close(); }
@@ -254,60 +315,7 @@ export function BranchBillHistoryProTab({ branch }: ModuleProps) {
         return;
       }
 
-      const mapped = allRows.map((row) => {
-        const items = (row.branch_bill_items || []).map((item) => ({
-          itemName: item.item_name,
-          quantity: num(item.quantity),
-          unit: item.unit,
-          price: num(item.unit_price),
-          discount: num(item.discount),
-          tax: num(item.tax),
-          lineTotal: num(item.line_total),
-        }));
-        const payments = row.branch_sale_payments || [];
-        const splitTotals = payments.reduce<Record<string, number>>((acc, payment) => {
-          acc[payment.payment_mode] = (acc[payment.payment_mode] || 0) + num(payment.amount);
-          return acc;
-        }, {});
-        const modes = Object.keys(splitTotals).filter((mode) => splitTotals[mode] > 0);
-        const paymentMode = row.bill_type === 'credit'
-          ? 'credit'
-          : modes.length > 1
-            ? 'split'
-            : ((modes[0] || 'cash') as BranchBillRecord['paymentMode']);
-        const split = {
-          cash: splitTotals.cash || 0,
-          upi: splitTotals.upi || 0,
-          card: splitTotals.card || 0,
-        };
-
-        return {
-          id: row.id,
-          branch,
-          billNo: row.bill_no,
-          invoiceNo: num(row.invoice_no),
-          items,
-          subtotal: num(row.subtotal),
-          discount: num(row.discount),
-          discountPercent: row.discount_percent == null ? undefined : num(row.discount_percent),
-          tax: num(row.tax),
-          roundOff: row.round_off == null ? undefined : num(row.round_off),
-          amountBeforeRoundOff: roundMoney(num(row.total) - num(row.round_off)),
-          total: num(row.total),
-          tendered: num(row.tendered),
-          balance: num(row.balance),
-          paymentMode,
-          creditCustomerName: row.customer_name || undefined,
-          creditCustomerMobile: row.customer_phone || undefined,
-          split: paymentMode === 'split' || row.bill_type === 'credit' ? split : undefined,
-          salesperson: row.salesperson || 'Staff',
-          biller: row.biller || 'Staff',
-          createdAt: row.created_at,
-          printCount: row.status === 'duplicate_printed' ? 2 : 1,
-          status: row.status === 'duplicate_printed' ? 'Duplicate Bill' : row.status === 'returned' ? 'Returned' : 'Original Bill',
-          source: row.bill_type === 'advance_final' ? 'advance-final' : 'counter',
-        } as BranchBillRecord;
-      });
+      const mapped = allRows.map((row) => mapLedgerBillRow(row, branch));
 
       setLedgerBills(mapped);
       setLoadingLedger(false);
@@ -326,14 +334,59 @@ export function BranchBillHistoryProTab({ branch }: ModuleProps) {
   const historyPageCount = Math.max(1, Math.ceil(rows.length / historyPageSize));
   const pagedRows = rows.slice((historyPage - 1) * historyPageSize, historyPage * historyPageSize);
   useEffect(() => setHistoryPage(1), [query, branch]);
-  const reprint = (bill: BranchBillRecord) => {
-    markBillDuplicate(bill.id, currentUser?.displayName || 'Staff');
-    void printCounterBill(bill, true);
+  const [reprintingId, setReprintingId] = useState<string | null>(null);
+  // BUG FIX: this used to print whatever bill object was captured in
+  // ledgerBills at tab-mount time and mark it duplicate only in the local,
+  // per-session `bills` zustand array (which this tab doesn't even read
+  // from - see sourceRows above). Two consequences: (1) if the bill's
+  // payment mode had since been corrected via Payment Mode Edit or
+  // converted to credit, the duplicate print still showed the OLD mode, and
+  // (2) branch_bill_headers.status (what Bill History and any other
+  // Supabase-backed report reads) never actually flipped to
+  // 'duplicate_printed', so the "cashier closure record" for the bill never
+  // reflected the reprint. Now this re-fetches the single bill fresh from
+  // Supabase, persists the duplicate mark server-side via a secure RPC, and
+  // only then prints - so the printed copy and the stored record always
+  // agree with whatever is currently true for that bill.
+  const reprint = async (bill: BranchBillRecord) => {
+    setReprintingId(bill.id);
+    setLedgerMessage('');
+    try {
+      const { data, error } = await supabase
+        .from('branch_bill_headers')
+        .select('id, bill_no, invoice_no, bill_type, customer_name, customer_phone, salesperson, biller, subtotal, discount, discount_percent, tax, round_off, total, tendered, balance, status, created_at, branch_bill_items(item_name, quantity, unit, unit_price, discount, tax, line_total), branch_sale_payments(payment_mode, amount)')
+        .eq('branch', branch)
+        .eq('id', bill.id)
+        .maybeSingle();
+      if (error || !data) {
+        // Fall back to the snapshot already on screen rather than blocking
+        // the reprint entirely - it's stale, but still better than nothing
+        // if Supabase is briefly unreachable.
+        setLedgerMessage(error ? `Could not refresh this bill before reprinting (${error.message}); printed the last-known copy.` : '');
+        void printCounterBill(bill, true);
+        return;
+      }
+      const freshBill = mapLedgerBillRow(data as LedgerBillRow, branch);
+      const { error: markError } = await supabase.rpc('mark_branch_bill_duplicate_secure', {
+        p_branch: branch,
+        p_bill_id: bill.id,
+        p_marked_by: currentUser?.username || currentUser?.displayName || 'Staff',
+      });
+      if (markError && !/mark_branch_bill_duplicate_secure|could not find the function|does not exist|schema cache/i.test(markError.message)) {
+        setLedgerMessage(`Bill printed, but its duplicate status was not saved: ${markError.message}`);
+      }
+      const printedBill: BranchBillRecord = { ...freshBill, printCount: 2, status: 'Duplicate Bill' };
+      setLedgerBills((current) => current.map((row) => row.id === bill.id ? printedBill : row));
+      markBillDuplicate(bill.id, currentUser?.displayName || 'Staff');
+      void printCounterBill(printedBill, true);
+    } finally {
+      setReprintingId(null);
+    }
   };
   return <Section title="Bill History" icon={<History className="size-5"/>} action={<div className="relative"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400"/><Input value={query} onChange={(e)=>setQuery(e.target.value)} placeholder={isVRSNB ? 'Search bill or cashier' : 'Search bill, salesperson or cashier'} className="pl-9"/></div>}>
     {ledgerMessage && <p className="mb-2 rounded-xl bg-amber-50 px-3 py-2 text-sm font-black text-amber-800">{ledgerMessage}</p>}
     {loadingLedger && <p className="mb-2 rounded-xl bg-slate-50 px-3 py-2 text-sm font-black text-slate-500">Loading bill history from Supabase...</p>}
-    <div className="overflow-auto rounded-xl border border-slate-200"><table className={cn('w-full text-sm', isVRSNB ? 'min-w-[820px]' : 'min-w-[920px]')}><thead className="sticky top-0 z-10 bg-slate-50"><tr className="text-left text-[10px] uppercase tracking-wide text-slate-500"><th className="p-2">Bill</th><th className="p-2">Time</th>{!isVRSNB && <th className="p-2">Salesperson</th>}<th className="p-2">Cashier</th><th className="p-2">Mode</th><th className="p-2 text-right">Qty</th><th className="p-2 text-right">Total</th><th className="p-2">Status</th><th className="p-2 text-right">Action</th></tr></thead><tbody>{rows.length === 0 ? <tr><td colSpan={isVRSNB ? 8 : 9} className="p-6 text-center font-bold text-slate-500">No bills found.</td></tr> : pagedRows.map((b)=><Fragment key={b.id}><tr className="border-t"><td className="p-2 font-black"><button className="inline-flex items-center gap-1" onClick={()=>setExpandedBillId(expandedBillId===b.id?null:b.id)}><ChevronDown className={cn('size-4 transition',expandedBillId===b.id&&'rotate-180')}/>{b.billNo}</button></td><td className="p-2 text-xs">{new Date(b.createdAt).toLocaleString('en-IN')}</td>{!isVRSNB && <td className="p-2">{b.salesperson}</td>}<td className="p-2">{b.biller}</td><td className="p-2 uppercase">{b.paymentMode}</td><td className="p-2 text-right font-black">{b.items.reduce((sum,item)=>sum+item.quantity,0)}</td><td className="p-2 text-right font-black">{money(b.total)}</td><td className="p-2"><span className={cn('rounded-full px-2 py-1 text-[10px] font-black', b.printCount > 1 ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700')}>{b.printCount > 1 ? 'Duplicate' : 'Original'}</span></td><td className="p-2 text-right"><SoftButton onClick={()=>reprint(b)} className="min-h-8 px-2 py-1 text-xs"><Printer className="size-3.5"/>Duplicate</SoftButton></td></tr>{expandedBillId===b.id&&<tr className="border-t bg-slate-50"><td colSpan={isVRSNB?8:9} className="p-2"><div className="overflow-x-auto"><table className="w-full min-w-[620px] text-xs"><thead><tr className="text-left uppercase text-slate-500"><th className="p-2">Item</th><th className="p-2 text-right">Qty</th><th className="p-2">Unit</th><th className="p-2 text-right">Unit Price</th><th className="p-2 text-right">Discount</th><th className="p-2 text-right">Tax</th><th className="p-2 text-right">Line Revenue</th></tr></thead><tbody>{b.items.map((item,index)=><tr key={`${item.itemName}-${index}`} className="border-t"><td className="p-2 font-bold">{item.itemName}</td><td className="p-2 text-right">{item.quantity}</td><td className="p-2">{item.unit}</td><td className="p-2 text-right">{money(item.price)}</td><td className="p-2 text-right">{money(item.discount||0)}</td><td className="p-2 text-right">{money(item.tax||0)}</td><td className="p-2 text-right font-black">{money(item.lineTotal)}</td></tr>)}</tbody></table></div></td></tr>}</Fragment>)}</tbody></table></div>
+    <div className="overflow-auto rounded-xl border border-slate-200"><table className={cn('w-full text-sm', isVRSNB ? 'min-w-[820px]' : 'min-w-[920px]')}><thead className="sticky top-0 z-10 bg-slate-50"><tr className="text-left text-[10px] uppercase tracking-wide text-slate-500"><th className="p-2">Bill</th><th className="p-2">Time</th>{!isVRSNB && <th className="p-2">Salesperson</th>}<th className="p-2">Cashier</th><th className="p-2">Mode</th><th className="p-2 text-right">Qty</th><th className="p-2 text-right">Total</th><th className="p-2">Status</th><th className="p-2 text-right">Action</th></tr></thead><tbody>{rows.length === 0 ? <tr><td colSpan={isVRSNB ? 8 : 9} className="p-6 text-center font-bold text-slate-500">No bills found.</td></tr> : pagedRows.map((b)=><Fragment key={b.id}><tr className="border-t"><td className="p-2 font-black"><button className="inline-flex items-center gap-1" onClick={()=>setExpandedBillId(expandedBillId===b.id?null:b.id)}><ChevronDown className={cn('size-4 transition',expandedBillId===b.id&&'rotate-180')}/>{b.billNo}</button></td><td className="p-2 text-xs">{new Date(b.createdAt).toLocaleString('en-IN')}</td>{!isVRSNB && <td className="p-2">{b.salesperson}</td>}<td className="p-2">{b.biller}</td><td className="p-2 uppercase">{b.paymentMode}</td><td className="p-2 text-right font-black">{b.items.reduce((sum,item)=>sum+item.quantity,0)}</td><td className="p-2 text-right font-black">{money(b.total)}</td><td className="p-2"><span className={cn('rounded-full px-2 py-1 text-[10px] font-black', b.printCount > 1 ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700')}>{b.printCount > 1 ? 'Duplicate' : 'Original'}</span></td><td className="p-2 text-right"><SoftButton onClick={()=>void reprint(b)} disabled={reprintingId===b.id} className="min-h-8 px-2 py-1 text-xs"><Printer className="size-3.5"/>{reprintingId===b.id ? 'Printing...' : 'Duplicate'}</SoftButton></td></tr>{expandedBillId===b.id&&<tr className="border-t bg-slate-50"><td colSpan={isVRSNB?8:9} className="p-2"><div className="overflow-x-auto"><table className="w-full min-w-[620px] text-xs"><thead><tr className="text-left uppercase text-slate-500"><th className="p-2">Item</th><th className="p-2 text-right">Qty</th><th className="p-2">Unit</th><th className="p-2 text-right">Unit Price</th><th className="p-2 text-right">Discount</th><th className="p-2 text-right">Tax</th><th className="p-2 text-right">Line Revenue</th></tr></thead><tbody>{b.items.map((item,index)=><tr key={`${item.itemName}-${index}`} className="border-t"><td className="p-2 font-bold">{item.itemName}</td><td className="p-2 text-right">{item.quantity}</td><td className="p-2">{item.unit}</td><td className="p-2 text-right">{money(item.price)}</td><td className="p-2 text-right">{money(item.discount||0)}</td><td className="p-2 text-right">{money(item.tax||0)}</td><td className="p-2 text-right font-black">{money(item.lineTotal)}</td></tr>)}</tbody></table></div></td></tr>}</Fragment>)}</tbody></table></div>
     {rows.length>historyPageSize&&<div className="mt-2 flex items-center justify-between text-xs font-bold"><span>Showing {(historyPage-1)*historyPageSize+1}-{Math.min(historyPage*historyPageSize,rows.length)} of {rows.length}</span><div className="flex gap-2"><button disabled={historyPage===1} onClick={()=>setHistoryPage((page)=>Math.max(1,page-1))} className="rounded-lg border p-2 disabled:opacity-40"><ChevronLeft className="size-4"/></button><button disabled={historyPage===historyPageCount} onClick={()=>setHistoryPage((page)=>Math.min(historyPageCount,page+1))} className="rounded-lg border p-2 disabled:opacity-40"><ChevronRight className="size-4"/></button></div></div>}
   </Section>;
 }
@@ -486,7 +539,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch' }:
   const [cake, setCake] = useState({
     cakeKg:'', creamType:'Butter Cream' as CakeCreamType, cakeTypeId:'butter-birthday', flavor:'', shape:'',
     designType:'Normal' as CakeDesignType, drawingWork:false, photoWork:false, messageOnCake:'', designNotes:'',
-    attachmentName:'', attachmentDataUrl:'',
+    attachmentName:'', attachmentDataUrl:'', topperCharge:'', toyCharges:'',
   });
   const [error, setError] = useState('');
   const [dateFilterMode, setDateFilterMode] = useState<'ordered' | 'delivery'>('ordered');
@@ -534,6 +587,15 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch' }:
     drawingWork: cake.drawingWork,
     photoWork: cake.photoWork,
   }), [cake.cakeKg, cake.cakeTypeId, cake.designType, cake.drawingWork, cake.photoWork]);
+  // Cake Topper Charge and Toy Charges are free-form, cashier-entered flat
+  // fees (e.g. a plastic topper or toy add-on the customer brings/orders) -
+  // unlike drawing/photo work they have no fixed catalog price, so they're
+  // plain number inputs rather than checkboxes. Like drawing/photo charges,
+  // they must NOT scale if the cake's weight is later revised (see
+  // scaledCakeOrderLineTotal below).
+  const topperChargeNum = Math.max(0, Number(cake.topperCharge || 0));
+  const toyChargesNum = Math.max(0, Number(cake.toyCharges || 0));
+  const cakeGrandTotal = Math.round((cakePrice.total + topperChargeNum + toyChargesNum) * 100) / 100;
 
   const updateCommon = (k: string, v: string) => { setCommon((f)=>({...f,[k]:v})); setError(''); };
   // Photo attachments are no longer captured on orders — embedding images as
@@ -684,7 +746,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch' }:
       ? storeLines
       : orderType === 'custom'
         ? (customLines.length > 0 ? customLines : [{ itemName: custom.itemName.trim(), quantity: Number(custom.quantity || 0), unit: custom.unit, price: Number(custom.price || 0), tax:0, discount:0, lineTotal: Number(custom.quantity || 0) * Number(custom.price || 0) }])
-        : [{ barcode: selectedCakeType?.catalogBarcode, itemName: cakeItemName, quantity: cakeWeight, unit:'kg' as const, price: cakeWeight > 0 ? cakePrice.total / cakeWeight : 0, tax:0, discount:0, lineTotal: cakePrice.total }];
+        : [{ barcode: selectedCakeType?.catalogBarcode, itemName: cakeItemName, quantity: cakeWeight, unit:'kg' as const, price: cakeWeight > 0 ? cakeGrandTotal / cakeWeight : 0, tax:0, discount:0, lineTotal: cakeGrandTotal }];
     const orderValue = sourceLines.reduce((sum, line)=>sum+line.lineTotal,0);
     if (orderType === 'cake' && (!selectedCakeType || cakeWeight <= 0 || !cake.flavor.trim() || !cake.shape.trim())) {
       setError('Cream type, cake type, weight, flavor and shape are mandatory.');
@@ -791,22 +853,41 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch' }:
       designCharge: orderType === 'cake' ? cakePrice.designCharge : undefined,
       drawingCharge: orderType === 'cake' ? cakePrice.drawingCharge : undefined,
       photoCharge: orderType === 'cake' ? cakePrice.photoCharge : undefined,
+      topperCharge: orderType === 'cake' ? topperChargeNum : undefined,
+      toyCharges: orderType === 'cake' ? toyChargesNum : undefined,
       messageOnCake: orderType === 'cake' ? cake.messageOnCake : '', designNotes: orderType === 'cake' ? cake.designNotes : orderType === 'custom' ? custom.notes : 'Existing branch stock advance order [Stock Reserved]',
       attachmentName, attachmentDataUrl, orderValue, advanceAmount: adv, balanceAmount, salesperson: staff, paymentMode: common.paymentMode as 'cash'|'upi'|'card',
       createdBy: auditActor, collectionSource: isSnbOrder ? 'SNB Order collected' : undefined, skipLocalCashMovement: isSnbOrder,
     });
     // Print slip - show "PAID IN FULL" stamp when fully paid
-    printAdvanceSalesOrder({ branch, orderNo: order.orderNo, slipNumber: order.slipNumber, customerName: order.customerName, mobile: order.mobile, deliveryDate: order.deliveryDate, deliveryTime: order.deliveryTime, items: sourceLines, orderValue, advanceAmount: adv, balanceAmount, paymentMode: common.paymentMode, staffName: isSnbOrder ? auditActor : staff, fullyPaid, cakeDetails: orderType === 'cake' && selectedCakeType ? { creamType: cake.creamType, cakeType: selectedCakeType.name, flavor: cake.flavor.trim(), weightKg: cakeWeight, shape: cake.shape.trim(), design: cake.designType, baseRate: cakePrice.baseRate, baseAmount: cakePrice.baseAmount, designCharge: cakePrice.designCharge, drawingCharge: cakePrice.drawingCharge, photoCharge: cakePrice.photoCharge, messageOnCake: cake.messageOnCake.trim() || undefined } : undefined });
+    printAdvanceSalesOrder({ branch, orderNo: order.orderNo, slipNumber: order.slipNumber, customerName: order.customerName, mobile: order.mobile, deliveryDate: order.deliveryDate, deliveryTime: order.deliveryTime, items: sourceLines, orderValue, advanceAmount: adv, balanceAmount, paymentMode: common.paymentMode, staffName: isSnbOrder ? auditActor : staff, fullyPaid, cakeDetails: orderType === 'cake' && selectedCakeType ? { creamType: cake.creamType, cakeType: selectedCakeType.name, flavor: cake.flavor.trim(), weightKg: cakeWeight, shape: cake.shape.trim(), design: cake.designType, baseRate: cakePrice.baseRate, baseAmount: cakePrice.baseAmount, designCharge: cakePrice.designCharge, drawingCharge: cakePrice.drawingCharge, photoCharge: cakePrice.photoCharge, topperCharge: topperChargeNum, toyCharges: toyChargesNum, messageOnCake: cake.messageOnCake.trim() || undefined } : undefined });
     setCommon({ slipNumber:'', customerName:'', mobile:'', deliveryDate:'', deliveryTime:'', advanceAmount:'', paymentMode:'cash', salesperson:'' });
     setStoreFullyPaid(false); setCustomFullyPaid(false);
-    setStoreLines([]); setCustomLines([]); setCustom({ itemName:'', quantity:'1', unit:'pcs', price:'', notes:'', attachmentName:'', attachmentDataUrl:'' }); setCake({ cakeKg:'', creamType:'Butter Cream', cakeTypeId:'butter-birthday', flavor:'', shape:'', designType:'Normal', drawingWork:false, photoWork:false, messageOnCake:'', designNotes:'', attachmentName:'', attachmentDataUrl:'' });
+    setStoreLines([]); setCustomLines([]); setCustom({ itemName:'', quantity:'1', unit:'pcs', price:'', notes:'', attachmentName:'', attachmentDataUrl:'' }); setCake({ cakeKg:'', creamType:'Butter Cream', cakeTypeId:'butter-birthday', flavor:'', shape:'', designType:'Normal', drawingWork:false, photoWork:false, messageOnCake:'', designNotes:'', attachmentName:'', attachmentDataUrl:'', topperCharge:'', toyCharges:'' });
     setError('');
   };
   const manageAdvanceOrder = async (
     order: CakeAdvanceOrder,
     action: 'edit' | 'cancel',
-    input: { reason: string; password: string; refundMode?: 'cash' | 'upi' | 'card'; details?: Partial<CakeAdvanceOrder> },
+    input: { reason: string; password: string; refundMode?: 'cash' | 'upi' | 'card'; details?: Partial<CakeAdvanceOrder>; advanceAmount?: number; advancePaymentMode?: 'cash' | 'upi' | 'card' },
   ): Promise<string | null> => {
+    if (action === 'edit' && typeof input.advanceAmount === 'number' && Math.abs(input.advanceAmount - order.advanceAmount) > 0.001) {
+      const { error: advanceError } = await supabase.rpc('adjust_branch_advance_amount_secure', {
+        p_branch: branch,
+        p_order_no: order.orderNo,
+        p_new_advance_amount: input.advanceAmount,
+        p_payment_mode: input.advancePaymentMode || order.paymentMode,
+        p_reason: input.reason,
+        p_password: input.password,
+      });
+      if (advanceError) {
+        if (/INVALID_PASSWORD|password/i.test(advanceError.message)) return 'Authorization failed. Check your login password.';
+        return advanceError.message.includes('adjust_branch_advance_amount_secure') || /could not find the function|schema cache/i.test(advanceError.message)
+          ? 'The advance amount edit feature is not installed yet. Please redeploy.'
+          : advanceError.message;
+      }
+      await fetchBranchData(branch);
+    }
     const { data, error: manageError } = await supabase.rpc('manage_branch_advance_cake_order_secure', {
       p_branch: branch,
       p_source_order_id: order.id,
@@ -861,12 +942,19 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch' }:
     // subtracted on top.
     if (closingOverrides && orderLines.length === 1) {
       const rate = closingQty.rate || (orderLines[0].price > 0 ? orderLines[0].price : orderLines[0].quantity > 0 ? orderLines[0].lineTotal / orderLines[0].quantity : orderLines[0].price);
-      const newLineTotal = Math.round((closingOverrides.quantity * rate - discountAmount) * 100) / 100;
+      const scaledAmount = scaledCakeOrderLineTotal(o, closingOverrides.quantity, rate);
+      const newLineTotal = Math.round((scaledAmount - discountAmount) * 100) / 100;
       orderLines = [{ ...orderLines[0], quantity: closingOverrides.quantity, discount: discountAmount, lineTotal: newLineTotal }];
       orderTotal = Math.round((newLineTotal + additionalCharges) * 100) / 100;
     } else if (closingOverrides) {
       orderTotal = Math.round((o.orderValue - discountAmount + additionalCharges) * 100) / 100;
     }
+    // Round the final bill value off to the nearest whole rupee (standard billing
+    // convention), same as regular counter bills. The paise difference is tracked
+    // as roundOffAmount so it can show separately on the final invoice.
+    const amountBeforeRoundOff = orderTotal;
+    orderTotal = Math.round(Math.max(0, orderTotal));
+    const roundOffAmount = Math.round((orderTotal - amountBeforeRoundOff) * 100) / 100;
     balanceAmount = Math.max(0, Math.round((orderTotal - (o.advanceAmount || 0)) * 100) / 100);
     const refundAmount = Math.max(0, Math.round(((o.advanceAmount || 0) - orderTotal) * 100) / 100);
     if (refundAmount > 0 && !closingOverrides?.refundMode) return fail('Select how the customer refund will be paid.');
@@ -959,10 +1047,12 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch' }:
       billNo,
       invoiceNo,
       items: billItems,
-      subtotal: orderTotal + discountAmount,
+      subtotal: amountBeforeRoundOff + discountAmount,
       discount: discountAmount,
       tax: 0,
       total: orderTotal,
+      amountBeforeRoundOff,
+      roundOff: roundOffAmount,
       tendered: orderTotal - creditPortion,
       balance: creditPortion,
       paymentMode: finalBillPaymentMode,
@@ -988,7 +1078,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch' }:
       originalOrderValue: closingQty.placedOrderValue || o.originalOrderValue || o.orderValue,
       originalCakeKg: String(closingQty.placedQty || qtyValue(o.originalCakeKg) || qtyValue(o.cakeKg)),
     });
-    void printCounterBill(finalBill, false);
+    void printCounterBill({ ...finalBill, _advanceAmount: o.advanceAmount || 0 } as typeof finalBill, false);
     setCollectingId(null);
     setClosingOrder(null);
     return null;
@@ -1080,6 +1170,10 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch' }:
               Photo cake/print work (+{money(CAKE_PHOTO_CHARGE)})
             </label>
           </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field label="Cake Topper Charge"><Input type="number" min="0" step="0.01" value={cake.topperCharge} onChange={(e)=>setCake({...cake,topperCharge:e.target.value})} placeholder="0"/></Field>
+            <Field label="Toy Charges"><Input type="number" min="0" step="0.01" value={cake.toyCharges} onChange={(e)=>setCake({...cake,toyCharges:e.target.value})} placeholder="0"/></Field>
+          </div>
           <div className="rounded-2xl bg-emerald-50 p-4 ring-1 ring-emerald-100">
             <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm font-bold text-emerald-900">
               <span>Rate</span><span className="text-right">{money(cakePrice.baseRate)}{Number(cake.cakeKg) === 0.5 && selectedCakeType?.halfKg ? ' (special 0.5kg)' : '/kg'}</span>
@@ -1087,7 +1181,9 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch' }:
               <span>{cake.designType}</span><span className="text-right">{cakePrice.designCharge > 0 ? `+${money(cakePrice.designCharge)}` : money(0)}</span>
               {cakePrice.drawingCharge > 0 && <><span>Drawing/design work</span><span className="text-right">+{money(cakePrice.drawingCharge)}</span></>}
               {cakePrice.photoCharge > 0 && <><span>Photo work</span><span className="text-right">+{money(cakePrice.photoCharge)}</span></>}
-              <span className="mt-2 border-t border-emerald-200 pt-2 text-base font-black">Final cake amount</span><span className="mt-2 border-t border-emerald-200 pt-2 text-right text-lg font-black">{money(cakePrice.total)}</span>
+              {topperChargeNum > 0 && <><span>Cake Topper Charge</span><span className="text-right">+{money(topperChargeNum)}</span></>}
+              {toyChargesNum > 0 && <><span>Toy Charges</span><span className="text-right">+{money(toyChargesNum)}</span></>}
+              <span className="mt-2 border-t border-emerald-200 pt-2 text-base font-black">Final cake amount</span><span className="mt-2 border-t border-emerald-200 pt-2 text-right text-lg font-black">{money(cakeGrandTotal)}</span>
             </div>
           </div>
           <Field label="Message on cake"><Input value={cake.messageOnCake} onChange={(e)=>setCake({...cake,messageOnCake:e.target.value})}/></Field>
@@ -1142,7 +1238,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch' }:
       </div>
     }>
       {pipelineView === 'active' ? (
-        <div className="space-y-3">{activeOrders.length === 0 ? <p className="rounded-2xl bg-slate-50 p-6 text-center font-bold text-slate-500">No active advance orders.</p> : activeOrders.map(o=>{ const lines = o.items && o.items.length > 0 ? o.items : [{ itemName: o.flavor, quantity: Number(o.cakeKg || 0), unit: o.shape === 'Kgs' ? 'kg' as const : 'pcs' as const, price: o.orderValue / Math.max(Number(o.cakeKg || 1), 1), tax:0, discount:0, lineTotal:o.orderValue }]; const isCollecting = collectingId === o.id; return <div key={o.id} className="rounded-3xl border p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-lg font-black">{o.orderNo}{o.slipNumber ? ` - Slip ${o.slipNumber}` : ''} - {o.customerName}</p><p className="text-sm font-bold text-slate-500">{o.mobile} - {lines.map((line)=>`${line.itemName} ${line.quantity} ${line.unit}`).join(', ')} - Delivery {o.deliveryDate} {o.deliveryTime}</p>{(o.creamType || o.cakeTypeName || o.designType) && <p className="mt-1 text-xs font-black text-fuchsia-700">{[o.creamType, o.cakeTypeName, o.flavor, o.designType].filter(Boolean).join(' - ')}{o.designCharge ? ` - Design +${money(o.designCharge)}` : ''}</p>}{o.attachmentName && <p className="mt-1 text-xs font-black text-emerald-700">Attachment: {o.attachmentName}</p>}</div><span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-black text-amber-700">{o.storeStatus || o.status}</span></div><div className="mt-3 grid gap-2 sm:grid-cols-4"><Kpi label="Order" value={money(o.orderValue)} icon={<Receipt className="size-4"/>}/><Kpi label="Advance" value={money(o.advanceAmount)} icon={<Banknote className="size-4"/>} tone="green"/><Kpi label="Balance" value={money(o.balanceAmount)} icon={<IndianRupee className="size-4"/>} tone="amber"/><div className="flex flex-col justify-center gap-2">{!o.sentToStoreAt && <SoftButton onClick={async()=>{setSendingToStore(o.id); try { if ((o.orderType || 'cake') === 'cake') await sendCakeToStoreDashboard(o); else await sendToStoreDashboard(o, lines); markAdvanceSentToStore(o.id); } catch (sendError) { setError(sendError instanceof Error ? sendError.message : 'Failed to send order to store.'); } finally { setSendingToStore(null); }}} disabled={sendingToStore===o.id}><Store className="size-4"/>{sendingToStore===o.id?'Sending...':((o.orderType || 'cake') === 'cake' ? 'Send to Cake Master' : 'Send to Store')}</SoftButton>}{(() => { const needsDispatchSync = !!o.sentToStoreAt && o.storeStatus !== 'dispatched'; return o.balanceAmount > 0 ? (<><SoftButton onClick={()=>setCollectingId(isCollecting ? null : o.id)}><IndianRupee className="size-4"/>Collect Remaining ({money(o.balanceAmount)})</SoftButton>{isCollecting && <div className="mt-2 space-y-2 rounded-2xl bg-slate-50 p-3"><Select value={collectMode} onChange={e=>setCollectMode(e.target.value as typeof collectMode)} className="text-xs"><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option><option value="split">Split</option><option value="credit">Credit</option></Select><PrimaryButton onClick={()=>setClosingOrder({ order: o, payMode: collectMode })} disabled={needsDispatchSync} className="w-full text-xs">Confirm & Print Final Bill</PrimaryButton>{needsDispatchSync && <p className="mt-1 text-[11px] font-bold text-amber-600">Waiting for packing to dispatch - stock must sync to this branch first.</p>}</div>}</>) : (<><PrimaryButton onClick={()=>setClosingOrder({ order: o, payMode: o.paymentMode })} disabled={needsDispatchSync} className="w-full text-xs"><Printer className="size-4"/>Complete & Print Final Bill</PrimaryButton>{needsDispatchSync && <p className="mt-1 text-[11px] font-bold text-amber-600">Waiting for packing to dispatch - stock must sync to this branch first.</p>}</>); })()}{(o.orderType || 'cake') === 'cake' && <div className="grid grid-cols-2 gap-2"><SoftButton onClick={()=>setManagingOrder({ order:o, action:'edit' })} disabled={!!o.storeStatus && o.storeStatus !== 'store'}><Pencil className="size-4"/>Edit</SoftButton><SoftButton onClick={()=>setManagingOrder({ order:o, action:'cancel' })} disabled={!!o.storeStatus && o.storeStatus !== 'store'} className="text-red-600"><XCircle className="size-4"/>Cancel</SoftButton></div>}{(o.orderType || 'cake') === 'cake' && !!o.storeStatus && o.storeStatus !== 'store' && <p className="text-[10px] font-bold text-slate-500">Locked after Cake Master acceptance.</p>}</div></div>{o.sentToStoreAt && <div className="mt-3 flex flex-wrap items-center gap-1 rounded-2xl bg-slate-50 p-2 text-xs font-black">{(()=>{ const stageOrder = ['store','baking','packing','dispatched'] as const; const reachedIdx = o.storeStatus ? stageOrder.indexOf(o.storeStatus) : -1; return stageOrder.map((stage, idx, arr)=>{ const done = idx <= reachedIdx; const labels = { store:'Store', baking:'Baking', packing:'Packing', dispatched:'Dispatched' }; return <span key={stage} className="inline-flex items-center gap-1"><span className={cn('rounded-xl px-2 py-1', done ? 'bg-emerald-600 text-white' : 'bg-slate-200 text-slate-500')}>{labels[stage]}</span>{idx < arr.length - 1 && <span className="text-slate-300">-</span>}</span>; }); })()}<span className="ml-auto text-slate-500">{o.storeStatusHistory && o.storeStatusHistory.length > 0 ? (o.storeAcceptedBy && `${o.storeStatus} by ${o.storeAcceptedBy} - ${new Date(o.storeStatusHistory.at(-1)!.at).toLocaleString('en-IN', { hour:'2-digit', minute:'2-digit' })}`) : `Sent to store ${new Date(o.sentToStoreAt).toLocaleString('en-IN', { hour:'2-digit', minute:'2-digit' })} - awaiting store`}</span></div>}</div>; })}</div>
+        <div className="space-y-3">{activeOrders.length === 0 ? <p className="rounded-2xl bg-slate-50 p-6 text-center font-bold text-slate-500">No active advance orders.</p> : activeOrders.map(o=>{ const lines = o.items && o.items.length > 0 ? o.items : [{ itemName: o.flavor, quantity: Number(o.cakeKg || 0), unit: o.shape === 'Kgs' ? 'kg' as const : 'pcs' as const, price: o.orderValue / Math.max(Number(o.cakeKg || 1), 1), tax:0, discount:0, lineTotal:o.orderValue }]; const isCollecting = collectingId === o.id; return <div key={o.id} className="rounded-3xl border p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-lg font-black">{o.orderNo}{o.slipNumber ? ` - Slip ${o.slipNumber}` : ''} - {o.customerName}</p><p className="text-sm font-bold text-slate-500">{o.mobile} - {lines.map((line)=>`${line.itemName} ${line.quantity} ${line.unit}`).join(', ')} - Delivery {o.deliveryDate} {o.deliveryTime}</p>{(o.creamType || o.cakeTypeName || o.designType) && <p className="mt-1 text-xs font-black text-fuchsia-700">{[o.creamType, o.cakeTypeName, o.flavor, o.designType].filter(Boolean).join(' - ')}{o.designCharge ? ` - Design +${money(o.designCharge)}` : ''}</p>}{o.attachmentName && <p className="mt-1 text-xs font-black text-emerald-700">Attachment: {o.attachmentName}</p>}</div><span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-black text-amber-700">{o.storeStatus || o.status}</span></div><div className="mt-3 grid gap-2 sm:grid-cols-4"><Kpi label="Order" value={money(o.orderValue)} icon={<Receipt className="size-4"/>}/><Kpi label="Advance" value={money(o.advanceAmount)} icon={<Banknote className="size-4"/>} tone="green"/><Kpi label="Balance" value={money(o.balanceAmount)} icon={<IndianRupee className="size-4"/>} tone="amber"/><div className="flex flex-col justify-center gap-2">{!o.sentToStoreAt && <SoftButton onClick={async()=>{setSendingToStore(o.id); try { if ((o.orderType || 'cake') === 'cake') await sendCakeToStoreDashboard(o); else await sendToStoreDashboard(o, lines); markAdvanceSentToStore(o.id); } catch (sendError) { setError(sendError instanceof Error ? sendError.message : 'Failed to send order to store.'); } finally { setSendingToStore(null); }}} disabled={sendingToStore===o.id}><Store className="size-4"/>{sendingToStore===o.id?'Sending...':((o.orderType || 'cake') === 'cake' ? 'Send to Cake Master' : 'Send to Store')}</SoftButton>}{(() => { const needsDispatchSync = !!o.sentToStoreAt && o.storeStatus !== 'dispatched'; return o.balanceAmount > 0 ? (<><SoftButton onClick={()=>setCollectingId(isCollecting ? null : o.id)}><IndianRupee className="size-4"/>Collect Remaining ({money(o.balanceAmount)})</SoftButton>{isCollecting && <div className="mt-2 space-y-2 rounded-2xl bg-slate-50 p-3"><Select value={collectMode} onChange={e=>setCollectMode(e.target.value as typeof collectMode)} className="text-xs"><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option><option value="split">Split</option><option value="credit">Credit</option></Select><PrimaryButton onClick={()=>setClosingOrder({ order: o, payMode: collectMode })} disabled={needsDispatchSync} className="w-full text-xs">Confirm & Print Final Bill</PrimaryButton>{needsDispatchSync && <p className="mt-1 text-[11px] font-bold text-amber-600">Waiting for packing to dispatch - stock must sync to this branch first.</p>}</div>}</>) : (<><PrimaryButton onClick={()=>setClosingOrder({ order: o, payMode: o.paymentMode })} disabled={needsDispatchSync} className="w-full text-xs"><Printer className="size-4"/>Complete & Print Final Bill</PrimaryButton>{needsDispatchSync && <p className="mt-1 text-[11px] font-bold text-amber-600">Waiting for packing to dispatch - stock must sync to this branch first.</p>}</>); })()}<div className="grid grid-cols-2 gap-2"><SoftButton onClick={()=>setManagingOrder({ order:o, action:'edit' })} disabled={!!o.storeStatus && o.storeStatus !== 'store'}><Pencil className="size-4"/>Edit</SoftButton><SoftButton onClick={()=>setManagingOrder({ order:o, action:'cancel' })} disabled={!!o.storeStatus && o.storeStatus !== 'store'} className="text-red-600"><XCircle className="size-4"/>Cancel</SoftButton></div>{!!o.storeStatus && o.storeStatus !== 'store' && <p className="text-[10px] font-bold text-slate-500">Locked after acceptance.</p>}</div></div>{o.sentToStoreAt && <div className="mt-3 flex flex-wrap items-center gap-1 rounded-2xl bg-slate-50 p-2 text-xs font-black">{(()=>{ const stageOrder = ['store','baking','packing','dispatched'] as const; const reachedIdx = o.storeStatus ? stageOrder.indexOf(o.storeStatus) : -1; return stageOrder.map((stage, idx, arr)=>{ const done = idx <= reachedIdx; const labels = { store:'Store', baking:'Baking', packing:'Packing', dispatched:'Dispatched' }; return <span key={stage} className="inline-flex items-center gap-1"><span className={cn('rounded-xl px-2 py-1', done ? 'bg-emerald-600 text-white' : 'bg-slate-200 text-slate-500')}>{labels[stage]}</span>{idx < arr.length - 1 && <span className="text-slate-300">-</span>}</span>; }); })()}<span className="ml-auto text-slate-500">{o.storeStatusHistory && o.storeStatusHistory.length > 0 ? (o.storeAcceptedBy && `${o.storeStatus} by ${o.storeAcceptedBy} - ${new Date(o.storeStatusHistory.at(-1)!.at).toLocaleString('en-IN', { hour:'2-digit', minute:'2-digit' })}`) : `Sent to store ${new Date(o.sentToStoreAt).toLocaleString('en-IN', { hour:'2-digit', minute:'2-digit' })} - awaiting store`}</span></div>}</div>; })}</div>
       ) : pipelineView === 'history' ? (
         <div className="overflow-x-auto rounded-2xl border border-slate-200"><table className="w-full min-w-[720px] text-sm"><thead><tr className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500"><th className="p-3">Order No</th><th className="p-3">Slip No</th><th className="p-3">Customer</th><th className="p-3">Cake / Delivery</th><th className="p-3 text-right">Order Value</th><th className="p-3 text-right">Paid</th></tr></thead><tbody>{historyOrders.length === 0 ? <tr><td colSpan={6} className="p-6 text-center font-bold text-slate-500">No completed orders yet.</td></tr> : historyOrders.map(o=><tr key={o.id} className="border-t"><td className="p-3 font-black">{o.orderNo}</td><td className="p-3 font-bold">{o.slipNumber || '-'}</td><td className="p-3"><p className="font-bold">{o.customerName}</p><p className="text-xs text-slate-500">{o.mobile}</p></td><td className="p-3"><p>{[o.creamType, o.cakeTypeName, o.flavor].filter(Boolean).join(' - ') || o.deliveryDate}</p><p className="text-xs text-slate-500">Delivery {o.deliveryDate} {o.deliveryTime || ''}</p></td><td className="p-3 text-right font-black">
               {o.originalOrderValue !== undefined && Math.abs(o.originalOrderValue - o.orderValue) > 0.01 ? (
@@ -1180,6 +1276,35 @@ type ClosingQuantityInfo = {
   rate: number;
   placedOrderValue: number;
 };
+
+// Cake advance orders capture drawing/design-work and photo/print charges as
+// separate FIXED fees at booking time (see saveAdvance() -> cakePricing's
+// calculateCakePrice, stored as order.drawingCharge/photoCharge). Only the
+// per-kg cake price - and the custom-design % which is a percentage of that
+// base price - should scale when the cake's weight is revised (at edit time
+// or at closing, since the actual baked weight is often a bit off from the
+// original estimate). The drawing and photo charges must stay flat no
+// matter how the final weight changes. This was previously broken: all
+// three closing/edit paths derived a single "rate = original total /
+// original quantity" and multiplied the WHOLE order value (including the
+// fixed charges) by the new weight, silently inflating/shrinking flat fees.
+// For orders missing the price breakdown (store/custom orders, or legacy
+// cake orders placed before this fix shipped), fall back to the old
+// whole-rate scaling behaviour, since there's nothing to split out.
+function scaledCakeOrderLineTotal(order: CakeAdvanceOrder, weightKg: number, fallbackRate: number): number {
+  if (order.orderType === 'cake' && order.cakeTypeId && order.baseRate != null) {
+    const recalced = calculateCakePrice({
+      cakeTypeId: order.cakeTypeId,
+      weightKg,
+      design: order.designType || 'Normal',
+      drawingWork: false,
+      photoWork: false,
+    });
+    const fixedCharges = (order.drawingCharge || 0) + (order.photoCharge || 0) + (order.topperCharge || 0) + (order.toyCharges || 0);
+    return Math.round((recalced.baseAmount + recalced.designCharge + fixedCharges) * 100) / 100;
+  }
+  return Math.round(weightKg * fallbackRate * 100) / 100;
+}
 
 function resolveAdvanceClosingQuantities(order: CakeAdvanceOrder): ClosingQuantityInfo {
   const firstLine = order.items?.[0];
@@ -1222,35 +1347,37 @@ function AdvanceManageModal({ order, action, onCancel, onConfirm }: {
   order: CakeAdvanceOrder;
   action: 'edit' | 'cancel';
   onCancel: () => void;
-  onConfirm: (input: { reason: string; password: string; refundMode?: 'cash' | 'upi' | 'card'; details?: Partial<CakeAdvanceOrder> }) => Promise<string | null>;
+  onConfirm: (input: { reason: string; password: string; refundMode?: 'cash' | 'upi' | 'card'; details?: Partial<CakeAdvanceOrder>; advanceAmount?: number; advancePaymentMode?: 'cash' | 'upi' | 'card' }) => Promise<string | null>;
 }) {
-  const [form, setForm] = useState({ customerName: order.customerName, mobile: order.mobile, deliveryDate: order.deliveryDate, deliveryTime: order.deliveryTime, cakeKg: order.cakeKg, flavor: order.flavor, shape: order.shape, creamType: order.creamType || 'Butter Cream', messageOnCake: order.messageOnCake || '', designNotes: order.designNotes || '', reason: '', password: '', refundMode: 'cash' as 'cash' | 'upi' | 'card' });
+  const [form, setForm] = useState({ customerName: order.customerName, mobile: order.mobile, deliveryDate: order.deliveryDate, deliveryTime: order.deliveryTime, cakeKg: order.cakeKg, flavor: order.flavor, shape: order.shape, creamType: order.creamType || 'Butter Cream', messageOnCake: order.messageOnCake || '', designNotes: order.designNotes || '', reason: '', password: '', refundMode: 'cash' as 'cash' | 'upi' | 'card', advanceAmount: String(order.advanceAmount || 0), advancePaymentMode: 'cash' as 'cash' | 'upi' | 'card' });
   const [saving, setSaving] = useState(false);
   const [modalError, setModalError] = useState('');
   const originalQty = Math.max(0, Number(order.cakeKg || order.items?.[0]?.quantity || 0));
   const nextQty = Math.max(0, Number(form.cakeKg || 0));
   const rate = order.items?.[0]?.price || (originalQty > 0 ? order.orderValue / originalQty : 0);
-  const orderValue = Math.round(nextQty * rate * 100) / 100;
+  const orderValue = scaledCakeOrderLineTotal(order, nextQty, rate);
+  const newAdvanceAmount = Math.max(0, Math.round((Number(form.advanceAmount) || 0) * 100) / 100);
+  const advanceChanged = action === 'edit' && Math.abs(newAdvanceAmount - order.advanceAmount) > 0.001;
   const submit = async () => {
     if (!form.reason.trim() || !form.password) { setModalError('Reason and login password are required.'); return; }
-    if (action === 'edit' && (!form.customerName.trim() || !form.deliveryDate || nextQty <= 0 || orderValue < order.advanceAmount)) {
-      setModalError(orderValue < order.advanceAmount ? 'Edited order value cannot be below the advance already paid.' : 'Complete the customer, delivery date, and quantity.'); return;
+    if (action === 'edit' && (!form.customerName.trim() || !form.deliveryDate || nextQty <= 0 || orderValue < newAdvanceAmount)) {
+      setModalError(orderValue < newAdvanceAmount ? 'Order value cannot be below the advance amount.' : 'Complete the customer, delivery date, and quantity.'); return;
     }
     setSaving(true); setModalError('');
     const details = action === 'edit' ? {
       customerName: form.customerName.trim(), mobile: form.mobile.trim(), deliveryDate: form.deliveryDate, deliveryTime: form.deliveryTime,
       cakeKg: String(nextQty), flavor: form.flavor.trim(), shape: form.shape.trim(), creamType: form.creamType as CakeAdvanceOrder['creamType'],
       messageOnCake: form.messageOnCake.trim(), designNotes: form.designNotes.trim(), orderValue,
-      balanceAmount: Math.round((orderValue - order.advanceAmount) * 100) / 100,
+      balanceAmount: Math.round((orderValue - newAdvanceAmount) * 100) / 100,
       items: order.items?.map((line, index) => index === 0 ? { ...line, quantity: nextQty, lineTotal: orderValue } : line),
     } : undefined;
     try {
-      const errorMessage = await onConfirm({ reason: form.reason.trim(), password: form.password, refundMode: action === 'cancel' && order.advanceAmount > 0 ? form.refundMode : undefined, details });
+      const errorMessage = await onConfirm({ reason: form.reason.trim(), password: form.password, refundMode: action === 'cancel' && order.advanceAmount > 0 ? form.refundMode : undefined, details, advanceAmount: advanceChanged ? newAdvanceAmount : undefined, advancePaymentMode: advanceChanged ? form.advancePaymentMode : undefined });
       if (errorMessage) setModalError(errorMessage);
     } finally { setSaving(false); }
   };
   return <div className="fixed inset-0 z-[210] flex items-center justify-center bg-slate-950/60 p-3"><div className="max-h-[calc(100dvh-1.5rem)] w-full max-w-lg overflow-y-auto rounded-2xl bg-white p-4 shadow-2xl sm:p-5"><div className="flex items-start justify-between gap-3"><div><h3 className="text-lg font-black text-slate-950">{action === 'edit' ? 'Edit Advance Cake Order' : 'Cancel Advance Cake Order'}</h3><p className="text-sm font-bold text-slate-500">{order.orderNo} - {order.customerName}</p></div><button type="button" onClick={onCancel} className="grid size-9 place-items-center rounded-xl bg-slate-100"><X className="size-4" /></button></div>
-    {action === 'edit' && <div className="mt-4 grid gap-3 sm:grid-cols-2"><Field label="Customer"><Input value={form.customerName} onChange={(e) => setForm({ ...form, customerName: e.target.value })} /></Field><Field label="Mobile"><Input value={form.mobile} onChange={(e) => setForm({ ...form, mobile: e.target.value })} /></Field><Field label="Delivery Date"><Input type="date" value={form.deliveryDate} onChange={(e) => setForm({ ...form, deliveryDate: e.target.value })} /></Field><Field label="Delivery Time"><Input type="time" value={form.deliveryTime} onChange={(e) => setForm({ ...form, deliveryTime: e.target.value })} /></Field><Field label="Cake Quantity"><Input type="number" min="0.01" step="0.01" value={form.cakeKg} onChange={(e) => setForm({ ...form, cakeKg: e.target.value })} /></Field><Field label="Flavour"><Input value={form.flavor} onChange={(e) => setForm({ ...form, flavor: e.target.value })} /></Field><Field label="Shape"><Input value={form.shape} onChange={(e) => setForm({ ...form, shape: e.target.value })} /></Field><Field label="Cream"><Select value={form.creamType} onChange={(e) => setForm({ ...form, creamType: e.target.value as typeof form.creamType })}><option>Butter Cream</option><option>Fresh Cream</option></Select></Field><div className="sm:col-span-2"><Field label="Message on Cake"><Input value={form.messageOnCake} onChange={(e) => setForm({ ...form, messageOnCake: e.target.value })} /></Field></div><div className="sm:col-span-2"><Field label="Design Notes"><Textarea value={form.designNotes} onChange={(e) => setForm({ ...form, designNotes: e.target.value })} /></Field></div><div className="sm:col-span-2 rounded-xl bg-slate-50 p-3 text-sm font-bold"><div className="flex justify-between"><span>Recalculated value</span><span>{money(orderValue)}</span></div><div className="mt-1 flex justify-between text-slate-500"><span>Advance already paid</span><span>{money(order.advanceAmount)}</span></div></div></div>}
+    {action === 'edit' && <div className="mt-4 grid gap-3 sm:grid-cols-2"><Field label="Customer"><Input value={form.customerName} onChange={(e) => setForm({ ...form, customerName: e.target.value })} /></Field><Field label="Mobile"><Input value={form.mobile} onChange={(e) => setForm({ ...form, mobile: e.target.value })} /></Field><Field label="Delivery Date"><Input type="date" value={form.deliveryDate} onChange={(e) => setForm({ ...form, deliveryDate: e.target.value })} /></Field><Field label="Delivery Time"><Input type="time" value={form.deliveryTime} onChange={(e) => setForm({ ...form, deliveryTime: e.target.value })} /></Field><Field label="Cake Quantity"><Input type="number" min="0.01" step="0.01" value={form.cakeKg} onChange={(e) => setForm({ ...form, cakeKg: e.target.value })} /></Field><Field label="Flavour"><Input value={form.flavor} onChange={(e) => setForm({ ...form, flavor: e.target.value })} /></Field><Field label="Shape"><Input value={form.shape} onChange={(e) => setForm({ ...form, shape: e.target.value })} /></Field><Field label="Cream"><Select value={form.creamType} onChange={(e) => setForm({ ...form, creamType: e.target.value as typeof form.creamType })}><option>Butter Cream</option><option>Fresh Cream</option></Select></Field><div className="sm:col-span-2"><Field label="Message on Cake"><Input value={form.messageOnCake} onChange={(e) => setForm({ ...form, messageOnCake: e.target.value })} /></Field></div><div className="sm:col-span-2"><Field label="Design Notes"><Textarea value={form.designNotes} onChange={(e) => setForm({ ...form, designNotes: e.target.value })} /></Field></div><Field label="Advance Amount"><Input type="number" min="0" step="0.01" value={form.advanceAmount} onChange={(e) => setForm({ ...form, advanceAmount: e.target.value })} /></Field>{advanceChanged && <Field label={newAdvanceAmount > order.advanceAmount ? 'Collect Extra Advance Via' : 'Refund Difference Via'}><Select value={form.advancePaymentMode} onChange={(e) => setForm({ ...form, advancePaymentMode: e.target.value as typeof form.advancePaymentMode })}><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option></Select></Field>}<div className="sm:col-span-2 rounded-xl bg-slate-50 p-3 text-sm font-bold"><div className="flex justify-between"><span>Recalculated value</span><span>{money(orderValue)}</span></div><div className="mt-1 flex justify-between text-slate-500"><span>Advance</span><span>{money(order.advanceAmount)}{advanceChanged ? ` -> ${money(newAdvanceAmount)}` : ''}</span></div>{advanceChanged && <div className="mt-1 flex justify-between text-slate-500"><span>{newAdvanceAmount > order.advanceAmount ? 'Additional advance to collect' : 'Refund to customer'}</span><span>{money(Math.abs(newAdvanceAmount - order.advanceAmount))}</span></div>}</div></div>}
     {action === 'cancel' && order.advanceAmount > 0 && <div className="mt-4"><Field label={`Refund Method (${money(order.advanceAmount)})`}><Select value={form.refundMode} onChange={(e) => setForm({ ...form, refundMode: e.target.value as typeof form.refundMode })}><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option></Select></Field></div>}
     <div className="mt-4 space-y-3"><Field label={`${action === 'edit' ? 'Edit' : 'Cancellation'} Reason`}><Textarea value={form.reason} onChange={(e) => setForm({ ...form, reason: e.target.value })} /></Field><Field label="Login Password"><Input type="password" autoComplete="off" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} /></Field>{modalError && <p className="rounded-xl bg-red-50 p-3 text-xs font-bold text-red-700">{modalError}</p>}<div className="grid grid-cols-2 gap-2"><SoftButton onClick={onCancel} disabled={saving}>Back</SoftButton><PrimaryButton onClick={() => void submit()} disabled={saving} className={action === 'cancel' ? 'bg-red-600' : ''}>{saving ? <Loader2 className="size-4 animate-spin" /> : action === 'edit' ? <Pencil className="size-4" /> : <XCircle className="size-4" />}{saving ? 'Saving...' : action === 'edit' ? 'Save Changes' : 'Cancel & Refund'}</PrimaryButton></div></div>
   </div></div>;
@@ -1278,8 +1405,14 @@ function ClosingConfirmModal({
   const qtyNum = isSingleLine ? Math.max(0, Number(quantity) || 0) : receivedQtyDefault;
   const discountNum = Math.max(0, Number(discount) || 0);
   const additionalChargesNum = Math.max(0, Number(additionalCharges) || 0);
-  const totalBillValue = isSingleLine ? Math.round(qtyNum * rate * 100) / 100 : order.orderValue;
-  const finalTotal = Math.max(0, Math.round((totalBillValue + additionalChargesNum - discountNum) * 100) / 100);
+  const totalBillValue = isSingleLine ? scaledCakeOrderLineTotal(order, qtyNum, rate) : order.orderValue;
+  // Rounded to the nearest whole rupee here too, matching finalInvoice's own
+  // round-off step server-side - otherwise this preview and the server total
+  // can disagree by a few paise, which throws off the refund/balance-due
+  // calculation below (e.g. showing "no refund needed" here while the server
+  // computes a small refund is owed, silently blocking the close with
+  // "Select how the customer refund will be paid").
+  const finalTotal = Math.round(Math.max(0, totalBillValue + additionalChargesNum - discountNum));
   const finalBalance = Math.max(0, Math.round((finalTotal - (order.advanceAmount || 0)) * 100) / 100);
   const refundDue = Math.max(0, Math.round(((order.advanceAmount || 0) - finalTotal) * 100) / 100);
   const paymentSplits = (Object.entries(split) as Array<['cash' | 'upi' | 'card', string]>)
@@ -2044,6 +2177,22 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
     });
   };
 
+  // Compact 80mm thermal receipt version of the closure, for cashiers whose
+  // till only has a receipt printer (no A4 printer available). Mirrors the
+  // opening slip (printCounterOpenSlip), which already prints its cash
+  // denomination breakdown - the closing slip previously had no thermal
+  // option at all, only the full A4 audit report via printClosure() below.
+  const printThermalClosure = () => printCounterCloseSlip({
+    branch, cashier: auditActor,
+    openingCash: Number(opening || 0),
+    cash, upi, card,
+    creditSales: creditSalesTotal, creditCollected: creditCollectionTotal,
+    expected, counted: countedCash, difference: diff,
+    billsCount: counterTodayBills.length,
+    closedAt: new Date().toISOString(),
+    closingDenominations: closeDenominations,
+  });
+
   const printClosure = (options: { silent?: boolean } = {}) => printBranchCashierClosure({
     branch, cashier: auditActor,
     counterSessionId: activeSessionId,
@@ -2141,7 +2290,10 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
             <RotateCcw className={cn("size-4", ledgerLoading && "animate-spin")} />Refresh
           </button>
           <button onClick={() => printClosure()} className="h-11 rounded-xl bg-primary px-4 text-sm font-black text-primary-foreground flex items-center gap-2 active:scale-95">
-            <Printer className="size-4" />Print Closure
+            <Printer className="size-4" />Print Closure (A4)
+          </button>
+          <button onClick={() => printThermalClosure()} className="h-11 rounded-xl border border-primary/40 bg-card px-4 text-sm font-black text-primary flex items-center gap-2 active:scale-95">
+            <Printer className="size-4" />Print Closure (Thermal)
           </button>
           <button onClick={() => { void save(); }} disabled={!branchCounterOpenRecord} className="h-11 rounded-xl bg-orange-500 px-4 text-sm font-black text-white shadow-lg shadow-orange-200 flex items-center gap-2 active:scale-95 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:shadow-none">
             <CheckCircle2 className="size-4" />Save Closure
