@@ -22,6 +22,7 @@ import { useOperationalBranchCatalog } from "@/hooks/useOperationalBranchCatalog
 import { useSnbAdminReports } from "@/hooks/useSnbAdminReports";
 import { PurchaseInvoicesTab } from "@/pages/AdminSNBDashboard";
 import { AdvancePaymentsTab } from "@/branch/tabs/AdvancePaymentsTab";
+import { useNotificationStore } from "./notificationStore";
 import type { BakeryOrder } from "./types";
 
 const panelClass = "rounded-2xl border border-border bg-white shadow-sm";
@@ -469,31 +470,77 @@ export function SnbStockMovementPanel({ mode }: { mode: StockMovementMode }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  const [disputeReason, setDisputeReason] = useState("");
+  const [raisingDispute, setRaisingDispute] = useState(false);
+  const [disputeMessage, setDisputeMessage] = useState("");
+  const [disputeQty, setDisputeQty] = useState<number | null>(null);
 
   useEffect(() => { if (!lineDraft.itemName && first) setLineDraft((current) => ({ ...current, itemName: first.name, barcode: first.barcode, unit: unitFor(first.name, first.uom) })); }, [first, lineDraft.itemName, unitFor]);
   // Reset the item list whenever the subtab changes so a Dump list doesn't bleed into Damage, etc.
-  useEffect(() => { setLines([]); setError(""); setSuccess(""); }, [mode]);
+  useEffect(() => { setLines([]); setError(""); setSuccess(""); setDisputeQty(null); setDisputeReason(""); setDisputeMessage(""); }, [mode]);
   const loadRows = useCallback(async () => { setLoading(true); const { data, error: loadError } = await supabase.from("branch_waste_logs").select("id,log_type,item_name,quantity,unit,reason,verified_by,created_by_username,created_at").eq("branch", "SNB").eq("log_type", mode).order("created_at", { ascending: false }).limit(500); setLoading(false); if (loadError) setError(loadError.message); else setHistory((data || []) as WasteRow[]); }, [mode]);
   useEffect(() => { void loadRows(); }, [loadRows]);
 
-  const stockFor = (itemName: string, barcode?: number) => stock.find((item) => barcode != null && item.itemBarcode != null ? item.itemBarcode === barcode : normal(item.itemName) === normal(itemName));
+  // FIX: previously this only tried a barcode match when both sides had a
+  // barcode, with no fallback - if the catalog's barcode for an item ever
+  // drifted from the actual branch_stock row's barcode (a stale catalog
+  // entry, a re-barcoded item, etc.) the lookup silently found nothing and
+  // showed "0 available" even though the item was clearly in stock under
+  // its name. Now it always falls back to a normalized name match.
+  const stockFor = (itemName: string, barcode?: number) =>
+    (barcode != null ? stock.find((item) => item.itemBarcode === barcode) : undefined)
+    ?? stock.find((item) => normal(item.itemName) === normal(itemName));
   const draftStockRow = stockFor(lineDraft.itemName, lineDraft.barcode);
   const draftAvailable = Number(draftStockRow?.availableQuantity ?? draftStockRow?.quantity ?? 0);
   // Account for quantities of the same item already queued in this batch, so a second line for the same item is checked against what's actually left.
   const queuedForDraftItem = lines.filter((line) => (lineDraft.barcode != null && line.barcode != null) ? line.barcode === lineDraft.barcode : normal(line.itemName) === normal(lineDraft.itemName)).reduce((sum, line) => sum + Number(line.quantity || 0), 0);
   const draftRemaining = Math.max(0, draftAvailable - queuedForDraftItem);
+  // Waste logs don't store a price, so items are priced live from the branch's own item price list.
+  const priceForItem = (itemName: string, barcode?: number) =>
+    Number((barcode != null ? catalogItems.find((item) => item.barcode === barcode) : undefined)?.price
+      ?? catalogItems.find((item) => normal(item.name) === normal(itemName))?.price
+      ?? 0);
+  const linesTotalValue = lines.reduce((sum, line) => sum + priceForItem(line.itemName, line.barcode) * Number(line.quantity || 0), 0);
 
   const choose = (name: string) => { const item = catalogItems.find((entry) => entry.name === name); setLineDraft((current) => ({ ...current, itemName: name, barcode: item?.barcode, unit: unitFor(name, item?.uom) })); };
 
   const addLine = () => {
     setError("");
+    setDisputeQty(null);
+    setDisputeMessage("");
     const qty = Number(lineDraft.quantity || 0);
     if (!lineDraft.itemName || qty <= 0) return setError("Choose an item and enter a valid quantity.");
-    if (qty > draftRemaining) return setError(`Only ${formatQty(draftRemaining, draftStockRow?.unit || lineDraft.unit)} is available for ${lineDraft.itemName} (after items already added).`);
+    if (qty > draftRemaining) {
+      setError(`Only ${formatQty(draftRemaining, draftStockRow?.unit || lineDraft.unit)} is available for ${lineDraft.itemName} (after items already added). If you've physically counted more stock than the system shows, raise a stock dispute below.`);
+      setDisputeQty(qty);
+      return;
+    }
     setLines((current) => [...current, { lineId: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, itemName: lineDraft.itemName, barcode: lineDraft.barcode, quantity: lineDraft.quantity, unit: lineDraft.unit }]);
     setLineDraft((current) => ({ ...current, quantity: "" }));
   };
   const removeLine = (lineId: string) => setLines((current) => current.filter((line) => line.lineId !== lineId));
+
+  const raiseDispute = async () => {
+    setDisputeMessage("");
+    if (disputeQty == null) return;
+    if (disputeReason.trim().length < 3) return setDisputeMessage("Enter a reason explaining the quantity mismatch.");
+    setRaisingDispute(true);
+    const { error: disputeError } = await supabase.rpc("raise_branch_stock_dispute_secure", {
+      p_branch: "SNB",
+      p_item_name: lineDraft.itemName,
+      p_item_barcode: lineDraft.barcode ?? null,
+      p_unit: draftStockRow?.unit || lineDraft.unit,
+      p_system_quantity: draftRemaining,
+      p_claimed_quantity: disputeQty,
+      p_context: mode,
+      p_reason: disputeReason.trim(),
+    });
+    setRaisingDispute(false);
+    if (disputeError) return setDisputeMessage(disputeError.message);
+    setDisputeMessage("Dispute raised and sent to SNB Admin for review.");
+    setDisputeReason("");
+    setDisputeQty(null);
+  };
 
   const submit = async () => {
     setError(""); setSuccess("");
@@ -512,6 +559,17 @@ export function SnbStockMovementPanel({ mode }: { mode: StockMovementMode }) {
     setSaving(false);
     if (saveError) return setError(saveError.message);
     setSuccess(`${lines.length} item${lines.length > 1 ? "s" : ""} posted as ${mode === "Trans Out" ? "Transfer Out" : mode} and shared with SNB Admin.`);
+    // Notify SNB Admin + Owner - previously a stock write-off had no
+    // cross-dashboard alert at all.
+    void useNotificationStore.getState().pushStockMovement({
+      branch: "SNB",
+      logType: mode,
+      items: lines.map((line) => ({ itemName: line.itemName, quantity: Number(line.quantity), unit: line.unit })),
+      totalValue: linesTotalValue,
+      reason: meta.reason.trim(),
+      postedBy: userName,
+      recipientRoles: ["admin_snb", "owner"],
+    });
     setLines([]);
     setMeta((current) => ({ ...current, reason: "", confirmed: false }));
     await Promise.all([loadRows(), useBranchStore.getState().fetchBranchData("SNB")]);
@@ -533,17 +591,28 @@ export function SnbStockMovementPanel({ mode }: { mode: StockMovementMode }) {
           </div>
           <button type="button" onClick={addLine} className={cn(primaryButton, "w-full bg-amber-600")}><Plus className="size-4" /> Add item to list</button>
 
+          {disputeQty != null && (
+            <div className="rounded-2xl border border-red-200 bg-red-50 p-3">
+              <p className="text-xs font-black text-red-700">Raise Stock Dispute</p>
+              <p className="mt-1 text-[11px] font-semibold text-red-700">System shows {formatQty(draftRemaining, draftStockRow?.unit || lineDraft.unit)} available for {lineDraft.itemName}, but you're trying to {mode === "Trans Out" ? "transfer out" : mode.toLowerCase()} {formatQty(disputeQty, lineDraft.unit)}. If the physical count is different, explain why below and notify SNB Admin to verify and correct the stock.</p>
+              <textarea className={cn(textareaClass, "mt-2 min-h-16 bg-white")} value={disputeReason} onChange={(event) => setDisputeReason(event.target.value)} placeholder="Explain the mismatch (e.g. found extra stock during physical count, previous entry error, etc.)" />
+              {disputeMessage && <p className={cn("mt-2 text-[11px] font-black", disputeMessage.includes("raised") ? "text-emerald-700" : "text-red-700")}>{disputeMessage}</p>}
+              <button type="button" onClick={() => void raiseDispute()} disabled={raisingDispute} className="mt-2 flex h-10 w-full items-center justify-center gap-2 rounded-xl bg-red-600 text-xs font-black text-white disabled:opacity-50">{raisingDispute ? <Loader2 className="size-4 animate-spin" /> : <AlertTriangle className="size-4" />} Notify SNB Admin of Stock Dispute</button>
+            </div>
+          )}
+
           {lines.length > 0 && (
             <div className="rounded-2xl border border-border bg-slate-50 p-2.5">
               <p className="mb-2 text-[10px] font-black uppercase tracking-wide text-slate-500">{lines.length} item{lines.length > 1 ? "s" : ""} queued for this {title.toLowerCase()}</p>
               <div className="space-y-1.5">
                 {lines.map((line) => (
                   <div key={line.lineId} className="flex items-center justify-between gap-2 rounded-xl bg-white px-3 py-2 ring-1 ring-slate-200">
-                    <div className="text-xs font-bold"><span className="font-black">{line.itemName}</span> · {formatQty(Number(line.quantity), line.unit)}</div>
-                    <button type="button" onClick={() => removeLine(line.lineId)} className="grid size-7 place-items-center rounded-lg text-slate-400 hover:bg-red-50 hover:text-red-600"><X className="size-3.5" /></button>
+                    <div className="text-xs font-bold"><span className="font-black">{line.itemName}</span> · {formatQty(Number(line.quantity), line.unit)} · {money(priceForItem(line.itemName, line.barcode))}/unit</div>
+                    <div className="flex items-center gap-2"><span className="text-xs font-black text-slate-700">{money(priceForItem(line.itemName, line.barcode) * Number(line.quantity || 0))}</span><button type="button" onClick={() => removeLine(line.lineId)} className="grid size-7 place-items-center rounded-lg text-slate-400 hover:bg-red-50 hover:text-red-600"><X className="size-3.5" /></button></div>
                   </div>
                 ))}
               </div>
+              <div className="mt-2 flex justify-between border-t border-border pt-2 text-xs font-black text-slate-900"><span>Total Value</span><span>{money(linesTotalValue)}</span></div>
             </div>
           )}
 
@@ -554,7 +623,7 @@ export function SnbStockMovementPanel({ mode }: { mode: StockMovementMode }) {
           <button type="button" onClick={() => void submit()} disabled={saving || lines.length === 0} className={cn(primaryButton, "w-full")}>{saving ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />} Post {title} ({lines.length} item{lines.length === 1 ? "" : "s"})</button>
         </div>
       </section>
-      <section className={cn(panelClass, "min-h-[420px] overflow-auto")}><div className="sticky top-0 flex items-center justify-between border-b border-border bg-white p-3"><h3 className="text-sm font-black">{title} History</h3><button type="button" onClick={() => void loadRows()} className="grid size-9 place-items-center rounded-xl border border-border"><RefreshCw className={cn("size-3.5", loading && "animate-spin")} /></button></div>{history.length === 0 ? <div className="p-8 text-center text-sm font-bold text-muted-foreground">No {title.toLowerCase()} records found.</div> : <div className="divide-y divide-border">{history.map((row) => <article key={row.id} className="p-3"><div className="flex items-start justify-between gap-3"><div><p className="text-sm font-black">{row.item_name}</p><p className="text-xs font-bold text-muted-foreground">{formatQty(Number(row.quantity), row.unit)} · {row.reason}</p></div><span className="rounded-full bg-amber-50 px-2 py-1 text-[10px] font-black text-amber-700">{title}</span></div><p className="mt-2 text-[10px] font-semibold text-muted-foreground">Verified by {row.verified_by} · Entered by {row.created_by_username} · {new Date(row.created_at).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" })}</p></article>)}</div>}</section>
+      <section className={cn(panelClass, "min-h-[420px] overflow-auto")}><div className="sticky top-0 flex items-center justify-between border-b border-border bg-white p-3"><h3 className="text-sm font-black">{title} History</h3><button type="button" onClick={() => void loadRows()} className="grid size-9 place-items-center rounded-xl border border-border"><RefreshCw className={cn("size-3.5", loading && "animate-spin")} /></button></div>{history.length === 0 ? <div className="p-8 text-center text-sm font-bold text-muted-foreground">No {title.toLowerCase()} records found.</div> : <div className="divide-y divide-border">{history.map((row) => <article key={row.id} className="p-3"><div className="flex items-start justify-between gap-3"><div><p className="text-sm font-black">{row.item_name}</p><p className="text-xs font-bold text-muted-foreground">{formatQty(Number(row.quantity), row.unit)} · {money(priceForItem(row.item_name) * Number(row.quantity))} · {row.reason}</p></div><span className="rounded-full bg-amber-50 px-2 py-1 text-[10px] font-black text-amber-700">{title}</span></div><p className="mt-2 text-[10px] font-semibold text-muted-foreground">Verified by {row.verified_by} · Entered by {row.created_by_username} · {new Date(row.created_at).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" })}</p></article>)}</div>}</section>
     </div>
   );
 }

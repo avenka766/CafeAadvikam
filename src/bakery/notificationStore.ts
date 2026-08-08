@@ -18,7 +18,8 @@ export type NotificationType =
   | 'credit_sale'
   | 'price_change'
   | 'store_item_change'
-  | 'recipe_change';
+  | 'recipe_change'
+  | 'stock_movement';
 
 export interface AdminNotification {
   id: string;
@@ -52,6 +53,7 @@ interface NotificationState {
   pushPackingRemainder: (orderId: string, orderNumber: string, branch: string, items: { itemName: string; remainderKg: number; dispatchedPcs: number; preparedKg: number }[]) => Promise<void>;
   pushStoreItemChange: (params: { action: 'created' | 'updated'; itemId: string; itemName: string; category?: string; changedBy?: string }) => Promise<void>;
   pushRecipeChange: (params: { action: 'created' | 'updated'; itemId: string; itemName: string; ingredientCount: number; changedBy?: string }) => Promise<void>;
+  pushStockMovement: (params: { branch: string; logType: 'Dump' | 'Damage' | 'Trans Out'; items: { itemName: string; quantity: number; unit: string }[]; totalValue: number; reason: string; postedBy: string; recipientRoles: string[] }) => Promise<void>;
 }
 
 // ─── Map row ──────────────────────────────────────────────────────────────────
@@ -353,6 +355,27 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
       recipient_role: 'admin',
     });
     if (!error) await get().load();
+  },
+
+  // Notifies owner + branch admin whenever a Dump/Damage/Transfer Out batch
+  // is posted (previously these movements had no cross-dashboard alert at
+  // all, so a sizable write-off could go unnoticed until someone happened
+  // to open the Waste Logs tab).
+  pushStockMovement: async ({ branch, logType, items, totalValue, reason, postedBy, recipientRoles }) => {
+    const label = logType === 'Trans Out' ? 'Transfer Out' : logType;
+    const lines = items.map(i => `${i.itemName}: ${i.quantity} ${i.unit}`).join('; ');
+    for (const recipientRole of recipientRoles) {
+      const { error } = await supabase.from('admin_notifications').insert({
+        type: 'stock_movement',
+        title: `${label} Posted – ${branch}`,
+        body: `${postedBy} posted ${items.length} item${items.length > 1 ? 's' : ''} as ${label} · ₹${totalValue.toFixed(2)} · ${lines} · Reason: ${reason}`,
+        ref_label: `${branch} ${label}`,
+        meta: { branch, logType, items, totalValue, reason, postedBy },
+        recipient_role: recipientRole,
+      });
+      if (error) console.warn(`[notificationStore] stock movement notify failed for ${recipientRole}:`, error.message);
+    }
+    await get().load();
   },
 
 }));
