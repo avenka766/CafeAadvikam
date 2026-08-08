@@ -20,7 +20,7 @@ import {
 } from 'lucide-react';
 import { useMenuStore } from '@/stores/menuStore';
 import { useOrderStore } from '@/stores/orderStore';
-import { CAFE_CONFIG, MENU_CATEGORIES, TABLE_NUMBERS } from '@/constants/config';
+import { CAFE_CONFIG, MENU_CATEGORIES, TABLE_NUMBERS, TABLES_G, TABLES_A, tableSectionOf, tableLabel } from '@/constants/config';
 import { cn, formatCurrency } from '@/lib/utils';
 import type { OrderType } from '@/types';
 import EmptyState from '@/components/ui/EmptyState';
@@ -70,6 +70,10 @@ export default function QROrderPage() {
   const [orderType, setOrderType] = useState<OrderType>(tableFromQr ? 'dine_in' : 'takeaway');
   const [tableNumber, setTableNumber] = useState<number | null>(tableFromQr);
   const [tablePickerOpen, setTablePickerOpen] = useState(false);
+  // FEATURE (2026-08-08): same two-step G/A table picker as the biller cart —
+  // only relevant when the customer opened this page without a table-linked
+  // QR code (tableFromQr is set and the picker is disabled entirely then).
+  const [tableSection, setTableSection] = useState<'G' | 'A' | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
   const [addedNotice, setAddedNotice] = useState('');
@@ -214,7 +218,7 @@ export default function QROrderPage() {
               <p className="mt-5 text-xs font-black uppercase tracking-[0.3em] text-emerald-200">Sent to the kitchen</p>
               <h1 className="mt-2 font-display text-4xl font-black">Order placed</h1>
               {placedOrder.number && <p className="mt-4 font-display text-6xl font-black text-amber-300">#{String(placedOrder.number).padStart(3, '0')}</p>}
-              <p className="mt-3 text-sm text-white/70">{orderType === 'dine_in' && tableNumber ? `Table ${tableNumber}` : 'Takeaway'} · We will update the status live.</p>
+              <p className="mt-3 text-sm text-white/70">{orderType === 'dine_in' && tableNumber ? `Table ${tableLabel(tableNumber)}` : 'Takeaway'} · We will update the status live.</p>
             </div>
             <div className="space-y-3 p-6">
               <button
@@ -265,7 +269,7 @@ export default function QROrderPage() {
             </div>
             <div className="flex flex-wrap gap-2">
               <span className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-3.5 py-2 text-xs font-black backdrop-blur">
-                <MapPin className="size-4 text-amber-300" /> {tableFromQr ? `Table ${tableFromQr}` : orderType === 'dine_in' && tableNumber ? `Table ${tableNumber}` : 'Choose table'}
+                <MapPin className="size-4 text-amber-300" /> {tableFromQr ? `Table ${tableLabel(tableFromQr)}` : orderType === 'dine_in' && tableNumber ? `Table ${tableLabel(tableNumber)}` : 'Choose table'}
               </span>
               <span className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-3.5 py-2 text-xs font-black backdrop-blur">
                 <Clock3 className="size-4 text-amber-300" /> Kitchen live
@@ -428,12 +432,43 @@ export default function QROrderPage() {
 
                 {orderType === 'dine_in' && (
                   <div className="relative mt-3">
-                    <button type="button" disabled={Boolean(tableFromQr)} onClick={() => setTablePickerOpen((open) => !open)} className="flex w-full items-center justify-between rounded-2xl border border-stone-200 bg-stone-50 px-4 py-3 text-sm font-black disabled:cursor-default">
-                      <span className="flex items-center gap-2"><MapPin className="size-4 text-emerald-700" /> {tableNumber ? `Table ${tableNumber}` : 'Select table'}</span><ChevronDown className={cn('size-4 transition', tablePickerOpen && 'rotate-180')} />
+                    <button
+                      type="button"
+                      disabled={Boolean(tableFromQr)}
+                      onClick={() => {
+                        setTableSection(tableNumber ? tableSectionOf(tableNumber) : null);
+                        setTablePickerOpen((open) => !open);
+                      }}
+                      className="flex w-full items-center justify-between rounded-2xl border border-stone-200 bg-stone-50 px-4 py-3 text-sm font-black disabled:cursor-default"
+                    >
+                      <span className="flex items-center gap-2"><MapPin className="size-4 text-emerald-700" /> {tableNumber ? `Table ${tableLabel(tableNumber)}` : 'Select table'}</span><ChevronDown className={cn('size-4 transition', tablePickerOpen && 'rotate-180')} />
                     </button>
                     {tablePickerOpen && !tableFromQr && (
-                      <div className="mt-2 grid grid-cols-5 gap-2 rounded-2xl border border-stone-200 bg-white p-3">
-                        {TABLE_NUMBERS.map((number) => <button type="button" key={number} onClick={() => { setTableNumber(number); setTablePickerOpen(false); }} className={cn('rounded-xl border px-2 py-2.5 text-sm font-black', tableNumber === number ? 'border-emerald-700 bg-emerald-700 text-white' : 'border-stone-200 bg-stone-50')}>{number}</button>)}
+                      <div className="mt-2 rounded-2xl border border-stone-200 bg-white p-3">
+                        {tableSection === null ? (
+                          <div className="grid grid-cols-2 gap-2">
+                            {(['G', 'A'] as const).map(section => (
+                              <button
+                                key={section}
+                                type="button"
+                                onClick={() => setTableSection(section)}
+                                className="flex flex-col items-center justify-center gap-0.5 rounded-xl border border-stone-200 bg-stone-50 py-4 font-black"
+                              >
+                                <span className="text-xl">{section}</span>
+                                <span className="text-[10px] font-bold text-stone-400">{section}1 – {section}15</span>
+                              </button>
+                            ))}
+                          </div>
+                        ) : (
+                          <div>
+                            <button type="button" onClick={() => setTableSection(null)} className="mb-2 text-xs font-black text-stone-400">← Section {tableSection}</button>
+                            <div className="grid grid-cols-5 gap-2">
+                              {(tableSection === 'G' ? TABLES_G : TABLES_A).map((number) => (
+                                <button type="button" key={number} onClick={() => { setTableNumber(number); setTablePickerOpen(false); }} className={cn('rounded-xl border px-2 py-2.5 text-sm font-black', tableNumber === number ? 'border-emerald-700 bg-emerald-700 text-white' : 'border-stone-200 bg-stone-50')}>{tableLabel(number)}</button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>

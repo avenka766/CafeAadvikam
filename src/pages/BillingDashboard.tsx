@@ -20,7 +20,7 @@ import OrderCard from '@/components/features/OrderCard';
 import CategoryFilter from '@/components/features/CategoryFilter';
 import MenuItemCard from '@/components/features/MenuItemCard';
 import type { OrderStatus, OrderType, PaymentType, PaymentBreakdown, Order, CartItem, MenuItem } from '@/types';
-import { TABLE_NUMBERS, MENU_CATEGORIES } from '@/constants/config';
+import { TABLES_G, TABLES_A, tableSectionOf, tableLabel, MENU_CATEGORIES } from '@/constants/config';
 import EmptyState from '@/components/ui/EmptyState';
 import { supabase } from '@/lib/supabase';
 import { businessDate } from '@/lib/businessDate';
@@ -1702,6 +1702,14 @@ function NewBillPanel() {
   // customer QR ordering page (QROrderPage.tsx), so the cart is visible
   // immediately.
   const [tablePickerOpen, setTablePickerOpen] = useState(false);
+  // FEATURE (2026-08-08): "when I click on dine in i should get a small box
+  // to select G or A. if I select G then it should show G1 to G15 and same
+  // If I select A then it should show A1 to A15." TABLE_NUMBERS is a flat
+  // 1-30 list — table_number stays a plain integer in the database and every
+  // RPC/print path untouched; G1-G15 map to table_number 1-15 and A1-A15 map
+  // to 16-30, so this is purely a two-step picker + display label on top of
+  // the existing numbering, nothing schema-side changes.
+  const [tableSection, setTableSection] = useState<'G' | 'A' | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [showSuccess, setShowSuccess] = useState(false);
   const [showBillModal, setShowBillModal] = useState(false);
@@ -2890,7 +2898,7 @@ function NewBillPanel() {
             <div className="flex items-center justify-between">
               <p className="text-[10px] font-black uppercase tracking-widest text-emerald-700">Final billing</p>
               <span className="flex items-center gap-1 text-[10px] font-black uppercase tracking-widest text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-full">
-                {orderType === 'dine_in' ? <><UtensilsCrossed className="size-3" />Table {tableNumber}</> : <><ShoppingBag className="size-3" />Takeaway</>}
+                {orderType === 'dine_in' ? <><UtensilsCrossed className="size-3" />Table {tableNumber ? tableLabel(tableNumber) : ''}</> : <><ShoppingBag className="size-3" />Takeaway</>}
               </span>
             </div>
             <h2 className="font-display text-2xl font-black text-foreground">Bill & Print</h2>
@@ -3177,24 +3185,12 @@ function NewBillPanel() {
 
       {/* -- COL 3: Bill summary ------------------------ */}
       <div className="biller-cart-panel shrink-0 flex flex-col border-l border-border bg-card overflow-hidden" style={{ width: "clamp(270px, 22vw, 340px)" }}>
-        <div className="biller-cart-header flex items-center justify-between px-4 py-3 border-b border-border bg-muted/30 shrink-0">
-          <div className="flex items-center gap-2">
-            <ShoppingBag className="size-4 text-primary" />
-            <h3 className="font-display font-bold text-lg text-foreground">New Bill</h3>
-            {!allEmpty && (
-              <span className="text-xs font-body font-bold px-1.5 py-0.5 rounded-full text-primary-foreground"
-                style={{ background: 'linear-gradient(135deg,hsl(164 52% 32%),hsl(164 52% 22%))' }}>
-                {cartCount + customItems.length}
-              </span>
-            )}
-          </div>
-          {!allEmpty && (
-            <button onClick={() => { clearCart(); setCustomItems([]); }}
-              className="text-xs font-body font-semibold text-destructive bg-destructive/10 px-2.5 py-1 rounded-lg active:scale-95 border border-destructive/15">
-              Clear
-            </button>
-          )}
-        </div>
+        {/* SPACE FIX (2026-08-08): the "New Bill" title bar (icon + heading +
+            item-count badge) sat above this context row saying nothing the
+            context row itself doesn't already show, and ate vertical space
+            from the cart on cramped touch terminals. Removed; its one real
+            function (Clear) now lives as a compact icon button at the right
+            of the context row so nothing is lost. */}
         <div className="biller-cart-context flex items-center gap-1.5 px-4 py-2 border-b border-border bg-background/60 shrink-0 text-[11px] font-body font-semibold overflow-x-auto">
           <span className={cn('flex items-center gap-1 px-2 py-1 rounded-full shrink-0',
             orderType === 'dine_in' ? 'bg-primary/10 text-primary' : 'bg-blue-100 text-blue-700')}>
@@ -3205,7 +3201,7 @@ function NewBillPanel() {
             tableNumber ? (
               <span className={cn('flex items-center gap-1 px-2 py-1 rounded-full shrink-0',
                 runningOrder ? 'bg-amber-100 text-amber-700' : 'bg-muted text-muted-foreground')}>
-                <MapPin className="size-3" />Table {tableNumber}
+                <MapPin className="size-3" />Table {tableLabel(tableNumber)}
                 {runningOrder ? ` · Running (${runningItemCount})` : ' · New'}
               </span>
             ) : (
@@ -3213,6 +3209,12 @@ function NewBillPanel() {
                 <AlertCircle className="size-3" />No table selected
               </span>
             )
+          )}
+          {!allEmpty && (
+            <button onClick={() => { clearCart(); setCustomItems([]); }}
+              className="ml-auto flex shrink-0 items-center gap-1 text-[10px] font-body font-semibold text-destructive bg-destructive/10 px-2 py-1 rounded-lg active:scale-95 border border-destructive/15">
+              Clear ({cartCount + customItems.length})
+            </button>
           )}
         </div>
 
@@ -3256,7 +3258,13 @@ function NewBillPanel() {
                   the full table board only opens as a dropdown on demand. */}
               <button
                 type="button"
-                onClick={() => setTablePickerOpen((open) => !open)}
+                onClick={() => {
+                  // Reopening jumps straight back into whichever section the
+                  // current table belongs to; nothing selected yet always
+                  // starts at the G/A chooser.
+                  setTableSection(tableNumber ? tableSectionOf(tableNumber) : null);
+                  setTablePickerOpen((open) => !open);
+                }}
                 className={cn('w-full flex items-center justify-between gap-2 rounded-lg border px-2.5 py-1.5 text-xs font-body font-bold transition-all active:scale-[0.98]',
                   tableError ? 'border-destructive/50 ring-1 ring-destructive/40' : 'border-border bg-muted/60')}>
                 <span className="flex items-center gap-1.5 truncate">
@@ -3266,7 +3274,7 @@ function NewBillPanel() {
                         tableBoard[tableNumber] !== undefined ? 'bg-amber-500'
                           : (tableDrafts[tableNumber]?.cart.length || tableDrafts[tableNumber]?.customItems.length) ? 'bg-blue-400'
                           : 'bg-muted-foreground/30')} />
-                      Table {tableNumber}
+                      Table {tableLabel(tableNumber)}
                       {tableBoard[tableNumber] !== undefined && ` · Running (${tableBoard[tableNumber]} item${tableBoard[tableNumber] === 1 ? '' : 's'})`}
                       {incomingByTable[tableNumber] ? ` · ${incomingByTable[tableNumber]} new item${incomingByTable[tableNumber] === 1 ? '' : 's'} waiting` : ''}
                     </>
@@ -3289,32 +3297,61 @@ function NewBillPanel() {
                     onClick={() => setTablePickerOpen(false)}
                   />
                   <div className="absolute left-0 right-0 top-full mt-1.5 z-50 rounded-2xl border border-border bg-card p-2 shadow-2xl">
-                    <div className="grid grid-cols-5 gap-1.5 p-1 rounded-2xl max-h-64 overflow-y-auto">
-                      {TABLE_NUMBERS.map(num => {
-                        const isSelected = tableNumber === num;
-                        const isRunning = tableBoard[num] !== undefined;
-                        const hasDraft = !isSelected && !isRunning && Boolean(tableDrafts[num]?.cart.length || tableDrafts[num]?.customItems.length);
-                        return (
-                          <button key={num}
-                            onClick={() => { switchTable(num); setTablePickerOpen(false); }}
-                            className={cn('relative py-2.5 rounded-xl text-xs font-body font-bold transition-all active:scale-90 flex flex-col items-center gap-0.5',
-                              isSelected ? 'text-primary-foreground shadow-teal ring-2 ring-offset-1 ring-emerald-500'
-                                : isRunning ? 'bg-amber-100 border border-amber-300 text-amber-800 hover:bg-amber-200'
-                                : hasDraft ? 'bg-blue-50 border border-blue-300 text-blue-700 hover:bg-blue-100'
-                                : 'bg-muted/60 border border-border text-foreground hover:bg-muted')}
-                            style={isSelected ? { background: 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))' } : {}}>
-                            {incomingByTable[num] ? (
-                              <span className="absolute -top-1.5 -right-1.5 flex size-4 items-center justify-center rounded-full bg-fuchsia-500 text-white text-[8px] font-black ring-2 ring-white">
-                                {incomingByTable[num]}
-                              </span>
-                            ) : null}
-                            {num}
-                            {isRunning && <span className="text-[9px] font-semibold opacity-80">{tableBoard[num]} item{tableBoard[num] === 1 ? '' : 's'}</span>}
-                            {hasDraft && <span className="text-[9px] font-semibold opacity-80">draft</span>}
+                    {tableSection === null ? (
+                      // FEATURE (2026-08-08): "small box to select G or A" —
+                      // the very first thing tapping the table field shows.
+                      <div className="grid grid-cols-2 gap-2 p-1.5">
+                        {(['G', 'A'] as const).map(section => (
+                          <button
+                            key={section}
+                            type="button"
+                            onClick={() => setTableSection(section)}
+                            className="flex flex-col items-center justify-center gap-1 rounded-xl border border-border bg-muted/60 py-4 text-foreground hover:bg-muted active:scale-95"
+                          >
+                            <span className="text-2xl font-display font-black">{section}</span>
+                            <span className="text-[10px] font-body font-bold text-muted-foreground">
+                              {section}1 – {section}15
+                            </span>
                           </button>
-                        );
-                      })}
-                    </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div>
+                        <button
+                          type="button"
+                          onClick={() => setTableSection(null)}
+                          className="mb-1.5 flex items-center gap-1 rounded-lg px-1.5 py-1 text-[11px] font-body font-bold text-muted-foreground hover:text-foreground"
+                        >
+                          ← Section {tableSection}
+                        </button>
+                        <div className="grid grid-cols-5 gap-1.5 p-1 rounded-2xl max-h-56 overflow-y-auto">
+                          {(tableSection === 'G' ? TABLES_G : TABLES_A).map(num => {
+                            const isSelected = tableNumber === num;
+                            const isRunning = tableBoard[num] !== undefined;
+                            const hasDraft = !isSelected && !isRunning && Boolean(tableDrafts[num]?.cart.length || tableDrafts[num]?.customItems.length);
+                            return (
+                              <button key={num}
+                                onClick={() => { switchTable(num); setTablePickerOpen(false); }}
+                                className={cn('relative py-2.5 rounded-xl text-xs font-body font-bold transition-all active:scale-90 flex flex-col items-center gap-0.5',
+                                  isSelected ? 'text-primary-foreground shadow-teal ring-2 ring-offset-1 ring-emerald-500'
+                                    : isRunning ? 'bg-amber-100 border border-amber-300 text-amber-800 hover:bg-amber-200'
+                                    : hasDraft ? 'bg-blue-50 border border-blue-300 text-blue-700 hover:bg-blue-100'
+                                    : 'bg-muted/60 border border-border text-foreground hover:bg-muted')}
+                                style={isSelected ? { background: 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))' } : {}}>
+                                {incomingByTable[num] ? (
+                                  <span className="absolute -top-1.5 -right-1.5 flex size-4 items-center justify-center rounded-full bg-fuchsia-500 text-white text-[8px] font-black ring-2 ring-white">
+                                    {incomingByTable[num]}
+                                  </span>
+                                ) : null}
+                                {tableLabel(num)}
+                                {isRunning && <span className="text-[9px] font-semibold opacity-80">{tableBoard[num]} item{tableBoard[num] === 1 ? '' : 's'}</span>}
+                                {hasDraft && <span className="text-[9px] font-semibold opacity-80">draft</span>}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </>
               )}
@@ -3694,7 +3731,7 @@ function NewBillPanel() {
             <div className="flex items-center justify-between">
               <p className="text-[10px] font-black uppercase tracking-widest text-fuchsia-700">Combined billing</p>
               <span className="flex items-center gap-1 text-[10px] font-black uppercase tracking-widest text-fuchsia-700 bg-fuchsia-100 px-2 py-0.5 rounded-full">
-                <UtensilsCrossed className="size-3" />Table {tableNumber}
+                <UtensilsCrossed className="size-3" />Table {tableNumber ? tableLabel(tableNumber) : ''}
               </span>
             </div>
             <h2 className="font-display text-2xl font-black text-foreground">Bill This Table</h2>

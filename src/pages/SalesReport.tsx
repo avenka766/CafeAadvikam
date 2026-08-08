@@ -10,6 +10,7 @@ import {
   Download, CalendarDays, QrCode, UserCheck,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { tableLabel } from '@/constants/config';
 import type { PaymentType } from '@/types';
 
 const PAYMENT_LABELS: Record<PaymentType, string> = {
@@ -212,7 +213,7 @@ export default function SalesReport() {
         'Date':             new Date(o.createdAt).toLocaleDateString('en-IN'),
         'Time':             new Date(o.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
         'Order Type':       o.orderType === 'dine_in' ? 'Dine In' : 'Takeaway',
-        'Table No':         o.tableNumber || '-',
+        'Table No':         o.tableNumber ? tableLabel(o.tableNumber) : '-',
         'Customer':         o.customerName || '-',
         'Items Ordered':    o.items.map(ci => ci.menuItem.name).join(', '),
         'Total Qty':        o.items.reduce((s, ci) => s + ci.quantity, 0),
@@ -243,7 +244,7 @@ export default function SalesReport() {
         'Date':             new Date(o.createdAt).toLocaleDateString('en-IN'),
         'Time':             new Date(o.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
         'Order Type':       o.orderType === 'dine_in' ? 'Dine In' : 'Takeaway',
-        'Table No':         o.tableNumber || '-',
+        'Table No':         o.tableNumber ? tableLabel(o.tableNumber) : '-',
         'Customer':         o.customerName || '-',
         'Items':            o.items.map(ci => `${ci.menuItem.name} x${ci.quantity}`).join(', '),
         'Total Amount (₹)': o.total,
