@@ -16,6 +16,7 @@
 // printVrsnbReceiptBill (VRSNB / Hosur), so every invoice in the app carries
 // the same real company details rather than inventing new ones.
 import { supabase } from '@/lib/supabase';
+import { printViaIframe } from '@/lib/printViaIframe';
 import type { Branch } from './types';
 
 export interface DispatchInvoiceItem {
@@ -212,15 +213,18 @@ export function renderDispatchInvoiceHtml(record: DispatchInvoiceRecord, mode: '
     <div class="paybox"><div class="paytitle">Dispatched By</div><div class="pay"><span>${esc(record.dispatchedBy)}</span><span>${esc(dateStr)} ${esc(timeStr)}</span></div></div>
     <div class="dash"></div>
     <div class="footer">Thank you, Visit Again</div>
-    <script>window.onload=()=>window.print()</script>
   </body></html>`;
 }
 
+// BUG FIX (2026-08-08): "invoice also we are unable to print... even for
+// the Dispatched tab reprint bill is not working" — this used to open a new
+// `window.open('', '_blank')` tab and silently do nothing (`if (!win)
+// return;`, no direct win.print() call, relying only on an in-page onload
+// script) whenever that popup was blocked. Now prints via a hidden iframe
+// (see printViaIframe) which never opens a new window/tab, so it can't be
+// blocked by a popup blocker.
 export function printDispatchInvoice(record: DispatchInvoiceRecord, mode: 'a4' | 'thermal') {
-  const win = window.open('', '_blank');
-  if (!win) return;
-  win.document.write(renderDispatchInvoiceHtml(record, mode));
-  win.document.close();
+  printViaIframe(renderDispatchInvoiceHtml(record, mode));
 }
 
 function recordFromRow(row: Record<string, unknown>): DispatchInvoiceRecord {

@@ -24,6 +24,7 @@ import { cn } from '@/lib/utils';
 import type { BakeryOrder, BakeryOrderItem, PreparedItem, Branch } from './types';
 import { BRANCHES, BAKERY_ITEMS } from './types';
 import { printHtml } from '@/branch/printUtils';
+import { printViaIframe } from '@/lib/printViaIframe';
 import PackingTransferInTab from './PackingTransferInTab';
 import PackingDailyClosureTab from './PackingDailyClosureTab';
 import { exportToExcel } from '@/lib/exportExcel';
@@ -1811,26 +1812,26 @@ function InvoiceTab({ orders }: { orders: BakeryOrder[] }) {
       </body></html>`;
   };
 
+  // BUG FIX (2026-08-08): "in the invoice tab we are unable to print the
+  // invoices" — same popup-blocker issue as the Dispatch tab's checklist/
+  // invoice prints; switched to the hidden-iframe printer (see
+  // printViaIframe) which can't be silently blocked.
   const printInvoice = (b: Branch) => {
-    const win = window.open('', '_blank'); if (!win) return;
-    win.document.write(renderInvoiceHtml(
+    printViaIframe(renderInvoiceHtml(
       `Invoice — ${b} — ${date}`,
       `Branch: <b>${b}</b> &nbsp;·&nbsp; Date: <b>${date}</b>`,
       perBranchRows[b],
       discountPct[b],
     ));
-    win.document.close(); win.print();
   };
 
   const printHosurShopInvoice = (shopName: string, rows: InvoiceRow[]) => {
-    const win = window.open('', '_blank'); if (!win) return;
-    win.document.write(renderInvoiceHtml(
+    printViaIframe(renderInvoiceHtml(
       `Invoice — Hosur — ${shopName} — ${date}`,
       `Branch: <b>Hosur</b> &nbsp;·&nbsp; Shop: <b>${shopName}</b> &nbsp;·&nbsp; Date: <b>${date}</b>`,
       rows,
       discountPct.Hosur,
     ));
-    win.document.close(); win.print();
   };
 
   const printAllHosurShops = () => {
@@ -4068,12 +4069,23 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
     .filter(r => r.itemName.toLowerCase().includes(search.trim().toLowerCase()))
     .filter(r => branchFilter === 'All' || !!r.perBranch[branchFilter]);
 
+  // BUG FIX (2026-08-08): "in All tab to dispatch its showing 74 items but
+  // we have dispatched some items its not showing that and its not getting
+  // minus" — this used to require `row.preparedTotal > 0` (i.e. something
+  // had been logged via the Production Entry tab) before an item could ever
+  // be considered dispatched in the 'All' view. Plenty of real orders (e.g.
+  // SNB #154) get dispatched with zero production ever logged against them
+  // — dispatch quantity isn't capped by preparedTotal, only by what's still
+  // owed — so those items' preparedTotal stayed 0 forever and this always
+  // returned false, permanently stuck in "To Dispatch" no matter how much
+  // was actually sent. Compare against what was actually ordered
+  // (row.totalRequested) instead, same as the per-branch case just above.
   const fullyDispatched = (row: ProductionRow) => {
     if (branchFilter !== 'All') {
       const requested = row.perBranch[branchFilter] ?? 0;
       return requested > 0 && branchDispatchedForRow(row, branchFilter, orders) >= requested - 0.01;
     }
-    return dispatchedQtyForItem(row) >= row.preparedTotal - 0.01 && row.preparedTotal > 0;
+    return row.totalRequested > 0 && dispatchedQtyForItem(row) >= row.totalRequested - 0.01;
   };
   const activeRows = filtered.filter(r => !fullyDispatched(r))
     .sort((a, b) => (dispatchedQtyForItem(b) > 0 ? 1 : 0) - (dispatchedQtyForItem(a) > 0 ? 1 : 0));
@@ -4089,6 +4101,15 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
     .filter(r => branchFilter === 'All' || !!r.perBranch[branchFilter])
     .filter(r => !fullyDispatched(r))
     .sort((a, b) => (dispatchedQtyForItem(b) > 0 ? 1 : 0) - (dispatchedQtyForItem(a) > 0 ? 1 : 0));
+  // BUG FIX (2026-08-08): same class of bug as flatPanelRows above, but for
+  // the Hosur "By Shop" view — HosurShopDispatchPanel was being fed
+  // `filtered` (search-narrowed), so an item you'd already opened a shop
+  // card for and typed a quantity into would simply disappear from that
+  // card's item list the moment the search box matched something else,
+  // reading exactly like "search again and the saved data is gone." This
+  // keeps the full Hosur-scoped row set (both dispatched + pending)
+  // search-independent, the same way flatPanelRows already is.
+  const hosurPanelRows = rows.filter(r => !!r.perBranch.Hosur);
   // Items with a "Planned" (Planning-tab) component still awaiting a
   // branch + quantity decision at dispatch time.
   const plannedRows = useMemo(
@@ -4185,7 +4206,7 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
         // completion (every item on that specific shop's order fully sent),
         // not by whether some unrelated shop still needs more of an item.
         <HosurShopDispatchPanel
-          rows={filtered}
+          rows={hosurPanelRows}
           mode={subTab === 'completed' ? 'completed' : 'active'}
           orders={orders}
           leftoverBalances={leftoverBalances}
@@ -4701,7 +4722,6 @@ function DispatchChecklistModal({ row, orders, branchFilter, onClose, onDispatch
   };
 
   const printChecklist = (mode: 'thermal' | 'a4') => {
-    const win = window.open('', '_blank'); if (!win) return;
     const sections = Array.from(branchOrders.entries()).filter(([branch]) => selectedBranches.includes(branch)).map(([branch, entries]) => {
       const qtyTotal = entries.reduce((s, { order }) => s + qtyFor(order.id), 0);
       const requested = row.perBranch[branch as Branch] ?? 0;
@@ -4731,11 +4751,10 @@ function DispatchChecklistModal({ row, orders, branchFilter, onClose, onDispatch
          h2 { font-size: 16px; } .meta { font-size: 12px; color: #555; } .order-line { font-size: 13px; } .check { display:block; font-size: 13px; margin: 4px 0; }
          .sign-box { font-size: 12px; margin-top: 10px; }`;
 
-    win.document.write(`<html><head><title>Dispatch Checklist — ${row.itemName}</title><style>${style}
+    printViaIframe(`<html><head><title>Dispatch Checklist — ${row.itemName}</title><style>${style}
       body { padding: 12px; } .checklist { margin: 8px 0; } .check input { margin-right: 6px; } .meta { margin-bottom: 6px; }
       .sign { margin-top: 12px; border-top: 1px dashed #999; padding-top: 8px; }
     </style></head><body>${sections}</body></html>`);
-    win.document.close(); win.print();
   };
 
   if (reviewQueue) {
@@ -4920,14 +4939,13 @@ function DispatchReviewModal({ scope, hosurShop, actions, dispatchedBy, onDispat
   const total = Math.round(subtotal - discountAmount);
 
   const printChecklist = (mode: 'thermal' | 'a4') => {
-    const win = window.open('', '_blank'); if (!win) return;
     const business = businessFor(scope);
     const title = scope === 'Hosur' && hosurShop ? `${scope} — ${hosurShop.name}` : scope;
     const rows = displayItems.map(d => `<div class="order-line">${d.itemName} — ${d.quantity} ${d.unit}</div>`).join('');
     const style = mode === 'thermal'
       ? `@page { size: 80mm auto; margin: 4mm; } body { font-family: monospace; font-size: 11px; width: 72mm; }`
       : `@page { size: auto; margin: 12mm; } body { font-family: sans-serif; font-size: 14px; }`;
-    win.document.write(`<html><head><title>Dispatch Checklist — ${title}</title><style>${style}
+    printViaIframe(`<html><head><title>Dispatch Checklist — ${title}</title><style>${style}
       body { padding: 12px; } h2 { margin: 0 0 4px; } .meta { font-size: 11px; color: #555; margin-bottom: 8px; }
       .order-line { padding: 3px 0; border-bottom: 1px dashed #ccc; }
       .check { display:block; margin: 4px 0; } .sign { margin-top: 16px; border-top: 1px dashed #999; padding-top: 10px; }
@@ -4943,7 +4961,6 @@ function DispatchReviewModal({ scope, hosurShop, actions, dispatchedBy, onDispat
         <div class="sign-box">Received By (Sign): ______________________</div>
       </div>
     </body></html>`);
-    win.document.close(); win.print();
   };
 
   const confirm = async () => {
