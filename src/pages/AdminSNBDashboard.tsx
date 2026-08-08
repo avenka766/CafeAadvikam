@@ -18,6 +18,8 @@ import { supabase } from "@/lib/supabase";
 import { useAuthStore } from "@/stores/authStore";
 import { useBranchStore } from "@/branch/branchStore";
 import AdvanceClosingReportTab from "@/components/admin/AdvanceClosingReportTab";
+import DailySalesTab from "@/components/admin/DailySalesTab";
+import { EditCreditPaymentModeModal } from "@/components/admin/AdminCreditTab";
 import {
   money,
   useBranchOpsStore,
@@ -29,6 +31,7 @@ import {
 import { useBranchCatalogStore } from "@/stores/branchCatalogStore";
 import { printAccountingVoucher, printCounterBill, printHtml } from "@/branch/printUtils";
 import { downloadExcel, downloadExcelWorkbook } from "@/lib/excelDownload";
+import { useNotificationStore } from "@/bakery/notificationStore";
 import type { Branch } from "@/branch/types";
 import {
   Area,
@@ -114,6 +117,7 @@ type TabId =
   | "audit-stock"
   | "history"
   | "advance-closing"
+  | "daily-sales"
   | "notifications";
 
 const TABS: Array<{
@@ -200,6 +204,12 @@ const TABS: Array<{
     id: "advance-closing",
     label: "Advance Order Closing Report",
     icon: FileSpreadsheet,
+    adminOnly: true,
+  },
+  {
+    id: "daily-sales",
+    label: "Daily Sales",
+    icon: BarChart3,
     adminOnly: true,
   },
   {
@@ -1016,7 +1026,7 @@ export default function AdminSNBDashboard() {
 
   return (
     <main className="min-w-0 space-y-4 px-4 py-5 sm:px-6 xl:px-8">
-      {!["stock", "update-stock", "suppliers", "quotations", "salespersons", "bank", "current-cash"].includes(tab) && (
+      {!["stock", "update-stock", "suppliers", "quotations", "salespersons", "bank", "current-cash", "daily-sales"].includes(tab) && (
         <DateFilters
           fromDate={fromDate}
           toDate={toDate}
@@ -1024,7 +1034,7 @@ export default function AdminSNBDashboard() {
           setToDate={setToDate}
         />
       )}
-      {dbReports.error && !["stock", "update-stock", "suppliers", "quotations", "salespersons", "bank", "current-cash"].includes(tab) && (
+      {dbReports.error && !["stock", "update-stock", "suppliers", "quotations", "salespersons", "bank", "current-cash", "daily-sales"].includes(tab) && (
         <div className="rounded-2xl bg-amber-50 px-4 py-3 text-sm font-bold text-amber-900 ring-1 ring-amber-100">
           Some live report data could not load. No browser-stored historical data will be substituted. {dbReports.error}
         </div>
@@ -1108,6 +1118,7 @@ export default function AdminSNBDashboard() {
       )}
       {tab === "history" && <HistoryTab {...commonProps} />}
       {tab === "advance-closing" && <AdvanceClosingReportTab fromDate={fromDate} toDate={toDate} />}
+      {tab === "daily-sales" && <DailySalesTab />}
       {tab === "notifications" && <NotificationsTab userName={userName} />}
     </main>
   );
@@ -1631,6 +1642,153 @@ function SalesReturnsTab(props: any) {
   );
 }
 
+type StockDisputeRow = {
+  id: string;
+  item_name: string;
+  item_barcode: number | null;
+  unit: string;
+  system_quantity: number;
+  claimed_quantity: number;
+  context: string;
+  reason: string;
+  status: string;
+  raised_by: string | null;
+  created_at: string;
+};
+
+function StockDisputeResolveModal({
+  dispute,
+  onClose,
+  onResolved,
+}: {
+  dispute: StockDisputeRow;
+  onClose: () => void;
+  onResolved: (message: string) => void;
+}) {
+  const currentUser = useAuthStore((state) => state.currentUser);
+  const [correctedQuantity, setCorrectedQuantity] = useState(String(dispute.claimed_quantity));
+  const [notes, setNotes] = useState("");
+  const [password, setPassword] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const submit = async () => {
+    setError("");
+    const qty = Number(correctedQuantity);
+    if (correctedQuantity === "" || Number.isNaN(qty) || qty < 0) return setError("Enter a valid corrected quantity.");
+    if (!password) return setError("Enter your password to confirm this correction.");
+    setSaving(true);
+    const { data, error: resolveError } = await supabase.rpc("resolve_branch_stock_dispute_secure", {
+      p_branch: "SNB",
+      p_dispute_id: dispute.id,
+      p_corrected_quantity: qty,
+      p_resolution_notes: notes.trim() || null,
+      p_password: password,
+    });
+    setSaving(false);
+    if (resolveError) return setError(resolveError.message);
+    if (data && (data as any).ok === false) return setError((data as any).error || "Could not resolve dispute.");
+    onResolved(`Dispute for ${dispute.item_name} resolved — stock corrected to ${qty} ${dispute.unit}.`);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-xl">
+        <h3 className="text-sm font-black">Resolve Stock Dispute — {dispute.item_name}</h3>
+        <p className="mt-1 text-xs font-semibold text-slate-500">
+          System showed {dispute.system_quantity} {dispute.unit}, {dispute.context === "Trans Out" ? "Transfer Out" : dispute.context} claimed {dispute.claimed_quantity} {dispute.unit}.
+        </p>
+        <p className="mt-1 text-xs font-bold text-slate-700">Reason: {dispute.reason}</p>
+        <div className="mt-3 space-y-3">
+          <label className="block text-xs font-black text-slate-600">
+            Corrected Quantity ({dispute.unit})
+            <input type="number" min="0" step="0.001" className={cn(inputCls, "mt-1")} value={correctedQuantity} onChange={(event) => setCorrectedQuantity(event.target.value)} />
+          </label>
+          <label className="block text-xs font-black text-slate-600">
+            Resolution Notes (optional)
+            <textarea className={cn(inputCls, "mt-1 min-h-16")} value={notes} onChange={(event) => setNotes(event.target.value)} />
+          </label>
+          <label className="block text-xs font-black text-slate-600">
+            Your Password
+            <input type="password" className={cn(inputCls, "mt-1")} value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="new-password" />
+          </label>
+          {error && <p className="text-xs font-black text-red-600">{error}</p>}
+        </div>
+        <div className="mt-4 flex justify-end gap-2">
+          <button type="button" onClick={onClose} className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")}>Cancel</button>
+          <button type="button" onClick={() => void submit()} disabled={saving} className={cn(btnCls, "bg-slate-950 text-white disabled:opacity-50")}>
+            {saving ? "Saving..." : `Confirm as ${currentUser?.displayName || currentUser?.username || "Admin"}`}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StockDisputesPanel() {
+  const [rows, setRows] = useState<StockDisputeRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [resolving, setResolving] = useState<StockDisputeRow | null>(null);
+  const [notice, setNotice] = useState("");
+
+  const load = async () => {
+    setLoading(true);
+    const { data, error } = await supabase
+      .from("branch_stock_disputes")
+      .select("id,item_name,item_barcode,unit,system_quantity,claimed_quantity,context,reason,status,raised_by,created_at")
+      .eq("branch", "SNB")
+      .eq("status", "pending")
+      .order("created_at", { ascending: false });
+    setLoading(false);
+    if (!error) setRows((data || []) as StockDisputeRow[]);
+  };
+  useEffect(() => { void load(); }, []);
+
+  if (!loading && rows.length === 0 && !notice) return null;
+
+  return (
+    <Panel
+      title="Stock Disputes"
+      icon={<AlertTriangle className="size-4" />}
+      action={
+        <button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => void load()}>
+          <ArrowUpDown className="size-4" />
+          Refresh
+        </button>
+      }
+    >
+      {notice && <p className="mb-3 rounded-xl bg-emerald-50 px-3 py-2 text-xs font-black text-emerald-700">{notice}</p>}
+      <DataTable
+        headers={["Item", "System Qty", "Claimed Qty", "Context", "Reason", "Raised By", "Raised At", "Action"]}
+        rows={rows.map((row) => [
+          row.item_name,
+          `${row.system_quantity} ${row.unit}`,
+          <span key="c" className="font-black text-red-600">{row.claimed_quantity} {row.unit}</span>,
+          row.context === "Trans Out" ? "Transfer Out" : row.context,
+          row.reason,
+          row.raised_by || "-",
+          fmtDateTime(row.created_at),
+          <button key="resolve" className={cn(btnCls, "bg-slate-950 text-white")} onClick={() => setResolving(row)}>
+            Resolve
+          </button>,
+        ])}
+        empty="No pending stock disputes."
+      />
+      {resolving && (
+        <StockDisputeResolveModal
+          dispute={resolving}
+          onClose={() => setResolving(null)}
+          onResolved={(message) => {
+            setResolving(null);
+            setNotice(message);
+            void load();
+          }}
+        />
+      )}
+    </Panel>
+  );
+}
+
 function StockTab(props: any) {
   const catalogItems = useSNBCatalog();
   const [stockSearch, setStockSearch] = useState("");
@@ -1677,6 +1835,7 @@ function StockTab(props: any) {
   const stockValue = enrichedRows.reduce((sum: number, item: any) => sum + item.stockValue, 0);
   return (
     <div className="space-y-4">
+      <StockDisputesPanel />
       <div className="grid gap-3 sm:grid-cols-3">
         <Kpi
           label="Total Stock Items"
@@ -1996,8 +2155,60 @@ function SuppliersTab({ userName }: { userName: string }) {
   );
 }
 
+// Shared "verify my password, then run this edit" gate used by the Expenses and
+// Bank Deposit History tabs below — both are locally-mirrored operational logs
+// (not secure-RPC-backed billing tables), so the password check itself is what
+// gates the edit rather than a per-entity RPC.
+function PasswordConfirmEditModal({
+  title,
+  children,
+  onCancel,
+  onConfirm,
+}: {
+  title: string;
+  children: ReactNode;
+  onCancel: () => void;
+  onConfirm: (password: string) => Promise<string | null>;
+}) {
+  const [password, setPassword] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const submit = async () => {
+    if (!password) { setError("Enter your login password to confirm this edit."); return; }
+    setSaving(true);
+    setError("");
+    const result = await onConfirm(password);
+    setSaving(false);
+    if (result) setError(result);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="w-full max-w-sm rounded-2xl bg-white p-4 shadow-xl">
+        <div className="mb-3 flex items-center justify-between">
+          <h3 className="text-sm font-black text-slate-900">{title}</h3>
+          <button onClick={onCancel}><X className="size-4 text-slate-400" /></button>
+        </div>
+        <div className="space-y-2.5">
+          {children}
+          <Field label="Your Login Password">
+            <input type="password" autoComplete="off" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" className={inputCls} value={password} onChange={(e) => { setPassword(e.target.value); setError(""); }} />
+          </Field>
+          {error && <p className="text-xs font-bold text-red-600">{error}</p>}
+          <div className="flex gap-2 pt-1">
+            <button onClick={onCancel} className={cn(btnCls, "flex-1 bg-white text-slate-700 ring-1 ring-slate-200")}>Cancel</button>
+            <button onClick={submit} disabled={saving} className={cn(btnCls, "flex-1 bg-slate-950 text-white disabled:opacity-50")}>{saving ? "Saving…" : "Confirm & Save"}</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ExpensesTab({ userName, expenseAmount, cashBalance }: any) {
-  const { expenses, addExpense } = useBranchOpsStore();
+  const { expenses, addExpense, updateExpense } = useBranchOpsStore();
+  const { currentUser } = useAuthStore();
   const [form, setForm] = useState({
     expenseDate: dateInput(),
     category: "",
@@ -2006,6 +2217,8 @@ function ExpensesTab({ userName, expenseAmount, cashBalance }: any) {
     mode: "cash",
   });
   const rows = expenses.filter((e) => e.branch === BRANCH);
+  const [editingExpense, setEditingExpense] = useState<(typeof rows)[number] | null>(null);
+  const [editForm, setEditForm] = useState({ category: "", description: "", amount: "", mode: "cash" });
   const printExpense = (expense: (typeof rows)[number]) => {
     printAccountingVoucher({
       voucherType: "Expense Voucher",
@@ -2026,6 +2239,22 @@ function ExpensesTab({ userName, expenseAmount, cashBalance }: any) {
     if (!form.category.trim() || !form.description.trim() || !amount) return;
     addExpense({ branch: BRANCH, expenseDate: form.expenseDate, category: form.category, description: form.description, amount, mode: form.mode as any, enteredBy: userName });
     setForm({ ...form, category: "", description: "", amount: "" });
+  };
+  const openEdit = (expense: (typeof rows)[number]) => {
+    setEditingExpense(expense);
+    setEditForm({ category: expense.category, description: expense.description, amount: String(expense.amount), mode: expense.mode });
+  };
+  const confirmEdit = async (password: string): Promise<string | null> => {
+    if (!editingExpense) return "No expense selected.";
+    const amount = Number(editForm.amount);
+    if (!editForm.category.trim() || !editForm.description.trim() || !amount || amount <= 0) return "Enter a valid category, details, and amount.";
+    if (!currentUser?.id) return "Your session is missing a user id — please re-login.";
+    const { data: verified, error: verifyError } = await supabase.rpc("verify_staff_password", { p_user_id: currentUser.id, p_password: password });
+    if (verifyError) return `Could not verify password: ${verifyError.message}`;
+    if (!verified) return "Incorrect password.";
+    updateExpense(editingExpense.id, { category: editForm.category.trim(), description: editForm.description.trim(), amount, mode: editForm.mode as any }, userName);
+    setEditingExpense(null);
+    return null;
   };
   return (
     <div className="space-y-4">
@@ -2051,9 +2280,24 @@ function ExpensesTab({ userName, expenseAmount, cashBalance }: any) {
           </div>
         </Panel>
         <Panel title="Expense History" icon={<History className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Expenses.xls", rows.map((e) => ({ Date: e.expenseDate, Category: e.category, Details: e.description, Amount: e.amount, Mode: e.mode, EnteredBy: e.enteredBy })))}><Download className="size-4" /> Excel</button>}>
-          <DataTable headers={["Date", "Category", "Details", "Amount", "Mode", "Entered By", "Action"]} rows={rows.map((e) => [fmtDate(e.expenseDate), e.category, e.description, money(e.amount), e.mode.toUpperCase(), e.enteredBy, <button key={`print-${e.id}`} className={cn(btnCls, "bg-slate-100 px-3 py-1.5 text-slate-700")} onClick={() => printExpense(e)}><Printer className="size-4" /> Print</button>])} empty="No expenses added." />
+          <DataTable headers={["Date", "Category", "Details", "Amount", "Mode", "Entered By", "Action"]} rows={rows.map((e) => [fmtDate(e.expenseDate), e.category, e.description, money(e.amount), e.mode.toUpperCase(), e.enteredBy, <div key={e.id} className="flex gap-2"><button className={cn(btnCls, "bg-slate-100 px-3 py-1.5 text-slate-700")} onClick={() => printExpense(e)}><Printer className="size-4" /> Print</button><button className={cn(btnCls, "bg-amber-50 px-3 py-1.5 text-amber-700 ring-1 ring-amber-200")} onClick={() => openEdit(e)}><Pencil className="size-3.5" /> Edit</button></div>])} empty="No expenses added." />
         </Panel>
       </div>
+
+      {editingExpense && (
+        <PasswordConfirmEditModal title={`Edit Expense — ${editingExpense.category}`} onCancel={() => setEditingExpense(null)} onConfirm={confirmEdit}>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Amount"><input type="number" className={inputCls} value={editForm.amount} onChange={(e) => setEditForm({ ...editForm, amount: e.target.value })} /></Field>
+            <Field label="Mode">
+              <select className={inputCls} value={editForm.mode} onChange={(e) => setEditForm({ ...editForm, mode: e.target.value })}>
+                <option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option><option value="bank">Bank</option>
+              </select>
+            </Field>
+          </div>
+          <Field label="Category"><input className={inputCls} value={editForm.category} onChange={(e) => setEditForm({ ...editForm, category: e.target.value })} /></Field>
+          <Field label="Details"><textarea className={inputCls} value={editForm.description} onChange={(e) => setEditForm({ ...editForm, description: e.target.value })} /></Field>
+        </PasswordConfirmEditModal>
+      )}
     </div>
   );
 }
@@ -2452,6 +2696,10 @@ function WasteLogsTab({ userName, role }: { userName: string; role: string }) {
         : normal(stockItem.itemName) === normal(itemName),
     );
   };
+  // Waste logs don't store a price (branch_waste_logs has no price column),
+  // so the item value is priced live from the branch's own item price list -
+  // matches what "priced from the branch" means for this feature.
+  const priceForItem = (itemName: string) => Number(catalogItems.find((item) => normal(item.name) === normal(itemName))?.price || 0);
   const draftCurrentQty = Number(stockRowFor(lineDraft.itemName)?.quantity || 0);
   const queuedForDraftItem = lines.filter((line) => normal(line.itemName) === normal(lineDraft.itemName)).reduce((sum, line) => sum + Number(line.quantity || 0), 0);
   const draftRemaining = Math.max(0, draftCurrentQty - queuedForDraftItem);
@@ -2560,6 +2808,16 @@ function WasteLogsTab({ userName, role }: { userName: string; role: string }) {
       for (const line of lines) {
         addWasteLog({ branch: BRANCH, logType: subTab, itemName: line.itemName, quantity: Number(line.quantity), unit: line.unit, reason: meta.reason, verifiedBy: meta.verifiedBy, checklist: meta.checklist, createdBy: userName });
       }
+      // Notify Owner - Admin posted this themselves so no need to notify Admin too.
+      void useNotificationStore.getState().pushStockMovement({
+        branch: BRANCH,
+        logType: subTab,
+        items: lines.map((line) => ({ itemName: line.itemName, quantity: Number(line.quantity), unit: line.unit })),
+        totalValue: lines.reduce((sum, line) => sum + priceForItem(line.itemName) * Number(line.quantity || 0), 0),
+        reason: meta.reason.trim(),
+        postedBy: userName,
+        recipientRoles: ["owner"],
+      });
       printWasteLogBatch(
         lines.map((line) => ({ itemName: line.itemName, quantity: Number(line.quantity), unit: line.unit })),
         subTab,
@@ -2599,11 +2857,12 @@ function WasteLogsTab({ userName, role }: { userName: string; role: string }) {
                 <div className="space-y-1.5">
                   {lines.map((line) => (
                     <div key={line.lineId} className="flex items-center justify-between gap-2 rounded-xl bg-white px-3 py-2 ring-1 ring-slate-200">
-                      <div className="text-sm font-bold"><span className="font-black">{line.itemName}</span> · {line.quantity} {line.unit}</div>
-                      <button type="button" onClick={() => removeLine(line.lineId)} className="grid size-7 place-items-center rounded-lg text-slate-400 hover:bg-red-50 hover:text-red-600"><X className="size-3.5" /></button>
+                      <div className="text-sm font-bold"><span className="font-black">{line.itemName}</span> · {line.quantity} {line.unit} · @{priceForItem(line.itemName).toFixed(2)}</div>
+                      <div className="flex items-center gap-2"><span className="text-sm font-black text-slate-700">₹{(priceForItem(line.itemName) * Number(line.quantity || 0)).toFixed(2)}</span><button type="button" onClick={() => removeLine(line.lineId)} className="grid size-7 place-items-center rounded-lg text-slate-400 hover:bg-red-50 hover:text-red-600"><X className="size-3.5" /></button></div>
                     </div>
                   ))}
                 </div>
+                <div className="mt-2 flex justify-between border-t border-slate-200 pt-2 text-sm font-black text-slate-900"><span>Total Value</span><span>₹{lines.reduce((sum, line) => sum + priceForItem(line.itemName) * Number(line.quantity || 0), 0).toFixed(2)}</span></div>
               </div>
             )}
 
@@ -2621,12 +2880,14 @@ function WasteLogsTab({ userName, role }: { userName: string; role: string }) {
             <button onClick={save} disabled={saving || lines.length === 0} className={cn(btnCls, "w-full bg-slate-950 text-white disabled:cursor-not-allowed disabled:opacity-50")}>{saving ? "Saving…" : `Save Waste Log (${lines.length} item${lines.length === 1 ? "" : "s"})`}</button>
           </div>
         </Panel>
-        <Panel title="Waste Log History" icon={<History className="size-4" />} action={<div className="flex items-center gap-2"><button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => void loadRows()}><RefreshCcw className={cn("size-4", rowsLoading && "animate-spin")} /> Refresh</button><button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Waste_Logs.xls", rows.map((w) => ({ Date: w.createdAt, Type: w.logType, Item: w.itemName, Quantity: w.quantity, Unit: w.unit, Reason: w.reason, VerifiedBy: w.verifiedBy })))}><Download className="size-4" /> Excel</button></div>}>
-          <DataTable headers={["Date", "Type", "Item", "Qty", "Reason", "Verified By", "Status", "Actions"]} rows={rows.map((w) => [
+        <Panel title="Waste Log History" icon={<History className="size-4" />} action={<div className="flex items-center gap-2"><button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => void loadRows()}><RefreshCcw className={cn("size-4", rowsLoading && "animate-spin")} /> Refresh</button><button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Waste_Logs.xls", rows.map((w) => ({ Date: w.createdAt, Type: w.logType, Item: w.itemName, Quantity: w.quantity, Unit: w.unit, Price: priceForItem(w.itemName).toFixed(2), Total: (priceForItem(w.itemName) * w.quantity).toFixed(2), Reason: w.reason, VerifiedBy: w.verifiedBy })))}><Download className="size-4" /> Excel</button></div>}>
+          <DataTable headers={["Date", "Type", "Item", "Qty", "Price", "Total", "Reason", "Verified By", "Status", "Actions"]} rows={rows.map((w) => [
             fmtDateTime(w.createdAt),
             w.logType,
             w.itemName,
             `${w.quantity} ${w.unit}`,
+            `₹${priceForItem(w.itemName).toFixed(2)}`,
+            `₹${(priceForItem(w.itemName) * w.quantity).toFixed(2)}`,
             w.reason,
             w.verifiedBy,
             <StatusBadge tone={w.status === "Cancelled" ? "red" : "green"}>{w.status}</StatusBadge>,
@@ -2685,6 +2946,14 @@ const SNB_QUOTE_TERMS: Array<[string, string]> = [
   ["Freight", "Free at door delivery"],
   ["GST", "Extra"],
 ];
+
+// jsPDF's built-in Helvetica font has no glyph for the ₹ symbol — drawing money(value)
+// (which is prefixed with ₹) directly with align:"right" throws off the text's measured
+// width, so the digits land misaligned from the label/edge they're meant to line up with.
+// Use a plain "Rs." prefix inside the PDF only; the on-screen ₹ formatting is unaffected.
+function pdfMoney(value: number) {
+  return `Rs. ${value.toLocaleString("en-IN", { maximumFractionDigits: 2, minimumFractionDigits: 2 })}`;
+}
 
 function buildQuotationPdf(quote: QuotationRecord) {
   const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4", compress: true });
@@ -2787,7 +3056,7 @@ function buildQuotationPdf(quote: QuotationRecord) {
     doc.setFont("helvetica", bold ? "bold" : "normal");
     doc.setFontSize(bold ? 10.5 : 9);
     doc.text(label, summaryLabelX, y);
-    doc.text(money(value), summaryValueX, y, { align: "right" });
+    doc.text(pdfMoney(value), summaryValueX, y, { align: "right" });
     y += bold ? 6 : 5;
   };
   summaryLine("Subtotal", quote.subtotal ?? quote.items.reduce((s, i) => s + i.lineTotal, 0));
@@ -2851,16 +3120,24 @@ function QuotationsTab({ userName }: { userName: string }) {
   const catalogItems = useSNBCatalog();
   const { quotations, addQuotation, updateQuotationStatus } = useBranchOpsStore();
   const [mode, setMode] = useState<"list" | "custom">("list");
-  const [form, setForm] = useState({ customerName: "", companyName: "", mobile: "", gstNumber: "", itemName: catalogItems[0]?.name || "", customName: "", qty: "1", rate: "", deliveryCharges: "0", packingCharges: "0", extraCharges: "0", discount: "0" });
+  const [form, setForm] = useState({ customerName: "", companyName: "", mobile: "", gstNumber: "", itemName: catalogItems[0]?.name || "", customName: "", qty: "1", unit: "pcs" as "pcs" | "kg", rate: "", deliveryCharges: "0", packingCharges: "0", extraCharges: "0", discount: "0" });
   const [lines, setLines] = useState<any[]>([]);
   const rows = quotations.filter((q) => q.branch === BRANCH);
+  // In list mode, default the unit field from the catalog item's own UOM whenever
+  // the selected item changes — the admin can still override it before adding.
+  useEffect(() => {
+    if (mode !== "list") return;
+    const item = catalogItems.find((i) => i.name === form.itemName);
+    if (item) setForm((f) => ({ ...f, unit: item.uom === "Kgs" ? "kg" : "pcs" }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, form.itemName]);
   const addLine = () => {
     const qty = Number(form.qty);
     const item = catalogItems.find((i) => i.name === form.itemName);
     const name = mode === "custom" ? form.customName.trim() : form.itemName;
     const rate = mode === "custom" ? Number(form.rate) : Number(item?.price || form.rate);
     if (!name || !qty || !rate) return;
-    setLines((current) => [...current, { itemName: name, quantity: qty, unit: item?.uom === "Kgs" ? "kg" : "pcs", price: rate, tax: 0, discount: 0, lineTotal: qty * rate }]);
+    setLines((current) => [...current, { itemName: name, quantity: qty, unit: form.unit, price: rate, tax: 0, discount: 0, lineTotal: qty * rate }]);
     setForm({ ...form, customName: "", qty: "1", rate: "" });
   };
   const subtotal = lines.reduce((sum, line) => sum + line.lineTotal, 0);
@@ -2886,12 +3163,13 @@ function QuotationsTab({ userName }: { userName: string }) {
           </div>
           <div className="flex gap-2">{(["list", "custom"] as const).map((x) => <button key={x} onClick={() => setMode(x)} className={cn(btnCls, mode === x ? "bg-orange-500 text-white" : "bg-slate-100 text-slate-700")}>{x === "list" ? "Item List" : "Custom Item"}</button>)}</div>
           {mode === "list" ? <Field label="Item"><select className={inputCls} value={form.itemName} onChange={(e) => setForm({ ...form, itemName: e.target.value })}>{catalogItems.map((i) => <option key={i.name}>{i.name}</option>)}</select></Field> : <Field label="Custom Item"><input className={inputCls} value={form.customName} onChange={(e) => setForm({ ...form, customName: e.target.value })} /></Field>}
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-3 gap-3">
             <Field label="Qty"><input type="number" className={inputCls} value={form.qty} onChange={(e) => setForm({ ...form, qty: e.target.value })} /></Field>
+            <Field label="Unit"><select className={inputCls} value={form.unit} onChange={(e) => setForm({ ...form, unit: e.target.value as "pcs" | "kg" })}><option value="pcs">pcs</option><option value="kg">kg</option></select></Field>
             <Field label="Rate"><input type="number" className={inputCls} value={form.rate} placeholder={mode === "list" ? "Auto from item" : ""} onChange={(e) => setForm({ ...form, rate: e.target.value })} /></Field>
           </div>
           <button onClick={addLine} className={cn(btnCls, "w-full bg-white text-slate-700 ring-1 ring-slate-200")}><Plus className="size-4" /> Add Item</button>
-          {lines.map((line, i) => <div key={`${line.itemName}-${i}`} className="flex items-center justify-between rounded-xl bg-slate-50 p-2 text-sm font-bold"><span>{line.itemName} - {line.quantity} x {money(line.price)}</span><button onClick={() => setLines((current) => current.filter((_, idx) => idx !== i))} className="text-red-600"><X className="size-4" /></button></div>)}
+          {lines.map((line, i) => <div key={`${line.itemName}-${i}`} className="flex items-center justify-between rounded-xl bg-slate-50 p-2 text-sm font-bold"><span>{line.itemName} - {line.quantity} {line.unit} x {money(line.price)}</span><button onClick={() => setLines((current) => current.filter((_, idx) => idx !== i))} className="text-red-600"><X className="size-4" /></button></div>)}
           <div className="grid grid-cols-2 gap-3">
             <Field label="Delivery"><input type="number" className={inputCls} value={form.deliveryCharges} onChange={(e) => setForm({ ...form, deliveryCharges: e.target.value })} /></Field>
             <Field label="Packing"><input type="number" className={inputCls} value={form.packingCharges} onChange={(e) => setForm({ ...form, packingCharges: e.target.value })} /></Field>
@@ -2950,6 +3228,8 @@ function CreditTab({ userName, role, fromDate, toDate }: { userName: string; rol
   const [discountMessage, setDiscountMessage] = useState("");
   const [detailId, setDetailId] = useState("");
   const [printError, setPrintError] = useState("");
+  const [editingPayment, setEditingPayment] = useState<(typeof payments)[number] | null>(null);
+  const [correctionMessage, setCorrectionMessage] = useState("");
   const detailCredit = credits.find((credit) => credit.id === detailId) || null;
   const [detailLedger, setDetailLedger] = useState<{
     subtotal: number;
@@ -3195,12 +3475,34 @@ function CreditTab({ userName, role, fromDate, toDate }: { userName: string; rol
         </Panel>
       </div>
       <Panel title="Credit Collection History" icon={<History className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Credit_Collections.xls", paymentsInRange.map((payment) => ({ Date: payment.createdAt, Bill: payment.billNo, Amount: payment.amount, Mode: payment.paymentMode, Reference: payment.reference || "-", CollectedBy: payment.collectedBy, Remarks: payment.remarks || "-" })))}><Download className="size-4" /> Excel</button>}>
+        {correctionMessage && <p className="mb-3 rounded-2xl bg-emerald-50 p-3 text-sm font-black text-emerald-700 ring-1 ring-emerald-100">{correctionMessage}</p>}
         <DataTable
-          headers={["Date", "Bill", "Amount", "Mode", "Reference", "Collected By", "Remarks"]}
-          rows={paymentsInRange.map((payment) => [fmtDateTime(payment.createdAt), payment.billNo, money(payment.amount), payment.paymentMode.toUpperCase(), payment.reference || "-", payment.collectedBy, payment.remarks || "-"])}
+          headers={["Date", "Bill", "Amount", "Mode", "Reference", "Collected By", "Remarks", "Action"]}
+          rows={paymentsInRange.map((payment) => [
+            fmtDateTime(payment.createdAt),
+            payment.billNo,
+            money(payment.amount),
+            payment.paymentMode.toUpperCase(),
+            payment.reference || "-",
+            payment.collectedBy,
+            payment.remarks || "-",
+            <button key="fix" onClick={() => { setEditingPayment(payment); setCorrectionMessage(""); }} className={cn(btnCls, "bg-amber-50 text-amber-700 ring-1 ring-amber-200")}><Pencil className="size-3.5" /> Fix Mode</button>,
+          ])}
           empty="No credit collections found."
         />
       </Panel>
+
+      {editingPayment && (
+        <EditCreditPaymentModeModal
+          payment={editingPayment}
+          onClose={() => setEditingPayment(null)}
+          onSaved={async (message) => {
+            setEditingPayment(null);
+            setCorrectionMessage(message);
+            await Promise.all([fetchBranchData(BRANCH), fetchCreditPayments(BRANCH)]);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -3478,24 +3780,109 @@ function CashierReportTab(props: any) {
       row.sessions += 1;
       map.set(name, row);
     });
-    return Array.from(map.values()).sort((a: any, b: any) => b.netSales - a.netSales);
+    // Total Amount = every rupee this cashier was accountable for handling in the
+    // period — cash/UPI/card counter sales plus credit collections and advance
+    // money received, so it's a true "money passed through this cashier" figure
+    // rather than just net sales (which already excludes credit/advance flows).
+    return Array.from(map.values())
+      .map((row: any) => ({ ...row, totalAmount: row.cash + row.upi + row.card + row.creditCollected + row.advance }))
+      .sort((a: any, b: any) => b.netSales - a.netSales);
   }, [props.dbReports.counterTotals]);
 
   const totalNet = rows.reduce((sum: number, row: any) => sum + row.netSales, 0);
   const totalBills = rows.reduce((sum: number, row: any) => sum + row.bills, 0);
+  const grandTotalAmount = rows.reduce((sum: number, row: any) => sum + row.totalAmount, 0);
   const best = rows[0];
   return (
     <div className="space-y-4">
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
         <Kpi label="Cashier Logins" value={rows.length} icon={<UserRound className="size-5" />} />
         <Kpi label="Total Bills" value={totalBills} icon={<Receipt className="size-5" />} tone="blue" />
         <Kpi label="Combined Net Sales" value={money(totalNet)} icon={<IndianRupee className="size-5" />} tone="green" />
+        <Kpi label="Total Amount Handled" value={money(grandTotalAmount)} icon={<WalletCards className="size-5" />} tone="purple" />
         <Kpi label="Top Cashier" value={best ? best.name : "-"} sub={best ? money(best.netSales) : undefined} icon={<BarChart3 className="size-5" />} tone="amber" />
       </div>
       {props.dbReports.error && <div className="rounded-2xl bg-amber-50 p-3 text-xs font-bold text-amber-800 ring-1 ring-amber-100">Some database reports could not load: {props.dbReports.error}</div>}
-      <Panel title="Cashier Accountability Report" icon={<BarChart3 className="size-4" />} action={<button className={cn(btnCls, "bg-slate-950 text-white")} onClick={() => csvDownload("SNB_Cashier_Report.xls", rows.map((row: any) => ({ CashierLogin: row.name, Sessions: row.sessions, GrossSales: row.grossSales, Returns: row.returns, NetSales: row.netSales, Bills: row.bills, Cash: row.cash, UPI: row.upi, Card: row.card, CreditSales: row.credit, CreditCollected: row.creditCollected, AdvanceCollected: row.advance })))}><Download className="size-4" /> Excel</button>}>
-        <DataTable headers={["Rank", "Cashier Login", "Sessions", "Gross", "Returns", "Net", "Bills", "Cash", "UPI", "Card", "Credit Sales", "Credit Collected", "Advance"]} rows={rows.map((row: any, index: number) => [`#${index + 1}`, row.name, row.sessions || "-", money(row.grossSales), money(row.returns), <span key="net" className="font-black text-emerald-700">{money(row.netSales)}</span>, row.bills, money(row.cash), money(row.upi), money(row.card), money(row.credit), money(row.creditCollected), money(row.advance)])} empty="No cashier sales data found for the selected date range." />
+      <Panel title="Cashier Accountability Report" icon={<BarChart3 className="size-4" />} action={<button className={cn(btnCls, "bg-slate-950 text-white")} onClick={() => csvDownload("SNB_Cashier_Report.xls", rows.map((row: any) => ({ CashierLogin: row.name, Sessions: row.sessions, GrossSales: row.grossSales, Returns: row.returns, NetSales: row.netSales, Bills: row.bills, Cash: row.cash, UPI: row.upi, Card: row.card, CreditSales: row.credit, CreditCollected: row.creditCollected, AdvanceCollected: row.advance, TotalAmount: row.totalAmount })))}><Download className="size-4" /> Excel</button>}>
+        <DataTable headers={["Rank", "Cashier Login", "Sessions", "Gross", "Returns", "Net", "Bills", "Cash", "UPI", "Card", "Credit Sales", "Credit Collected", "Advance", "Total Amount"]} rows={rows.map((row: any, index: number) => [`#${index + 1}`, row.name, row.sessions || "-", money(row.grossSales), money(row.returns), <span key="net" className="font-black text-emerald-700">{money(row.netSales)}</span>, row.bills, money(row.cash), money(row.upi), money(row.card), money(row.credit), money(row.creditCollected), money(row.advance), <span key="total" className="font-black text-purple-700">{money(row.totalAmount)}</span>])} empty="No cashier sales data found for the selected date range." />
+        {rows.length > 0 && (
+          <div className="mt-3 flex items-center justify-between rounded-2xl bg-slate-950 px-4 py-3 text-sm font-black text-white">
+            <span>Total Amount — All Cashiers</span>
+            <span className="tabular-nums">{money(grandTotalAmount)}</span>
+          </div>
+        )}
       </Panel>
+    </div>
+  );
+}
+
+function denominationRows(pack: Record<string, unknown> | null | undefined) {
+  if (!pack) return [];
+  return Object.entries(pack)
+    .map(([denom, count]) => ({ denom: Number(denom), count: Number(count) || 0 }))
+    .filter((row) => Number.isFinite(row.denom) && row.denom > 0 && row.count > 0)
+    .sort((a, b) => b.denom - a.denom);
+}
+
+function DenominationAuditModal({ row, onClose }: { row: any; onClose: () => void }) {
+  const opening = denominationRows(row.opening_denominations);
+  const closing = denominationRows(row.closing_denominations);
+  const openingTotal = opening.reduce((sum, r) => sum + r.denom * r.count, 0);
+  const closingTotal = closing.reduce((sum, r) => sum + r.denom * r.count, 0);
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="w-full max-w-lg rounded-2xl bg-white p-4 shadow-xl">
+        <div className="mb-3 flex items-center justify-between">
+          <h3 className="text-sm font-black text-slate-900">
+            Denomination Audit — {row.cashier_display_name || row.cashier_username || "Legacy / Unattributed"} ({row.business_date})
+          </h3>
+          <button onClick={onClose}><X className="size-4 text-slate-400" /></button>
+        </div>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div>
+            <p className="mb-2 text-xs font-black uppercase tracking-wide text-slate-500">Opening Cash</p>
+            {opening.length === 0 ? (
+              <p className="text-xs font-bold text-slate-400">No denomination breakdown recorded.</p>
+            ) : (
+              <div className="space-y-1">
+                {opening.map((r) => (
+                  <div key={r.denom} className="flex items-center justify-between rounded-lg bg-slate-50 px-2.5 py-1.5 text-xs font-bold">
+                    <span>₹{r.denom} × {r.count}</span>
+                    <span className="tabular-nums">{money(r.denom * r.count)}</span>
+                  </div>
+                ))}
+                <div className="flex items-center justify-between rounded-lg bg-slate-950 px-2.5 py-1.5 text-xs font-black text-white">
+                  <span>Total</span><span className="tabular-nums">{money(openingTotal)}</span>
+                </div>
+              </div>
+            )}
+          </div>
+          <div>
+            <p className="mb-2 text-xs font-black uppercase tracking-wide text-slate-500">Closing Cash</p>
+            {closing.length === 0 ? (
+              <p className="text-xs font-bold text-slate-400">No denomination breakdown recorded.</p>
+            ) : (
+              <div className="space-y-1">
+                {closing.map((r) => (
+                  <div key={r.denom} className="flex items-center justify-between rounded-lg bg-slate-50 px-2.5 py-1.5 text-xs font-bold">
+                    <span>₹{r.denom} × {r.count}</span>
+                    <span className="tabular-nums">{money(r.denom * r.count)}</span>
+                  </div>
+                ))}
+                <div className="flex items-center justify-between rounded-lg bg-slate-950 px-2.5 py-1.5 text-xs font-black text-white">
+                  <span>Total</span><span className="tabular-nums">{money(closingTotal)}</span>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+        {row.status === "closed" && (
+          <div className="mt-3 flex items-center justify-between rounded-xl bg-amber-50 px-3 py-2 text-xs font-bold text-amber-800 ring-1 ring-amber-100">
+            <span>System-recorded Counted Cash</span>
+            <span className="tabular-nums">{money(asNumber(row.counted_cash))}</span>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -3506,6 +3893,7 @@ function CashierClosureTab(props: any) {
   const totalDifference = closedRows.reduce((sum: number, row: any) => sum + asNumber(row.difference), 0);
   const mismatches = closedRows.filter((row: any) => Math.abs(asNumber(row.difference)) > 0.009).length;
   const openCounters = rows.filter((row: any) => row.status === "open").length;
+  const [denomRow, setDenomRow] = useState<any | null>(null);
 
   return (
     <div className="space-y-4">
@@ -3517,7 +3905,7 @@ function CashierClosureTab(props: any) {
       </div>
       <Panel title="Per-Cashier Counter Sessions" icon={<CalendarClock className="size-4" />} action={<button className={cn(btnCls, "bg-slate-950 text-white")} onClick={() => csvDownload("SNB_Cashier_Closures.xls", rows.map((row: any) => ({ BusinessDate: row.business_date, CashierLogin: row.cashier_display_name || row.cashier_username || "Legacy / Unattributed", OpenedAt: row.opened_at, ClosedAt: row.closed_at || "", Status: row.status, OpeningCash: asNumber(row.opening_cash), GrossSales: asNumber(row.gross_sales), Discounts: asNumber(row.discounts), Returns: asNumber(row.returns), NetSales: asNumber(row.net_sales), CashSales: asNumber(row.cash_sales), UPISales: asNumber(row.upi_sales), CardSales: asNumber(row.card_sales), CreditSales: asNumber(row.credit_sales), CreditCollected: asNumber(row.credit_collected), AdvanceCollected: asNumber(row.advance_collected), Expenses: asNumber(row.expenses), SupplierPayments: asNumber(row.supplier_payments), BankDeposits: asNumber(row.bank_deposits), ExpectedCash: asNumber(row.expected_cash), CountedCash: asNumber(row.counted_cash), Difference: asNumber(row.difference), Bills: asNumber(row.bill_count), Notes: row.notes || "" })))}><Download className="size-4" /> Excel</button>}>
         <DataTable
-          headers={["Date", "Cashier Login", "Session", "Status", "Opening", "Gross", "Returns", "Net", "Expected", "Counted", "Difference", "Bills", "Cash", "UPI", "Card", "Credit Collected", "Advance", "Expenses", "Supplier Payments", "Bank Deposits", "Notes"]}
+          headers={["Date", "Cashier Login", "Session", "Status", "Opening", "Gross", "Returns", "Net", "Expected", "Counted", "Difference", "Bills", "Cash", "UPI", "Card", "Credit Collected", "Advance", "Expenses", "Supplier Payments", "Bank Deposits", "Notes", "Action"]}
           rows={rows.map((row: any) => [
             row.business_date,
             row.cashier_display_name || row.cashier_username || "Legacy / Unattributed",
@@ -3540,10 +3928,13 @@ function CashierClosureTab(props: any) {
             money(asNumber(row.supplier_payments)),
             money(asNumber(row.bank_deposits)),
             row.notes || "-",
+            <button key="denom" className={cn(btnCls, "bg-indigo-50 px-3 py-1.5 text-indigo-700 ring-1 ring-indigo-200")} onClick={() => setDenomRow(row)}><WalletCards className="size-3.5" /> Denominations</button>,
           ])}
           empty="No cashier counter sessions found for the selected date range."
         />
       </Panel>
+
+      {denomRow && <DenominationAuditModal row={denomRow} onClose={() => setDenomRow(null)} />}
     </div>
   );
 }
@@ -5708,7 +6099,8 @@ function SupplierPaymentsTab({
 }
 
 function BankDepositsTab({ userName }: { userName: string }) {
-  const { bankDeposits, addBankDeposit, expenses } = useBranchOpsStore();
+  const { bankDeposits, addBankDeposit, updateBankDeposit, expenses } = useBranchOpsStore();
+  const { currentUser } = useAuthStore();
 
   // Authoritative all-time source: every closed/open counter session ever
   // recorded for this branch (no date filter). This is the same source
@@ -5830,6 +6222,25 @@ function BankDepositsTab({ userName }: { userName: string }) {
       transactionRef: "",
       remarks: "",
     });
+  };
+
+  const [editingDeposit, setEditingDeposit] = useState<(typeof rows)[number] | null>(null);
+  const [editForm, setEditForm] = useState({ amount: "", bankAccount: "", paymentMode: "Cash Deposit", slipNo: "", transactionRef: "", remarks: "" });
+  const openEdit = (deposit: (typeof rows)[number]) => {
+    setEditingDeposit(deposit);
+    setEditForm({ amount: String(deposit.amount), bankAccount: deposit.bankAccount, paymentMode: deposit.paymentMode, slipNo: deposit.slipNo || "", transactionRef: deposit.transactionRef || "", remarks: deposit.remarks || "" });
+  };
+  const confirmEdit = async (password: string): Promise<string | null> => {
+    if (!editingDeposit) return "No deposit selected.";
+    const amount = Number(editForm.amount);
+    if (!editForm.bankAccount.trim() || !amount || amount <= 0) return "Enter a valid bank account and amount.";
+    if (!currentUser?.id) return "Your session is missing a user id — please re-login.";
+    const { data: verified, error: verifyError } = await supabase.rpc("verify_staff_password", { p_user_id: currentUser.id, p_password: password });
+    if (verifyError) return `Could not verify password: ${verifyError.message}`;
+    if (!verified) return "Incorrect password.";
+    updateBankDeposit(editingDeposit.id, { amount, bankAccount: editForm.bankAccount.trim(), paymentMode: editForm.paymentMode as any, slipNo: editForm.slipNo.trim(), transactionRef: editForm.transactionRef.trim(), remarks: editForm.remarks.trim() }, userName);
+    setEditingDeposit(null);
+    return null;
   };
 
   return (
@@ -6011,6 +6422,7 @@ function BankDepositsTab({ userName }: { userName: string }) {
               "Remarks",
               "Bank Deposited (Total)",
               "Cash In Hand After",
+              "Action",
             ]}
             rows={rows.map((d) => [
               fmtDate(d.depositDate),
@@ -6023,11 +6435,34 @@ function BankDepositsTab({ userName }: { userName: string }) {
               d.remarks,
               <span key="cum" className="font-black text-purple-700">{money(d.cumulativeDeposited)}</span>,
               <span key="cash" className={cn("font-black", d.cashAfter >= 0 ? "text-emerald-700" : "text-red-600")}>{money(d.cashAfter)}</span>,
+              <button key="edit" className={cn(btnCls, "bg-amber-50 px-3 py-1.5 text-amber-700 ring-1 ring-amber-200")} onClick={() => openEdit(d)}><Pencil className="size-3.5" /> Edit</button>,
             ])}
             empty="No bank deposits saved."
           />
         </Panel>
       </div>
+
+      {editingDeposit && (
+        <PasswordConfirmEditModal title={`Edit Deposit — ${fmtDate(editingDeposit.depositDate)}`} onCancel={() => setEditingDeposit(null)} onConfirm={confirmEdit}>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Amount"><input type="number" className={inputCls} value={editForm.amount} onChange={(e) => setEditForm({ ...editForm, amount: e.target.value })} /></Field>
+            <Field label="Method">
+              <select className={inputCls} value={editForm.paymentMode} onChange={(e) => setEditForm({ ...editForm, paymentMode: e.target.value })}>
+                <option value="Cash Deposit">Cash Deposit</option>
+                <option value="UPI Transfer">UPI Transfer</option>
+                <option value="Card Settlement">Card Settlement</option>
+                <option value="Bank Transfer">Bank Transfer</option>
+              </select>
+            </Field>
+          </div>
+          <Field label="Bank Account"><input className={inputCls} value={editForm.bankAccount} onChange={(e) => setEditForm({ ...editForm, bankAccount: e.target.value })} /></Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Slip No"><input className={inputCls} value={editForm.slipNo} onChange={(e) => setEditForm({ ...editForm, slipNo: e.target.value })} /></Field>
+            <Field label="Reference"><input className={inputCls} value={editForm.transactionRef} onChange={(e) => setEditForm({ ...editForm, transactionRef: e.target.value })} /></Field>
+          </div>
+          <Field label="Remarks"><textarea className={inputCls} value={editForm.remarks} onChange={(e) => setEditForm({ ...editForm, remarks: e.target.value })} /></Field>
+        </PasswordConfirmEditModal>
+      )}
     </div>
   );
 }
