@@ -4,18 +4,135 @@
 
 import { useEffect, useState, useMemo } from 'react';
 import { useBranchStore } from '@/branch/branchStore';
-import type { CreditSale } from '@/branch/branchStore';
+import type { CreditSale, CreditPayment } from '@/branch/branchStore';
 import type { Branch } from '@/branch/types';
 import { formatCurrency } from '@/lib/utils';
 import { cn } from '@/lib/utils';
+import { supabase } from '@/lib/supabase';
+import { useAuthStore } from '@/stores/authStore';
 import {
   PieChart, Pie, Cell, Tooltip, ResponsiveContainer,
   BarChart, Bar, XAxis, YAxis, CartesianGrid,
 } from 'recharts';
 import {
   IndianRupee, Users, CheckCircle2, Clock, AlertCircle,
-  ChevronDown, ChevronUp, Filter, Loader2, Download, Percent,
+  ChevronDown, ChevronUp, Filter, Loader2, Download, Percent, Pencil, Lock, X,
 } from 'lucide-react';
+
+const PAYMENT_MODES: CreditPayment['paymentMode'][] = ['cash', 'upi', 'card', 'bank'];
+
+// ── Edit a settled credit payment's mode (fix a mis-recorded cash/UPI/card entry) ──
+// Exported so branch-specific admin dashboards (e.g. AdminSNBDashboard's own local
+// Credit tab) can reuse the same correction UI without duplicating the RPC wiring.
+export function EditCreditPaymentModeModal({
+  payment,
+  onClose,
+  onSaved,
+}: {
+  payment: CreditPayment;
+  onClose: () => void;
+  onSaved: (message: string) => void;
+}) {
+  const { currentUser } = useAuthStore();
+  const [mode, setMode] = useState<CreditPayment['paymentMode']>(payment.paymentMode);
+  const [reason, setReason] = useState('');
+  const [password, setPassword] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  const submit = async () => {
+    if (mode === payment.paymentMode) { setError('Choose a different payment mode.'); return; }
+    if (!reason.trim()) { setError('Enter a reason for this correction.'); return; }
+    if (!password) { setError('Enter your password to confirm.'); return; }
+    setSaving(true);
+    setError('');
+    const { data, error: rpcError } = await supabase.rpc('edit_branch_credit_payment_mode_secure', {
+      p_branch: payment.branch,
+      p_credit_payment_id: payment.id,
+      p_new_mode: mode,
+      p_reason: reason.trim(),
+      p_password: password,
+      p_changed_by: currentUser?.username || currentUser?.displayName || 'Admin',
+    });
+    setSaving(false);
+    if (rpcError) {
+      if (/INVALID_PASSWORD/i.test(rpcError.message)) setError('Incorrect password.');
+      else if (/edit_branch_credit_payment_mode_secure|could not find the function|schema cache|does not exist/i.test(rpcError.message)) {
+        setError('This feature is not installed yet. Ask the developer to run the latest migration.');
+      } else setError(rpcError.message);
+      return;
+    }
+    void data;
+    onSaved(`Payment mode updated to ${mode.toUpperCase()} for bill #${payment.billNo}.`);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="w-full max-w-sm rounded-2xl bg-white p-4 shadow-xl">
+        <div className="mb-3 flex items-center justify-between">
+          <h3 className="text-sm font-black text-slate-900">Correct Payment Mode</h3>
+          <button onClick={onClose}><X className="size-4 text-slate-400" /></button>
+        </div>
+        <p className="mb-3 text-xs text-muted-foreground">
+          Bill #{payment.billNo} · {formatCurrency(payment.amount)} collected on{' '}
+          {new Date(payment.createdAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
+          {' '}as <span className="font-bold uppercase">{payment.paymentMode}</span>
+        </p>
+        <div className="space-y-2.5">
+          <div>
+            <label className="text-[10px] font-bold uppercase tracking-wide text-slate-500">New Payment Mode</label>
+            <select
+              value={mode}
+              onChange={(e) => setMode(e.target.value as CreditPayment['paymentMode'])}
+              className="mt-1 w-full rounded-lg border border-border px-2 py-2 text-sm font-semibold bg-background"
+            >
+              {PAYMENT_MODES.map((m) => (
+                <option key={m} value={m}>{m.toUpperCase()}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Reason</label>
+            <input
+              type="text"
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              placeholder="e.g. cashier entered wrong mode"
+              className="mt-1 w-full rounded-lg border border-border px-2 py-2 text-sm bg-background"
+            />
+          </div>
+          <div>
+            <label className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Your Password</label>
+            <div className="relative mt-1">
+              <Lock className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full rounded-lg border border-border py-2 pl-8 pr-2 text-sm bg-background"
+              />
+            </div>
+          </div>
+          {error && (
+            <p className="text-[11px] text-destructive flex items-center gap-1">
+              <AlertCircle className="size-3 shrink-0" />{error}
+            </p>
+          )}
+          <div className="flex gap-2 pt-1">
+            <button onClick={onClose} className="flex-1 rounded-xl border border-border py-2 text-sm font-bold">Cancel</button>
+            <button
+              onClick={submit}
+              disabled={saving}
+              className="flex-1 rounded-xl bg-slate-950 py-2 text-sm font-bold text-white disabled:opacity-50"
+            >
+              {saving ? 'Saving…' : 'Save Correction'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 const STATUS_COLOR: Record<CreditSale['status'], string> = {
@@ -62,11 +179,18 @@ function KpiCard({
 
 // ── Expandable credit sale card ───────────────────────────────────────────────
 function CreditCard({ sale }: { sale: CreditSale & { branch: Branch } }) {
-  const { settleCreditSale, applyCreditDiscount } = useBranchStore();
+  const { settleCreditSale, applyCreditDiscount, creditPayments } = useBranchStore();
   const [open, setOpen] = useState(false);
   const [settleAmt, setSettleAmt] = useState('');
   const [settling, setSettling] = useState(false);
   const [settleError, setSettleError] = useState('');
+  const [editingPayment, setEditingPayment] = useState<CreditPayment | null>(null);
+  const [correctionMessage, setCorrectionMessage] = useState('');
+
+  const salePayments = useMemo(
+    () => (creditPayments[sale.branch] || []).filter((p) => p.creditSaleId === sale.id),
+    [creditPayments, sale.branch, sale.id],
+  );
 
   const [showDiscount, setShowDiscount] = useState(false);
   const [discountAmt, setDiscountAmt] = useState('');
@@ -341,7 +465,50 @@ function CreditCard({ sale }: { sale: CreditSale & { branch: Branch } }) {
               Total discount given on this bill: {formatCurrency(sale.discountAmount)}
             </p>
           )}
+
+          {/* ── Payment History / Correct Mode (e.g. cashier logged UPI as Cash) ── */}
+          {salePayments.length > 0 && (
+            <div className="border-t border-border pt-3 space-y-2">
+              <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">
+                Payment History
+              </p>
+              {correctionMessage && (
+                <p className="text-[11px] text-emerald-700 flex items-center gap-1">
+                  <CheckCircle2 className="size-3 shrink-0" />{correctionMessage}
+                </p>
+              )}
+              <div className="space-y-1.5">
+                {salePayments.map((p) => (
+                  <div key={p.id} className="flex items-center justify-between rounded-lg bg-muted px-2.5 py-1.5">
+                    <div className="min-w-0">
+                      <p className="text-xs font-semibold">
+                        {formatCurrency(p.amount)} · <span className="uppercase">{p.paymentMode}</span>
+                      </p>
+                      <p className="text-[10px] text-muted-foreground">
+                        {new Date(p.createdAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
+                        {p.collectedBy ? ` · ${p.collectedBy}` : ''}
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => { setEditingPayment(p); setCorrectionMessage(''); }}
+                      className="flex shrink-0 items-center gap-1 rounded-lg border border-amber-300 bg-amber-50 px-2 py-1 text-[10px] font-bold text-amber-700"
+                    >
+                      <Pencil className="size-3" />Fix Mode
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
+      )}
+
+      {editingPayment && (
+        <EditCreditPaymentModeModal
+          payment={editingPayment}
+          onClose={() => setEditingPayment(null)}
+          onSaved={(message) => { setEditingPayment(null); setCorrectionMessage(message); }}
+        />
       )}
     </div>
   );
@@ -354,7 +521,7 @@ interface AdminCreditTabProps {
 }
 
 export default function AdminCreditTab({ branches, accentColor = 'text-primary' }: AdminCreditTabProps) {
-  const { creditSales, fetchCreditSales } = useBranchStore();
+  const { creditSales, fetchCreditSales, fetchCreditPayments } = useBranchStore();
   const [statusFilter, setStatusFilter] = useState<'all' | CreditSale['status']>('all');
   const [branchFilter, setBranchFilter] = useState<Branch | 'all'>('all');
   const [searchQuery, setSearchQuery] = useState('');
@@ -365,9 +532,9 @@ export default function AdminCreditTab({ branches, accentColor = 'text-primary' 
 
   // Fetch on mount for each relevant branch
   useEffect(() => {
-    branches.forEach(b => fetchCreditSales(b));
+    branches.forEach(b => { fetchCreditSales(b); fetchCreditPayments(b); });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fetchCreditSales]);
+  }, [fetchCreditSales, fetchCreditPayments]);
 
   // Collect all credit sales for the given branches
   const allSales = useMemo(() => {

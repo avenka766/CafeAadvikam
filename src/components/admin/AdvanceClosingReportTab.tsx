@@ -37,6 +37,16 @@ export default function AdvanceClosingReportTab({ fromDate, toDate }: Props) {
 
   const orders = advanceOrders[BRANCH] || [];
 
+  // Pending summary is a current-state figure, independent of the fromDate/toDate
+  // range below — an order placed weeks ago and still unpaid is still "pending" today.
+  const pendingOrders = useMemo(() => orders.filter((o) => o.status === 'pending'), [orders]);
+  const pendingCount = pendingOrders.length;
+  const pendingOrderValue = useMemo(() => pendingOrders.reduce((s, o) => s + o.subtotal, 0), [pendingOrders]);
+  const pendingBalanceDue = useMemo(
+    () => pendingOrders.reduce((s, o) => s + Math.max(0, o.subtotal - o.advanceAmount), 0),
+    [pendingOrders],
+  );
+
   // Stable, unique Advance No. for every order, based on the order it was
   // placed across the branch's full history - independent of whichever
   // date range is currently selected, so the same order always shows the
@@ -93,6 +103,21 @@ export default function AdvanceClosingReportTab({ fromDate, toDate }: Props) {
 
   return (
     <div className="space-y-6">
+      <div className="grid gap-3 sm:grid-cols-3">
+        <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3">
+          <p className="text-[10px] font-bold uppercase tracking-wide text-amber-700">Pending Advance Orders</p>
+          <p className="mt-1 text-xl font-black text-amber-900 tabular-nums">{pendingCount}</p>
+        </div>
+        <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3">
+          <p className="text-[10px] font-bold uppercase tracking-wide text-amber-700">Total Order Value (Pending)</p>
+          <p className="mt-1 text-xl font-black text-amber-900 tabular-nums">{money(pendingOrderValue)}</p>
+        </div>
+        <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3">
+          <p className="text-[10px] font-bold uppercase tracking-wide text-amber-700">Balance Still Due</p>
+          <p className="mt-1 text-xl font-black text-amber-900 tabular-nums">{money(pendingBalanceDue)}</p>
+        </div>
+      </div>
+
       <div className="flex items-center justify-between">
         <p className="text-xs font-semibold text-slate-500">
           {fromDate} to {toDate} · {byDay.reduce((s, [, o]) => s + o.length, 0)} advance orders
