@@ -16,6 +16,20 @@ export const CAFE_CONFIG = {
 
 export const TABLE_NUMBERS = Array.from({ length: 30 }, (_, i) => i + 1);
 
+// Table numbering (2026-08-08): tables 1-15 are physically the "G" section,
+// 16-30 are the "A" section. table_number itself stays a plain integer
+// everywhere in the database/RPCs/print templates — these are shared display
+// helpers for the two-step G/A picker (Cafe billing, QR ordering) and the
+// G-/A-prefixed labels shown wherever a table number is shown to a person.
+export const TABLES_G = TABLE_NUMBERS.filter(n => n <= 15);
+export const TABLES_A = TABLE_NUMBERS.filter(n => n > 15);
+export function tableSectionOf(num: number): 'G' | 'A' {
+  return num <= 15 ? 'G' : 'A';
+}
+export function tableLabel(num: number): string {
+  return num <= 15 ? `G${num}` : `A${num - 15}`;
+}
+
 export const ORDER_STATUS_LABELS: Record<string, string> = {
   pending: 'New Order',
   preparing: 'Preparing',
