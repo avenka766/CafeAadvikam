@@ -38,4 +38,19 @@ export function printViaIframe(html: string) {
   win.document.open();
   win.document.write(finalHtml);
   win.document.close();
+
+  // Belt-and-braces (2026-08-08): the embedded onload script above is the
+  // exact mechanism printSnbCounterBill/printCounterBill already rely on
+  // successfully elsewhere in this app, but on live testing this specific
+  // print (dispatch invoice reprint) opened the window with the right
+  // content and title yet never actually raised the print dialog — the
+  // 'load' event either didn't fire or something about this window
+  // suppressed the auto-print. Also fire print() directly from here as a
+  // second, independent trigger. If the onload script already opened the
+  // dialog this is harmless (browsers just no-op or refocus it); if onload
+  // never fired, this is what actually gets the print out.
+  try { win.focus(); } catch { /* ignore */ }
+  setTimeout(() => {
+    try { win.print(); } catch { /* window may already be closed */ }
+  }, 300);
 }
