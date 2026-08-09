@@ -177,10 +177,11 @@ export async function recordLeftoverMovement(params: {
 }
 
 // FEATURE (2026-08-09): "Need ability to fully edit Closing Stock entries —
-// quantity, unit, name, etc." Only rewrites the row in place (item/unit/
-// quantity) — restricted server-side to reason='closing_stock' rows, since
-// dispatch/production entries are the real audit trail of stock that
-// actually moved through an order and must never be silently rewritten.
+// quantity, unit, name, etc." Rewrites a single ledger row in place
+// (item/unit/quantity) — open to every reason (dispatch/production/
+// adjustment/etc, not just manually-added closing_stock rows), per explicit
+// follow-up request. The server-side RPC preserves the row's original +/-
+// direction so an edit here can't flip a deduction into an addition.
 export async function editClosingStockEntry(params: {
   entryId: string;
   itemName: string;
@@ -199,6 +200,33 @@ export async function editClosingStockEntry(params: {
     p_edited_by: params.editedBy,
   });
   if (error) return { error: error.message };
+  return { ok: true };
+}
+
+// FEATURE (2026-08-09): edits the "Current Leftover Balance" summary row
+// directly — the aggregate view the planner actually looks at first — not
+// just a single Movement Log entry. Renaming bulk-renames every historical
+// ledger row for this item+unit bucket (so nothing splits into two rows
+// under old/new names), and a changed target quantity is applied as a single
+// 'adjustment' entry for the difference, keeping full history intact.
+export async function renameAndCorrectClosingStockBalance(params: {
+  oldItemSlug: string;
+  oldUnit: LeftoverUnit;
+  newItemName: string;
+  newUnit: LeftoverUnit;
+  targetQuantity: number;
+  editedBy: string;
+}): Promise<{ ok: true } | { error: string }> {
+  const { data, error } = await supabase.rpc('rename_and_correct_closing_stock_balance_secure', {
+    p_old_slug: params.oldItemSlug,
+    p_old_unit: params.oldUnit,
+    p_new_item_name: params.newItemName.trim(),
+    p_new_unit: params.newUnit,
+    p_target_quantity: params.targetQuantity,
+    p_edited_by: params.editedBy,
+  });
+  if (error) return { error: error.message };
+  void data;
   return { ok: true };
 }
 
@@ -388,6 +416,41 @@ export default function PlannerLeftoverTab() {
     if ('error' in result) { setError(result.error); return; }
     setMessage(`${balanceRow.itemName}: ${qtyFmt(amount)} ${balanceRow.unit} removed (spoilage/correction).`);
     setAdjustingSlug(null); setAdjustQty(''); setAdjustNote('');
+    void refresh();
+  };
+
+  // ── Edit the aggregate "Current Leftover Balance" row directly (item
+  // name/unit/quantity) — this is the table the planner actually looks at
+  // first, distinct from editing one Movement Log entry below. ───────────
+  const [editBalanceKey, setEditBalanceKey] = useState<string | null>(null);
+  const [editBalanceName, setEditBalanceName] = useState('');
+  const [editBalanceUnit, setEditBalanceUnit] = useState<LeftoverUnit>('kg');
+  const [editBalanceQty, setEditBalanceQty] = useState('');
+  const [editBalanceSaving, setEditBalanceSaving] = useState(false);
+
+  const startEditBalance = (row: { itemSlug: string; itemName: string; unit: LeftoverUnit; balance: number }) => {
+    setEditBalanceKey(`${row.itemSlug}|${row.unit}`);
+    setEditBalanceName(row.itemName);
+    setEditBalanceUnit(row.unit);
+    setEditBalanceQty(String(row.balance));
+    setError(''); setMessage('');
+  };
+
+  const submitEditBalance = async (row: { itemSlug: string; itemName: string; unit: LeftoverUnit; balance: number }) => {
+    const name = editBalanceName.trim();
+    const target = Number(editBalanceQty);
+    if (!name) { setError('Enter an item name.'); return; }
+    if (!Number.isFinite(target)) { setError('Enter a valid balance quantity.'); return; }
+    setEditBalanceSaving(true); setError('');
+    const result = await renameAndCorrectClosingStockBalance({
+      oldItemSlug: row.itemSlug, oldUnit: row.unit,
+      newItemName: name, newUnit: editBalanceUnit, targetQuantity: target,
+      editedBy: staffName,
+    });
+    setEditBalanceSaving(false);
+    if ('error' in result) { setError(result.error); return; }
+    setMessage(`${name}: balance updated to ${qtyFmt(target)} ${editBalanceUnit}.`);
+    setEditBalanceKey(null); setEditBalanceName(''); setEditBalanceQty('');
     void refresh();
   };
 
@@ -738,29 +801,51 @@ export default function PlannerLeftoverTab() {
           <div className="max-h-[420px] overflow-y-auto">
             <table className="min-w-full text-sm">
               <thead className="sticky top-0 bg-muted/50 text-[10px] font-black uppercase tracking-wide text-muted-foreground">
-                <tr><th className="px-4 py-2.5 text-left">Item</th><th className="px-4 py-2.5 text-right">Balance</th><th className="px-4 py-2.5 text-right">Adjust</th></tr>
+                <tr><th className="px-4 py-2.5 text-left">Item</th><th className="px-4 py-2.5 text-right">Balance</th><th className="px-4 py-2.5 text-right">Actions</th></tr>
               </thead>
               <tbody className="divide-y">
                 {balances.length ? balances.map((row) => {
                   const isBackorder = row.balance < -0.001;
+                  const key = `${row.itemSlug}|${row.unit}`;
+                  if (editBalanceKey === key) {
+                    return (
+                      <tr key={key} className="bg-teal-50/60">
+                        <td className="px-4 py-2.5" colSpan={3}>
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <input autoFocus value={editBalanceName} onChange={(e) => setEditBalanceName(e.target.value)} placeholder="Item name" className="h-8 min-w-[140px] flex-1 rounded-lg border bg-background px-2 text-xs font-bold" />
+                            <input type="number" step="0.001" value={editBalanceQty} onChange={(e) => setEditBalanceQty(e.target.value)} placeholder="Balance qty" className="h-8 w-24 rounded-lg border bg-background px-2 text-right text-xs font-bold" />
+                            <select value={editBalanceUnit} onChange={(e) => setEditBalanceUnit(e.target.value as LeftoverUnit)} className="h-8 rounded-lg border bg-background px-1 text-xs font-bold">
+                              <option value="kg">kg</option>
+                              <option value="pcs">pcs</option>
+                            </select>
+                            <button onClick={() => submitEditBalance(row)} disabled={editBalanceSaving} className="rounded-lg bg-teal-700 px-2.5 py-1.5 text-[10px] font-black text-white disabled:opacity-50">{editBalanceSaving ? '…' : 'Save'}</button>
+                            <button onClick={() => { setEditBalanceKey(null); setEditBalanceName(''); setEditBalanceQty(''); }} className="rounded-lg bg-muted px-1.5 py-1.5"><X className="size-3" /></button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  }
                   return (
-                  <tr key={`${row.itemSlug}|${row.unit}`} className={isBackorder ? 'bg-red-50/60' : undefined}>
+                  <tr key={key} className={isBackorder ? 'bg-red-50/60' : undefined}>
                     <td className="px-4 py-2.5 font-bold">{row.itemName}</td>
                     <td className={cn('px-4 py-2.5 text-right font-black', isBackorder && 'text-red-700')}>
                       {qtyFmt(row.balance)} {row.unit}
                       {isBackorder && <span className="ml-1.5 rounded-full bg-red-100 px-1.5 py-0.5 text-[9px] font-black uppercase text-red-700">Backorder</span>}
                     </td>
                     <td className="px-4 py-2.5 text-right">
-                      {isBackorder ? (
-                        <span className="text-[10px] font-bold text-muted-foreground">—</span>
-                      ) : adjustingSlug === `${row.itemSlug}|${row.unit}` ? (
+                      {adjustingSlug === key ? (
                         <div className="flex items-center justify-end gap-1">
                           <input autoFocus type="number" min="0" step="0.001" value={adjustQty} onChange={(e) => setAdjustQty(e.target.value)} className="h-8 w-20 rounded-lg border bg-background px-2 text-xs" placeholder="qty" />
                           <button onClick={() => submitAdjustment(row)} disabled={adjustSaving} className="rounded-lg bg-red-600 px-2 py-1.5 text-[10px] font-black text-white">{adjustSaving ? '…' : 'Remove'}</button>
                           <button onClick={() => { setAdjustingSlug(null); setAdjustQty(''); setAdjustNote(''); }} className="rounded-lg bg-muted px-1.5 py-1.5"><X className="size-3" /></button>
                         </div>
                       ) : (
-                        <button onClick={() => setAdjustingSlug(`${row.itemSlug}|${row.unit}`)} className="inline-flex items-center gap-1 rounded-lg bg-red-50 px-2 py-1 text-[10px] font-black text-red-700"><Minus className="size-3" />Write-off</button>
+                        <div className="flex items-center justify-end gap-1">
+                          <button onClick={() => startEditBalance(row)} className="inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-[10px] font-black text-muted-foreground hover:bg-muted">Edit</button>
+                          {!isBackorder && (
+                            <button onClick={() => setAdjustingSlug(key)} className="inline-flex items-center gap-1 rounded-lg bg-red-50 px-2 py-1 text-[10px] font-black text-red-700"><Minus className="size-3" />Write-off</button>
+                          )}
+                        </div>
                       )}
                     </td>
                   </tr>

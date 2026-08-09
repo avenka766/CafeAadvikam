@@ -13,7 +13,7 @@ import {
   ChevronDown, ChevronUp, X, RefreshCw, AlertTriangle, FileSpreadsheet, Clock3,
   Store, CreditCard, WalletCards, MessageCircle, Bell, CalendarDays,
   Search, Printer, Receipt, ListPlus, BarChart3, FileText, Minus, IndianRupee,
-  ShoppingCart, Percent, Trash2, Scale, PackageMinus, UserCheck,
+  ShoppingCart, Percent, Trash2, Scale, PackageMinus,
 } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import * as XLSX from 'xlsx';
@@ -49,7 +49,7 @@ import { getPackingCounterStatus } from './packingCounter';
 // list rendered as a panel inside it. The 'done' key is kept in the type
 // (but no longer in TABS/nav) purely so any stale bookmarked URL still
 // resolves instead of erroring.
-type PlannerTab = 'incoming' | 'sent' | 'merged' | 'planning' | 'production' | 'dispatch' | 'hosur' | 'custom' | 'cake' | 'transfer-in' | 'transfer-out' | 'closure' | 'leftover-stock' | 'invoice' | 'reports' | 'billing' | 'done';
+type PlannerTab = 'incoming' | 'sent' | 'merged' | 'planning' | 'production' | 'dispatch' | 'hosur' | 'cake' | 'transfer-in' | 'transfer-out' | 'closure' | 'leftover-stock' | 'invoice' | 'reports' | 'billing' | 'done';
 const TABS: { key: PlannerTab; label: string; icon: React.ReactNode }[] = [
   { key: 'incoming',    label: 'Incoming Orders',  icon: <ClipboardList className="size-4" /> },
   { key: 'sent',        label: 'Sent',             icon: <Send className="size-4" /> },
@@ -58,7 +58,6 @@ const TABS: { key: PlannerTab; label: string; icon: React.ReactNode }[] = [
   { key: 'production',  label: 'Production Entry', icon: <Factory className="size-4" /> },
   { key: 'dispatch',    label: 'Dispatch',         icon: <Truck className="size-4" /> },
   { key: 'hosur',       label: 'Hosur Shops & Billing', icon: <PackageCheck className="size-4" /> },
-  { key: 'custom',      label: 'Custom Dispatch',  icon: <UserCheck className="size-4" /> },
   { key: 'cake',        label: 'Cake Dispatch',    icon: <Cake className="size-4" /> },
   { key: 'transfer-in', label: 'Transfer In',      icon: <ArrowRightLeft className="size-4" /> },
   { key: 'transfer-out', label: 'Transfer Out',    icon: <PackageMinus className="size-4" /> },
@@ -459,7 +458,6 @@ export default function PlannerDashboard() {
               </div>
             )}
             {tab === 'hosur' && <HosurUnifiedSection />}
-            {tab === 'custom' && <PlannerCustomDispatchTab orders={productionSourceOrders} />}
             {tab === 'cake' && <PackingCakeOrdersTab />}
             {tab === 'transfer-in' && <PackingTransferInTab />}
             {tab === 'transfer-out' && <PlannerTransferOutTab />}
@@ -4606,7 +4604,7 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
   const [checklistItem, setChecklistItem] = useState<ProductionRow | null>(null);
   // 'All' shows every item like before. Picking a branch filters to only items
   // that branch actually ordered, and turns on multi-select + bulk dispatch.
-  const [branchFilter, setBranchFilter] = useState<'All' | Branch>('All');
+  const [branchFilter, setBranchFilter] = useState<'All' | Branch | 'Custom'>('All');
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkOpen, setBulkOpen] = useState(false);
   // Hosur dispatch can be viewed item-first (original) or shop-first (shop
@@ -4614,6 +4612,17 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
   // shop-first per the planner's request, since that's how shop orders are
   // actually organized in their head.
   const [hosurView, setHosurView] = useState<'shop' | 'item'>('shop');
+  // Lets the planner strike a stray/erroneous item off an order entirely
+  // (e.g. a duplicate or mis-entered custom line) instead of it sitting in
+  // Dispatch forever with nothing to send it against. Only offered on items
+  // that have never been dispatched anywhere — removing something already
+  // part-sent would desync the dispatch log, so that case still has to go
+  // through support. Mirrors the same items/removed_items update the Store
+  // Dashboard's "Remove item" action already uses (OrderReceiverDashboard.tsx).
+  const [removeConfirm, setRemoveConfirm] = useState<ProductionRow | null>(null);
+  const [removeReason, setRemoveReason] = useState('');
+  const [removeBusy, setRemoveBusy] = useState(false);
+  const [removeError, setRemoveError] = useState('');
 
   useEffect(() => { setSelected(new Set()); }, [branchFilter]);
 
@@ -4626,9 +4635,63 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
     return sum;
   };
 
+  // Strikes `removeConfirm`'s item out of every order that contributed it —
+  // re-fetching each order's items/produced_items fresh right before writing
+  // (not from the possibly-stale `orders` prop) so a concurrent edit to the
+  // same order isn't clobbered, same safeguard OrderReceiverDashboard's
+  // "Remove item" already uses. Also drops any produced_items entry sharing
+  // that item's itemId so a stale "Completed"/"Produced Xkg" badge doesn't
+  // linger for an item that no longer exists on the order.
+  const confirmRemoveItem = async () => {
+    if (!removeConfirm) return;
+    const reason = removeReason.trim();
+    if (!reason) { setRemoveError('Enter a reason for removing this item.'); return; }
+    setRemoveBusy(true);
+    setRemoveError('');
+    try {
+      for (const orderId of removeConfirm.contributingOrderIds) {
+        const { data: current, error: fetchErr } = await supabase
+          .from('bakery_orders')
+          .select('items, produced_items, removed_items')
+          .eq('id', orderId)
+          .single();
+        if (fetchErr || !current) continue;
+        const freshItems: BakeryOrderItem[] = Array.isArray((current as Record<string, unknown>).items)
+          ? (current as Record<string, unknown>).items as BakeryOrderItem[] : [];
+        const matchIdx = freshItems.findIndex(it => sameItem(it.itemName, removeConfirm.itemName));
+        if (matchIdx === -1) continue;
+        const removedItem = freshItems[matchIdx];
+        const remainingItems = freshItems.filter((_, idx) => idx !== matchIdx);
+        const freshProduced: Array<{ itemId?: string }> = Array.isArray((current as Record<string, unknown>).produced_items)
+          ? (current as Record<string, unknown>).produced_items as Array<{ itemId?: string }> : [];
+        const remainingProduced = freshProduced.filter(p => p.itemId !== removedItem.itemId);
+        const existingRemoved: unknown[] = Array.isArray((current as Record<string, unknown>).removed_items)
+          ? (current as Record<string, unknown>).removed_items as unknown[] : [];
+        const removedEntry = {
+          itemName: removedItem.itemName,
+          quantity: removedItem.quantity,
+          unit: removedItem.dispatchUnit ?? 'kg',
+          reason,
+          removedAt: new Date().toISOString(),
+        };
+        const { error: updateErr } = await supabase
+          .from('bakery_orders')
+          .update({ items: remainingItems, produced_items: remainingProduced, removed_items: [...existingRemoved, removedEntry] })
+          .eq('id', orderId);
+        if (updateErr) throw updateErr;
+      }
+      setRemoveConfirm(null);
+      setRemoveReason('');
+    } catch (e) {
+      setRemoveError(e instanceof Error ? e.message : 'Failed to remove this item. Please try again.');
+    } finally {
+      setRemoveBusy(false);
+    }
+  };
+
   const filtered = rows
     .filter(r => r.itemName.toLowerCase().includes(search.trim().toLowerCase()))
-    .filter(r => branchFilter === 'All' || !!r.perBranch[branchFilter]);
+    .filter(r => branchFilter === 'All' || branchFilter === 'Custom' || !!r.perBranch[branchFilter]);
 
   // BUG FIX (2026-08-08): "in All tab to dispatch its showing 74 items but
   // we have dispatched some items its not showing that and its not getting
@@ -4642,6 +4705,9 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
   // was actually sent. Compare against what was actually ordered
   // (row.totalRequested) instead, same as the per-branch case just above.
   const fullyDispatched = (row: ProductionRow) => {
+    // 'Custom' isn't a real branch — its own panel (CustomDispatchPanel)
+    // tracks completion off the 'Planned' bucket directly, not this helper.
+    if (branchFilter === 'Custom') return false;
     if (branchFilter !== 'All') {
       const requested = row.perBranch[branchFilter] ?? 0;
       return requested > 0 && branchDispatchedForRow(row, branchFilter, orders) >= requested - 0.01;
@@ -4659,7 +4725,7 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
   // meant every keystroke in the search box shrank the set, which reset any
   // quantity you'd already typed for items outside the current search text.
   const flatPanelRows = rows
-    .filter(r => branchFilter === 'All' || !!r.perBranch[branchFilter])
+    .filter(r => branchFilter === 'All' || branchFilter === 'Custom' || !!r.perBranch[branchFilter])
     .filter(r => !fullyDispatched(r))
     .sort((a, b) => (dispatchedQtyForItem(b) > 0 ? 1 : 0) - (dispatchedQtyForItem(a) > 0 ? 1 : 0));
   // BUG FIX (2026-08-08): same class of bug as flatPanelRows above, but for
@@ -4718,13 +4784,13 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
           with a checkbox on each card to bulk-dispatch several items at once. */}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-wrap gap-2">
-          {(['All', ...BRANCHES] as const).map(b => (
+          {(['All', ...BRANCHES, 'Custom'] as const).map(b => (
             <button
               key={b}
               onClick={() => setBranchFilter(b)}
-              className={cn('rounded-xl px-3 py-1.5 text-xs font-black', branchFilter === b ? 'bg-teal-600 text-white' : 'bg-muted text-muted-foreground')}
+              className={cn('rounded-xl px-3 py-1.5 text-xs font-black', branchFilter === b ? 'bg-teal-600 text-white' : 'bg-muted text-muted-foreground', b === 'Custom' && branchFilter !== 'Custom' && 'bg-amber-100 text-amber-800')}
             >
-              {b}
+              {b === 'Custom' ? 'Custom (Planned)' : b}
             </button>
           ))}
         </div>
@@ -4738,26 +4804,33 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
         )}
       </div>
 
+      {branchFilter !== 'Custom' && (
       <div className="flex gap-2">
         <button onClick={() => setSubTab('active')} className={cn('rounded-xl px-3 py-1.5 text-xs font-bold', subTab === 'active' ? 'bg-foreground text-white' : 'bg-muted text-muted-foreground')}>To Dispatch ({activeRows.length})</button>
         <button onClick={() => setSubTab('completed')} className={cn('rounded-xl px-3 py-1.5 text-xs font-bold', subTab === 'completed' ? 'bg-foreground text-white' : 'bg-muted text-muted-foreground')}>Dispatched ({completedRows.length})</button>
         <button onClick={() => setSubTab('planned')} className={cn('rounded-xl px-3 py-1.5 text-xs font-bold', subTab === 'planned' ? 'cafe-gradient text-white shadow-teal' : 'bg-primary/10 text-primary')}>Planned ({plannedRows.length})</button>
-        {/* PROMOTED (2026-08-09): "Custom" used to be a sub-tab pill right
-            here, scoped to just this one date group's planned rows. It's now
-            its own top-level Planner tab ("Custom Dispatch", next to Hosur
-            Shops & Billing in the sidebar) covering planned rows across
-            every date at once — see PlannerCustomDispatchTab. */}
       </div>
+      )}
 
       {/* Reprint access for anything already sent — only relevant once a
           specific branch is picked (scope) and only on the Dispatched tab.
           The Hosur "By Shop" view gets its own per-shop version further
           down; this covers VRSNB/SNB and Hosur's "By Item" view. */}
-      {subTab === 'completed' && branchFilter !== 'All' && !(branchFilter === 'Hosur' && hosurView === 'shop') && (
+      {subTab === 'completed' && branchFilter !== 'All' && branchFilter !== 'Custom' && !(branchFilter === 'Hosur' && hosurView === 'shop') && (
         <RecentDispatchInvoices scope={branchFilter} title={`${branchFilter} Invoices`} />
       )}
 
-      {subTab === 'planned' ? (
+      {branchFilter === 'Custom' ? (
+        // Custom is a sub-tab of Dispatch, sitting right next to Hosur — not
+        // a separate top-level Planner tab. Sells Planning-stock items
+        // direct to a walk-in customer, with the same checklist/invoice flow
+        // as every other dispatch, scoped to this date group's planned rows.
+        plannedRows.length === 0 ? (
+          <EmptyState text="No Planned-stock items are currently waiting on a custom sale." />
+        ) : (
+          <CustomDispatchPanel rows={plannedRows} orders={orders} onDispatch={submitDispatch} dispatchedBy={currentUser?.displayName || currentUser?.username || 'Planner'} />
+        )
+      ) : subTab === 'planned' ? (
         <PlannedDispatchPanel rows={plannedRows} orders={orders} onDispatch={submitDispatch} dispatchedBy={currentUser?.displayName || 'Planner'} />
       ) : branchFilter === 'Hosur' && hosurView === 'shop' ? (
         // BUG FIX (2026-08-07): this used to pass `shown` (activeRows/
@@ -4830,11 +4903,22 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
                     <p className="text-xs font-bold text-muted-foreground">Produced {row.preparedTotal} {row.unit}{dispatched > 0 ? ` · Dispatched ${dispatched} ${row.unit}` : ''}</p>
                   </div>
                 </div>
-                {subTab === 'active' && (
-                  <button onClick={() => setChecklistItem(row)} className="flex shrink-0 items-center gap-1.5 rounded-xl bg-teal-600 px-3 py-2 text-xs font-bold text-white hover:bg-teal-700">
-                    <Truck className="size-3.5" /> Dispatch
-                  </button>
-                )}
+                <div className="flex shrink-0 items-center gap-1.5">
+                  {subTab === 'active' && dispatched <= 0.001 && (
+                    <button
+                      onClick={() => { setRemoveConfirm(row); setRemoveReason(''); setRemoveError(''); }}
+                      title="Remove this item — it never dispatched anywhere"
+                      className="flex items-center gap-1 rounded-xl border border-red-200 bg-red-50 px-2 py-2 text-xs font-bold text-red-600 hover:bg-red-100"
+                    >
+                      <Trash2 className="size-3.5" />
+                    </button>
+                  )}
+                  {subTab === 'active' && (
+                    <button onClick={() => setChecklistItem(row)} className="flex items-center gap-1.5 rounded-xl bg-teal-600 px-3 py-2 text-xs font-bold text-white hover:bg-teal-700">
+                      <Truck className="size-3.5" /> Dispatch
+                    </button>
+                  )}
+                </div>
               </div>
               {subTab === 'active' && (() => {
                 // Leftover is no longer a separate manual step — the "Dispatch"
@@ -4885,7 +4969,7 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
           you'd ticked a few items scattered down a long list. Show exactly
           what's selected, by name, with a one-tap way to remove one before
           committing to the bulk dispatch. */}
-      {branchFilter !== 'All' && selected.size > 0 && (
+      {branchFilter !== 'All' && branchFilter !== 'Custom' && selected.size > 0 && (
         <div className="rounded-2xl border border-teal-200 bg-teal-50/60 p-3">
           <p className="mb-2 text-[11px] font-black uppercase tracking-wide text-teal-700">Selected for {branchFilter} ({selected.size})</p>
           <div className="flex flex-wrap gap-2">
@@ -4900,7 +4984,7 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
           </div>
         </div>
       )}
-      {branchFilter !== 'All' && selected.size > 0 && (
+      {branchFilter !== 'All' && branchFilter !== 'Custom' && selected.size > 0 && (
         <div className="sticky bottom-2 z-10 flex justify-center pt-2">
           <button
             onClick={() => setBulkOpen(true)}
@@ -4925,7 +5009,7 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
         />
       )}
 
-      {bulkOpen && branchFilter !== 'All' && (
+      {bulkOpen && branchFilter !== 'All' && branchFilter !== 'Custom' && (
         <BulkDispatchModal
           branch={branchFilter}
           rows={selectedRows}
@@ -4935,6 +5019,26 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
           dispatchedBy={currentUser?.displayName || 'Planner'}
           onDone={() => { setSelected(new Set()); setBulkOpen(false); }}
         />
+      )}
+
+      {removeConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => !removeBusy && setRemoveConfirm(null)}>
+          <div className="w-full max-w-sm space-y-3 rounded-2xl bg-white p-4 shadow-xl" onClick={e => e.stopPropagation()}>
+            <p className="text-sm font-black text-foreground">Remove &ldquo;{removeConfirm.itemName}&rdquo;?</p>
+            <p className="text-xs font-bold text-muted-foreground">This item has never been dispatched. It'll be struck off every order it's part of, so it stops showing up in Dispatch. This can't be undone from here.</p>
+            <label className="block space-y-1">
+              <span className="text-[11px] font-black uppercase tracking-wide text-muted-foreground">Reason *</span>
+              <input value={removeReason} onChange={e => setRemoveReason(e.target.value)} placeholder="e.g. Duplicate/mis-entered item" className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm font-bold" autoFocus />
+            </label>
+            {removeError && <p className="text-xs font-bold text-red-700">{removeError}</p>}
+            <div className="flex justify-end gap-2 pt-1">
+              <button disabled={removeBusy} onClick={() => setRemoveConfirm(null)} className="rounded-xl border border-border px-4 py-2 text-xs font-bold text-muted-foreground disabled:opacity-50">Cancel</button>
+              <button disabled={removeBusy} onClick={() => void confirmRemoveItem()} className="flex items-center gap-1.5 rounded-xl bg-red-600 px-4 py-2 text-xs font-bold text-white hover:bg-red-700 disabled:opacity-50">
+                <Trash2 className="size-3.5" /> {removeBusy ? 'Removing…' : 'Remove item'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -5241,37 +5345,6 @@ function CustomDispatchPanel({ rows, orders, onDispatch, dispatchedBy }: {
   );
 }
 
-// PROMOTED (2026-08-09): "Custom" used to only exist as a sub-tab pill
-// buried inside Dispatch → (pick a date) → Custom, scoped to just that one
-// date group's planning-stock rows. The planner explicitly asked for it as
-// its own top-level tab next to Hosur Shops & Billing, same as Transfer In/
-// Transfer Out — this wraps the exact same CustomDispatchPanel, but sources
-// planned rows across ALL of Planner's production-relevant orders (not just
-// one date), so nothing is missed just because it was ordered on a
-// different day than whatever happened to be open in Dispatch.
-function PlannerCustomDispatchTab({ orders }: { orders: BakeryOrder[] }) {
-  const { submitDispatch } = useBakeryStore();
-  const currentUser = useAuthStore(s => s.currentUser);
-  const rows = useMemo(() => computeProductionRows(orders), [orders]);
-  const plannedRows = useMemo(
-    () => rows.filter(r => (r.perBranch.Planned ?? 0) > 0 && plannedDispatchedForRow(r, orders) < (r.perBranch.Planned ?? 0) - 0.01),
-    [rows, orders],
-  );
-  return (
-    <section className="space-y-4">
-      <div>
-        <h2 className="font-display text-lg font-black text-foreground">Custom Dispatch</h2>
-        <p className="text-xs text-muted-foreground">Sell Planning-stock items direct to a walk-in customer — pick items, enter quantity, then the customer's name, mobile and address at dispatch time.</p>
-      </div>
-      {plannedRows.length === 0 ? (
-        <EmptyState text="No Planned-stock items are currently waiting on a custom sale." />
-      ) : (
-        <CustomDispatchPanel rows={plannedRows} orders={orders} onDispatch={submitDispatch} dispatchedBy={currentUser?.displayName || 'Planner'} />
-      )}
-    </section>
-  );
-}
-
 // Lets the planner dispatch several selected items to one branch in a single
 // step, instead of opening the per-item checklist modal one at a time.
 function BulkDispatchModal({ branch, rows, orders, onClose, onDispatch, dispatchedBy, onDone }: {
@@ -5404,7 +5477,7 @@ function BulkDispatchModal({ branch, rows, orders, onClose, onDispatch, dispatch
 }
 
 function DispatchChecklistModal({ row, orders, branchFilter, onClose, onDispatch, dispatchedBy, leftoverBalance }: {
-  row: ProductionRow; orders: BakeryOrder[]; branchFilter: 'All' | Branch; onClose: () => void;
+  row: ProductionRow; orders: BakeryOrder[]; branchFilter: 'All' | Branch | 'Custom'; onClose: () => void;
   onDispatch: ReturnType<typeof useBakeryStore.getState>['submitDispatch']; dispatchedBy: string;
   leftoverBalance: number;
 }) {
