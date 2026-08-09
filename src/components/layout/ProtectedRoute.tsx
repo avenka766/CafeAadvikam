@@ -11,7 +11,12 @@ interface ProtectedRouteProps {
 }
 
 export default function ProtectedRoute({ children, allowedRoles }: ProtectedRouteProps) {
-  const { currentUser } = useAuthStore();
+  // Selector instead of a whole-store destructure — every route in the app
+  // is wrapped in this component, so subscribing to the entire authStore
+  // here means ANY field change anywhere in that store re-renders every
+  // mounted ProtectedRoute (and therefore its whole page) app-wide. Same
+  // class of bug fixed in Owner Dashboard's useOrderStore usage.
+  const currentUser = useAuthStore((s) => s.currentUser);
 
   if (!currentUser) return <Navigate to="/login" replace />;
 
