@@ -279,7 +279,29 @@ function EmptyOwnerState({ title, message }: { title: string; message: string })
 // ── Sales Overview Tab ────────────────────────────────────────────────────────
 // CHANGE 5: removed Menu section, branch filter, multi-branch trend, combined payment breakdown, export
 function SalesOverviewTab() {
-  const { orders, startPolling, stopPolling } = useOrderStore();
+  // ROOT-CAUSE FIX (2026-08-09, "Owner Dashboard refreshing 10x/sec"): the 5
+  // Owner Dashboard tab components below (SalesOverviewTab, BranchOverviewTab,
+  // OwnerDailyClosureTab, OwnerAlertsTab, OwnerEverythingTab) all used to do
+  // `const { orders, startPolling, stopPolling } = useOrderStore();` — a
+  // WHOLE-STORE destructure with no selector. Zustand's default subscription
+  // (no selector passed) re-renders the calling component on ANY state
+  // change anywhere in that store, not just the 3 fields actually read here.
+  // useOrderStore is the SAME global store that backs Cafe billing's live
+  // cart (`cart` / `advanceCart`), and `updateCartQuantity` / `addToCart` /
+  // `setCartItemNotes` fire a `set()` on that store for every single +/- tap
+  // or quantity keystroke a cashier makes on OrderCart.tsx anywhere in the
+  // live Cafe billing screen — completely unrelated to what Owner Dashboard
+  // shows. On a busy trading day, with billers actively editing tickets,
+  // that meant Owner Dashboard was re-rendering on every one of those
+  // keystrokes system-wide — easily tens of times a second, far faster than
+  // the 15-minute poll or any real order event could explain, which matches
+  // the reported symptom exactly. Selecting only the fields actually used
+  // (`orders`, `startPolling`, `stopPolling` — the latter two are stable
+  // Zustand action references) means these components now only re-render
+  // when real order data changes, not on unrelated billing-cart edits.
+  const orders = useOrderStore(s => s.orders);
+  const startPolling = useOrderStore(s => s.startPolling);
+  const stopPolling = useOrderStore(s => s.stopPolling);
   const { sales, fetchBranchData } = useBranchStore();
   const { bills, returns } = useBranchOpsStore();
   const [dateRange, setDateRange] = useState<'today' | 'yesterday' | '7d' | '15d' | '30d'>('7d');
@@ -1522,7 +1544,9 @@ function OwnerComplaintsTab() {
 }
 
 function BranchOverviewTab() {
-  const { orders, startPolling, stopPolling } = useOrderStore();
+  const orders = useOrderStore(s => s.orders);
+  const startPolling = useOrderStore(s => s.startPolling);
+  const stopPolling = useOrderStore(s => s.stopPolling);
   const { sales, incoming, advanceOrders, creditSales, stockMismatches, fetchBranchData, fetchStockMismatches } = useBranchStore();
   const { bills, returns, purchases, cashMovements, bankDeposits, cashierClosures, storeOrders, fetchBillsInRange } = useBranchOpsStore();
   const [preset, setPreset] = useState<OwnerDatePreset>('today');
@@ -1937,7 +1961,9 @@ function buildOwnerClosureRows(
 }
 
 function OwnerDailyClosureTab() {
-  const { orders, startPolling, stopPolling } = useOrderStore();
+  const orders = useOrderStore(s => s.orders);
+  const startPolling = useOrderStore(s => s.startPolling);
+  const stopPolling = useOrderStore(s => s.stopPolling);
   const { bills, returns, purchasePayments, bankDeposits, cashierClosures, cashMovements, fetchBillsInRange } = useBranchOpsStore();
   const [date, setDate] = useState(ownerDateInput());
   const [branch, setBranch] = useState<'all' | Branch>('all');
@@ -2049,7 +2075,9 @@ function OwnerDailyClosureTab() {
 
 // ── Owner Alerts Tab ─────────────────────────────────────────────────────────
 function OwnerAlertsTab() {
-  const { orders, startPolling, stopPolling } = useOrderStore();
+  const orders = useOrderStore(s => s.orders);
+  const startPolling = useOrderStore(s => s.startPolling);
+  const stopPolling = useOrderStore(s => s.stopPolling);
   const { creditSales, fetchBranchData, fetchStockMismatches } = useBranchStore();
   const { purchases, cashierClosures, notifications, storeOrders, returns } = useBranchOpsStore();
   const { invoices, load } = useInvoiceStore();
@@ -2726,7 +2754,9 @@ async function fetchOwnerEverythingExtras(): Promise<{ data: OwnerEverythingExtr
 }
 
 function OwnerEverythingTab() {
-  const { orders, startPolling, stopPolling } = useOrderStore();
+  const orders = useOrderStore(s => s.orders);
+  const startPolling = useOrderStore(s => s.startPolling);
+  const stopPolling = useOrderStore(s => s.stopPolling);
   const { bills, returns, purchasePayments, bankDeposits, cashierClosures, cashMovements, fetchBillsInRange } = useBranchOpsStore();
   const { orders: poOrders, load: loadPOs } = useStorePurchaseOrderStore();
   const today = ownerDateInput();
