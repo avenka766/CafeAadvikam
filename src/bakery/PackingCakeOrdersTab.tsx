@@ -1,12 +1,14 @@
 // src/bakery/PackingCakeOrdersTab.tsx
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Cake, Loader2, Package, Send, AlertTriangle, RefreshCcw, Receipt, Printer, RotateCcw, X, CheckCircle2, Truck, FileText } from 'lucide-react';
+import { Cake, Loader2, Package, Send, AlertTriangle, RefreshCcw, Receipt, Printer, RotateCcw, X, CheckCircle2, Truck, FileText, Percent, ClipboardList } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuthStore } from '@/stores/authStore';
 import { supabase } from '@/lib/supabase';
 import { ensureCakeDispatchIncoming } from '@/branch/cakeDispatchSync';
 import { printHtml } from '@/branch/printUtils';
+import { printViaIframe } from '@/lib/printViaIframe';
 import { saveDispatchInvoice, printDispatchInvoice, type DispatchInvoiceRecord, type DispatchInvoiceItem, type DispatchInvoiceScope } from './dispatchInvoice';
+import { CAKE_DESIGNS, cakeTypesFor, calculateCakePrice, type CakeCreamType, type CakeDesignType } from '@/branch/cakePricing';
 
 interface CakeOrderRow {
   id: string;
@@ -125,7 +127,7 @@ export default function PackingCakeOrdersTab() {
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState('');
-  const [view, setView] = useState<'ready' | 'corrections'>('ready');
+  const [view, setView] = useState<'ready' | 'corrections' | 'custom'>('ready');
   const [returnId, setReturnId] = useState<string | null>(null);
   const [returnReason, setReturnReason] = useState('');
 
@@ -188,7 +190,7 @@ export default function PackingCakeOrdersTab() {
           <h3 className="text-sm font-black text-foreground">Cake Packing</h3>
           <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-black text-muted-foreground">{visibleOrders.length}</span>
         </div>
-        <div className="flex items-center gap-2"><div className="flex rounded-xl bg-muted p-1"><button type="button" onClick={() => setView('ready')} className={cn('rounded-lg px-3 py-1.5 text-[11px] font-black', view === 'ready' ? 'bg-white text-slate-950 shadow-sm' : 'text-muted-foreground')}>Ready</button><button type="button" onClick={() => setView('corrections')} className={cn('rounded-lg px-3 py-1.5 text-[11px] font-black', view === 'corrections' ? 'bg-white text-amber-800 shadow-sm' : 'text-muted-foreground')}>Corrections ({orders.filter(order => order.status === 'Correction Required').length})</button></div><button type="button" title="Refresh cake orders" onClick={() => void load()} disabled={loading} className="grid size-9 place-items-center rounded-lg border border-border text-muted-foreground disabled:cursor-wait disabled:opacity-60"><RefreshCcw className={cn('size-3.5', loading && 'animate-spin')} /></button></div>
+        <div className="flex items-center gap-2"><div className="flex rounded-xl bg-muted p-1"><button type="button" onClick={() => setView('ready')} className={cn('rounded-lg px-3 py-1.5 text-[11px] font-black', view === 'ready' ? 'bg-white text-slate-950 shadow-sm' : 'text-muted-foreground')}>Ready</button><button type="button" onClick={() => setView('corrections')} className={cn('rounded-lg px-3 py-1.5 text-[11px] font-black', view === 'corrections' ? 'bg-white text-amber-800 shadow-sm' : 'text-muted-foreground')}>Corrections ({orders.filter(order => order.status === 'Correction Required').length})</button><button type="button" onClick={() => setView('custom')} className={cn('rounded-lg px-3 py-1.5 text-[11px] font-black', view === 'custom' ? 'bg-white text-rose-700 shadow-sm' : 'text-muted-foreground')}>Custom Cake Order</button></div>{view !== 'custom' && <button type="button" title="Refresh cake orders" onClick={() => void load()} disabled={loading} className="grid size-9 place-items-center rounded-lg border border-border text-muted-foreground disabled:cursor-wait disabled:opacity-60"><RefreshCcw className={cn('size-3.5', loading && 'animate-spin')} /></button>}</div>
       </div>
 
       {error && (
@@ -197,6 +199,9 @@ export default function PackingCakeOrdersTab() {
         </div>
       )}
 
+      {view === 'custom' ? (
+        <CustomCakeOrderPanel dispatchedBy={currentUser?.displayName || currentUser?.username || 'Packing'} />
+      ) : <>
       {view === 'ready' && selected.size > 0 && (
         <div className="sticky top-2 z-10 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-teal-300 bg-teal-50 px-3.5 py-2.5">
           <span className="text-xs font-black text-teal-800">{selected.size} cake{selected.size === 1 ? '' : 's'} selected</span>
@@ -275,13 +280,202 @@ export default function PackingCakeOrdersTab() {
           }}
         />
       )}
+      </>}
     </section>
   );
 }
 
+// FEATURE (2026-08-09): "under this tab create a 'Custom Cake Order' sub-tab
+// that gets price/tab format from SNB branch advance cake orders, with bill
+// print + discount" — a one-off cake sale with no advance order behind it
+// (walk-in customer buying a cake straight from Packing). Reuses the exact
+// same pricing table/formula as SNB's own advance cake order form
+// (branch/cakePricing.ts — the same file that already computes order_value
+// for every advance-order cake dispatched through CakeDispatchReviewModal
+// above) so the price a walk-in customer is quoted always matches what SNB
+// itself charges, and the same dispatch_invoices storage so it prints with
+// the identical bill format and shows up in the Invoice tab/reports.
+function CustomCakeOrderPanel({ dispatchedBy }: { dispatchedBy: string }) {
+  const [customerName, setCustomerName] = useState('');
+  const [customerPhone, setCustomerPhone] = useState('');
+  const [creamType, setCreamType] = useState<CakeCreamType | ''>('');
+  const [cakeTypeId, setCakeTypeId] = useState('');
+  const [weightKg, setWeightKg] = useState('0.5');
+  const [flavour, setFlavour] = useState('');
+  const [design, setDesign] = useState<CakeDesignType>('Normal');
+  const [drawingWork, setDrawingWork] = useState(false);
+  const [photoWork, setPhotoWork] = useState(false);
+  const [messageOnCake, setMessageOnCake] = useState('');
+  const [discountPct, setDiscountPct] = useState('0');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [result, setResult] = useState<DispatchInvoiceRecord | null>(null);
+
+  const cakeTypes = useMemo(() => cakeTypesFor(creamType), [creamType]);
+  const selectedCakeType = cakeTypes.find(c => c.id === cakeTypeId);
+  const priceCalc = useMemo(() => calculateCakePrice({
+    cakeTypeId, weightKg: Number(weightKg) || 0, design, drawingWork, photoWork,
+  }), [cakeTypeId, weightKg, design, drawingWork, photoWork]);
+  const pct = Math.max(0, Math.min(100, Number(discountPct) || 0));
+  const discountAmount = Math.round(priceCalc.total * (pct / 100) * 100) / 100;
+  const netTotal = Math.max(0, Math.round((priceCalc.total - discountAmount) * 100) / 100);
+
+  const itemLabel = () => {
+    const parts = [creamType, flavour, selectedCakeType?.name].filter(Boolean).join(' / ');
+    return `Cake${parts ? ` — ${parts}` : ''} (${weightKg || '?'} kg)${design !== 'Normal' ? ` — ${design}` : ''} — ${customerName || 'Customer'}`;
+  };
+
+  const reset = () => {
+    setCustomerName(''); setCustomerPhone(''); setCreamType(''); setCakeTypeId('');
+    setWeightKg('0.5'); setFlavour(''); setDesign('Normal'); setDrawingWork(false); setPhotoWork(false);
+    setMessageOnCake(''); setDiscountPct('0');
+  };
+
+  const createAndPrint = async () => {
+    if (!customerName.trim()) { setError("Enter the customer's name."); return; }
+    if (!cakeTypeId) { setError('Pick a cake type.'); return; }
+    if (!(Number(weightKg) > 0)) { setError('Enter a cake weight above 0.'); return; }
+    if (!(priceCalc.total > 0)) { setError('This combination has no price — check the cake type and weight.'); return; }
+    setSaving(true); setError('');
+    try {
+      const item: DispatchInvoiceItem = { itemName: itemLabel(), unit: 'pcs', quantity: 1, unitPrice: priceCalc.total, lineTotal: priceCalc.total };
+      const record = await saveDispatchInvoice({
+        scope: 'SNB',
+        customerName: customerName.trim(),
+        customerPhone: customerPhone.trim() || null,
+        dispatchedBy,
+        items: [item],
+        discountPct: pct,
+        status: 'paid',
+        notes: messageOnCake.trim() ? `Custom Cake Order — Message: ${messageOnCake.trim()}` : 'Custom Cake Order',
+      });
+      setResult(record);
+      reset();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save the custom cake order.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_22rem]">
+      <section className="space-y-3 rounded-2xl border border-border bg-white p-5 shadow-sm">
+        <div className="grid gap-3 sm:grid-cols-2">
+          <label className="space-y-1">
+            <span className="text-[11px] font-black uppercase tracking-wide text-muted-foreground">Customer Name *</span>
+            <input value={customerName} onChange={e => setCustomerName(e.target.value)} className="h-10 w-full rounded-lg border border-border bg-background px-3 text-sm font-bold" placeholder="e.g. Ramesh Kumar" />
+          </label>
+          <label className="space-y-1">
+            <span className="text-[11px] font-black uppercase tracking-wide text-muted-foreground">Mobile Number</span>
+            <input value={customerPhone} onChange={e => setCustomerPhone(e.target.value)} className="h-10 w-full rounded-lg border border-border bg-background px-3 text-sm font-bold" placeholder="Optional" />
+          </label>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <label className="space-y-1">
+            <span className="text-[11px] font-black uppercase tracking-wide text-muted-foreground">Cream Type *</span>
+            <select value={creamType} onChange={e => { setCreamType(e.target.value as CakeCreamType | ''); setCakeTypeId(''); }} className="h-10 w-full rounded-lg border border-border bg-background px-3 text-sm font-bold">
+              <option value="">Select…</option>
+              <option value="Butter Cream">Butter Cream</option>
+              <option value="Fresh Cream">Fresh Cream</option>
+            </select>
+          </label>
+          <label className="space-y-1">
+            <span className="text-[11px] font-black uppercase tracking-wide text-muted-foreground">Cake Type *</span>
+            <select value={cakeTypeId} onChange={e => setCakeTypeId(e.target.value)} disabled={!creamType} className="h-10 w-full rounded-lg border border-border bg-background px-3 text-sm font-bold disabled:opacity-50">
+              <option value="">Select…</option>
+              {cakeTypes.map(c => <option key={c.id} value={c.id}>{c.name} (Rs.{c.perKg}/kg{c.halfKg ? `, Rs.${c.halfKg} half kg` : ''})</option>)}
+            </select>
+          </label>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-3">
+          <label className="space-y-1">
+            <span className="text-[11px] font-black uppercase tracking-wide text-muted-foreground">Weight (kg) *</span>
+            <input type="number" step={0.5} min={0.5} value={weightKg} onChange={e => setWeightKg(e.target.value)} className="h-10 w-full rounded-lg border border-border bg-background px-3 text-sm font-bold" />
+          </label>
+          <label className="space-y-1">
+            <span className="text-[11px] font-black uppercase tracking-wide text-muted-foreground">Flavour</span>
+            {selectedCakeType && selectedCakeType.flavours.length > 0 ? (
+              <select value={flavour} onChange={e => setFlavour(e.target.value)} className="h-10 w-full rounded-lg border border-border bg-background px-3 text-sm font-bold">
+                <option value="">Select…</option>
+                {selectedCakeType.flavours.map(f => <option key={f} value={f}>{f}</option>)}
+              </select>
+            ) : (
+              <input value={flavour} onChange={e => setFlavour(e.target.value)} className="h-10 w-full rounded-lg border border-border bg-background px-3 text-sm font-bold" placeholder="e.g. Chocolate" />
+            )}
+          </label>
+          <label className="space-y-1">
+            <span className="text-[11px] font-black uppercase tracking-wide text-muted-foreground">Design</span>
+            <select value={design} onChange={e => setDesign(e.target.value as CakeDesignType)} className="h-10 w-full rounded-lg border border-border bg-background px-3 text-sm font-bold">
+              {CAKE_DESIGNS.map(d => <option key={d} value={d}>{d}</option>)}
+            </select>
+          </label>
+        </div>
+        <div className="flex flex-wrap items-center gap-4">
+          <label className="flex items-center gap-1.5 text-xs font-bold text-foreground">
+            <input type="checkbox" checked={drawingWork} onChange={e => setDrawingWork(e.target.checked)} className="size-4 accent-rose-600" /> Drawing Work (+Rs.150)
+          </label>
+          <label className="flex items-center gap-1.5 text-xs font-bold text-foreground">
+            <input type="checkbox" checked={photoWork} onChange={e => setPhotoWork(e.target.checked)} className="size-4 accent-rose-600" /> Photo Work (+Rs.100)
+          </label>
+        </div>
+        <label className="space-y-1 block">
+          <span className="text-[11px] font-black uppercase tracking-wide text-muted-foreground">Message on Cake</span>
+          <input value={messageOnCake} onChange={e => setMessageOnCake(e.target.value)} className="h-10 w-full rounded-lg border border-border bg-background px-3 text-sm font-bold" placeholder="Optional" />
+        </label>
+      </section>
+
+      <aside className="space-y-3 rounded-2xl border border-border bg-white p-5 shadow-sm">
+        <div className="flex items-center gap-2"><Cake className="size-4 text-rose-500" /><h3 className="font-display text-lg font-bold text-foreground">Price</h3></div>
+        <div className="space-y-1 rounded-xl bg-muted/40 p-3 text-sm">
+          <div className="flex justify-between font-bold text-muted-foreground"><span>Base ({selectedCakeType?.name ?? '—'})</span><span>Rs. {priceCalc.baseAmount.toFixed(2)}</span></div>
+          {priceCalc.designCharge > 0 && <div className="flex justify-between font-bold text-muted-foreground"><span>Design ({priceCalc.designPercent}%)</span><span>Rs. {priceCalc.designCharge.toFixed(2)}</span></div>}
+          {priceCalc.drawingCharge > 0 && <div className="flex justify-between font-bold text-muted-foreground"><span>Drawing Work</span><span>Rs. {priceCalc.drawingCharge.toFixed(2)}</span></div>}
+          {priceCalc.photoCharge > 0 && <div className="flex justify-between font-bold text-muted-foreground"><span>Photo Work</span><span>Rs. {priceCalc.photoCharge.toFixed(2)}</span></div>}
+          <div className="flex justify-between border-t border-border pt-1.5 font-black text-foreground"><span>Cake Price</span><span>Rs. {priceCalc.total.toFixed(2)}</span></div>
+        </div>
+
+        <div className="space-y-2 rounded-xl border border-border bg-muted/20 p-3">
+          <label className="flex items-center gap-1.5 text-[11px] font-black uppercase tracking-wide text-muted-foreground">
+            <Percent className="size-3.5" /> Discount
+          </label>
+          <div className="flex items-center gap-1.5">
+            <input type="number" min={0} max={100} value={discountPct} onChange={e => setDiscountPct(e.target.value)} className="w-20 rounded-lg border border-border bg-background px-2 py-1.5 text-right text-sm font-bold" />
+            <span className="text-xs font-bold text-muted-foreground">%</span>
+          </div>
+        </div>
+
+        <div className="space-y-1 rounded-xl bg-rose-50 p-3 text-sm">
+          {discountAmount > 0 && <div className="flex justify-between font-bold text-red-600"><span>Discount</span><span>- Rs. {discountAmount.toFixed(2)}</span></div>}
+          <div className="flex justify-between text-base font-black text-foreground"><span>Total</span><span>Rs. {netTotal.toFixed(2)}</span></div>
+        </div>
+
+        {error && <p className="rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs font-bold text-destructive">{error}</p>}
+
+        <button onClick={createAndPrint} disabled={saving} className="flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-rose-600 text-sm font-black text-white shadow-sm hover:bg-rose-700 disabled:opacity-40">
+          {saving ? <Loader2 className="size-4 animate-spin" /> : <ClipboardList className="size-4" />} Create &amp; Bill (Rs. {netTotal.toFixed(2)})
+        </button>
+
+        {result && (
+          <div className="rounded-xl border border-teal-200 bg-teal-50 p-3">
+            <p className="text-xs font-black text-teal-800">Invoice {result.invoiceNo} created — Rs. {result.total.toFixed(2)}</p>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              <button onClick={() => printDispatchInvoice(result, 'thermal')} className="flex items-center gap-1 rounded-lg bg-teal-600 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-teal-700"><Printer className="size-3.5" /> Thermal</button>
+              <button onClick={() => printDispatchInvoice(result, 'a4')} className="flex items-center gap-1 rounded-lg bg-teal-600 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-teal-700"><Printer className="size-3.5" /> A4</button>
+            </div>
+          </div>
+        )}
+      </aside>
+    </div>
+  );
+}
+
+// BUG FIX (2026-08-09): this used the pre-fix `window.open('', '_blank')` +
+// immediate `win.print()` pattern (no size args, no document.open(), no
+// onload/setTimeout guard) — the anti-pattern already fixed elsewhere via
+// printViaIframe. This was one of the print calls behind the "unable to
+// print any bill" report for Planner's Cake Dispatch tab.
 function printCakeChecklist(orders: CakeOrderRow[], packingUser: string, mode: 'a4' | 'thermal') {
-  const win = window.open('', '_blank');
-  if (!win) return;
   const rows = orders.map((o, idx) => `
     <div class="order">
       <div class="orow"><b>${idx + 1}. ${escapeHtml(o.branch)} — ${escapeHtml(o.order_no)}</b><span>${escapeHtml(fmtDate(o.delivery_date))} ${escapeHtml(o.delivery_time || '')}</span></div>
@@ -293,7 +487,7 @@ function printCakeChecklist(orders: CakeOrderRow[], packingUser: string, mode: '
   const style = mode === 'thermal'
     ? `@page{size:80mm auto;margin:3mm}body{font-family:monospace;font-size:11px;width:72mm}`
     : `@page{size:auto;margin:12mm}body{font-family:sans-serif;font-size:14px;}`;
-  win.document.write(`<!doctype html><html><head><title>Cake Dispatch Checklist</title><style>${style}
+  printViaIframe(`<!doctype html><html><head><title>Cake Dispatch Checklist</title><style>${style}
     body{padding:12px}h2{margin:0 0 4px}.meta{font-size:11px;color:#555;margin-bottom:10px}
     .order{padding:8px 0;border-bottom:1px dashed #ccc}
     .orow{display:flex;justify-content:space-between;gap:8px}.small{color:#555;font-size:11px}
@@ -308,7 +502,6 @@ function printCakeChecklist(orders: CakeOrderRow[], packingUser: string, mode: '
       <div style="margin-top:6px">Received By (Sign): ______________________</div>
     </div>
   </body></html>`);
-  win.document.close(); win.print();
 }
 
 // FEATURE (2026-08-08): "I need the ability to select multiple items and

@@ -29,6 +29,7 @@ import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/stores/authStore';
 import { cn } from '@/lib/utils';
 import { exportToExcel } from '@/lib/exportExcel';
+import { printViaIframe } from '@/lib/printViaIframe';
 import { dispatchReceiveAndBill } from './hosurBillingBridge';
 import { getPackingCounterStatus } from './packingCounter';
 import { notifyAdmin } from '@/pages/HosurDashboard';
@@ -721,11 +722,15 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
     }
   };
 
+  // BUG FIX (2026-08-09): this used the pre-fix `window.open('', '_blank')` +
+  // immediate `win.print()` pattern (no size args, no document.open(), no
+  // onload/setTimeout guard) — the anti-pattern already fixed elsewhere via
+  // printViaIframe. This was one of the print calls behind the "unable to
+  // print any bill" report for Planner's Hosur Shops & Billing tab.
   const printPhysicalBill = (snap: { billNo: string; order: HosurOrder; items: { itemName: string; unit: string; quantity: number; unitPrice: number }[] }) => {
-    const win = window.open('', '_blank'); if (!win) return;
     const rows = snap.items.map(i => `<tr><td>${i.itemName}</td><td style="text-align:right">${num(i.quantity)} ${i.unit}</td><td style="text-align:right">${money(i.unitPrice)}</td><td style="text-align:right">${money(i.quantity * i.unitPrice)}</td></tr>`).join('');
     const total = snap.items.reduce((s, i) => s + i.quantity * i.unitPrice, 0);
-    win.document.write(`<html><head><title>Bill ${snap.billNo}</title><style>
+    printViaIframe(`<html><head><title>Bill ${snap.billNo}</title><style>
       @page { size: 80mm auto; margin: 4mm; } body { font-family: monospace; font-size: 11px; width: 72mm; padding: 6px; color:#000; }
       h1 { font-size: 13px; margin: 0 0 4px; text-align:center; } .meta { font-size: 10px; text-align:center; margin-bottom: 6px; }
       table { width: 100%; border-collapse: collapse; font-size: 10px; } th, td { padding: 2px 0; } th { border-bottom: 1px dashed #000; text-align:left; }
@@ -736,7 +741,6 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
       <table><thead><tr><th>Item</th><th style="text-align:right">Qty</th><th style="text-align:right">Rate</th><th style="text-align:right">Amt</th></tr></thead><tbody>${rows}</tbody></table>
       <div class="grand"><span>Total</span><span>${money(total)}</span></div>
     </body></html>`);
-    win.document.close(); win.print();
   };
 
   return (
@@ -1299,10 +1303,11 @@ function HosurLeftoverAndCancelPanel({ pendingOrders, pendingItems, appliedLefto
     }
   };
 
+  // BUG FIX (2026-08-09): same broken window.open+immediate-print pattern as
+  // printPhysicalBill above.
   const printLeftoverBill = (snap: { billNo: string; shopName: string; orderNumber: string; itemName: string; unit: string; quantity: number; unitPrice: number }) => {
-    const win = window.open('', '_blank'); if (!win) return;
     const total = snap.quantity * snap.unitPrice;
-    win.document.write(`<html><head><title>Bill ${snap.billNo}</title><style>
+    printViaIframe(`<html><head><title>Bill ${snap.billNo}</title><style>
       @page { size: 80mm auto; margin: 4mm; } body { font-family: monospace; font-size: 11px; width: 72mm; padding: 6px; color:#000; }
       h1 { font-size: 13px; margin: 0 0 4px; text-align:center; } .meta { font-size: 10px; text-align:center; margin-bottom: 6px; }
       table { width: 100%; border-collapse: collapse; font-size: 10px; } th, td { padding: 2px 0; } th { border-bottom: 1px dashed #000; text-align:left; }
@@ -1314,7 +1319,6 @@ function HosurLeftoverAndCancelPanel({ pendingOrders, pendingItems, appliedLefto
       <tbody><tr><td>${snap.itemName}</td><td style="text-align:right">${num(snap.quantity)} ${snap.unit}</td><td style="text-align:right">${money(snap.unitPrice)}</td><td style="text-align:right">${money(total)}</td></tr></tbody></table>
       <div class="grand"><span>Total</span><span>${money(total)}</span></div>
     </body></html>`);
-    win.document.close(); win.print();
   };
 
   const selectedOrder = recentOrders.find(o => o.id === selectedOrderId);

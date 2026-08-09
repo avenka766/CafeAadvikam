@@ -704,7 +704,14 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
         // never ordered at all), the dispatch UI tags the entry isExtra=true.
         const extraNote = newEntry.isExtra ? 'EXTRA (non-requested item)' : null;
         const hosurShopNote = hosurShopName ? `Dispatched to ${hosurShopName}` : null;
-        const combinedNote = [hosurShopNote, extraNote].filter(Boolean).join(' · ') || null;
+        // FEATURE (2026-08-09): Custom dispatch — makes it obvious in the
+        // Movement Log that this debit went to a walk-in customer, not the
+        // branch value stamped on the entry (which is just a bookkeeping
+        // placeholder for Custom sales — see DispatchEntry.isCustomSale).
+        const customSaleNote = newEntry.isCustomSale
+          ? `Custom sale${newEntry.customerName ? ` to ${newEntry.customerName}` : ''}`
+          : null;
+        const combinedNote = [hosurShopNote, extraNote, customSaleNote].filter(Boolean).join(' · ') || null;
         const ledgerResult = await recordLeftoverMovement({
           itemName: newEntry.itemName,
           unit: newEntry.unit === 'pcs' ? 'pcs' : 'kg',
@@ -989,13 +996,21 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     // newEntry.id is stable across retries (see isDuplicateDispatch above) —
     // previously a fresh UUID was minted on every call, so this lookup could
     // never find a match even on a genuine retry.
-    const { data: existingRow } = await supabase
-      .from('branch_incoming')
-      .select('id')
-      .eq('dispatch_id', newEntry.id)
-      .maybeSingle();
+    // FEATURE (2026-08-09): Custom dispatch — a planning-stock item sold
+    // straight to a walk-in customer never actually arrives at any branch,
+    // so it must never create a branch_incoming row (that table drives each
+    // branch's own "confirm incoming stock" workflow — writing one here
+    // would let e.g. SNB staff "confirm" stock into their store that was
+    // really just handed to a customer, silently double-counting it).
+    const { data: existingRow } = newEntry.isCustomSale
+      ? { data: null }
+      : await supabase
+          .from('branch_incoming')
+          .select('id')
+          .eq('dispatch_id', newEntry.id)
+          .maybeSingle();
 
-    if (!existingRow) {
+    if (!existingRow && !newEntry.isCustomSale) {
       const { error: incomingErr } = await supabase.from('branch_incoming').insert({
         dispatch_id:   newEntry.id,
         branch:        newEntry.branch,

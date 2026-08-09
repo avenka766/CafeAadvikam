@@ -12,7 +12,7 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   Search, Plus, Minus, PackageCheck, History, FileSpreadsheet, Printer,
-  Loader2, AlertTriangle, CheckCircle2, CalendarDays, Scale, X, RefreshCw,
+  Loader2, AlertTriangle, CheckCircle2, CalendarDays, Scale, X, RefreshCw, Truck,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import jsPDF from 'jspdf';
@@ -25,7 +25,7 @@ import { BRANCHES } from './types';
 import type { Branch } from './types';
 
 export type LeftoverUnit = 'kg' | 'pcs';
-export type LeftoverReason = 'closing_stock' | 'production_carryover' | 'dispatch' | 'adjustment';
+export type LeftoverReason = 'closing_stock' | 'production_carryover' | 'dispatch' | 'adjustment' | 'transfer_out';
 
 export interface LeftoverLedgerRow {
   id: string;
@@ -56,7 +56,7 @@ export const kolkataToday = () =>
 
 export const qtyFmt = (v: number) => Number(v || 0).toLocaleString('en-IN', { maximumFractionDigits: 3 });
 const dateLabel = (value: string) => new Date(`${value}T00:00:00`).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
-const reasonLabel = (r: LeftoverReason) => r === 'closing_stock' ? 'Closing stock entry' : r === 'production_carryover' ? 'Unused production' : r === 'dispatch' ? 'Dispatched' : 'Adjustment';
+const reasonLabel = (r: LeftoverReason) => r === 'closing_stock' ? 'Closing stock entry' : r === 'production_carryover' ? 'Unused production' : r === 'dispatch' ? 'Dispatched' : r === 'transfer_out' ? 'Transfer Out' : 'Adjustment';
 
 function mapLedgerRow(row: Record<string, unknown>): LeftoverLedgerRow {
   return {
@@ -176,6 +176,32 @@ export async function recordLeftoverMovement(params: {
   return { newBalance: Number((data as { newBalance?: number })?.newBalance ?? 0) };
 }
 
+// FEATURE (2026-08-09): "Need ability to fully edit Closing Stock entries —
+// quantity, unit, name, etc." Only rewrites the row in place (item/unit/
+// quantity) — restricted server-side to reason='closing_stock' rows, since
+// dispatch/production entries are the real audit trail of stock that
+// actually moved through an order and must never be silently rewritten.
+export async function editClosingStockEntry(params: {
+  entryId: string;
+  itemName: string;
+  unit: LeftoverUnit;
+  quantity: number;
+  editedBy: string;
+}): Promise<{ ok: true } | { error: string }> {
+  const slug = closingStockItemSlug(params.itemName);
+  if (!slug) return { error: 'Enter an item name.' };
+  const { error } = await supabase.rpc('edit_closing_stock_entry_secure', {
+    p_entry_id: params.entryId,
+    p_item_slug: slug,
+    p_item_name: params.itemName.trim(),
+    p_unit: params.unit,
+    p_quantity: params.quantity,
+    p_edited_by: params.editedBy,
+  });
+  if (error) return { error: error.message };
+  return { ok: true };
+}
+
 // Lightweight balance lookup for the Dispatch tab's "Dispatch from Leftover"
 // action — keyed by item slug (not slug+unit, since in practice each item
 // only ever carries a balance in one unit at a time).
@@ -236,9 +262,9 @@ export function useMergedLeftoverCatalog(): MergedCatalogItem[] {
 }
 
 function StatCard({ label, value, helper, icon, tone = 'slate' }: {
-  label: string; value: React.ReactNode; helper?: string; icon: React.ReactNode; tone?: 'slate' | 'emerald' | 'blue' | 'amber' | 'red';
+  label: string; value: React.ReactNode; helper?: string; icon: React.ReactNode; tone?: 'slate' | 'emerald' | 'blue' | 'amber' | 'red' | 'orange';
 }) {
-  const tones = { slate: 'bg-slate-100 text-slate-700', emerald: 'bg-teal-100 text-teal-700', blue: 'bg-blue-100 text-blue-700', amber: 'bg-amber-100 text-amber-700', red: 'bg-red-100 text-red-700' };
+  const tones = { slate: 'bg-slate-100 text-slate-700', emerald: 'bg-teal-100 text-teal-700', blue: 'bg-blue-100 text-blue-700', amber: 'bg-amber-100 text-amber-700', red: 'bg-red-100 text-red-700', orange: 'bg-orange-100 text-orange-700' };
   return <div className="rounded-2xl border border-border bg-card p-4 shadow-sm"><div className="flex items-start justify-between gap-3"><div><p className="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">{label}</p><p className="mt-2 text-2xl font-display font-black text-foreground">{value}</p>{helper && <p className="mt-1 text-xs text-muted-foreground">{helper}</p>}</div><span className={cn('grid size-10 place-items-center rounded-xl', tones[tone])}>{icon}</span></div></div>;
 }
 
@@ -336,6 +362,13 @@ export default function PlannerLeftoverTab() {
     void refresh();
   };
 
+  // NOTE: Transfer Out now lives in its own standalone top-level Planner
+  // tab — see `PlannerTransferOutTab` below. It still writes to this same
+  // planner_leftover_ledger (reason: 'transfer_out'), so everything in this
+  // tab (Daily Report "Transferred Out" column, Movement Log, Excel/PDF
+  // exports) keeps working unchanged regardless of which tab created the
+  // entry.
+
   // ── Write-off / correction ───────────────────────────────────────────────
   const [adjustingSlug, setAdjustingSlug] = useState<string | null>(null);
   const [adjustQty, setAdjustQty] = useState('');
@@ -355,6 +388,36 @@ export default function PlannerLeftoverTab() {
     if ('error' in result) { setError(result.error); return; }
     setMessage(`${balanceRow.itemName}: ${qtyFmt(amount)} ${balanceRow.unit} removed (spoilage/correction).`);
     setAdjustingSlug(null); setAdjustQty(''); setAdjustNote('');
+    void refresh();
+  };
+
+  // ── Edit a Closing Stock entry (item/qty/unit) ───────────────────────────
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editQty, setEditQty] = useState('');
+  const [editUnit, setEditUnit] = useState<LeftoverUnit>('kg');
+  const [editSaving, setEditSaving] = useState(false);
+
+  const startEdit = (row: LeftoverLedgerRow) => {
+    setEditingId(row.id);
+    setEditName(row.itemName);
+    setEditQty(String(row.delta));
+    setEditUnit(row.unit);
+    setError(''); setMessage('');
+  };
+
+  const submitEdit = async () => {
+    if (!editingId) return;
+    const name = editName.trim();
+    const amount = Number(editQty);
+    if (!name) { setError('Enter an item name.'); return; }
+    if (!Number.isFinite(amount) || amount <= 0) { setError('Enter a quantity greater than zero.'); return; }
+    setEditSaving(true); setError('');
+    const result = await editClosingStockEntry({ entryId: editingId, itemName: name, unit: editUnit, quantity: amount, editedBy: staffName });
+    setEditSaving(false);
+    if ('error' in result) { setError(result.error); return; }
+    setMessage(`${name}: entry updated to ${qtyFmt(amount)} ${editUnit}.`);
+    setEditingId(null); setEditName(''); setEditQty('');
     void refresh();
   };
 
@@ -379,6 +442,7 @@ export default function PlannerLeftoverTab() {
   const todayRows = useMemo(() => rows.filter((row) => row.businessDate === kolkataToday()), [rows]);
   const addedTodayTotal = todayRows.filter((row) => row.delta > 0).length;
   const dispatchedTodayTotal = todayRows.filter((row) => row.reason === 'dispatch').length;
+  const transferredOutTodayTotal = todayRows.filter((row) => row.reason === 'transfer_out').length;
   const extraTodayTotal = todayRows.filter((row) => row.isExtra).length;
 
   // ── Daily report (opening / added / dispatched / closing per item) ──────
@@ -394,6 +458,16 @@ export default function PlannerLeftoverTab() {
       itemSlug: string; itemName: string; unit: LeftoverUnit;
       opening: number; produced: number; extraProduced: number; closingStockEntry: number;
       dispatched: number; extraDispatched: number; adjusted: number; closing: number;
+      // FEATURE (2026-08-09): "Transfer Out" — stock sent out for a
+      // specific tracked reason (not a branch dispatch, not spoilage/write-
+      // off). Kept separate from `adjusted` and `dispatched` so reports show
+      // exactly how much left this way and why.
+      transferredOut: number; transferOutReasons: string[];
+      // FEATURE (2026-08-09 / #279): adjustments (write-offs/corrections)
+      // already carry a required-ish `notes` reason, same as transfer_out —
+      // surface it the same way so the owner can tell what was written off
+      // and why, not just that some quantity moved.
+      adjustReasons: string[];
       dispatchByBranch: Record<string, number>;
       // Hosur only — which shop actually received each dispatched quantity,
       // instead of every Hosur dispatch collapsing into one combined number.
@@ -401,7 +475,7 @@ export default function PlannerLeftoverTab() {
     }>();
     const ensure = (row: LeftoverLedgerRow) => {
       const key = `${row.itemSlug}|${row.unit}`;
-      const current = map.get(key) ?? { itemSlug: row.itemSlug, itemName: row.itemName, unit: row.unit, opening: 0, produced: 0, extraProduced: 0, closingStockEntry: 0, dispatched: 0, extraDispatched: 0, adjusted: 0, closing: 0, dispatchByBranch: {}, dispatchByShop: {} };
+      const current = map.get(key) ?? { itemSlug: row.itemSlug, itemName: row.itemName, unit: row.unit, opening: 0, produced: 0, extraProduced: 0, closingStockEntry: 0, dispatched: 0, extraDispatched: 0, adjusted: 0, closing: 0, transferredOut: 0, transferOutReasons: [], adjustReasons: [], dispatchByBranch: {}, dispatchByShop: {} };
       map.set(key, current);
       return current;
     };
@@ -417,8 +491,12 @@ export default function PlannerLeftoverTab() {
           const branchKey = row.branch || 'Unspecified';
           entry.dispatchByBranch[branchKey] = (entry.dispatchByBranch[branchKey] || 0) + Math.abs(row.delta);
           if (row.shopName) entry.dispatchByShop[row.shopName] = (entry.dispatchByShop[row.shopName] || 0) + Math.abs(row.delta);
+        } else if (row.reason === 'transfer_out') {
+          entry.transferredOut += Math.abs(row.delta);
+          if (row.notes) entry.transferOutReasons.push(row.notes);
         } else if (row.reason === 'adjustment') {
           entry.adjusted += row.delta;
+          if (row.notes) entry.adjustReasons.push(row.notes);
         } else if (row.reason === 'production_carryover') {
           entry.produced += row.delta;
           if (row.isExtra) entry.extraProduced += row.delta;
@@ -428,8 +506,8 @@ export default function PlannerLeftoverTab() {
       }
     });
     return Array.from(map.values())
-      .map((entry) => ({ ...entry, closing: entry.opening + entry.produced + entry.closingStockEntry - entry.dispatched + entry.adjusted }))
-      .filter((entry) => Math.abs(entry.opening) > 0.001 || Math.abs(entry.produced) > 0.001 || Math.abs(entry.closingStockEntry) > 0.001 || Math.abs(entry.dispatched) > 0.001 || Math.abs(entry.adjusted) > 0.001)
+      .map((entry) => ({ ...entry, closing: entry.opening + entry.produced + entry.closingStockEntry - entry.dispatched - entry.transferredOut + entry.adjusted }))
+      .filter((entry) => Math.abs(entry.opening) > 0.001 || Math.abs(entry.produced) > 0.001 || Math.abs(entry.closingStockEntry) > 0.001 || Math.abs(entry.dispatched) > 0.001 || Math.abs(entry.transferredOut) > 0.001 || Math.abs(entry.adjusted) > 0.001)
       .sort((a, b) => a.itemName.localeCompare(b.itemName));
   }, [rows, reportDate]);
 
@@ -463,7 +541,11 @@ export default function PlannerLeftoverTab() {
       'Of Which Extra (Not Ordered) ': row.extraDispatched,
       ...Object.fromEntries(BRANCHES.map((b) => [`Dispatched to ${b}`, row.dispatchByBranch[b] || 0])),
       'Dispatched By Hosur Shop': Object.entries(row.dispatchByShop).map(([shop, q]) => `${shop}: ${q}`).join(', ') || '-',
-      Adjusted: row.adjusted, Closing: row.closing,
+      'Transferred Out': row.transferredOut,
+      'Transfer Out Reason(s)': row.transferOutReasons.join('; ') || '-',
+      Adjusted: row.adjusted,
+      'Adjustment Reason(s)': row.adjustReasons.join('; ') || '-',
+      Closing: row.closing,
     })), 'Daily Reconciliation', 'No leftover activity on this date');
     addSheet(reportMovements.map((row) => ({
       Time: new Date(row.createdAt).toLocaleString('en-IN'), Item: row.itemName, Unit: row.unit,
@@ -542,11 +624,40 @@ export default function PlannerLeftoverTab() {
 
     drawTable(
       'Daily Reconciliation',
-      ['Item', 'Unit', 'Opening', 'Produced', 'Extra Prod.', 'Added', 'Dispatched', 'Extra Disp.', 'Adjusted', 'Closing'],
-      [95, 26, 42, 46, 44, 42, 48, 44, 42, 44],
-      reportRows.map((row) => [row.itemName.slice(0, 18), row.unit, qtyFmt(row.opening), qtyFmt(row.produced), row.extraProduced > 0 ? qtyFmt(row.extraProduced) : '-', qtyFmt(row.closingStockEntry), qtyFmt(row.dispatched), row.extraDispatched > 0 ? qtyFmt(row.extraDispatched) : '-', qtyFmt(row.adjusted), qtyFmt(row.closing)]),
+      ['Item', 'Unit', 'Opening', 'Produced', 'Extra Prod.', 'Added', 'Dispatched', 'Extra Disp.', 'Transfer Out', 'Adjusted', 'Closing'],
+      [82, 24, 38, 42, 40, 38, 44, 40, 46, 38, 40],
+      reportRows.map((row) => [row.itemName.slice(0, 16), row.unit, qtyFmt(row.opening), qtyFmt(row.produced), row.extraProduced > 0 ? qtyFmt(row.extraProduced) : '-', qtyFmt(row.closingStockEntry), qtyFmt(row.dispatched), row.extraDispatched > 0 ? qtyFmt(row.extraDispatched) : '-', row.transferredOut > 0 ? qtyFmt(row.transferredOut) : '-', qtyFmt(row.adjusted), qtyFmt(row.closing)]),
       'No leftover activity recorded for this date.',
     );
+
+    // FEATURE (2026-08-09): "reports/closing stock exports must show reasons
+    // clearly so the owner can immediately understand what stock was sent
+    // where or misused and why" — the columns above only fit a quantity,
+    // so every transfer-out's actual reason gets its own table underneath.
+    const transferOutDetail = reportRows.filter((row) => row.transferredOut > 0.001 && row.transferOutReasons.length > 0);
+    if (transferOutDetail.length > 0) {
+      drawTable(
+        'Transfer Out — Reasons',
+        ['Item', 'Qty', 'Reason(s)'],
+        [140, 60, 300],
+        transferOutDetail.map((row) => [row.itemName.slice(0, 26), `${qtyFmt(row.transferredOut)} ${row.unit}`, row.transferOutReasons.join('; ').slice(0, 80)]),
+        'No transfers out on this date.',
+      );
+    }
+
+    // FEATURE (2026-08-09 / #279): same treatment for write-offs/corrections
+    // — the Daily Reconciliation table above only has room for the net
+    // adjustment quantity, so the actual reason gets its own detail table.
+    const adjustDetail = reportRows.filter((row) => row.adjusted !== 0 && row.adjustReasons.length > 0);
+    if (adjustDetail.length > 0) {
+      drawTable(
+        'Adjustments / Write-offs — Reasons',
+        ['Item', 'Qty', 'Reason(s)'],
+        [140, 60, 300],
+        adjustDetail.map((row) => [row.itemName.slice(0, 26), `${qtyFmt(row.adjusted)} ${row.unit}`, row.adjustReasons.join('; ').slice(0, 80)]),
+        'No adjustments on this date.',
+      );
+    }
 
     drawTable(
       'Movement Log',
@@ -582,10 +693,11 @@ export default function PlannerLeftoverTab() {
       {error && <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-bold text-red-700"><AlertTriangle className="mr-2 inline size-4" />{error}</div>}
       {message && <div className="rounded-2xl border border-teal-200 bg-teal-50 px-4 py-3 text-sm font-bold text-teal-700"><CheckCircle2 className="mr-2 inline size-4" />{message}</div>}
 
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
         <StatCard label="Items In Leftover Pool" value={balances.length} icon={<PackageCheck className="size-5" />} tone="emerald" />
         <StatCard label="Added Today" value={addedTodayTotal} helper="Entries recorded today" icon={<Plus className="size-5" />} tone="blue" />
         <StatCard label="Dispatched From Leftover Today" value={dispatchedTodayTotal} icon={<Scale className="size-5" />} tone="amber" />
+        <StatCard label="Transferred Out Today" value={transferredOutTodayTotal} helper="Sent out for a tracked reason" icon={<Truck className="size-5" />} tone="orange" />
         <StatCard label="Extra / Non-Requested Today" value={extraTodayTotal} helper="Produced or dispatched beyond what was ordered" icon={<AlertTriangle className="size-5" />} tone="red" />
         <StatCard label="Total Movements Logged" value={rows.length} icon={<History className="size-5" />} tone="slate" />
       </div>
@@ -682,6 +794,7 @@ export default function PlannerLeftoverTab() {
                 <th className="px-4 py-3 text-right">Added Today</th>
                 <th className="px-4 py-3 text-right">Dispatched Today</th>
                 <th className="px-4 py-3 text-left">Dispatched To</th>
+                <th className="px-4 py-3 text-right">Transferred Out</th>
                 <th className="px-4 py-3 text-right">Adjusted</th>
                 <th className="px-4 py-3 text-right">Closing</th>
               </tr>
@@ -716,10 +829,33 @@ export default function PlannerLeftoverTab() {
                       </div>
                     )}
                   </td>
-                  <td className="px-4 py-3 text-right">{row.adjusted !== 0 ? qtyFmt(row.adjusted) : '-'}</td>
+                  <td className="px-4 py-3 text-right text-orange-700 font-bold">
+                    {row.transferredOut > 0 ? (
+                      <div>
+                        <span>-{qtyFmt(row.transferredOut)}</span>
+                        {row.transferOutReasons.length > 0 && (
+                          <div className="mt-0.5 text-[10px] font-normal text-muted-foreground" title={row.transferOutReasons.join('; ')}>
+                            {row.transferOutReasons.join('; ')}
+                          </div>
+                        )}
+                      </div>
+                    ) : '-'}
+                  </td>
+                  <td className="px-4 py-3 text-right">
+                    {row.adjusted !== 0 ? (
+                      <div>
+                        <span>{qtyFmt(row.adjusted)}</span>
+                        {row.adjustReasons.length > 0 && (
+                          <div className="mt-0.5 text-[10px] font-normal text-muted-foreground" title={row.adjustReasons.join('; ')}>
+                            {row.adjustReasons.join('; ')}
+                          </div>
+                        )}
+                      </div>
+                    ) : '-'}
+                  </td>
                   <td className="px-4 py-3 text-right font-black">{qtyFmt(row.closing)}</td>
                 </tr>
-              )) : <tr><td colSpan={8} className="px-4 py-10 text-center text-muted-foreground">No leftover activity on {dateLabel(reportDate)}.</td></tr>}
+              )) : <tr><td colSpan={9} className="px-4 py-10 text-center text-muted-foreground">No leftover activity on {dateLabel(reportDate)}.</td></tr>}
             </tbody>
           </table>
         </div>
@@ -730,10 +866,44 @@ export default function PlannerLeftoverTab() {
         <div className="max-h-80 overflow-y-auto">
           <table className="min-w-full text-sm">
             <thead className="sticky top-0 bg-muted/50 text-[10px] font-black uppercase tracking-wide text-muted-foreground">
-              <tr><th className="px-4 py-2.5 text-left">Time</th><th className="px-4 py-2.5 text-left">Item</th><th className="px-4 py-2.5 text-right">Qty</th><th className="px-4 py-2.5 text-left">Type</th><th className="px-4 py-2.5 text-left">Branch / Order / Shop</th><th className="px-4 py-2.5 text-left">By</th></tr>
+              <tr><th className="px-4 py-2.5 text-left">Time</th><th className="px-4 py-2.5 text-left">Item</th><th className="px-4 py-2.5 text-right">Qty</th><th className="px-4 py-2.5 text-left">Type</th><th className="px-4 py-2.5 text-left">Branch / Order / Shop</th><th className="px-4 py-2.5 text-left">By</th><th className="px-4 py-2.5 text-right">Edit</th></tr>
             </thead>
             <tbody className="divide-y">
-              {reportMovements.length ? reportMovements.map((row) => (
+              {reportMovements.length ? reportMovements.map((row) => {
+                const isEditing = editingId === row.id;
+                // FEATURE (2026-08-09): only manually-recorded Closing Stock
+                // entries can be edited here — dispatch/production rows are
+                // the real audit trail of what actually moved through an
+                // order and must stay exactly as recorded (matches the
+                // server-side guard in edit_closing_stock_entry_secure).
+                const editable = row.reason === 'closing_stock';
+                if (isEditing) {
+                  return (
+                    <tr key={row.id} className="bg-teal-50/60">
+                      <td className="px-4 py-2 text-xs text-muted-foreground">{new Date(row.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</td>
+                      <td className="px-4 py-2"><input autoFocus value={editName} onChange={(e) => setEditName(e.target.value)} className="h-8 w-full rounded-lg border bg-background px-2 text-xs font-bold" /></td>
+                      <td className="px-4 py-2">
+                        <div className="flex items-center justify-end gap-1">
+                          <input type="number" min="0" step="0.001" value={editQty} onChange={(e) => setEditQty(e.target.value)} className="h-8 w-20 rounded-lg border bg-background px-2 text-right text-xs font-bold" />
+                          <select value={editUnit} onChange={(e) => setEditUnit(e.target.value as LeftoverUnit)} className="h-8 rounded-lg border bg-background px-1 text-xs font-bold">
+                            <option value="kg">kg</option>
+                            <option value="pcs">pcs</option>
+                          </select>
+                        </div>
+                      </td>
+                      <td className="px-4 py-2 text-xs">{reasonLabel(row.reason)}</td>
+                      <td className="px-4 py-2 text-xs text-muted-foreground">{[row.branch, row.orderNumber ? `#${row.orderNumber}` : null, row.notes].filter(Boolean).join(' · ') || '-'}</td>
+                      <td className="px-4 py-2 text-xs text-muted-foreground">{row.recordedBy}</td>
+                      <td className="px-4 py-2">
+                        <div className="flex items-center justify-end gap-1">
+                          <button onClick={submitEdit} disabled={editSaving} className="rounded-lg bg-teal-700 px-2 py-1.5 text-[10px] font-black text-white disabled:opacity-50">{editSaving ? '…' : 'Save'}</button>
+                          <button onClick={() => { setEditingId(null); setEditName(''); setEditQty(''); }} className="rounded-lg bg-muted px-1.5 py-1.5"><X className="size-3" /></button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                }
+                return (
                 <tr key={row.id} className={row.isExtra ? 'bg-fuchsia-50/50' : undefined}>
                   <td className="px-4 py-2 text-xs text-muted-foreground">{new Date(row.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</td>
                   <td className="px-4 py-2 font-bold">{row.itemName}</td>
@@ -753,10 +923,174 @@ export default function PlannerLeftoverTab() {
                     </div>
                   </td>
                   <td className="px-4 py-2 text-xs text-muted-foreground">{row.recordedBy}</td>
+                  <td className="px-4 py-2 text-right">
+                    {editable ? (
+                      <button onClick={() => startEdit(row)} className="rounded-lg border px-2 py-1 text-[10px] font-black text-muted-foreground hover:bg-muted">Edit</button>
+                    ) : <span className="text-[10px] font-bold text-muted-foreground/50">—</span>}
+                  </td>
                 </tr>
-              )) : <tr><td colSpan={6} className="px-4 py-10 text-center text-muted-foreground">No movements on this date.</td></tr>}
+                );
+              }) : <tr><td colSpan={7} className="px-4 py-10 text-center text-muted-foreground">No movements on this date.</td></tr>}
             </tbody>
           </table>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// ── Transfer Out (standalone top-level Planner tab) ────────────────────────
+// Promoted out of the Closing Stock tab into its own top-level Planner tab —
+// mirrors the "Transfer In" tab's placement/pattern (own PlannerTab value,
+// own TABS entry, own WorkspaceChrome sidebar link). Still writes to the
+// SAME planner_leftover_ledger (reason: 'transfer_out') via
+// recordLeftoverMovement, so Closing Stock's Daily Report "Transferred Out"
+// column, Movement Log, and Excel/PDF exports keep showing these entries
+// exactly as before, regardless of which tab created them.
+export function PlannerTransferOutTab() {
+  const { currentUser } = useAuthStore();
+  const staffName = currentUser?.displayName || currentUser?.username || 'Planner Staff';
+  const catalog = useMergedLeftoverCatalog();
+
+  const [rows, setRows] = useState<LeftoverLedgerRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
+
+  const refresh = useCallback(async () => {
+    setLoading(true); setError('');
+    const { rows: fetched, error: fetchError } = await fetchLeftoverLedger();
+    setRows(fetched);
+    if (fetchError) setError(fetchError);
+    setLoading(false);
+  }, []);
+  useEffect(() => { void refresh(); }, [refresh]);
+
+  const [transferQuery, setTransferQuery] = useState('');
+  const [transferItem, setTransferItem] = useState<MergedCatalogItem | null>(null);
+  const [transferQty, setTransferQty] = useState('');
+  const [transferUnit, setTransferUnit] = useState<LeftoverUnit>('kg');
+  const [transferReason, setTransferReason] = useState('');
+  const [transferSaving, setTransferSaving] = useState(false);
+
+  const resetTransferForm = () => { setTransferQuery(''); setTransferItem(null); setTransferQty(''); setTransferUnit('kg'); setTransferReason(''); };
+
+  const submitTransferOut = async () => {
+    setError(''); setMessage('');
+    const name = (transferItem?.name || transferQuery).trim();
+    const amount = Number(transferQty);
+    if (!name) { setError('Search and pick (or type) an item first.'); return; }
+    if (!Number.isFinite(amount) || amount <= 0) { setError('Enter a quantity greater than zero.'); return; }
+    if (!transferReason.trim()) { setError('Enter a reason for this transfer out.'); return; }
+    setTransferSaving(true);
+    const result = await recordLeftoverMovement({
+      itemName: name, unit: transferUnit, delta: -amount, businessDate: kolkataToday(),
+      reason: 'transfer_out', recordedBy: staffName, notes: transferReason.trim(),
+    });
+    setTransferSaving(false);
+    if ('error' in result) { setError(result.error); return; }
+    setMessage(`${name}: ${qtyFmt(amount)} ${transferUnit} transferred out (${transferReason.trim()}). New balance ${qtyFmt(result.newBalance)} ${transferUnit}.`);
+    resetTransferForm();
+    void refresh();
+  };
+
+  const history = useMemo(
+    () => rows.filter((row) => row.reason === 'transfer_out').sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+    [rows],
+  );
+  const [historyQuery, setHistoryQuery] = useState('');
+  const filteredHistory = useMemo(() => {
+    const q = historyQuery.trim().toLowerCase();
+    if (!q) return history;
+    return history.filter((row) => row.itemName.toLowerCase().includes(q) || (row.notes || '').toLowerCase().includes(q));
+  }, [history, historyQuery]);
+
+  const todayCount = useMemo(() => history.filter((row) => row.businessDate === kolkataToday()).length, [history]);
+
+  if (loading) return <div className="flex min-h-[55vh] items-center justify-center"><Loader2 className="size-7 animate-spin text-orange-600" /></div>;
+
+  return (
+    <section className="space-y-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 className="font-display text-lg font-black text-foreground">Transfer Out</h2>
+          <p className="text-xs text-muted-foreground">Send stock out for a specific tracked reason — not a branch dispatch, not spoilage. A reason is required and shown in Closing Stock reports.</p>
+        </div>
+        <button onClick={refresh} className="inline-flex h-9 items-center gap-2 rounded-xl border border-border bg-card px-3 text-xs font-black text-muted-foreground hover:bg-muted"><RefreshCw className="size-3.5" />Refresh</button>
+      </div>
+
+      {error && <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-bold text-red-700"><AlertTriangle className="mr-2 inline size-4" />{error}</div>}
+      {message && <div className="rounded-2xl border border-teal-200 bg-teal-50 px-4 py-3 text-sm font-bold text-teal-700"><CheckCircle2 className="mr-2 inline size-4" />{message}</div>}
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        <StatCard label="Transferred Out Today" value={todayCount} helper="Entries recorded today" icon={<Truck className="size-5" />} tone="orange" />
+        <StatCard label="Total Transfers Logged" value={history.length} icon={<History className="size-5" />} tone="slate" />
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-[390px_minmax(0,1fr)]">
+        <div className="rounded-2xl border border-orange-200 bg-orange-50/40 p-4 space-y-3">
+          <h3 className="font-black text-orange-900">Record a Transfer Out</h3>
+          <p className="text-xs text-orange-800/80">Pick any stock item and send it out for a specific reason.</p>
+          <ItemSearchPicker
+            value={transferItem ? transferItem.name : transferQuery}
+            onChange={(v) => { setTransferQuery(v); setTransferItem(null); }}
+            onSelect={(item) => { setTransferItem(item); setTransferQuery(item.name); }}
+            items={catalog}
+          />
+          <div className="grid grid-cols-2 gap-3">
+            <label className="space-y-1">
+              <span className="text-xs font-black text-orange-900">Quantity</span>
+              <input type="number" min="0" step="0.001" value={transferQty} onChange={(e) => setTransferQty(e.target.value)} className="h-11 w-full rounded-xl border border-orange-200 bg-white px-3 text-sm font-bold" placeholder="0" />
+            </label>
+            <div className="flex items-end gap-2">
+              <button onClick={() => setTransferUnit('kg')} className={cn('flex-1 rounded-xl border py-2.5 text-sm font-black', transferUnit === 'kg' ? 'border-orange-600 bg-orange-600 text-white' : 'border-orange-200 bg-white text-orange-900')}>Kg</button>
+              <button onClick={() => setTransferUnit('pcs')} className={cn('flex-1 rounded-xl border py-2.5 text-sm font-black', transferUnit === 'pcs' ? 'border-orange-600 bg-orange-600 text-white' : 'border-orange-200 bg-white text-orange-900')}>Pcs</button>
+            </div>
+          </div>
+          <label className="block space-y-1">
+            <span className="text-xs font-black text-orange-900">Reason *</span>
+            <input value={transferReason} onChange={(e) => setTransferReason(e.target.value)} className="h-11 w-full rounded-xl border border-orange-200 bg-white px-3 text-sm font-bold" placeholder="e.g. Sent to Cafe for an event" />
+          </label>
+          <button onClick={submitTransferOut} disabled={transferSaving} className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-orange-600 text-sm font-black text-white disabled:opacity-50">
+            {transferSaving ? <Loader2 className="size-4 animate-spin" /> : <Truck className="size-4" />}Transfer Out
+          </button>
+        </div>
+
+        <div className="overflow-hidden rounded-2xl border bg-card">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b bg-muted/30 px-4 py-3">
+            <div>
+              <h3 className="font-black">Recent Transfers Out</h3>
+              <p className="text-xs text-muted-foreground">Full history — also shown in Closing Stock's Daily Report and Movement Log.</p>
+            </div>
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+              <input value={historyQuery} onChange={(e) => setHistoryQuery(e.target.value)} placeholder="Search item or reason…" className="h-9 w-56 rounded-xl border border-border bg-background pl-8 pr-3 text-xs font-bold" />
+            </div>
+          </div>
+          <div className="max-h-[520px] overflow-y-auto">
+            <table className="min-w-full text-sm">
+              <thead className="sticky top-0 bg-muted/50 text-[10px] font-black uppercase tracking-wide text-muted-foreground">
+                <tr>
+                  <th className="px-4 py-2.5 text-left">Date</th>
+                  <th className="px-4 py-2.5 text-left">Item</th>
+                  <th className="px-4 py-2.5 text-right">Qty</th>
+                  <th className="px-4 py-2.5 text-left">Reason</th>
+                  <th className="px-4 py-2.5 text-left">By</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border/60">
+                {filteredHistory.length > 0 ? filteredHistory.map((row) => (
+                  <tr key={row.id}>
+                    <td className="px-4 py-2 text-xs text-muted-foreground">{new Date(row.createdAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</td>
+                    <td className="px-4 py-2 font-bold">{row.itemName}</td>
+                    <td className="px-4 py-2 text-right font-black text-orange-700">{qtyFmt(Math.abs(row.delta))} {row.unit}</td>
+                    <td className="px-4 py-2 text-xs text-muted-foreground">{row.notes || '-'}</td>
+                    <td className="px-4 py-2 text-xs text-muted-foreground">{row.recordedBy}</td>
+                  </tr>
+                )) : <tr><td colSpan={5} className="px-4 py-10 text-center text-muted-foreground">No transfers out recorded yet.</td></tr>}
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
     </section>

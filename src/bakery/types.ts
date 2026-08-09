@@ -102,6 +102,18 @@ export interface DispatchEntry {
    * fulfilment numbers.
    */
   isExtra?: boolean;
+  /**
+   * FEATURE (2026-08-09): "Custom" dispatch — a planning-stock item sold
+   * direct to a walk-in customer rather than sent to a branch/shop. `branch`
+   * is still set to a real Branch value (schema requires it, and it's what
+   * plannedDispatchedForRow sums against to keep the Planned bucket's
+   * remaining-owed math correct) but is otherwise a bookkeeping placeholder
+   * — submitDispatch skips the branch_incoming write for these so they never
+   * show up as unconfirmed incoming stock on that branch's own dashboard.
+   */
+  isCustomSale?: boolean;
+  /** Walk-in customer's name, for Custom-sale entries only — surfaced in the Closing Stock Movement Log note. */
+  customerName?: string;
 }
 
 export type Branch = 'VRSNB' | 'SNB' | 'Hosur';

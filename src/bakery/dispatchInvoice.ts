@@ -82,6 +82,14 @@ export interface DispatchInvoiceRecord {
   hosurShopId: string | null;
   hosurShopName: string | null;
   hosurShopPhone: string | null;
+  // FEATURE (2026-08-09): "Custom" dispatch of planning-stock items direct to
+  // a walk-in customer (no branch involved) — the planner enters these three
+  // fields at dispatch time instead of picking a branch/shop. When set, the
+  // printed invoice/checklist shows this customer's details instead of the
+  // branch/shop line.
+  customerName: string | null;
+  customerPhone: string | null;
+  customerAddress: string | null;
   dispatchedBy: string;
   items: DispatchInvoiceItem[];
   subtotal: number;
@@ -89,6 +97,15 @@ export interface DispatchInvoiceRecord {
   discountAmount: number;
   roundOff: number;
   total: number;
+  // FEATURE (2026-08-09): "Sample Bill" — a bill created for a Billing
+  // (Walk-in) customer before they've actually paid. 'unpaid' until the
+  // planner hits "Mark as Paid" (see markDispatchInvoicePaid below), which is
+  // the moment stock actually gets deducted. Every other invoice in this
+  // table (branch/shop/custom-sale dispatch) is created at the moment goods
+  // physically leave, so it defaults to already-'paid'.
+  status: 'paid' | 'unpaid' | 'cancelled';
+  paidAt: string | null;
+  notes: string | null;
   createdAt: string;
 }
 
@@ -97,10 +114,15 @@ export async function saveDispatchInvoice(input: {
   hosurShopId?: string | null;
   hosurShopName?: string | null;
   hosurShopPhone?: string | null;
+  customerName?: string | null;
+  customerPhone?: string | null;
+  customerAddress?: string | null;
   dispatchedBy: string;
   items: DispatchInvoiceItem[];
   discountPct: number;
-  dispatchEntryIds: { orderId: string; dispatchEntryId: string }[];
+  dispatchEntryIds?: { orderId: string; dispatchEntryId: string }[];
+  status?: 'paid' | 'unpaid';
+  notes?: string | null;
 }): Promise<DispatchInvoiceRecord> {
   const subtotal = Math.round(input.items.reduce((s, i) => s + i.lineTotal, 0) * 100) / 100;
   const discountAmount = Math.round(subtotal * (input.discountPct / 100) * 100) / 100;
@@ -108,6 +130,7 @@ export async function saveDispatchInvoice(input: {
   const total = Math.round(preRound);
   const roundOff = Math.round((total - preRound) * 100) / 100;
   const invoiceNo = await nextDispatchInvoiceNo(input.scope);
+  const status = input.status ?? 'paid';
 
   const { data, error } = await supabase.from('dispatch_invoices').insert({
     invoice_no: invoiceNo,
@@ -115,6 +138,9 @@ export async function saveDispatchInvoice(input: {
     hosur_shop_id: input.hosurShopId ?? null,
     hosur_shop_name: input.hosurShopName ?? null,
     hosur_shop_phone: input.hosurShopPhone ?? null,
+    customer_name: input.customerName ?? null,
+    customer_phone: input.customerPhone ?? null,
+    customer_address: input.customerAddress ?? null,
     dispatched_by: input.dispatchedBy,
     items: input.items,
     subtotal,
@@ -122,8 +148,11 @@ export async function saveDispatchInvoice(input: {
     discount_amount: discountAmount,
     round_off: roundOff,
     total,
-    dispatch_entry_ids: input.dispatchEntryIds,
-  }).select('id, created_at').single();
+    dispatch_entry_ids: input.dispatchEntryIds ?? [],
+    status,
+    paid_at: status === 'paid' ? new Date().toISOString() : null,
+    notes: input.notes ?? null,
+  }).select('id, created_at, paid_at').single();
   if (error) throw error;
 
   return {
@@ -133,6 +162,9 @@ export async function saveDispatchInvoice(input: {
     hosurShopId: input.hosurShopId ?? null,
     hosurShopName: input.hosurShopName ?? null,
     hosurShopPhone: input.hosurShopPhone ?? null,
+    customerName: input.customerName ?? null,
+    customerPhone: input.customerPhone ?? null,
+    customerAddress: input.customerAddress ?? null,
     dispatchedBy: input.dispatchedBy,
     items: input.items,
     subtotal,
@@ -140,8 +172,45 @@ export async function saveDispatchInvoice(input: {
     discountAmount,
     roundOff,
     total,
+    status,
+    paidAt: (data.paid_at as string | null) ?? null,
+    notes: input.notes ?? null,
     createdAt: data.created_at as string,
   };
+}
+
+// FEATURE (2026-08-09): the moment a Sample Bill actually gets paid — flips
+// it to 'paid' and, only now, debits the Closing Stock pool for every item
+// on it (mirrors submitDispatch's own debit: non-fatal, allowed to go
+// negative rather than ever blocking the sale). Tagged in the Movement Log
+// as "Sales Online" per the owner's explicit ask, distinguishing it from a
+// regular Billing (Walk-in) sale that deducts stock immediately at creation.
+export async function markDispatchInvoicePaid(record: DispatchInvoiceRecord, recordedBy: string): Promise<{ ok: true } | { error: string }> {
+  if (record.status === 'paid') return { ok: true };
+  const paidAt = new Date().toISOString();
+  const { error } = await supabase.from('dispatch_invoices').update({ status: 'paid', paid_at: paidAt }).eq('id', record.id);
+  if (error) return { error: error.message };
+
+  const { recordLeftoverMovement, kolkataToday } = await import('./PlannerLeftoverTab');
+  for (const item of record.items) {
+    try {
+      const result = await recordLeftoverMovement({
+        itemName: item.itemName,
+        unit: item.unit === 'pcs' ? 'pcs' : 'kg',
+        delta: -Math.abs(item.quantity),
+        businessDate: kolkataToday(),
+        reason: 'dispatch',
+        recordedBy,
+        notes: `Sales Online — Sample Bill ${record.invoiceNo}${record.customerName ? ` — ${record.customerName}` : ''}`,
+      });
+      if ('error' in result) {
+        console.error('[markDispatchInvoicePaid] Closing Stock pool debit failed:', result.error);
+      }
+    } catch (err) {
+      console.error('[markDispatchInvoicePaid] Closing Stock pool debit threw:', err);
+    }
+  }
+  return { ok: true };
 }
 
 function esc(v: unknown): string {
@@ -156,9 +225,12 @@ export function renderDispatchInvoiceHtml(record: DispatchInvoiceRecord, mode: '
   const createdAt = new Date(record.createdAt);
   const dateStr = createdAt.toLocaleDateString('en-GB');
   const timeStr = createdAt.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-  const customerLine = record.scope === 'Hosur'
+  const customerLine = record.customerName
+    ? `${esc(record.customerName)}${record.customerPhone ? ` ${esc(record.customerPhone)}` : ''}`
+    : record.scope === 'Hosur'
     ? `${esc(record.hosurShopName || 'Hosur Shop')}${record.hosurShopPhone ? ` ${esc(record.hosurShopPhone)}` : ''}`
     : `${esc(record.scope)} Branch`;
+  const addressLine = record.customerName && record.customerAddress ? `<div class="row small"><span>${esc(record.customerAddress)}</span></div>` : '';
   const totalQty = record.items.reduce((s, i) => s + i.quantity, 0);
   const rows = record.items.map((i, idx) => `
     <tr>
@@ -194,9 +266,10 @@ export function renderDispatchInvoiceHtml(record: DispatchInvoiceRecord, mode: '
     <div class="c" style="font-weight:900;font-size:${mode === 'thermal' ? '16px' : '20px'}">${esc(business.name)}</div>
     <div class="c small">${business.lines.map(esc).join('<br/>')}</div>
     <div class="c small">GSTIN : ${esc(business.gstin)}${business.fssai ? ` &nbsp; FSSAI : ${esc(business.fssai)}` : ''}</div>
-    <div class="c doc" style="font-weight:900;margin:6px 0">TAX INVOICE</div>
+    <div class="c doc" style="font-weight:900;margin:6px 0">TAX INVOICE${record.status === 'unpaid' ? ' — SAMPLE (AWAITING PAYMENT)' : ''}</div>
     <div class="row"><span>Bill No : ${esc(record.invoiceNo)}</span><span>Date : ${esc(dateStr)}</span></div>
     <div class="row"><span>${customerLine}</span><span>Time : ${esc(timeStr)}</span></div>
+    ${addressLine}
     <div class="dash"></div>
     <table>
       <thead><tr><th>Sn</th><th>Item Name</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">Amount</th></tr></thead>
@@ -235,6 +308,9 @@ function recordFromRow(row: Record<string, unknown>): DispatchInvoiceRecord {
     hosurShopId: (row.hosur_shop_id as string | null) ?? null,
     hosurShopName: (row.hosur_shop_name as string | null) ?? null,
     hosurShopPhone: (row.hosur_shop_phone as string | null) ?? null,
+    customerName: (row.customer_name as string | null) ?? null,
+    customerPhone: (row.customer_phone as string | null) ?? null,
+    customerAddress: (row.customer_address as string | null) ?? null,
     dispatchedBy: String(row.dispatched_by ?? ''),
     items: (row.items as DispatchInvoiceItem[] | null) ?? [],
     subtotal: Number(row.subtotal ?? 0),
@@ -242,6 +318,9 @@ function recordFromRow(row: Record<string, unknown>): DispatchInvoiceRecord {
     discountAmount: Number(row.discount_amount ?? 0),
     roundOff: Number(row.round_off ?? 0),
     total: Number(row.total ?? 0),
+    status: ((row.status as string | null) ?? 'paid') as 'paid' | 'unpaid' | 'cancelled',
+    paidAt: (row.paid_at as string | null) ?? null,
+    notes: (row.notes as string | null) ?? null,
     createdAt: String(row.created_at ?? ''),
   };
 }

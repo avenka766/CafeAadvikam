@@ -20,10 +20,16 @@ import { searchItems } from './storeItemMaster';
 // paper format exactly — Consignee (fixed, this business) / Supplier block,
 // GRN No./Date, Supplier Inv No./Date, PO No./Date, Vehicle No., an item
 // table of Sl.No/Item Code/Material Description/UOM/Recd./Acc./Rej. Qty/
-// Remarks (deliberately no rate/amount columns — a GRN is a physical
-// goods-receipt record, not a priced document), and a Prepared/Checked/
-// Approved By signature footer. Exported so AdminInvoicesTab.tsx's Admin
-// copy uses the exact same layout instead of a second, drifting copy.
+// Remarks, and a Prepared/Checked/Approved By signature footer. Exported so
+// AdminInvoicesTab.tsx's Admin copy uses the exact same layout instead of a
+// second, drifting copy.
+//
+// FEATURE (2026-08-09 / #282): "include price on GRN print/admin view" —
+// this used to deliberately omit Rate/Amount (matching the blank physical
+// GRN pad, which is filled by hand without pricing). Owner wants the price
+// on the printed copy too, same as the on-screen Store/Admin card already
+// shows — added Rate + Amount columns and a Grand Total line, everything
+// else about the physical layout stays exactly as before.
 //
 // BUG FIX carried over: uses the off-screen aria-hidden iframe pattern
 // (src/branch/printUtils.ts) instead of a visible window.open() popup.
@@ -60,6 +66,8 @@ export function printInvoice(invoice: StoreInvoice) {
       <td class="r">${li.quantity}</td>
       <td class="r">${li.acceptedQty ?? li.quantity}</td>
       <td class="r">${li.rejectedQty ?? 0}</td>
+      <td class="r">₹${li.pricePerUnit.toFixed(2)}</td>
+      <td class="r">₹${li.totalPrice.toFixed(2)}</td>
       <td>${li.remarks || ''}</td>
     </tr>
   `).join('');
@@ -148,10 +156,13 @@ export function printInvoice(invoice: StoreInvoice) {
       <thead>
         <tr>
           <th class="c">Sl.No</th><th>Item Code</th><th>Material Description</th><th class="c">UOM</th>
-          <th class="r">Recd. Qty</th><th class="r">Acc. Qty</th><th class="r">Rej. Qty</th><th>Remarks</th>
+          <th class="r">Recd. Qty</th><th class="r">Acc. Qty</th><th class="r">Rej. Qty</th><th class="r">Rate</th><th class="r">Amount</th><th>Remarks</th>
         </tr>
       </thead>
       <tbody>${rows}</tbody>
+      <tfoot>
+        <tr><td colspan="8" class="r" style="font-weight:700; border-top:2px solid #999;">Grand Total</td><td class="r" style="font-weight:700; border-top:2px solid #999;">₹${invoice.grandTotal.toFixed(2)}</td><td style="border-top:2px solid #999;"></td></tr>
+      </tfoot>
     </table>
 
     ${invoice.notes ? `<div class="notes"><b>Notes:</b> ${invoice.notes}</div>` : ''}
@@ -831,6 +842,34 @@ export function CreateInvoiceModal({
   const selectedItemNames = lines.map(line => line.itemName).filter(Boolean);
   const grandTotal = lines.reduce((sum, line) => sum + draftNumber(line.quantity) * draftNumber(line.pricePerUnit), 0);
 
+  // FEATURE (2026-08-09 / #281): live preview of the same PO-vs-GRN
+  // discrepancy check handleSave runs before saving — so Store sees what
+  // will be flagged to Admin/Owner while they're still editing, not only
+  // after the fact on a saved GRN they can no longer easily change.
+  const poDiscrepancyPreview = useMemo(() => {
+    if (!sourcePO) return [];
+    const poByItem = new Map(sourcePO.lineItems.map(li => [normalizeItemName(li.itemName), li]));
+    const grnByItem = new Map<string, { itemName: string; quantity: number; unit: string }>();
+    for (const line of lines) {
+      const itemName = line.itemName.trim();
+      if (!itemName) continue;
+      const qty = draftNumber(line.quantity);
+      grnByItem.set(normalizeItemName(itemName), { itemName, quantity: qty, unit: line.unit });
+    }
+    const out: string[] = [];
+    for (const [key, po] of poByItem) {
+      const grn = grnByItem.get(key);
+      if (!grn) { out.push(`${po.itemName}: ordered ${po.quantity} ${po.unit}, not on this GRN`); continue; }
+      if (Math.abs(grn.quantity - po.quantity) > 0.001) {
+        out.push(`${po.itemName}: ordered ${po.quantity} ${po.unit}, now ${grn.quantity} ${grn.unit}`);
+      }
+    }
+    for (const [key, grn] of grnByItem) {
+      if (!poByItem.has(key)) out.push(`${grn.itemName}: ${grn.quantity} ${grn.unit} — not on the original PO`);
+    }
+    return out;
+  }, [sourcePO, lines]);
+
   const today = businessDate();
   const yesterday = useMemo(() => {
     const date = new Date(`${today}T12:00:00`);
@@ -978,11 +1017,37 @@ export function CreateInvoiceModal({
       }
 
       if (sourcePO) {
+        // FEATURE (2026-08-09 / #281): "flag discrepancies to Admin/Owner" —
+        // Store can freely change quantities/add items while converting a PO
+        // to a GRN (that's the whole point of the conversion step), but any
+        // difference from what was originally approved should never be
+        // silent. Compare the PO's requested lines against what's actually
+        // being received here and, if anything changed, prepend a clearly
+        // marked note — this reuses the existing `notes` field, which Admin
+        // already sees on every GRN review card and which prints on the GRN
+        // itself, and Owner sees via the "Store invoices pending review"
+        // alert + PO Approvals tab (same store_invoices.notes column).
+        const poQtyByItem = new Map(sourcePO.lineItems.map(li => [normalizeItemName(li.itemName), li]));
+        const grnQtyByItem = new Map(invoiceLines.map(li => [normalizeItemName(li.itemName), li]));
+        const discrepancyLines: string[] = [];
+        for (const [key, po] of poQtyByItem) {
+          const grn = grnQtyByItem.get(key);
+          if (!grn) { discrepancyLines.push(`${po.itemName}: ordered ${po.quantity} ${po.unit}, not received`); continue; }
+          if (Math.abs(grn.quantity - po.quantity) > 0.001) {
+            discrepancyLines.push(`${po.itemName}: ordered ${po.quantity} ${po.unit}, received ${grn.quantity} ${grn.unit}`);
+          }
+        }
+        for (const [key, grn] of grnQtyByItem) {
+          if (!poQtyByItem.has(key)) discrepancyLines.push(`${grn.itemName}: ${grn.quantity} ${grn.unit} received but not on the original PO`);
+        }
+        const discrepancyNote = discrepancyLines.length > 0 ? `⚠ PO DISCREPANCY vs ${sourcePO.poNumber}: ${discrepancyLines.join('; ')}` : '';
+        const notesWithDiscrepancy = [discrepancyNote, normalizedNotes].filter(Boolean).join(discrepancyNote && normalizedNotes ? ' — ' : '');
+
         const convertResult = await convertPOToInvoice(sourcePO.id, {
           deliveryDate,
           lineItems: invoiceLines,
           grandTotal: normalizedGrandTotal,
-          notes: normalizedNotes,
+          notes: notesWithDiscrepancy,
           supplierInvoiceNumber: supplierInvoiceNumber.trim() || undefined,
           supplierInvoiceDate: supplierInvoiceDate || undefined,
           vehicleNumber: vehicleNumber.trim() || undefined,
@@ -1071,6 +1136,17 @@ export function CreateInvoiceModal({
             <div className="flex items-center gap-2 rounded-xl border border-primary/30 bg-primary/5 px-3 py-2.5 text-xs font-body text-primary">
               <CheckCircle2 className="size-3.5 shrink-0" />
               <span>Converting Owner-approved <strong>{sourcePO.poNumber}</strong> — supplier is locked to this purchase order.</span>
+            </div>
+          )}
+          {sourcePO && poDiscrepancyPreview.length > 0 && (
+            <div className="flex items-start gap-2 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2.5 text-xs font-body text-amber-800">
+              <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+              <div>
+                <p className="font-bold">Differs from the approved PO — this will be flagged to Admin &amp; Owner on save:</p>
+                <ul className="mt-1 list-disc space-y-0.5 pl-4">
+                  {poDiscrepancyPreview.map((line, i) => <li key={i}>{line}</li>)}
+                </ul>
+              </div>
             </div>
           )}
           <section className="rounded-2xl border border-border bg-card p-4">

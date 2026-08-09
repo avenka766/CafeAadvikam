@@ -5,7 +5,7 @@
 // handing merged totals to Store, recording actual production, splitting and
 // dispatching to branches, tracking leftovers, and cake dispatch — plus the
 // migrated Transfer-In and Daily Closure tools from Packing.
-import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef, Fragment } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
   ClipboardList, Layers, Factory, Truck, Cake, PackageCheck,
@@ -13,7 +13,7 @@ import {
   ChevronDown, ChevronUp, X, RefreshCw, AlertTriangle, FileSpreadsheet, Clock3,
   Store, CreditCard, WalletCards, MessageCircle, Bell, CalendarDays,
   Search, Printer, Receipt, ListPlus, BarChart3, FileText, Minus, IndianRupee,
-  ShoppingCart, Percent, Trash2, Scale,
+  ShoppingCart, Percent, Trash2, Scale, PackageMinus,
 } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import * as XLSX from 'xlsx';
@@ -31,11 +31,11 @@ import { exportToExcel } from '@/lib/exportExcel';
 import HosurDashboard from '@/pages/HosurDashboard';
 import HosurShopOrderPanel, { leftoverReasonLabel } from './HosurShopOrderPanel';
 import PackingCakeOrdersTab from './PackingCakeOrdersTab';
-import PlannerLeftoverTab, { useLeftoverBalanceMap, recordLeftoverMovement, kolkataToday, qtyFmt, type LeftoverUnit, useMergedLeftoverCatalog, useBranchOnlyCatalog, ItemSearchPicker, type MergedCatalogItem } from './PlannerLeftoverTab';
+import PlannerLeftoverTab, { PlannerTransferOutTab, useLeftoverBalanceMap, recordLeftoverMovement, kolkataToday, qtyFmt, type LeftoverUnit, useMergedLeftoverCatalog, useBranchOnlyCatalog, ItemSearchPicker, type MergedCatalogItem } from './PlannerLeftoverTab';
 import { canonicalItemSlug, closingStockItemSlug, parseWeightGrams, pcsToKg, resolveItemWeightGrams } from './itemMatcher';
 import { useBranchCatalogStore } from '@/stores/branchCatalogStore';
 import {
-  businessFor, defaultDiscountPct, saveDispatchInvoice, printDispatchInvoice, listDispatchInvoices,
+  businessFor, defaultDiscountPct, saveDispatchInvoice, printDispatchInvoice, listDispatchInvoices, markDispatchInvoicePaid,
   type DispatchInvoiceRecord, type DispatchInvoiceItem,
 } from './dispatchInvoice';
 import { supabase } from '@/lib/supabase';
@@ -49,7 +49,7 @@ import { getPackingCounterStatus } from './packingCounter';
 // list rendered as a panel inside it. The 'done' key is kept in the type
 // (but no longer in TABS/nav) purely so any stale bookmarked URL still
 // resolves instead of erroring.
-type PlannerTab = 'incoming' | 'sent' | 'merged' | 'planning' | 'production' | 'dispatch' | 'hosur' | 'cake' | 'transfer-in' | 'closure' | 'leftover-stock' | 'invoice' | 'reports' | 'billing' | 'done';
+type PlannerTab = 'incoming' | 'sent' | 'merged' | 'planning' | 'production' | 'dispatch' | 'hosur' | 'cake' | 'transfer-in' | 'transfer-out' | 'closure' | 'leftover-stock' | 'invoice' | 'reports' | 'billing' | 'done';
 const TABS: { key: PlannerTab; label: string; icon: React.ReactNode }[] = [
   { key: 'incoming',    label: 'Incoming Orders',  icon: <ClipboardList className="size-4" /> },
   { key: 'sent',        label: 'Sent',             icon: <Send className="size-4" /> },
@@ -60,6 +60,7 @@ const TABS: { key: PlannerTab; label: string; icon: React.ReactNode }[] = [
   { key: 'hosur',       label: 'Hosur Shops & Billing', icon: <PackageCheck className="size-4" /> },
   { key: 'cake',        label: 'Cake Dispatch',    icon: <Cake className="size-4" /> },
   { key: 'transfer-in', label: 'Transfer In',      icon: <ArrowRightLeft className="size-4" /> },
+  { key: 'transfer-out', label: 'Transfer Out',    icon: <PackageMinus className="size-4" /> },
   { key: 'closure',     label: 'Daily Closure',    icon: <Calendar className="size-4" /> },
   { key: 'leftover-stock', label: 'Closing Stock', icon: <Scale className="size-4" /> },
   { key: 'invoice',     label: 'Invoice',          icon: <Receipt className="size-4" /> },
@@ -93,6 +94,13 @@ interface MergedRow {
   totalRequested: number;
   perBranch: Partial<Record<MergeBucket, number>>;
   contributingOrderIds: string[];
+  // FEATURE (2026-08-09 / #280): only populated by computeMergedSummaryDisplay
+  // — when a row folds together more than one distinct raw item name (e.g.
+  // "Beetroot Muruku" + "Beetroot Muruku 200gm"), this lists each original
+  // name with its own sub-total (and per-branch breakdown) so the Merged
+  // Summary tab can show what got combined and let the planner split it back
+  // apart if the merge was wrong.
+  variants?: { itemName: string; unit: 'pcs' | 'kg'; total: number; perBranch: Partial<Record<MergeBucket, number>> }[];
 }
 
 // RETRY-SAFETY FIX (2026-08-06): submitDispatch used to mint a fresh UUID
@@ -168,6 +176,11 @@ export function computeMergedSummary(orders: BakeryOrder[]): MergedRow[] {
 function cleanItemDisplayName(name: string): string {
   return name
     .replace(/\(\s*\d+(?:\.\d+)?\s*(?:g|gm|gms|kg|ml|l)\s*\)/i, '')
+    // FEATURE (2026-08-09 / #280): same cleanup for a BARE (no parens)
+    // trailing weight — "Beetroot Muruku 200gm" — only stripped once the row
+    // has actually been merged with another variant of the same item (see
+    // mergeGroup's variants.length > 1 check), never for a lone item.
+    .replace(/\s+\d+(?:\.\d+)?\s*(?:kgs?|gms?|g|mls?|ltrs?|l)\.?\s*$/i, '')
     .replace(/\s{2,}/g, ' ')
     .trim();
 }
@@ -192,8 +205,15 @@ function mergeGroupToken(token: string): string {
 // canonicalItemSlug uses, so "Garlic nippat (200g)" and "GARLIC NIPPAT"
 // still merge, but "X (Diwali Pack)" and "X (Family Pack)" never would.
 function mergeGroupKey(name: string): string {
-  const withoutWeight = name.replace(/\(\s*\d+(?:\.\d+)?\s*(?:g|gm|gms|kg|ml|l)\s*\)/gi, '');
-  return withoutWeight
+  const withoutParenWeight = name.replace(/\(\s*\d+(?:\.\d+)?\s*(?:g|gm|gms|kg|ml|l)\s*\)/gi, '');
+  // FIX (2026-08-09 / #280): "Beetroot Muruku" (SNB) vs "Beetroot Muruku
+  // 200gm" (VRSNB) used to land as two separate Merged Summary rows — the
+  // weight-stripping above only caught a PARENTHESIZED suffix. Branches also
+  // just tack the weight on bare, with no parens, so strip that too — but
+  // ONLY at the very end of the name, never mid-string, so a real qualifier
+  // that happens to contain a number is never touched.
+  const withoutTrailingWeight = withoutParenWeight.replace(/\s+\d+(?:\.\d+)?\s*(?:kgs?|gms?|g|mls?|ltrs?|l)\.?\s*$/i, '');
+  return withoutTrailingWeight
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, ' ')
     .trim()
@@ -258,6 +278,11 @@ export function computeMergedSummaryDisplay(orders: BakeryOrder[]): MergedRow[] 
     let totalRequested = 0;
     const perBranch: Partial<Record<MergeBucket, number>> = {};
     const contributingOrderIds: string[] = [];
+    // FEATURE (2026-08-09 / #280): track each distinct raw item name folded
+    // into this row, with its own sub-total, so a merge that combined
+    // "Beetroot Muruku" + "Beetroot Muruku 200gm" can show both names on
+    // hover instead of silently picking one and hiding the other.
+    const variantTotals = new Map<string, { itemName: string; unit: 'pcs' | 'kg'; total: number; perBranch: Partial<Record<MergeBucket, number>> }>();
     for (const e of list) {
       const qty = convertPcsToKg && e.unit === 'pcs' && e.grams != null
         ? (pcsToKg(e.itemName, e.qty, e.grams) ?? e.qty)
@@ -265,19 +290,29 @@ export function computeMergedSummaryDisplay(orders: BakeryOrder[]): MergedRow[] 
       totalRequested += qty;
       perBranch[e.bucket] = Math.round(((perBranch[e.bucket] || 0) + qty) * 1000) / 1000;
       if (!contributingOrderIds.includes(e.orderId)) contributingOrderIds.push(e.orderId);
+      const vKey = `${e.itemName.trim().toLowerCase()}__${e.unit}`;
+      const vCur = variantTotals.get(vKey) ?? { itemName: e.itemName.trim(), unit: e.unit, total: 0, perBranch: {} };
+      vCur.total = Math.round((vCur.total + qty) * 1000) / 1000;
+      vCur.perBranch[e.bucket] = Math.round(((vCur.perBranch[e.bucket] || 0) + qty) * 1000) / 1000;
+      variantTotals.set(vKey, vCur);
     }
+    const variants = Array.from(variantTotals.values());
     // Prefer the kg-native name for the merged label (already unit-agnostic);
     // fall back to the first entry, stripping any packet-weight suffix once
     // the row has been converted to kg so it doesn't read like a per-packet
-    // figure next to a multi-item total.
+    // figure next to a multi-item total. Same cleanup also applies whenever
+    // this row folded together more than one distinct raw name — e.g. plain
+    // "Beetroot Muruku" merging with "Beetroot Muruku 200gm" — so the label
+    // doesn't just show whichever variant happened to be looked up first.
     const nameSource = list.find(e => e.unit === 'kg') ?? list[0];
-    const itemName = convertPcsToKg ? cleanItemDisplayName(nameSource.itemName) : nameSource.itemName;
+    const itemName = (convertPcsToKg || variants.length > 1) ? cleanItemDisplayName(nameSource.itemName) : nameSource.itemName;
     rows.push({
       itemName,
       unit,
       totalRequested: Math.round(totalRequested * 1000) / 1000,
       perBranch,
       contributingOrderIds,
+      variants: variants.length > 1 ? variants : undefined,
     });
   };
 
@@ -366,6 +401,19 @@ export default function PlannerDashboard() {
   const urlTab = searchParams.get('tab') as PlannerTab | null;
   const tab: PlannerTab = urlTab && TABS.some(t => t.key === urlTab) ? urlTab : 'incoming';
 
+  // BUG FIX (2026-08-09): "if we add an extra item and come back to search
+  // its gone again" — every tab below is conditionally rendered
+  // (`tab === X && <Component/>`), so switching away from Dispatch to any
+  // other tab (even just to search/check something) fully UNMOUNTED
+  // DispatchTab, wiping every bit of in-progress work in its children —
+  // BranchFlatDispatchPanel's staged extra items, ticked-but-not-yet-sent
+  // selections, typed quantities, all of it, with zero warning. Once the
+  // planner has ever opened Dispatch, keep it mounted permanently (just
+  // hidden via CSS when another tab is active) so none of that staged work
+  // can ever be silently lost by navigating away and back.
+  const [dispatchVisited, setDispatchVisited] = useState(false);
+  useEffect(() => { if (tab === 'dispatch') setDispatchVisited(true); }, [tab]);
+
   useEffect(() => {
     fetchOrders().catch(() => {});
     const unsubscribe = subscribe();
@@ -404,10 +452,15 @@ export default function PlannerDashboard() {
             {tab === 'merged' && <MergedSummaryTab orders={mergeableOrders} />}
             {tab === 'planning' && <PlanningTab orders={orders} />}
             {tab === 'production' && <ProductionEntryTab orders={productionSourceOrders} />}
-            {tab === 'dispatch' && <DispatchTab orders={productionSourceOrders} allOrders={orders} />}
+            {dispatchVisited && (
+              <div style={{ display: tab === 'dispatch' ? 'block' : 'none' }}>
+                <DispatchTab orders={productionSourceOrders} allOrders={orders} />
+              </div>
+            )}
             {tab === 'hosur' && <HosurUnifiedSection />}
             {tab === 'cake' && <PackingCakeOrdersTab />}
             {tab === 'transfer-in' && <PackingTransferInTab />}
+            {tab === 'transfer-out' && <PlannerTransferOutTab />}
             {tab === 'closure' && <PackingDailyClosureTab />}
             {tab === 'leftover-stock' && (
               <div className="space-y-6">
@@ -416,7 +469,7 @@ export default function PlannerDashboard() {
               </div>
             )}
             {tab === 'invoice' && <InvoiceTab orders={orders} />}
-            {tab === 'billing' && <BillingTab />}
+            {tab === 'billing' && <BillingWalkinTab />}
             {tab === 'reports' && <ReportsTab orders={orders} />}
           </>
         )}
@@ -716,6 +769,18 @@ function MergedSummaryTab({ orders }: { orders: BakeryOrder[] }) {
   const [sendingAll, setSendingAll] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
+  // FEATURE (2026-08-09 / #280): "Beetroot Muruku" vs "Beetroot Muruku
+  // 200gm" now auto-merge into one row (see mergeGroupKey) — but an auto
+  // merge can occasionally be wrong for a genuinely different item that just
+  // happens to share a name + weight suffix. Per-row "Unmerge" toggle splits
+  // that one row back into its original variant lines, view-only (doesn't
+  // touch the underlying orders or the Excel export).
+  const [unmergedKeys, setUnmergedKeys] = useState<Set<string>>(new Set());
+  const toggleUnmerge = (key: string) => setUnmergedKeys(prev => {
+    const next = new Set(prev);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    return next;
+  });
 
   const handleSendToStore = async () => {
     setSendingAll(true); setNotice(null); setSendError(null);
@@ -791,15 +856,66 @@ function MergedSummaryTab({ orders }: { orders: BakeryOrder[] }) {
               </tr>
             </thead>
             <tbody>
-              {merged.map(row => (
-                <tr key={`${row.itemName}-${row.unit}`} className="border-t border-border">
-                  <td className="px-4 py-3 font-bold text-foreground">{row.itemName}</td>
-                  {DISPLAY_BUCKETS.map(b => (
-                    <td key={b} className="px-4 py-3 text-right text-muted-foreground">{row.perBranch[b] ? `${row.perBranch[b]} ${row.unit}` : '—'}</td>
-                  ))}
-                  <td className="px-4 py-3 text-right font-black text-foreground">{row.totalRequested} {row.unit}</td>
-                </tr>
-              ))}
+              {merged.map(row => {
+                const key = `${row.itemName}-${row.unit}`;
+                const hasVariants = (row.variants?.length ?? 0) > 1;
+                const isUnmerged = hasVariants && unmergedKeys.has(key);
+                if (isUnmerged) {
+                  return (
+                    <Fragment key={key}>
+                      {row.variants!.map((v, idx) => (
+                        <tr key={`${key}-v${idx}`} className={cn('border-t border-border', idx === 0 && 'bg-amber-50/40')}>
+                          <td className="px-4 py-3 font-bold text-foreground">
+                            {idx === 0 && (
+                              <span className="mr-1.5 rounded-full bg-amber-100 px-1.5 py-0.5 text-[9px] font-black uppercase text-amber-700">split</span>
+                            )}
+                            {v.itemName}
+                          </td>
+                          {DISPLAY_BUCKETS.map(b => (
+                            <td key={b} className="px-4 py-3 text-right text-muted-foreground">{v.perBranch[b] ? `${v.perBranch[b]} ${v.unit}` : '—'}</td>
+                          ))}
+                          <td className="px-4 py-3 text-right font-black text-foreground">
+                            {v.total} {v.unit}
+                            {idx === row.variants!.length - 1 && (
+                              <button type="button" onClick={() => toggleUnmerge(key)} className="ml-2 rounded-lg border border-amber-300 px-2 py-0.5 text-[10px] font-black text-amber-800 hover:bg-amber-50">
+                                Re-merge
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </Fragment>
+                  );
+                }
+                return (
+                  <tr key={key} className="border-t border-border">
+                    <td className="px-4 py-3 font-bold text-foreground">
+                      <span className="inline-flex items-center gap-1.5">
+                        {row.itemName}
+                        {hasVariants && (
+                          <span
+                            className="rounded-full bg-teal-100 px-1.5 py-0.5 text-[9px] font-black uppercase text-teal-700 cursor-help"
+                            title={`Merged from: ${row.variants!.map(v => `${v.itemName} (${v.total} ${v.unit})`).join(', ')}`}
+                          >
+                            merged
+                          </span>
+                        )}
+                      </span>
+                    </td>
+                    {DISPLAY_BUCKETS.map(b => (
+                      <td key={b} className="px-4 py-3 text-right text-muted-foreground">{row.perBranch[b] ? `${row.perBranch[b]} ${row.unit}` : '—'}</td>
+                    ))}
+                    <td className="px-4 py-3 text-right font-black text-foreground">
+                      {row.totalRequested} {row.unit}
+                      {hasVariants && (
+                        <button type="button" onClick={() => toggleUnmerge(key)} className="ml-2 rounded-lg border border-teal-300 px-2 py-0.5 text-[10px] font-black text-teal-800 hover:bg-teal-50">
+                          Unmerge
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -2096,7 +2212,7 @@ function computeReportRows(orders: BakeryOrder[]): ReportVarianceRow[] {
   const production = computeProductionRows(orders);
   return production.map(row => {
     const dispatched = orders.filter(o => row.contributingOrderIds.includes(o.id))
-      .reduce((s, o) => s + (o.dispatchLog || []).filter(d => sameItem(d.itemName, row.itemName)).reduce((s2, d) => s2 + d.quantity, 0), 0);
+      .reduce((s, o) => s + (o.dispatchLog || []).filter(d => sameItem(d.itemName, row.itemName) && !d.isExtra).reduce((s2, d) => s2 + d.quantity, 0), 0);
     const prodVariancePct = row.totalRequested > 0 ? Math.round(((row.preparedTotal - row.totalRequested) / row.totalRequested) * 1000) / 10 : 0;
     const dispatchVariancePct = row.preparedTotal > 0 ? Math.round(((dispatched - row.preparedTotal) / row.preparedTotal) * 1000) / 10 : 0;
     const status: ReportVarianceRow['status'] =
@@ -2786,27 +2902,57 @@ function mapWalkinBill(d: Record<string, unknown>): WalkinBillRow {
   };
 }
 
-function printWalkinBill(bill: WalkinBillRow) {
-  const win = window.open('', '_blank'); if (!win) return;
-  const rows = bill.items.map(i => `<tr><td>${i.itemName}</td><td style="text-align:right">${i.quantity} ${i.unit}</td><td style="text-align:right">${invoiceMoney(i.price)}</td><td style="text-align:right">${invoiceMoney(i.lineTotal)}</td></tr>`).join('');
-  win.document.write(`<html><head><title>Bill ${bill.billNo}</title><style>
-    @page { size: 80mm auto; margin: 4mm; } body { font-family: monospace; font-size: 11px; width: 72mm; padding: 6px; color:#000; }
-    h1 { font-size: 13px; margin: 0 0 4px; text-align:center; } .meta { font-size: 10px; text-align:center; margin-bottom: 6px; }
-    table { width: 100%; border-collapse: collapse; font-size: 10px; } th, td { padding: 2px 0; } th { border-bottom: 1px dashed #000; text-align:left; }
-    .totals div { display:flex; justify-content:space-between; font-size:11px; padding: 1px 0; } .totals { margin-top:6px; border-top:1px dashed #000; padding-top:4px; }
-    .grand { font-weight:bold; font-size:13px; border-top:1px solid #000; margin-top:3px; padding-top:3px; }
-  </style></head><body>
-    <h1>Cafe Aadvikam — Walk-in Bill</h1>
-    <div class="meta">Bill #${bill.billNo}<br/>${new Date(bill.createdAt).toLocaleString('en-IN')}<br/>Cashier: ${bill.cashierName || '-'}</div>
-    <table><thead><tr><th>Item</th><th style="text-align:right">Qty</th><th style="text-align:right">Rate</th><th style="text-align:right">Amt</th></tr></thead><tbody>${rows}</tbody></table>
-    <div class="totals">
-      <div><span>Subtotal</span><span>${invoiceMoney(bill.subtotal)}</span></div>
-      ${bill.discountAmount > 0 ? `<div><span>Discount${bill.discountType === 'percent' ? ` (${bill.discountValue}%)` : ''}</span><span>- ${invoiceMoney(bill.discountAmount)}</span></div>` : ''}
-      <div class="grand"><span>Total</span><span>${invoiceMoney(bill.total)}</span></div>
-      <div style="margin-top:4px">Payment: ${bill.paymentMode.toUpperCase()}</div>
+// WORKFLOW CHANGE (2026-08-09): "All bills in this dashboard should use a
+// standard format, sourced from the Dispatch tab's invoice format" — this
+// used to print its own bespoke thermal-only receipt layout, the one bill
+// type in Planner still not sharing the TAX INVOICE format every other
+// dispatch/sample-bill/custom-cake invoice now uses. Adapts the saved
+// bakery_walkin_bills row into the same DispatchInvoiceRecord shape so it
+// renders through the identical renderDispatchInvoiceHtml template (and now
+// gets an A4 option too, not just thermal).
+function walkinBillToInvoiceRecord(bill: WalkinBillRow): DispatchInvoiceRecord {
+  return {
+    id: bill.id,
+    invoiceNo: bill.billNo,
+    scope: 'SNB',
+    hosurShopId: null, hosurShopName: null, hosurShopPhone: null,
+    customerName: 'Walk-in Customer',
+    customerPhone: null,
+    customerAddress: null,
+    dispatchedBy: bill.cashierName || 'Planner',
+    items: bill.items.map(i => ({ itemName: i.itemName, unit: i.unit, quantity: i.quantity, unitPrice: i.price, lineTotal: i.lineTotal })),
+    subtotal: bill.subtotal,
+    discountPct: bill.discountType === 'percent' ? bill.discountValue : 0,
+    discountAmount: bill.discountAmount,
+    roundOff: 0,
+    total: bill.total,
+    status: 'paid',
+    paidAt: bill.createdAt,
+    notes: `Walk-in Bill · Payment: ${bill.paymentMode.toUpperCase()}`,
+    createdAt: bill.createdAt,
+  };
+}
+
+function printWalkinBill(bill: WalkinBillRow, mode: 'thermal' | 'a4' = 'thermal') {
+  printDispatchInvoice(walkinBillToInvoiceRecord(bill), mode);
+}
+
+// FEATURE (2026-08-09): "In Billing (Walk-in) tab: create a new 'Sample
+// Bill' sub-tab where a bill is created for a customer before they pay" —
+// wraps the existing walk-in billing UI (now "New Bill") and the new Sample
+// Bill flow under one set of sub-tabs, same pattern as the Dispatch tab's
+// To Dispatch/Dispatched/Planned/Custom switcher.
+function BillingWalkinTab() {
+  const [sub, setSub] = useState<'new' | 'sample'>('new');
+  return (
+    <div className="space-y-4">
+      <div className="flex gap-2">
+        <button onClick={() => setSub('new')} className={cn('rounded-xl px-3 py-1.5 text-xs font-bold', sub === 'new' ? 'bg-foreground text-white' : 'bg-muted text-muted-foreground')}>New Bill</button>
+        <button onClick={() => setSub('sample')} className={cn('rounded-xl px-3 py-1.5 text-xs font-bold', sub === 'sample' ? 'cafe-gradient text-white shadow-teal' : 'bg-primary/10 text-primary')}>Sample Bill</button>
+      </div>
+      {sub === 'new' ? <BillingTab /> : <SampleBillTab />}
     </div>
-  </body></html>`);
-  win.document.close(); win.print();
+  );
 }
 
 function BillingTab() {
@@ -2922,6 +3068,29 @@ function BillingTab() {
       }).select().single();
       if (insertError || !data) throw new Error('Failed to save the bill — please try again.');
       const bill = mapWalkinBill(data as Record<string, unknown>);
+      // BUG FIX (2026-08-09): "regular walk-in bills should also deduct
+      // stock and show as 'walk in bill' in reports" — this bill used to
+      // save purely as a money record with no link at all to the Closing
+      // Stock pool, so items sold here silently never left the tracked
+      // stock. Best-effort per line (mirrors submitDispatch's own philosophy
+      // — a ledger hiccup must never block a sale that already happened),
+      // allowed to go negative rather than ever blocking the bill.
+      for (const line of items) {
+        try {
+          const result = await recordLeftoverMovement({
+            itemName: line.itemName,
+            unit: line.unit === 'pcs' ? 'pcs' : 'kg',
+            delta: -Math.abs(line.quantity),
+            businessDate: kolkataToday(),
+            reason: 'dispatch',
+            recordedBy: currentUser?.displayName || 'Planner',
+            notes: `Walk-in Bill #${billNo}`,
+          });
+          if ('error' in result) console.error('[BillingTab] Closing Stock pool debit failed:', result.error);
+        } catch (err) {
+          console.error('[BillingTab] Closing Stock pool debit threw:', err);
+        }
+      }
       setLastBill(bill);
       resetCart();
       loadRecent();
@@ -3048,9 +3217,14 @@ function BillingTab() {
           {lastBill && (
             <div className="rounded-xl border border-teal-200 bg-teal-50 p-3">
               <p className="text-xs font-black text-teal-800">Bill {lastBill.billNo} saved — {invoiceMoney(lastBill.total)}</p>
-              <button onClick={() => printWalkinBill(lastBill)} className="mt-2 flex items-center gap-1.5 rounded-lg bg-teal-600 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-teal-700">
-                <Printer className="size-3.5" /> Print Bill
-              </button>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                <button onClick={() => printWalkinBill(lastBill, 'thermal')} className="flex items-center gap-1.5 rounded-lg bg-teal-600 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-teal-700">
+                  <Printer className="size-3.5" /> Thermal
+                </button>
+                <button onClick={() => printWalkinBill(lastBill, 'a4')} className="flex items-center gap-1.5 rounded-lg bg-teal-600 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-teal-700">
+                  <Printer className="size-3.5" /> A4
+                </button>
+              </div>
             </div>
           )}
         </aside>
@@ -3086,9 +3260,319 @@ function BillingTab() {
                 </div>
                 <div className="flex items-center gap-2">
                   <span className="text-sm font-black text-foreground">{invoiceMoney(bill.total)}</span>
-                  <button onClick={() => printWalkinBill(bill)} className="rounded-lg border border-border bg-card p-1.5 text-muted-foreground hover:bg-muted" title="Print"><Printer className="size-3.5" /></button>
+                  <button onClick={() => printWalkinBill(bill, 'thermal')} className="rounded-lg border border-border bg-card p-1.5 text-muted-foreground hover:bg-muted" title="Print thermal"><Printer className="size-3.5" /></button>
+                  <button onClick={() => printWalkinBill(bill, 'a4')} className="rounded-lg border border-border bg-card px-2 py-1.5 text-[10px] font-black text-muted-foreground hover:bg-muted" title="Print A4">A4</button>
                   {bill.status === 'active' && (
                     <button onClick={() => cancelBill(bill)} className="rounded-lg border border-destructive/30 bg-destructive/10 p-1.5 text-destructive hover:bg-destructive/20" title="Cancel bill"><Trash2 className="size-3.5" /></button>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// FEATURE (2026-08-09): "create a new 'Sample Bill' sub-tab where a bill is
+// created for a customer before they pay — with name/number fields, ability
+// to apply a discount for the entire tab, same invoice format as Dispatch;
+// after creating the sample bill there should be a 'mark as paid' field —
+// only once marked paid should stock be deducted and it should show in
+// reports as 'sales online'". Reuses the Dispatch tab's invoice
+// infrastructure (dispatchInvoice.ts) purely for its format + storage —
+// there's no bakery_orders/dispatch_log involved here, just a
+// dispatch_invoices row created 'unpaid' and flipped to 'paid' later.
+const SAMPLE_BILL_NOTE = 'Sample Bill';
+
+function SampleBillTab() {
+  const { items: catalogItems, loadCatalog } = useBranchCatalogStore();
+  const currentUser = useAuthStore(s => s.currentUser);
+  const [search, setSearch] = useState('');
+  const [cart, setCart] = useState<Record<string, { itemName: string; unit: 'pcs' | 'kg'; price: number; quantity: number }>>({});
+  const [discountPct, setDiscountPct] = useState('0');
+  const [customerName, setCustomerName] = useState('');
+  const [customerPhone, setCustomerPhone] = useState('');
+  const [customerAddress, setCustomerAddress] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [markingPaidId, setMarkingPaidId] = useState<string | null>(null);
+  const [error, setError] = useState('');
+  const [lastBill, setLastBill] = useState<DispatchInvoiceRecord | null>(null);
+  const [recent, setRecent] = useState<DispatchInvoiceRecord[]>([]);
+  const [loadingRecent, setLoadingRecent] = useState(true);
+
+  const [counterOpen, setCounterOpen] = useState<boolean | null>(null);
+  const [counterError, setCounterError] = useState('');
+  const refreshCounter = useCallback(async () => {
+    try {
+      const status = await getPackingCounterStatus();
+      setCounterOpen(status.isOpen);
+      setCounterError('');
+    } catch (err) {
+      setCounterOpen(false);
+      setCounterError(err instanceof Error ? err.message : 'Could not check the Daily Closure counter status.');
+    }
+  }, []);
+  useEffect(() => {
+    void refreshCounter();
+    const interval = window.setInterval(() => { if (!document.hidden) void refreshCounter(); }, 15_000);
+    return () => window.clearInterval(interval);
+  }, [refreshCounter]);
+
+  useEffect(() => { loadCatalog('SNB').catch(() => {}); loadCatalog('VRSNB').catch(() => {}); }, [loadCatalog]);
+
+  const loadRecent = useCallback(async () => {
+    setLoadingRecent(true);
+    try {
+      const to = new Date(); to.setDate(to.getDate() + 1);
+      const from = new Date(); from.setDate(from.getDate() - 90);
+      const all = await listDispatchInvoices({ fromDate: from.toISOString(), toDate: to.toISOString() });
+      setRecent(all.filter(r => r.notes === SAMPLE_BILL_NOTE));
+    } catch { /* best-effort */ }
+    setLoadingRecent(false);
+  }, []);
+  useEffect(() => { loadRecent().catch(() => {}); }, [loadRecent]);
+
+  const catalog = useMemo(() => {
+    const map = new Map<string, { name: string; unit: 'pcs' | 'kg'; category: string; price: number }>();
+    for (const branch of ['SNB', 'VRSNB'] as const) {
+      for (const item of catalogItems[branch] ?? []) {
+        if (!item.active) continue;
+        const key = item.name.trim().toLowerCase();
+        if (!map.has(key)) map.set(key, { name: item.name, unit: item.uom === 'Kgs' ? 'kg' : 'pcs', category: item.category, price: item.price });
+      }
+    }
+    return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
+  }, [catalogItems]);
+
+  const filtered = useMemo(
+    () => catalog.filter(i => !search.trim() || i.name.toLowerCase().includes(search.trim().toLowerCase())),
+    [catalog, search],
+  );
+
+  const setQty = (item: { name: string; unit: 'pcs' | 'kg'; price: number }, value: number) => {
+    const safe = Math.max(0, Math.round(value * 1000) / 1000);
+    setCart(prev => {
+      const next = { ...prev };
+      if (safe <= 0) delete next[item.name];
+      else next[item.name] = { itemName: item.name, unit: item.unit, price: item.price, quantity: safe };
+      return next;
+    });
+  };
+
+  const cartLines = Object.values(cart);
+  const subtotal = Math.round(cartLines.reduce((s, l) => s + l.price * l.quantity, 0) * 100) / 100;
+  const pct = Math.max(0, Math.min(100, Number(discountPct) || 0));
+  const discountAmount = Math.round(subtotal * (pct / 100) * 100) / 100;
+  const total = Math.max(0, Math.round((subtotal - discountAmount) * 100) / 100);
+
+  const resetForm = () => { setCart({}); setDiscountPct('0'); setCustomerName(''); setCustomerPhone(''); setCustomerAddress(''); };
+
+  const createSampleBill = async () => {
+    if (cartLines.length === 0) { setError('Add at least one item.'); return; }
+    if (!customerName.trim()) { setError("Enter the customer's name."); return; }
+    if (!customerPhone.trim()) { setError("Enter the customer's mobile number."); return; }
+    const status = await getPackingCounterStatus().catch(() => null);
+    if (!status?.isOpen) {
+      setCounterOpen(false);
+      setError("Planner's Daily Closure counter is closed — open it from the Daily Closure tab before billing.");
+      return;
+    }
+    setSaving(true); setError('');
+    try {
+      const items: DispatchInvoiceItem[] = cartLines.map(l => ({ itemName: l.itemName, unit: l.unit, quantity: l.quantity, unitPrice: l.price, lineTotal: Math.round(l.price * l.quantity * 100) / 100 }));
+      const record = await saveDispatchInvoice({
+        scope: 'SNB',
+        customerName: customerName.trim(),
+        customerPhone: customerPhone.trim(),
+        customerAddress: customerAddress.trim() || null,
+        dispatchedBy: currentUser?.displayName || 'Planner',
+        items,
+        discountPct: pct,
+        status: 'unpaid',
+        notes: SAMPLE_BILL_NOTE,
+      });
+      setLastBill(record);
+      resetForm();
+      loadRecent();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save the sample bill.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const markPaid = async (record: DispatchInvoiceRecord) => {
+    setMarkingPaidId(record.id);
+    try {
+      const result = await markDispatchInvoicePaid(record, currentUser?.displayName || 'Planner');
+      if ('error' in result) { setError(result.error); return; }
+      if (lastBill?.id === record.id) setLastBill({ ...record, status: 'paid', paidAt: new Date().toISOString() });
+      loadRecent();
+    } finally {
+      setMarkingPaidId(null);
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="card-base flex flex-wrap items-center justify-between gap-3 p-4">
+        <div className="flex items-center gap-3">
+          <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-amber-500 text-white shadow-sm">
+            <Receipt className="size-5" />
+          </span>
+          <div>
+            <h2 className="font-display text-xl font-bold text-foreground">Sample Bill</h2>
+            <p className="text-xs font-bold text-muted-foreground font-body">Prepare a bill before the customer pays. Stock is only deducted once it's marked paid — appears in reports as "Sales Online".</p>
+          </div>
+        </div>
+      </div>
+
+      {counterOpen === false && (
+        <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs font-bold text-amber-900">
+          <AlertTriangle className="size-4 shrink-0" />
+          {counterError || "Planner's Daily Closure counter is closed — open it from the Daily Closure tab before billing."}
+        </div>
+      )}
+
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_22rem]">
+        <section className="space-y-3 card-base p-5">
+          <label className="space-y-1">
+            <span className="text-[11px] font-black uppercase tracking-wide text-muted-foreground">Search item</span>
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+              <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search item..." className="h-11 w-full rounded-xl border border-border bg-background pl-9 pr-3 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-primary/30" />
+            </div>
+          </label>
+          {filtered.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-border p-8 text-center text-xs font-bold text-muted-foreground">No items match.</div>
+          ) : (
+            <div className="grid gap-2 sm:grid-cols-2 max-h-[60vh] overflow-y-auto pr-1">
+              {filtered.map(item => {
+                const current = cart[item.name]?.quantity ?? 0;
+                const step = item.unit === 'kg' ? 0.25 : 1;
+                return (
+                  <article key={item.name} className={cn('rounded-xl border p-3 transition-colors', current > 0 ? 'border-amber-400 bg-amber-50' : 'border-border bg-muted/40')}>
+                    <p className="text-sm font-black text-foreground">{item.name}</p>
+                    <p className="text-xs font-bold text-muted-foreground">{invoiceMoney(item.price)} / {item.unit} · {item.category}</p>
+                    <div className="mt-2 flex items-center gap-2">
+                      <button onClick={() => setQty(item, current - step)} className="size-8 rounded-lg border border-border bg-card font-black text-foreground hover:bg-muted">-</button>
+                      <input type="number" value={current || ''} onChange={e => setQty(item, Number(e.target.value))} placeholder="0" className="h-8 w-full rounded-lg border border-border bg-background text-center text-sm font-black" />
+                      <button onClick={() => setQty(item, current + step)} className="size-8 rounded-lg bg-amber-500 font-black text-white hover:opacity-90">+</button>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          )}
+        </section>
+
+        <aside className="space-y-3 card-base p-5">
+          <div className="flex items-center gap-2"><ShoppingCart className="size-4 text-amber-600" /><h3 className="font-display text-lg font-bold text-foreground">Cart</h3></div>
+          {cartLines.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-border p-6 text-center text-xs font-bold text-muted-foreground">No items added</div>
+          ) : (
+            <div className="max-h-56 space-y-2 overflow-auto">
+              {cartLines.map(line => (
+                <div key={line.itemName} className="flex items-center justify-between rounded-xl bg-muted/40 p-2.5">
+                  <div className="min-w-0">
+                    <p className="truncate text-xs font-black text-foreground">{line.itemName}</p>
+                    <p className="text-[11px] font-bold text-muted-foreground">{line.quantity} {line.unit} × {invoiceMoney(line.price)} = {invoiceMoney(line.price * line.quantity)}</p>
+                  </div>
+                  <button onClick={() => setQty({ name: line.itemName, unit: line.unit, price: line.price }, 0)}><X className="size-3.5 text-destructive" /></button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="space-y-2 rounded-xl border border-border bg-muted/20 p-3">
+            <label className="flex items-center gap-1.5 text-[11px] font-black uppercase tracking-wide text-muted-foreground">
+              <Percent className="size-3.5" /> Discount for the whole bill
+            </label>
+            <div className="flex items-center gap-1.5">
+              <input type="number" min={0} max={100} value={discountPct} onChange={e => setDiscountPct(e.target.value)} className="w-20 rounded-lg border border-border bg-background px-2 py-1.5 text-right text-sm font-bold" />
+              <span className="text-xs font-bold text-muted-foreground">%</span>
+            </div>
+          </div>
+
+          <div className="space-y-2 rounded-xl border border-amber-200 bg-amber-50 p-3">
+            <label className="block space-y-1">
+              <span className="text-[11px] font-black uppercase tracking-wide text-amber-800">Customer Name *</span>
+              <input value={customerName} onChange={e => setCustomerName(e.target.value)} className="w-full rounded-lg border border-amber-300 bg-white px-2.5 py-1.5 text-sm font-bold" placeholder="e.g. Ramesh Kumar" />
+            </label>
+            <label className="block space-y-1">
+              <span className="text-[11px] font-black uppercase tracking-wide text-amber-800">Mobile Number *</span>
+              <input value={customerPhone} onChange={e => setCustomerPhone(e.target.value)} className="w-full rounded-lg border border-amber-300 bg-white px-2.5 py-1.5 text-sm font-bold" placeholder="e.g. 9876543210" />
+            </label>
+            <label className="block space-y-1">
+              <span className="text-[11px] font-black uppercase tracking-wide text-amber-800">Address</span>
+              <input value={customerAddress} onChange={e => setCustomerAddress(e.target.value)} className="w-full rounded-lg border border-amber-300 bg-white px-2.5 py-1.5 text-sm font-bold" placeholder="Optional" />
+            </label>
+          </div>
+
+          <div className="space-y-1 rounded-xl bg-muted/40 p-3 text-sm">
+            <div className="flex justify-between font-bold text-muted-foreground"><span>Subtotal</span><span>{invoiceMoney(subtotal)}</span></div>
+            {discountAmount > 0 && <div className="flex justify-between font-bold text-red-600"><span>Discount ({pct}%)</span><span>- {invoiceMoney(discountAmount)}</span></div>}
+            <div className="flex justify-between border-t border-border pt-1.5 text-base font-black text-foreground"><span>Total</span><span>{invoiceMoney(total)}</span></div>
+          </div>
+
+          {error && <p className="rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs font-bold text-destructive">{error}</p>}
+
+          <button onClick={createSampleBill} disabled={saving || cartLines.length === 0 || counterOpen === false} className="flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-amber-600 text-sm font-black text-white shadow-sm hover:bg-amber-700 disabled:opacity-40">
+            {saving ? <Loader2 className="size-4 animate-spin" /> : <ClipboardList className="size-4" />} Create Sample Bill{cartLines.length > 0 ? ` (${invoiceMoney(total)})` : ''}
+          </button>
+
+          {lastBill && (
+            <div className={cn('rounded-xl border p-3', lastBill.status === 'paid' ? 'border-teal-200 bg-teal-50' : 'border-amber-200 bg-amber-50')}>
+              <p className={cn('text-xs font-black', lastBill.status === 'paid' ? 'text-teal-800' : 'text-amber-800')}>
+                Sample Bill {lastBill.invoiceNo} — {invoiceMoney(lastBill.total)} · {lastBill.status === 'paid' ? 'Paid' : 'Awaiting Payment'}
+              </p>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                <button onClick={() => printDispatchInvoice(lastBill, 'thermal')} className="flex items-center gap-1 rounded-lg bg-muted px-2.5 py-1.5 text-[11px] font-bold text-muted-foreground hover:bg-slate-200"><Printer className="size-3.5" /> Thermal</button>
+                <button onClick={() => printDispatchInvoice(lastBill, 'a4')} className="flex items-center gap-1 rounded-lg bg-muted px-2.5 py-1.5 text-[11px] font-bold text-muted-foreground hover:bg-slate-200"><Printer className="size-3.5" /> A4</button>
+                {lastBill.status === 'unpaid' && (
+                  <button onClick={() => markPaid(lastBill)} disabled={markingPaidId === lastBill.id} className="flex items-center gap-1 rounded-lg bg-teal-600 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-teal-700 disabled:opacity-50">
+                    {markingPaidId === lastBill.id ? <Loader2 className="size-3.5 animate-spin" /> : <CheckCircle2 className="size-3.5" />} Mark as Paid
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+        </aside>
+      </div>
+
+      <div className="overflow-hidden rounded-2xl border border-border bg-white shadow-sm">
+        <div className="flex items-center justify-between border-b border-border bg-muted/40 px-4 py-3">
+          <p className="text-sm font-black text-foreground">Recent Sample Bills</p>
+          <button type="button" onClick={() => void loadRecent()} disabled={loadingRecent} className="flex items-center gap-1.5 rounded-xl border border-border bg-card px-3 py-1.5 text-xs font-bold text-muted-foreground hover:bg-muted disabled:cursor-wait disabled:opacity-60">
+            <RefreshCw className={cn('size-3.5', loadingRecent && 'animate-spin')} /> Refresh
+          </button>
+        </div>
+        {loadingRecent ? (
+          <div className="flex justify-center py-8"><Loader2 className="size-5 animate-spin text-muted-foreground" /></div>
+        ) : recent.length === 0 ? (
+          <div className="p-4"><EmptyState text="No sample bills yet." /></div>
+        ) : (
+          <div className="max-h-96 divide-y divide-border overflow-y-auto">
+            {recent.map(bill => (
+              <div key={bill.id} className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5">
+                <div className="min-w-0">
+                  <p className="text-xs font-black text-foreground">
+                    {bill.invoiceNo} — {bill.customerName}
+                    <span className={cn('ml-1.5 rounded-full px-1.5 py-0.5 text-[10px] font-black', bill.status === 'paid' ? 'bg-teal-100 text-teal-700' : 'bg-amber-100 text-amber-700')}>
+                      {bill.status === 'paid' ? 'Paid' : 'Awaiting Payment'}
+                    </span>
+                  </p>
+                  <p className="text-[11px] font-bold text-muted-foreground">{new Date(bill.createdAt).toLocaleString('en-IN')} · {bill.items.length} item{bill.items.length === 1 ? '' : 's'} · {bill.customerPhone}</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-black text-foreground">{invoiceMoney(bill.total)}</span>
+                  <button onClick={() => printDispatchInvoice(bill, 'thermal')} className="rounded-lg border border-border bg-card p-1.5 text-muted-foreground hover:bg-muted" title="Print thermal"><Printer className="size-3.5" /></button>
+                  {bill.status === 'unpaid' && (
+                    <button onClick={() => markPaid(bill)} disabled={markingPaidId === bill.id} className="flex items-center gap-1 rounded-lg bg-teal-600 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-teal-700 disabled:opacity-50">
+                      {markingPaidId === bill.id ? <Loader2 className="size-3.5 animate-spin" /> : <CheckCircle2 className="size-3.5" />} Mark Paid
+                    </button>
                   )}
                 </div>
               </div>
@@ -3105,7 +3589,7 @@ function BillingTab() {
 function branchDispatchedForRow(row: ProductionRow, branch: Branch, orders: BakeryOrder[]): number {
   return orders
     .filter(o => o.targetBranch === branch && row.contributingOrderIds.includes(o.id))
-    .reduce((s, o) => s + (o.dispatchLog || []).filter(d => sameItem(d.itemName, row.itemName)).reduce((s2, d) => s2 + d.quantity, 0), 0);
+    .reduce((s, o) => s + (o.dispatchLog || []).filter(d => sameItem(d.itemName, row.itemName) && !d.isExtra).reduce((s2, d) => s2 + d.quantity, 0), 0);
 }
 
 // Same idea as branchDispatchedForRow, but for the "Planned" bucket (Planning
@@ -3207,7 +3691,7 @@ interface HosurShopOrderCard {
   shopName: string;
   shopId: string | null;
   shopPhone: string | null;
-  items: { itemName: string; unit: string; requested: number; dispatched: number }[];
+  items: { itemName: string; unit: string; requested: number; dispatched: number; cancelled: number; cancellationReason: string | null }[];
 }
 
 // Shop-centric Hosur dispatch view: one card per shop ORDER (not just shop
@@ -3237,7 +3721,7 @@ function useHosurShopOrders(rows: ProductionRow[], orders: BakeryOrder[]) {
     (async () => {
       const [{ data: ordersData }, { data: itemsData }] = await Promise.all([
         supabase.from('hosur_orders').select('id, order_number, shop_name, shop_id').in('id', hosurOrderIds),
-        supabase.from('hosur_order_items').select('order_id, item_name, unit, quantity, dispatched_quantity').in('order_id', hosurOrderIds),
+        supabase.from('hosur_order_items').select('order_id, item_name, unit, quantity, dispatched_quantity, cancelled_quantity, cancellation_reason').in('order_id', hosurOrderIds),
       ]);
       if (cancelled) return;
       // Invoice needs the shop's phone number ("if it's Hosur mention the
@@ -3261,7 +3745,7 @@ function useHosurShopOrders(rows: ProductionRow[], orders: BakeryOrder[]) {
           }];
         }),
       );
-      const byOrder = new Map<string, { itemName: string; unit: string; requested: number; dispatched: number }[]>();
+      const byOrder = new Map<string, { itemName: string; unit: string; requested: number; dispatched: number; cancelled: number; cancellationReason: string | null }[]>();
       for (const item of (itemsData ?? []) as Record<string, unknown>[]) {
         const rawName = String(item.item_name ?? '');
         // Only surface items that belong to the currently-visible row set
@@ -3277,6 +3761,8 @@ function useHosurShopOrders(rows: ProductionRow[], orders: BakeryOrder[]) {
           unit: String(item.unit ?? matchedRow.unit ?? 'pcs'),
           requested: Number(item.quantity ?? 0),
           dispatched: Number(item.dispatched_quantity ?? 0),
+          cancelled: Number(item.cancelled_quantity ?? 0),
+          cancellationReason: (item.cancellation_reason as string | null) ?? null,
         });
         byOrder.set(orderId, list);
       }
@@ -3428,12 +3914,22 @@ function HosurShopDispatchPanel({ rows, mode, orders, leftoverBalances, onDispat
   const [review, setReview] = useState<{ actions: PendingDispatchAction[]; card: HosurShopOrderCard } | null>(null);
 
   const availableFor = (itemName: string) => Math.max(0, leftoverBalances.get(closingStockItemSlug(itemName))?.balance ?? 0);
+  // BUG FIX (2026-08-09): "we are unable to remove the orders from the hosur
+  // shop... need to remove that item so we can dispatch the rest" — an item
+  // that genuinely can't be fulfilled (production issue) had no way to be
+  // excluded, so it sat at requested > dispatched forever and the whole shop
+  // card could never reach "Dispatched". cancelItemRemaining below lets the
+  // planner permanently cancel what's left of one item (with a required
+  // reason), and every remaining/complete calculation here now subtracts
+  // `cancelled` the same way it already subtracts `dispatched`.
+  const remainingFor = (item: HosurShopOrderCard['items'][number]) =>
+    Math.max(0, Math.round((item.requested - item.dispatched - item.cancelled) * 100) / 100);
 
   const openCard = (card: HosurShopOrderCard) => {
     setSelectedOrderId(card.orderId);
     const draft: Record<string, string> = {};
     for (const item of card.items) {
-      const remaining = Math.max(0, Math.round((item.requested - item.dispatched) * 100) / 100);
+      const remaining = remainingFor(item);
       const suggested = Math.round(Math.min(remaining, availableFor(item.itemName)) * 100) / 100;
       draft[item.itemName] = String(suggested);
     }
@@ -3451,7 +3947,26 @@ function HosurShopDispatchPanel({ rows, mode, orders, leftoverBalances, onDispat
     reload();
   };
   const cancel = () => { setSelectedOrderId(null); setQtyDraft({}); setResult(null); };
+  // "Remove" only zeroes this batch's quantity draft — the item is still
+  // owed and will keep blocking the card from ever showing as Dispatched.
+  // Use cancelItemRemaining for a permanent, reason-required cancellation.
   const removeItem = (itemName: string) => setQtyDraft(v => ({ ...v, [itemName]: '0' }));
+  const [cancelPromptItem, setCancelPromptItem] = useState<string | null>(null);
+  const [cancelReason, setCancelReason] = useState('');
+  const [cancelBusy, setCancelBusy] = useState(false);
+  const cancelItemRemaining = async (card: HosurShopOrderCard, itemName: string) => {
+    if (!cancelReason.trim()) { setResult({ ok: false, message: 'Enter a reason before cancelling this item.' }); return; }
+    setCancelBusy(true);
+    const { error } = await supabase.rpc('cancel_hosur_order_item_remaining_secure', {
+      p_order_id: card.orderId, p_item_name: itemName, p_reason: cancelReason.trim(),
+    });
+    setCancelBusy(false);
+    if (error) { setResult({ ok: false, message: error.message }); return; }
+    setCancelPromptItem(null);
+    setCancelReason('');
+    setResult({ ok: true, message: `"${itemName}" won't be sent to ${card.shopName} — marked cancelled and recorded in reports.` });
+    reload();
+  };
 
   // WORKFLOW CHANGE (2026-08-08): "when we select the item and click on
   // dispatch it should open the checklist... I should also get the invoice."
@@ -3467,7 +3982,7 @@ function HosurShopDispatchPanel({ rows, mode, orders, leftoverBalances, onDispat
       // CRITICAL BUG FIX (2026-08-07, preserved): hard-cap every send to
       // this item's true remaining balance (requested − already dispatched)
       // — dispatching more than a shop ordered should never be possible.
-      const remaining = Math.max(0, Math.round((item.requested - item.dispatched) * 100) / 100);
+      const remaining = remainingFor(item);
       const typed = Number(qtyDraft[item.itemName] || 0);
       const qty = Math.min(typed, remaining);
       if (typed > remaining + 0.01) clampedAny = true;
@@ -3523,9 +4038,12 @@ function HosurShopDispatchPanel({ rows, mode, orders, leftoverBalances, onDispat
 
   if (shopOrders === null) return <p className="text-xs font-bold text-muted-foreground">Loading shop orders…</p>;
   // A card belongs to "Dispatched" only once every item ON THAT SHOP'S OWN
-  // ORDER has been fully sent — independent of whether some other shop
-  // sharing the same item still has a balance owed to it.
-  const isCardComplete = (card: HosurShopOrderCard) => card.items.length > 0 && card.items.every(i => i.dispatched >= i.requested - 0.01);
+  // ORDER has been fully sent OR cancelled — independent of whether some
+  // other shop sharing the same item still has a balance owed to it. Without
+  // the `+ i.cancelled` here, an item cancelled because it couldn't be
+  // fulfilled would keep this card stuck in "To Dispatch" forever even
+  // though nothing more is ever coming for it.
+  const isCardComplete = (card: HosurShopOrderCard) => card.items.length > 0 && card.items.every(i => i.dispatched + i.cancelled >= i.requested - 0.01);
   const bucketed = shopOrders.filter(c => (mode === 'completed') === isCardComplete(c));
   const filtered = shopSearch.trim()
     ? bucketed.filter(c => c.shopName.toLowerCase().includes(shopSearch.trim().toLowerCase()))
@@ -3541,7 +4059,7 @@ function HosurShopDispatchPanel({ rows, mode, orders, leftoverBalances, onDispat
       {filtered.length === 0 && <EmptyState text={`No shop orders match "${shopSearch}".`} />}
       {filtered.map(card => {
         const isOpen = selectedOrderId === card.orderId;
-        const doneCount = card.items.filter(i => i.dispatched >= i.requested - 0.01).length;
+        const doneCount = card.items.filter(i => i.dispatched + i.cancelled >= i.requested - 0.01).length;
         return (
           <div key={card.orderId} className="rounded-2xl border border-border bg-white p-3 shadow-sm">
             <button onClick={() => (isOpen ? cancel() : openCard(card))} className="flex w-full flex-wrap items-center justify-between gap-2 text-left">
@@ -3555,10 +4073,13 @@ function HosurShopDispatchPanel({ rows, mode, orders, leftoverBalances, onDispat
             {isOpen && (
               <div className="mt-3 space-y-2">
                 {card.items.map(item => {
-                  const remaining = Math.max(0, Math.round((item.requested - item.dispatched) * 100) / 100);
+                  const remaining = remainingFor(item);
                   const available = availableFor(item.itemName);
                   const val = qtyDraft[item.itemName] ?? '0';
-                  const done = remaining <= 0.01;
+                  const fullySent = item.dispatched >= item.requested - 0.01;
+                  const fullyCancelled = !fullySent && remaining <= 0.01;
+                  const done = fullySent || fullyCancelled;
+                  const promptingCancel = cancelPromptItem === item.itemName;
                   // BUG FIX (2026-08-07): once an item has nothing left owed
                   // to this shop, its quantity field is locked instead of
                   // staying open for another entry — this is what actually
@@ -3569,10 +4090,14 @@ function HosurShopDispatchPanel({ rows, mode, orders, leftoverBalances, onDispat
                   return (
                     <div key={item.itemName} className={cn('rounded-lg px-3 py-1.5', done ? 'bg-teal-50' : 'bg-muted/40')}>
                       <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-bold">
-                        <span>{item.itemName} <span className="text-muted-foreground">(ordered {qtyFmt(item.requested)} {item.unit} · sent {qtyFmt(item.dispatched)} {item.unit})</span></span>
-                        {done ? (
+                        <span>{item.itemName} <span className="text-muted-foreground">(ordered {qtyFmt(item.requested)} {item.unit} · sent {qtyFmt(item.dispatched)} {item.unit}{item.cancelled > 0 ? ` · cancelled ${qtyFmt(item.cancelled)} ${item.unit}` : ''})</span></span>
+                        {fullySent ? (
                           <span className="flex items-center gap-1 rounded-full bg-teal-100 px-2.5 py-1 text-[10px] font-black text-teal-700">
                             <PackageCheck className="size-3.5" /> Fully sent
+                          </span>
+                        ) : fullyCancelled ? (
+                          <span className="flex items-center gap-1 rounded-full bg-slate-200 px-2.5 py-1 text-[10px] font-black text-slate-700">
+                            <X className="size-3.5" /> Cancelled
                           </span>
                         ) : (
                           <div className="flex items-center gap-1.5">
@@ -3581,15 +4106,35 @@ function HosurShopDispatchPanel({ rows, mode, orders, leftoverBalances, onDispat
                               onChange={e => setQtyDraft(v => ({ ...v, [item.itemName]: e.target.value }))}
                               className="w-20 rounded-lg border border-border bg-background px-2 py-1 text-right"
                             />
-                            <button onClick={() => removeItem(item.itemName)} className="rounded-lg border border-border px-2 py-1 text-[10px] font-black text-muted-foreground hover:bg-muted" title="Not sending this item — set to 0">Remove</button>
+                            <button onClick={() => removeItem(item.itemName)} className="rounded-lg border border-border px-2 py-1 text-[10px] font-black text-muted-foreground hover:bg-muted" title="Not sending this item in this batch — set to 0, still owed">Skip</button>
+                            <button onClick={() => { setCancelPromptItem(item.itemName); setCancelReason(''); }} className="rounded-lg border border-red-300 px-2 py-1 text-[10px] font-black text-red-700 hover:bg-red-50" title="Permanently cancel what's left of this item (e.g. production issue)">Cancel item</button>
                           </div>
                         )}
                       </div>
-                      {!done && (
+                      {item.cancellationReason && item.cancelled > 0 && (
+                        <p className="mt-0.5 text-[10px] font-bold text-slate-500">Cancelled — {item.cancellationReason}</p>
+                      )}
+                      {!done && !promptingCancel && (
                         <p className="mt-0.5 text-[10px] font-bold text-muted-foreground">
                           {qtyFmt(Math.min(remaining, available))} {item.unit} available to send now (capped at {qtyFmt(remaining)} {item.unit} still owed)
                           {Number(val) > remaining + 0.01 ? " — this will be capped at what's still owed when you send." : ''}
                         </p>
+                      )}
+                      {promptingCancel && (
+                        <div className="mt-1.5 rounded-lg border border-red-200 bg-red-50 p-2">
+                          <p className="text-[10px] font-black text-red-800">Cancel {qtyFmt(remaining)} {item.unit} of {item.itemName} — why can't it be sent?</p>
+                          <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                            <input
+                              autoFocus value={cancelReason} onChange={e => setCancelReason(e.target.value)}
+                              placeholder="e.g. Production shortfall, ran out of raw material"
+                              className="min-w-[220px] flex-1 rounded-lg border border-red-300 bg-white px-2 py-1 text-[11px] font-semibold"
+                            />
+                            <button disabled={cancelBusy || !cancelReason.trim()} onClick={() => void cancelItemRemaining(card, item.itemName)} className="rounded-lg bg-red-700 px-2.5 py-1 text-[10px] font-black text-white disabled:opacity-50">
+                              {cancelBusy ? 'Cancelling…' : 'Confirm cancel'}
+                            </button>
+                            <button onClick={() => { setCancelPromptItem(null); setCancelReason(''); }} className="rounded-lg border border-red-300 px-2.5 py-1 text-[10px] font-black text-red-700">Back</button>
+                          </div>
+                        </div>
                       )}
                     </div>
                   );
@@ -3909,7 +4454,7 @@ function plannedContributingOrders(row: ProductionRow, orders: BakeryOrder[]): B
 }
 function plannedDispatchedForRow(row: ProductionRow, orders: BakeryOrder[]): number {
   return plannedContributingOrders(row, orders)
-    .reduce((s, o) => s + (o.dispatchLog || []).filter(d => sameItem(d.itemName, row.itemName)).reduce((s2, d) => s2 + d.quantity, 0), 0);
+    .reduce((s, o) => s + (o.dispatchLog || []).filter(d => sameItem(d.itemName, row.itemName) && !d.isExtra).reduce((s2, d) => s2 + d.quantity, 0), 0);
 }
 
 // Date-wise: each calendar day gets its own collapsible group (own branch
@@ -3931,7 +4476,7 @@ function DispatchTab({ orders, allOrders }: { orders: BakeryOrder[]; allOrders: 
     const rows = computeProductionRows(g.orders);
     return rows.map(row => {
       const dispatched = g.orders.filter(o => row.contributingOrderIds.includes(o.id))
-        .reduce((s, o) => s + (o.dispatchLog || []).filter(d => sameItem(d.itemName, row.itemName)).reduce((s2, d) => s2 + d.quantity, 0), 0);
+        .reduce((s, o) => s + (o.dispatchLog || []).filter(d => sameItem(d.itemName, row.itemName) && !d.isExtra).reduce((s2, d) => s2 + d.quantity, 0), 0);
       return { date: g.label, item: row.itemName, VRSNB: row.perBranch.VRSNB ?? '', SNB: row.perBranch.SNB ?? '', Hosur: row.perBranch.Hosur ?? '', produced: row.preparedTotal, dispatched, status: row.itemStatus };
     });
   }), [dateGroups]);
@@ -4041,7 +4586,7 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
   // — Dispatch now lists every item that's been ordered at all, even before
   // any production has been recorded for it, per owner's explicit request.
   const rows = useMemo(() => computeProductionRows(orders), [orders]);
-  const [subTab, setSubTab] = useState<'active' | 'completed' | 'planned'>('active');
+  const [subTab, setSubTab] = useState<'active' | 'completed' | 'planned' | 'custom'>('active');
   const [checklistItem, setChecklistItem] = useState<ProductionRow | null>(null);
   // 'All' shows every item like before. Picking a branch filters to only items
   // that branch actually ordered, and turns on multi-select + bulk dispatch.
@@ -4060,7 +4605,7 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
     let sum = 0;
     for (const order of orders) {
       if (!row.contributingOrderIds.includes(order.id)) continue;
-      sum += (order.dispatchLog || []).filter(d => sameItem(d.itemName, row.itemName)).reduce((s, d) => s + d.quantity, 0);
+      sum += (order.dispatchLog || []).filter(d => sameItem(d.itemName, row.itemName) && !d.isExtra).reduce((s, d) => s + d.quantity, 0);
     }
     return sum;
   };
@@ -4181,6 +4726,13 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
         <button onClick={() => setSubTab('active')} className={cn('rounded-xl px-3 py-1.5 text-xs font-bold', subTab === 'active' ? 'bg-foreground text-white' : 'bg-muted text-muted-foreground')}>To Dispatch ({activeRows.length})</button>
         <button onClick={() => setSubTab('completed')} className={cn('rounded-xl px-3 py-1.5 text-xs font-bold', subTab === 'completed' ? 'bg-foreground text-white' : 'bg-muted text-muted-foreground')}>Dispatched ({completedRows.length})</button>
         <button onClick={() => setSubTab('planned')} className={cn('rounded-xl px-3 py-1.5 text-xs font-bold', subTab === 'planned' ? 'cafe-gradient text-white shadow-teal' : 'bg-primary/10 text-primary')}>Planned ({plannedRows.length})</button>
+        {/* FEATURE (2026-08-09): "for planning order items build a new Custom
+            tab under Dispatch where items can be selected with quantity, and
+            on dispatch the planner should enter customer name, mobile number
+            and address" — sells planning-stock items direct to a walk-in
+            customer instead of to a branch. Shares the same source rows as
+            Planned (planning-stock items with nothing owed to any branch). */}
+        <button onClick={() => setSubTab('custom')} className={cn('rounded-xl px-3 py-1.5 text-xs font-bold', subTab === 'custom' ? 'bg-amber-500 text-white shadow-sm' : 'bg-amber-50 text-amber-700')}>Custom ({plannedRows.length})</button>
       </div>
 
       {/* Reprint access for anything already sent — only relevant once a
@@ -4193,6 +4745,8 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
 
       {subTab === 'planned' ? (
         <PlannedDispatchPanel rows={plannedRows} orders={orders} onDispatch={submitDispatch} dispatchedBy={currentUser?.displayName || 'Planner'} />
+      ) : subTab === 'custom' ? (
+        <CustomDispatchPanel rows={plannedRows} orders={orders} onDispatch={submitDispatch} dispatchedBy={currentUser?.displayName || 'Planner'} />
       ) : branchFilter === 'Hosur' && hosurView === 'shop' ? (
         // BUG FIX (2026-08-07): this used to pass `shown` (activeRows/
         // completedRows — item-level rows already filtered by whether that
@@ -4498,6 +5052,183 @@ function PlannedDispatchPanel({ rows, orders, onDispatch, dispatchedBy }: {
   );
 }
 
+// FEATURE (2026-08-09): "for planning order items build a new Custom tab
+// under Dispatch where items can be selected with quantity, and on dispatch
+// the planner should enter customer name, mobile number, and address; only
+// then can the checklist/invoice be printed with that customer info; need
+// price and discount fields per item" — sells planning-stock items direct to
+// a walk-in customer. Draws from the exact same source rows as the Planned
+// tab (plannedRows), so a quantity sold here also counts against what's
+// "already sent" out of the Planned bucket (plannedDispatchedForRow sums
+// every non-extra dispatch log entry regardless of which branch it's
+// nominally stamped with) — the two tabs can never double-count the same
+// planning stock.
+function CustomDispatchPanel({ rows, orders, onDispatch, dispatchedBy }: {
+  rows: ProductionRow[]; orders: BakeryOrder[];
+  onDispatch: ReturnType<typeof useBakeryStore.getState>['submitDispatch']; dispatchedBy: string;
+}) {
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [qty, setQty] = useState<Record<string, string>>({});
+  const [error, setError] = useState<string | null>(null);
+  const [customerStep, setCustomerStep] = useState(false);
+  const [customerName, setCustomerName] = useState('');
+  const [customerPhone, setCustomerPhone] = useState('');
+  const [customerAddress, setCustomerAddress] = useState('');
+  const [customerError, setCustomerError] = useState<string | null>(null);
+  const { getId, reset: resetDispatchIds } = useStableDispatchIds();
+  const [review, setReview] = useState<{ actions: PendingDispatchAction[]; customer: { name: string; phone: string; address: string } } | null>(null);
+
+  const lines = useMemo(() => rows.map(row => {
+    const plannedRequested = row.perBranch.Planned ?? 0;
+    const alreadySent = plannedDispatchedForRow(row, orders);
+    const remainingPlanned = Math.max(0, plannedRequested - alreadySent);
+    const defaultQty = Math.round(Math.min(remainingPlanned, row.preparedTotal) * 100) / 100;
+    return { row, plannedRequested, remainingPlanned, defaultQty };
+  }), [rows, orders]);
+
+  const toggleSelect = (itemName: string) => setSelected(prev => {
+    const next = new Set(prev);
+    if (next.has(itemName)) next.delete(itemName); else next.add(itemName);
+    return next;
+  });
+
+  const qtyFor = (itemName: string, defaultQty: number) => {
+    const raw = qty[itemName];
+    return raw !== undefined ? Number(raw || 0) : defaultQty;
+  };
+
+  const selectedCount = selected.size;
+
+  const buildActions = (): PendingDispatchAction[] | null => {
+    setError(null);
+    const actions: PendingDispatchAction[] = [];
+    let clampedAny = false;
+    for (const { row, remainingPlanned, defaultQty } of lines) {
+      if (!selected.has(row.itemName)) continue;
+      const typed = qtyFor(row.itemName, defaultQty);
+      const q = Math.min(typed, remainingPlanned);
+      if (typed > remainingPlanned + 0.01) clampedAny = true;
+      if (q <= 0) continue;
+      const entries = plannedContributingOrders(row, orders);
+      const split = autoSplitForItem(entries, row.itemName, q);
+      for (const order of entries) {
+        const item = order.items.find(i => sameItem(i.itemName, row.itemName));
+        const orderQty = split[order.id] ?? 0;
+        if (!item || orderQty <= 0) continue;
+        actions.push({ orderId: order.id, itemName: item.itemName, quantity: orderQty, unit: item.dispatchUnit || 'kg', dispatchEntryId: getId(`custom:${order.id}:${row.itemName}`) });
+      }
+    }
+    if (actions.length === 0) {
+      setError('Select at least one item with a quantity above 0.');
+      return null;
+    }
+    if (clampedAny) setError("One or more items were capped at what's still owed (some had already been sent).");
+    return actions;
+  };
+
+  const openCustomerStep = () => {
+    const actions = buildActions();
+    if (!actions) return;
+    setCustomerStep(true);
+  };
+
+  const confirmCustomer = () => {
+    const actions = buildActions();
+    if (!actions) { setCustomerStep(false); return; }
+    if (!customerName.trim()) { setCustomerError('Enter the customer\'s name.'); return; }
+    if (!customerPhone.trim()) { setCustomerError('Enter the customer\'s mobile number.'); return; }
+    setCustomerError(null);
+    setReview({ actions, customer: { name: customerName.trim(), phone: customerPhone.trim(), address: customerAddress.trim() } });
+  };
+
+  if (review) {
+    return (
+      <DispatchReviewModal
+        scope="SNB"
+        customer={review.customer}
+        actions={review.actions}
+        dispatchedBy={dispatchedBy}
+        onDispatch={onDispatch}
+        onClose={() => setReview(null)}
+        onDone={() => {
+          resetDispatchIds();
+          setSelected(new Set());
+          setQty({});
+          setCustomerStep(false);
+          setCustomerName(''); setCustomerPhone(''); setCustomerAddress('');
+        }}
+      />
+    );
+  }
+
+  if (customerStep) {
+    return (
+      <div className="mx-auto max-w-md space-y-3 rounded-2xl border border-amber-200 bg-amber-50 p-4">
+        <p className="text-sm font-black text-amber-900">Who is this going to?</p>
+        <p className="text-[11px] font-bold text-amber-700">Required before the checklist/invoice can be printed — it'll carry this customer's details instead of a branch name.</p>
+        <label className="block space-y-1">
+          <span className="text-[11px] font-black uppercase tracking-wide text-amber-800">Customer Name *</span>
+          <input value={customerName} onChange={e => setCustomerName(e.target.value)} className="w-full rounded-lg border border-amber-300 bg-white px-3 py-2 text-sm font-bold" placeholder="e.g. Ramesh Kumar" />
+        </label>
+        <label className="block space-y-1">
+          <span className="text-[11px] font-black uppercase tracking-wide text-amber-800">Mobile Number *</span>
+          <input value={customerPhone} onChange={e => setCustomerPhone(e.target.value)} className="w-full rounded-lg border border-amber-300 bg-white px-3 py-2 text-sm font-bold" placeholder="e.g. 9876543210" />
+        </label>
+        <label className="block space-y-1">
+          <span className="text-[11px] font-black uppercase tracking-wide text-amber-800">Address</span>
+          <textarea value={customerAddress} onChange={e => setCustomerAddress(e.target.value)} rows={2} className="w-full rounded-lg border border-amber-300 bg-white px-3 py-2 text-sm font-bold" placeholder="Optional, for delivery reference" />
+        </label>
+        {customerError && <p className="text-xs font-bold text-red-700">{customerError}</p>}
+        <div className="flex justify-end gap-2 pt-1">
+          <button onClick={() => setCustomerStep(false)} className="rounded-xl border border-amber-300 px-4 py-2 text-xs font-bold text-amber-800">Back</button>
+          <button onClick={confirmCustomer} className="flex items-center gap-1.5 rounded-xl bg-amber-600 px-4 py-2 text-xs font-bold text-white hover:bg-amber-700">
+            <ClipboardList className="size-3.5" /> Continue to Price &amp; Discount
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (rows.length === 0) return <EmptyState text="No planning-stock items available for a custom sale." />;
+
+  return (
+    <div className="space-y-2 pb-16">
+      {lines.map(({ row, plannedRequested, remainingPlanned, defaultQty }) => {
+        const isChecked = selected.has(row.itemName);
+        const val = qty[row.itemName] ?? String(defaultQty);
+        return (
+          <div key={row.itemName} className={cn('rounded-2xl border bg-white p-3 shadow-sm', isChecked ? 'border-amber-300 ring-1 ring-amber-200' : 'border-border opacity-70')}>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <label className="flex min-w-0 items-center gap-2.5">
+                <input type="checkbox" checked={isChecked} onChange={() => toggleSelect(row.itemName)} className="size-4 shrink-0 accent-amber-600" />
+                <p className="text-sm font-black text-foreground">
+                  {row.itemName} <span className="font-bold text-muted-foreground">(planned {qtyFmt(plannedRequested)} {row.unit} · produced {qtyFmt(row.preparedTotal)} {row.unit} · {qtyFmt(remainingPlanned)} {row.unit} still available)</span>
+                </p>
+              </label>
+              <input
+                type="number" min={0} max={remainingPlanned}
+                value={val}
+                onChange={e => setQty(v => ({ ...v, [row.itemName]: e.target.value }))}
+                className="w-24 rounded-lg border border-border bg-background px-2 py-1.5 text-right text-sm font-bold"
+              />
+            </div>
+          </div>
+        );
+      })}
+      {error && <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700">{error}</p>}
+      <div className="sticky bottom-2 z-10 flex justify-center pt-2">
+        <button
+          onClick={openCustomerStep}
+          disabled={selectedCount === 0}
+          className="flex items-center gap-2 rounded-2xl bg-amber-600 px-5 py-3 text-sm font-black text-white shadow-xl disabled:opacity-50"
+        >
+          <ShoppingCart className="size-4" /> Sell {selectedCount} selected item{selectedCount === 1 ? '' : 's'} to a customer
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // Lets the planner dispatch several selected items to one branch in a single
 // step, instead of opening the per-item checklist modal one at a time.
 function BulkDispatchModal({ branch, rows, orders, onClose, onDispatch, dispatchedBy, onDone }: {
@@ -4709,7 +5440,19 @@ function DispatchChecklistModal({ row, orders, branchFilter, onClose, onDispatch
         // had already been sent — hard-cap every send at what's genuinely
         // still outstanding for this order.
         const requestedForOrder = item.dispatchUnit === 'pcs' && item.originalPcs != null ? item.originalPcs : item.quantity;
-        const alreadyForOrder = (order.dispatchLog || []).filter(d => sameItem(d.itemName, item.itemName)).reduce((s, d) => s + d.quantity, 0);
+        // BUG FIX (2026-08-09): "Rasamalai 10pcs / Malaikulla 5pcs auto-moving
+        // to Dispatched without being dispatched" — an "extra / non-requested
+        // item" dispatch (isExtra:true) gets anchored to whatever order
+        // happens to be first for that branch (see anchorOrderId above), which
+        // can be a totally unrelated order that also has this same item name
+        // as a genuinely requested line. Every "how much has been dispatched
+        // against what was actually requested" calculation in this file
+        // pooled ALL dispatch-log entries matching the item name regardless
+        // of isExtra, so an ad-hoc extra send could silently satisfy (and
+        // hide) a real order's own never-actually-dispatched line for the
+        // same item. Extra entries are still recorded and reported — they
+        // just no longer count toward "requested quantity fulfilled".
+        const alreadyForOrder = (order.dispatchLog || []).filter(d => sameItem(d.itemName, item.itemName) && !d.isExtra).reduce((s, d) => s + d.quantity, 0);
         const remainingForOrder = Math.max(0, Math.round((requestedForOrder - alreadyForOrder) * 100) / 100);
         const cappedQ = Math.min(q, remainingForOrder);
         if (cappedQ <= 0.001) continue;
@@ -4861,9 +5604,15 @@ export interface PendingDispatchAction {
   isExtra?: boolean;
 }
 
-function DispatchReviewModal({ scope, hosurShop, actions, dispatchedBy, onDispatch, onClose, onDone }: {
+function DispatchReviewModal({ scope, hosurShop, customer, actions, dispatchedBy, onDispatch, onClose, onDone }: {
   scope: Branch;
   hosurShop?: { id: string; name: string; phone: string } | null;
+  // FEATURE (2026-08-09): Custom dispatch — when set, this review is for a
+  // planning-stock item sold direct to a walk-in customer rather than to a
+  // branch/shop. `scope` is still passed through (needed for invoice
+  // numbering + as the technical branch value on the dispatch entry) but the
+  // UI, pricing lookup, and printed invoice all key off `customer` instead.
+  customer?: { name: string; phone: string; address: string } | null;
   actions: PendingDispatchAction[];
   dispatchedBy: string;
   onDispatch: ReturnType<typeof useBakeryStore.getState>['submitDispatch'];
@@ -4874,7 +5623,7 @@ function DispatchReviewModal({ scope, hosurShop, actions, dispatchedBy, onDispat
   const [hosurPrices, setHosurPrices] = useState<Record<string, number>>({});
   const [loadingPrices, setLoadingPrices] = useState(scope !== 'Hosur');
   const [priceOverrides, setPriceOverrides] = useState<Record<string, string>>({});
-  const [discountPct, setDiscountPct] = useState(defaultDiscountPct(scope));
+  const [discountPct, setDiscountPct] = useState(customer ? 0 : defaultDiscountPct(scope));
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<DispatchInvoiceRecord | null>(null);
@@ -4882,7 +5631,10 @@ function DispatchReviewModal({ scope, hosurShop, actions, dispatchedBy, onDispat
   useEffect(() => {
     if (scope === 'Hosur') return;
     loadCatalog(scope).catch(() => {});
-  }, [scope, loadCatalog]);
+    // Custom sales can be priced off either branch's catalog (planning-stock
+    // items are picked from the combined SNB+VRSNB list), so load both.
+    if (customer) loadCatalog(scope === 'SNB' ? 'VRSNB' : 'SNB').catch(() => {});
+  }, [scope, loadCatalog, customer]);
 
   useEffect(() => {
     if (scope !== 'Hosur' || !hosurShop) return;
@@ -4919,6 +5671,13 @@ function DispatchReviewModal({ scope, hosurShop, actions, dispatchedBy, onDispat
   const priceFor = (itemName: string): number | null => {
     const override = priceOverrides[itemName];
     if (override !== undefined && override.trim() !== '') return Number(override) || 0;
+    if (customer) {
+      // Combined SNB + VRSNB lookup — matches how the Planning tab's item
+      // picker sources items in the first place.
+      const combined = [...(catalogItems.SNB ?? []), ...(catalogItems.VRSNB ?? [])];
+      const match = combined.find(i => i.name.trim().toLowerCase() === itemName.trim().toLowerCase());
+      return match && match.price > 0 ? match.price : null;
+    }
     if (scope === 'Hosur') {
       const p = hosurPrices[itemName.trim().toLowerCase()];
       return p !== undefined && p > 0 ? p : null;
@@ -4940,7 +5699,7 @@ function DispatchReviewModal({ scope, hosurShop, actions, dispatchedBy, onDispat
 
   const printChecklist = (mode: 'thermal' | 'a4') => {
     const business = businessFor(scope);
-    const title = scope === 'Hosur' && hosurShop ? `${scope} — ${hosurShop.name}` : scope;
+    const title = customer ? `Custom Sale — ${customer.name}` : scope === 'Hosur' && hosurShop ? `${scope} — ${hosurShop.name}` : scope;
     const rows = displayItems.map(d => `<div class="order-line">${d.itemName} — ${d.quantity} ${d.unit}</div>`).join('');
     const style = mode === 'thermal'
       ? `@page { size: 80mm auto; margin: 4mm; } body { font-family: monospace; font-size: 11px; width: 72mm; }`
@@ -4982,6 +5741,7 @@ function DispatchReviewModal({ scope, hosurShop, actions, dispatchedBy, onDispat
           dispatchedAt: new Date().toISOString(),
           ...(a.targetHosurOrderId ? { targetHosurOrderId: a.targetHosurOrderId } : {}),
           ...(a.isExtra ? { isExtra: true } : {}),
+          ...(customer ? { isCustomSale: true, customerName: customer.name } : {}),
         });
       }
       const record = await saveDispatchInvoice({
@@ -4989,6 +5749,9 @@ function DispatchReviewModal({ scope, hosurShop, actions, dispatchedBy, onDispat
         hosurShopId: hosurShop?.id ?? null,
         hosurShopName: hosurShop?.name ?? null,
         hosurShopPhone: hosurShop?.phone ?? null,
+        customerName: customer?.name ?? null,
+        customerPhone: customer?.phone ?? null,
+        customerAddress: customer?.address ?? null,
         dispatchedBy,
         items: invoiceLines,
         discountPct,
@@ -5010,11 +5773,20 @@ function DispatchReviewModal({ scope, hosurShop, actions, dispatchedBy, onDispat
           <>
             <div className="flex items-center justify-between gap-2">
               <p className="text-sm font-black text-foreground">
-                Dispatch Review — {scope}{scope === 'Hosur' && hosurShop ? ` · ${hosurShop.name}` : ''}
+                {customer ? `Custom Sale Review — ${customer.name}` : `Dispatch Review — ${scope}${scope === 'Hosur' && hosurShop ? ` · ${hosurShop.name}` : ''}`}
               </p>
               <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="size-4" /></button>
             </div>
-            <p className="mt-1 text-[11px] font-bold text-muted-foreground">Double-check quantities, confirm prices, then dispatch. Nothing is sent to {scope} until you confirm below.</p>
+            <p className="mt-1 text-[11px] font-bold text-muted-foreground">
+              {customer
+                ? `Double-check quantities, confirm prices, then dispatch. Nothing is sold to ${customer.name} until you confirm below.`
+                : `Double-check quantities, confirm prices, then dispatch. Nothing is sent to ${scope} until you confirm below.`}
+            </p>
+            {customer && (
+              <p className="mt-1 text-[11px] font-bold text-muted-foreground">
+                {customer.phone}{customer.address ? ` · ${customer.address}` : ''}
+              </p>
+            )}
 
             <div className="mt-3 overflow-x-auto rounded-xl border border-border">
               <table className="w-full text-xs">
