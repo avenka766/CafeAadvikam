@@ -19,6 +19,24 @@ const POLL_BACKOFF_BASE_MS = 5_000;
 const POLL_BACKOFF_MAX_MS = 5 * 60_000;
 let orderRealtimeChannel: ReturnType<typeof supabase.channel> | null = null;
 let orderFetchInFlight = false;
+// BUG FIX (2026-08-09): "Owner Dashboard page is keep on refreshing 10 times
+// per sec" — root cause #2, found after the earlier whole-store-subscription
+// fix (which stopped UNRELATED store fields from re-rendering Owner tabs)
+// still left this: every single postgres_changes event on the `orders`
+// table — including a live cart draft syncing on every keystroke/quantity
+// click during active billing elsewhere in the app — called `set()`
+// individually, once per event. Each `set()` produces a brand-new `orders`
+// array reference, and every Owner tab subscribed to `orders` (correctly,
+// via a selector — it needs the data) re-renders on every single one of
+// those events. During a burst of rapid edits this really can hit ~10
+// updates/sec, each one a full re-render of heavy dashboard tabs — reading
+// exactly like "the page keeps refreshing." Coalescing rapid-fire events
+// into one `set()` per short window fixes this without losing any data
+// (last state per order always wins, same as before) — it just stops
+// firing a fresh render for every single intermediate keystroke.
+let pendingOrderEvents: Map<string, { type: 'upsert' | 'delete'; order?: Order }> = new Map();
+let orderFlushTimer: ReturnType<typeof setTimeout> | null = null;
+const ORDER_EVENT_FLUSH_MS = 200;
 
 const moneyValue = (value: number) => Math.round(Number(value) * 100) / 100;
 
@@ -715,15 +733,31 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
           const event = payload as { eventType?: string; new?: Record<string, unknown>; old?: { id?: string } };
           const id = String(event.new?.id ?? event.old?.id ?? '');
           if (!id) return;
+          // Buffer this event instead of applying it immediately — see the
+          // ORDER_EVENT_FLUSH_MS comment above. Map key = order id, so a
+          // rapid burst of updates to the SAME order (e.g. a cart being
+          // edited live) collapses to just its latest state, not one entry
+          // per keystroke.
           if (event.eventType === 'DELETE') {
-            set((current) => ({ orders: current.orders.filter((order) => order.id !== id) }));
-            return;
+            pendingOrderEvents.set(id, { type: 'delete' });
+          } else {
+            pendingOrderEvents.set(id, { type: 'upsert', order: dbRowToOrder(event.new ?? {}) });
           }
-          const changed = dbRowToOrder(event.new ?? {});
-          set((current) => ({
-            orders: [changed, ...current.orders.filter((order) => order.id !== id)]
-              .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
-          }));
+          if (orderFlushTimer) return;
+          orderFlushTimer = setTimeout(() => {
+            const events = pendingOrderEvents;
+            pendingOrderEvents = new Map();
+            orderFlushTimer = null;
+            set((current) => {
+              let next = current.orders;
+              const ids = new Set(events.keys());
+              next = next.filter((order) => !ids.has(order.id));
+              for (const ev of events.values()) {
+                if (ev.type === 'upsert' && ev.order) next = [ev.order, ...next];
+              }
+              return { orders: next.sort((a, b) => b.createdAt.localeCompare(a.createdAt)) };
+            });
+          }, ORDER_EVENT_FLUSH_MS);
         })
         .subscribe();
     }
