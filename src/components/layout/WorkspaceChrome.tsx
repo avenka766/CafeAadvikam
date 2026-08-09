@@ -44,6 +44,7 @@ import {
   X,
   Scale,
   PackageMinus,
+  UserCheck,
 } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
 import { cn } from '@/lib/utils';
@@ -195,6 +196,7 @@ function navForRole(role?: string): NavItem[] {
         { label: 'Dispatch', path: '/bakery/planner?tab=dispatch', icon: <Truck className="size-4" />, group: 'Main' },
         // Order-taking + billing channels, grouped by destination.
         { label: 'Hosur Shops & Billing', path: '/bakery/planner?tab=hosur', icon: <ShoppingCart className="size-4" />, group: 'Operations' },
+        { label: 'Custom Dispatch', path: '/bakery/planner?tab=custom', icon: <UserCheck className="size-4" />, group: 'Operations' },
         { label: 'Cake Dispatch', path: '/bakery/planner?tab=cake', icon: <Cake className="size-4" />, group: 'Operations' },
         // Stock movement + reconciliation, grouped together.
         { label: 'Transfer In', path: '/bakery/planner?tab=transfer-in', icon: <ArrowRightLeft className="size-4" />, group: 'Stock' },
