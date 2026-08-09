@@ -508,7 +508,10 @@ function SalesOverviewTab() {
   const showBranches = branchFilter === 'all' || branchFilter !== 'Cafe';
 
   return (
-    <div className="space-y-5">
+    // POLISH FIX (2026-08-09 / #284): standardized on the same
+    // "owner-tab-stack" spacing container every other Owner tab uses,
+    // instead of a one-off Tailwind space-y utility.
+    <div className="owner-tab-stack">
       {/* Filters */}
       <div className="flex flex-wrap gap-2 items-center">
         <div className="flex gap-1 p-1 rounded-xl bg-muted">
@@ -911,7 +914,8 @@ function AttendanceSalaryTab() {
   );
 
   return (
-    <div className="space-y-5">
+    // POLISH FIX (2026-08-09 / #284): standardized wrapper — see SalesOverviewTab.
+    <div className="owner-tab-stack">
       <div className="flex flex-wrap items-end justify-between gap-3 rounded-2xl border border-border bg-card p-3">
         <div><p className="text-xs font-black uppercase tracking-wide text-muted-foreground">Payroll period</p><p className="font-display text-lg font-black">Attendance and approved deductions</p></div>
         <div className="flex gap-2">
@@ -1185,7 +1189,8 @@ function WasteLogsTab() {
   };
 
   return (
-    <div className="space-y-4">
+    // POLISH FIX (2026-08-09 / #284): standardized wrapper — see SalesOverviewTab.
+    <div className="owner-tab-stack">
       <div className="flex items-center gap-2">
         <div className="size-8 rounded-xl flex items-center justify-center bg-red-50">
           <Trash2 className="size-4 text-red-600" />
@@ -1370,7 +1375,8 @@ function OwnerAuditTab() {
   const BRANCH_COLOR: Record<string, string> = { SNB: 'bg-blue-50 text-blue-700', VRSNB: 'bg-purple-50 text-purple-700', Hosur: 'bg-amber-50 text-amber-700', Cafe: 'bg-emerald-50 text-emerald-700' };
 
   return (
-    <div className="space-y-4">
+    // POLISH FIX (2026-08-09 / #284): standardized wrapper — see SalesOverviewTab.
+    <div className="owner-tab-stack">
       <div className="flex items-center gap-2">
         <div className="size-8 rounded-xl flex items-center justify-center bg-slate-100">
           <ShieldCheck className="size-4 text-slate-600" />
@@ -1448,7 +1454,8 @@ function OwnerComplaintsTab() {
   };
 
   return (
-    <div className="space-y-4">
+    // POLISH FIX (2026-08-09 / #284): standardized wrapper — see SalesOverviewTab.
+    <div className="owner-tab-stack">
       <div className="flex items-center gap-2">
         <div className="size-8 rounded-xl flex items-center justify-center bg-orange-50">
           <AlertTriangle className="size-4 text-orange-600" />
@@ -2069,6 +2076,13 @@ function OwnerAlertsTab() {
     if (pendingPurchases.length) list.push({ title: 'Purchase stock sync pending', value: String(pendingPurchases.length), note: 'Purchased quantities not fully reflected in stock', tone: 'warning' });
     const pendingInvoice = invoices.filter(i => i.status === 'pending_review');
     if (pendingInvoice.length) list.push({ title: 'Store invoices pending review', value: String(pendingInvoice.length), note: 'Owner can review purchase exposure', tone: 'warning' });
+    // FEATURE (2026-08-09 / #281): PO→GRN conversions that came in different
+    // from what was approved (qty changed, item dropped, item added) get a
+    // "⚠ PO DISCREPANCY" prefix auto-written into the GRN's notes by
+    // CreateInvoiceModal — surface those here so Owner sees exactly which
+    // GRNs deviated from what they approved, not just that a GRN exists.
+    const poDiscrepancyGRNs = invoices.filter(i => (i.notes || '').startsWith('⚠ PO DISCREPANCY'));
+    if (poDiscrepancyGRNs.length) list.push({ title: 'GRNs differ from approved PO', value: String(poDiscrepancyGRNs.length), note: poDiscrepancyGRNs.map(i => i.invoiceNumber).join(', '), tone: 'danger' });
     const pendingDispatch = storeOrders.filter(o => ['Pending Store Confirmation', 'Confirmed', 'Ready'].includes(o.status));
     if (pendingDispatch.length) list.push({ title: 'Pending dispatch / store orders', value: String(pendingDispatch.length), note: 'Packing or store confirmation pending', tone: 'neutral' });
     const todayReturns = returns.filter(r => ownerLocalDay(r.createdAt) === today);
@@ -2394,7 +2408,12 @@ function OwnerStockVarianceTab() {
   const excessCount = rows.filter(row => row.difference > 0).length;
 
   return (
-    <section className="owner-section">
+    // POLISH FIX (2026-08-09 / #284): "owner-section" was never defined in
+    // index.css — this tab's toolbar/metric-grid/table sat flush against
+    // each other with zero gap, the one tab visibly out of step with every
+    // other Owner tab's spacing. Swapped to the same "owner-tab-stack"
+    // (grid, 1rem gap) every other tab already uses.
+    <section className="owner-tab-stack">
       <div className="mb-4">
         <p className="text-xs font-black uppercase tracking-[0.16em] text-muted-foreground">
           Difference between system stock and physical stock count after SNB Admin confirmation
