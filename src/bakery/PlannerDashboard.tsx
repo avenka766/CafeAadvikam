@@ -13,7 +13,7 @@ import {
   ChevronDown, ChevronUp, X, RefreshCw, AlertTriangle, FileSpreadsheet, Clock3,
   Store, CreditCard, WalletCards, MessageCircle, Bell, CalendarDays,
   Search, Printer, Receipt, ListPlus, BarChart3, FileText, Minus, IndianRupee,
-  ShoppingCart, Percent, Trash2, Scale, PackageMinus,
+  ShoppingCart, Percent, Trash2, Scale, PackageMinus, UserCheck,
 } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import * as XLSX from 'xlsx';
@@ -49,7 +49,7 @@ import { getPackingCounterStatus } from './packingCounter';
 // list rendered as a panel inside it. The 'done' key is kept in the type
 // (but no longer in TABS/nav) purely so any stale bookmarked URL still
 // resolves instead of erroring.
-type PlannerTab = 'incoming' | 'sent' | 'merged' | 'planning' | 'production' | 'dispatch' | 'hosur' | 'cake' | 'transfer-in' | 'transfer-out' | 'closure' | 'leftover-stock' | 'invoice' | 'reports' | 'billing' | 'done';
+type PlannerTab = 'incoming' | 'sent' | 'merged' | 'planning' | 'production' | 'dispatch' | 'hosur' | 'custom' | 'cake' | 'transfer-in' | 'transfer-out' | 'closure' | 'leftover-stock' | 'invoice' | 'reports' | 'billing' | 'done';
 const TABS: { key: PlannerTab; label: string; icon: React.ReactNode }[] = [
   { key: 'incoming',    label: 'Incoming Orders',  icon: <ClipboardList className="size-4" /> },
   { key: 'sent',        label: 'Sent',             icon: <Send className="size-4" /> },
@@ -58,6 +58,7 @@ const TABS: { key: PlannerTab; label: string; icon: React.ReactNode }[] = [
   { key: 'production',  label: 'Production Entry', icon: <Factory className="size-4" /> },
   { key: 'dispatch',    label: 'Dispatch',         icon: <Truck className="size-4" /> },
   { key: 'hosur',       label: 'Hosur Shops & Billing', icon: <PackageCheck className="size-4" /> },
+  { key: 'custom',      label: 'Custom Dispatch',  icon: <UserCheck className="size-4" /> },
   { key: 'cake',        label: 'Cake Dispatch',    icon: <Cake className="size-4" /> },
   { key: 'transfer-in', label: 'Transfer In',      icon: <ArrowRightLeft className="size-4" /> },
   { key: 'transfer-out', label: 'Transfer Out',    icon: <PackageMinus className="size-4" /> },
@@ -458,6 +459,7 @@ export default function PlannerDashboard() {
               </div>
             )}
             {tab === 'hosur' && <HosurUnifiedSection />}
+            {tab === 'custom' && <PlannerCustomDispatchTab orders={productionSourceOrders} />}
             {tab === 'cake' && <PackingCakeOrdersTab />}
             {tab === 'transfer-in' && <PackingTransferInTab />}
             {tab === 'transfer-out' && <PlannerTransferOutTab />}
@@ -3691,7 +3693,16 @@ interface HosurShopOrderCard {
   shopName: string;
   shopId: string | null;
   shopPhone: string | null;
-  items: { itemName: string; unit: string; requested: number; dispatched: number; cancelled: number; cancellationReason: string | null }[];
+  // ROOT-CAUSE FIX (2026-08-09, "cancel item throws P0001 Order item not
+  // found"): `itemName` here is the *display* name after sameItem() groups
+  // spelling variants under one canonical row name (see below) — it can
+  // legitimately differ from what's actually stored in
+  // hosur_order_items.item_name. cancel_hosur_order_item_remaining_secure
+  // does an EXACT `item_name = p_item_name` match against that raw column,
+  // so passing the display name through to the RPC failed whenever the two
+  // diverged. `rawItemName` carries the untouched hosur_order_items value
+  // specifically so cancel calls always match a real row.
+  items: { itemName: string; rawItemName: string; unit: string; requested: number; dispatched: number; cancelled: number; cancellationReason: string | null }[];
 }
 
 // Shop-centric Hosur dispatch view: one card per shop ORDER (not just shop
@@ -3758,6 +3769,7 @@ function useHosurShopOrders(rows: ProductionRow[], orders: BakeryOrder[]) {
         const list = byOrder.get(orderId) ?? [];
         list.push({
           itemName: matchedRow.itemName,
+          rawItemName: rawName,
           unit: String(item.unit ?? matchedRow.unit ?? 'pcs'),
           requested: Number(item.quantity ?? 0),
           dispatched: Number(item.dispatched_quantity ?? 0),
@@ -3954,11 +3966,15 @@ function HosurShopDispatchPanel({ rows, mode, orders, leftoverBalances, onDispat
   const [cancelPromptItem, setCancelPromptItem] = useState<string | null>(null);
   const [cancelReason, setCancelReason] = useState('');
   const [cancelBusy, setCancelBusy] = useState(false);
-  const cancelItemRemaining = async (card: HosurShopOrderCard, itemName: string) => {
+  // `itemName` (canonical/display name, used for UI state keys and the
+  // confirmation message) and `rawItemName` (the exact hosur_order_items
+  // value) are deliberately separate — see the HosurShopOrderCard comment
+  // above. Only rawItemName is safe to send to the RPC's exact-match lookup.
+  const cancelItemRemaining = async (card: HosurShopOrderCard, itemName: string, rawItemName: string) => {
     if (!cancelReason.trim()) { setResult({ ok: false, message: 'Enter a reason before cancelling this item.' }); return; }
     setCancelBusy(true);
     const { error } = await supabase.rpc('cancel_hosur_order_item_remaining_secure', {
-      p_order_id: card.orderId, p_item_name: itemName, p_reason: cancelReason.trim(),
+      p_order_id: card.orderId, p_item_name: rawItemName, p_reason: cancelReason.trim(),
     });
     setCancelBusy(false);
     if (error) { setResult({ ok: false, message: error.message }); return; }
@@ -4129,7 +4145,7 @@ function HosurShopDispatchPanel({ rows, mode, orders, leftoverBalances, onDispat
                               placeholder="e.g. Production shortfall, ran out of raw material"
                               className="min-w-[220px] flex-1 rounded-lg border border-red-300 bg-white px-2 py-1 text-[11px] font-semibold"
                             />
-                            <button disabled={cancelBusy || !cancelReason.trim()} onClick={() => void cancelItemRemaining(card, item.itemName)} className="rounded-lg bg-red-700 px-2.5 py-1 text-[10px] font-black text-white disabled:opacity-50">
+                            <button disabled={cancelBusy || !cancelReason.trim()} onClick={() => void cancelItemRemaining(card, item.itemName, item.rawItemName)} className="rounded-lg bg-red-700 px-2.5 py-1 text-[10px] font-black text-white disabled:opacity-50">
                               {cancelBusy ? 'Cancelling…' : 'Confirm cancel'}
                             </button>
                             <button onClick={() => { setCancelPromptItem(null); setCancelReason(''); }} className="rounded-lg border border-red-300 px-2.5 py-1 text-[10px] font-black text-red-700">Back</button>
@@ -4586,7 +4602,7 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
   // — Dispatch now lists every item that's been ordered at all, even before
   // any production has been recorded for it, per owner's explicit request.
   const rows = useMemo(() => computeProductionRows(orders), [orders]);
-  const [subTab, setSubTab] = useState<'active' | 'completed' | 'planned' | 'custom'>('active');
+  const [subTab, setSubTab] = useState<'active' | 'completed' | 'planned'>('active');
   const [checklistItem, setChecklistItem] = useState<ProductionRow | null>(null);
   // 'All' shows every item like before. Picking a branch filters to only items
   // that branch actually ordered, and turns on multi-select + bulk dispatch.
@@ -4726,13 +4742,11 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
         <button onClick={() => setSubTab('active')} className={cn('rounded-xl px-3 py-1.5 text-xs font-bold', subTab === 'active' ? 'bg-foreground text-white' : 'bg-muted text-muted-foreground')}>To Dispatch ({activeRows.length})</button>
         <button onClick={() => setSubTab('completed')} className={cn('rounded-xl px-3 py-1.5 text-xs font-bold', subTab === 'completed' ? 'bg-foreground text-white' : 'bg-muted text-muted-foreground')}>Dispatched ({completedRows.length})</button>
         <button onClick={() => setSubTab('planned')} className={cn('rounded-xl px-3 py-1.5 text-xs font-bold', subTab === 'planned' ? 'cafe-gradient text-white shadow-teal' : 'bg-primary/10 text-primary')}>Planned ({plannedRows.length})</button>
-        {/* FEATURE (2026-08-09): "for planning order items build a new Custom
-            tab under Dispatch where items can be selected with quantity, and
-            on dispatch the planner should enter customer name, mobile number
-            and address" — sells planning-stock items direct to a walk-in
-            customer instead of to a branch. Shares the same source rows as
-            Planned (planning-stock items with nothing owed to any branch). */}
-        <button onClick={() => setSubTab('custom')} className={cn('rounded-xl px-3 py-1.5 text-xs font-bold', subTab === 'custom' ? 'bg-amber-500 text-white shadow-sm' : 'bg-amber-50 text-amber-700')}>Custom ({plannedRows.length})</button>
+        {/* PROMOTED (2026-08-09): "Custom" used to be a sub-tab pill right
+            here, scoped to just this one date group's planned rows. It's now
+            its own top-level Planner tab ("Custom Dispatch", next to Hosur
+            Shops & Billing in the sidebar) covering planned rows across
+            every date at once — see PlannerCustomDispatchTab. */}
       </div>
 
       {/* Reprint access for anything already sent — only relevant once a
@@ -4745,8 +4759,6 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
 
       {subTab === 'planned' ? (
         <PlannedDispatchPanel rows={plannedRows} orders={orders} onDispatch={submitDispatch} dispatchedBy={currentUser?.displayName || 'Planner'} />
-      ) : subTab === 'custom' ? (
-        <CustomDispatchPanel rows={plannedRows} orders={orders} onDispatch={submitDispatch} dispatchedBy={currentUser?.displayName || 'Planner'} />
       ) : branchFilter === 'Hosur' && hosurView === 'shop' ? (
         // BUG FIX (2026-08-07): this used to pass `shown` (activeRows/
         // completedRows — item-level rows already filtered by whether that
@@ -5226,6 +5238,37 @@ function CustomDispatchPanel({ rows, orders, onDispatch, dispatchedBy }: {
         </button>
       </div>
     </div>
+  );
+}
+
+// PROMOTED (2026-08-09): "Custom" used to only exist as a sub-tab pill
+// buried inside Dispatch → (pick a date) → Custom, scoped to just that one
+// date group's planning-stock rows. The planner explicitly asked for it as
+// its own top-level tab next to Hosur Shops & Billing, same as Transfer In/
+// Transfer Out — this wraps the exact same CustomDispatchPanel, but sources
+// planned rows across ALL of Planner's production-relevant orders (not just
+// one date), so nothing is missed just because it was ordered on a
+// different day than whatever happened to be open in Dispatch.
+function PlannerCustomDispatchTab({ orders }: { orders: BakeryOrder[] }) {
+  const { submitDispatch } = useBakeryStore();
+  const currentUser = useAuthStore(s => s.currentUser);
+  const rows = useMemo(() => computeProductionRows(orders), [orders]);
+  const plannedRows = useMemo(
+    () => rows.filter(r => (r.perBranch.Planned ?? 0) > 0 && plannedDispatchedForRow(r, orders) < (r.perBranch.Planned ?? 0) - 0.01),
+    [rows, orders],
+  );
+  return (
+    <section className="space-y-4">
+      <div>
+        <h2 className="font-display text-lg font-black text-foreground">Custom Dispatch</h2>
+        <p className="text-xs text-muted-foreground">Sell Planning-stock items direct to a walk-in customer — pick items, enter quantity, then the customer's name, mobile and address at dispatch time.</p>
+      </div>
+      {plannedRows.length === 0 ? (
+        <EmptyState text="No Planned-stock items are currently waiting on a custom sale." />
+      ) : (
+        <CustomDispatchPanel rows={plannedRows} orders={orders} onDispatch={submitDispatch} dispatchedBy={currentUser?.displayName || 'Planner'} />
+      )}
+    </section>
   );
 }
 

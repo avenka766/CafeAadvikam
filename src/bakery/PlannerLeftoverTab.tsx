@@ -871,12 +871,18 @@ export default function PlannerLeftoverTab() {
             <tbody className="divide-y">
               {reportMovements.length ? reportMovements.map((row) => {
                 const isEditing = editingId === row.id;
-                // FEATURE (2026-08-09): only manually-recorded Closing Stock
-                // entries can be edited here — dispatch/production rows are
-                // the real audit trail of what actually moved through an
-                // order and must stay exactly as recorded (matches the
-                // server-side guard in edit_closing_stock_entry_secure).
-                const editable = row.reason === 'closing_stock';
+                // FEATURE (2026-08-09, updated): originally only manually-
+                // recorded Closing Stock entries could be edited here —
+                // dispatch/production rows were treated as a protected audit
+                // trail. The user explicitly asked for "complete ability to
+                // edit all the things like quantity and unit and name" for
+                // every row, so this is now open to every reason.
+                // edit_closing_stock_entry_secure preserves each row's
+                // original +/- direction (a dispatch/adjustment/transfer_out
+                // row stays a deduction, a closing_stock/production row stays
+                // an addition) so editing the quantity here can't flip a
+                // subtraction into an addition and corrupt the balance.
+                const editable = true;
                 if (isEditing) {
                   return (
                     <tr key={row.id} className="bg-teal-50/60">

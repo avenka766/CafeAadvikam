@@ -238,7 +238,22 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
         }),
       ...customLines.map(
         (l, idx): BakeryOrderItem => ({
-          itemId: `custom-${currentUser.id}-${idx}`,
+          // BUG FIX (2026-08-09): this was `custom-${currentUser.id}-${idx}`
+          // — `idx` is just this custom item's position within THIS
+          // submission's customLines array, so it resets to 0 every time the
+          // same staff member submits a new order. Two different orders from
+          // the same person each adding a custom item at position 0 produced
+          // the exact same itemId ("custom-<userId>-0"). Planner's order
+          // merging combines multiple branch stock requests into one
+          // bakery_orders row, so those colliding IDs would end up side by
+          // side in the same merged order's `items` array — and everything
+          // downstream (produced_items, dispatch matching, Dispatch tab
+          // status) keys off itemId, so only one of the two colliding items
+          // could ever show correct production/dispatch status; the other
+          // stayed permanently stuck as "Not produced yet" even after being
+          // handled. Using a timestamp + random suffix makes every custom
+          // item's id globally unique, so merging never collides.
+          itemId: `custom-${currentUser.id}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}-${idx}`,
           itemName: l.name.trim(),
           quantity: Number(l.qty),
           isCustom: true,
