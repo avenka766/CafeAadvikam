@@ -43,6 +43,7 @@ import {
   Menu,
   X,
   Scale,
+  PackageMinus,
 } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
 import { cn } from '@/lib/utils';
@@ -197,6 +198,7 @@ function navForRole(role?: string): NavItem[] {
         { label: 'Cake Dispatch', path: '/bakery/planner?tab=cake', icon: <Cake className="size-4" />, group: 'Operations' },
         // Stock movement + reconciliation, grouped together.
         { label: 'Transfer In', path: '/bakery/planner?tab=transfer-in', icon: <ArrowRightLeft className="size-4" />, group: 'Stock' },
+        { label: 'Transfer Out', path: '/bakery/planner?tab=transfer-out', icon: <PackageMinus className="size-4" />, group: 'Stock' },
         // "Leftover / Done" used to be a separate sidebar link to its own
         // Planner tab ?tab=done. That tab was merged into Closing Stock
         // (2026-08-06) — its checklist now renders as a panel inside this
