@@ -27,6 +27,7 @@ import {
   Loader2,
   MessageCircle,
   PackageCheck,
+  Pencil,
   Plus,
   Printer,
   Receipt,
@@ -48,6 +49,7 @@ import { useBranchCatalogStore, type BranchCatalogItem } from '@/stores/branchCa
 import { HOSUR_VRSNB_PRICE_LIST } from '@/data/hosurVrsnbPriceList';
 import { buildHosurOrderTag, buildHosurItemId, checkRecentDuplicateHosurOrder } from '@/bakery/hosurOrderShared';
 import { getPackingCounterStatus } from '@/bakery/packingCounter';
+import KgPackAdder from '@/bakery/KgPackAdder';
 
 export const BRANCH = 'Hosur' as const;
 const HOSUR_UPI_ID = '328969176350835@cnrb';
@@ -1812,6 +1814,10 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
   const [priceEdits, setPriceEdits] = useState<Record<string, string>>({});
   const [customItem, setCustomItem] = useState({ itemName: '', unit: 'pcs' as 'pcs' | 'kg', unitPrice: '' });
   const [showItemSuggestions, setShowItemSuggestions] = useState(false);
+  // Renaming an item in this shop's price list — keyed by the item's
+  // current name (matches the row keys used throughout this table already).
+  const [renamingItemName, setRenamingItemName] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState('');
   const selectedShop = shops.find((s) => s.id === selectedShopId) ?? shops[0];
 
   const { items: bakeryItems, loadAllItems } = useBakeryItemsStore();
@@ -1954,6 +1960,26 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
     });
   };
 
+  // Renames an item on THIS shop's price list only — updates the existing
+  // hosur_shop_price_lists row by its id (not a delete+re-add), so the
+  // price, active status and history stay attached to the same row. Past
+  // orders keep whatever name was on them at the time; this only affects
+  // future ordering. Blocked if the shop already has another active item
+  // under the new name, since (shop_id, item_name) must stay unique.
+  const renameItem = async (item: HosurCatalogItem, rawNewName: string) => {
+    if (!selectedShop) throw new Error('Select a shop first.');
+    const newName = rawNewName.trim();
+    if (!newName) throw new Error('Item name cannot be empty.');
+    if (normalize(newName) === normalize(item.name)) { setRenamingItemName(null); return; }
+    const row = prices.find((p) => p.shopId === selectedShop.id && normalize(p.itemName) === normalize(item.name));
+    if (!row) throw new Error("Could not find this item's price list entry.");
+    const duplicate = prices.find((p) => p.shopId === selectedShop.id && p.id !== row.id && p.isActive && normalize(p.itemName) === normalize(newName));
+    if (duplicate) throw new Error(`${selectedShop.shopName} already has an item named "${duplicate.itemName}".`);
+    const { error } = await supabase.from('hosur_shop_price_lists').update({ item_name: newName, updated_at: new Date().toISOString() }).eq('id', row.id);
+    if (error) throw error;
+    setRenamingItemName(null);
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
@@ -2047,7 +2073,27 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
                   const custom = selectedShop ? prices.find((p) => p.shopId === selectedShop.id && normalize(p.itemName) === normalize(item.name)) : null;
                   const current = selectedShop ? priceFor(selectedShop.id, item) : item.price;
                   const nameMismatch = closestRecipeMatch(item.name, recipeItemNames);
-                  return <tr key={`${item.source}-${item.name}`} className="bg-card"><td className="px-3 py-2 font-semibold">{item.name}{nameMismatch?.status === 'mismatch' && (<span title={`Recipe Management has "${nameMismatch.match}" — spelling doesn't match.`} className="ml-1.5 inline-flex items-center gap-1 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-700">recipe mismatch</span>)}{nameMismatch?.status === 'missing' && (<span title="This item isn't in Recipe Management yet." className="ml-1.5 inline-flex items-center gap-1 rounded-full bg-red-100 px-1.5 py-0.5 text-[10px] font-bold text-red-700">not in recipe mgmt</span>)}<p className="text-[10px] text-muted-foreground">{item.category} · {item.source === 'shop' ? 'shop item' : 'master item'}</p></td><td className="px-3 py-2">{item.uom === 'Kgs' ? 'kg' : 'pcs'}</td><td className="px-3 py-2">{item.source === 'master' ? money(item.price) : '—'}</td><td className="px-3 py-2"><input className="w-28 rounded-xl border px-2 py-1.5 text-sm" type="number" value={priceEdits[item.name] ?? String(current)} onChange={(e) => setPriceEdits((prev) => ({ ...prev, [item.name]: e.target.value }))} /></td><td className="px-3 py-2 text-right"><div className="flex justify-end gap-2"><button className={softButton} disabled={!selectedShop || busy} onClick={() => withBusy(() => savePrice(item), 'Price updated.')}>{custom?.isActive ? 'Update' : 'Save'}</button><button className="rounded-2xl bg-red-50 px-3 py-2 text-xs font-black text-red-700 hover:bg-red-100" disabled={!selectedShop || busy} onClick={() => withBusy(() => deletePrice(item), 'Item removed from this shop list.')}>Delete</button></div></td></tr>;
+                  const isRenaming = renamingItemName === item.name;
+                  return <tr key={`${item.source}-${item.name}`} className="bg-card"><td className="px-3 py-2 font-semibold">
+                    {isRenaming ? (
+                      <div className="flex items-center gap-1.5">
+                        <input
+                          autoFocus
+                          className="w-full min-w-[140px] rounded-lg border px-2 py-1 text-sm font-semibold"
+                          value={renameDraft}
+                          onChange={(e) => setRenameDraft(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === 'Enter') void withBusy(() => renameItem(item, renameDraft), 'Item renamed.'); if (e.key === 'Escape') setRenamingItemName(null); }}
+                        />
+                        <button title="Save name" disabled={busy} className="rounded-lg bg-emerald-600 p-1.5 text-white disabled:opacity-50" onClick={() => withBusy(() => renameItem(item, renameDraft), 'Item renamed.')}><CheckCircle2 className="size-3.5" /></button>
+                        <button title="Cancel" className="rounded-lg bg-muted p-1.5 text-muted-foreground" onClick={() => setRenamingItemName(null)}><X className="size-3.5" /></button>
+                      </div>
+                    ) : (
+                      <span className="inline-flex items-center gap-1.5">
+                        {item.name}
+                        <button title="Rename this item" className="text-muted-foreground hover:text-foreground" onClick={() => { setRenamingItemName(item.name); setRenameDraft(item.name); }}><Pencil className="size-3" /></button>
+                      </span>
+                    )}
+                    {nameMismatch?.status === 'mismatch' && (<span title={`Recipe Management has "${nameMismatch.match}" — spelling doesn't match.`} className="ml-1.5 inline-flex items-center gap-1 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-700">recipe mismatch</span>)}{nameMismatch?.status === 'missing' && (<span title="This item isn't in Recipe Management yet." className="ml-1.5 inline-flex items-center gap-1 rounded-full bg-red-100 px-1.5 py-0.5 text-[10px] font-bold text-red-700">not in recipe mgmt</span>)}<p className="text-[10px] text-muted-foreground">{item.category} · {item.source === 'shop' ? 'shop item' : 'master item'}</p></td><td className="px-3 py-2">{item.uom === 'Kgs' ? 'kg' : 'pcs'}</td><td className="px-3 py-2">{item.source === 'master' ? money(item.price) : '—'}</td><td className="px-3 py-2"><input className="w-28 rounded-xl border px-2 py-1.5 text-sm" type="number" value={priceEdits[item.name] ?? String(current)} onChange={(e) => setPriceEdits((prev) => ({ ...prev, [item.name]: e.target.value }))} /></td><td className="px-3 py-2 text-right"><div className="flex justify-end gap-2"><button className={softButton} disabled={!selectedShop || busy} onClick={() => withBusy(() => savePrice(item), 'Price updated.')}>{custom?.isActive ? 'Update' : 'Save'}</button><button className="rounded-2xl bg-red-50 px-3 py-2 text-xs font-black text-red-700 hover:bg-red-100" disabled={!selectedShop || busy} onClick={() => withBusy(() => deletePrice(item), 'Item removed from this shop list.')}>Delete</button></div></td></tr>;
                 })}
               </tbody>
             </table>
@@ -2249,6 +2295,7 @@ function NewOrderTab({ shops, prices, busy, withBusy, priceFor, userName }: {
                     </p>
                   </div>
                   <div className="mt-3 flex items-center gap-2"><button className="size-9 rounded-xl border bg-white font-black" onClick={() => setQty(item, current - step)}>-</button><input className="h-9 min-w-0 flex-1 rounded-xl border text-center text-sm font-black" type="number" step={step} value={current || ''} onChange={(e) => setQty(item, Number(e.target.value))} placeholder="0" /><button className="size-9 rounded-xl bg-emerald-600 font-black text-white" onClick={() => setQty(item, current + step)}>+</button></div>
+                  {item.uom === 'Kgs' && <KgPackAdder onAdd={(kg) => setQty(item, current + kg)} />}
                 </div>;
               })}
             </div>
