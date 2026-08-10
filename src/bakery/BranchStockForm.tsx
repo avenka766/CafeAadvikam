@@ -95,8 +95,17 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
       ? makeLine(branch, defaultItem)
       : { id: `empty-${Date.now()}`, itemId: "", itemName: "", uom: "Kgs", weightGrams: null, qty: "" },
   ]);
+  // BUG FIX (2026-08-09): "for custom orders there is no units so its
+  // considering all as kgs" — custom lines had no unit field at all, always
+  // submitted as dispatchUnit: 'kg' regardless of what was actually being
+  // ordered. This is exactly why staff had been typing quantities like
+  // "10pcs" into the item NAME and entering 0.01 as the qty (in kg) to
+  // approximate 10 pieces — there was nowhere else to say "this is 10 pcs,
+  // not 0.01 kg". Root cause of the "Rasamalai 10pcs"/"Malaikulla 5pcs"
+  // confusion reported this session. Defaults to 'kg' (previous behavior)
+  // so nothing changes unless the staff member actively picks Pcs.
   const [customLines, setCustomLines] = useState<
-    { id: string; name: string; qty: string }[]
+    { id: string; name: string; qty: string; unit: "kg" | "pcs" }[]
   >([]);
 
   const successTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -172,7 +181,7 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
   const addCustomLine = () =>
     setCustomLines((prev) => [
       ...prev,
-      { id: `${Date.now()}-${Math.random()}`, name: "", qty: "" },
+      { id: `${Date.now()}-${Math.random()}`, name: "", qty: "", unit: "kg" },
     ]);
   const removeCustomLine = (idx: number) =>
     setCustomLines((prev) => prev.filter((_, i) => i !== idx));
@@ -186,6 +195,10 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
         prev.map((l, i) => (i === idx ? { ...l, qty: val } : l)),
       );
   };
+  const updateCustomUnit = (idx: number, val: "kg" | "pcs") =>
+    setCustomLines((prev) =>
+      prev.map((l, i) => (i === idx ? { ...l, unit: val } : l)),
+    );
 
   // ── Validation ─────────────────────────────────────────────────────────────
 
@@ -257,7 +270,7 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
           itemName: l.name.trim(),
           quantity: Number(l.qty),
           isCustom: true,
-          dispatchUnit: "kg" as const,
+          dispatchUnit: l.unit,
         }),
       ),
     ];
@@ -593,6 +606,14 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
                     line.qty === "" ? "border-amber-400" : "border-amber-300",
                   )}
                 />
+                <select
+                  value={line.unit}
+                  onChange={(e) => updateCustomUnit(idx, e.target.value as "kg" | "pcs")}
+                  className="h-10 w-16 shrink-0 rounded-xl border border-amber-300 bg-background text-xs font-body font-bold focus:outline-none focus:ring-2 focus:ring-amber-400/40"
+                >
+                  <option value="kg">Kg</option>
+                  <option value="pcs">Pcs</option>
+                </select>
                 <button
                   onClick={() => removeCustomLine(idx)}
                   className="size-10 rounded-xl bg-destructive/10 text-destructive flex items-center justify-center active:scale-95 transition-all shrink-0"
