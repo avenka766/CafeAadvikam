@@ -2191,14 +2191,43 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
     });
     setOpening(String(record.openingCash));
     setCounterSnapshot({ advanceCash:0, advanceUpi:0, advanceCard:0, advanceBank:0, advanceInitial:0, advanceBalance:0, advanceTotal:0, paymentCount:0 });
-    setOpenSavedMessage(`Counter opened at ${new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })} by ${isSnbOrder ? 'SNB Order - ' : ''}${record.cashier}. Opening cash: ${money(record.openingCash)}`);
-    printCounterOpenSlip({
-      branch,
-      cashier: record.cashier,
-      openingCash: record.openingCash,
-      denominations: openingDenominations,
-      openedAt: String(inserted.opened_at),
-    });
+    // BUG FIX (production error ERR-20260810-A4C5B9F8, "duplicate key value
+    // violates unique constraint branch_counter_sessions_one_open_per_cashier"):
+    // the RPC used to crash outright whenever a cashier had an OPEN counter
+    // session left over from a previous day that was never closed (e.g. SNB
+    // Production's session from 2026-08-09), because its "already open?"
+    // check was scoped to today's business_date while the actual database
+    // constraint is not date-scoped at all. The RPC now always finds that
+    // row first and returns it with alreadyOpen/staleFromPreviousDay flags
+    // instead of attempting a colliding insert. Surface that honestly here:
+    // a stale prior-day session must be reconciled and closed (its real
+    // stored opening figures are already loaded above via `record`), and a
+    // same-day reopen (e.g. after a page refresh) is just resuming, not a
+    // fresh open — neither case should claim "opened just now" or print a
+    // fresh opening slip.
+    const alreadyOpen = inserted.alreadyOpen === true;
+    const staleFromPreviousDay = inserted.staleFromPreviousDay === true;
+    if (staleFromPreviousDay) {
+      const staleDateLabel = inserted.business_date
+        ? new Date(`${String(inserted.business_date)}T00:00:00`).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
+        : 'a previous day';
+      setOpenSavedMessage(`This cashier still has an OPEN counter from ${staleDateLabel} that was never closed (opening cash ${money(record.openingCash)}). It has been loaded below — reconcile and close it before opening today's counter.`);
+    } else if (alreadyOpen) {
+      // NOTE: use the DB's real opened_at (inserted.opened_at), not
+      // record.openedAt — branchOpsStore's openCounter() always stamps
+      // openedAt with the current wall-clock time locally, which would
+      // misreport a resumed session as having just opened right now.
+      setOpenSavedMessage(`Counter is already open (opened ${new Date(String(inserted.opened_at)).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })} by ${record.cashier}). Opening cash: ${money(record.openingCash)}`);
+    } else {
+      setOpenSavedMessage(`Counter opened at ${new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })} by ${isSnbOrder ? 'SNB Order - ' : ''}${record.cashier}. Opening cash: ${money(record.openingCash)}`);
+      printCounterOpenSlip({
+        branch,
+        cashier: record.cashier,
+        openingCash: record.openingCash,
+        denominations: openingDenominations,
+        openedAt: String(inserted.opened_at),
+      });
+    }
   };
 
   // Compact 80mm thermal receipt version of the closure, for cashiers whose
