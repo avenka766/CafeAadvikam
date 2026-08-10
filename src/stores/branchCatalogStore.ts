@@ -105,6 +105,15 @@ interface BranchCatalogState {
   subscribe: (branch: CatalogBranch) => () => void;
   getItem: (branch: CatalogBranch, barcode: number) => BranchCatalogItem | undefined;
   getActiveItems: (branch: CatalogBranch) => BranchCatalogItem[];
+  // FEATURE: "unable to see the place to create a new category" — categories
+  // used to only exist implicitly as free text on individual items (derived
+  // by scanning the catalogue), with no standalone place to create one.
+  // These back a real branch_categories table so a category can exist and
+  // be picked before any item uses it.
+  categories: Record<CatalogBranch, string[]>;
+  categoriesLoaded: Record<CatalogBranch, boolean>;
+  loadCategories: (branch: CatalogBranch, force?: boolean) => Promise<void>;
+  addCategory: (branch: CatalogBranch, name: string, createdBy: string) => Promise<string | null>;
 }
 
 export const useBranchCatalogStore = create<BranchCatalogState>((set, get) => ({
@@ -112,6 +121,8 @@ export const useBranchCatalogStore = create<BranchCatalogState>((set, get) => ({
   loaded: { SNB: false, VRSNB: false },
   loading: { SNB: false, VRSNB: false },
   errors: { SNB: null, VRSNB: null },
+  categories: { SNB: [], VRSNB: [] },
+  categoriesLoaded: { SNB: false, VRSNB: false },
 
   loadCatalog: async (branch, force = false) => {
     if (!force && (get().loaded[branch] || get().loading[branch])) return;
@@ -274,6 +285,52 @@ export const useBranchCatalogStore = create<BranchCatalogState>((set, get) => ({
       items: {
         ...state.items,
         [branch]: state.items[branch].map((entry) => entry.barcode === barcode ? saved! : entry),
+      },
+    }));
+    return null;
+  },
+
+  loadCategories: async (branch, force = false) => {
+    if (!force && (get().categoriesLoaded[branch])) return;
+    const { data, error } = await supabase
+      .from('branch_categories')
+      .select('name')
+      .eq('branch', branch)
+      .order('name', { ascending: true });
+    if (error) {
+      // branch_categories migration not installed yet on an older
+      // environment — fall back silently to whatever catalogCategories()
+      // derives from items, same as before this feature existed.
+      set((state) => ({ categoriesLoaded: { ...state.categoriesLoaded, [branch]: true } }));
+      return;
+    }
+    set((state) => ({
+      categories: { ...state.categories, [branch]: (data ?? []).map((row) => String(row.name)) },
+      categoriesLoaded: { ...state.categoriesLoaded, [branch]: true },
+    }));
+  },
+
+  addCategory: async (branch, name, createdBy) => {
+    const trimmed = name.trim();
+    if (!trimmed) return 'Category name is required.';
+    const { data, error } = await supabase.rpc('create_branch_category', {
+      p_branch: branch,
+      p_name: trimmed,
+      p_created_by: createdBy,
+    });
+    if (error) {
+      const missingRpc = /create_branch_category|could not find the function|does not exist|schema cache/i.test(error.message ?? '');
+      return missingRpc
+        ? 'The category management feature is not installed yet. Please redeploy.'
+        : error.message;
+    }
+    const savedName = data && typeof data === 'object' && 'name' in data ? String((data as { name: unknown }).name) : trimmed;
+    set((state) => ({
+      categories: {
+        ...state.categories,
+        [branch]: state.categories[branch].includes(savedName)
+          ? state.categories[branch]
+          : [...state.categories[branch], savedName].sort((a, b) => a.localeCompare(b)),
       },
     }));
     return null;
