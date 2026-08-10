@@ -780,10 +780,25 @@ export default function BranchBillingProTab({
       // refreshed" guard and got blocked. extraChargesValue is a manually
       // entered fee, not a catalogue price, so it needs no canonicalization
       // -- just folding into both sides of this comparison the same way it's
-      // folded into `total` on the client.
+      // folded into `total` on the client. This charges-inclusive total is
+      // ONLY for that comparison below -- see canonicalCoreTotal for what
+      // actually gets sent to the checkout RPC.
       const canonicalAmountBeforeRoundOff = roundMoney(Math.max(0, canonicalSubtotal + canonicalTax - canonicalCombinedDiscount + extraChargesValue));
       const canonicalTotal = roundWholeRupee(canonicalAmountBeforeRoundOff);
-      const canonicalRoundOff = roundMoney(canonicalTotal - canonicalAmountBeforeRoundOff);
+      // BUG FIX (2026-08-10, part 2): complete_branch_checkout (the RPC
+      // eventually called below) computes its OWN bill total strictly from
+      // items - discount + tax + round_off -- it has no concept of
+      // Packing/Delivery charges (those are folded in afterward, additively,
+      // by add_branch_bill_extra_charges_secure once the core bill exists).
+      // It hard-fails with "Collected amount exceeds bill total" the moment
+      // the payments it's handed sum to more than that core total. So the
+      // core round-off sent as p_round_off, and the payment amounts sent as
+      // p_payments, both need to be based on this charges-EXCLUDED total,
+      // never canonicalTotal above (which intentionally includes charges for
+      // the cart-refreshed comparison against the cashier-facing `total`).
+      const canonicalCoreAmountBeforeRoundOff = roundMoney(Math.max(0, canonicalSubtotal + canonicalTax - canonicalCombinedDiscount));
+      const canonicalCoreTotal = roundWholeRupee(canonicalCoreAmountBeforeRoundOff);
+      const canonicalCoreRoundOff = roundMoney(canonicalCoreTotal - canonicalCoreAmountBeforeRoundOff);
       const catalogueChanged = canonicalItems.length !== cart.length || canonicalItems.some((item, index) => {
         const old = cart.find((line) => line.barcode === item.barcode) ?? cart[index];
         return !old || old.itemName !== item.itemName || roundMoney(old.price) !== roundMoney(item.price) || old.unit !== item.unit;
@@ -815,6 +830,32 @@ export default function BranchBillingProTab({
               ? []
               : [{ mode: paymentMode, amount: total }];
 
+      // BUG FIX (2026-08-10, part 3): the rows above are exactly what the
+      // cashier collected, which correctly includes Packing/Delivery charge
+      // -- e.g. Cash 1400 + Card 500 = 1900 on a bill whose "core" (items -
+      // discount + tax + round-off, see canonicalCoreTotal above) value is
+      // only 1800. complete_branch_checkout's payment ledger only ever knows
+      // about the core bill and hard-rejects ("Collected amount exceeds
+      // bill total") anything that doesn't sum to exactly that -- it has no
+      // concept of these charges at all, by the same design documented on
+      // add_branch_bill_extra_charges_secure (called further below), which
+      // folds the charge into the bill header's tendered/total additively,
+      // without a mode-tagged payment row. Trim the charge amount back out
+      // of what's sent to the RPC here, preferring cash first (the one mode
+      // that isn't a fixed machine-swiped/scanned amount), so the ledger
+      // balances against the core bill. The cashier's real entered amounts
+      // are preserved everywhere else -- printed bill, `split` state, and
+      // the header's tendered total via the extra-charges call below.
+      let chargeRemainderToTrim = extraChargesValue;
+      const corePaymentRows = paymentRows
+        .map((row) => {
+          if (chargeRemainderToTrim <= 0) return row;
+          const trim = Math.min(row.amount, chargeRemainderToTrim);
+          chargeRemainderToTrim = roundMoney(chargeRemainderToTrim - trim);
+          return { ...row, amount: roundMoney(row.amount - trim) };
+        })
+        .filter((row) => row.amount > 0);
+
       const idempotencyKey = checkoutIdempotencyRef.current
         ?? `branch-checkout:${branch}:${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`}`;
       checkoutIdempotencyRef.current = idempotencyKey;
@@ -831,7 +872,7 @@ export default function BranchBillingProTab({
             p_biller: userName,
             p_manual_discount: canonicalManualDiscount,
             p_tax: canonicalTax,
-            p_round_off: canonicalRoundOff,
+            p_round_off: canonicalCoreRoundOff,
             p_due_date: walletOtherMode === 'credit' ? creditDueDate || null : null,
             p_notes: walletOtherMode === 'credit' ? creditRemarks.trim() || null : null,
             p_wallet_id: selectedWallet!.id,
@@ -845,14 +886,14 @@ export default function BranchBillingProTab({
         : await supabase.rpc('complete_branch_promotional_checkout_v1', {
             p_branch: branch,
             p_items: canonicalItems,
-            p_payments: paymentRows,
+            p_payments: corePaymentRows,
             p_customer_name: customerName,
             p_customer_phone: customerPhone,
             p_salesperson: billingStaff,
             p_biller: userName,
             p_manual_discount: canonicalManualDiscount,
             p_tax: canonicalTax,
-            p_round_off: canonicalRoundOff,
+            p_round_off: canonicalCoreRoundOff,
             p_payment_type: paymentMode === 'credit' ? 'credit' : 'counter',
             p_due_date: paymentMode === 'credit' ? creditDueDate : null,
             p_notes: paymentMode === 'credit' ? creditRemarks.trim() || null : null,
@@ -866,14 +907,14 @@ export default function BranchBillingProTab({
         const fallbackArgs = {
           p_branch: branch,
           p_items: canonicalItems,
-          p_payments: paymentRows,
+          p_payments: corePaymentRows,
           p_customer_name: customerName,
           p_customer_phone: customerPhone,
           p_salesperson: billingStaff,
           p_biller: userName,
           p_discount: canonicalCombinedDiscount,
           p_tax: canonicalTax,
-          p_round_off: canonicalRoundOff,
+          p_round_off: canonicalCoreRoundOff,
           p_payment_type: paymentMode === 'credit' ? 'credit' : 'counter',
           p_due_date: paymentMode === 'credit' ? creditDueDate : null,
           p_notes: paymentMode === 'credit' ? creditRemarks.trim() || null : null,
