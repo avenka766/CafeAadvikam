@@ -919,7 +919,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch' }:
   const finalInvoice = async (
     o: CakeAdvanceOrder,
     payMode?: 'cash' | 'upi' | 'card' | 'split' | 'credit',
-    closingOverrides?: { quantity: number; discount: number; additionalCharges: number; refundMode?: 'cash' | 'upi' | 'card'; paymentSplits?: Array<{ mode: 'cash' | 'upi' | 'card'; amount: number }>; discountReason?: string },
+    closingOverrides?: { quantity: number; discount: number; additionalCharges: number; refundMode?: 'cash' | 'upi' | 'card'; paymentSplits?: Array<{ mode: 'cash' | 'upi' | 'card'; amount: number }>; discountReason?: string; creditDueDate?: string },
   ): Promise<string | null> => {
     const fail = (message: string) => {
       setError(message);
@@ -966,6 +966,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch' }:
     balanceAmount = Math.max(0, Math.round((orderTotal - (o.advanceAmount || 0)) * 100) / 100);
     const refundAmount = Math.max(0, Math.round(((o.advanceAmount || 0) - orderTotal) * 100) / 100);
     if (refundAmount > 0 && !closingOverrides?.refundMode) return fail('Select how the customer refund will be paid.');
+    if (usedMode === 'credit' && balanceAmount > 0 && !closingOverrides?.creditDueDate) return fail('Due date is required for a credit balance.');
     const paymentSplits = usedMode === 'split' ? (closingOverrides?.paymentSplits || []).filter((line) => line.amount > 0) : [];
     const splitTotal = Math.round(paymentSplits.reduce((sum, line) => sum + line.amount, 0) * 100) / 100;
     if (balanceAmount > 0 && usedMode === 'split' && Math.abs(splitTotal - balanceAmount) > 0.001) {
@@ -998,6 +999,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch' }:
       p_payment_splits: paymentSplits.length > 0 ? paymentSplits : null,
       p_customer_name: o.customerName || null,
       p_customer_phone: o.mobile || null,
+      p_due_date: rpcPaymentMode === 'credit' ? (closingOverrides?.creditDueDate || null) : null,
     });
     if (finalError) {
       return fail(/finalize_branch_advance_order_v2|could not find the function|schema cache/i.test(finalError.message)
@@ -1079,6 +1081,17 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch' }:
       additionalCharges,
       refundAmount: refundAmount || undefined,
       refundMode: closingOverrides?.refundMode,
+      // BUG FIX: "Advance order credit bill isn't showing customer name,
+      // mobile, due date" - these were never forwarded onto the final bill
+      // record at all, even though the order already has customerName/mobile
+      // (required fields when the advance order was first taken) and the
+      // closing modal now collects a due date whenever a credit balance is
+      // being carried. Without this, the printed bill and any UI reading
+      // BranchBillRecord.creditCustomerName/creditCustomerMobile/creditDueDate
+      // always showed blank for advance-order credit closures.
+      creditCustomerName: creditPortion > 0 ? (o.customerName || undefined) : undefined,
+      creditCustomerMobile: creditPortion > 0 ? (o.mobile || undefined) : undefined,
+      creditDueDate: creditPortion > 0 ? (closingOverrides?.creditDueDate || undefined) : undefined,
     });
     // FIX: previously only status/balance were saved back onto the order record,
     // so an edited closing quantity (and the resulting recalculated value) never
@@ -1406,7 +1419,7 @@ function ClosingConfirmModal({
   order: CakeAdvanceOrder;
   payMode: 'cash' | 'upi' | 'card' | 'split' | 'credit';
   onCancel: () => void;
-  onConfirm: (overrides: { quantity: number; discount: number; additionalCharges: number; refundMode?: 'cash' | 'upi' | 'card'; paymentSplits?: Array<{ mode: 'cash' | 'upi' | 'card'; amount: number }>; discountReason?: string }) => Promise<string | null | void>;
+  onConfirm: (overrides: { quantity: number; discount: number; additionalCharges: number; refundMode?: 'cash' | 'upi' | 'card'; paymentSplits?: Array<{ mode: 'cash' | 'upi' | 'card'; amount: number }>; discountReason?: string; creditDueDate?: string }) => Promise<string | null | void>;
 }) {
   const isSingleLine = (order.items?.length ?? 1) <= 1;
   const closingQty = resolveAdvanceClosingQuantities(order);
@@ -1419,6 +1432,13 @@ function ClosingConfirmModal({
   const [split, setSplit] = useState({ cash: '', upi: '', card: '' });
   const [confirming, setConfirming] = useState(false);
   const [modalError, setModalError] = useState('');
+  // BUG FIX: "Advance order credit bill isn't showing customer name, mobile,
+  // due date" - the credit bill DOES store customer name/mobile correctly
+  // (they're required fields on the original order), but a due date was
+  // never collected anywhere in this closing flow at all - there was no
+  // input for it, so branch_credit_sales.due_date was always left null.
+  // Require it here, same as the regular counter credit-sale flow does.
+  const [creditDueDate, setCreditDueDate] = useState('');
 
   const qtyNum = isSingleLine ? Math.max(0, Number(quantity) || 0) : receivedQtyDefault;
   const discountNum = Math.max(0, Number(discount) || 0);
@@ -1449,7 +1469,8 @@ function ClosingConfirmModal({
     try {
       if (!splitValid) { setModalError(`Split payments must add up to ${money(finalBalance)}.`); return; }
       if (discountNum > 0 && !discountReason.trim()) { setModalError('Discount reason is required whenever a discount is applied.'); return; }
-      const errorMessage = await onConfirm({ quantity: qtyNum, discount: discountNum, additionalCharges: additionalChargesNum, refundMode: refundDue > 0 ? refundMode : undefined, paymentSplits: payMode === 'split' ? paymentSplits : undefined, discountReason: discountReason.trim() || undefined });
+      if (payMode === 'credit' && finalBalance > 0 && !creditDueDate) { setModalError('Due date is required for a credit balance.'); return; }
+      const errorMessage = await onConfirm({ quantity: qtyNum, discount: discountNum, additionalCharges: additionalChargesNum, refundMode: refundDue > 0 ? refundMode : undefined, paymentSplits: payMode === 'split' ? paymentSplits : undefined, discountReason: discountReason.trim() || undefined, creditDueDate: payMode === 'credit' && finalBalance > 0 ? creditDueDate : undefined });
       if (errorMessage) setModalError(errorMessage);
     } catch (confirmError) {
       setModalError(confirmError instanceof Error ? confirmError.message : 'Advance order could not be closed.');
@@ -1493,6 +1514,11 @@ function ClosingConfirmModal({
               <option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option>
             </Select>
           </Field>}
+          {payMode === 'credit' && finalBalance > 0 && (
+            <Field label="Credit Due Date (required)">
+              <Input type="date" value={creditDueDate} onChange={(e) => setCreditDueDate(e.target.value)} className="border-red-200 bg-red-50 focus:border-red-400" />
+            </Field>
+          )}
           {refundDue === 0 && finalBalance > 0 && payMode === 'split' && (
             <div className="rounded-2xl border border-blue-200 bg-blue-50 p-3">
               <p className="mb-2 text-xs font-black uppercase tracking-wide text-blue-800">Split Final Payment</p>
@@ -1523,7 +1549,7 @@ function ClosingConfirmModal({
           <SoftButton type="button" onClick={onCancel} disabled={confirming} className="flex-1">Cancel</SoftButton>
           <PrimaryButton
             type="button"
-            disabled={confirming || finalTotal <= 0 || qtyNum <= 0 || !splitValid || (discountNum > 0 && !discountReason.trim())}
+            disabled={confirming || finalTotal <= 0 || qtyNum <= 0 || !splitValid || (discountNum > 0 && !discountReason.trim()) || (payMode === 'credit' && finalBalance > 0 && !creditDueDate)}
             onClick={() => void handleConfirm()}
             className="flex-1"
           >
