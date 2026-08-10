@@ -109,13 +109,40 @@ export const useMenuCategoryStore = create<MenuCategoryState>((set, get) => ({
     return null;
   },
 
-  subscribe: () => {
-    const channel = supabase
-      .channel('menu-categories-live')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'menu_categories' }, () => { void get().loadCategories(true); })
-      .subscribe();
-    return () => { void supabase.removeChannel(channel); };
-  },
+  // BUG FIX (production errors ERR-20260810-AACDFB6B / ERR-20260810-721A198B,
+  // "cannot add `postgres_changes` callbacks for realtime:menu-categories-live
+  // after `subscribe()`"): MenuManagement.tsx and its child CategoryFilter.tsx
+  // (plus ManageCategoriesSheet) each independently call useMenuCategories(),
+  // so a single page render (e.g. /admin-vrsnb/items or /bakery/items) mounts
+  // this hook more than once. Each mount used to call supabase.channel('menu-
+  // categories-live').on(...).subscribe() itself — Supabase Realtime throws if
+  // .on() is called on a channel that has already been subscribed, so the
+  // second mount's subscribe() call crashed React rendering outright. Fixed
+  // with a singleton channel + ref count, same pattern as
+  // branchCatalogStore.ts's subscribe(): only the first caller opens the
+  // channel, later callers just bump the ref count, and the channel is only
+  // torn down once the last subscriber unmounts.
+  subscribe: (() => {
+    let channel: ReturnType<typeof supabase.channel> | null = null;
+    let refCount = 0;
+    return () => {
+      refCount += 1;
+      if (!channel) {
+        channel = supabase
+          .channel('menu-categories-live')
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'menu_categories' }, () => { void get().loadCategories(true); })
+          .subscribe();
+      }
+      return () => {
+        refCount -= 1;
+        if (refCount <= 0 && channel) {
+          void supabase.removeChannel(channel);
+          channel = null;
+          refCount = 0;
+        }
+      };
+    };
+  })(),
 }));
 
 // Convenience hook for read-only consumers (category chips, filters, order
