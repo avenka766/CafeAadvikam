@@ -25,7 +25,13 @@ import { useBranchCatalogStore, type BranchCatalogItem } from '@/stores/branchCa
 import { printCounterBill, printHtml, printBranchCashierClosure, printCounterOpenSlip, printCounterCloseSlip } from '../printUtils';
 import { CAKE_DESIGNS, CAKE_DRAWING_CHARGE, CAKE_PHOTO_CHARGE, cakeTypesFor, calculateCakePrice, findCakeType, type CakeCreamType, type CakeDesignType } from '../cakePricing';
 
-type ModuleProps = { branch: Branch; branchStock: StockItem[]; branchSales?: SaleRecord[]; onOpenTab?: (tab: string) => void; source?: 'branch' | 'snb-order' };
+// FEATURE (2026-08-10): cakeOnly is set when Planner Dashboard embeds
+// AdvanceCakeOrdersTab (branch='Planner') for its Custom Cake Order sub-tab.
+// Planner has no branch_stock/store-catalog inventory of its own, so the
+// 'store' and 'custom' order modes (which reserve/deduct against branch
+// stock) must never be reachable there -- only 'cake' mode, which this app's
+// Cake Master pipeline already handles independently of branch_stock.
+type ModuleProps = { branch: Branch; branchStock: StockItem[]; branchSales?: SaleRecord[]; onOpenTab?: (tab: string) => void; source?: 'branch' | 'snb-order'; cakeOnly?: boolean };
 
 type LedgerBillRow = {
   id: string;
@@ -509,7 +515,7 @@ export function CreditSalesTab({ branch }: ModuleProps) {
     </Section>
   </div>;
 }
-export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch' }: ModuleProps) {
+export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch', cakeOnly = false }: ModuleProps) {
   const { currentUser } = useAuthStore();
   const { advanceCakeOrders, salespeople, addAdvanceCakeOrder, updateAdvanceStatus, markAdvanceSentToStore, addCashMovement, addAdvanceFinalBill, recordAdvanceRefund, counterOpenings, addAuditLog } = useBranchOpsStore();
   const submitBakeryOrder = useBakeryStore((s) => s.submitOrder);
@@ -521,7 +527,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch' }:
   const auditActor = isSnbOrder ? `SNB Order - ${user}` : user;
   const items = useOperationalCatalog(branch);
   const people = Array.from(new Set(salespeople.filter((p)=>p.branch===branch && p.active).map((p)=>p.name).filter(Boolean)));
-  const [mode, setMode] = useState<'store' | 'custom' | 'cake'>('store');
+  const [mode, setMode] = useState<'store' | 'custom' | 'cake'>(cakeOnly ? 'cake' : 'store');
   const [finalPaymentMode, setFinalPaymentMode] = useState<'cash' | 'upi' | 'card' | 'split' | 'credit'>('cash');
   const [pipelineView, setPipelineView] = useState<'active' | 'history' | 'cancelled'>('active');
   const [collectingId, setCollectingId] = useState<string | null>(null);
@@ -552,7 +558,21 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch' }:
     return o.deliveryDate === dateFilter;
   });
   const localCounterOpenToday = counterOpenings.some((c) => c.branch === branch && c.date === todayIso() && c.active !== false && (currentUser?.id ? c.cashierUserId === currentUser.id : c.cashier === user));
-  const counterOpenToday = isSnbOrder ? receiverCounterOpen : localCounterOpenToday;
+  // FEATURE (2026-08-10): Planner has no "Daily Closure" tab of its own to
+  // open a counter from (that's a real branch's cash-drawer concept) -- when
+  // embedded here as cakeOnly, this local flag unblocks billing the moment
+  // openPlannerCounter() below succeeds, without waiting on the next
+  // counterOpenings poll to pick up the new branch_operation_records row.
+  const [plannerCounterJustOpened, setPlannerCounterJustOpened] = useState(false);
+  const [openingPlannerCounter, setOpeningPlannerCounter] = useState(false);
+  const openPlannerCounter = async () => {
+    setOpeningPlannerCounter(true); setError('');
+    const { error: openError } = await supabase.rpc('open_branch_counter_session_secure', { p_branch: 'Planner', p_opening_cash: 0 });
+    setOpeningPlannerCounter(false);
+    if (openError) { setError(`Could not open the Planner cake counter: ${openError.message}`); return; }
+    setPlannerCounterJustOpened(true);
+  };
+  const counterOpenToday = isSnbOrder ? receiverCounterOpen : (localCounterOpenToday || (cakeOnly && plannerCounterJustOpened));
 
   useEffect(() => {
     if (!isSnbOrder) return;
@@ -975,11 +995,30 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch' }:
     const rpcPaymentMode = usedMode === 'split' ? (paymentSplits[0]?.mode || 'cash') : usedMode;
     const orderKind = o.orderType || (o.designNotes?.includes('Existing branch stock advance order') ? 'store' : 'cake');
     const stockAlreadyReserved = o.designNotes?.includes('[Stock Reserved]') === true;
-    if (orderKind === 'cake' && !stockAlreadyReserved) {
+    // FEATURE (2026-08-10): Planner has no branch_stock of its own (cakes
+    // aren't credited into a generic inventory table the way SNB/VRSNB's
+    // dispatched cakes are) — this stock-quantity proxy check exists purely
+    // to confirm "did Cake Master actually finish and deliver this cake"
+    // for those two branches. For Planner, check that directly against the
+    // linked cake_master_orders row's own status instead (see cakeDispatched
+    // check just below), and skip the branchStock-quantity check entirely.
+    if (orderKind === 'cake' && !stockAlreadyReserved && branch !== 'Planner') {
       const missingLine = orderLines.find((line) => stockQty(branchStock, line.itemName, line.barcode) < line.quantity);
       if (missingLine) {
         const available = stockQty(branchStock, missingLine.itemName, missingLine.barcode);
         return fail(`Advance cake order ${o.orderNo} cannot be closed. ${missingLine.itemName} requires ${missingLine.quantity} ${missingLine.unit}, but only ${available} is in stock. Confirm the dispatched cake in Stock / Incoming, then try again.`);
+      }
+    }
+    if (orderKind === 'cake' && branch === 'Planner') {
+      const { data: cakeRow, error: cakeCheckError } = await supabase
+        .from('cake_master_orders')
+        .select('status')
+        .eq('branch', 'Planner')
+        .eq('source_order_id', o.id)
+        .maybeSingle();
+      if (cakeCheckError) return fail(`Could not verify this cake's status with Cake Master: ${cakeCheckError.message}`);
+      if (!cakeRow || cakeRow.status !== 'Dispatched') {
+        return fail(`Advance cake order ${o.orderNo} cannot be closed yet — Cake Master has not dispatched it (current status: ${cakeRow?.status ?? 'unknown'}).`);
       }
     }
     const { data: finalData, error: finalError } = await supabase.rpc('finalize_branch_advance_order_v2', {
@@ -991,7 +1030,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch' }:
       p_payment_mode: rpcPaymentMode,
       p_salesperson: o.salesperson,
       p_biller: isSnbOrder ? auditActor : (currentUser?.displayName || 'Staff'),
-      p_deduct_stock: orderKind !== 'custom' && !stockAlreadyReserved,
+      p_deduct_stock: orderKind !== 'custom' && !stockAlreadyReserved && branch !== 'Planner',
       p_discount_amount: discountAmount,
       p_additional_charges: additionalCharges,
       p_refund_amount: refundAmount,
@@ -1119,11 +1158,19 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch' }:
 
   return <><div className="branch-split-workspace branch-split-workspace-tight grid h-full min-h-0 gap-2">
     {receiverCounterLoading && isSnbOrder && <div className="xl:col-span-2 rounded-2xl bg-blue-50 border border-blue-200 px-4 py-3 text-sm font-black text-blue-800">Checking the SNB Order counter...</div>}
-    {!receiverCounterLoading && !counterOpenToday && <div className="xl:col-span-2 rounded-2xl bg-amber-50 border border-amber-200 px-4 py-3 text-sm font-black text-amber-800">Open the counter in the Daily Closure tab before taking or collecting an advance order.</div>}
+    {!receiverCounterLoading && !counterOpenToday && cakeOnly && (
+      <div className="xl:col-span-2 flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-amber-50 border border-amber-200 px-4 py-3 text-sm font-black text-amber-800">
+        <span>Open a cake counter before taking or collecting a payment.</span>
+        <button onClick={openPlannerCounter} disabled={openingPlannerCounter} className="rounded-xl bg-amber-700 px-3 py-1.5 text-xs font-black text-white disabled:opacity-50">{openingPlannerCounter ? 'Opening…' : 'Open Cake Counter'}</button>
+      </div>
+    )}
+    {!receiverCounterLoading && !counterOpenToday && !cakeOnly && <div className="xl:col-span-2 rounded-2xl bg-amber-50 border border-amber-200 px-4 py-3 text-sm font-black text-amber-800">Open the counter in the Daily Closure tab before taking or collecting an advance order.</div>}
     <Section title="Advance Order" icon={<Gift className="size-5"/>}>
+      {!cakeOnly && (
       <div className="mb-4 grid grid-cols-3 gap-2 rounded-2xl bg-slate-100 p-1">
         {(['store','custom','cake'] as const).map((tab)=><button key={tab} onClick={()=>setMode(tab)} className={cn('rounded-xl px-3 py-2 text-sm font-black capitalize', mode===tab?'bg-slate-950 text-white':'text-slate-600')}>{tab === 'store' ? 'Store Items' : tab === 'custom' ? 'Custom Items' : 'Cake Orders'}</button>)}
       </div>
+      )}
       <div className="grid gap-3">
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label="Slip Number"><Input value={common.slipNumber} onChange={(e)=>updateCommon('slipNumber',e.target.value)} placeholder="Enter customer slip number"/></Field>
