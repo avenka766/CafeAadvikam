@@ -2,29 +2,168 @@ import { useState, useMemo, useRef, useEffect } from 'react';
 import { useMenuStore } from '@/stores/menuStore';
 import {
   Search, X, Camera, ToggleLeft, ToggleRight, ImageOff,
-  Edit3, Check, Plus, ChevronDown, Loader2,
+  Edit3, Check, Plus, ChevronDown, Loader2, Tag, Pencil,
 } from 'lucide-react';
 import { formatCurrency, cn } from '@/lib/utils';
 import CategoryFilter from '@/components/features/CategoryFilter';
-import { MENU_CATEGORIES } from '@/constants/config';
+import { useMenuCategories } from '@/hooks/useMenuCategories';
+import { useMenuCategoryStore, type MenuCategory } from '@/stores/menuCategoryStore';
+import { useAuthStore } from '@/stores/authStore';
 import EmptyState from '@/components/ui/EmptyState';
+
+// ─── Manage Categories Sheet ─────────────────────────────────────────────────
+// FEATURE (2026-08-10): "allow the VRSNB Admin and Admin to add a new
+// category and edit the category this should sync with Admin if VRSNB Admin
+// makes changes and vice versa" — categories used to be a hardcoded array,
+// so nobody could add one at all. This is rendered from the same
+// MenuManagement component both Admin's own "Menu Studio" and VRSNB Admin's
+// "Items → Cafe Items" screen use, backed by the same `menu_categories`
+// table with realtime sync — so a category added here shows up in the other
+// dashboard within seconds, no separate wiring needed per dashboard.
+function ManageCategoriesSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const categories = useMenuCategories();
+  const { addCategory, updateCategory } = useMenuCategoryStore();
+  const { currentUser } = useAuthStore();
+  const updatedBy = currentUser?.displayName || currentUser?.username || 'Admin';
+
+  const [newName, setNewName] = useState('');
+  const [newIcon, setNewIcon] = useState('🍽️');
+  const [newTiming, setNewTiming] = useState('');
+  const [adding, setAdding] = useState(false);
+  const [addError, setAddError] = useState<string | null>(null);
+
+  const [editing, setEditing] = useState<MenuCategory | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editIcon, setEditIcon] = useState('');
+  const [editTiming, setEditTiming] = useState('');
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (open) { setNewName(''); setNewIcon('🍽️'); setNewTiming(''); setAddError(null); setEditing(null); }
+  }, [open]);
+
+  const startEdit = (cat: MenuCategory) => {
+    setEditing(cat); setEditName(cat.name); setEditIcon(cat.icon); setEditTiming(cat.timing); setEditError(null);
+  };
+
+  const handleAdd = async () => {
+    if (!newName.trim()) { setAddError('Category name is required.'); return; }
+    setAdding(true); setAddError(null);
+    const { error } = await addCategory({ name: newName.trim(), icon: newIcon.trim() || '🍽️', timing: newTiming.trim() }, updatedBy);
+    setAdding(false);
+    if (error) { setAddError(error); return; }
+    setNewName(''); setNewIcon('🍽️'); setNewTiming('');
+  };
+
+  const handleSaveEdit = async () => {
+    if (!editing) return;
+    if (!editName.trim()) { setEditError('Category name is required.'); return; }
+    setSavingEdit(true); setEditError(null);
+    const error = await updateCategory(editing.id, { name: editName.trim(), icon: editIcon.trim() || '🍽️', timing: editTiming.trim() }, updatedBy);
+    setSavingEdit(false);
+    if (error) { setEditError(error); return; }
+    setEditing(null);
+  };
+
+  if (!open) return null;
+
+  return (
+    <>
+      <div className="fixed inset-0 z-40 bg-black/55" onClick={onClose} />
+      <div className="fixed bottom-0 left-0 right-0 z-50 bg-background rounded-t-2xl shadow-2xl safe-area-inset-bottom animate-in slide-in-from-bottom duration-300 max-h-[85vh] overflow-y-auto">
+        <div className="flex justify-center pt-3 pb-1">
+          <div className="w-10 h-1 rounded-full bg-muted-foreground/20" />
+        </div>
+        <div className="px-4 pb-2 flex items-center justify-between">
+          <h2 className="font-display text-lg font-bold text-foreground flex items-center gap-1.5"><Tag className="size-4" />Manage Categories</h2>
+          <button onClick={onClose} className="size-8 flex items-center justify-center rounded-full bg-muted text-muted-foreground"><X className="size-4" /></button>
+        </div>
+
+        <div className="px-4 pb-8 space-y-4">
+          {/* Add new category */}
+          <div className="rounded-2xl border border-border bg-muted/40 p-3 space-y-2">
+            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Add a new category</p>
+            <div className="flex gap-2">
+              <input type="text" placeholder="Icon" value={newIcon} onChange={(e) => setNewIcon(e.target.value)}
+                className="w-14 px-2 py-2.5 rounded-xl border border-border bg-card text-center text-lg" maxLength={4} />
+              <input type="text" placeholder="Category name (e.g. Desserts)" value={newName} onChange={(e) => setNewName(e.target.value)}
+                className="flex-1 min-w-0 px-3 py-2.5 rounded-xl border border-border bg-card text-sm font-body" />
+            </div>
+            <input type="text" placeholder="Available timing (e.g. 3PM - 10PM)" value={newTiming} onChange={(e) => setNewTiming(e.target.value)}
+              className="w-full px-3 py-2.5 rounded-xl border border-border bg-card text-sm font-body" />
+            {addError && <p className="text-xs text-destructive font-medium bg-destructive/10 rounded-lg px-3 py-2">{addError}</p>}
+            <button onClick={handleAdd} disabled={adding}
+              className="w-full h-10 rounded-xl bg-primary text-primary-foreground font-semibold text-sm flex items-center justify-center gap-2 disabled:opacity-50 active:scale-[0.98] transition-all">
+              {adding ? <><Loader2 className="size-4 animate-spin" />Adding…</> : <><Plus className="size-4" />Add Category</>}
+            </button>
+          </div>
+
+          {/* Existing categories */}
+          <div className="space-y-1.5">
+            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide px-1">Existing categories ({categories.length})</p>
+            {categories.map((cat) => (
+              <div key={cat.id} className="rounded-xl border border-border bg-card p-2.5">
+                {editing?.id === cat.id ? (
+                  <div className="space-y-2">
+                    <div className="flex gap-2">
+                      <input type="text" value={editIcon} onChange={(e) => setEditIcon(e.target.value)}
+                        className="w-14 px-2 py-2 rounded-lg border border-border bg-background text-center text-lg" maxLength={4} />
+                      <input type="text" value={editName} onChange={(e) => setEditName(e.target.value)}
+                        className="flex-1 min-w-0 px-3 py-2 rounded-lg border border-border bg-background text-sm font-body" autoFocus />
+                    </div>
+                    <input type="text" value={editTiming} onChange={(e) => setEditTiming(e.target.value)}
+                      placeholder="Available timing" className="w-full px-3 py-2 rounded-lg border border-border bg-background text-sm font-body" />
+                    {editError && <p className="text-xs text-destructive font-medium bg-destructive/10 rounded-lg px-3 py-2">{editError}</p>}
+                    <div className="flex gap-2">
+                      <button onClick={handleSaveEdit} disabled={savingEdit}
+                        className="flex-1 h-9 rounded-lg bg-primary text-primary-foreground text-sm font-semibold flex items-center justify-center gap-1.5 disabled:opacity-50">
+                        {savingEdit ? <Loader2 className="size-3.5 animate-spin" /> : <Check className="size-3.5" />}Save
+                      </button>
+                      <button onClick={() => setEditing(null)} disabled={savingEdit}
+                        className="flex-1 h-9 rounded-lg bg-muted text-muted-foreground text-sm font-semibold flex items-center justify-center gap-1.5">
+                        <X className="size-3.5" />Cancel
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2.5">
+                    <span className="text-xl shrink-0">{cat.icon}</span>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-semibold text-foreground truncate">{cat.name}</p>
+                      {cat.timing && <p className="text-[10px] text-muted-foreground">{cat.timing}</p>}
+                    </div>
+                    <button onClick={() => startEdit(cat)} className="shrink-0 size-8 rounded-lg bg-muted flex items-center justify-center" aria-label={`Edit ${cat.name}`}>
+                      <Pencil className="size-3.5" />
+                    </button>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
 
 // ─── Add Item Sheet ──────────────────────────────────────────────────────────
 function AddItemSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { addItem } = useMenuStore();
+  const menuCategories = useMenuCategories();
 
   const [name,     setName]     = useState('');
   const [price,    setPrice]    = useState('');
-  const [category, setCategory] = useState(MENU_CATEGORIES[0].id);
+  const [category, setCategory] = useState('');
   const [saving,   setSaving]   = useState(false);
   const [error,    setError]    = useState<string | null>(null);
 
   // Reset form when opened
   useEffect(() => {
-    if (open) { setName(''); setPrice(''); setCategory(MENU_CATEGORIES[0].id); setError(null); }
-  }, [open]);
+    if (open) { setName(''); setPrice(''); setCategory(menuCategories[0]?.id ?? ''); setError(null); }
+  }, [open, menuCategories]);
 
-  const selectedCat = MENU_CATEGORIES.find(c => c.id === category)!;
+  const selectedCat = menuCategories.find(c => c.id === category);
 
   const handleSave = async () => {
     const trimmedName = name.trim();
@@ -32,6 +171,7 @@ function AddItemSheet({ open, onClose }: { open: boolean; onClose: () => void })
 
     if (!trimmedName)          return setError('Item name is required.');
     if (!parsedPrice || parsedPrice <= 0) return setError('Enter a valid price.');
+    if (!category)             return setError('Select a category.');
 
     setSaving(true);
     setError(null);
@@ -40,7 +180,7 @@ function AddItemSheet({ open, onClose }: { open: boolean; onClose: () => void })
       name:     trimmedName,
       price:    parsedPrice,
       category: category,
-      timing:   selectedCat.timing,
+      timing:   selectedCat?.timing ?? '',
     });
 
     setSaving(false);
@@ -121,16 +261,18 @@ function AddItemSheet({ open, onClose }: { open: boolean; onClose: () => void })
                 onChange={e => setCategory(e.target.value)}
                 className="w-full appearance-none px-3 py-2.5 rounded-xl border border-border bg-card text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/40 pr-8"
               >
-                {MENU_CATEGORIES.map(c => (
+                {menuCategories.map(c => (
                   <option key={c.id} value={c.id}>{c.icon} {c.name}</option>
                 ))}
               </select>
               <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground pointer-events-none" />
             </div>
             {/* Timing preview */}
-            <p className="text-[11px] text-muted-foreground pl-1">
-              ⏰ Available: {selectedCat.timing}
-            </p>
+            {selectedCat?.timing && (
+              <p className="text-[11px] text-muted-foreground pl-1">
+                ⏰ Available: {selectedCat.timing}
+              </p>
+            )}
           </div>
 
           {/* Error */}
@@ -167,8 +309,10 @@ export default function MenuManagement({ embedded = false }: { embedded?: boolea
   const [savingPrice,      setSavingPrice]      = useState(false);
   const [priceError,       setPriceError]       = useState<string | null>(null);
   const [showAddSheet,     setShowAddSheet]     = useState(false);
+  const [showCategorySheet, setShowCategorySheet] = useState(false);
   const fileInputRef  = useRef<HTMLInputElement>(null);
   const [uploadTarget, setUploadTarget] = useState<string | null>(null);
+  const menuCategories = useMenuCategories();
 
   useEffect(() => { loadMenu(); }, [loadMenu]);
 
@@ -183,7 +327,7 @@ export default function MenuManagement({ embedded = false }: { embedded?: boolea
   }, [items, selectedCategory, search]);
 
   const categoryName = (catId: string) =>
-    MENU_CATEGORIES.find(c => c.id === catId)?.name || catId;
+    menuCategories.find(c => c.id === catId)?.name || catId;
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -256,6 +400,15 @@ export default function MenuManagement({ embedded = false }: { embedded?: boolea
             )}
           </div>
 
+          {/* Manage Categories button */}
+          <button
+            onClick={() => setShowCategorySheet(true)}
+            className="shrink-0 h-10 px-3 rounded-xl bg-muted text-foreground text-sm font-semibold flex items-center gap-1.5 active:scale-95 transition-all border border-border"
+            aria-label="Manage categories"
+          >
+            <Tag className="size-4" />
+            Categories
+          </button>
           {/* Add Item button */}
           <button
             onClick={() => setShowAddSheet(true)}
@@ -376,6 +529,8 @@ export default function MenuManagement({ embedded = false }: { embedded?: boolea
 
       {/* Add Item sheet */}
       <AddItemSheet open={showAddSheet} onClose={() => setShowAddSheet(false)} />
+      {/* Manage Categories sheet */}
+      <ManageCategoriesSheet open={showCategorySheet} onClose={() => setShowCategorySheet(false)} />
     </div>
   );
 }

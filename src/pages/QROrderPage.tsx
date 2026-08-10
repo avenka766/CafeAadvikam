@@ -20,7 +20,8 @@ import {
 } from 'lucide-react';
 import { useMenuStore } from '@/stores/menuStore';
 import { useOrderStore } from '@/stores/orderStore';
-import { CAFE_CONFIG, MENU_CATEGORIES, TABLE_NUMBERS, TABLES_G, TABLES_A, tableSectionOf, tableLabel } from '@/constants/config';
+import { CAFE_CONFIG, TABLE_NUMBERS, TABLES_G, TABLES_A, tableSectionOf, tableLabel } from '@/constants/config';
+import { useMenuCategories } from '@/hooks/useMenuCategories';
 import { cn, formatCurrency } from '@/lib/utils';
 import type { OrderType } from '@/types';
 import EmptyState from '@/components/ui/EmptyState';
@@ -61,6 +62,7 @@ export default function QROrderPage() {
     getCartCount,
     submitOrder,
   } = useOrderStore();
+  const menuCategories = useMenuCategories();
 
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [search, setSearch] = useState('');
@@ -85,8 +87,8 @@ export default function QROrderPage() {
 
   const enabledItems = useMemo(() => items.filter((item) => item.enabled), [items]);
   const activeCategories = useMemo(
-    () => MENU_CATEGORIES.filter((category) => enabledItems.some((item) => item.category === category.id)),
-    [enabledItems],
+    () => menuCategories.filter((category) => enabledItems.some((item) => item.category === category.id)),
+    [enabledItems, menuCategories],
   );
 
   useEffect(() => {
@@ -326,7 +328,7 @@ export default function QROrderPage() {
         <div className="mb-4 flex items-end justify-between gap-3">
           <div>
             <p className="text-[10px] font-black uppercase tracking-[0.22em] text-emerald-700">Fresh from our kitchen</p>
-            <h2 className="mt-1 font-display text-2xl font-black">{selectedCategory === 'all' ? 'Cafe menu' : MENU_CATEGORIES.find((category) => category.id === selectedCategory)?.name}</h2>
+            <h2 className="mt-1 font-display text-2xl font-black">{selectedCategory === 'all' ? 'Cafe menu' : menuCategories.find((category) => category.id === selectedCategory)?.name}</h2>
           </div>
           <p className="text-xs font-bold text-stone-500">{filteredItems.length} items</p>
         </div>
@@ -339,7 +341,7 @@ export default function QROrderPage() {
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {filteredItems.map((item) => {
               const quantity = getQty(item.id);
-              const category = MENU_CATEGORIES.find((entry) => entry.id === item.category);
+              const category = menuCategories.find((entry) => entry.id === item.category);
               return (
                 <article key={item.id} className={cn('grid grid-cols-[6.5rem_1fr] overflow-hidden rounded-3xl border bg-white shadow-sm transition sm:grid-cols-1', quantity ? 'border-emerald-500 ring-2 ring-emerald-500/10' : 'border-stone-200')}>
                   <div className="relative min-h-32 bg-[#f7f1df] sm:aspect-[16/10]">
@@ -410,7 +412,7 @@ export default function QROrderPage() {
                 {cart.map((line) => (
                   <div key={line.menuItem.id} className="flex items-center gap-3 rounded-2xl border border-stone-200 bg-white p-3 shadow-sm">
                     <div className="grid size-14 shrink-0 place-items-center overflow-hidden rounded-xl bg-[#f7f1df] text-2xl">
-                      {line.menuItem.imageUrl ? <img src={line.menuItem.imageUrl} alt="" className="size-full object-cover" /> : (MENU_CATEGORIES.find((category) => category.id === line.menuItem.category)?.icon || '🍽️')}
+                      {line.menuItem.imageUrl ? <img src={line.menuItem.imageUrl} alt="" className="size-full object-cover" /> : (menuCategories.find((category) => category.id === line.menuItem.category)?.icon || '🍽️')}
                     </div>
                     <div className="min-w-0 flex-1"><p className="truncate text-sm font-black">{line.menuItem.name}</p><p className="mt-1 text-xs font-bold text-orange-700">{formatCurrency(line.menuItem.price * line.quantity)}</p></div>
                     <div className="flex items-center rounded-xl border border-stone-200 bg-stone-50 p-1">

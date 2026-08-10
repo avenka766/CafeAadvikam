@@ -53,7 +53,7 @@ import {
 import { useAuthStore } from '@/stores/authStore';
 import { useMenuStore } from '@/stores/menuStore';
 import { useBakeryItemsStore } from '@/bakery/bakeryItemsStore';
-import { MENU_CATEGORIES } from '@/constants/config';
+import { useMenuCategories } from '@/hooks/useMenuCategories';
 import { getRoleDefaultPath } from '@/lib/routing';
 import { cn, formatCurrency } from '@/lib/utils';
 import cafeLogo from '@/assets/cafe-logo.png';
@@ -590,6 +590,7 @@ export default function Landing() {
 
   const { items: cafeMenuItems, loading: cafeMenuLoading, loadMenu } = useMenuStore();
   const { items: bakeryMenuItems, loading: bakeryMenuLoading, loadItems: loadBakeryItems } = useBakeryItemsStore();
+  const menuCategories = useMenuCategories();
 
   useEffect(() => {
     void loadMenu();
@@ -618,13 +619,14 @@ export default function Landing() {
     return () => window.removeEventListener('keydown', onKey);
   }, [lightboxIndex, galleryLength]);
 
-  // Live cafe menu, grouped by category, in the same order as MENU_CATEGORIES.
+  // Live cafe menu, grouped by category, in the same order as the live
+  // menu_categories table (sort_order).
   const cafeLiveGroups = useMemo(() => {
     const enabled = cafeMenuItems.filter((i) => i.enabled);
-    return MENU_CATEGORIES
+    return menuCategories
       .map((cat) => ({ cat, items: enabled.filter((i) => i.category === cat.id) }))
       .filter((g) => g.items.length > 0);
-  }, [cafeMenuItems]);
+  }, [cafeMenuItems, menuCategories]);
 
   // Live bakery menu, grouped by category.
   const bakeryLiveGroups = useMemo(() => {

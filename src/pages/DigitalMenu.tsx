@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect } from 'react';
 import { useMenuStore } from '@/stores/menuStore';
-import { MENU_CATEGORIES, CAFE_CONFIG, TABLE_NUMBERS } from '@/constants/config';
+import { CAFE_CONFIG, TABLE_NUMBERS } from '@/constants/config';
+import { useMenuCategories } from '@/hooks/useMenuCategories';
 import { formatCurrency } from '@/lib/utils';
 import { cn } from '@/lib/utils';
 import { BellRing, X, ChevronDown, Send, MessageCircle, Clock, Leaf } from 'lucide-react';
@@ -118,6 +119,7 @@ function CallWaiterSheet({ onClose }: { onClose: () => void }) {
 
 export default function DigitalMenu() {
   const { items, loadMenu, loading } = useMenuStore();
+  const menuCategories = useMenuCategories();
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [showWaiter, setShowWaiter] = useState(false);
 
@@ -125,7 +127,7 @@ export default function DigitalMenu() {
 
   const enabledItems = useMemo(() => items.filter((i) => i.enabled), [items]);
   const activeCategories = useMemo(() =>
-    MENU_CATEGORIES.filter((cat) => enabledItems.some((i) => i.category === cat.id)), [enabledItems]);
+    menuCategories.filter((cat) => enabledItems.some((i) => i.category === cat.id)), [enabledItems, menuCategories]);
   const displayCategories = useMemo(() =>
     selectedCategory === 'all' ? activeCategories : activeCategories.filter((c) => c.id === selectedCategory),
     [selectedCategory, activeCategories]);

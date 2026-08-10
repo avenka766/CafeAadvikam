@@ -1,12 +1,13 @@
 import { useState, useMemo, useEffect } from 'react';
 import { useMenuStore } from '@/stores/menuStore';
-import { MENU_CATEGORIES } from '@/constants/config';
+import { useMenuCategories } from '@/hooks/useMenuCategories';
 import { formatCurrency } from '@/lib/utils';
 import { cn } from '@/lib/utils';
 
 export default function MenuPage() {
   const { items, loadMenu, loading } = useMenuStore();
   const [selectedCategory, setSelectedCategory] = useState('all');
+  const menuCategories = useMenuCategories();
 
   useEffect(() => {
     loadMenu();
@@ -15,9 +16,9 @@ export default function MenuPage() {
   const enabledItems = useMemo(() => items.filter((i) => i.enabled), [items]);
 
   const categories = useMemo(() => {
-    if (selectedCategory === 'all') return MENU_CATEGORIES;
-    return MENU_CATEGORIES.filter((c) => c.id === selectedCategory);
-  }, [selectedCategory]);
+    if (selectedCategory === 'all') return menuCategories;
+    return menuCategories.filter((c) => c.id === selectedCategory);
+  }, [selectedCategory, menuCategories]);
 
   if (loading) {
     return (
@@ -42,7 +43,7 @@ export default function MenuPage() {
           >
             All
           </button>
-          {MENU_CATEGORIES.map((cat) => (
+          {menuCategories.map((cat) => (
             <button
               key={cat.id}
               onClick={() => setSelectedCategory(cat.id)}

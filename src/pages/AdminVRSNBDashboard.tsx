@@ -12,6 +12,8 @@ import {
 import { useSearchParams } from "react-router-dom";
 import { cn } from "@/lib/utils";
 import { useBranchLedger } from "@/hooks/useBranchLedger";
+import { useCafeOrderSales } from "@/hooks/useCafeOrderSales";
+import { useCafeOrderRows } from "@/hooks/useCafeOrderRows";
 import { supabase } from "@/lib/supabase";
 import { useAuthStore } from "@/stores/authStore";
 import { useBranchStore, type CreditSale } from "@/branch/branchStore";
@@ -476,6 +478,12 @@ export default function AdminVRSNBDashboard() {
   const viewBranch: Branch = viewScope === "Cafe" ? "Cafe" : BRANCH;
   const viewBranchLabel = SCOPE_LABEL[viewScope];
   const adminLedger = useBranchLedger(fromDate, toDate, viewBranches);
+  // BUG FIX (2026-08-10): Cafe's real sales live in the `orders` table, not
+  // branch_bill_headers/branch_daily_closure_ledger (those two only ever
+  // cover VRSNB/SNB's retail till). Fetched separately and folded into the
+  // combined totals below whenever Cafe is in the selected scope — see
+  // useCafeOrderSales.ts for the full explanation.
+  const cafeOrderSales = useCafeOrderSales(fromDate, toDate, viewBranches.includes("Cafe"));
 
   const userName =
     currentUser?.displayName || currentUser?.username || "VRSNB Admin";
@@ -637,14 +645,18 @@ export default function AdminVRSNBDashboard() {
   const ledgerBillsCount = ledgerRows.reduce((sum, row) => sum + adminLedger.toNumber(row.bill_count), 0);
   const ledgerAdvanceCollected = ledgerRows.reduce((sum, row) => sum + adminLedger.toNumber(row.advance_collected), 0);
   const ledgerAdvanceBalanceCollected = ledgerRows.reduce((sum, row) => sum + adminLedger.toNumber(row.advance_balance_collected), 0);
-  const grossSales = hasLedgerRows ? ledgerGrossSales : rawGrossSales;
+  // Cafe's contribution (0 unless Cafe is in the current scope — see
+  // useCafeOrderSales) is added on top of the VRSNB/SNB retail-till figures
+  // computed above, since the two branches keep sales in entirely different
+  // tables and neither pipeline knows about the other.
+  const grossSales = (hasLedgerRows ? ledgerGrossSales : rawGrossSales) + cafeOrderSales.grossSales;
   const netSales = Math.max(0, grossSales - returnAmount);
-  const billsCount = hasLedgerRows ? ledgerBillsCount : rawBillsCount;
+  const billsCount = (hasLedgerRows ? ledgerBillsCount : rawBillsCount) + cafeOrderSales.billsCount;
   const avgBillValue = billsCount > 0 ? grossSales / billsCount : rawAvgBillValue;
-  const finalCashSales = hasLedgerRows ? ledgerCashSales : cashSales;
-  const finalUpiSales = hasLedgerRows ? ledgerUpiSales : upiSales;
-  const finalCardSales = hasLedgerRows ? ledgerCardSales : cardSales;
-  const finalCreditBillAmount = hasLedgerRows ? ledgerCreditBillAmount : creditBillAmount;
+  const finalCashSales = (hasLedgerRows ? ledgerCashSales : cashSales) + cafeOrderSales.cashSales;
+  const finalUpiSales = (hasLedgerRows ? ledgerUpiSales : upiSales) + cafeOrderSales.upiSales;
+  const finalCardSales = (hasLedgerRows ? ledgerCardSales : cardSales) + cafeOrderSales.cardSales;
+  const finalCreditBillAmount = (hasLedgerRows ? ledgerCreditBillAmount : creditBillAmount) + cafeOrderSales.creditSales;
   const advanceCollectionsFallback = cashMovements
     .filter(
       (m) =>
@@ -656,7 +668,7 @@ export default function AdminVRSNBDashboard() {
     .reduce((sum, m) => sum + m.amount, 0);
   const advanceCollected = hasLedgerRows ? ledgerAdvanceCollected : advanceCollectionsFallback;
   const advanceBalanceCollected = hasLedgerRows ? ledgerAdvanceBalanceCollected : 0;
-  const transparentGrossSales = hasLedgerRows ? ledgerGrossSales : rawGrossSales;
+  const transparentGrossSales = (hasLedgerRows ? ledgerGrossSales : rawGrossSales) + cafeOrderSales.grossSales;
   const salesBreakdown = {
     billSales: transparentGrossSales,
     advanceCollected,
@@ -670,6 +682,7 @@ export default function AdminVRSNBDashboard() {
       finalCashSales +
       finalUpiSales +
       finalCardSales +
+      cafeOrderSales.otherSales +
       (hasLedgerRows ? 0 : advanceCollected + advanceBalanceCollected),
   };
 
@@ -1082,7 +1095,7 @@ export default function AdminVRSNBDashboard() {
       {tab === "complaints" && <ComplaintsTab userName={userName} />}
       {tab === "waste" && <WasteLogsTab userName={userName} role={role} />}
       {tab === "quotations" && <QuotationsTab userName={userName} />}
-      {tab === "credit" && <CreditTab fromDate={fromDate} toDate={toDate} />}
+      {tab === "credit" && <CreditTab fromDate={fromDate} toDate={toDate} viewBranches={viewBranches} />}
       {tab === "cashier-report" && <CashierReportTab {...commonProps} />}
       {tab === "cashier-closure" && <CashierClosureTab userName={userName} {...commonProps} />}
       {tab === "closure" && (
@@ -1610,7 +1623,23 @@ function OverviewTab(props: any) {
 }
 
 function SalesReturnsTab(props: any) {
+  // BUG FIX (audit 2026-08-10): the Gross Sales KPI above this log already
+  // includes Cafe's dine-in sales (see useCafeOrderSales), but this table
+  // itself only ever listed VRSNB retail rows — showing "No sales or return
+  // records" for Cafe while the KPI card right above it showed real money.
+  const cafeRows = useCafeOrderRows(props.fromDate, props.toDate, (props.reportBranches || []).includes('Cafe'));
   const salesRows = [
+    ...cafeRows.map((r) => ({
+      type: 'Sale',
+      no: r.billNo,
+      date: r.createdAt,
+      customer: r.customer,
+      person: r.person,
+      gross: r.total,
+      returns: 0,
+      net: r.total,
+      payment: r.paymentType,
+    })),
     ...props.branchBills.map((b: any) => ({
       type: "Sale",
       no: b.billNo,
@@ -2566,6 +2595,12 @@ function QuotationsTab({ userName }: { userName: string }) {
 }
 
 function CashierReportTab(props: any) {
+  // BUG FIX (audit 2026-08-10): same gap as the Sales & Returns log — Cafe's
+  // real sales were being counted in the Overview KPI totals but this
+  // per-cashier breakdown only ever grouped VRSNB retail bills, so
+  // switching scope to "Cafe" showed "No cashier sales data found" here
+  // while other tabs on the same page showed non-zero Cafe revenue.
+  const cafeRows = useCafeOrderRows(props.fromDate, props.toDate, (props.reportBranches || []).includes('Cafe'));
   const rows = useMemo(() => {
     const map = new Map<string, any>();
     const ensure = (name: string) => {
@@ -2613,10 +2648,19 @@ function CashierReportTab(props: any) {
       const row = ensure(original?.biller || ret.returnedBy);
       row.returns += ret.total;
     });
+    cafeRows.forEach((order) => {
+      const row = ensure(order.person);
+      row.grossSales += order.total;
+      row.bills += 1;
+      if (order.paymentType === 'cash') row.cash += order.total;
+      if (order.paymentType === 'upi') row.upi += order.total;
+      if (order.paymentType === 'card') row.card += order.total;
+      if (order.paymentType === 'credit') row.credit += order.total;
+    });
     return Array.from(map.values())
       .map((row) => ({ ...row, netSales: Math.max(0, row.grossSales - row.returns) }))
       .sort((a, b) => b.netSales - a.netSales);
-  }, [props.branchBills, props.branchReturns, props.legacySalesRows]);
+  }, [props.branchBills, props.branchReturns, props.legacySalesRows, cafeRows]);
   const totalNet = rows.reduce((sum: number, r: any) => sum + r.netSales, 0);
   const totalBills = rows.reduce((sum: number, r: any) => sum + r.bills, 0);
   const best = rows[0];
@@ -3970,7 +4014,7 @@ function SalespersonReportTab(props: any) {
   );
 }
 
-function CreditTab({ fromDate, toDate }: { fromDate: string; toDate: string }) {
+function CreditTab({ fromDate, toDate, viewBranches }: { fromDate: string; toDate: string; viewBranches: Branch[] }) {
   const {
     creditSales,
     creditPayments,
@@ -3984,26 +4028,38 @@ function CreditTab({ fromDate, toDate }: { fromDate: string; toDate: string }) {
   const [modes, setModes] = useState<Record<string, "cash" | "upi" | "card" | "bank">>({});
   const [message, setMessage] = useState("");
 
+  // BUG FIX (audit 2026-08-10): this tab always fetched/aggregated BOTH
+  // Cafe and VRSNB credit, ignoring the page's scope switcher entirely — an
+  // admin who picked scope "VRSNB" to look at VRSNB alone still saw Cafe's
+  // credit sales mixed in here, unlike every other tab on this page (which
+  // does respect the switcher). Scoping this to whichever of Cafe/VRSNB is
+  // actually selected fixes that inconsistency; falls back to both if
+  // viewBranches is ever empty so this never goes blank unexpectedly.
+  const scopedBranches = useMemo(() => {
+    const scoped = CREDIT_BRANCHES.filter((branch) => viewBranches.includes(branch));
+    return scoped.length > 0 ? scoped : CREDIT_BRANCHES;
+  }, [viewBranches]);
+
   useEffect(() => {
-    CREDIT_BRANCHES.forEach((branch) => {
+    scopedBranches.forEach((branch) => {
       void fetchCreditSales(branch);
       void fetchCreditPayments(branch);
     });
-  }, [fetchCreditPayments, fetchCreditSales]);
+  }, [fetchCreditPayments, fetchCreditSales, scopedBranches]);
 
   const sales = useMemo(
     () =>
-      CREDIT_BRANCHES.flatMap((branch) =>
+      scopedBranches.flatMap((branch) =>
         (creditSales[branch] || []).map((sale) => ({ ...sale, branch })),
       ).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
-    [creditSales],
+    [creditSales, scopedBranches],
   );
   const payments = useMemo(
     () =>
-      CREDIT_BRANCHES.flatMap((branch) =>
+      scopedBranches.flatMap((branch) =>
         (creditPayments[branch] || []).map((payment) => ({ ...payment, branch })),
       ).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
-    [creditPayments],
+    [creditPayments, scopedBranches],
   );
   const visibleSales = sales.filter((sale) => {
     if (statusFilter !== "all" && sale.status !== statusFilter) return false;
@@ -4208,6 +4264,21 @@ function DailyClosureTab({ userName, ...props }: any) {
   const expectedCash = Number(form.openingCash || 0) + cashMovementsNet;
   const diff = Number(form.closingCash || 0) - expectedCash;
   const save = async () => {
+    // BUG FIX (audit 2026-08-10): props.cashSales/upiSales/cardSales/
+    // creditBillAmount/billsCount are the page-wide, scope-dependent
+    // totals — when the admin has the top scope switcher set to "overall"
+    // or "Cafe" (to check combined or Cafe-only numbers elsewhere on this
+    // page), those props include Cafe's dine-in sales blended in. This save
+    // button always wrote them into branch_daily_closures hardcoded as
+    // `branch: "VRSNB"` regardless, which would permanently record Cafe's
+    // (or Cafe+VRSNB combined) money as if it were VRSNB's own till
+    // closure — corrupting VRSNB's official reconciliation ledger. A daily
+    // closure is a single till's reconciliation record, so it must only
+    // ever be saved while viewing VRSNB alone.
+    if (props.viewScope && props.viewScope !== "VRSNB") {
+      window.alert('Switch the scope selector to "VRSNB" before finalizing this closure — the current view includes Cafe sales, which do not belong in VRSNB\'s till closure.');
+      return;
+    }
     const closureDate = dateInput();
     const payload = {
       branch: BRANCH,
@@ -4319,6 +4390,12 @@ function DailyClosureTab({ userName, ...props }: any) {
   }, [cashierClosures, remoteClosures]);
   return (
     <div className="space-y-4">
+      {props.viewScope && props.viewScope !== "VRSNB" && (
+        <div className="flex items-center gap-2 rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800">
+          <AlertTriangle className="size-4 shrink-0" />
+          Scope is set to "{props.viewScope === "overall" ? "Overall" : props.viewScope}" — the figures below include Cafe sales. Switch to "VRSNB" to finalize today's till closure with VRSNB-only numbers.
+        </div>
+      )}
       <div className="grid gap-3 sm:grid-cols-4">
         <Kpi
           label="Gross Sales"

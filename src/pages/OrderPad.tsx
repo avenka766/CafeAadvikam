@@ -14,10 +14,11 @@ import CategoryFilter from '@/components/features/CategoryFilter';
 import MenuItemCard from '@/components/features/MenuItemCard';
 import OrderCart from '@/components/features/OrderCart';
 import EmptyState from '@/components/ui/EmptyState';
-import { MENU_CATEGORIES } from '@/constants/config';
+import { useMenuCategories } from '@/hooks/useMenuCategories';
 
 export default function OrderPad() {
   const { items, loadMenu } = useMenuStore();
+  const menuCategories = useMenuCategories();
   const { cart, addToCart, updateCartQuantity, getCartTotal, getCartCount } = useOrderStore();
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [cartOpen, setCartOpen] = useState(false);
@@ -36,7 +37,7 @@ export default function OrderPad() {
   const getQty = (id: string) => cart.find((c) => c.menuItem.id === id)?.quantity ?? 0;
   const activeCategoryName = selectedCategory === 'all'
     ? 'All menu items'
-    : MENU_CATEGORIES.find((category) => category.id === selectedCategory)?.name ?? 'Selected menu';
+    : menuCategories.find((category) => category.id === selectedCategory)?.name ?? 'Selected menu';
 
   return (
     <div className="orderpad-screen dashboard-screen">

@@ -15,12 +15,14 @@ import {
   QrCode, UserCheck, IndianRupee, Clock, CheckCircle2,
   CreditCard, Banknote, Smartphone, Wallet, Loader2,
   Edit3, UtensilsCrossed, Printer, Calendar, Building2, Bell, RefreshCw,
+  ArrowRightLeft,
 } from 'lucide-react';
 import OrderCard from '@/components/features/OrderCard';
 import CategoryFilter from '@/components/features/CategoryFilter';
 import MenuItemCard from '@/components/features/MenuItemCard';
 import type { OrderStatus, OrderType, PaymentType, PaymentBreakdown, Order, CartItem, MenuItem } from '@/types';
-import { TABLES_G, TABLES_A, tableSectionOf, tableLabel, MENU_CATEGORIES } from '@/constants/config';
+import { TABLES_G, TABLES_A, tableSectionOf, tableLabel } from '@/constants/config';
+import { useMenuCategories } from '@/hooks/useMenuCategories';
 import EmptyState from '@/components/ui/EmptyState';
 import { supabase } from '@/lib/supabase';
 import { businessDate } from '@/lib/businessDate';
@@ -159,7 +161,15 @@ function useCafeCounterOpened() {
   // must take priority over it rather than only ever being OR'd in.
   if (todaysLocalOpening) return localOpened;
   if (localClosed) return false;
-  if (!remoteCounter.loaded) return true;
+  // BUG FIX (audit 2026-08-10): this used to default to `true` while the
+  // remote fetch above was still in flight, so a bill could be pushed
+  // through in the brief window right after a fresh page load / new device,
+  // even if the counter was actually closed for the day (nothing local yet
+  // to say otherwise). A billing-integrity gate like this should fail
+  // closed while its answer is unknown, not fail open — the loading window
+  // is at most a second, and the error is instantly recoverable the moment
+  // the fetch resolves.
+  if (!remoteCounter.loaded) return false;
   return remoteCounter.opened && !remoteCounter.closed;
 }
 
@@ -1052,6 +1062,7 @@ interface CustomLineItem { id: string; name: string; price: number; qty: number;
 
 function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void; advanceOrders: Order[] }) {
   const { items, loadMenu } = useMenuStore();
+  const menuCategories = useMenuCategories();
   // BUG FIX (audit): bound to the dedicated `advanceCart` slice instead of
   // the shared `cart` NewBillPanel uses for its dine-in/takeaway drafts —
   // see the `advanceCart` field comment in orderStore.ts for why sharing one
@@ -1244,7 +1255,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
               </button>
             </div>
           </div>
-          {[{ id: 'all', name: 'All Items' }, ...MENU_CATEGORIES].map((cat) => {
+          {[{ id: 'all', name: 'All Items' }, ...menuCategories].map((cat) => {
             const isActive = selectedCategory === cat.id && !search.trim();
             const catCount = cat.id === 'all'
               ? enabledItems.length
@@ -1282,7 +1293,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
                 </p>
               ) : (
                 <p className="text-[11px] text-muted-foreground mt-1.5 px-1">
-                  {selectedCategory === 'all' ? `${enabledItems.length} items` : `${filteredItems.length} in ${MENU_CATEGORIES.find(c => c.id === selectedCategory)?.name ?? selectedCategory}`}
+                  {selectedCategory === 'all' ? `${enabledItems.length} items` : `${filteredItems.length} in ${menuCategories.find(c => c.id === selectedCategory)?.name ?? selectedCategory}`}
                 </p>
               )}
             </div>
@@ -1642,6 +1653,7 @@ function NewBillPanel() {
   // them actually ran.
   const { currentUser } = useAuthStore();
   const { items, loadMenu } = useMenuStore();
+  const menuCategories = useMenuCategories();
   const { orders, cart, addToCart, updateCartQuantity, clearCart, setCart, getCartTotal, getCartCount, submitOrder, loadOrders, setPaymentType, updateOrderStatus } = useOrderStore(
     useShallow(s => ({
       orders: s.orders,
@@ -1965,6 +1977,133 @@ function NewBillPanel() {
     }
   };
 
+  // FEATURE (2026-08-10): "employees will make mistake in table selection
+  // and place order... option to move items to different table... complete
+  // items to move to different tab" — researched Petpooja's own table
+  // move/merge pattern (a moved order carries its running bill with it; an
+  // occupied destination triggers a merge-confirmation rather than a silent
+  // overwrite or a hard block) and modeled this on it.
+  //
+  // Two scopes, both reachable through one "Move" button + the same G/A
+  // section-then-grid picker already used for table selection above:
+  //  1. scope 'table' — moves the WHOLE table: the running KOT order plus
+  //     any Order Pad/QR orders still waiting on it, plus any unsent draft
+  //     items typed but not yet sent. table_number is simply repointed to
+  //     the destination for every relevant `orders` row (RLS on `orders` is
+  //     fully open, so a plain client update is enough — no new RPC).
+  //     Afterwards the source table is free (nothing references it anymore)
+  //     and the destination is "blocked" for a separate new bill for free,
+  //     because this app already only ever allows one running order per
+  //     table — exactly the existing single-row-per-table architecture
+  //     `refreshRunningOrder`/`get_running_table_orders_v1` already enforce.
+  //  2. scope 'item' — moves a SINGLE line item that's still sitting in the
+  //     unsent draft cart (caught before "Send to Kitchen" was pressed) to a
+  //     different table's draft. Purely client-side (tableDrafts), no DB
+  //     write needed. Items already sent to the kitchen are intentionally
+  //     NOT splittable one-by-one here — carving up a ticket the kitchen
+  //     already has would let the KOT and the bill disagree about what was
+  //     made. Use the whole-table move for those instead.
+  const [movingTable, setMovingTable] = useState(false);
+  const [moveTarget, setMoveTarget] = useState<
+    | { scope: 'table' }
+    | { scope: 'item'; itemKind: 'menu' | 'custom'; itemId: string }
+    | null
+  >(null);
+  const [moveSection, setMoveSection] = useState<'G' | 'A' | null>(null);
+
+  const closeMovePicker = () => { setMoveTarget(null); setMoveSection(null); };
+
+  const handleMoveTable = async (destTable: number) => {
+    if (!runningOrder || !tableNumber || !currentUser || destTable === tableNumber) return;
+    // BUG FIX (audit 2026-08-10): a destination table that already has its
+    // own RUNNING order (tableBoard[destTable] set) must never be allowed
+    // through here — this only ever repoints table_number on the existing
+    // rows, it never merges/removes the destination's own running order
+    // first. Doing so would leave TWO rows with status='running' for the
+    // same table_number, which silently breaks every future lookup of that
+    // table (refreshRunningOrder/get_running_table_orders_v1 both expect at
+    // most one running row per table and would start erroring or picking
+    // one arbitrarily) — worse than the original wrong-table mistake this
+    // feature exists to fix. A destination that only has non-running
+    // Order Pad/QR orders waiting (incomingByTable) is still safe to move
+    // into and keeps the existing merge-confirm behavior, since this app's
+    // architecture already supports multiple non-running order rows sharing
+    // one table_number (that's exactly how "Bill This Table" combines them).
+    if (tableBoard[destTable] !== undefined) {
+      window.alert(`Table ${tableLabel(destTable)} already has its own running order. Bill or cancel that table first, then move this one — two running orders can't share one table.`);
+      return;
+    }
+    const destOccupied = Boolean(incomingByTable[destTable]);
+    if (destOccupied) {
+      if (!window.confirm(`Table ${tableLabel(destTable)} already has items on it. Move this table's order there anyway and combine the bills?`)) return;
+    }
+    setMovingTable(true);
+    try {
+      const idsToMove = [runningOrder.id, ...incomingTableOrders.map((o) => o.id)];
+      const { error } = await supabase
+        .from('orders')
+        .update({ table_number: destTable })
+        .in('id', idsToMove);
+      if (error) throw new Error(error.message);
+
+      // Carry along any unsent draft items too, so nothing typed for this
+      // table gets silently left behind by the move.
+      const leftoverDraft = captureDraft();
+      if (leftoverDraft.cart.length || leftoverDraft.customItems.length) {
+        setTableDrafts((prev) => {
+          const existing = prev[destTable] ?? { cart: [], customItems: [] };
+          const mergedCart = [...existing.cart];
+          for (const item of leftoverDraft.cart) {
+            const idx = mergedCart.findIndex((c) => c.menuItem.id === item.menuItem.id && c.notes === item.notes);
+            if (idx >= 0) mergedCart[idx] = { ...mergedCart[idx], quantity: mergedCart[idx].quantity + item.quantity };
+            else mergedCart.push(item);
+          }
+          return { ...prev, [destTable]: { cart: mergedCart, customItems: [...existing.customItems, ...leftoverDraft.customItems] } };
+        });
+      }
+
+      clearTableDraft(tableNumber);
+      setRunningOrder(null);
+      clearCart();
+      setCustomItems([]); setCustomName(''); setCustomPrice(''); setCustomQty('1');
+      setParcelCount(0);
+      setTableNumber(null);
+      closeMovePicker();
+      void loadTableBoard();
+    } catch (err) {
+      setSubmitError(err instanceof Error ? err.message : 'Failed to move this table.');
+    } finally {
+      setMovingTable(false);
+    }
+  };
+
+  const handleMoveItem = (destTable: number) => {
+    if (!moveTarget || moveTarget.scope !== 'item' || !tableNumber || destTable === tableNumber) return;
+    const { itemKind, itemId } = moveTarget;
+    if (itemKind === 'menu') {
+      const item = cart.find((c) => c.menuItem.id === itemId);
+      if (!item) { closeMovePicker(); return; }
+      setTableDrafts((prev) => {
+        const existing = prev[destTable] ?? { cart: [], customItems: [] };
+        const mergedCart = [...existing.cart];
+        const idx = mergedCart.findIndex((c) => c.menuItem.id === item.menuItem.id && c.notes === item.notes);
+        if (idx >= 0) mergedCart[idx] = { ...mergedCart[idx], quantity: mergedCart[idx].quantity + item.quantity };
+        else mergedCart.push(item);
+        return { ...prev, [destTable]: { ...existing, cart: mergedCart } };
+      });
+      setCart(cart.filter((c) => c.menuItem.id !== itemId));
+    } else {
+      const item = customItems.find((c) => c.id === itemId);
+      if (!item) { closeMovePicker(); return; }
+      setTableDrafts((prev) => {
+        const existing = prev[destTable] ?? { cart: [], customItems: [] };
+        return { ...prev, [destTable]: { ...existing, customItems: [...existing.customItems, item] } };
+      });
+      setCustomItems(customItems.filter((c) => c.id !== itemId));
+    }
+    closeMovePicker();
+  };
+
   const handleSendToKitchen = async () => {
     if (!currentUser) return;
     if (!tableNumber) { setTableError(true); setSubmitError('Select a table first.'); return; }
@@ -2121,6 +2260,45 @@ function NewBillPanel() {
         return;
       }
 
+      const combinedItems = allSources.flatMap(o => o.items);
+      const combinedSubtotal = combinedItems.reduce((s, ci) => s + ci.menuItem.price * ci.quantity, 0);
+      const combinedParcel = allSources.reduce((s, o) => s + (o.parcelCharges || 0), 0);
+      const combinedTotal = combinedSubtotal + combinedParcel;
+
+      // BUG FIX (audit 2026-08-10): recordCreditSale used to run AFTER the
+      // orders below were already marked paid/served. Every field this
+      // needs (combinedItems/combinedSubtotal, and the order numbers used
+      // in the bill number) is already known at this point — none of it
+      // depends on the finalize call below — so there's no reason to risk
+      // it running second. If this insert into branch_credit_sales ever
+      // fails (it has before: a check-constraint bug on this exact table
+      // was fixed earlier this session), doing it first means the table is
+      // untouched and the biller can just retry, instead of the order
+      // silently sitting in `orders` marked "paid by credit" forever with
+      // no matching row in the Credit tab to actually collect it from.
+      if (combineBillMethod === 'credit') {
+        const { recordCreditSale } = useBranchStore.getState();
+        const creditItems = combinedItems.map(ci => ({
+          itemName: ci.menuItem.name, quantity: ci.quantity, sellUnit: 'pcs' as const,
+          price: ci.menuItem.price, lineTotal: ci.menuItem.price * ci.quantity,
+        }));
+        const primaryNumber = (freshRunning ?? freshIncoming[0]).orderNumber;
+        const creditErr = await recordCreditSale('Cafe', {
+          billNo: `CREDIT-Cafe-${primaryNumber}`,
+          branch: 'Cafe',
+          customerName: customerName.trim(),
+          customerPhone: combineCreditPhone.trim(),
+          items: creditItems,
+          subtotal: combinedSubtotal,
+          amountPaid: 0,
+          creditAmount: combinedSubtotal,
+          dueDate: combineCreditDueDate,
+          soldBy: billedBy,
+          notes: `Combined Table ${tableNumber} bill (orders ${allSources.map(o => o.orderNumber).join(', ')})`,
+        });
+        if (creditErr) throw new Error(`Credit ledger: ${creditErr} — table was NOT billed, nothing was charged. Fix the issue and try again.`);
+      }
+
       // Settle every source with the same already-tested primitives used
       // elsewhere in this file — not a new payment code path. Each call is
       // independently safe/atomic; if one fails partway we stop and surface
@@ -2152,34 +2330,6 @@ function NewBillPanel() {
         if (o.status !== 'served') {
           await updateOrderStatus(o.id, 'served');
         }
-      }
-
-      const combinedItems = allSources.flatMap(o => o.items);
-      const combinedSubtotal = combinedItems.reduce((s, ci) => s + ci.menuItem.price * ci.quantity, 0);
-      const combinedParcel = allSources.reduce((s, o) => s + (o.parcelCharges || 0), 0);
-      const combinedTotal = combinedSubtotal + combinedParcel;
-
-      if (combineBillMethod === 'credit') {
-        const { recordCreditSale } = useBranchStore.getState();
-        const creditItems = combinedItems.map(ci => ({
-          itemName: ci.menuItem.name, quantity: ci.quantity, sellUnit: 'pcs' as const,
-          price: ci.menuItem.price, lineTotal: ci.menuItem.price * ci.quantity,
-        }));
-        const primaryNumber = (freshRunning ?? freshIncoming[0]).orderNumber;
-        const creditErr = await recordCreditSale('Cafe', {
-          billNo: `CREDIT-Cafe-${primaryNumber}`,
-          branch: 'Cafe',
-          customerName: customerName.trim(),
-          customerPhone: combineCreditPhone.trim(),
-          items: creditItems,
-          subtotal: combinedSubtotal,
-          amountPaid: 0,
-          creditAmount: combinedSubtotal,
-          dueDate: combineCreditDueDate,
-          soldBy: billedBy,
-          notes: `Combined Table ${tableNumber} bill (orders ${allSources.map(o => o.orderNumber).join(', ')})`,
-        });
-        if (creditErr) throw new Error(creditErr);
       }
 
       // Synthetic combined order purely for printing — reuses the exact same
@@ -2404,9 +2554,21 @@ function NewBillPanel() {
         if (!creditDueDate) { setCreditError('Due date is required for credit sale'); return; }
         setCreditError('');
       } else if (billMethod === 'part_payment') {
+        // BUG FIX (audit 2026-08-10): this running-table finalize path only
+        // checked that the split fields were non-negative and summed to
+        // something greater than zero — unlike the sibling non-running-order
+        // checkout below (~line 2940), it never checked the split actually
+        // matched the bill total. A biller could type e.g. cash: ₹1 as the
+        // only split value on a ₹500 table and the whole table would be
+        // marked fully paid/served. Matching the same `splitRemaining`
+        // tolerance check used everywhere else in this file closes that gap.
         const values = Object.values(splitBreakdown);
         if (values.some((value) => Number.isNaN(value) || value < 0)) { setSubmitError('Enter valid split payment amounts.'); return; }
         if (splitTotal <= 0) { setSubmitError('Enter at least one split payment amount.'); return; }
+        if (Math.abs(splitRemaining) > 0.01) {
+          setSubmitError(`Split payment must match bill total. Remaining: ${formatCurrency(splitRemaining)}`);
+          return;
+        }
       }
 
       setSubmitting(true);
@@ -2466,7 +2628,19 @@ function NewBillPanel() {
               customerPhone: selectedWallet.mobile, items: creditItems, subtotal: Number(result.total),
               amountPaid: walletAmount, creditAmount: walletRemainder, dueDate: creditDueDate, soldBy: billedBy, notes: notes || undefined,
             });
-            if (creditErr) throw new Error(creditErr);
+            // BUG FIX (audit 2026-08-10): finalize_table_bill_wallet_v1 above
+            // already committed this order as paid — its wallet+cashback
+            // fields only exist once it returns, so recordCreditSale can't
+            // run before it here the way the combine-bill path was reordered
+            // to. If this insert fails, the order is still correctly paid,
+            // but nothing exists yet in the Credit tab to actually collect
+            // the ₹{walletRemainder} balance from — make that unmissable
+            // rather than a generic dismissible error.
+            if (creditErr) {
+              const msg = `Bill #${result.orderNumber} was already closed and paid, but saving the ₹${walletRemainder} credit balance failed: ${creditErr}. Add it to Credit manually right now so it isn't lost.`;
+              window.alert(msg);
+              throw new Error(msg);
+            }
           }
           await loadOrders(60);
           const loaded = useOrderStore.getState().orders.find((o) => o.orderNumber === result.orderNumber);
@@ -2528,7 +2702,16 @@ function NewBillPanel() {
             soldBy: billedBy,
             notes: notes || undefined,
           });
-          if (err) throw new Error(err);
+          // BUG FIX (audit 2026-08-10): same class as the wallet branch
+          // above — finalize_table_bill_v1 already marked this order paid
+          // by the time we know its final total, so a failure here can't be
+          // avoided by reordering. Name the bill and amount explicitly so
+          // it's never silently lost from the Credit tab.
+          if (err) {
+            const msg = `Bill #${finalized.orderNumber} was already closed and paid, but saving the ₹${finalized.total} credit record failed: ${err}. Add it to Credit manually right now so it isn't lost.`;
+            window.alert(msg);
+            throw new Error(msg);
+          }
           printCreditBill(finalized, creditCustomerPhone.trim(), creditDueDate);
         } else {
           printPaidBill(finalized, 'original', billMethod === 'cash' ? Number(cashTendered || 0) || undefined : undefined);
@@ -2616,7 +2799,17 @@ function NewBillPanel() {
           notes: notes || undefined,
         });
 
-        if (err) { setSubmitError(err); setSubmitting(false); return; }
+        // BUG FIX (audit 2026-08-10): submitOrder above already committed
+        // this order as status:'served', paymentType:'credit' — its
+        // generated order number/items are exactly what billNo/creditItems
+        // needed, so this can't safely run before that write either. Name
+        // the bill and amount explicitly on failure so it's never silently
+        // lost from the Credit tab.
+        if (err) {
+          const msg = `Bill ${billNo} was already closed and paid, but saving the ${formatCurrency(total)} credit record failed: ${err}. Add it to Credit manually right now so it isn't lost.`;
+          window.alert(msg);
+          setSubmitError(msg); setSubmitting(false); return;
+        }
 
         // Notify VRSNB Admin + Admin
         await notifyCreditSale({
@@ -2752,7 +2945,16 @@ function NewBillPanel() {
             soldBy: billedBy,
             notes: notes || undefined,
           });
-          if (creditErrorMessage) throw new Error(creditErrorMessage);
+          // BUG FIX (audit 2026-08-10): same class as the other wallet+
+          // credit-remainder branch above — complete_cafe_wallet_checkout_v1
+          // already committed this order paid by the time we know its final
+          // number/total, so this can't run before it. Name the bill and
+          // amount explicitly on failure so it's never silently lost.
+          if (creditErrorMessage) {
+            const msg = `Bill #${result.orderNumber} was already closed and paid, but saving the ₹${walletRemainder} credit balance failed: ${creditErrorMessage}. Add it to Credit manually right now so it isn't lost.`;
+            window.alert(msg);
+            throw new Error(msg);
+          }
         }
 
         await loadOrders(60);
@@ -3071,7 +3273,7 @@ function NewBillPanel() {
               </button>
             </div>
           </div>
-          {[{ id: 'all', name: 'All Items' }, ...MENU_CATEGORIES].map((cat) => {
+          {[{ id: 'all', name: 'All Items' }, ...menuCategories].map((cat) => {
             const isActive = selectedCategory === cat.id && !search.trim();
             const catCount = cat.id === 'all'
               ? enabledItems.length
@@ -3109,7 +3311,7 @@ function NewBillPanel() {
                 </p>
               ) : (
                 <p className="text-[11px] text-muted-foreground mt-1.5 px-1">
-                  {selectedCategory === 'all' ? `${enabledItems.length} items` : `${filteredItems.length} in ${MENU_CATEGORIES.find(c => c.id === selectedCategory)?.name ?? selectedCategory}`}
+                  {selectedCategory === 'all' ? `${enabledItems.length} items` : `${filteredItems.length} in ${menuCategories.find(c => c.id === selectedCategory)?.name ?? selectedCategory}`}
                 </p>
               )}
             </div>
@@ -3473,6 +3675,15 @@ function NewBillPanel() {
                   <div className="flex items-center gap-1.5">
                     {runningOrder && (
                       <button
+                        onClick={() => { setMoveSection(tableSectionOf(tableNumber)); setMoveTarget({ scope: 'table' }); }}
+                        disabled={movingTable}
+                        className="flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-[11px] font-bold text-blue-700 bg-blue-50 border border-blue-200 transition-all active:scale-95">
+                        {movingTable ? <Loader2 className="size-3.5 animate-spin" /> : <ArrowRightLeft className="size-3.5" />}
+                        Move
+                      </button>
+                    )}
+                    {runningOrder && (
+                      <button
                         onClick={handleCancelTable}
                         disabled={cancellingTable}
                         className="flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-[11px] font-bold text-destructive bg-destructive/10 border border-destructive/20 transition-all active:scale-95">
@@ -3584,7 +3795,12 @@ function NewBillPanel() {
                   </div>
                   <div className="text-right shrink-0">
                     <p className="text-sm text-primary font-black tabular-nums">{formatCurrency(ci.menuItem.price * ci.quantity)}</p>
-                    <button onClick={() => updateCartQuantity(ci.menuItem.id, 0)} className="mt-1 text-[10px] font-black text-destructive inline-flex items-center gap-1" aria-label={`Remove ${ci.menuItem.name}`}><Trash2 className="size-3" />Remove</button>
+                    <div className="mt-1 flex items-center justify-end gap-2">
+                      {orderType === 'dine_in' && tableNumber != null && (
+                        <button onClick={() => { setMoveSection(tableSectionOf(tableNumber)); setMoveTarget({ scope: 'item', itemKind: 'menu', itemId: ci.menuItem.id }); }} className="text-[10px] font-black text-blue-700 inline-flex items-center gap-1" aria-label={`Move ${ci.menuItem.name} to another table`}><ArrowRightLeft className="size-3" />Move</button>
+                      )}
+                      <button onClick={() => updateCartQuantity(ci.menuItem.id, 0)} className="text-[10px] font-black text-destructive inline-flex items-center gap-1" aria-label={`Remove ${ci.menuItem.name}`}><Trash2 className="size-3" />Remove</button>
+                    </div>
                   </div>
                 </div>
               ))}
@@ -3605,7 +3821,12 @@ function NewBillPanel() {
                   </div>
                   <div className="text-right shrink-0">
                     <p className="text-sm text-amber-700 font-black tabular-nums">{formatCurrency(ci.price * ci.qty)}</p>
-                    <button onClick={() => updateCustomQty(ci.id, 0)} className="mt-1 text-[10px] font-black text-destructive inline-flex items-center gap-1" aria-label={`Remove ${ci.name}`}><Trash2 className="size-3" />Remove</button>
+                    <div className="mt-1 flex items-center justify-end gap-2">
+                      {orderType === 'dine_in' && tableNumber != null && (
+                        <button onClick={() => { setMoveSection(tableSectionOf(tableNumber)); setMoveTarget({ scope: 'item', itemKind: 'custom', itemId: ci.id }); }} className="text-[10px] font-black text-blue-700 inline-flex items-center gap-1" aria-label={`Move ${ci.name} to another table`}><ArrowRightLeft className="size-3" />Move</button>
+                      )}
+                      <button onClick={() => updateCustomQty(ci.id, 0)} className="text-[10px] font-black text-destructive inline-flex items-center gap-1" aria-label={`Remove ${ci.name}`}><Trash2 className="size-3" />Remove</button>
+                    </div>
                   </div>
                 </div>
               ))}
@@ -4110,10 +4331,15 @@ function PrinterSetupModal({ onClose }: { onClose: () => void }) {
             <button onClick={() => void refresh()} className="ml-auto text-xs font-bold text-muted-foreground underline">Recheck</button>
           </div>
           {!checking && !qzOnline && (
-            <p className="mt-2 text-xs text-muted-foreground">
-              Install QZ Tray (free, one-time) from <span className="font-bold">qz.io</span> on this billing computer, then click Recheck.
-              Until it's installed, KOT and Bill will keep printing the old way (whatever printer is set as Windows default).
-            </p>
+            <div className="mt-2 space-y-2 text-xs text-muted-foreground">
+              <p>
+                Install QZ Tray (free, one-time) from <span className="font-bold">qz.io</span> on this billing computer, then click Recheck.
+                Until it's installed, KOT and Bill will keep printing the old way (whatever printer is set as Windows default).
+              </p>
+              <p className="rounded-lg bg-amber-50 p-2 text-amber-800">
+                <span className="font-bold">Already installed and running, but still shows "not detected"?</span> This is normal the first time — this website talks to QZ Tray over a secure connection your browser doesn't trust yet. Fix it once: open a <span className="font-bold">new browser tab</span>, go to <span className="font-bold">https://localhost:8181</span>, click "Advanced" then "Proceed" on the warning page, then come back here and click Recheck.
+              </p>
+            </div>
           )}
         </div>
 
@@ -4328,6 +4554,76 @@ export default function BillingDashboard() {
       )}
 
       {showPrinterSetup && <PrinterSetupModal onClose={() => setShowPrinterSetup(false)} />}
+
+      {/* Move Table / Move Item destination picker — same G/A-section-then-grid
+          pattern as the main table selector above, so staff already know how
+          to use it. Occupied tables are visually flagged the same way; picking
+          one is allowed (Petpooja-style merge) but the whole-table move path
+          asks for a confirm first (see handleMoveTable). */}
+      {moveTarget && tableNumber != null && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/55 px-4" onClick={closeMovePicker}>
+          <div className="w-full max-w-sm rounded-3xl border border-border bg-background p-4 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-start justify-between gap-3 mb-3">
+              <div>
+                <h2 className="font-display text-base font-black flex items-center gap-1.5"><ArrowRightLeft className="size-4 text-blue-700" />
+                  {moveTarget.scope === 'table' ? `Move Table ${tableLabel(tableNumber)}` : 'Move item to table'}
+                </h2>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  {moveTarget.scope === 'table'
+                    ? 'Moves this table\'s whole running order to the table you pick.'
+                    : 'Moves just this item into the picked table\'s draft.'}
+                </p>
+              </div>
+              <button onClick={closeMovePicker} className="p-1.5 rounded-lg bg-muted shrink-0"><X className="size-4" /></button>
+            </div>
+
+            {moveSection === null ? (
+              <div className="grid grid-cols-2 gap-2 p-1">
+                {(['G', 'A'] as const).map((section) => (
+                  <button key={section} type="button" onClick={() => setMoveSection(section)}
+                    className="flex flex-col items-center justify-center gap-1 rounded-xl border border-border bg-muted/60 py-4 text-foreground hover:bg-muted active:scale-95">
+                    <span className="text-2xl font-display font-black">{section}</span>
+                    <span className="text-[10px] font-body font-bold text-muted-foreground">{section}1 – {section}15</span>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div>
+                <button type="button" onClick={() => setMoveSection(null)} className="mb-1.5 flex items-center gap-1 rounded-lg px-1.5 py-1 text-[11px] font-body font-bold text-muted-foreground hover:text-foreground">
+                  ← Section {moveSection}
+                </button>
+                <div className="grid grid-cols-5 gap-1.5 p-1 rounded-2xl max-h-64 overflow-y-auto">
+                  {(moveSection === 'G' ? TABLES_G : TABLES_A).filter((num) => num !== tableNumber).map((num) => {
+                    const isRunning = tableBoard[num] !== undefined;
+                    const hasDraft = !isRunning && Boolean(tableDrafts[num]?.cart.length || tableDrafts[num]?.customItems.length);
+                    // A whole-table move can't land on a table that already
+                    // has its own running order (see handleMoveTable) — grey
+                    // it out here instead of letting the tap end in an alert.
+                    // Moving a single unsent item has no such conflict.
+                    const blocked = moveTarget.scope === 'table' && isRunning;
+                    return (
+                      <button key={num} disabled={movingTable || blocked}
+                        onClick={() => moveTarget.scope === 'table' ? handleMoveTable(num) : handleMoveItem(num)}
+                        className={cn('relative py-2.5 rounded-xl text-xs font-body font-bold transition-all active:scale-90 flex flex-col items-center gap-0.5',
+                          blocked ? 'bg-muted/30 border border-border text-muted-foreground/50 cursor-not-allowed'
+                            : isRunning ? 'bg-amber-100 border border-amber-300 text-amber-800 hover:bg-amber-200'
+                            : hasDraft ? 'bg-blue-50 border border-blue-300 text-blue-700 hover:bg-blue-100'
+                            : 'bg-muted/60 border border-border text-foreground hover:bg-muted')}>
+                        {incomingByTable[num] ? (
+                          <span className="absolute -top-1.5 -right-1.5 flex size-4 items-center justify-center rounded-full bg-fuchsia-500 text-white text-[8px] font-black ring-2 ring-white">{incomingByTable[num]}</span>
+                        ) : null}
+                        {tableLabel(num)}
+                        {isRunning && <span className="text-[9px] font-semibold opacity-80">{tableBoard[num]} item{tableBoard[num] === 1 ? '' : 's'}</span>}
+                        {hasDraft && <span className="text-[9px] font-semibold opacity-80">draft</span>}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Compact live/order filter rail. Main Cafe navigation now lives above this page. */}
       <div className="biller-status-bar shrink-0 border-b border-border bg-background px-3 py-1.5">
