@@ -628,6 +628,13 @@ export default function BranchBillingProTab({
     if (discountMode === 'value' && discountInput > subtotal) return 'Discount value cannot exceed the subtotal.';
     if (discountValue > 0 && !discountReason.trim()) return 'Discount reason is required whenever a discount is applied.';
     if (paymentMode === 'credit' && Number(creditAmountPaid || 0) > total) return 'Credit upfront amount cannot exceed bill total.';
+    // BUG FIX (audit 2026-08-10): only the upper bound was checked — a
+    // negative value (the number input's `min="0"` is a UI hint only, not
+    // an enforced constraint) passed this check and then flowed into
+    // `creditPaid = Math.min(Number(creditAmountPaid || 0), total)`,
+    // inflating the on-screen "Credit due after upfront payment" figure
+    // above the real bill total for the cashier/customer to see.
+    if (paymentMode === 'credit' && Number(creditAmountPaid || 0) < 0) return 'Credit upfront amount cannot be negative.';
     if (paymentMode === 'wallet' && !selectedWallet) return 'Select a wallet customer before checkout.';
     if (paymentMode === 'wallet' && selectedWallet?.status !== 'active') return 'This wallet is not active.';
     if (paymentMode === 'wallet' && walletAmount <= 0) return 'Enter the wallet amount to use.';
@@ -1182,12 +1189,28 @@ export default function BranchBillingProTab({
               )}
             </div>
           ) : (
-            <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-3 py-2">
-              <div>
-                <p className="text-xs font-black uppercase tracking-wide text-slate-500">Cashier</p>
-                <p className="mt-0.5 text-base font-black text-slate-950">{userName}</p>
+            <div className="space-y-1 border-b border-slate-200 px-3 py-2">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs font-black uppercase tracking-wide text-slate-500">Cashier</p>
+                  <p className="mt-0.5 text-base font-black text-slate-950">{userName}</p>
+                </div>
+                <span className="rounded-2xl bg-slate-100 px-3 py-2 text-xs font-black text-slate-700">{branchHolds.length} hold</span>
               </div>
-              <span className="rounded-2xl bg-slate-100 px-3 py-2 text-xs font-black text-slate-700">{branchHolds.length} hold</span>
+              {/* BUG FIX (audit 2026-08-10): validateCheckout() requires a
+                  discount reason whenever a discount is applied, for every
+                  branch — but this input only ever existed inside the
+                  `requiresSalesperson` (SNB-only) branch above. A VRSNB
+                  cashier could type a discount amount but had no field to
+                  explain it, so checkout would fail every single time with
+                  "Discount reason is required" until the discount was
+                  removed. Same field, same validation, now available here. */}
+              {discountValue > 0 && (
+                <div className="pt-1">
+                  <label className="block text-[10px] font-black uppercase tracking-wide text-red-600">Discount Reason <span className="text-red-500">*</span></label>
+                  <input value={discountReason} onChange={(e) => setDiscountReason(e.target.value)} placeholder="Why is a discount being applied?" className="h-7 w-full rounded-lg border border-red-200 bg-red-50 px-2 text-xs font-bold outline-none focus:border-red-400" />
+                </div>
+              )}
             </div>
           )}
 

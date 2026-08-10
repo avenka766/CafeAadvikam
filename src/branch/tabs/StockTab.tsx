@@ -146,6 +146,7 @@ function ManualStockUpdate({ branch, branchStock }: { branch: Branch; branchStoc
   const [activeCategory, setActiveCategory] = useState<string>('All');
   const [editItem, setEditItem]     = useState<string | null>(null);
   const [editQty, setEditQty]       = useState('');
+  const [editBaseline, setEditBaseline] = useState<number | null>(null);
   const [saving, setSaving]         = useState(false);
   const [saved, setSaved]           = useState<Record<string, boolean>>({});
   const [error, setError]           = useState('');
@@ -162,11 +163,16 @@ function ManualStockUpdate({ branch, branchStock }: { branch: Branch; branchStoc
     const qty = parseFloat(editQty);
     if (isNaN(qty) || qty < 0) { setError('Enter a valid quantity.'); return; }
     setSaving(true); setError('');
-    const err = await manualUpdateStock(branch, itemName, qty, updatedBy, catalogue.find((item) => item.name === itemName)?.barcode);
+    const err = await manualUpdateStock(
+      branch, itemName, qty, updatedBy,
+      catalogue.find((item) => item.name === itemName)?.barcode,
+      undefined,
+      editBaseline ?? undefined,
+    );
     setSaving(false);
     if (err) { setError(err); return; }
     setSaved((prev) => ({ ...prev, [itemName]: true }));
-    setEditItem(null); setEditQty('');
+    setEditItem(null); setEditQty(''); setEditBaseline(null);
     setTimeout(() => setSaved((prev) => ({ ...prev, [itemName]: false })), 3000);
   };
 
@@ -239,20 +245,20 @@ function ManualStockUpdate({ branch, branchStock }: { branch: Branch; branchStoc
                     placeholder={isKg ? '0.000 kg' : '0 pcs'}
                     className="w-24 h-8 px-2 rounded-lg border bg-white text-sm font-mono text-right focus:outline-none focus:ring-2 focus:ring-violet-400/40"
                     autoFocus
-                    onKeyDown={(e) => { if (e.key === 'Enter') handleSave(item.name, item.uom); if (e.key === 'Escape') { setEditItem(null); setEditQty(''); } }}
+                    onKeyDown={(e) => { if (e.key === 'Enter') handleSave(item.name, item.uom); if (e.key === 'Escape') { setEditItem(null); setEditQty(''); setEditBaseline(null); } }}
                   />
                   <button onClick={() => handleSave(item.name, item.uom)} disabled={saving}
                     className="h-8 px-3 rounded-lg bg-violet-600 text-white text-xs font-bold disabled:opacity-50 transition active:scale-95">
                     {saving ? <Loader2 className="size-3 animate-spin" /> : 'Save'}
                   </button>
-                  <button onClick={() => { setEditItem(null); setEditQty(''); }}
+                  <button onClick={() => { setEditItem(null); setEditQty(''); setEditBaseline(null); }}
                     className="h-8 px-2 rounded-lg bg-muted text-muted-foreground text-xs font-bold transition active:scale-95">
                     <X className="size-3" />
                   </button>
                 </div>
               ) : (
                 <button
-                  onClick={() => { setEditItem(item.name); setEditQty(''); setError(''); }}
+                  onClick={() => { setEditItem(item.name); setEditQty(''); setEditBaseline(currentQty); setError(''); }}
                   className="inline-flex items-center gap-1 text-xs font-semibold text-violet-600 bg-violet-50 hover:bg-violet-100 px-2.5 py-1 rounded-full transition">
                   <PencilLine className="size-3" /> Update
                 </button>
