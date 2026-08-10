@@ -511,7 +511,7 @@ export function CreditSalesTab({ branch }: ModuleProps) {
 }
 export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch' }: ModuleProps) {
   const { currentUser } = useAuthStore();
-  const { advanceCakeOrders, salespeople, addAdvanceCakeOrder, updateAdvanceStatus, markAdvanceSentToStore, addCashMovement, addAdvanceFinalBill, recordAdvanceRefund, counterOpenings } = useBranchOpsStore();
+  const { advanceCakeOrders, salespeople, addAdvanceCakeOrder, updateAdvanceStatus, markAdvanceSentToStore, addCashMovement, addAdvanceFinalBill, recordAdvanceRefund, counterOpenings, addAuditLog } = useBranchOpsStore();
   const submitBakeryOrder = useBakeryStore((s) => s.submitOrder);
   const { manualUpdateStock, fetchBranchData } = useBranchStore();
   const isVRSNB = branch === 'VRSNB';
@@ -919,7 +919,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch' }:
   const finalInvoice = async (
     o: CakeAdvanceOrder,
     payMode?: 'cash' | 'upi' | 'card' | 'split' | 'credit',
-    closingOverrides?: { quantity: number; discount: number; additionalCharges: number; refundMode?: 'cash' | 'upi' | 'card'; paymentSplits?: Array<{ mode: 'cash' | 'upi' | 'card'; amount: number }> },
+    closingOverrides?: { quantity: number; discount: number; additionalCharges: number; refundMode?: 'cash' | 'upi' | 'card'; paymentSplits?: Array<{ mode: 'cash' | 'upi' | 'card'; amount: number }>; discountReason?: string },
   ): Promise<string | null> => {
     const fail = (message: string) => {
       setError(message);
@@ -935,6 +935,14 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch' }:
     let balanceAmount = o.balanceAmount;
     const discountAmount = closingOverrides?.discount || 0;
     const additionalCharges = closingOverrides?.additionalCharges || 0;
+    // BUG FIX (2026-08-09): "when giving a discount, add a mandatory
+    // discount reason field" was already done for regular counter billing
+    // (BranchBillingProTab) but was missing from this advance-order closing
+    // flow entirely - a discount could be applied here with no reason
+    // recorded anywhere. Enforce the same rule here.
+    if (discountAmount > 0 && !closingOverrides?.discountReason?.trim()) {
+      return fail('Discount reason is required whenever a discount is applied.');
+    }
     // Only single-line orders (the common case for cake orders) support an
     // edited quantity, since the actual cake weight/count is often a bit off
     // from the original estimate. The bill value and balance recompute from
@@ -999,6 +1007,15 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch' }:
     const finalResult = finalData as { billNo?: string; invoiceNo?: number; refundNo?: string } | null;
     if (!finalResult?.billNo || !finalResult.invoiceNo) return fail('Final invoice was not returned by Supabase.');
     const { billNo, invoiceNo } = finalResult;
+    if (discountAmount > 0 && closingOverrides?.discountReason?.trim()) {
+      addAuditLog({
+        branch,
+        user,
+        action: 'Discount Applied',
+        previousValue: `Bill ${billNo}`,
+        newValue: `Discount ${money(discountAmount)} - Reason: ${closingOverrides.discountReason.trim()}`,
+      });
+    }
     if (orderKind !== 'custom') await fetchBranchData(branch);
     if (balanceAmount > 0 && !isSnbOrder && rpcPaymentMode !== 'credit') {
       const movementLines = paymentSplits.length > 0 ? paymentSplits : [{ mode: rpcPaymentMode, amount: balanceAmount }];
@@ -1389,13 +1406,14 @@ function ClosingConfirmModal({
   order: CakeAdvanceOrder;
   payMode: 'cash' | 'upi' | 'card' | 'split' | 'credit';
   onCancel: () => void;
-  onConfirm: (overrides: { quantity: number; discount: number; additionalCharges: number; refundMode?: 'cash' | 'upi' | 'card'; paymentSplits?: Array<{ mode: 'cash' | 'upi' | 'card'; amount: number }> }) => Promise<string | null | void>;
+  onConfirm: (overrides: { quantity: number; discount: number; additionalCharges: number; refundMode?: 'cash' | 'upi' | 'card'; paymentSplits?: Array<{ mode: 'cash' | 'upi' | 'card'; amount: number }>; discountReason?: string }) => Promise<string | null | void>;
 }) {
   const isSingleLine = (order.items?.length ?? 1) <= 1;
   const closingQty = resolveAdvanceClosingQuantities(order);
   const { placedQty, receivedQty: receivedQtyDefault, rate } = closingQty;
   const [quantity, setQuantity] = useState(String(receivedQtyDefault));
   const [discount, setDiscount] = useState('0');
+  const [discountReason, setDiscountReason] = useState('');
   const [additionalCharges, setAdditionalCharges] = useState('0');
   const [refundMode, setRefundMode] = useState<'cash' | 'upi' | 'card'>('cash');
   const [split, setSplit] = useState({ cash: '', upi: '', card: '' });
@@ -1430,7 +1448,8 @@ function ClosingConfirmModal({
     setConfirming(true);
     try {
       if (!splitValid) { setModalError(`Split payments must add up to ${money(finalBalance)}.`); return; }
-      const errorMessage = await onConfirm({ quantity: qtyNum, discount: discountNum, additionalCharges: additionalChargesNum, refundMode: refundDue > 0 ? refundMode : undefined, paymentSplits: payMode === 'split' ? paymentSplits : undefined });
+      if (discountNum > 0 && !discountReason.trim()) { setModalError('Discount reason is required whenever a discount is applied.'); return; }
+      const errorMessage = await onConfirm({ quantity: qtyNum, discount: discountNum, additionalCharges: additionalChargesNum, refundMode: refundDue > 0 ? refundMode : undefined, paymentSplits: payMode === 'split' ? paymentSplits : undefined, discountReason: discountReason.trim() || undefined });
       if (errorMessage) setModalError(errorMessage);
     } catch (confirmError) {
       setModalError(confirmError instanceof Error ? confirmError.message : 'Advance order could not be closed.');
@@ -1461,6 +1480,11 @@ function ClosingConfirmModal({
           <Field label="Discount Amount">
             <Input type="number" min="0" step="0.01" value={discount} onChange={(e) => setDiscount(e.target.value)} />
           </Field>
+          {discountNum > 0 && (
+            <Field label="Discount Reason (required)">
+              <Input value={discountReason} onChange={(e) => setDiscountReason(e.target.value)} placeholder="Why is a discount being applied?" className="border-red-200 bg-red-50 focus:border-red-400" />
+            </Field>
+          )}
           <Field label="Additional Charges">
             <Input type="number" min="0" step="0.01" value={additionalCharges} onChange={(e) => setAdditionalCharges(e.target.value)} />
           </Field>
@@ -1499,7 +1523,7 @@ function ClosingConfirmModal({
           <SoftButton type="button" onClick={onCancel} disabled={confirming} className="flex-1">Cancel</SoftButton>
           <PrimaryButton
             type="button"
-            disabled={confirming || finalTotal <= 0 || qtyNum <= 0 || !splitValid}
+            disabled={confirming || finalTotal <= 0 || qtyNum <= 0 || !splitValid || (discountNum > 0 && !discountReason.trim())}
             onClick={() => void handleConfirm()}
             className="flex-1"
           >
