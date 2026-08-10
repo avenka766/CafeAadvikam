@@ -169,7 +169,23 @@ export async function printHtmlToPrinter(printerName: string, html: string): Pro
   if (!connected) return false;
   try {
     const qz = await loadQz();
-    const config = qz.configs.create(printerName, { rasterize: true });
+    // BUG FIX: without an explicit `size`/`margins`, QZ Tray's HTML renderer
+    // falls back to the printer driver's own default page — commonly a full
+    // Letter/A4 page with ~1 inch margins, NOT the actual 80mm thermal roll.
+    // Our HTML is only 76mm wide, but if it gets placed inside a ~25mm left
+    // margin on that oversized virtual page, the printer's physical roll
+    // (fixed at 80mm) runs out of room and everything past that point on
+    // each line gets cut off mid-row — exactly the symptom reported (bare
+    // "x" with no quantity number, "TABLE" with no number, truncated
+    // amounts). This matches the printer's own paper size as configured in
+    // Windows for this device ("80 x 297mm[PR95]") with zero margins so the
+    // full 76mm-wide receipt actually fits on the physical roll.
+    const config = qz.configs.create(printerName, {
+      size: { width: 80, height: 297 },
+      units: 'mm',
+      margins: 0,
+      rasterize: true,
+    });
     await qz.print(config, [{ type: 'pixel', format: 'html', flavor: 'plain', data: html }]);
     return true;
   } catch {
