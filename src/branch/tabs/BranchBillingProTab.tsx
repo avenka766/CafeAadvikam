@@ -770,7 +770,18 @@ export default function BranchBillingProTab({
         : Math.min(canonicalSubtotal, roundMoney(discountInput));
       const canonicalPromotionDiscount = Math.min(Math.max(0, canonicalSubtotal - canonicalManualDiscount), promotionDiscount);
       const canonicalCombinedDiscount = roundMoney(Math.min(canonicalSubtotal, canonicalManualDiscount + canonicalPromotionDiscount));
-      const canonicalAmountBeforeRoundOff = roundMoney(Math.max(0, canonicalSubtotal + canonicalTax - canonicalCombinedDiscount));
+      // BUG FIX (2026-08-10): this left `extraChargesValue` (Packing Charge +
+      // Delivery Charge, added to the client-side `total` at line ~431) out
+      // of the recomputed canonical total entirely. So the instant a cashier
+      // set a non-zero Packing/Delivery charge, `canonicalTotal !== total`
+      // below was guaranteed to be true (off by exactly the charge amount)
+      // even though nothing about the cart had actually changed -- every
+      // SNB/branch sale with a packing charge hit the "cart has been
+      // refreshed" guard and got blocked. extraChargesValue is a manually
+      // entered fee, not a catalogue price, so it needs no canonicalization
+      // -- just folding into both sides of this comparison the same way it's
+      // folded into `total` on the client.
+      const canonicalAmountBeforeRoundOff = roundMoney(Math.max(0, canonicalSubtotal + canonicalTax - canonicalCombinedDiscount + extraChargesValue));
       const canonicalTotal = roundWholeRupee(canonicalAmountBeforeRoundOff);
       const canonicalRoundOff = roundMoney(canonicalTotal - canonicalAmountBeforeRoundOff);
       const catalogueChanged = canonicalItems.length !== cart.length || canonicalItems.some((item, index) => {
