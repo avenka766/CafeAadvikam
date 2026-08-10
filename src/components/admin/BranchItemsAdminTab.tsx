@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { AlertCircle, AlertTriangle, Download, Hash, Pencil, Plus, Search, X } from 'lucide-react';
+import { AlertCircle, AlertTriangle, Download, FolderPlus, Hash, Pencil, Plus, Search, X } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
 import { useBranchStore } from '@/branch/branchStore';
 import { downloadExcel } from '@/lib/excelDownload';
@@ -109,23 +109,52 @@ function ItemDialog({
 }
 
 export default function BranchItemsAdminTab({ branch }: { branch: CatalogBranch }) {
-  const { items, errors, loadCatalog, subscribe } = useBranchCatalogStore();
+  const { currentUser } = useAuthStore();
+  const { items, errors, loadCatalog, subscribe, categories: savedCategories, loadCategories, addCategory } = useBranchCatalogStore();
   const { stock, fetchBranchData } = useBranchStore();
   const { items: bakeryItems, loadAllItems } = useBakeryItemsStore();
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState('All');
   const [dialog, setDialog] = useState<BranchCatalogItem | 'new' | null>(null);
+  // FEATURE: "unable to see the place to create a new category" — previously
+  // the only way to add a category was to already be adding/editing an item
+  // and know its category field secretly accepted free text. This gives it
+  // its own visible control, backed by a real branch_categories table so a
+  // category can exist before any item uses it.
+  const [addingCategory, setAddingCategory] = useState(false);
+  const [newCategoryName, setNewCategoryName] = useState('');
+  const [categoryError, setCategoryError] = useState('');
+  const [savingCategory, setSavingCategory] = useState(false);
 
   useEffect(() => {
     void loadCatalog(branch);
     void fetchBranchData(branch);
+    void loadCategories(branch);
     return subscribe(branch);
-  }, [branch, fetchBranchData, loadCatalog, subscribe]);
+  }, [branch, fetchBranchData, loadCatalog, loadCategories, subscribe]);
   useEffect(() => { void loadAllItems(); }, [loadAllItems]);
 
   const recipeItemNames = useMemo(() => bakeryItems.filter((i) => i.enabled).map((i) => i.name), [bakeryItems]);
   const catalogue = items[branch];
-  const categories = useMemo(() => catalogCategories(catalogue), [catalogue]);
+  // Union of categories already in use on items and categories explicitly
+  // created via "+ Category" below (a brand-new category has no items yet,
+  // so catalogCategories() alone would never show it).
+  const categories = useMemo(
+    () => Array.from(new Set([...catalogCategories(catalogue), ...savedCategories[branch]])).sort((a, b) => a.localeCompare(b)),
+    [catalogue, savedCategories, branch],
+  );
+
+  const handleAddCategory = async () => {
+    setCategoryError('');
+    setSavingCategory(true);
+    const message = await addCategory(branch, newCategoryName, currentUser?.displayName || currentUser?.username || 'Admin');
+    setSavingCategory(false);
+    if (message) { setCategoryError(message); return; }
+    setCategory(newCategoryName.trim());
+    setNewCategoryName('');
+    setAddingCategory(false);
+  };
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return catalogue.filter((item) => (category === 'All' || item.category === category) && (!q || item.name.toLowerCase().includes(q) || String(item.barcode).includes(q)));
@@ -138,6 +167,7 @@ export default function BranchItemsAdminTab({ branch }: { branch: CatalogBranch 
     <div className="flex flex-wrap items-center gap-2">
       <div className="relative min-w-56 flex-1"><Search className="absolute left-3 top-2.5 size-4 text-muted-foreground" /><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search item or barcode" className="w-full rounded-xl border bg-background py-2 pl-9 pr-3 text-sm" /></div>
       <select className="rounded-xl border bg-background px-3 py-2 text-sm" value={category} onChange={(e) => setCategory(e.target.value)}><option>All</option>{categories.map((value) => <option key={value}>{value}</option>)}</select>
+      <button onClick={() => { setAddingCategory(true); setCategoryError(''); setNewCategoryName(''); }} className="inline-flex items-center gap-1.5 rounded-xl border bg-background px-3 py-2 text-sm font-semibold"><FolderPlus className="size-4" />Category</button>
       <button
         onClick={() => downloadExcel(
           `${branch}_Items_${new Date().toISOString().slice(0, 10)}.xls`,
@@ -168,5 +198,26 @@ export default function BranchItemsAdminTab({ branch }: { branch: CatalogBranch 
       })}</tbody></table>
     </div>
     {dialog && <ItemDialog branch={branch} item={dialog === 'new' ? null : dialog} categories={categories} recipeItemNames={recipeItemNames} onClose={() => setDialog(null)} />}
+    {addingCategory && (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+        <div className="w-full max-w-sm overflow-hidden rounded-2xl border bg-card shadow-2xl">
+          <div className="flex items-center justify-between border-b px-5 py-4">
+            <p className="font-bold">New {branch} Category</p>
+            <button onClick={() => setAddingCategory(false)} className="rounded-lg p-2 hover:bg-muted"><X className="size-4" /></button>
+          </div>
+          <div className="space-y-3 p-5">
+            <label className="block text-xs font-semibold">Category name
+              <input autoFocus className="mt-1 w-full rounded-xl border bg-background px-3 py-2.5 text-sm" value={newCategoryName} onChange={(e) => setNewCategoryName(e.target.value)} placeholder="e.g. Cookies & Biscuits" onKeyDown={(e) => { if (e.key === 'Enter') void handleAddCategory(); }} />
+            </label>
+            <p className="text-xs text-muted-foreground">This makes the category available right away when adding or editing an item — you don't need to add an item first.</p>
+            {categoryError && <p className="flex items-center gap-2 rounded-xl bg-red-50 p-3 text-sm text-red-700"><AlertCircle className="size-4" />{categoryError}</p>}
+          </div>
+          <div className="flex gap-2 px-5 pb-5">
+            <button onClick={() => setAddingCategory(false)} className="flex-1 rounded-xl border py-2.5 text-sm font-semibold">Cancel</button>
+            <button disabled={savingCategory || !newCategoryName.trim()} onClick={() => void handleAddCategory()} className="flex-1 rounded-xl bg-primary py-2.5 text-sm font-semibold text-primary-foreground disabled:opacity-60">{savingCategory ? 'Saving…' : 'Save'}</button>
+          </div>
+        </div>
+      </div>
+    )}
   </div>;
 }
