@@ -24,6 +24,7 @@ import { TABLES_G, TABLES_A, tableSectionOf, tableLabel, MENU_CATEGORIES } from 
 import EmptyState from '@/components/ui/EmptyState';
 import { supabase } from '@/lib/supabase';
 import { businessDate } from '@/lib/businessDate';
+import { printViaQz, listQzPrinters, isQzAvailable, getPrinterPref, setPrinterPref } from '@/lib/qzPrint';
 import { useNotificationStore } from '@/bakery/notificationStore';
 import { useSearchParams } from 'react-router-dom';
 import WalletOffersPanel, { type WalletOtherMode } from '@/components/commerce/WalletOffersPanel';
@@ -421,16 +422,24 @@ function safeHtml(value: unknown): string {
     .replace(/'/g, '&#39;');
 }
 
-// BUG FIX: this used to open a real, visible `window.open(..., '_blank', ...)`
-// popup for every single print (KOT, bill, KOT+bill, credit slip, advance
-// slip...) — a whole separate browser window would flash on screen before/
-// during printing. The branch billing print pipeline (src/branch/printUtils.ts
-// printCounterBill) already solved this correctly with an off-screen,
-// aria-hidden 1x1 iframe that's never actually visible at any point — same
-// silent-print outcome, no popup window, no "preparing print" page ever
-// shown. Cafe printing now uses that same pattern instead of its own weaker
-// popup-window approach.
-function printCounterSlip(title: string, bodyHtml: string) {
+function buildSlipDocument(title: string, bodyHtml: string): string {
+  return `<!DOCTYPE html><html><head><title>${safeHtml(title)}</title>
+<style>
+@page{margin:4mm;size:80mm auto}*{box-sizing:border-box}body{margin:0;width:76mm;font-family:'Courier New',monospace;color:#000;font-size:12px;line-height:1.3}.c{text-align:center}.r{text-align:right}.b{font-weight:900}.muted{color:#444}.big{font-size:16px}.shop{font-size:17px;font-weight:900}.dash{border-top:1px dashed #000;margin:6px 0}.solid{border-top:2px solid #000;margin:6px 0}.kv{width:100%;border-collapse:collapse}.kv td{padding:1px 0;vertical-align:top}.mt{margin-top:6px}.paid{font-size:15px;font-weight:900;text-align:center;margin-bottom:3px}.pick{text-align:right;font-size:16px;font-weight:900}table{width:100%;border-collapse:collapse}td,th{padding:3px 1px;vertical-align:top}th{text-align:left;border-bottom:1px solid #000}tbody tr.item-row td{border-bottom:1px solid #ddd}.num{text-align:right}.grand td{font-size:18px;font-weight:900;padding:6px 0}.thanks{text-align:center;font-size:14px;margin-top:8px}.small{font-size:10px}
+/* KOT (kitchen ticket) — deliberately larger + heavier than the customer bill so kitchen staff can read it at a glance across the pass. */
+.kot-slip{font-size:15px;font-weight:700}
+.kot-slip .kot-title{font-size:20px;font-weight:900;text-align:center;margin-bottom:2px}
+.kot-slip .kot-meta{font-size:15px;font-weight:900}
+.kot-slip .kot-item{width:100%;border-collapse:collapse;table-layout:fixed;margin:4px 0}
+.kot-slip .kot-item td{padding:2px 0;vertical-align:top}
+.kot-slip .kot-name{font-size:17px;font-weight:900;word-wrap:break-word;white-space:normal;width:auto}
+.kot-slip .kot-qty{font-size:20px;font-weight:900;text-align:right;width:56px;white-space:nowrap}
+.kot-slip .kot-note{font-size:13px;font-weight:700;font-style:italic;padding-top:0;padding-bottom:4px}
+.kot-slip .kot-count{font-size:15px;font-weight:900;text-align:right;margin-top:4px}
+</style></head><body>${bodyHtml}</body></html>`;
+}
+
+function printCounterSlipViaIframe(title: string, bodyHtml: string) {
   const frame = document.createElement('iframe');
   frame.setAttribute('aria-hidden', 'true');
   frame.style.position = 'fixed';
@@ -447,10 +456,7 @@ function printCounterSlip(title: string, bodyHtml: string) {
   if (!win) { frame.remove(); return Promise.resolve(); }
 
   win.document.open();
-  win.document.write(`<!DOCTYPE html><html><head><title>${safeHtml(title)}</title>
-<style>
-@page{margin:4mm;size:80mm auto}*{box-sizing:border-box}body{margin:0;width:76mm;font-family:'Courier New',monospace;color:#000;font-size:12px;line-height:1.3}.c{text-align:center}.r{text-align:right}.b{font-weight:900}.muted{color:#444}.big{font-size:16px}.shop{font-size:17px;font-weight:900}.dash{border-top:1px dashed #000;margin:6px 0}.solid{border-top:2px solid #000;margin:6px 0}.kv{width:100%;border-collapse:collapse}.kv td{padding:1px 0;vertical-align:top}.mt{margin-top:6px}.paid{font-size:15px;font-weight:900;text-align:center;margin-bottom:3px}.pick{text-align:right;font-size:16px;font-weight:900}table{width:100%;border-collapse:collapse}td,th{padding:3px 1px;vertical-align:top}th{text-align:left;border-bottom:1px solid #000}tbody tr.item-row td{border-bottom:1px solid #ddd}.num{text-align:right}.grand td{font-size:18px;font-weight:900;padding:6px 0}.thanks{text-align:center;font-size:14px;margin-top:8px}.small{font-size:10px}
-</style></head><body>${bodyHtml}</body></html>`);
+  win.document.write(buildSlipDocument(title, bodyHtml));
   win.document.close();
 
   return new Promise<void>((resolve) => {
@@ -470,6 +476,21 @@ function printCounterSlip(title: string, bodyHtml: string) {
     window.setTimeout(finish, 60_000);
     setTimeout(() => { try { win.focus(); win.print(); } catch { finish(); } }, 350);
   });
+}
+
+// Tries QZ Tray first (silent print straight to whichever named printer is
+// configured for this role — 'kot' for the Kitchen ticket, 'bill' for
+// everything customer-facing), and only falls back to the manual
+// window.print() dialog/iframe pipeline if QZ Tray isn't installed/running
+// or no printer has been assigned yet in Printer Setup. This is what makes
+// the KOT land on the kitchen printer and the bill land on the counter
+// printer automatically, with no change in behavior for anyone who hasn't
+// set up QZ Tray yet.
+async function printCounterSlip(title: string, bodyHtml: string, role: 'kot' | 'bill' = 'bill') {
+  const html = buildSlipDocument(title, bodyHtml);
+  const printedViaQz = await printViaQz(role, html);
+  if (printedViaQz) return;
+  await printCounterSlipViaIframe(title, bodyHtml);
 }
 
 // Two/three-column receipt rows MUST use a <table> (not flex/grid divs) — on
@@ -577,23 +598,41 @@ function dateTimeLabel(value?: string): string {
   return d.toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
+// Dedicated row renderer for KOT items — uses a FIXED-width quantity column
+// (kot-qty, width:56px, table-layout:fixed) so a long item/combo name can
+// never squeeze the quantity cell down to nothing or wrap it out of view,
+// which is what was happening with the generic shared kvRow() table (its
+// columns auto-size to content, so a long dish name could shrink "xN" to an
+// almost invisible sliver). Notes now get their own bold/italic line below
+// the item instead of being crammed in parentheses on the same line.
+function kotItemRow(name: string, quantity: number, notes?: string): string {
+  return `
+    <table class="kot-item">
+      <tr><td class="kot-name">${safeHtml(name)}</td><td class="kot-qty">x${quantity}</td></tr>
+      ${notes ? `<tr><td colspan="2" class="kot-note">Note: ${safeHtml(notes)}</td></tr>` : ''}
+    </table>
+  `;
+}
+
 function kotBody(order: Order): string {
   const dt = receiptDate(order.createdAt);
-  const rows = order.items.map(ci => `
-    ${kvRow([`${safeHtml(ci.menuItem.name)}${ci.notes ? ` (${safeHtml(ci.notes)})` : ''}`, `x${ci.quantity}`], { bold: true })}
-  `).join('');
+  const rows = order.items.map(ci => kotItemRow(ci.menuItem.name, ci.quantity, ci.notes)).join('');
+  const totalQty = order.items.reduce((sum, ci) => sum + Number(ci.quantity || 0), 0);
   return `
-    <div class="thanks" style="font-size:14px">KOT - ${safeHtml(billNo(order))}</div>
-    ${kvRow([`Date: ${safeHtml(dt.date)}`, order.orderType === 'dine_in' ? `TABLE ${order.tableNumber ?? '-'}` : 'Pick UP'])}
-    ${kvRow([safeHtml(dt.time), ''])}
-    <div class="dash"></div>
-    ${rows}
-    <div class="dash"></div>
+    <div class="kot-slip">
+      <div class="kot-title">*** KOT - ${safeHtml(billNo(order))} ***</div>
+      ${kvRow([`Date: ${safeHtml(dt.date)}`, order.orderType === 'dine_in' ? `TABLE ${order.tableNumber ?? '-'}` : 'PARCEL / PICK UP'], { bold: true })}
+      ${kvRow([`Time: ${safeHtml(dt.time)}`, `Server: ${safeHtml(order.createdBy || '-')}`], { bold: true })}
+      <div class="dash"></div>
+      ${rows}
+      <div class="dash"></div>
+      <div class="kot-count">Total Items: ${totalQty}</div>
+    </div>
   `;
 }
 
 function printKotSlip(order: Order) {
-  return printCounterSlip(`KOT ${order.orderNumber}`, kotBody(order));
+  return printCounterSlip(`KOT ${order.orderNumber}`, kotBody(order), 'kot');
 }
 
 function billBody(order: Order, copyType: 'original' | 'duplicate' = 'original', cashTendered?: number): string {
@@ -4020,6 +4059,95 @@ function CafePaymentModeEditTab({ orders }: { orders: Order[] }) {
   );
 }
 
+// -- Printer Setup modal -------------------------------------------------------
+// Lets the biller assign which installed Windows printer is the Bill
+// Printer vs the Kitchen KOT Printer, so QZ Tray (see src/lib/qzPrint.ts)
+// can route each print job silently to the correct machine. If QZ Tray
+// isn't installed/running on this PC yet, this just shows install
+// instructions — nothing here is required for the app to keep working the
+// old way (manual print dialog / single default printer).
+function PrinterSetupModal({ onClose }: { onClose: () => void }) {
+  const [qzOnline, setQzOnline] = useState<boolean | null>(null);
+  const [printers, setPrinters] = useState<string[]>([]);
+  const [billPrinter, setBillPrinterState] = useState(() => getPrinterPref('bill'));
+  const [kotPrinter, setKotPrinterState] = useState(() => getPrinterPref('kot'));
+  const [checking, setChecking] = useState(true);
+
+  const refresh = useCallback(async () => {
+    setChecking(true);
+    const online = await isQzAvailable();
+    setQzOnline(online);
+    setPrinters(online ? await listQzPrinters() : []);
+    setChecking(false);
+  }, []);
+
+  useEffect(() => { void refresh(); }, [refresh]);
+
+  const save = (role: 'bill' | 'kot', value: string) => {
+    setPrinterPref(role, value);
+    if (role === 'bill') setBillPrinterState(value);
+    else setKotPrinterState(value);
+  };
+
+  return (
+    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 p-4">
+      <div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-xl">
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex gap-3">
+            <div className="size-11 shrink-0 rounded-2xl bg-slate-100 flex items-center justify-center"><Printer className="size-5 text-slate-700" /></div>
+            <div>
+              <h2 className="font-display text-lg font-black">Printer Setup</h2>
+              <p className="text-sm text-muted-foreground">Send KOTs to the kitchen printer and bills to the counter printer automatically.</p>
+            </div>
+          </div>
+          <button onClick={onClose} className="p-2 rounded-xl bg-muted"><X className="size-4" /></button>
+        </div>
+
+        <div className="mt-4 rounded-xl border border-border p-3">
+          <div className="flex items-center gap-2">
+            <span className={cn('size-2 rounded-full', qzOnline ? 'bg-emerald-500' : 'bg-red-500')} />
+            <span className="text-sm font-bold">{checking ? 'Checking QZ Tray…' : qzOnline ? 'QZ Tray connected' : 'QZ Tray not detected'}</span>
+            <button onClick={() => void refresh()} className="ml-auto text-xs font-bold text-muted-foreground underline">Recheck</button>
+          </div>
+          {!checking && !qzOnline && (
+            <p className="mt-2 text-xs text-muted-foreground">
+              Install QZ Tray (free, one-time) from <span className="font-bold">qz.io</span> on this billing computer, then click Recheck.
+              Until it's installed, KOT and Bill will keep printing the old way (whatever printer is set as Windows default).
+            </p>
+          )}
+        </div>
+
+        <div className="mt-4 space-y-3">
+          <div>
+            <label className="text-xs font-black uppercase text-muted-foreground">Kitchen KOT Printer</label>
+            {qzOnline ? (
+              <select value={kotPrinter} onChange={(e) => save('kot', e.target.value)} className="mt-1 w-full rounded-xl border border-border bg-card px-3 py-2 text-sm font-bold">
+                <option value="">Not set — use Windows default</option>
+                {printers.map(p => <option key={p} value={p}>{p}</option>)}
+              </select>
+            ) : (
+              <input value={kotPrinter} onChange={(e) => save('kot', e.target.value)} placeholder="Exact printer name from Windows" className="mt-1 w-full rounded-xl border border-border bg-card px-3 py-2 text-sm font-bold" />
+            )}
+          </div>
+          <div>
+            <label className="text-xs font-black uppercase text-muted-foreground">Bill / Receipt Printer</label>
+            {qzOnline ? (
+              <select value={billPrinter} onChange={(e) => save('bill', e.target.value)} className="mt-1 w-full rounded-xl border border-border bg-card px-3 py-2 text-sm font-bold">
+                <option value="">Not set — use Windows default</option>
+                {printers.map(p => <option key={p} value={p}>{p}</option>)}
+              </select>
+            ) : (
+              <input value={billPrinter} onChange={(e) => save('bill', e.target.value)} placeholder="Exact printer name from Windows" className="mt-1 w-full rounded-xl border border-border bg-card px-3 py-2 text-sm font-bold" />
+            )}
+          </div>
+        </div>
+
+        <button onClick={onClose} className="mt-5 w-full rounded-xl bg-slate-950 py-3 text-sm font-black text-white">Done</button>
+      </div>
+    </div>
+  );
+}
+
 // -- Main BillingDashboard -----------------------------------------------------
 export default function BillingDashboard() {
   // STORE-01 FIX: granular selector with shallow equality - avoids full re-render on cart/loading changes
@@ -4123,6 +4251,7 @@ export default function BillingDashboard() {
     )
     .sort((a, b) => new Date(a.deliveryDate!).getTime() - new Date(b.deliveryDate!).getTime()), [orders]);
   const [showDeliveryPopup, setShowDeliveryPopup] = useState(false);
+  const [showPrinterSetup, setShowPrinterSetup] = useState(false);
   useEffect(() => {
     if (todayDeliveryAlerts.length === 0 || !currentUser?.username) return;
     const key = `biller-delivery-popup:${currentUser.username}:${todayIso()}`;
@@ -4198,6 +4327,8 @@ export default function BillingDashboard() {
         </div>
       )}
 
+      {showPrinterSetup && <PrinterSetupModal onClose={() => setShowPrinterSetup(false)} />}
+
       {/* Compact live/order filter rail. Main Cafe navigation now lives above this page. */}
       <div className="biller-status-bar shrink-0 border-b border-border bg-background px-3 py-1.5">
         <div className="flex min-w-0 flex-wrap items-center gap-1.5">
@@ -4214,6 +4345,15 @@ export default function BillingDashboard() {
             className="mr-1 inline-flex size-7 items-center justify-center rounded-lg border border-border bg-card text-muted-foreground transition-colors hover:bg-muted disabled:opacity-60"
           >
             <RefreshCw className={cn('size-3.5', refreshing && 'animate-spin')} />
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowPrinterSetup(true)}
+            title="Printer setup (route KOT vs Bill to specific printers)"
+            aria-label="Printer setup"
+            className="mr-1 inline-flex size-7 items-center justify-center rounded-lg border border-border bg-card text-muted-foreground transition-colors hover:bg-muted"
+          >
+            <Printer className="size-3.5" />
           </button>
 
           {([
