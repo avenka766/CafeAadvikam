@@ -4124,6 +4124,83 @@ function NewBillPanel() {
         </div>
       </div>
     )}
+
+    {/* BUG FIX (production error ERR-20260810-C63EE19E, "moveTarget is not
+        defined"): this Move Table / Move Item destination picker reads
+        moveTarget/moveSection/movingTable/tableNumber/tableBoard/etc., which
+        are all state that lives in THIS component (NewBillPanel). It was
+        originally (wrongly) rendered from the outer BillingDashboard wrapper
+        component instead, which has no such state at all — a plain
+        ReferenceError the instant a biller opened this screen. Moved here,
+        next to the state it actually reads. Same G/A-section-then-grid
+        pattern as the main table selector above, so staff already know how
+        to use it. Occupied tables are visually flagged the same way; picking
+        one is allowed (Petpooja-style merge) but the whole-table move path
+        asks for a confirm first (see handleMoveTable). */}
+    {moveTarget && tableNumber != null && (
+      <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/55 px-4" onClick={closeMovePicker}>
+        <div className="w-full max-w-sm rounded-3xl border border-border bg-background p-4 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+          <div className="flex items-start justify-between gap-3 mb-3">
+            <div>
+              <h2 className="font-display text-base font-black flex items-center gap-1.5"><ArrowRightLeft className="size-4 text-blue-700" />
+                {moveTarget.scope === 'table' ? `Move Table ${tableLabel(tableNumber)}` : 'Move item to table'}
+              </h2>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                {moveTarget.scope === 'table'
+                  ? 'Moves this table\'s whole running order to the table you pick.'
+                  : 'Moves just this item into the picked table\'s draft.'}
+              </p>
+            </div>
+            <button onClick={closeMovePicker} className="p-1.5 rounded-lg bg-muted shrink-0"><X className="size-4" /></button>
+          </div>
+
+          {moveSection === null ? (
+            <div className="grid grid-cols-2 gap-2 p-1">
+              {(['G', 'A'] as const).map((section) => (
+                <button key={section} type="button" onClick={() => setMoveSection(section)}
+                  className="flex flex-col items-center justify-center gap-1 rounded-xl border border-border bg-muted/60 py-4 text-foreground hover:bg-muted active:scale-95">
+                  <span className="text-2xl font-display font-black">{section}</span>
+                  <span className="text-[10px] font-body font-bold text-muted-foreground">{section}1 – {section}15</span>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div>
+              <button type="button" onClick={() => setMoveSection(null)} className="mb-1.5 flex items-center gap-1 rounded-lg px-1.5 py-1 text-[11px] font-body font-bold text-muted-foreground hover:text-foreground">
+                ← Section {moveSection}
+              </button>
+              <div className="grid grid-cols-5 gap-1.5 p-1 rounded-2xl max-h-64 overflow-y-auto">
+                {(moveSection === 'G' ? TABLES_G : TABLES_A).filter((num) => num !== tableNumber).map((num) => {
+                  const isRunning = tableBoard[num] !== undefined;
+                  const hasDraft = !isRunning && Boolean(tableDrafts[num]?.cart.length || tableDrafts[num]?.customItems.length);
+                  // A whole-table move can't land on a table that already
+                  // has its own running order (see handleMoveTable) — grey
+                  // it out here instead of letting the tap end in an alert.
+                  // Moving a single unsent item has no such conflict.
+                  const blocked = moveTarget.scope === 'table' && isRunning;
+                  return (
+                    <button key={num} disabled={movingTable || blocked}
+                      onClick={() => moveTarget.scope === 'table' ? handleMoveTable(num) : handleMoveItem(num)}
+                      className={cn('relative py-2.5 rounded-xl text-xs font-body font-bold transition-all active:scale-90 flex flex-col items-center gap-0.5',
+                        blocked ? 'bg-muted/30 border border-border text-muted-foreground/50 cursor-not-allowed'
+                          : isRunning ? 'bg-amber-100 border border-amber-300 text-amber-800 hover:bg-amber-200'
+                          : hasDraft ? 'bg-blue-50 border border-blue-300 text-blue-700 hover:bg-blue-100'
+                          : 'bg-muted/60 border border-border text-foreground hover:bg-muted')}>
+                      {incomingByTable[num] ? (
+                        <span className="absolute -top-1.5 -right-1.5 flex size-4 items-center justify-center rounded-full bg-fuchsia-500 text-white text-[8px] font-black ring-2 ring-white">{incomingByTable[num]}</span>
+                      ) : null}
+                      {tableLabel(num)}
+                      {isRunning && <span className="text-[9px] font-semibold opacity-80">{tableBoard[num]} item{tableBoard[num] === 1 ? '' : 's'}</span>}
+                      {hasDraft && <span className="text-[9px] font-semibold opacity-80">draft</span>}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    )}
     </>
   );
 }
@@ -4554,76 +4631,6 @@ export default function BillingDashboard() {
       )}
 
       {showPrinterSetup && <PrinterSetupModal onClose={() => setShowPrinterSetup(false)} />}
-
-      {/* Move Table / Move Item destination picker — same G/A-section-then-grid
-          pattern as the main table selector above, so staff already know how
-          to use it. Occupied tables are visually flagged the same way; picking
-          one is allowed (Petpooja-style merge) but the whole-table move path
-          asks for a confirm first (see handleMoveTable). */}
-      {moveTarget && tableNumber != null && (
-        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/55 px-4" onClick={closeMovePicker}>
-          <div className="w-full max-w-sm rounded-3xl border border-border bg-background p-4 shadow-2xl" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-start justify-between gap-3 mb-3">
-              <div>
-                <h2 className="font-display text-base font-black flex items-center gap-1.5"><ArrowRightLeft className="size-4 text-blue-700" />
-                  {moveTarget.scope === 'table' ? `Move Table ${tableLabel(tableNumber)}` : 'Move item to table'}
-                </h2>
-                <p className="text-xs text-muted-foreground mt-0.5">
-                  {moveTarget.scope === 'table'
-                    ? 'Moves this table\'s whole running order to the table you pick.'
-                    : 'Moves just this item into the picked table\'s draft.'}
-                </p>
-              </div>
-              <button onClick={closeMovePicker} className="p-1.5 rounded-lg bg-muted shrink-0"><X className="size-4" /></button>
-            </div>
-
-            {moveSection === null ? (
-              <div className="grid grid-cols-2 gap-2 p-1">
-                {(['G', 'A'] as const).map((section) => (
-                  <button key={section} type="button" onClick={() => setMoveSection(section)}
-                    className="flex flex-col items-center justify-center gap-1 rounded-xl border border-border bg-muted/60 py-4 text-foreground hover:bg-muted active:scale-95">
-                    <span className="text-2xl font-display font-black">{section}</span>
-                    <span className="text-[10px] font-body font-bold text-muted-foreground">{section}1 – {section}15</span>
-                  </button>
-                ))}
-              </div>
-            ) : (
-              <div>
-                <button type="button" onClick={() => setMoveSection(null)} className="mb-1.5 flex items-center gap-1 rounded-lg px-1.5 py-1 text-[11px] font-body font-bold text-muted-foreground hover:text-foreground">
-                  ← Section {moveSection}
-                </button>
-                <div className="grid grid-cols-5 gap-1.5 p-1 rounded-2xl max-h-64 overflow-y-auto">
-                  {(moveSection === 'G' ? TABLES_G : TABLES_A).filter((num) => num !== tableNumber).map((num) => {
-                    const isRunning = tableBoard[num] !== undefined;
-                    const hasDraft = !isRunning && Boolean(tableDrafts[num]?.cart.length || tableDrafts[num]?.customItems.length);
-                    // A whole-table move can't land on a table that already
-                    // has its own running order (see handleMoveTable) — grey
-                    // it out here instead of letting the tap end in an alert.
-                    // Moving a single unsent item has no such conflict.
-                    const blocked = moveTarget.scope === 'table' && isRunning;
-                    return (
-                      <button key={num} disabled={movingTable || blocked}
-                        onClick={() => moveTarget.scope === 'table' ? handleMoveTable(num) : handleMoveItem(num)}
-                        className={cn('relative py-2.5 rounded-xl text-xs font-body font-bold transition-all active:scale-90 flex flex-col items-center gap-0.5',
-                          blocked ? 'bg-muted/30 border border-border text-muted-foreground/50 cursor-not-allowed'
-                            : isRunning ? 'bg-amber-100 border border-amber-300 text-amber-800 hover:bg-amber-200'
-                            : hasDraft ? 'bg-blue-50 border border-blue-300 text-blue-700 hover:bg-blue-100'
-                            : 'bg-muted/60 border border-border text-foreground hover:bg-muted')}>
-                        {incomingByTable[num] ? (
-                          <span className="absolute -top-1.5 -right-1.5 flex size-4 items-center justify-center rounded-full bg-fuchsia-500 text-white text-[8px] font-black ring-2 ring-white">{incomingByTable[num]}</span>
-                        ) : null}
-                        {tableLabel(num)}
-                        {isRunning && <span className="text-[9px] font-semibold opacity-80">{tableBoard[num]} item{tableBoard[num] === 1 ? '' : 's'}</span>}
-                        {hasDraft && <span className="text-[9px] font-semibold opacity-80">draft</span>}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
 
       {/* Compact live/order filter rail. Main Cafe navigation now lives above this page. */}
       <div className="biller-status-bar shrink-0 border-b border-border bg-background px-3 py-1.5">
