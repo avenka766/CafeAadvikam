@@ -18,7 +18,7 @@ import {
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import * as XLSX from 'xlsx';
 import jsPDF from 'jspdf';
-import { useBakeryStore, isPlannedOrder } from './bakeryStore';
+import { useBakeryStore, isPlannedOrder, clampQtyForUnit } from './bakeryStore';
 import { useAuthStore } from '@/stores/authStore';
 import { cn } from '@/lib/utils';
 import type { BakeryOrder, BakeryOrderItem, PreparedItem, Branch } from './types';
@@ -433,8 +433,19 @@ export default function PlannerDashboard() {
   // received them yet. Production Entry + Dispatch now only source orders
   // once Store has combined + confirmed them (status 'store_confirmed' or
   // later) — the same gate 'Sent'/Reports already use elsewhere.
+  // BUG FIX (2026-08-10): "planning orders that has been placed should only
+  // show in Dispatch tab -> Custom(Planned)... currently not displaying." A
+  // Planning-tab batch (Planned bucket, target_branch null) has no real
+  // branch/Store waiting on it the way a VRSNB/SNB/Hosur order does — it's
+  // the Planner's own stock plan, sitting at status 'pending' until someone
+  // separately visits Merged Summary and clicks "Send to Store". That extra
+  // manual detour is exactly why placed plans looked like they'd vanished.
+  // Carve Planned-bucket orders out of the store-confirmation gate above
+  // (added 2026-08-10 for real branch orders, and still fully in force for
+  // them) so a plan shows in Production Entry / Dispatch the moment it's
+  // placed, without needing anyone to "send" it anywhere first.
   const productionSourceOrders = useMemo(
-    () => orders.filter(o => ['store_confirmed', 'produced', 'dispatched'].includes(o.status)),
+    () => orders.filter(o => ['store_confirmed', 'produced', 'dispatched'].includes(o.status) || (o.status === 'pending' && bucketFor(o) === 'Planned')),
     [orders],
   );
   const activeLeftovers    = useMemo(() => orders.filter(o => (o.leftoverStatus ?? 'pending') === 'pending' && o.status === 'dispatched'), [orders]);
@@ -458,7 +469,7 @@ export default function PlannerDashboard() {
               </div>
             )}
             {tab === 'hosur' && <HosurUnifiedSection />}
-            {tab === 'cake' && <PackingCakeOrdersTab />}
+            {tab === 'cake' && <PackingCakeOrdersTab mode="planner" />}
             {tab === 'transfer-in' && <PackingTransferInTab />}
             {tab === 'transfer-out' && <PlannerTransferOutTab />}
             {tab === 'closure' && <PackingDailyClosureTab />}
@@ -1153,7 +1164,7 @@ function PlanningTab({ orders }: { orders: BakeryOrder[] }) {
   );
 
   const setQty = (item: { name: string; unit: 'pcs' | 'kg' }, value: number) => {
-    const safe = Math.max(0, Math.round(value * 1000) / 1000);
+    const safe = clampQtyForUnit(value, item.unit);
     setCart(prev => {
       const next = { ...prev };
       if (safe <= 0) delete next[item.name];
@@ -1228,7 +1239,7 @@ function PlanningTab({ orders }: { orders: BakeryOrder[] }) {
                     <p className="text-xs font-bold text-muted-foreground">{item.unit} · {item.category}</p>
                     <div className="mt-2 flex items-center gap-2">
                       <button onClick={() => setQty(item, current - step)} className="size-8 rounded-lg border border-border bg-card font-black text-foreground hover:bg-muted">-</button>
-                      <input type="number" value={current || ''} onChange={e => setQty(item, Number(e.target.value))} placeholder="0" className="h-8 w-full rounded-lg border border-border bg-background text-center text-sm font-black" />
+                      <input type="number" step={item.unit === 'pcs' ? 1 : 0.001} value={current || ''} onChange={e => setQty(item, Number(e.target.value))} placeholder="0" className="h-8 w-full rounded-lg border border-border bg-background text-center text-sm font-black" />
                       <button onClick={() => setQty(item, current + step)} className="size-8 rounded-lg bg-primary font-black text-primary-foreground hover:opacity-90">+</button>
                     </div>
                   </article>
@@ -2614,6 +2625,29 @@ function ReportsTab({ orders }: { orders: BakeryOrder[] }) {
       .sort((a, b) => a.shopName.localeCompare(b.shopName));
   }, [hosurShopDispatchRows]);
 
+  // FEATURE (2026-08-10): "cake orders should be clearly noted and tracked
+  // in reports" — cake_master_orders is a completely separate table from
+  // bakery_orders (the `orders` prop this whole tab is built on), so cakes
+  // were entirely invisible in Reports until now. Scoped to the same
+  // date-range picker as everything else, keyed off created_at (when the
+  // advance order — and therefore the cake — was actually placed).
+  const [cakeOrdersInRange, setCakeOrdersInRange] = useState<{ branch: string; status: string; order_value: number; created_at: string }[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const fromIso = `${dateFrom}T00:00:00`;
+      const toIso = `${dateTo}T23:59:59`;
+      const { data } = await supabase.from('cake_master_orders').select('branch, status, order_value, created_at').gte('created_at', fromIso).lte('created_at', toIso);
+      if (cancelled) return;
+      setCakeOrdersInRange((data ?? []) as { branch: string; status: string; order_value: number; created_at: string }[]);
+    })();
+    return () => { cancelled = true; };
+  }, [dateFrom, dateTo, refreshTick]);
+  const cakeOrdersDispatched = useMemo(() => cakeOrdersInRange.filter(o => o.status === 'Dispatched'), [cakeOrdersInRange]);
+  const cakeOrdersCancelled = useMemo(() => cakeOrdersInRange.filter(o => o.status === 'Correction Required'), [cakeOrdersInRange]);
+  const cakeOrdersValue = useMemo(() => Math.round(cakeOrdersInRange.reduce((s, o) => s + Number(o.order_value || 0), 0) * 100) / 100, [cakeOrdersInRange]);
+  const cakeOrdersDispatchedValue = useMemo(() => Math.round(cakeOrdersDispatched.reduce((s, o) => s + Number(o.order_value || 0), 0) * 100) / 100, [cakeOrdersDispatched]);
+
   const hosurLeftoverAvailable = useMemo(() => hosurLeftovers.filter(l => l.status === 'available'), [hosurLeftovers]);
   const hosurLeftoverResolved = useMemo(() => hosurLeftovers.filter(l => l.status === 'resolved'), [hosurLeftovers]);
   const hosurShortfallCount = useMemo(() => hosurLeftovers.filter(l => l.reason === 'dispatch_shortfall').length, [hosurLeftovers]);
@@ -2871,6 +2905,22 @@ function ReportsTab({ orders }: { orders: BakeryOrder[] }) {
           </div>
         ))}
       </div>
+
+      {/* FEATURE (2026-08-10): Cake Orders summary — see comment above
+          cakeOrdersInRange. Kept as its own labeled card rather than mixed
+          into the KPI row above, since these numbers come from a completely
+          different table (cake_master_orders) than every other KPI here. */}
+      {cakeOrdersInRange.length > 0 && (
+        <div className="card-base p-4">
+          <div className="flex items-center gap-2"><Cake className="size-4 text-rose-500" /><p className="text-sm font-black text-foreground">Cake Orders ({rangeLabel})</p></div>
+          <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
+            <div className="rounded-xl border border-border bg-card p-3"><p className="text-[10px] font-black uppercase tracking-wide text-muted-foreground">Placed</p><p className="font-display text-xl font-bold tabular-nums text-foreground">{cakeOrdersInRange.length}</p></div>
+            <div className="rounded-xl border border-teal-200 bg-teal-50 p-3"><p className="text-[10px] font-black uppercase tracking-wide text-teal-700">Dispatched</p><p className="font-display text-xl font-bold tabular-nums text-teal-700">{cakeOrdersDispatched.length}</p></div>
+            <div className="rounded-xl border border-amber-200 bg-amber-50 p-3"><p className="text-[10px] font-black uppercase tracking-wide text-amber-700">Corrections</p><p className="font-display text-xl font-bold tabular-nums text-amber-700">{cakeOrdersCancelled.length}</p></div>
+            <div className="rounded-xl border border-border bg-card p-3"><p className="text-[10px] font-black uppercase tracking-wide text-muted-foreground">Value (Dispatched / Total)</p><p className="font-display text-base font-bold tabular-nums text-foreground">Rs. {cakeOrdersDispatchedValue.toFixed(0)} / {cakeOrdersValue.toFixed(0)}</p></div>
+          </div>
+        </div>
+      )}
 
       {/* Variance visualization — items furthest from their requested quantity,
           red = falling short, blue = running ahead, so the owner sees at a glance
@@ -3223,7 +3273,7 @@ function BillingTab() {
   );
 
   const setQty = (item: { name: string; unit: 'pcs' | 'kg'; price: number }, value: number) => {
-    const safe = Math.max(0, Math.round(value * 1000) / 1000);
+    const safe = clampQtyForUnit(value, item.unit);
     setCart(prev => {
       const next = { ...prev };
       if (safe <= 0) delete next[item.name];
@@ -3350,7 +3400,7 @@ function BillingTab() {
                     <p className="text-xs font-bold text-muted-foreground">{invoiceMoney(item.price)} / {item.unit} · {item.category}</p>
                     <div className="mt-2 flex items-center gap-2">
                       <button onClick={() => setQty(item, current - step)} className="size-8 rounded-lg border border-border bg-card font-black text-foreground hover:bg-muted">-</button>
-                      <input type="number" value={current || ''} onChange={e => setQty(item, Number(e.target.value))} placeholder="0" className="h-8 w-full rounded-lg border border-border bg-background text-center text-sm font-black" />
+                      <input type="number" step={item.unit === 'pcs' ? 1 : 0.001} value={current || ''} onChange={e => setQty(item, Number(e.target.value))} placeholder="0" className="h-8 w-full rounded-lg border border-border bg-background text-center text-sm font-black" />
                       <button onClick={() => setQty(item, current + step)} className="size-8 rounded-lg bg-primary font-black text-primary-foreground hover:opacity-90">+</button>
                     </div>
                   </article>
@@ -3551,7 +3601,7 @@ function SampleBillTab() {
   );
 
   const setQty = (item: { name: string; unit: 'pcs' | 'kg'; price: number }, value: number) => {
-    const safe = Math.max(0, Math.round(value * 1000) / 1000);
+    const safe = clampQtyForUnit(value, item.unit);
     setCart(prev => {
       const next = { ...prev };
       if (safe <= 0) delete next[item.name];
@@ -3657,7 +3707,7 @@ function SampleBillTab() {
                     <p className="text-xs font-bold text-muted-foreground">{invoiceMoney(item.price)} / {item.unit} · {item.category}</p>
                     <div className="mt-2 flex items-center gap-2">
                       <button onClick={() => setQty(item, current - step)} className="size-8 rounded-lg border border-border bg-card font-black text-foreground hover:bg-muted">-</button>
-                      <input type="number" value={current || ''} onChange={e => setQty(item, Number(e.target.value))} placeholder="0" className="h-8 w-full rounded-lg border border-border bg-background text-center text-sm font-black" />
+                      <input type="number" step={item.unit === 'pcs' ? 1 : 0.001} value={current || ''} onChange={e => setQty(item, Number(e.target.value))} placeholder="0" className="h-8 w-full rounded-lg border border-border bg-background text-center text-sm font-black" />
                       <button onClick={() => setQty(item, current + step)} className="size-8 rounded-lg bg-amber-500 font-black text-white hover:opacity-90">+</button>
                     </div>
                   </article>
@@ -4734,7 +4784,7 @@ function DispatchTab({ orders, allOrders }: { orders: BakeryOrder[]; allOrders: 
 // of hunting through the separate Invoice tab. This pulls the branch's (or
 // one Hosur shop's) recent invoices straight into the Dispatched view with
 // one-tap thermal/A4 reprint, as many times as needed.
-function RecentDispatchInvoices({ scope, hosurShopId, title }: { scope: Branch; hosurShopId?: string; title?: string }) {
+function RecentDispatchInvoices({ scope, hosurShopId, title, customSalesOnly }: { scope: Branch; hosurShopId?: string; title?: string; customSalesOnly?: boolean }) {
   const [invoices, setInvoices] = useState<DispatchInvoiceRecord[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -4746,14 +4796,19 @@ function RecentDispatchInvoices({ scope, hosurShopId, title }: { scope: Branch; 
       const to = new Date(); to.setDate(to.getDate() + 1);
       const from = new Date(); from.setDate(from.getDate() - 90);
       const records = await listDispatchInvoices({ fromDate: from.toISOString(), toDate: to.toISOString(), scope });
-      setInvoices(hosurShopId ? records.filter(r => r.hosurShopId === hosurShopId) : records);
+      // Custom (Planned) walk-in sales are saved under scope='SNB' with no
+      // hosurShopId but a customerName set (see DispatchReviewModal's confirm())
+      // — that's the only marker distinguishing them from SNB's own branch
+      // invoices, which never carry a customerName.
+      const filtered = customSalesOnly ? records.filter(r => !!r.customerName && !r.hosurShopId) : records;
+      setInvoices(hosurShopId ? filtered.filter(r => r.hosurShopId === hosurShopId) : filtered);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not load recent invoices.');
       setInvoices([]);
     } finally {
       setLoading(false);
     }
-  }, [scope, hosurShopId]);
+  }, [scope, hosurShopId, customSalesOnly]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -5037,6 +5092,15 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
     () => rows.filter(r => (r.perBranch.Planned ?? 0) > 0 && plannedDispatchedForRow(r, orders) < (r.perBranch.Planned ?? 0) - 0.01),
     [rows, orders],
   );
+  // FEATURE (2026-08-10): "the dispatched order should show in that
+  // custom(planned) -> dispatched" — mirrors plannedRows above but for items
+  // whose planned quantity has already been fully sold/sent, so Custom
+  // (Planned) can show a Dispatched view the same way every other branch
+  // filter already does.
+  const plannedCompletedRows = useMemo(
+    () => rows.filter(r => (r.perBranch.Planned ?? 0) > 0 && plannedDispatchedForRow(r, orders) >= (r.perBranch.Planned ?? 0) - 0.01),
+    [rows, orders],
+  );
 
   const toggleSelect = (itemName: string) => setSelected(prev => {
     const next = new Set(prev);
@@ -5117,6 +5181,18 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
       </div>
       )}
 
+      {/* FEATURE (2026-08-10): Custom (Planned) gets its own To Sell/Dispatched
+          toggle, same shape as every other branch filter — previously it only
+          ever showed the "still to sell" view with no way to see what had
+          already gone out. Reuses the same `subTab` state; 'planned' is simply
+          never selectable while on Custom. */}
+      {branchFilter === 'Custom' && (
+      <div className="flex gap-2">
+        <button onClick={() => setSubTab('active')} className={cn('rounded-xl px-3 py-1.5 text-xs font-bold', subTab !== 'completed' ? 'bg-amber-600 text-white' : 'bg-muted text-muted-foreground')}>To Sell ({plannedRows.length})</button>
+        <button onClick={() => setSubTab('completed')} className={cn('rounded-xl px-3 py-1.5 text-xs font-bold', subTab === 'completed' ? 'bg-amber-600 text-white' : 'bg-muted text-muted-foreground')}>Dispatched ({plannedCompletedRows.length})</button>
+      </div>
+      )}
+
       {/* Reprint access for anything already sent — only relevant once a
           specific branch is picked (scope) and only on the Dispatched tab.
           The Hosur "By Shop" view gets its own per-shop version further
@@ -5124,8 +5200,35 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
       {subTab === 'completed' && branchFilter !== 'All' && branchFilter !== 'Custom' && !(branchFilter === 'Hosur' && hosurView === 'shop') && (
         <RecentDispatchInvoices scope={branchFilter} title={`${branchFilter} Invoices`} />
       )}
+      {/* Custom (Planned) reprint list — same recent-invoices lookup as every
+          other branch, filtered down to just the custom walk-in sales (the
+          ones carrying a customerName) so SNB's own branch invoices don't
+          bleed into this view. */}
+      {subTab === 'completed' && branchFilter === 'Custom' && (
+        <RecentDispatchInvoices scope="SNB" title="Custom Sale Invoices" customSalesOnly />
+      )}
 
       {branchFilter === 'Custom' ? (
+        subTab === 'completed' ? (
+          // FEATURE (2026-08-10): read-only summary of planned-stock items
+          // that have already been fully sold off — the invoice reprint list
+          // above covers the bill side, this covers the quantity side.
+          plannedCompletedRows.length === 0 ? (
+            <EmptyState text="Nothing sold from Planned stock yet." />
+          ) : (
+            <div className="space-y-2">
+              {plannedCompletedRows.map(row => {
+                const dispatchedQty = plannedDispatchedForRow(row, orders);
+                return (
+                  <div key={row.itemName} className="rounded-2xl border border-border bg-white p-3 shadow-sm">
+                    <p className="text-sm font-black text-foreground">{row.itemName}</p>
+                    <p className="text-xs font-bold text-muted-foreground">Planned {qtyFmt(row.perBranch.Planned ?? 0)} {row.unit} · Sold {qtyFmt(dispatchedQty)} {row.unit}</p>
+                  </div>
+                );
+              })}
+            </div>
+          )
+        ) : (
         // Custom is a sub-tab of Dispatch, sitting right next to Hosur — not
         // a separate top-level Planner tab. Sells Planning-stock items
         // direct to a walk-in customer, with the same checklist/invoice flow
@@ -5134,6 +5237,7 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
           <EmptyState text="No Planned-stock items are currently waiting on a custom sale." />
         ) : (
           <CustomDispatchPanel rows={plannedRows} orders={orders} onDispatch={submitDispatch} dispatchedBy={currentUser?.displayName || currentUser?.username || 'Planner'} leftoverBalances={leftoverBalances} />
+        )
         )
       ) : subTab === 'planned' ? (
         <PlannedDispatchPanel rows={plannedRows} orders={orders} onDispatch={submitDispatch} dispatchedBy={currentUser?.displayName || 'Planner'} />

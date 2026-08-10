@@ -9,10 +9,20 @@ import { printHtml } from '@/branch/printUtils';
 import { printViaIframe } from '@/lib/printViaIframe';
 import { saveDispatchInvoice, printDispatchInvoice, type DispatchInvoiceRecord, type DispatchInvoiceItem, type DispatchInvoiceScope } from './dispatchInvoice';
 import { CAKE_DESIGNS, cakeTypesFor, calculateCakePrice, type CakeCreamType, type CakeDesignType } from '@/branch/cakePricing';
+// FEATURE (2026-08-10): "the custom cake order sub tab... should be same
+// like SNB branch Advance cake orders" -- reuses the exact same component
+// SNB/VRSNB use for their own Advance Cake Orders (place -> send to Cake
+// Master -> Cake Master dispatches -> bill with discount/payment mode/
+// credit), rendered with branch='Planner'. See BranchBusinessModules.tsx's
+// AdvanceCakeOrdersTab cakeOnly prop and the 2026-08-10 migrations that
+// widened cake_master_orders / branch_counter_sessions / branch_credit_sales
+// and their RPCs to accept 'Planner' as a fourth (isolated) branch value.
+import { AdvanceCakeOrdersTab } from '@/branch/tabs/BranchBusinessModules';
+import type { Branch } from '@/branch/types';
 
 interface CakeOrderRow {
   id: string;
-  branch: 'SNB' | 'VRSNB';
+  branch: 'SNB' | 'VRSNB' | 'Planner';
   order_no: string;
   source_order_id: string | null;
   slip_number: string | null;
@@ -121,28 +131,43 @@ function printPackingChecklist(order: CakeOrderRow, packingUser: string) {
     </div>`);
 }
 
-export default function PackingCakeOrdersTab() {
+// FEATURE (2026-08-10): "even the planner should receive the order that are
+// send to cake master from SNB — they need to see all the details from snb."
+// Packing's own dashboard only ever needs to act on cakes once they're
+// actually dispatchable (Ready for Packing / Packed / a correction bounced
+// back), so `load()` has always scoped its query that way — 'New' /
+// 'Accepted' / 'Baking' orders were invisible here entirely. Planner renders
+// this exact same component for its "Cake Dispatch" tab (see
+// PlannerDashboard.tsx), and wants full visibility into everything sent to
+// Cake Master regardless of stage, not just the dispatchable tail end.
+// `mode="planner"` widens the query to every status and adds a read-only
+// "In Progress" view for the earlier stages — Packing's own dashboard (no
+// prop passed, defaults to 'packing') is completely unaffected.
+export default function PackingCakeOrdersTab({ mode = 'packing' }: { mode?: 'packing' | 'planner' }) {
   const { currentUser } = useAuthStore();
   const [orders, setOrders] = useState<CakeOrderRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState('');
-  const [view, setView] = useState<'ready' | 'corrections' | 'custom'>('ready');
+  const [view, setView] = useState<'ready' | 'in_progress' | 'corrections' | 'custom'>('ready');
   const [returnId, setReturnId] = useState<string | null>(null);
   const [returnReason, setReturnReason] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true);
-    const { data, error: err } = await supabase
+    let query = supabase
       .from('cake_master_orders')
       .select('id,branch,order_no,source_order_id,slip_number,customer_name,delivery_date,delivery_time,cake_kg,prepared_quantity,flavor,shape,cream_type,message_on_cake,design_notes,updated_at,created_at,status,correction_reason,correction_requested_by,correction_requested_at,order_value,advance_amount,balance_amount')
-      .in('status', ['Ready for Packing', 'Packed', 'Correction Required'])
       .order('delivery_date', { ascending: true });
+    if (mode !== 'planner') {
+      query = query.in('status', ['Ready for Packing', 'Packed', 'Correction Required']);
+    }
+    const { data, error: err } = await query;
     setLoading(false);
     if (err) { setError(err.message); return; }
     setError('');
     setOrders((data || []) as CakeOrderRow[]);
-  }, []);
+  }, [mode]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -180,7 +205,15 @@ export default function PackingCakeOrdersTab() {
     await load();
   };
 
-  const visibleOrders = orders.filter(order => view === 'corrections' ? order.status === 'Correction Required' : order.status !== 'Correction Required');
+  // Stages before a cake is dispatchable — only ever populated when
+  // mode === 'planner' widens the query above; Packing's own dashboard never
+  // fetches these rows in the first place.
+  const EARLY_STAGES = ['New', 'Accepted', 'Baking'];
+  const inProgressOrders = orders.filter(order => EARLY_STAGES.includes(order.status));
+  const visibleOrders = orders.filter(order => {
+    if (EARLY_STAGES.includes(order.status)) return false;
+    return view === 'corrections' ? order.status === 'Correction Required' : order.status !== 'Correction Required';
+  });
 
   return (
     <section className="space-y-3">
@@ -188,9 +221,9 @@ export default function PackingCakeOrdersTab() {
         <div className="flex items-center gap-2">
           <Cake className="size-4 text-rose-500" />
           <h3 className="text-sm font-black text-foreground">Cake Packing</h3>
-          <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-black text-muted-foreground">{visibleOrders.length}</span>
+          <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-black text-muted-foreground">{view === 'in_progress' ? inProgressOrders.length : visibleOrders.length}</span>
         </div>
-        <div className="flex items-center gap-2"><div className="flex rounded-xl bg-muted p-1"><button type="button" onClick={() => setView('ready')} className={cn('rounded-lg px-3 py-1.5 text-[11px] font-black', view === 'ready' ? 'bg-white text-slate-950 shadow-sm' : 'text-muted-foreground')}>Ready</button><button type="button" onClick={() => setView('corrections')} className={cn('rounded-lg px-3 py-1.5 text-[11px] font-black', view === 'corrections' ? 'bg-white text-amber-800 shadow-sm' : 'text-muted-foreground')}>Corrections ({orders.filter(order => order.status === 'Correction Required').length})</button><button type="button" onClick={() => setView('custom')} className={cn('rounded-lg px-3 py-1.5 text-[11px] font-black', view === 'custom' ? 'bg-white text-rose-700 shadow-sm' : 'text-muted-foreground')}>Custom Cake Order</button></div>{view !== 'custom' && <button type="button" title="Refresh cake orders" onClick={() => void load()} disabled={loading} className="grid size-9 place-items-center rounded-lg border border-border text-muted-foreground disabled:cursor-wait disabled:opacity-60"><RefreshCcw className={cn('size-3.5', loading && 'animate-spin')} /></button>}</div>
+        <div className="flex items-center gap-2"><div className="flex rounded-xl bg-muted p-1"><button type="button" onClick={() => setView('ready')} className={cn('rounded-lg px-3 py-1.5 text-[11px] font-black', view === 'ready' ? 'bg-white text-slate-950 shadow-sm' : 'text-muted-foreground')}>Ready</button>{mode === 'planner' && <button type="button" onClick={() => setView('in_progress')} className={cn('rounded-lg px-3 py-1.5 text-[11px] font-black', view === 'in_progress' ? 'bg-white text-indigo-700 shadow-sm' : 'text-muted-foreground')}>In Progress ({inProgressOrders.length})</button>}<button type="button" onClick={() => setView('corrections')} className={cn('rounded-lg px-3 py-1.5 text-[11px] font-black', view === 'corrections' ? 'bg-white text-amber-800 shadow-sm' : 'text-muted-foreground')}>Corrections ({orders.filter(order => order.status === 'Correction Required').length})</button><button type="button" onClick={() => setView('custom')} className={cn('rounded-lg px-3 py-1.5 text-[11px] font-black', view === 'custom' ? 'bg-white text-rose-700 shadow-sm' : 'text-muted-foreground')}>{mode === 'planner' ? 'Advance Cake Order' : 'Custom Cake Order'}</button></div>{view !== 'custom' && <button type="button" title="Refresh cake orders" onClick={() => void load()} disabled={loading} className="grid size-9 place-items-center rounded-lg border border-border text-muted-foreground disabled:cursor-wait disabled:opacity-60"><RefreshCcw className={cn('size-3.5', loading && 'animate-spin')} /></button>}</div>
       </div>
 
       {error && (
@@ -200,7 +233,11 @@ export default function PackingCakeOrdersTab() {
       )}
 
       {view === 'custom' ? (
-        <CustomCakeOrderPanel dispatchedBy={currentUser?.displayName || currentUser?.username || 'Packing'} />
+        mode === 'planner' ? (
+          <AdvanceCakeOrdersTab branch={'Planner' as Branch} branchStock={[]} cakeOnly />
+        ) : (
+          <CustomCakeOrderPanel dispatchedBy={currentUser?.displayName || currentUser?.username || 'Packing'} />
+        )
       ) : <>
       {view === 'ready' && selected.size > 0 && (
         <div className="sticky top-2 z-10 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-teal-300 bg-teal-50 px-3.5 py-2.5">
@@ -218,14 +255,55 @@ export default function PackingCakeOrdersTab() {
         </div>
       )}
 
-      {!loading && visibleOrders.length === 0 && (
+      {view === 'in_progress' && !loading && inProgressOrders.length === 0 && (
+        <div className="flex flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-border py-16 text-center">
+          <Package className="size-8 text-muted-foreground/40" />
+          <p className="text-sm font-bold text-muted-foreground">Nothing in progress at Cake Master right now.</p>
+        </div>
+      )}
+      {view !== 'in_progress' && !loading && visibleOrders.length === 0 && (
         <div className="flex flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-border py-16 text-center">
           <Package className="size-8 text-muted-foreground/40" />
           <p className="text-sm font-bold text-muted-foreground">{view === 'corrections' ? 'No cake weight corrections pending.' : 'No cake orders waiting on Packing right now.'}</p>
         </div>
       )}
 
-      <div className="space-y-2.5">
+      {/* FEATURE (2026-08-10): read-only — these are still baking/queued at
+          Cake Master, nothing here is actionable from Planner's side yet.
+          Full order detail is shown (same fields as the dispatchable view)
+          so nothing is hidden, just not yet dispatchable. */}
+      {view === 'in_progress' && (
+        <div className="space-y-2.5">
+          {inProgressOrders.map(order => (
+            <div key={order.id} className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-indigo-200 bg-indigo-50/40 p-3.5">
+              <div className="flex min-w-0 items-center gap-3">
+                <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-indigo-100">
+                  <Cake className="size-5 text-indigo-500" />
+                </div>
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="rounded-md bg-foreground px-1.5 py-0.5 text-[10px] font-black text-white">{order.branch}</span>
+                    {order.slip_number && <span className="rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-bold text-muted-foreground">Slip {order.slip_number}</span>}
+                    <span className="flex items-center gap-1 rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-bold text-muted-foreground"><Receipt className="size-3" />{order.order_no}</span>
+                    <span className="rounded-md bg-indigo-600 px-1.5 py-0.5 text-[10px] font-black text-white">{order.status}</span>
+                  </div>
+                  <p className="mt-0.5 truncate text-sm font-black text-foreground">{order.customer_name || 'Customer'}</p>
+                  <p className="truncate text-[11px] font-bold text-muted-foreground">
+                    {order.cream_type || '—'} · {order.flavor || '—'} · {order.shape || '—'} · {order.cake_kg || '?'} kg · Delivery {fmtDate(order.delivery_date)} {order.delivery_time || ''}
+                  </p>
+                  {order.message_on_cake && <p className="truncate text-[11px] font-bold text-muted-foreground">Message: {order.message_on_cake}</p>}
+                </div>
+              </div>
+              <div className="text-right text-[11px] font-bold text-muted-foreground">
+                {Number(order.order_value) > 0 && <p className="text-sm font-black text-foreground">Rs. {Number(order.order_value).toFixed(2)}</p>}
+                {Number(order.advance_amount) > 0 && <p>Advance Rs. {Number(order.advance_amount).toFixed(2)}</p>}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {view !== 'in_progress' && <div className="space-y-2.5">
         {visibleOrders.map((order) => (
           <div key={order.id} className={cn('flex flex-wrap items-center justify-between gap-3 rounded-2xl border bg-card p-3.5', selected.has(order.id) ? 'border-teal-300 ring-1 ring-teal-200' : 'border-border')}>
             <div className="flex min-w-0 items-center gap-3">
@@ -268,7 +346,7 @@ export default function PackingCakeOrdersTab() {
             {returnId === order.id && <div className="w-full rounded-xl border border-amber-200 bg-amber-50 p-3"><div className="flex items-center justify-between"><p className="text-xs font-black text-amber-900">Return to Cake Master</p><button type="button" onClick={() => setReturnId(null)} className="grid size-7 place-items-center rounded-lg text-amber-800"><X className="size-3.5" /></button></div><div className="mt-2 grid gap-2 sm:grid-cols-[1fr_auto]"><input autoFocus value={returnReason} onChange={event => setReturnReason(event.target.value)} placeholder="Enter actual and expected weight" className="h-10 rounded-xl border border-amber-300 bg-white px-3 text-xs font-semibold outline-none focus:ring-2 focus:ring-amber-300" /><button type="button" disabled={busyId === order.id} onClick={() => void returnToCakeMaster(order)} className="inline-flex h-10 items-center justify-center gap-2 rounded-xl bg-amber-700 px-4 text-xs font-black text-white disabled:opacity-50">{busyId === order.id ? <Loader2 className="size-4 animate-spin" /> : <RotateCcw className="size-4" />} Send for correction</button></div></div>}
           </div>
         ))}
-      </div>
+      </div>}
       {reviewOrders && (
         <CakeDispatchReviewModal
           orders={reviewOrders}

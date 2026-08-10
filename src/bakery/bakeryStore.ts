@@ -30,6 +30,32 @@ export function isPlannedOrder(order: { notes?: string | null; targetBranch?: st
   return !order.targetBranch && String(order.notes ?? '').includes(PLANNED_STOCK_TAG);
 }
 
+// FEATURE (2026-08-10): "for pcs item never mark the quantity in decimal /
+// for kgs the decimal should not be more than 3 numbers." Applied at every
+// write path below (order submission, production entry, dispatch) rather
+// than on individual UI inputs, so it's enforced no matter which screen the
+// quantity was typed into — a pcs count is always a whole number, a kg
+// quantity never carries more than 3 decimal places.
+export function clampQtyForUnit(value: number, unit: 'pcs' | 'kg' | undefined): number {
+  const n = Number.isFinite(value) ? value : 0;
+  if (unit === 'pcs') return Math.max(0, Math.round(n));
+  return Math.max(0, Math.round(n * 1000) / 1000);
+}
+
+function clampOrderItems(items: BakeryOrderItem[]): BakeryOrderItem[] {
+  return items.map(item => {
+    const unit: 'pcs' | 'kg' = item.dispatchUnit === 'pcs' ? 'pcs' : 'kg';
+    return {
+      ...item,
+      quantity: clampQtyForUnit(item.quantity, unit),
+      // originalPcs is the raw pcs count VRSNB Nos items were entered in
+      // before conversion to kg — that's the number staff actually see and
+      // type, so it must also never carry a decimal.
+      ...(item.originalPcs != null ? { originalPcs: Math.max(0, Math.round(item.originalPcs)) } : {}),
+    };
+  });
+}
+
 // MATERIAL DEDUCTION FIX (2026-08-06): deducts Store's raw-material stock for
 // a set of order items, mirroring exactly what StoreDashboard.tsx's OrderCard
 // .handleConfirmStock used to do (and still does, for orders that arrive via
@@ -206,6 +232,7 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
   },
 
   submitOrder: async (items, createdBy, targetBranch, notes) => {
+    items = clampOrderItems(items);
     const { data, error } = await supabase
       .from('bakery_orders')
       .insert({ items, status: 'pending', created_by: createdBy, target_branch: targetBranch, notes: notes || null })
@@ -231,6 +258,7 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
   },
 
   submitPlannedOrder: async (items, createdBy, notes) => {
+    items = clampOrderItems(items);
     const taggedNotes = `${PLANNED_STOCK_TAG}${notes?.trim() ? `|${notes.trim()}` : ''}`;
     const { data, error } = await supabase
       .from('bakery_orders')
@@ -258,6 +286,7 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
       throw new Error('This order has already moved past Incoming and can no longer be edited here.');
     }
     if (items.length === 0) throw new Error('An order needs at least one item — remove the whole order instead if it should no longer exist.');
+    items = clampOrderItems(items);
     // BUG FIX (audit): the `order.status !== 'pending'` guard above only
     // checks the local (possibly stale) zustand cache — if Store merged/
     // accepted this exact order in the moments between the planner opening
@@ -563,6 +592,10 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
   },
 
   recordProduction: async (orderId, producedItems) => {
+    // quantityPrepared is always expressed in kg (pcs items are converted to
+    // kg via weightGrams before storage — see kgToPcs usage below), so this
+    // only ever needs the 3-decimal kg cap, never the pcs whole-number rule.
+    producedItems = producedItems.map(p => ({ ...p, quantityPrepared: clampQtyForUnit(p.quantityPrepared, 'kg') }));
     const { error } = await supabase
       .from('bakery_orders')
       .update({ produced_items: producedItems, status: 'produced' })
@@ -630,7 +663,7 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
 
 
   submitDispatch: async (orderId, entry) => {
-    const newEntry: DispatchEntry = { ...entry, id: entry.id ?? crypto.randomUUID() };
+    const newEntry: DispatchEntry = { ...entry, id: entry.id ?? crypto.randomUUID(), quantity: clampQtyForUnit(entry.quantity, entry.unit) };
 
     // Fetch fresh order from DB — includes order_number for notifications.
     // BUG #3 FIX: fetching from DB avoids stale React state in the dispatch log.

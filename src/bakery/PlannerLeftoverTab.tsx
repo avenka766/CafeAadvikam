@@ -12,7 +12,7 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   Search, Plus, Minus, PackageCheck, History, FileSpreadsheet, Printer,
-  Loader2, AlertTriangle, CheckCircle2, CalendarDays, Scale, X, RefreshCw, Truck,
+  Loader2, AlertTriangle, CheckCircle2, CalendarDays, Scale, X, RefreshCw, Truck, Cake,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import jsPDF from 'jspdf';
@@ -361,6 +361,34 @@ export default function PlannerLeftoverTab() {
     setLoading(false);
   }, []);
   useEffect(() => { void refresh(); }, [refresh]);
+
+  // FEATURE (2026-08-10): "cake orders should be clearly noted and tracked
+  // in reports and closing stock." Cakes are custom-made per order (not a
+  // pooled kg/pcs item), so they were never part of this ledger's balances —
+  // but that also meant Closing Stock, where the planner already looks every
+  // day, gave zero visibility into what's in flight at Cake Master. This is
+  // a read-only same-day snapshot, deliberately kept separate from the
+  // pooled-item balances table below rather than forced into it.
+  const [cakeOrderCounts, setCakeOrderCounts] = useState<{ inProgress: number; readyOrPacked: number; dispatchedToday: number } | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const today = kolkataToday();
+      const toDateKey = (iso: string) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(iso));
+      const { data } = await supabase
+        .from('cake_master_orders')
+        .select('status, updated_at')
+        .in('status', ['New', 'Accepted', 'Baking', 'Ready for Packing', 'Packed', 'Dispatched']);
+      if (cancelled || !data) return;
+      const cakeRows = data as { status: string; updated_at: string | null }[];
+      setCakeOrderCounts({
+        inProgress: cakeRows.filter(r => ['New', 'Accepted', 'Baking'].includes(r.status)).length,
+        readyOrPacked: cakeRows.filter(r => ['Ready for Packing', 'Packed'].includes(r.status)).length,
+        dispatchedToday: cakeRows.filter(r => r.status === 'Dispatched' && r.updated_at && toDateKey(r.updated_at) === today).length,
+      });
+    })();
+    return () => { cancelled = true; };
+  }, [rows]);
 
   // ── Add-to-leftover form ─────────────────────────────────────────────────
   const [itemQuery, setItemQuery] = useState('');
@@ -764,6 +792,17 @@ export default function PlannerLeftoverTab() {
         <StatCard label="Extra / Non-Requested Today" value={extraTodayTotal} helper="Produced or dispatched beyond what was ordered" icon={<AlertTriangle className="size-5" />} tone="red" />
         <StatCard label="Total Movements Logged" value={rows.length} icon={<History className="size-5" />} tone="slate" />
       </div>
+
+      {cakeOrderCounts && (cakeOrderCounts.inProgress + cakeOrderCounts.readyOrPacked + cakeOrderCounts.dispatchedToday) > 0 && (
+        <div className="rounded-2xl border border-rose-200 bg-rose-50/50 p-4">
+          <div className="flex items-center gap-2"><Cake className="size-4 text-rose-500" /><h3 className="font-black text-rose-900">Cake Orders (Cake Master — not part of the pooled balances below)</h3></div>
+          <div className="mt-2 grid gap-3 sm:grid-cols-3">
+            <StatCard label="In Progress at Cake Master" value={cakeOrderCounts.inProgress} helper="New / Accepted / Baking" icon={<Loader2 className="size-5" />} tone="blue" />
+            <StatCard label="Ready / Packed" value={cakeOrderCounts.readyOrPacked} helper="Waiting on dispatch" icon={<PackageCheck className="size-5" />} tone="amber" />
+            <StatCard label="Dispatched Today" value={cakeOrderCounts.dispatchedToday} icon={<Truck className="size-5" />} tone="emerald" />
+          </div>
+        </div>
+      )}
 
       <div className="grid gap-4 xl:grid-cols-[1fr_1.1fr]">
         <div className="rounded-2xl border bg-card p-4">

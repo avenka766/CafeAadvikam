@@ -14,7 +14,7 @@ type CakeOrderStatus = 'New' | 'Accepted' | 'Baking' | 'Correction Required' | '
 
 interface CakeMasterOrder {
   id: string;
-  branch: 'SNB' | 'VRSNB';
+  branch: 'SNB' | 'VRSNB' | 'Planner';
   orderNo: string;
   slipNumber: string | null;
   customerName: string;
