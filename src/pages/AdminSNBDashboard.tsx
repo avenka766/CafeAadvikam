@@ -2242,7 +2242,14 @@ function ExpensesTab({ userName, expenseAmount, cashBalance }: any) {
   };
   const openEdit = (expense: (typeof rows)[number]) => {
     setEditingExpense(expense);
-    setEditForm({ category: expense.category, description: expense.description, amount: String(expense.amount), mode: expense.mode });
+    // BUG FIX (2026-08-09): older/legacy expense rows can have a missing
+    // category or description (e.g. imported data or rows saved before a
+    // field was required). Without these fallbacks, editForm.category or
+    // .description was `undefined`, and confirmEdit's `.trim()` call on it
+    // threw an uncaught TypeError inside this async handler - surfacing to
+    // the user as an unhandled-rejection "error" banner every time they
+    // tried to edit that expense, with no way to proceed.
+    setEditForm({ category: expense.category || "", description: expense.description || "", amount: String(expense.amount ?? ""), mode: expense.mode || "cash" });
   };
   const confirmEdit = async (password: string): Promise<string | null> => {
     if (!editingExpense) return "No expense selected.";
@@ -3804,7 +3811,26 @@ function CashierReportTab(props: any) {
       </div>
       {props.dbReports.error && <div className="rounded-2xl bg-amber-50 p-3 text-xs font-bold text-amber-800 ring-1 ring-amber-100">Some database reports could not load: {props.dbReports.error}</div>}
       <Panel title="Cashier Accountability Report" icon={<BarChart3 className="size-4" />} action={<button className={cn(btnCls, "bg-slate-950 text-white")} onClick={() => csvDownload("SNB_Cashier_Report.xls", rows.map((row: any) => ({ CashierLogin: row.name, Sessions: row.sessions, GrossSales: row.grossSales, Returns: row.returns, NetSales: row.netSales, Bills: row.bills, Cash: row.cash, UPI: row.upi, Card: row.card, CreditSales: row.credit, CreditCollected: row.creditCollected, AdvanceCollected: row.advance, TotalAmount: row.totalAmount })))}><Download className="size-4" /> Excel</button>}>
-        <DataTable headers={["Rank", "Cashier Login", "Sessions", "Gross", "Returns", "Net", "Bills", "Cash", "UPI", "Card", "Credit Sales", "Credit Collected", "Advance", "Total Amount"]} rows={rows.map((row: any, index: number) => [`#${index + 1}`, row.name, row.sessions || "-", money(row.grossSales), money(row.returns), <span key="net" className="font-black text-emerald-700">{money(row.netSales)}</span>, row.bills, money(row.cash), money(row.upi), money(row.card), money(row.credit), money(row.creditCollected), money(row.advance), <span key="total" className="font-black text-purple-700">{money(row.totalAmount)}</span>])} empty="No cashier sales data found for the selected date range." />
+        <DataTable
+          headers={["Rank", "Cashier Login", "Sessions", "Gross", "Returns", "Net", "Bills", "Cash", "UPI", "Card", "Credit Sales", "Credit Collected", "Advance", "Total Amount"]}
+          rows={rows.map((row: any, index: number) => [`#${index + 1}`, row.name, row.sessions || "-", money(row.grossSales), money(row.returns), <span key="net" className="font-black text-emerald-700">{money(row.netSales)}</span>, row.bills, money(row.cash), money(row.upi), money(row.card), money(row.credit), money(row.creditCollected), money(row.advance), <span key="total" className="font-black text-purple-700">{money(row.totalAmount)}</span>])}
+          empty="No cashier sales data found for the selected date range."
+          footer={rows.length > 0 ? [
+            "Total", `${rows.length} Cashier${rows.length === 1 ? "" : "s"}`,
+            rows.reduce((s: number, r: any) => s + (r.sessions || 0), 0),
+            money(rows.reduce((s: number, r: any) => s + r.grossSales, 0)),
+            money(rows.reduce((s: number, r: any) => s + r.returns, 0)),
+            money(totalNet),
+            totalBills,
+            money(rows.reduce((s: number, r: any) => s + r.cash, 0)),
+            money(rows.reduce((s: number, r: any) => s + r.upi, 0)),
+            money(rows.reduce((s: number, r: any) => s + r.card, 0)),
+            money(rows.reduce((s: number, r: any) => s + r.credit, 0)),
+            money(rows.reduce((s: number, r: any) => s + r.creditCollected, 0)),
+            money(rows.reduce((s: number, r: any) => s + r.advance, 0)),
+            money(grandTotalAmount),
+          ] : undefined}
+        />
         {rows.length > 0 && (
           <div className="mt-3 flex items-center justify-between rounded-2xl bg-slate-950 px-4 py-3 text-sm font-black text-white">
             <span>Total Amount — All Cashiers</span>
@@ -3876,7 +3902,7 @@ function DenominationAuditModal({ row, onClose }: { row: any; onClose: () => voi
             )}
           </div>
         </div>
-        {row.status === "closed" && (
+        {row.status === "finalized" && (
           <div className="mt-3 flex items-center justify-between rounded-xl bg-amber-50 px-3 py-2 text-xs font-bold text-amber-800 ring-1 ring-amber-100">
             <span>System-recorded Counted Cash</span>
             <span className="tabular-nums">{money(asNumber(row.counted_cash))}</span>
@@ -3889,7 +3915,15 @@ function DenominationAuditModal({ row, onClose }: { row: any; onClose: () => voi
 
 function CashierClosureTab(props: any) {
   const rows = props.dbReports.counterSessions as any[];
-  const closedRows = rows.filter((row: any) => row.status === "closed");
+  // BUG FIX (2026-08-09): branch_counter_sessions.status is actually either
+  // "open" or "finalized" (confirmed live - every closed session in the DB
+  // uses "finalized", none ever use "closed"). This tab everywhere checked
+  // for the literal "closed", which never matched a real row - so every
+  // session was treated as still-open: the status badge always showed amber
+  // "open", closedRows/mismatch KPIs were always zero, and the Counted /
+  // Difference columns always rendered "-" even for fully closed-out
+  // sessions with real counted-cash data. Match "finalized" instead.
+  const closedRows = rows.filter((row: any) => row.status === "finalized");
   const totalDifference = closedRows.reduce((sum: number, row: any) => sum + asNumber(row.difference), 0);
   const mismatches = closedRows.filter((row: any) => Math.abs(asNumber(row.difference)) > 0.009).length;
   const openCounters = rows.filter((row: any) => row.status === "open").length;
@@ -3910,14 +3944,14 @@ function CashierClosureTab(props: any) {
             row.business_date,
             row.cashier_display_name || row.cashier_username || "Legacy / Unattributed",
             `${fmtDateTime(row.opened_at)}${row.closed_at ? ` → ${fmtDateTime(row.closed_at)}` : ""}`,
-            <StatusBadge key="status" tone={row.status === "closed" ? "green" : "amber"}>{row.status}</StatusBadge>,
+            <StatusBadge key="status" tone={row.status === "finalized" ? "green" : "amber"}>{row.status === "finalized" ? "closed" : row.status}</StatusBadge>,
             money(asNumber(row.opening_cash)),
             money(asNumber(row.gross_sales)),
             money(asNumber(row.returns)),
             money(asNumber(row.net_sales)),
             money(asNumber(row.expected_cash)),
-            row.status === "closed" ? money(asNumber(row.counted_cash)) : "-",
-            <span key="difference" className={cn("font-black", Math.abs(asNumber(row.difference)) < 0.01 ? "text-emerald-700" : "text-red-600")}>{row.status === "closed" ? money(asNumber(row.difference)) : "-"}</span>,
+            row.status === "finalized" ? money(asNumber(row.counted_cash)) : "-",
+            <span key="difference" className={cn("font-black", Math.abs(asNumber(row.difference)) < 0.01 ? "text-emerald-700" : "text-red-600")}>{row.status === "finalized" ? money(asNumber(row.difference)) : "-"}</span>,
             asNumber(row.bill_count),
             money(asNumber(row.cash_sales)),
             money(asNumber(row.upi_sales)),
@@ -6228,7 +6262,14 @@ function BankDepositsTab({ userName }: { userName: string }) {
   const [editForm, setEditForm] = useState({ amount: "", bankAccount: "", paymentMode: "Cash Deposit", slipNo: "", transactionRef: "", remarks: "" });
   const openEdit = (deposit: (typeof rows)[number]) => {
     setEditingDeposit(deposit);
-    setEditForm({ amount: String(deposit.amount), bankAccount: deposit.bankAccount, paymentMode: deposit.paymentMode, slipNo: deposit.slipNo || "", transactionRef: deposit.transactionRef || "", remarks: deposit.remarks || "" });
+    // BUG FIX (2026-08-09): `bankAccount` (and `paymentMode`) were copied
+    // into editForm with no fallback, unlike slipNo/transactionRef/remarks
+    // just below. A deposit row missing bankAccount (legacy/imported data)
+    // made editForm.bankAccount `undefined`, and confirmEdit's
+    // `.trim()` call on it threw an uncaught TypeError inside this async
+    // handler - surfacing as an unhandled-rejection "error" banner every
+    // time the user tried to edit that deposit, with no way to proceed.
+    setEditForm({ amount: String(deposit.amount ?? ""), bankAccount: deposit.bankAccount || "", paymentMode: deposit.paymentMode || "Cash Deposit", slipNo: deposit.slipNo || "", transactionRef: deposit.transactionRef || "", remarks: deposit.remarks || "" });
   };
   const confirmEdit = async (password: string): Promise<string | null> => {
     if (!editingDeposit) return "No deposit selected.";
@@ -6839,7 +6880,7 @@ function DailyClosureTab({ userName, ...props }: any) {
       </Panel>
 
       <Panel title="Cashier Session Drill-down" icon={<UserRound className="size-4" />} action={<button className={cn(btnCls, "bg-slate-950 text-white")} onClick={() => csvDownload("SNB_Daily_Closure_Cashier_Detail.xls", sessionRows.map((row) => ({ Date: row.business_date, CashierLogin: row.cashier_display_name || row.cashier_username || "Legacy / Unattributed", Status: row.status, OpenedAt: row.opened_at, ClosedAt: row.closed_at || "", OpeningCash: asNumber(row.opening_cash), GrossSales: asNumber(row.gross_sales), Discounts: asNumber(row.discounts), Returns: asNumber(row.returns), NetSales: asNumber(row.net_sales), CashSales: asNumber(row.cash_sales), UPISales: asNumber(row.upi_sales), CardSales: asNumber(row.card_sales), CreditSales: asNumber(row.credit_sales), CreditCollected: asNumber(row.credit_collected), AdvanceCollected: asNumber(row.advance_collected), Expenses: asNumber(row.expenses), SupplierPayments: asNumber(row.supplier_payments), BankDeposits: asNumber(row.bank_deposits), ExpectedCash: asNumber(row.expected_cash), CountedCash: asNumber(row.counted_cash), Difference: asNumber(row.difference), Bills: asNumber(row.bill_count), Notes: row.notes || "" })))}><Download className="size-4" /> Excel Detail</button>}>
-        <DataTable headers={["Date", "Cashier Login", "Status", "Opened", "Closed", "Opening", "Gross", "Returns", "Net", "Expected", "Counted", "Difference", "Bills", "Expenses", "Supplier Payments", "Bank Deposits", "Notes"]} rows={sessionRows.map((row) => [row.business_date, row.cashier_display_name || row.cashier_username || "Legacy / Unattributed", <StatusBadge key="status" tone={row.status === "closed" ? "green" : "amber"}>{row.status}</StatusBadge>, fmtDateTime(row.opened_at), row.closed_at ? fmtDateTime(row.closed_at) : "-", money(asNumber(row.opening_cash)), money(asNumber(row.gross_sales)), money(asNumber(row.returns)), money(asNumber(row.net_sales)), money(asNumber(row.expected_cash)), row.status === "closed" ? money(asNumber(row.counted_cash)) : "-", row.status === "closed" ? money(asNumber(row.difference)) : "-", asNumber(row.bill_count), money(asNumber(row.expenses)), money(asNumber(row.supplier_payments)), money(asNumber(row.bank_deposits)), row.notes || "-"])} empty="No cashier sessions found for the selected date range." />
+        <DataTable headers={["Date", "Cashier Login", "Status", "Opened", "Closed", "Opening", "Gross", "Returns", "Net", "Expected", "Counted", "Difference", "Bills", "Expenses", "Supplier Payments", "Bank Deposits", "Notes"]} rows={sessionRows.map((row) => [row.business_date, row.cashier_display_name || row.cashier_username || "Legacy / Unattributed", <StatusBadge key="status" tone={row.status === "finalized" ? "green" : "amber"}>{row.status === "finalized" ? "closed" : row.status}</StatusBadge>, fmtDateTime(row.opened_at), row.closed_at ? fmtDateTime(row.closed_at) : "-", money(asNumber(row.opening_cash)), money(asNumber(row.gross_sales)), money(asNumber(row.returns)), money(asNumber(row.net_sales)), money(asNumber(row.expected_cash)), row.status === "finalized" ? money(asNumber(row.counted_cash)) : "-", row.status === "finalized" ? money(asNumber(row.difference)) : "-", asNumber(row.bill_count), money(asNumber(row.expenses)), money(asNumber(row.supplier_payments)), money(asNumber(row.bank_deposits)), row.notes || "-"])} empty="No cashier sessions found for the selected date range." />
       </Panel>
     </div>
   );
@@ -7971,10 +8012,19 @@ function DataTable({
   headers,
   rows,
   empty = "No records found.",
+  footer,
 }: {
   headers: string[];
   rows?: ReactNode[][];
   empty?: string;
+  // BUG FIX (2026-08-09): reports like the Cashier Accountability Report only
+  // had a single grand-total callout below the table (e.g. just "Total
+  // Amount"), when what was asked for was a row-wise total across every
+  // column (Gross, Returns, Net, Bills, Cash, UPI... each with its own sum).
+  // This optional pinned footer row renders that - always visible regardless
+  // of the table's own search/sort/pagination, since it's a total over ALL
+  // rows, not just the currently visible page.
+  footer?: ReactNode[];
 }) {
   const safeRows = useMemo(() => rows || [], [rows]);
   const [query, setQuery] = useState("");
@@ -8064,6 +8114,17 @@ function DataTable({
               </tr>
             ))}
           </tbody>
+          {footer && (
+            <tfoot>
+              <tr className="border-t-2 border-slate-300 bg-slate-950">
+                {footer.map((cell, cellIndex) => (
+                  <td key={cellIndex} className="px-4 py-3 font-black text-white">
+                    {cell}
+                  </td>
+                ))}
+              </tr>
+            </tfoot>
+          )}
         </table>
       </div>
       {preparedRows.length > pageSize && (

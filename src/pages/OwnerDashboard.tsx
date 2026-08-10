@@ -43,6 +43,14 @@ import {
   ClipboardList, Loader2, ChevronDown, ChevronUp, LogOut, UserCircle2, Scale,
 } from 'lucide-react';
 import { isNativeApp } from '@/lib/platform';
+import { useOperationalBranchCatalog } from '@/hooks/useOperationalBranchCatalog';
+
+// Shared helper for matching a free-text item name against a catalog's name
+// (used to price Stock Variance and Waste & Loss rows against the live
+// SNB/VRSNB catalog — see OwnerStockVarianceTab and WasteLogsTab).
+function ownerNormalizeName(name: string): string {
+  return (name || '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
 
 const COLORS = ['#2D7D6F', '#C5973E', '#5BA3C9', '#E07B5B', '#8B5CF6', '#EC4899'];
 
@@ -902,6 +910,22 @@ function AttendanceSalaryTab() {
       .sort((a, b) => b.ratio - a.ratio),
     [employees]);
 
+  // FEATURE (2026-08-09): "the visualize is not at all good / improve all the
+  // tabs" — this tab only ever showed branch-level aggregates and charts;
+  // there was no way to see any individual employee's own earned/advance/net
+  // figures. Add a per-employee table so payroll is actually inspectable,
+  // not just summarized.
+  const [staffSearch, setStaffSearch] = useState('');
+  const employeeRows = useMemo(() => {
+    return employees
+      .map(e => {
+        const calc = ownerCalcSalary(e, attendance, daysInMonth, deductionDecisions[e.id] ?? ownerDefaultDecision());
+        return { ...e, earned: calc.earned, deductionsTotal: calc.deductions, net: calc.net };
+      })
+      .filter(e => !staffSearch || `${e.name} ${e.branch} ${e.department}`.toLowerCase().includes(staffSearch.toLowerCase()))
+      .sort((a, b) => b.net - a.net);
+  }, [employees, attendance, daysInMonth, deductionDecisions, staffSearch]);
+
   const allDepts = useMemo(() => [...new Set(employees.map(e => e.department))], [employees]);
   const deptByBranch = useMemo(() => {
     return Object.entries(branchGroups).map(([branch, emps]) => {
@@ -1063,6 +1087,56 @@ function AttendanceSalaryTab() {
           </ResponsiveContainer>
         </div>
       )}
+
+      <section className="owner-table-card">
+        <div className="flex items-center justify-between gap-2 p-3">
+          <h3 className="font-display text-base font-bold">Per-Employee Payroll</h3>
+          <div className="relative w-full max-w-[220px]">
+            <Search className="absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+            <input
+              value={staffSearch}
+              onChange={e => setStaffSearch(e.target.value)}
+              placeholder="Search name, branch, dept"
+              className="w-full rounded-xl border border-border bg-card py-1.5 pl-8 pr-3 text-xs outline-none"
+            />
+          </div>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Branch</th>
+              <th>Department</th>
+              <th>Gross Salary</th>
+              <th>Earned</th>
+              <th>Advance</th>
+              <th>Deductions</th>
+              <th>Net Payable</th>
+            </tr>
+          </thead>
+          <tbody>
+            {employeeRows.map(e => (
+              <tr key={e.id}>
+                <td><strong>{e.name}</strong></td>
+                <td>{ownerBranchDisplay(e.branch)}</td>
+                <td>{e.department}</td>
+                <td>{formatCurrency(e.grossSalary)}</td>
+                <td>{formatCurrency(e.earned)}</td>
+                <td>{e.salaryAdvance > 0 ? <em className="owner-status warn">{formatCurrency(e.salaryAdvance)}</em> : '—'}</td>
+                <td>{formatCurrency(e.deductionsTotal)}</td>
+                <td><strong className="text-emerald-700">{formatCurrency(e.net)}</strong></td>
+              </tr>
+            ))}
+            {!employeeRows.length && (
+              <tr>
+                <td colSpan={8}>
+                  <EmptyOwnerState title="No employees found" message="Add employees to see per-employee payroll here." />
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </section>
     </div>
   );
 }
@@ -1071,6 +1145,31 @@ function AttendanceSalaryTab() {
 // ── Waste Logs Tab ────────────────────────────────────────────────────────────
 // CHANGE 11: date range state + presets + daily trend chart
 function WasteLogsTab() {
+  // FEATURE (2026-08-09): "Waste & Loss tab there is no price of the damage
+  // items how much is loss this should be highlighted" — neither waste
+  // source stored a rupee value. Price branch waste rows against the live
+  // catalog (same approach as OwnerStockVarianceTab); kitchen waste's
+  // `quantity` is a loose free-text field (e.g. "2 kg"), so it's priced on a
+  // best-effort basis (parse the leading number, match food_item against the
+  // catalog) and clearly marked as an estimate rather than an exact figure.
+  const { items: snbCatalogW } = useOperationalBranchCatalog('SNB');
+  const { items: vrsnbCatalogW } = useOperationalBranchCatalog('VRSNB');
+  const snbPriceByNameW = useMemo(() => new Map(snbCatalogW.map(item => [ownerNormalizeName(item.name), item.price])), [snbCatalogW]);
+  const vrsnbPriceByNameW = useMemo(() => new Map(vrsnbCatalogW.map(item => [ownerNormalizeName(item.name), item.price])), [vrsnbCatalogW]);
+  const branchWastePriceFor = (branch: string, itemName: string): number | null => {
+    const key = ownerNormalizeName(itemName);
+    if (branch === 'SNB' || branch === 'Hosur') return snbPriceByNameW.get(key) ?? null;
+    // Cafe has no dedicated catalog in this app; VRSNB is used as the closest
+    // available price reference, same fallback StockTab.tsx already uses.
+    return vrsnbPriceByNameW.get(key) ?? null;
+  };
+  const parseLeadingQuantity = (raw: string): number | null => {
+    const match = /^\s*([\d.]+)/.exec(raw || '');
+    if (!match) return null;
+    const n = Number(match[1]);
+    return Number.isFinite(n) ? n : null;
+  };
+
   // Kitchen waste log (cafe)
   const [entries, setEntries] = useState<Array<{
     id: string; food_item: string; quantity: string; logged_at: string;
@@ -1140,8 +1239,29 @@ function WasteLogsTab() {
   const refreshWasteLogs = useCallback(() => { void fetchWaste(); void fetchBranchWaste(); }, [fetchWaste, fetchBranchWaste]);
 
   const filteredBranchWaste = useMemo(() => {
-    return wasteLogs.slice().sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-  }, [wasteLogs]);
+    return wasteLogs
+      .slice()
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+      .map(log => {
+        const price = branchWastePriceFor(log.branch, log.itemName);
+        return { ...log, price, lossValue: price != null ? price * log.quantity : null };
+      });
+  }, [wasteLogs, snbPriceByNameW, vrsnbPriceByNameW]);
+  const totalBranchWasteLoss = useMemo(
+    () => filteredBranchWaste.reduce((sum, log) => sum + (log.lossValue ?? 0), 0),
+    [filteredBranchWaste],
+  );
+
+  const pricedEntries = useMemo(() => entries.map(entry => {
+    const qty = parseLeadingQuantity(entry.quantity);
+    const price = vrsnbPriceByNameW.get(ownerNormalizeName(entry.food_item)) ?? null;
+    const lossValue = qty != null && price != null ? qty * price : null;
+    return { ...entry, lossValue };
+  }), [entries, vrsnbPriceByNameW]);
+  const totalKitchenWasteLoss = useMemo(
+    () => pricedEntries.reduce((sum, entry) => sum + (entry.lossValue ?? 0), 0),
+    [pricedEntries],
+  );
 
   const dailyWasteCount = useMemo(() => {
     const counts: Record<string, number> = {};
@@ -1158,14 +1278,14 @@ function WasteLogsTab() {
   }, [entries]);
 
   const grouped = useMemo(() => {
-    const g: Record<string, typeof entries> = {};
-    entries.forEach(e => {
+    const g: Record<string, typeof pricedEntries> = {};
+    pricedEntries.forEach(e => {
       const date = e.logged_at.slice(0, 10);
       if (!g[date]) g[date] = [];
       g[date].push(e);
     });
     return g;
-  }, [entries]);
+  }, [pricedEntries]);
   const sortedDates = Object.keys(grouped).sort((a, b) => b.localeCompare(a));
 
   // Group branch waste by date
@@ -1257,6 +1377,18 @@ function WasteLogsTab() {
         </button>
       </div>
 
+      {/* Estimated loss value for whichever source is active — approximate
+          for kitchen waste (parsed from a free-text quantity field and
+          matched against the closest available catalog), exact for branch
+          waste (clean quantity + unit matched against the live catalog). */}
+      <div className="flex items-center gap-2 rounded-2xl border border-red-200 bg-red-50 px-4 py-3">
+        <IndianRupee className="size-4 text-red-600 shrink-0" />
+        <p className="text-sm font-black text-red-700">
+          Estimated Loss Value: {formatCurrency(activeSource === 'kitchen' ? totalKitchenWasteLoss : totalBranchWasteLoss)}
+        </p>
+        {activeSource === 'kitchen' && <span className="text-[10px] font-bold text-red-500">(approximate — matched against catalog prices)</span>}
+      </div>
+
       {activeSource === 'kitchen' && (
         <>
           {/* Daily trend chart */}
@@ -1307,6 +1439,9 @@ function WasteLogsTab() {
                       <p className="text-sm font-semibold text-foreground truncate">{entry.food_item}</p>
                       <p className="text-[11px] text-muted-foreground">{entry.quantity}</p>
                     </div>
+                    {entry.lossValue != null && (
+                      <span className="text-xs font-black text-red-600 tabular-nums shrink-0">{formatCurrency(entry.lossValue)}</span>
+                    )}
                     <span className="text-[11px] text-muted-foreground tabular-nums shrink-0">
                       {new Date(entry.logged_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
                     </span>
@@ -1363,6 +1498,11 @@ function WasteLogsTab() {
                       </div>
                       <p className="text-[11px] text-muted-foreground">{log.quantity} {log.unit} · {log.reason || '-'} · by {log.createdBy}</p>
                     </div>
+                    {log.lossValue != null ? (
+                      <span className="text-xs font-black text-red-600 tabular-nums shrink-0">{formatCurrency(log.lossValue)}</span>
+                    ) : (
+                      <span className="text-[10px] font-bold text-muted-foreground shrink-0">Price N/A</span>
+                    )}
                     <span className="text-[11px] text-muted-foreground tabular-nums shrink-0">
                       {new Date(log.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
                     </span>
@@ -1378,23 +1518,85 @@ function WasteLogsTab() {
 }
 
 // ── Owner Audit Logs Tab (read-only) ─────────────────────────────────────────
+// Unified shape the Owner Audit Logs tab renders, regardless of which
+// underlying table an entry actually came from.
+interface OwnerAuditEvent {
+  id: string; branch: string; action: string; user: string; createdAt: string; source: string;
+}
+
 function OwnerAuditTab() {
   const { auditLogs } = useBranchOpsStore();
   const { fetchBranchData } = useBranchStore();
   const [search, setSearch] = useState('');
   const [branchFilter, setBranchFilter] = useState<string>('all');
+  // BUG FIX (2026-08-09): "we are unable to see all the logs" — this tab only
+  // ever read the `auditLogs` bucket (populated from just 4 call sites app-
+  // wide: discount overrides and advance-order edits). Two other genuine
+  // audit trails exist in this codebase and were never surfaced here:
+  //   • staff_activity_log — a dedicated staff action log, previously shown
+  //     only in AdminDashboard's Bakery > Activity Log tab, never in Owner.
+  //   • branch_stock_adjustments — written on every manual stock quantity
+  //     change specifically "so owners can see who changed what" (per its
+  //     own code comment in branchStore.ts), but never actually read here.
+  // Also removed the hard `.slice(0, 150)` cutoff below in favor of a
+  // "Load more" control, so a busy log doesn't just silently truncate.
+  const [activityLog, setActivityLog] = useState<OwnerAuditEvent[]>([]);
+  const [stockAdjustmentLog, setStockAdjustmentLog] = useState<OwnerAuditEvent[]>([]);
+  const [visibleCount, setVisibleCount] = useState(150);
 
   useEffect(() => { OWNER_FULL_BRANCHES.forEach(b => fetchBranchData(b)); }, [fetchBranchData]);
 
+  useEffect(() => {
+    void (async () => {
+      const { data } = await supabase
+        .from('staff_activity_log')
+        .select('id, branch, action, detail, staff_name, created_at')
+        .order('created_at', { ascending: false })
+        .limit(1000);
+      setActivityLog((data || []).map((row: any): OwnerAuditEvent => ({
+        id: `activity-${row.id}`,
+        branch: row.branch || '-',
+        action: row.detail ? `${row.action} — ${row.detail}` : row.action,
+        user: row.staff_name || '-',
+        createdAt: row.created_at,
+        source: 'Staff Activity',
+      })));
+    })();
+    void (async () => {
+      const { data } = await supabase
+        .from('branch_stock_adjustments')
+        .select('id, branch, item_name, old_quantity, new_quantity, delta, reason, adjusted_by, adjusted_at')
+        .order('adjusted_at', { ascending: false })
+        .limit(1000);
+      setStockAdjustmentLog((data || []).map((row: any): OwnerAuditEvent => ({
+        id: `stockadj-${row.id}`,
+        branch: row.branch || '-',
+        action: `Manual Stock Adjustment — ${row.item_name} ${row.old_quantity} → ${row.new_quantity} (${row.delta > 0 ? '+' : ''}${row.delta})${row.reason ? ` — ${row.reason}` : ''}`,
+        user: row.adjusted_by || '-',
+        createdAt: row.adjusted_at,
+        source: 'Stock Adjustment',
+      })));
+    })();
+  }, []);
+
+  const combinedLogs = useMemo<OwnerAuditEvent[]>(() => [
+    ...auditLogs.map((l): OwnerAuditEvent => ({ id: `bucket-${l.id}`, branch: l.branch, action: l.action, user: l.user, createdAt: l.createdAt, source: 'Discount / Order Edit' })),
+    ...activityLog,
+    ...stockAdjustmentLog,
+  ], [auditLogs, activityLog, stockAdjustmentLog]);
+
   const filtered = useMemo(() =>
-    auditLogs
+    combinedLogs
       .filter(l => branchFilter === 'all' || l.branch === branchFilter)
-      .filter(l => !search || `${l.action} ${l.user} ${l.branch}`.toLowerCase().includes(search.toLowerCase()))
+      .filter(l => !search || `${l.action} ${l.user} ${l.branch} ${l.source}`.toLowerCase().includes(search.toLowerCase()))
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
-    [auditLogs, branchFilter, search]
+    [combinedLogs, branchFilter, search]
   );
 
+  useEffect(() => { setVisibleCount(150); }, [search, branchFilter]);
+
   const BRANCH_COLOR: Record<string, string> = { SNB: 'bg-blue-50 text-blue-700', VRSNB: 'bg-purple-50 text-purple-700', Hosur: 'bg-amber-50 text-amber-700', Cafe: 'bg-emerald-50 text-emerald-700' };
+  const SOURCE_COLOR: Record<string, string> = { 'Staff Activity': 'bg-indigo-50 text-indigo-700', 'Stock Adjustment': 'bg-amber-50 text-amber-700', 'Discount / Order Edit': 'bg-rose-50 text-rose-700' };
 
   return (
     // POLISH FIX (2026-08-09 / #284): standardized wrapper — see SalesOverviewTab.
@@ -1420,16 +1622,19 @@ function OwnerAuditTab() {
         </select>
       </div>
 
+      <p className="text-[11px] font-bold text-muted-foreground">{filtered.length} log{filtered.length === 1 ? '' : 's'} across Discount/Order Edits, Staff Activity, and Stock Adjustments</p>
+
       {filtered.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-12 gap-2 text-center">
           <ShieldCheck className="size-7 text-muted-foreground" />
-          <p className="text-sm font-medium text-muted-foreground">{auditLogs.length === 0 ? 'No audit logs yet' : 'No logs match filters'}</p>
+          <p className="text-sm font-medium text-muted-foreground">{combinedLogs.length === 0 ? 'No audit logs yet' : 'No logs match filters'}</p>
         </div>
       ) : (
         <div className="space-y-1.5">
-          {filtered.slice(0, 150).map(log => (
+          {filtered.slice(0, visibleCount).map(log => (
             <div key={log.id} className="flex items-center gap-3 rounded-xl border border-border bg-card px-4 py-3">
               <span className={`text-[10px] font-black px-2 py-0.5 rounded-full shrink-0 ${BRANCH_COLOR[log.branch] || 'bg-slate-100 text-slate-600'}`}>{log.branch}</span>
+              <span className={`text-[10px] font-black px-2 py-0.5 rounded-full shrink-0 ${SOURCE_COLOR[log.source] || 'bg-slate-100 text-slate-600'}`}>{log.source}</span>
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-semibold text-foreground truncate">{log.action}</p>
                 <p className="text-[11px] text-muted-foreground">{log.user}</p>
@@ -1439,6 +1644,15 @@ function OwnerAuditTab() {
               </span>
             </div>
           ))}
+          {filtered.length > visibleCount && (
+            <button
+              type="button"
+              onClick={() => setVisibleCount(current => current + 150)}
+              className="w-full rounded-xl border border-dashed border-border bg-card py-2.5 text-xs font-black text-muted-foreground hover:bg-slate-50"
+            >
+              Load {Math.min(150, filtered.length - visibleCount)} more ({filtered.length - visibleCount} remaining)
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -2429,11 +2643,39 @@ function OwnerPurchasesTab() {
 
 function OwnerStockVarianceTab() {
   const { stockVarianceRecords } = useBranchOpsStore();
+  // FEATURE (2026-08-09): "there is no price of the difference how much is
+  // loss this should be highlighted" — stock variance rows only ever stored
+  // quantities, no rupee value. Price the difference against the live
+  // branch catalog (same name-matching approach StockTab.tsx already uses
+  // for branch stock) so a loss amount can be shown and highlighted.
+  // Hosur shares SNB's catalog/pricing; Cafe has no equivalent catalog price
+  // list in this codebase, so Cafe rows fall back to "Price N/A" rather than
+  // silently showing a wrong number.
+  const { items: snbCatalog } = useOperationalBranchCatalog('SNB');
+  const { items: vrsnbCatalog } = useOperationalBranchCatalog('VRSNB');
+  const snbPriceByName = useMemo(() => new Map(snbCatalog.map(item => [ownerNormalizeName(item.name), item.price])), [snbCatalog]);
+  const vrsnbPriceByName = useMemo(() => new Map(vrsnbCatalog.map(item => [ownerNormalizeName(item.name), item.price])), [vrsnbCatalog]);
+  const priceFor = (branch: Branch, itemName: string): number | null => {
+    const key = ownerNormalizeName(itemName);
+    if (branch === 'SNB' || branch === 'Hosur') return snbPriceByName.get(key) ?? null;
+    if (branch === 'VRSNB') return vrsnbPriceByName.get(key) ?? null;
+    return null;
+  };
+
   const rows = stockVarianceRecords
     .slice()
-    .sort((a, b) => Number(new Date(b.createdAt)) - Number(new Date(a.createdAt)));
+    .sort((a, b) => Number(new Date(b.createdAt)) - Number(new Date(a.createdAt)))
+    .map(row => {
+      const price = priceFor(row.branch, row.itemName);
+      const lossValue = price != null ? Math.abs(row.difference) * price : null;
+      return { ...row, price, lossValue };
+    });
   const shortCount = rows.filter(row => row.difference < 0).length;
   const excessCount = rows.filter(row => row.difference > 0).length;
+  // Only short counts (difference < 0) represent an actual loss to the
+  // business — excess counts are a counting/recording discrepancy, not
+  // money that left the building.
+  const totalLossValue = rows.reduce((sum, row) => sum + (row.difference < 0 && row.lossValue != null ? row.lossValue : 0), 0);
 
   return (
     // POLISH FIX (2026-08-09 / #284): "owner-section" was never defined in
@@ -2463,6 +2705,7 @@ function OwnerStockVarianceTab() {
                 SystemQty: row.systemQty,
                 PhysicalQty: row.physicalQty,
                 Difference: row.difference,
+                LossValue: row.difference < 0 ? (row.lossValue ?? '') : '',
                 ReportedBy: row.reportedBy,
                 ConfirmedBy: row.confirmedBy,
               })),
@@ -2476,6 +2719,7 @@ function OwnerStockVarianceTab() {
         <OwnerMetricCard icon={<AlertTriangle className="size-5" />} label="Variance Lines" value={rows.length} tone="amber" />
         <OwnerMetricCard icon={<ArrowDownRight className="size-5" />} label="Short Count" value={shortCount} tone="red" />
         <OwnerMetricCard icon={<ArrowUpRight className="size-5" />} label="Excess Count" value={excessCount} tone="blue" />
+        <OwnerMetricCard icon={<IndianRupee className="size-5" />} label="Estimated Loss Value" value={formatCurrency(totalLossValue)} tone="red" />
       </section>
       <section className="owner-table-card">
         <table>
@@ -2488,6 +2732,7 @@ function OwnerStockVarianceTab() {
               <th>System</th>
               <th>Physical</th>
               <th>Difference</th>
+              <th>Loss Value</th>
               <th>Reported By</th>
               <th>Confirmed By</th>
             </tr>
@@ -2502,13 +2747,22 @@ function OwnerStockVarianceTab() {
                 <td>{row.systemQty} {row.unit}</td>
                 <td>{row.physicalQty} {row.unit}</td>
                 <td><em className={cn('owner-status', row.difference === 0 ? 'ok' : row.difference < 0 ? 'danger' : 'warn')}>{row.difference}</em></td>
+                <td>
+                  {row.difference < 0 ? (
+                    row.lossValue != null
+                      ? <strong className="text-red-600">{formatCurrency(row.lossValue)}</strong>
+                      : <span className="text-muted-foreground">Price N/A</span>
+                  ) : row.difference > 0 && row.lossValue != null ? (
+                    <span className="text-muted-foreground">+{formatCurrency(row.lossValue)}</span>
+                  ) : '—'}
+                </td>
                 <td>{row.reportedBy}</td>
                 <td>{row.confirmedBy}</td>
               </tr>
             ))}
             {!rows.length && (
               <tr>
-                <td colSpan={9}>
+                <td colSpan={10}>
                   <EmptyOwnerState
                     title="No stock variance yet"
                     message="Variance lines will appear here once SNB Admin confirms a receiver stock-count report."
