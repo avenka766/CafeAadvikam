@@ -35,6 +35,7 @@ import { getPackingCounterStatus } from './packingCounter';
 import { notifyAdmin } from '@/pages/HosurDashboard';
 import { buildHosurOrderTag, buildHosurItemId, checkRecentDuplicateHosurOrder } from './hosurOrderShared';
 import { closestRecipeMatch } from './recipeNameMatch';
+import KgPackAdder from './KgPackAdder';
 
 const money = (v: number | null | undefined) => 'Rs.' + (v ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
 const num = (v: number | null | undefined) => (v ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
@@ -420,6 +421,7 @@ function PlaceOrderSection({ shops, prices, userName, onSaved }: { shops: HosurS
                     <input type="number" value={current || ''} onChange={e => setQty(item, Number(e.target.value))} placeholder="0" className="h-8 w-full rounded-lg border border-border bg-background text-center text-sm font-black" />
                     <button onClick={() => setQty(item, current + step)} className="size-8 rounded-lg bg-primary font-black text-primary-foreground hover:opacity-90">+</button>
                   </div>
+                  {item.itemUnit === 'kg' && <KgPackAdder onAdd={(kg) => setQty(item, current + kg)} />}
                 </article>
               );
             })}
