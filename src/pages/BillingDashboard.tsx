@@ -2007,6 +2007,7 @@ function NewBillPanel() {
   const [moveTarget, setMoveTarget] = useState<
     | { scope: 'table' }
     | { scope: 'item'; itemKind: 'menu' | 'custom'; itemId: string }
+    | { scope: 'draft' }
     | null
   >(null);
   const [moveSection, setMoveSection] = useState<'G' | 'A' | null>(null);
@@ -2101,6 +2102,37 @@ function NewBillPanel() {
       });
       setCustomItems(customItems.filter((c) => c.id !== itemId));
     }
+    closeMovePicker();
+  };
+
+  // BUG FIX ("i am only able to move only one item"): the whole-table Move
+  // button above only ever existed for a table that already has a
+  // `runningOrder` (i.e. items already sent to the kitchen) — see the
+  // `{runningOrder && (...)}` guard on that button. A biller who picks the
+  // wrong table and notices BEFORE pressing "Send to Kitchen" (items still
+  // sitting in the local draft cart) had no whole-table option at all, only
+  // the per-item "Move" link next to each individual line — so moving a
+  // multi-item order meant repeating that one-by-one for every item. This
+  // moves the entire draft cart + custom items in one action, same as
+  // handleMoveItem but for everything at once instead of a single id.
+  const handleMoveDraftAll = (destTable: number) => {
+    if (!tableNumber || destTable === tableNumber) return;
+    if (cart.length === 0 && customItems.length === 0) { closeMovePicker(); return; }
+    setTableDrafts((prev) => {
+      const existing = prev[destTable] ?? { cart: [], customItems: [] };
+      const mergedCart = [...existing.cart];
+      for (const item of cart) {
+        const idx = mergedCart.findIndex((c) => c.menuItem.id === item.menuItem.id && c.notes === item.notes);
+        if (idx >= 0) mergedCart[idx] = { ...mergedCart[idx], quantity: mergedCart[idx].quantity + item.quantity };
+        else mergedCart.push(item);
+      }
+      return { ...prev, [destTable]: { cart: mergedCart, customItems: [...existing.customItems, ...customItems] } };
+    });
+    clearTableDraft(tableNumber);
+    clearCart();
+    setCustomItems([]); setCustomName(''); setCustomPrice(''); setCustomQty('1');
+    setParcelCount(0);
+    setTableNumber(null);
     closeMovePicker();
   };
 
@@ -3691,6 +3723,20 @@ function NewBillPanel() {
                         Cancel
                       </button>
                     )}
+                    {/* BUG FIX ("i am only able to move only one item"): wrong
+                        table picked BEFORE sending to kitchen — nothing here
+                        let a biller move the whole draft cart at once, only
+                        one item at a time via the per-item Move links below.
+                        Mirrors the whole-table Move button above, just for
+                        the not-yet-sent case. */}
+                    {!runningOrder && (cart.length > 0 || customItems.length > 0) && (
+                      <button
+                        onClick={() => { setMoveSection(tableSectionOf(tableNumber)); setMoveTarget({ scope: 'draft' }); }}
+                        className="flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-[11px] font-bold text-blue-700 bg-blue-50 border border-blue-200 transition-all active:scale-95">
+                        <ArrowRightLeft className="size-3.5" />
+                        Move All
+                      </button>
+                    )}
                     <button
                       onClick={handleSendToKitchen}
                       disabled={sendingKot || allEmpty}
@@ -4143,11 +4189,15 @@ function NewBillPanel() {
           <div className="flex items-start justify-between gap-3 mb-3">
             <div>
               <h2 className="font-display text-base font-black flex items-center gap-1.5"><ArrowRightLeft className="size-4 text-blue-700" />
-                {moveTarget.scope === 'table' ? `Move Table ${tableLabel(tableNumber)}` : 'Move item to table'}
+                {moveTarget.scope === 'table' ? `Move Table ${tableLabel(tableNumber)}`
+                  : moveTarget.scope === 'draft' ? `Move all items from Table ${tableLabel(tableNumber)}`
+                  : 'Move item to table'}
               </h2>
               <p className="text-xs text-muted-foreground mt-0.5">
                 {moveTarget.scope === 'table'
                   ? 'Moves this table\'s whole running order to the table you pick.'
+                  : moveTarget.scope === 'draft'
+                  ? 'Moves every item in this table\'s unsent draft to the picked table\'s draft.'
                   : 'Moves just this item into the picked table\'s draft.'}
               </p>
             </div>
@@ -4180,7 +4230,7 @@ function NewBillPanel() {
                   const blocked = moveTarget.scope === 'table' && isRunning;
                   return (
                     <button key={num} disabled={movingTable || blocked}
-                      onClick={() => moveTarget.scope === 'table' ? handleMoveTable(num) : handleMoveItem(num)}
+                      onClick={() => moveTarget.scope === 'table' ? handleMoveTable(num) : moveTarget.scope === 'draft' ? handleMoveDraftAll(num) : handleMoveItem(num)}
                       className={cn('relative py-2.5 rounded-xl text-xs font-body font-bold transition-all active:scale-90 flex flex-col items-center gap-0.5',
                         blocked ? 'bg-muted/30 border border-border text-muted-foreground/50 cursor-not-allowed'
                           : isRunning ? 'bg-amber-100 border border-amber-300 text-amber-800 hover:bg-amber-200'
