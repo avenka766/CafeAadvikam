@@ -38,11 +38,45 @@ type QzModule = {
   };
 };
 
-let qzModulePromise: Promise<QzModule> | null = null;
+declare global {
+  interface Window {
+    qz?: QzModule;
+  }
+}
+
+// qz-tray is a legacy UMD script that attaches itself to `window.qz` — it's
+// designed to be loaded via a plain <script> tag, not bundled as an ESM/CJS
+// module. An `import('qz-tray')` here builds fine locally but Rollup's
+// production build (what Vercel actually runs) can't resolve the package at
+// all and hard-fails the whole deploy. So instead the exact same script
+// (vendored at public/vendor/qz-tray.js, served as a static file — no
+// external CDN dependency for a POS machine that needs to work reliably) is
+// injected as a real <script> tag at runtime, on demand, only when a print
+// is actually attempted. This never touches the bundler, so it can't break
+// the build, and it costs nothing for anyone who never sets up QZ Tray.
+let qzScriptPromise: Promise<QzModule> | null = null;
 async function loadQz(): Promise<QzModule> {
-  if (!qzModulePromise) {
-    qzModulePromise = import('qz-tray').then((mod) => {
-      const qz = (mod as { default?: QzModule }).default ?? (mod as unknown as QzModule);
+  if (!qzScriptPromise) {
+    qzScriptPromise = new Promise<QzModule>((resolve, reject) => {
+      if (window.qz) { resolve(window.qz); return; }
+      const existing = document.querySelector<HTMLScriptElement>('script[data-qz-tray]');
+      const onReady = () => {
+        if (window.qz) resolve(window.qz);
+        else reject(new Error('qz-tray script loaded but window.qz was not set'));
+      };
+      if (existing) {
+        existing.addEventListener('load', onReady, { once: true });
+        existing.addEventListener('error', () => reject(new Error('Failed to load qz-tray script')), { once: true });
+        return;
+      }
+      const script = document.createElement('script');
+      script.src = '/vendor/qz-tray.js';
+      script.async = true;
+      script.dataset.qzTray = 'true';
+      script.addEventListener('load', onReady, { once: true });
+      script.addEventListener('error', () => reject(new Error('Failed to load qz-tray script')), { once: true });
+      document.head.appendChild(script);
+    }).then((qz) => {
       // Unsigned/untrusted mode: QZ Tray will show a one-time "Action
       // Required" prompt in its tray app the first time this site connects,
       // where the cashier can tick "Remember this decision" so it never
@@ -52,8 +86,11 @@ async function loadQz(): Promise<QzModule> {
       qz.security.setSignaturePromise(() => (resolve) => resolve(''));
       return qz;
     });
+    // Don't cache a permanent failure (e.g. static file briefly unavailable)
+    // — let the next print attempt retry loading the script from scratch.
+    qzScriptPromise.catch(() => { qzScriptPromise = null; });
   }
-  return qzModulePromise;
+  return qzScriptPromise;
 }
 
 // Local storage keys for the two printer roles this app currently needs.
