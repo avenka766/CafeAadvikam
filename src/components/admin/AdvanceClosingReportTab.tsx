@@ -1,9 +1,29 @@
 // src/components/admin/AdvanceClosingReportTab.tsx
-// SNB Admin dashboard: Advance Order Closing Report — date range, grouped by day,
-// matching the layout of the sample closing sheet (per-order table + Sales/Advance/Receipt summary).
+// SNB Admin dashboard: Advance Order Closing tab.
+//
+// BUG FIX (2026-08-09): this tab was rebuilt into a full day-by-day
+// sales/advance/receipt closing report, reading from `branch_advance_orders`
+// (the Order Receiver's reserved-stock advance flow). Two problems with that:
+//   1. The user's original, explicit spec for this tab was much simpler -
+//      "only show the Pending advance orders - what is the value and how
+//      many orders are still pending" - not a full historical closing
+//      report. ("i said only to show the Pending advance orders what is the
+//      value and how many order are still pending but what have you done.")
+//   2. `branch_advance_orders` is a different, mostly-separate table from
+//      the actual advance-cake/store/custom order system staff use day to
+//      day (BranchBusinessModules.tsx's "Advance Order" tab, which writes to
+//      branch_operation_records + cake_master_orders and is what generates
+//      the SNB-ADV-### numbers the admin actually references). Reading the
+//      wrong table meant the counts/values shown here didn't match reality.
+// Rebuilt to source from the real advance-order system (useBranchOpsStore's
+// advanceCakeOrders, same data BranchBusinessModules.tsx uses) and to show
+// exactly what was asked for: how many advance orders are still pending,
+// what they're worth, and the list of those orders so the number is
+// actionable - nothing more.
 import { useEffect, useMemo } from 'react';
 import { Download } from 'lucide-react';
 import { useBranchStore } from '@/branch/branchStore';
+import { useBranchOpsStore } from '@/branch/branchOpsStore';
 import { downloadExcelWorkbook } from '@/lib/excelDownload';
 
 interface Props {
@@ -16,93 +36,52 @@ const BRANCH = 'SNB' as const;
 const money = (n: number) =>
   `₹${n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
-function dateKey(iso: string) {
-  const d = new Date(iso);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+function fmtDate(iso: string | undefined) {
+  if (!iso) return '-';
+  const d = new Date(iso.includes('T') ? iso : `${iso}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
 }
 
-function modeLabel(mode: string | null | undefined) {
-  return (mode ?? '').toUpperCase() || '-';
-}
-
-function isCash(mode: string | null | undefined) { return (mode ?? '').toLowerCase() === 'cash'; }
-function isUpi(mode: string | null | undefined) { return (mode ?? '').toLowerCase() === 'upi'; }
-
-export default function AdvanceClosingReportTab({ fromDate, toDate }: Props) {
-  const { advanceOrders, fetchBranchData } = useBranchStore();
+export default function AdvanceClosingReportTab({}: Props) {
+  const { fetchBranchData } = useBranchStore();
+  const { advanceCakeOrders } = useBranchOpsStore();
 
   useEffect(() => {
     fetchBranchData(BRANCH);
   }, [fetchBranchData]);
 
-  const orders = advanceOrders[BRANCH] || [];
-
-  // Pending summary is a current-state figure, independent of the fromDate/toDate
-  // range below — an order placed weeks ago and still unpaid is still "pending" today.
-  const pendingOrders = useMemo(() => orders.filter((o) => o.status === 'pending'), [orders]);
-  const pendingCount = pendingOrders.length;
-  const pendingOrderValue = useMemo(() => pendingOrders.reduce((s, o) => s + o.subtotal, 0), [pendingOrders]);
-  const pendingBalanceDue = useMemo(
-    () => pendingOrders.reduce((s, o) => s + Math.max(0, o.subtotal - o.advanceAmount), 0),
-    [pendingOrders],
+  // "Pending" = every advance order that hasn't been fully invoiced or
+  // cancelled yet - i.e. still needs a final bill/closing action from the
+  // branch. This is a current-state figure, not tied to a date range.
+  const pendingOrders = useMemo(
+    () => advanceCakeOrders
+      .filter((o) => o.branch === BRANCH && o.status !== 'Paid In Full' && o.status !== 'Cancelled')
+      .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()),
+    [advanceCakeOrders],
   );
+  const pendingCount = pendingOrders.length;
+  const pendingOrderValue = useMemo(() => pendingOrders.reduce((s, o) => s + (o.orderValue || 0), 0), [pendingOrders]);
+  const pendingBalanceDue = useMemo(() => pendingOrders.reduce((s, o) => s + (o.balanceAmount || 0), 0), [pendingOrders]);
 
-  // Stable, unique Advance No. for every order, based on the order it was
-  // placed across the branch's full history - independent of whichever
-  // date range is currently selected, so the same order always shows the
-  // same number.
-  const advanceNoById = useMemo(() => {
-    const sorted = [...orders].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
-    const map = new Map<string, string>();
-    sorted.forEach((o, i) => map.set(o.id, `ADV-${String(i + 1).padStart(4, '0')}`));
-    return map;
-  }, [orders]);
-
-  // Group by the day the order was PLACED (advance collected that day).
-  // Orders whose balance was collected on a different day (fullyPaidAt) still show
-  // their advance leg here; the day their balance closes shows up as that day's
-  // "balance collected" contribution via fullyPaidAt.
-  const byDay = useMemo(() => {
-    const from = fromDate ? new Date(`${fromDate}T00:00:00`) : null;
-    const to = toDate ? new Date(`${toDate}T23:59:59`) : null;
-    const groups = new Map<string, typeof orders>();
-
-    orders.forEach((o) => {
-      const placedKey = dateKey(o.createdAt);
-      const placedDate = new Date(o.createdAt);
-      if (from && placedDate < from) return;
-      if (to && placedDate > to) return;
-      if (!groups.has(placedKey)) groups.set(placedKey, []);
-      groups.get(placedKey)!.push(o);
-    });
-
-    return [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0]));
-  }, [orders, fromDate, toDate]);
-
-  const exportAll = () => {
-    const worksheets = byDay.map(([day, dayOrders]) => ({
-      name: day,
-      rows: dayOrders.map((o, i) => {
-        const balance = Math.max(0, o.subtotal - o.advanceAmount);
-        return {
-          'Sl No': i + 1,
-          'Advance No': advanceNoById.get(o.id) ?? '-',
-          'Order': o.customerName ?? o.id,
-          'Total Bill Value': o.subtotal,
-          'Advance': o.advanceAmount,
-          'Balance': balance,
-          'Advance Mode': modeLabel(o.advanceMethod),
-          'Balance Mode': modeLabel(o.balanceMethod),
-          'Status': o.status,
-          'Delivery Date': o.deliveryDate ?? '',
-        };
-      }),
-    }));
-    downloadExcelWorkbook(`advance-closing-report-${fromDate}-to-${toDate}.xls`, worksheets);
+  const exportPending = () => {
+    downloadExcelWorkbook(`snb-pending-advance-orders-${new Date().toISOString().slice(0, 10)}.xls`, [{
+      name: 'Pending Advance Orders',
+      rows: pendingOrders.map((o, i) => ({
+        'Sl No': i + 1,
+        'Advance No': o.orderNo,
+        'Customer': o.customerName || '-',
+        'Status': o.status,
+        'Order Value': o.orderValue,
+        'Advance Collected': o.advanceAmount,
+        'Balance Due': o.balanceAmount,
+        'Delivery Date': o.deliveryDate || '',
+      })),
+    }]);
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <div className="grid gap-3 sm:grid-cols-3">
         <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3">
           <p className="text-[10px] font-bold uppercase tracking-wide text-amber-700">Pending Advance Orders</p>
@@ -119,111 +98,58 @@ export default function AdvanceClosingReportTab({ fromDate, toDate }: Props) {
       </div>
 
       <div className="flex items-center justify-between">
-        <p className="text-xs font-semibold text-slate-500">
-          {fromDate} to {toDate} · {byDay.reduce((s, [, o]) => s + o.length, 0)} advance orders
-        </p>
+        <p className="text-xs font-semibold text-slate-500">{pendingCount} advance order{pendingCount === 1 ? '' : 's'} still pending</p>
         <button
-          onClick={exportAll}
-          className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg bg-slate-950 text-white font-bold"
+          onClick={exportPending}
+          disabled={pendingCount === 0}
+          className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg bg-slate-950 text-white font-bold disabled:opacity-40"
         >
-          <Download className="size-3.5" /> Export All (Excel)
+          <Download className="size-3.5" /> Export (Excel)
         </button>
       </div>
 
-      {byDay.length === 0 ? (
+      {pendingCount === 0 ? (
         <div className="rounded-2xl border border-border bg-card py-10 text-center text-sm text-muted-foreground">
-          No advance orders placed in this date range.
+          No pending advance orders - everything is closed out.
         </div>
       ) : (
-        byDay.map(([day, dayOrders]) => {
-          const cashSales = dayOrders.reduce((s, o) => s + (isCash(o.balanceMethod) ? Math.max(0, o.subtotal - o.advanceAmount) : 0), 0);
-          const upiSales = dayOrders.reduce((s, o) => s + (isUpi(o.balanceMethod) ? Math.max(0, o.subtotal - o.advanceAmount) : 0), 0);
-          const advancesFromSalesOrder = dayOrders.reduce((s, o) => s + o.advanceAmount, 0);
-          const totalSales = cashSales + upiSales + advancesFromSalesOrder;
-
-          const todayCashAdvance = dayOrders.reduce((s, o) => s + (isCash(o.advanceMethod) ? o.advanceAmount : 0), 0);
-          const todayUpiAdvance = dayOrders.reduce((s, o) => s + (isUpi(o.advanceMethod) ? o.advanceAmount : 0), 0);
-
-          const totalCash = cashSales + todayCashAdvance;
-          const totalUpi = upiSales + todayUpiAdvance;
-          const totalReceipt = totalCash + totalUpi;
-
-          return (
-            <div key={day} className="rounded-2xl border border-border bg-card overflow-hidden">
-              <div className="px-4 py-2.5 bg-slate-950 text-white text-sm font-bold">
-                {new Date(`${day}T00:00:00`).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
-              </div>
-
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="bg-slate-50 text-left text-[10px] uppercase tracking-wide text-slate-500">
-                      <th className="p-2">Sl No</th>
-                      <th className="p-2">Advance No</th>
-                      <th className="p-2">Order</th>
-                      <th className="p-2 text-right">Total Bill Value</th>
-                      <th className="p-2 text-right">Advance</th>
-                      <th className="p-2 text-right">Balance</th>
-                      <th className="p-2">Advance Mode</th>
-                      <th className="p-2">Balance Mode</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {dayOrders.map((o, i) => {
-                      const balance = Math.max(0, o.subtotal - o.advanceAmount);
-                      return (
-                        <tr key={o.id} className="border-t border-border">
-                          <td className="p-2 font-bold">{i + 1}</td>
-                          <td className="p-2 font-bold text-indigo-700">{advanceNoById.get(o.id) ?? '-'}</td>
-                          <td className="p-2">{o.customerName ?? o.id}</td>
-                          <td className="p-2 text-right tabular-nums">{money(o.subtotal)}</td>
-                          <td className="p-2 text-right tabular-nums">{o.advanceAmount > 0 ? money(o.advanceAmount) : '-'}</td>
-                          <td className="p-2 text-right tabular-nums">{balance > 0 ? money(balance) : '-'}</td>
-                          <td className="p-2 uppercase text-xs font-semibold">{modeLabel(o.advanceMethod)}</td>
-                          <td className="p-2 uppercase text-xs font-semibold">{modeLabel(o.balanceMethod)}</td>
-                        </tr>
-                      );
-                    })}
-                    <tr className="border-t-2 border-slate-300 font-bold bg-slate-50">
-                      <td className="p-2" colSpan={3}>Total</td>
-                      <td className="p-2 text-right tabular-nums">{money(dayOrders.reduce((s, o) => s + o.subtotal, 0))}</td>
-                      <td className="p-2 text-right tabular-nums">{money(advancesFromSalesOrder)}</td>
-                      <td className="p-2 text-right tabular-nums">{money(dayOrders.reduce((s, o) => s + Math.max(0, o.subtotal - o.advanceAmount), 0))}</td>
-                      <td className="p-2" colSpan={2} />
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-
-              <div className="grid gap-3 p-4 sm:grid-cols-3">
-                <div className="rounded-xl border border-border p-3">
-                  <p className="text-xs font-bold uppercase tracking-wide text-slate-500 mb-2">Sales</p>
-                  <div className="space-y-1 text-sm">
-                    <div className="flex justify-between"><span>Cash Sales</span><span className="font-bold tabular-nums">{money(cashSales)}</span></div>
-                    <div className="flex justify-between"><span>UPI Sales</span><span className="font-bold tabular-nums">{money(upiSales)}</span></div>
-                    <div className="flex justify-between"><span>Advances from Sales Order</span><span className="font-bold tabular-nums">{money(advancesFromSalesOrder)}</span></div>
-                    <div className="flex justify-between border-t pt-1 mt-1"><span className="font-bold">Total Sales</span><span className="font-bold tabular-nums">{money(totalSales)}</span></div>
-                  </div>
-                </div>
-                <div className="rounded-xl border border-border p-3">
-                  <p className="text-xs font-bold uppercase tracking-wide text-slate-500 mb-2">Advance</p>
-                  <div className="space-y-1 text-sm">
-                    <div className="flex justify-between"><span>Today Cash Advance</span><span className="font-bold tabular-nums">{money(todayCashAdvance)}</span></div>
-                    <div className="flex justify-between"><span>Today UPI Advance</span><span className="font-bold tabular-nums">{money(todayUpiAdvance)}</span></div>
-                  </div>
-                </div>
-                <div className="rounded-xl border border-border p-3">
-                  <p className="text-xs font-bold uppercase tracking-wide text-slate-500 mb-2">Receipt</p>
-                  <div className="space-y-1 text-sm">
-                    <div className="flex justify-between"><span>Total Cash Sales + Advance</span><span className="font-bold tabular-nums">{money(totalCash)}</span></div>
-                    <div className="flex justify-between"><span>Total UPI Sales + Advance</span><span className="font-bold tabular-nums">{money(totalUpi)}</span></div>
-                    <div className="flex justify-between border-t pt-1 mt-1"><span className="font-bold">Total Sales + Advance</span><span className="font-bold tabular-nums">{money(totalReceipt)}</span></div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          );
-        })
+        <div className="overflow-x-auto rounded-2xl border border-border bg-card">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-slate-50 text-left text-[10px] uppercase tracking-wide text-slate-500">
+                <th className="p-2">Sl No</th>
+                <th className="p-2">Advance No</th>
+                <th className="p-2">Customer</th>
+                <th className="p-2">Status</th>
+                <th className="p-2 text-right">Order Value</th>
+                <th className="p-2 text-right">Advance Collected</th>
+                <th className="p-2 text-right">Balance Due</th>
+                <th className="p-2">Delivery Date</th>
+              </tr>
+            </thead>
+            <tbody>
+              {pendingOrders.map((o, i) => (
+                <tr key={o.id} className="border-t border-border">
+                  <td className="p-2 font-bold">{i + 1}</td>
+                  <td className="p-2 font-bold text-indigo-700">{o.orderNo}</td>
+                  <td className="p-2">{o.customerName || '-'}</td>
+                  <td className="p-2 text-xs font-semibold">{o.status}</td>
+                  <td className="p-2 text-right tabular-nums">{money(o.orderValue || 0)}</td>
+                  <td className="p-2 text-right tabular-nums">{money(o.advanceAmount || 0)}</td>
+                  <td className="p-2 text-right tabular-nums">{money(o.balanceAmount || 0)}</td>
+                  <td className="p-2">{fmtDate(o.deliveryDate)}</td>
+                </tr>
+              ))}
+              <tr className="border-t-2 border-slate-300 font-bold bg-slate-50">
+                <td className="p-2" colSpan={4}>Total</td>
+                <td className="p-2 text-right tabular-nums">{money(pendingOrderValue)}</td>
+                <td className="p-2 text-right tabular-nums">{money(pendingOrders.reduce((s, o) => s + (o.advanceAmount || 0), 0))}</td>
+                <td className="p-2 text-right tabular-nums">{money(pendingBalanceDue)}</td>
+                <td className="p-2" />
+              </tr>
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );
