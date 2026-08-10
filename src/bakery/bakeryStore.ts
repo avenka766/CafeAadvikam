@@ -57,6 +57,16 @@ interface BakeryState {
   // preventing the StoreDashboard list from unmounting and resetting card state.
   fetchOrders: (silent?: boolean, force?: boolean) => Promise<void>;
   submitOrder: (items: BakeryOrderItem[], createdBy: string, targetBranch: Branch, notes?: string) => Promise<void>;
+  // FEATURE (2026-08-10): "need the ability to edit the incoming orders — we
+  // should be able to edit the order name, quantity, unit" — a plain items
+  // overwrite for an order still sitting in Incoming (status 'pending').
+  // Deliberately does NOT allow editing once an order has moved past
+  // 'pending' (accepted/store_confirmed/produced/dispatched) — by then
+  // Store/production/dispatch may already be relying on the original item
+  // list, and those stages already have their own dedicated edit surfaces
+  // (Store's Confirm Stock selection, Planner's Production Entry, Dispatch's
+  // review modal) that know how to keep everything downstream in sync.
+  updateOrderItems: (orderId: string, items: BakeryOrderItem[]) => Promise<void>;
   // Planner's "Planning" tab: proactive extra-production batches that are NOT
   // tied to any actual VRSNB/SNB/Hosur order yet. target_branch stays null —
   // the destination branch is chosen later, per item, at actual Dispatch time
@@ -237,6 +247,46 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
       void useActivityLogStore.getState().log({
         staffId: user.id, staffName: user.displayName, role: user.role,
         action: 'Submitted Production Plan', detail: `Plan #${order.orderNumber} — ${items.length} item(s), extra production`,
+      });
+    }
+  },
+
+  updateOrderItems: async (orderId, items) => {
+    const order = get().orders.find(o => o.id === orderId);
+    if (!order) throw new Error('Order was not found — please refresh.');
+    if (order.status !== 'pending') {
+      throw new Error('This order has already moved past Incoming and can no longer be edited here.');
+    }
+    if (items.length === 0) throw new Error('An order needs at least one item — remove the whole order instead if it should no longer exist.');
+    // BUG FIX (audit): the `order.status !== 'pending'` guard above only
+    // checks the local (possibly stale) zustand cache — if Store merged/
+    // accepted this exact order in the moments between the planner opening
+    // the edit form and hitting Save, that local check could still see the
+    // old 'pending' snapshot and let the write through, silently overwriting
+    // a row Store has already started acting on. Scoping the actual UPDATE
+    // to `status = 'pending'` makes the DB itself the source of truth: if
+    // the row moved on in the meantime, this becomes a no-op (0 rows
+    // affected) instead of a silent overwrite, and `.select()` lets us
+    // detect that and surface a real error instead of reporting success.
+    const { data: updated, error } = await supabase
+      .from('bakery_orders')
+      .update({ items })
+      .eq('id', orderId)
+      .eq('status', 'pending')
+      .select('id');
+    if (error) throw new Error('Failed to save changes — please try again.');
+    if (!updated || updated.length === 0) {
+      throw new Error('This order has already moved past Incoming (e.g. sent to Store) and can no longer be edited here — refresh to see its current state.');
+    }
+    set(s => ({ orders: s.orders.map(o => o.id === orderId ? { ...o, items } : o) }));
+    const { useAuthStore } = await import('@/stores/authStore');
+    const user = useAuthStore.getState().currentUser;
+    if (user) {
+      const { useActivityLogStore } = await import('./activityLogStore');
+      void useActivityLogStore.getState().log({
+        staffId: user.id, staffName: user.displayName, role: user.role,
+        action: 'Edited Incoming Order', detail: `Order #${order.orderNumber} — items edited (${items.length} item(s) now on the order)`,
+        branch: order.targetBranch,
       });
     }
   },
@@ -1142,58 +1192,138 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
       // reverted the bakery order to 'produced', while the corresponding
       // Hosur shop order(s) stayed stuck showing 'dispatched' with a stale
       // dispatched_quantity, so Hosur Receiving could show an order as ready
-      // to receive when it actually wasn't. Recompute both from the
-      // post-removal updatedLog, using the same proportional-split-by-share
-      // logic submitDispatch uses when one bakery order covers several
-      // merged Hosur shop orders.
+      // to receive when it actually wasn't.
+      //
+      // BUG FIX (audit, 2026-08-10): the reversal used to recompute
+      // `itemDispatchTotal` from THIS order's own post-removal `updatedLog`
+      // alone, then write that as an ABSOLUTE dispatched_quantity for EVERY
+      // shop sharing this Hosur group — the exact same two bugs that were
+      // already found and fixed on the forward (submitDispatch) path but
+      // never carried over to this undo path:
+      //   1. Ignored sibling bakery_orders rows — the same item routinely
+      //      lives on more than one row (e.g. confirmStockSelected splits a
+      //      Store batch), so deleting one entry silently discarded every
+      //      OTHER row's contribution to that item's total.
+      //   2. Recomputed and overwrote EVERY shop's dispatched_quantity
+      //      proportionally, including shops with an explicit TARGETED
+      //      allocation from the By-Shop dispatch panel — clawing back a
+      //      real, deliberate per-shop number back down to a proportional
+      //      guess just because an unrelated untargeted entry was deleted.
+      // Mirrors submitDispatch's now-correct approach: a targeted removal
+      // only decrements that ONE shop's own total; an untargeted removal
+      // gathers every sibling order's log entries first, excludes shops with
+      // their own targeted total from the pool being redistributed, and
+      // only recomputes shares for the remaining untargeted shops.
       if (removedEntry.branch === 'Hosur') {
         const hosurIdsMatch = String(order.notes ?? '').match(/HOSUR_ORDER_IDS?:([^|]+)/);
         const hosurOrderIds = hosurIdsMatch?.[1]
           ? hosurIdsMatch[1].split(',').map(s => s.trim()).filter(Boolean)
           : [];
         if (hosurOrderIds.length > 0) {
-          const itemDispatchTotal = updatedLog
-            .filter(d => d.branch === 'Hosur' && d.itemName === removedEntry.itemName)
-            .reduce((sum, d) => sum + Number(d.quantity || 0), 0);
-
-          const { data: itemRows, error: itemRowsError } = await supabase
-            .from('hosur_order_items')
-            .select('order_id, quantity')
-            .in('order_id', hosurOrderIds)
-            .eq('item_name', removedEntry.itemName);
-
-          if (itemRowsError) {
-            console.error('[deleteDispatchEntry] Hosur item reversal sync failed:', itemRowsError);
-          } else {
-            const rows = itemRows ?? [];
-            const totalRequested = rows.reduce((s, r) => s + Number(r.quantity || 0), 0) || 1;
-            for (const row of rows) {
-              const share = Math.round(itemDispatchTotal * (Number(row.quantity || 0) / totalRequested) * 100) / 100;
+          if (removedEntry.targetHosurOrderId && hosurOrderIds.includes(removedEntry.targetHosurOrderId)) {
+            // TARGETED removal: decrement exactly this shop's own total by
+            // exactly what this entry contributed — never touches any other
+            // shop, mirroring submitDispatch's targeted increment.
+            const { data: existingRow, error: existingErr } = await supabase
+              .from('hosur_order_items')
+              .select('dispatched_quantity')
+              .eq('order_id', removedEntry.targetHosurOrderId)
+              .eq('item_name', removedEntry.itemName)
+              .maybeSingle();
+            if (existingErr) {
+              console.error('[deleteDispatchEntry] Hosur targeted reversal read failed:', existingErr);
+            } else {
+              const newDispatched = Math.max(0, Math.round((Number(existingRow?.dispatched_quantity ?? 0) - Number(removedEntry.quantity || 0)) * 100) / 100);
               const { error: hosurItemError } = await supabase
                 .from('hosur_order_items')
-                .update({ dispatched_quantity: share })
-                .eq('order_id', row.order_id as string)
+                .update({ dispatched_quantity: newDispatched })
+                .eq('order_id', removedEntry.targetHosurOrderId)
                 .eq('item_name', removedEntry.itemName);
-              if (hosurItemError) console.error('[deleteDispatchEntry] Hosur item reversal write failed:', hosurItemError);
+              if (hosurItemError) console.error('[deleteDispatchEntry] Hosur targeted reversal write failed:', hosurItemError);
             }
-
-            for (const hosurOrderId of hosurOrderIds) {
-              const { data: allItems, error: allItemsError } = await supabase
-                .from('hosur_order_items')
-                .select('quantity, dispatched_quantity')
-                .eq('order_id', hosurOrderId);
-              if (allItemsError) {
-                console.error('[deleteDispatchEntry] Hosur order status reversal sync failed:', allItemsError);
-                continue;
+          } else {
+            // UNTARGETED removal: gather this item's dispatch entries across
+            // every sibling order sharing this Hosur group (not just this
+            // order's own log), split shops into "has its own targeted
+            // total" (left untouched) vs. "untargeted pool" (recomputed),
+            // exactly like submitDispatch's own untargeted path.
+            const { data: siblingOrders, error: siblingErr } = await supabase
+              .from('bakery_orders')
+              .select('id, dispatch_log')
+              .eq('target_branch', 'Hosur')
+              .or(hosurOrderIds.map(id => `notes.ilike.%${id}%`).join(','));
+            if (siblingErr) {
+              console.error('[deleteDispatchEntry] Hosur sibling lookup failed:', siblingErr);
+            } else {
+              const allKnownLogEntries: DispatchEntry[] = [
+                ...updatedLog,
+                ...(siblingOrders ?? [])
+                  .filter(o => o.id !== orderId)
+                  .flatMap(o => (o.dispatch_log as DispatchEntry[]) || []),
+              ];
+              const targetedTotalsByShop = new Map<string, number>();
+              for (const d of allKnownLogEntries) {
+                if (d.branch === 'Hosur' && d.itemName === removedEntry.itemName && d.targetHosurOrderId) {
+                  targetedTotalsByShop.set(d.targetHosurOrderId, (targetedTotalsByShop.get(d.targetHosurOrderId) ?? 0) + Number(d.quantity || 0));
+                }
               }
-              const fullyDone = (allItems ?? []).length > 0 &&
-                (allItems ?? []).every(r => Number(r.dispatched_quantity || 0) >= Number(r.quantity || 0) - 0.01);
-              const { error: hosurOrderError } = await supabase
-                .from('hosur_orders')
-                .update({ status: fullyDone ? 'dispatched' : 'pending_packing' })
-                .eq('id', hosurOrderId);
-              if (hosurOrderError) console.error('[deleteDispatchEntry] Hosur order status reversal write failed:', hosurOrderError);
+              const untargetedTotal = allKnownLogEntries
+                .filter(d => d.branch === 'Hosur' && d.itemName === removedEntry.itemName && !d.targetHosurOrderId)
+                .reduce((sum, d) => sum + Number(d.quantity || 0), 0);
+
+              const { data: itemRows, error: itemRowsError } = await supabase
+                .from('hosur_order_items')
+                .select('order_id, quantity')
+                .in('order_id', hosurOrderIds)
+                .eq('item_name', removedEntry.itemName);
+
+              if (itemRowsError) {
+                console.error('[deleteDispatchEntry] Hosur item reversal sync failed:', itemRowsError);
+              } else {
+                const rows = itemRows ?? [];
+                const untargetedRows = rows.filter(r => !targetedTotalsByShop.has(r.order_id as string));
+                const totalRequested = untargetedRows.reduce((s, r) => s + Number(r.quantity || 0), 0) || 1;
+                for (const row of untargetedRows) {
+                  const share = Math.round(untargetedTotal * (Number(row.quantity || 0) / totalRequested) * 100) / 100;
+                  const { error: hosurItemError } = await supabase
+                    .from('hosur_order_items')
+                    .update({ dispatched_quantity: share })
+                    .eq('order_id', row.order_id as string)
+                    .eq('item_name', removedEntry.itemName);
+                  if (hosurItemError) console.error('[deleteDispatchEntry] Hosur item reversal write failed:', hosurItemError);
+                }
+                // Targeted shops keep their own explicit total — rewritten
+                // explicitly (not just skipped) so it's corrected too if it
+                // had drifted for any reason, without ever being blended
+                // into the untargeted proportional pool above.
+                for (const [shopId, total] of targetedTotalsByShop) {
+                  const { error: targetedRewriteError } = await supabase
+                    .from('hosur_order_items')
+                    .update({ dispatched_quantity: Math.round(total * 100) / 100 })
+                    .eq('order_id', shopId)
+                    .eq('item_name', removedEntry.itemName);
+                  if (targetedRewriteError) console.error('[deleteDispatchEntry] Hosur targeted total rewrite failed:', targetedRewriteError);
+                }
+              }
             }
+          }
+
+          for (const hosurOrderId of hosurOrderIds) {
+            const { data: allItems, error: allItemsError } = await supabase
+              .from('hosur_order_items')
+              .select('quantity, dispatched_quantity')
+              .eq('order_id', hosurOrderId);
+            if (allItemsError) {
+              console.error('[deleteDispatchEntry] Hosur order status reversal sync failed:', allItemsError);
+              continue;
+            }
+            const fullyDone = (allItems ?? []).length > 0 &&
+              (allItems ?? []).every(r => Number(r.dispatched_quantity || 0) >= Number(r.quantity || 0) - 0.01);
+            const { error: hosurOrderError } = await supabase
+              .from('hosur_orders')
+              .update({ status: fullyDone ? 'dispatched' : 'pending_packing' })
+              .eq('id', hosurOrderId);
+            if (hosurOrderError) console.error('[deleteDispatchEntry] Hosur order status reversal write failed:', hosurOrderError);
           }
         }
       }

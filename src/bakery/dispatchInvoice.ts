@@ -25,6 +25,14 @@ export interface DispatchInvoiceItem {
   quantity: number;
   unitPrice: number;
   lineTotal: number;
+  // FEATURE (2026-08-10): "if we add the item and it is not in the
+  // dispatched item then it should get marked as extra item" — set on a line
+  // added through the bill-edit flow (updateDispatchInvoice below) that
+  // wasn't part of the original dispatch. Purely a display flag on the
+  // invoice itself (the real "extra" bookkeeping — the Closing Stock ledger
+  // entry and dispatch_log entry backing it — is tagged isExtra separately,
+  // same as every other extra-item path in the app).
+  isExtra?: boolean;
 }
 
 export type DispatchInvoiceScope = Branch; // 'VRSNB' | 'SNB' | 'Hosur'
@@ -107,6 +115,11 @@ export interface DispatchInvoiceRecord {
   paidAt: string | null;
   notes: string | null;
   createdAt: string;
+  // Exposed (2026-08-10) so updateDispatchInvoice can trace each invoice
+  // line back to the real dispatch_log entry it came from — see that
+  // function's comment for why this lookup is the safest way to edit a bill
+  // without duplicating submitDispatch/deleteDispatchEntry's stock logic.
+  dispatchEntryIds: { orderId: string; dispatchEntryId: string }[];
 }
 
 export async function saveDispatchInvoice(input: {
@@ -176,6 +189,7 @@ export async function saveDispatchInvoice(input: {
     paidAt: (data.paid_at as string | null) ?? null,
     notes: input.notes ?? null,
     createdAt: data.created_at as string,
+    dispatchEntryIds: input.dispatchEntryIds ?? [],
   };
 }
 
@@ -322,6 +336,7 @@ function recordFromRow(row: Record<string, unknown>): DispatchInvoiceRecord {
     paidAt: (row.paid_at as string | null) ?? null,
     notes: (row.notes as string | null) ?? null,
     createdAt: String(row.created_at ?? ''),
+    dispatchEntryIds: (row.dispatch_entry_ids as { orderId: string; dispatchEntryId: string }[] | null) ?? [],
   };
 }
 
@@ -346,4 +361,253 @@ export async function listDispatchInvoices(opts: {
   const { data, error } = await query;
   if (error) throw error;
   return ((data ?? []) as Record<string, unknown>[]).map(recordFromRow);
+}
+
+// FEATURE (2026-08-10): "for the dispatched items bill we need the edit
+// option — delete the item, change price/quantity/unit/discount/name...
+// complete edit access. If we minus or delete the item it should come back
+// to stock, and if we add an item it should minus from stock and get marked
+// as extra item if it wasn't in the original dispatch."
+//
+// Rather than re-implementing branch-stock / Closing-Stock-pool / Hosur-sync
+// bookkeeping a second time here, every quantity-affecting edit is expressed
+// as a delete + (re)create of the underlying bakery_orders dispatch_log
+// entry, reusing submitDispatch/deleteDispatchEntry from bakeryStore — the
+// same two functions every other dispatch surface in the app already goes
+// through — so a bill edit rolls back/reapplies stock exactly the way a
+// normal dispatch/undo already does (branch stock, Closing Stock ledger,
+// Hosur shop sync, branch_incoming), instead of a second, easier-to-drift
+// copy of that logic living only here.
+//
+// Matching an edited item back to its real dispatch_log entry: the invoice's
+// own items have no direct link to one (an item can even be split across
+// several dispatch_log rows/orders — see autoSplitForItem). What DOES carry
+// that link is `dispatchEntryIds`, saved alongside every branch/Hosur/
+// Custom-sale invoice — each {orderId, dispatchEntryId} pair points at one
+// real DispatchEntry, which itself carries the true itemName/quantity/unit.
+// Resolving every ref against live order data gives an exact map of "which
+// entries make up which invoice line" with no guessing.
+//
+// Cake invoices are the one dispatch_invoices row this can't reconcile stock
+// for — cake_master_orders never has a bakery_orders/dispatch_log entry at
+// all, and a made-to-order cake isn't part of the shared Closing Stock pool
+// in the first place (it's a bespoke, one-off line, not a catalog balance).
+// When no ref resolves to a real dispatch_log entry, this falls back to a
+// bill-only edit (name/qty/unit/price/discount on the invoice itself) with
+// no stock reconciliation attempted — there's nothing to reconcile. The
+// `stockSynced` flag on the result tells the caller which case happened, so
+// the UI can be honest with the planner about what did/didn't touch stock.
+export async function updateDispatchInvoice(params: {
+  invoiceId: string;
+  updatedItems: DispatchInvoiceItem[];
+  updatedDiscountPct: number;
+  editedBy: string;
+}): Promise<{ ok: true; record: DispatchInvoiceRecord; stockSynced: boolean } | { error: string }> {
+  const { data: invRow, error: invErr } = await supabase.from('dispatch_invoices').select('*').eq('id', params.invoiceId).single();
+  if (invErr || !invRow) return { error: invErr?.message || 'Invoice not found — it may have been removed.' };
+  const original = recordFromRow(invRow as Record<string, unknown>);
+  if (original.status === 'cancelled') return { error: 'This invoice has been cancelled and can no longer be edited.' };
+
+  const cleanedUpdatedItems = params.updatedItems
+    .filter(i => i.itemName.trim() && i.quantity > 0 && i.unitPrice >= 0)
+    .map(i => ({ ...i, itemName: i.itemName.trim() }));
+  if (cleanedUpdatedItems.length === 0) {
+    return { error: 'A bill needs at least one item with a name, quantity above 0 and a valid price — cancel the whole bill instead if it should no longer exist.' };
+  }
+
+  const key = (it: { itemName: string; unit: string }) => `${it.itemName.trim().toLowerCase()}|${it.unit}`;
+  const originalByKey = new Map(original.items.map(i => [key(i), i]));
+  const updatedByKey = new Map(cleanedUpdatedItems.map(i => [key(i), i]));
+
+  const { useBakeryStore } = await import('./bakeryStore');
+  // Force a fresh order fetch — this reconciliation reads dispatch_log
+  // straight off `orders`, and a bill can be edited long after the last poll.
+  await useBakeryStore.getState().fetchOrders(true, true);
+  const freshOrders = useBakeryStore.getState().orders;
+
+  type EntryDetail = { orderId: string; dispatchEntryId: string; itemName: string; unit: string; quantity: number; isExtra: boolean; targetHosurOrderId?: string; isCustomSale: boolean };
+  const entryDetails: EntryDetail[] = original.dispatchEntryIds
+    .map((ref): EntryDetail | null => {
+      const order = freshOrders.find(o => o.id === ref.orderId);
+      const entry = order?.dispatchLog?.find(d => d.id === ref.dispatchEntryId);
+      if (!entry) return null;
+      return {
+        orderId: ref.orderId, dispatchEntryId: ref.dispatchEntryId,
+        itemName: entry.itemName, unit: entry.unit ?? 'kg', quantity: entry.quantity,
+        isExtra: Boolean(entry.isExtra), targetHosurOrderId: entry.targetHosurOrderId, isCustomSale: Boolean(entry.isCustomSale),
+      };
+    })
+    .filter((x): x is EntryDetail => x !== null);
+
+  const stockSynced = entryDetails.length > 0;
+  const entriesByKey = new Map<string, EntryDetail[]>();
+  for (const e of entryDetails) {
+    const k = `${e.itemName.trim().toLowerCase()}|${e.unit}`;
+    if (!entriesByKey.has(k)) entriesByKey.set(k, []);
+    entriesByKey.get(k)!.push(e);
+  }
+
+  const removedKeys = [...originalByKey.keys()].filter(k => !updatedByKey.has(k));
+  const addedKeys = [...updatedByKey.keys()].filter(k => !originalByKey.has(k));
+  const changedQtyKeys = [...updatedByKey.keys()].filter(k => {
+    if (!originalByKey.has(k)) return false;
+    return Math.abs(originalByKey.get(k)!.quantity - updatedByKey.get(k)!.quantity) > 0.001;
+  });
+
+  const branch = original.scope;
+  // Fallback anchor for a genuinely brand-new item (never had any entry to
+  // anchor off) — any order already targeting this branch, same as
+  // ExtraItemDispatchForm's own anchorOrderId logic elsewhere in Dispatch.
+  const fallbackAnchorOrderId = entryDetails[0]?.orderId ?? freshOrders.find(o => o.targetBranch === branch)?.id ?? null;
+  // BUG FIX (audit): a changed-quantity item used to always get re-anchored
+  // onto the SAME single order as entryDetails[0], even when its own
+  // original entries lived on a *different* order. That order may not even
+  // list this item in its own `items` array, which several dispatched-total
+  // calculations elsewhere (branchDispatchedForRow, dispatchedQtyForItem)
+  // key off via `row.contributingOrderIds` — landing a reissued entry on the
+  // wrong order risked it silently dropping out of those totals even though
+  // it's correctly on the invoice. Anchor each changed item on ONE of its
+  // OWN original entries' orders (captured before deletion) instead, and
+  // only fall back to the generic branch anchor for items with no prior
+  // entry of their own (true adds).
+  const anchorFor = (itemKey: string): string | null => entriesByKey.get(itemKey)?.[0]?.orderId ?? fallbackAnchorOrderId;
+  const anchorHosurOrderId = branch === 'Hosur' ? entryDetails.find(e => e.targetHosurOrderId)?.targetHosurOrderId : undefined;
+  const isCustomSale = entryDetails[0]?.isCustomSale ?? Boolean(original.customerName && !original.hosurShopId);
+
+  if (stockSynced && (removedKeys.length > 0 || changedQtyKeys.length > 0 || addedKeys.length > 0) && !fallbackAnchorOrderId) {
+    return { error: `Can't apply this edit — no linked ${branch} order was found to attach the stock change to. Refresh and try again, or ask an admin to check this order.` };
+  }
+
+  const store = useBakeryStore.getState();
+  const reissuedRefs: { orderId: string; dispatchEntryId: string }[] = [];
+
+  if (stockSynced) {
+    // 1. Fully-removed items: delete every backing dispatch_log entry —
+    //    restores branch stock, the Closing Stock pool, and Hosur sync in
+    //    one call each (exactly what "Remove" already does everywhere else
+    //    in Dispatch).
+    for (const k of removedKeys) {
+      for (const e of entriesByKey.get(k) ?? []) {
+        await store.deleteDispatchEntry(e.orderId, e.dispatchEntryId);
+      }
+    }
+    // 2. Quantity/unit/name changes: delete the old entry/entries the same
+    //    way (full restock) — the fresh entry with the new value is
+    //    (re)created in step 3 below.
+    for (const k of changedQtyKeys) {
+      for (const e of entriesByKey.get(k) ?? []) {
+        await store.deleteDispatchEntry(e.orderId, e.dispatchEntryId);
+      }
+    }
+    // 3. Brand-new items AND changed-quantity items (just deleted above) get
+    //    a fresh dispatch_log entry — debits branch stock / Closing Stock /
+    //    Hosur sync exactly like a normal dispatch. Brand-new items are
+    //    tagged isExtra=true per the "mark it as an extra item" ask;
+    //    changed-quantity items carry forward whatever isExtra they already
+    //    had (editing quantity alone doesn't turn a normal item into extra).
+    const toReissue = [
+      ...addedKeys.map(k => ({ k, isExtra: true })),
+      ...changedQtyKeys.map(k => ({ k, isExtra: entriesByKey.get(k)?.[0]?.isExtra ?? false })),
+    ];
+    // BUG FIX (audit): explicitly minting each new entry's id here (instead
+    // of letting submitDispatch auto-generate one) so the dispatchEntryIds
+    // rebuild below can record EXACTLY the entry this call created — the
+    // previous version re-fetched the anchor order afterward and matched by
+    // itemName+unit, which could wrongly pick up an unrelated dispatch_log
+    // entry already sitting on that same order for the same item (e.g. from
+    // a completely different invoice), silently mis-linking this bill to
+    // someone else's dispatch record.
+    for (const { k, isExtra } of toReissue) {
+      const item = updatedByKey.get(k);
+      const orderId = anchorFor(k);
+      if (!item || item.quantity <= 0 || !orderId) continue;
+      const newId = crypto.randomUUID();
+      await store.submitDispatch(orderId, {
+        id: newId,
+        itemName: item.itemName,
+        quantity: item.quantity,
+        unit: item.unit === 'pcs' ? 'pcs' : 'kg',
+        branch,
+        dispatchedBy: params.editedBy,
+        dispatchedAt: new Date().toISOString(),
+        ...(anchorHosurOrderId ? { targetHosurOrderId: anchorHosurOrderId } : {}),
+        isExtra,
+        ...(isCustomSale ? { isCustomSale: true, customerName: original.customerName ?? undefined } : {}),
+      });
+      reissuedRefs.push({ orderId, dispatchEntryId: newId });
+    }
+  }
+
+  // 4. Recompute the invoice's own numbers from the final edited item list —
+  //    identical formula to saveDispatchInvoice, so a reprint looks the same
+  //    as any freshly-created bill.
+  const finalItems: DispatchInvoiceItem[] = cleanedUpdatedItems.map(i => {
+    const k = key(i);
+    return {
+      itemName: i.itemName,
+      unit: i.unit,
+      quantity: i.quantity,
+      unitPrice: i.unitPrice,
+      lineTotal: Math.round(i.quantity * i.unitPrice * 100) / 100,
+      isExtra: addedKeys.includes(k) ? true : (originalByKey.get(k)?.isExtra ?? i.isExtra ?? false),
+    };
+  });
+  const subtotal = Math.round(finalItems.reduce((s, i) => s + i.lineTotal, 0) * 100) / 100;
+  const discountAmount = Math.round(subtotal * (params.updatedDiscountPct / 100) * 100) / 100;
+  const preRound = subtotal - discountAmount;
+  const total = Math.round(preRound);
+  const roundOff = Math.round((total - preRound) * 100) / 100;
+
+  // Re-collect dispatchEntryIds for the edited bill: keep every ref whose
+  // item wasn't touched, drop refs for removed/changed items, and add the
+  // exact refs step 3 just created — keeps a FUTURE edit of this same bill
+  // able to trace back correctly again.
+  let finalDispatchEntryIds = original.dispatchEntryIds;
+  if (stockSynced) {
+    const keptRefs = original.dispatchEntryIds.filter(ref => {
+      const entry = entryDetails.find(e => e.orderId === ref.orderId && e.dispatchEntryId === ref.dispatchEntryId);
+      if (!entry) return true; // unresolved — leave untouched rather than silently drop
+      const k = `${entry.itemName.trim().toLowerCase()}|${entry.unit}`;
+      return !removedKeys.includes(k) && !changedQtyKeys.includes(k);
+    });
+    finalDispatchEntryIds = [...keptRefs, ...reissuedRefs];
+  }
+
+  const editNote = `Edited by ${params.editedBy} on ${new Date().toLocaleString('en-IN')}`;
+  const finalNotes = original.notes ? `${original.notes} · ${editNote}` : editNote;
+  const { error: updateErr } = await supabase.from('dispatch_invoices').update({
+    items: finalItems,
+    subtotal,
+    discount_pct: params.updatedDiscountPct,
+    discount_amount: discountAmount,
+    round_off: roundOff,
+    total,
+    dispatch_entry_ids: finalDispatchEntryIds,
+    notes: finalNotes,
+  }).eq('id', params.invoiceId);
+  if (updateErr) return { error: updateErr.message || 'Failed to save the edited bill.' };
+
+  const { useAuthStore } = await import('@/stores/authStore');
+  const user = useAuthStore.getState().currentUser;
+  if (user) {
+    const { useActivityLogStore } = await import('./activityLogStore');
+    void useActivityLogStore.getState().log({
+      staffId: user.id, staffName: user.displayName, role: user.role,
+      action: 'Edited Dispatch Invoice',
+      detail: `Invoice ${original.invoiceNo} (${original.scope}) edited — ${finalItems.length} item(s), new total Rs. ${total.toFixed(2)}`,
+      branch: original.scope,
+    });
+  }
+
+  return {
+    ok: true,
+    stockSynced,
+    record: {
+      ...original,
+      items: finalItems,
+      subtotal, discountPct: params.updatedDiscountPct, discountAmount, roundOff, total,
+      dispatchEntryIds: finalDispatchEntryIds,
+      notes: finalNotes,
+    },
+  };
 }

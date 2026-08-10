@@ -13,7 +13,7 @@ import {
   ChevronDown, ChevronUp, X, RefreshCw, AlertTriangle, FileSpreadsheet, Clock3,
   Store, CreditCard, WalletCards, MessageCircle, Bell, CalendarDays,
   Search, Printer, Receipt, ListPlus, BarChart3, FileText, Minus, IndianRupee,
-  ShoppingCart, Percent, Trash2, Scale, PackageMinus,
+  ShoppingCart, Percent, Trash2, Scale, PackageMinus, Pencil,
 } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import * as XLSX from 'xlsx';
@@ -35,7 +35,7 @@ import PlannerLeftoverTab, { PlannerTransferOutTab, useLeftoverBalanceMap, recor
 import { canonicalItemSlug, closingStockItemSlug, parseWeightGrams, pcsToKg, resolveItemWeightGrams } from './itemMatcher';
 import { useBranchCatalogStore } from '@/stores/branchCatalogStore';
 import {
-  businessFor, defaultDiscountPct, saveDispatchInvoice, printDispatchInvoice, listDispatchInvoices, markDispatchInvoicePaid,
+  businessFor, defaultDiscountPct, saveDispatchInvoice, printDispatchInvoice, listDispatchInvoices, markDispatchInvoicePaid, updateDispatchInvoice,
   type DispatchInvoiceRecord, type DispatchInvoiceItem,
 } from './dispatchInvoice';
 import { supabase } from '@/lib/supabase';
@@ -509,6 +509,14 @@ function IncomingOrdersTab({ orders, onAdd }: { orders: BakeryOrder[]; onAdd: Re
   const [showAdd, setShowAdd] = useState(false);
   const [branch, setBranch] = useState<Branch>('SNB');
   const [itemName, setItemName] = useState('');
+  // FEATURE (2026-08-10): "in the incoming orders tab new order it should
+  // show suggestion when we search if we select snb then snb items should
+  // show in the suggestion and same if we select vrsnb" — branch-scoped
+  // catalog suggestions, same pattern already used by the Dispatch tab's
+  // "extra item" form (useBranchOnlyCatalog + ItemSearchPicker). Hosur has no
+  // catalog here (returns []), so it stays free-text like before.
+  const [selectedSuggestion, setSelectedSuggestion] = useState<MergedCatalogItem | null>(null);
+  const branchCatalog = useBranchOnlyCatalog(branch === 'VRSNB' || branch === 'SNB' ? branch : null);
   const [qty, setQty] = useState('');
   const [unit, setUnit] = useState<'pcs' | 'kg'>('kg');
   // BUG FIX (audit 2026-08-07): a manually-added pcs item had no way to
@@ -536,7 +544,7 @@ function IncomingOrdersTab({ orders, onAdd }: { orders: BakeryOrder[]; onAdd: Re
         weightGrams: unit === 'pcs' && packWeightGrams && Number(packWeightGrams) > 0 ? Number(packWeightGrams) : undefined,
       };
       await onAdd([item], currentUser?.displayName || 'Planner', branch, 'Added directly by Planner');
-      setItemName(''); setQty(''); setPackWeightGrams(''); setShowAdd(false);
+      setItemName(''); setSelectedSuggestion(null); setQty(''); setPackWeightGrams(''); setShowAdd(false);
     } finally {
       setSaving(false);
     }
@@ -579,10 +587,22 @@ function IncomingOrdersTab({ orders, onAdd }: { orders: BakeryOrder[]; onAdd: Re
       {showAdd && (
         <div className="rounded-2xl border border-border bg-white p-4 shadow-sm">
           <div className="grid gap-3 sm:grid-cols-4">
-            <select value={branch} onChange={e => setBranch(e.target.value as Branch)} className="rounded-xl border border-border px-3 py-2 text-sm">
+            <select
+              value={branch}
+              onChange={e => { setBranch(e.target.value as Branch); setItemName(''); setSelectedSuggestion(null); }}
+              className="rounded-xl border border-border px-3 py-2 text-sm"
+            >
               {BRANCHES.map(b => <option key={b} value={b}>{b}</option>)}
             </select>
-            <input value={itemName} onChange={e => setItemName(e.target.value)} placeholder="Item name" className="rounded-xl border border-border px-3 py-2 text-sm sm:col-span-2" />
+            <div className="sm:col-span-2">
+              <ItemSearchPicker
+                value={selectedSuggestion ? selectedSuggestion.name : itemName}
+                onChange={(v) => { setItemName(v); setSelectedSuggestion(null); }}
+                onSelect={(item) => { setSelectedSuggestion(item); setItemName(item.name); }}
+                items={branchCatalog}
+                placeholder={branch === 'Hosur' ? 'Item name' : `Item name (${branch} catalog)`}
+              />
+            </div>
             <div className="flex gap-2">
               <input value={qty} onChange={e => setQty(e.target.value)} type="number" placeholder="Qty" className="w-full rounded-xl border border-border px-3 py-2 text-sm" />
               <select value={unit} onChange={e => setUnit(e.target.value as 'pcs' | 'kg')} className="rounded-xl border border-border px-2 py-2 text-sm">
@@ -606,14 +626,19 @@ function IncomingOrdersTab({ orders, onAdd }: { orders: BakeryOrder[]; onAdd: Re
         </div>
       )}
 
-      <DayGroupedOrderList orders={orders} badgeLabel="Pending" badgeTone="bg-amber-100 text-amber-700" />
+      <DayGroupedOrderList orders={orders} badgeLabel="Pending" badgeTone="bg-amber-100 text-amber-700" editable />
     </div>
   );
 }
 
 // Groups orders by calendar day (newest day first), each with a day header
 // and a running count — used by both Incoming and Sent tabs.
-function DayGroupedOrderList({ orders, badgeLabel, badgeTone }: { orders: BakeryOrder[]; badgeLabel: string | ((o: BakeryOrder) => string); badgeTone: string | ((o: BakeryOrder) => string) }) {
+// FEATURE (2026-08-10): "need the ability to edit the incoming orders — we
+// should be able to edit the order name, quantity, unit etc." `editable`
+// (only ever passed by IncomingOrdersTab — Sent stays read-only, its orders
+// have already moved past Store) swaps the plain item bullet list for
+// EditableIncomingOrderCard's inline edit form.
+function DayGroupedOrderList({ orders, badgeLabel, badgeTone, editable = false }: { orders: BakeryOrder[]; badgeLabel: string | ((o: BakeryOrder) => string); badgeTone: string | ((o: BakeryOrder) => string); editable?: boolean }) {
   const groups = useMemo(() => {
     const map = new Map<string, BakeryOrder[]>();
     for (const order of orders) {
@@ -639,7 +664,9 @@ function DayGroupedOrderList({ orders, badgeLabel, badgeTone }: { orders: Bakery
               const label = typeof badgeLabel === 'function' ? badgeLabel(order) : badgeLabel;
               const tone = typeof badgeTone === 'function' ? badgeTone(order) : badgeTone;
               const bucket = bucketFor(order);
-              return (
+              return editable ? (
+                <EditableIncomingOrderCard key={order.id} order={order} bucket={bucket} label={label} tone={tone} />
+              ) : (
                 <div key={order.id} className={cn('rounded-2xl border p-4 shadow-sm', BRANCH_META[bucket].bg)}>
                   <div className="flex items-center justify-between">
                     <span className={cn('text-sm font-black', BRANCH_META[bucket].text)}>
@@ -658,6 +685,164 @@ function DayGroupedOrderList({ orders, badgeLabel, badgeTone }: { orders: Bakery
           </div>
         </div>
       ))}
+    </div>
+  );
+}
+
+// One draft row inside the Incoming order edit form — mirrors the fields the
+// "Add Order" form itself collects (name/qty/unit), so editing an existing
+// item is exactly as capable as creating one in the first place.
+interface EditableItemDraft { itemId: string; itemName: string; qty: string; unit: 'pcs' | 'kg'; originalPcs?: number; weightGrams?: number; isCustom?: boolean; attachmentName?: string; attachmentDataUrl?: string }
+
+function draftFromItem(item: BakeryOrderItem): EditableItemDraft {
+  return {
+    itemId: item.itemId,
+    itemName: item.itemName,
+    qty: String(item.dispatchUnit === 'pcs' ? item.originalPcs ?? item.quantity : item.quantity),
+    unit: item.dispatchUnit === 'pcs' ? 'pcs' : 'kg',
+    originalPcs: item.originalPcs,
+    weightGrams: item.weightGrams,
+    isCustom: item.isCustom,
+    attachmentName: item.attachmentName,
+    attachmentDataUrl: item.attachmentDataUrl,
+  };
+}
+
+// A single Incoming order card with a toggleable full edit mode: item name
+// (branch-scoped suggestions, same catalog the Add Order form uses),
+// quantity, unit — plus adding a brand-new row or removing one entirely —
+// per the planner's explicit ask to edit "name, quantity, unit etc." Only
+// ever rendered for status==='pending' orders (see DayGroupedOrderList),
+// matching updateOrderItems' own guard in bakeryStore.
+function EditableIncomingOrderCard({ order, bucket, label, tone }: {
+  order: BakeryOrder; bucket: keyof typeof BRANCH_META; label: string; tone: string;
+}) {
+  const { updateOrderItems } = useBakeryStore();
+  const [editing, setEditing] = useState(false);
+  const [drafts, setDrafts] = useState<EditableItemDraft[]>([]);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const branch: Branch | null = order.targetBranch === 'VRSNB' || order.targetBranch === 'SNB' ? order.targetBranch : null;
+  const branchCatalog = useBranchOnlyCatalog(branch);
+
+  const startEdit = () => {
+    setDrafts(order.items.map(draftFromItem));
+    setError(null);
+    setEditing(true);
+  };
+  const cancel = () => { setEditing(false); setError(null); };
+
+  const updateDraft = (idx: number, patch: Partial<EditableItemDraft>) =>
+    setDrafts(prev => prev.map((d, i) => i === idx ? { ...d, ...patch } : d));
+  const removeDraft = (idx: number) => setDrafts(prev => prev.filter((_, i) => i !== idx));
+  const addDraft = () => setDrafts(prev => [...prev, { itemId: `manual-${Date.now()}-${prev.length}`, itemName: '', qty: '', unit: 'kg' }]);
+
+  const save = async () => {
+    setError(null);
+    const cleanedRaw = drafts.filter(d => d.itemName.trim() && d.qty && Number(d.qty) > 0);
+    if (cleanedRaw.length === 0) { setError('Add at least one item with a name and quantity above 0.'); return; }
+    // BUG FIX (audit): "Add item" has no protection against creating a
+    // second row for an item that already exists on this order (e.g. typing
+    // a name that's a near-duplicate, or clicking Add item twice by
+    // mistake) — two separate line entries with the same name/unit would
+    // both persist, which is confusing on the order even though most
+    // downstream totals (computeProductionRows etc.) sum across an order's
+    // items regardless. Merge same name+unit rows into one before saving.
+    const mergedByKey = new Map<string, EditableItemDraft>();
+    for (const d of cleanedRaw) {
+      const k = `${d.itemName.trim().toLowerCase()}|${d.unit}`;
+      const existing = mergedByKey.get(k);
+      if (existing) {
+        existing.qty = String((Number(existing.qty) || 0) + (Number(d.qty) || 0));
+        if (d.unit === 'pcs') existing.originalPcs = (existing.originalPcs ?? Number(existing.qty)) + (Number(d.qty) || 0);
+      } else {
+        mergedByKey.set(k, { ...d });
+      }
+    }
+    const cleaned = Array.from(mergedByKey.values());
+    const items: BakeryOrderItem[] = cleaned.map(d => ({
+      itemId: d.itemId,
+      itemName: d.itemName.trim(),
+      quantity: Number(d.qty),
+      dispatchUnit: d.unit,
+      originalPcs: d.unit === 'pcs' ? Number(d.qty) : undefined,
+      weightGrams: d.weightGrams,
+      isCustom: d.isCustom,
+      attachmentName: d.attachmentName,
+      attachmentDataUrl: d.attachmentDataUrl,
+    }));
+    setSaving(true);
+    try {
+      await updateOrderItems(order.id, items);
+      setEditing(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save — please try again.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className={cn('rounded-2xl border p-4 shadow-sm', BRANCH_META[bucket].bg)}>
+      <div className="flex items-center justify-between gap-2">
+        <span className={cn('text-sm font-black', BRANCH_META[bucket].text)}>
+          {BRANCH_META[bucket].icon} {bucket === 'Planned' ? 'Planned Stock' : bucket} — Order #{order.orderNumber}
+        </span>
+        <div className="flex items-center gap-2">
+          <span className={cn('rounded-full px-2 py-1 text-[10px] font-black', tone)}>{label}</span>
+          {!editing && (
+            <button type="button" onClick={startEdit} className="flex items-center gap-1 rounded-lg border border-border bg-white px-2 py-1 text-[10px] font-black text-muted-foreground hover:bg-muted">
+              <Pencil className="size-3" /> Edit
+            </button>
+          )}
+        </div>
+      </div>
+
+      {!editing ? (
+        <ul className="mt-2 space-y-1 text-xs font-semibold text-muted-foreground">
+          {order.items.map((item, i) => (
+            <li key={i}>{item.itemName} — {item.dispatchUnit === 'pcs' ? item.originalPcs ?? item.quantity : item.quantity} {item.dispatchUnit || 'kg'}</li>
+          ))}
+        </ul>
+      ) : (
+        <div className="mt-3 space-y-2 rounded-xl border border-border bg-white p-3">
+          {drafts.map((d, idx) => (
+            <div key={d.itemId} className="grid gap-2 sm:grid-cols-[1fr_auto_auto_auto]">
+              <ItemSearchPicker
+                value={d.itemName}
+                onChange={(v) => updateDraft(idx, { itemName: v })}
+                onSelect={(item) => updateDraft(idx, { itemName: item.name })}
+                items={branchCatalog}
+                placeholder="Item name"
+              />
+              <input
+                value={d.qty} onChange={e => updateDraft(idx, { qty: e.target.value })} type="number" min={0}
+                placeholder="Qty" className="w-24 rounded-lg border border-border px-2.5 py-1.5 text-xs font-bold"
+              />
+              <select
+                value={d.unit} onChange={e => updateDraft(idx, { unit: e.target.value as 'pcs' | 'kg' })}
+                className="rounded-lg border border-border px-2 py-1.5 text-xs font-bold"
+              >
+                <option value="kg">kg</option>
+                <option value="pcs">pcs</option>
+              </select>
+              <button type="button" onClick={() => removeDraft(idx)} className="flex items-center justify-center gap-1 rounded-lg border border-red-300 bg-red-50 px-2 py-1.5 text-[11px] font-black text-red-700 hover:bg-red-100">
+                <Trash2 className="size-3.5" /> Remove
+              </button>
+            </div>
+          ))}
+          <button type="button" onClick={addDraft} className="flex items-center gap-1.5 rounded-lg border border-dashed border-border px-2.5 py-1.5 text-[11px] font-black text-muted-foreground hover:bg-muted">
+            <Plus className="size-3.5" /> Add item
+          </button>
+          {error && <p className="text-[11px] font-bold text-red-700">{error}</p>}
+          <div className="flex justify-end gap-2 pt-1">
+            <button type="button" onClick={cancel} disabled={saving} className="rounded-lg border border-border px-3 py-1.5 text-xs font-bold text-muted-foreground hover:bg-muted disabled:opacity-50">Cancel</button>
+            <button type="button" onClick={save} disabled={saving} className="flex items-center gap-1.5 rounded-lg bg-teal-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-teal-700 disabled:opacity-50">
+              {saving ? <Loader2 className="size-3.5 animate-spin" /> : <CheckCircle2 className="size-3.5" />} Save Changes
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1691,6 +1876,10 @@ function InvoiceTab({ orders }: { orders: BakeryOrder[] }) {
   const [batches, setBatches] = useState<DispatchInvoiceRecord[] | null>(null);
   const [batchError, setBatchError] = useState('');
   const [openBatchId, setOpenBatchId] = useState<string | null>(null);
+  // FEATURE (2026-08-10): full edit access on an already-dispatched bill,
+  // reachable straight from the Invoice tab's own batch browser (the most
+  // direct place a planner looks for "the dispatched items bill").
+  const [editingBatch, setEditingBatch] = useState<DispatchInvoiceRecord | null>(null);
 
   const monthRange = useMemo(() => {
     const [y, m] = batchMonth.split('-').map(Number);
@@ -2179,6 +2368,9 @@ function InvoiceTab({ orders }: { orders: BakeryOrder[] }) {
                           <div className="mt-2 flex flex-wrap gap-2">
                             <button onClick={() => printDispatchInvoice(record, 'thermal')} className="flex items-center gap-1.5 rounded-xl bg-muted px-3 py-1.5 text-[11px] font-bold text-muted-foreground hover:bg-slate-200"><Printer className="size-3" /> Print / PDF (Thermal)</button>
                             <button onClick={() => printDispatchInvoice(record, 'a4')} className="flex items-center gap-1.5 rounded-xl bg-muted px-3 py-1.5 text-[11px] font-bold text-muted-foreground hover:bg-slate-200"><Printer className="size-3" /> Print / PDF (A4)</button>
+                            {record.status !== 'cancelled' && (
+                              <button onClick={() => setEditingBatch(record)} className="flex items-center gap-1.5 rounded-xl border border-amber-300 bg-amber-50 px-3 py-1.5 text-[11px] font-black text-amber-800 hover:bg-amber-100"><Pencil className="size-3" /> Edit Bill</button>
+                            )}
                           </div>
                         </div>
                       )}
@@ -2190,6 +2382,13 @@ function InvoiceTab({ orders }: { orders: BakeryOrder[] }) {
           </div>
         )}
       </div>
+      {editingBatch && (
+        <EditDispatchInvoiceModal
+          invoice={editingBatch}
+          onClose={() => setEditingBatch(null)}
+          onSaved={() => { setEditingBatch(null); void loadBatches(); }}
+        />
+      )}
     </div>
   );
 }
@@ -4558,6 +4757,12 @@ function RecentDispatchInvoices({ scope, hosurShopId, title }: { scope: Branch; 
 
   useEffect(() => { void load(); }, [load]);
 
+  // FEATURE (2026-08-10): "for the dispatched items bill we need the edit
+  // option — complete edit access of the bill." Reprint list is also now the
+  // entry point into full bill editing (delete/add items, change price/
+  // qty/unit/name/discount) — see EditDispatchInvoiceModal.
+  const [editingInvoice, setEditingInvoice] = useState<DispatchInvoiceRecord | null>(null);
+
   if (loading && invoices === null) return <p className="text-[11px] font-bold text-muted-foreground">Loading recent invoices…</p>;
   if (error) return <p className="text-[11px] font-bold text-red-700">{error}</p>;
   if (!invoices || invoices.length === 0) return null;
@@ -4578,9 +4783,163 @@ function RecentDispatchInvoices({ scope, hosurShopId, title }: { scope: Branch; 
             <div className="flex gap-1.5">
               <button onClick={() => printDispatchInvoice(inv, 'thermal')} className="flex items-center gap-1 rounded-lg bg-muted px-2 py-1 text-[10px] font-bold text-muted-foreground hover:bg-slate-200"><Printer className="size-3" /> Thermal</button>
               <button onClick={() => printDispatchInvoice(inv, 'a4')} className="flex items-center gap-1 rounded-lg bg-muted px-2 py-1 text-[10px] font-bold text-muted-foreground hover:bg-slate-200"><Printer className="size-3" /> A4</button>
+              {inv.status !== 'cancelled' && (
+                <button onClick={() => setEditingInvoice(inv)} className="flex items-center gap-1 rounded-lg border border-amber-300 bg-amber-50 px-2 py-1 text-[10px] font-black text-amber-800 hover:bg-amber-100"><Pencil className="size-3" /> Edit</button>
+              )}
             </div>
           </div>
         ))}
+      </div>
+      {editingInvoice && (
+        <EditDispatchInvoiceModal
+          invoice={editingInvoice}
+          onClose={() => setEditingInvoice(null)}
+          onSaved={() => { setEditingInvoice(null); void load(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+// FEATURE (2026-08-10): "complete edit access of the bill — delete the item
+// (back to stock), change price/quantity/unit/discount/name, add a new item
+// (minus from stock, marked extra if not originally dispatched)." One draft
+// row per invoice line, editable in place; "Remove" drops a row entirely,
+// "Add item" appends a free-text row (no catalog picker here — a dispatch
+// bill can carry items across any branch/shop, so a single scoped catalog
+// wouldn't fit every case; the item name is still validated non-empty on
+// save). All the actual stock reconciliation happens server-side in
+// updateDispatchInvoice — this component only collects the edited values.
+interface EditableInvoiceLine extends DispatchInvoiceItem { key: number }
+
+function EditDispatchInvoiceModal({ invoice, onClose, onSaved }: {
+  invoice: DispatchInvoiceRecord; onClose: () => void; onSaved: () => void;
+}) {
+  const currentUser = useAuthStore(s => s.currentUser);
+  const [lines, setLines] = useState<EditableInvoiceLine[]>(() => invoice.items.map((i, idx) => ({ ...i, key: idx })));
+  const nextKeyRef = useRef(invoice.items.length);
+  const [discountPct, setDiscountPct] = useState(invoice.discountPct);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [warning, setWarning] = useState<string | null>(null);
+
+  const updateLine = (key: number, patch: Partial<EditableInvoiceLine>) =>
+    setLines(prev => prev.map(l => l.key === key ? { ...l, ...patch } : l));
+  const removeLine = (key: number) => setLines(prev => prev.filter(l => l.key !== key));
+  const addLine = () => {
+    const key = nextKeyRef.current++;
+    setLines(prev => [...prev, { key, itemName: '', unit: 'kg', quantity: 0, unitPrice: 0, lineTotal: 0, isExtra: true }]);
+  };
+
+  const subtotal = lines.reduce((s, l) => s + Math.round(l.quantity * l.unitPrice * 100) / 100, 0);
+  const discountAmount = Math.round(subtotal * (discountPct / 100) * 100) / 100;
+  const total = Math.round(subtotal - discountAmount);
+
+  const save = async () => {
+    setError(null);
+    setWarning(null);
+    const cleaned = lines.filter(l => l.itemName.trim() && l.quantity > 0);
+    if (cleaned.length === 0) { setError('Add at least one item with a name and quantity above 0.'); return; }
+    // BUG FIX (audit): the original bill-creation flow (DispatchReviewModal)
+    // refuses to confirm while any item has no real price ("NO PRICE — enter
+    // below") — this edit path had no equivalent guard, so it was possible
+    // to silently zero out a line's revenue by leaving price blank/0 with no
+    // warning at all, unlike every other place a bill gets built.
+    const zeroPriceItems = cleaned.filter(l => !(l.unitPrice > 0));
+    if (zeroPriceItems.length > 0) {
+      setError(`Enter a price above 0 for: ${zeroPriceItems.map(l => l.itemName).join(', ')} before saving.`);
+      return;
+    }
+    setSaving(true);
+    try {
+      const result = await updateDispatchInvoice({
+        invoiceId: invoice.id,
+        updatedItems: cleaned.map(({ key: _key, ...rest }) => rest),
+        updatedDiscountPct: discountPct,
+        editedBy: currentUser?.displayName || currentUser?.username || 'Planner',
+      });
+      if ('error' in result) { setError(result.error); return; }
+      if (!result.stockSynced) {
+        setWarning('Saved. This bill has no linked dispatch record (e.g. a cake bill), so only the bill itself was updated — no stock was adjusted.');
+        setTimeout(onSaved, 1200);
+      } else {
+        onSaved();
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save changes — please try again.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white p-5 shadow-xl">
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-sm font-black text-foreground">Edit Bill — {invoice.invoiceNo}</p>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="size-4" /></button>
+        </div>
+        <p className="mt-1 text-[11px] font-bold text-muted-foreground">
+          Removing or reducing an item credits it back to stock. Adding an item (or increasing a quantity) debits stock and is marked as an extra/non-requested item on the record.
+        </p>
+
+        <div className="mt-3 space-y-2">
+          {lines.map(l => (
+            <div key={l.key} className="grid gap-2 sm:grid-cols-[1fr_5rem_4.5rem_5rem_auto]">
+              <input
+                value={l.itemName} onChange={e => updateLine(l.key, { itemName: e.target.value })}
+                placeholder="Item name" className="rounded-lg border border-border px-2.5 py-1.5 text-xs font-bold"
+              />
+              <input
+                value={l.quantity || ''} onChange={e => updateLine(l.key, { quantity: Number(e.target.value) || 0 })}
+                type="number" min={0} placeholder="Qty" className="rounded-lg border border-border px-2 py-1.5 text-right text-xs font-bold"
+              />
+              <select
+                value={l.unit} onChange={e => updateLine(l.key, { unit: e.target.value })}
+                className="rounded-lg border border-border px-1.5 py-1.5 text-xs font-bold"
+              >
+                <option value="kg">kg</option>
+                <option value="pcs">pcs</option>
+              </select>
+              <input
+                value={l.unitPrice || ''} onChange={e => updateLine(l.key, { unitPrice: Number(e.target.value) || 0 })}
+                type="number" min={0} placeholder="Price" className="rounded-lg border border-border px-2 py-1.5 text-right text-xs font-bold"
+              />
+              <button type="button" onClick={() => removeLine(l.key)} className="flex items-center justify-center gap-1 rounded-lg border border-red-300 bg-red-50 px-2 py-1.5 text-[11px] font-black text-red-700 hover:bg-red-100">
+                <Trash2 className="size-3.5" />
+              </button>
+              {l.isExtra && <span className="col-span-full -mt-1 text-[10px] font-black uppercase text-amber-700">Extra / non-requested item</span>}
+            </div>
+          ))}
+          <button type="button" onClick={addLine} className="flex items-center gap-1.5 rounded-lg border border-dashed border-border px-2.5 py-1.5 text-[11px] font-black text-muted-foreground hover:bg-muted">
+            <Plus className="size-3.5" /> Add item
+          </button>
+        </div>
+
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+          <label className="flex items-center gap-1.5 text-[11px] font-bold text-muted-foreground">
+            <Percent className="size-3.5" /> Discount %
+            <input
+              type="number" min={0} max={100} step={0.5} value={discountPct}
+              onChange={e => setDiscountPct(Math.max(0, Math.min(100, Number(e.target.value) || 0)))}
+              className="w-16 rounded-lg border border-border px-2 py-1 text-right text-xs font-bold"
+            />
+          </label>
+          <div className="text-right text-xs font-bold text-muted-foreground">
+            Subtotal Rs. {subtotal.toFixed(2)} &nbsp;·&nbsp; Discount Rs. {discountAmount.toFixed(2)} &nbsp;·&nbsp;
+            <span className="text-sm font-black text-foreground"> Total Rs. {total.toFixed(2)}</span>
+          </div>
+        </div>
+
+        {error && <p className="mt-2 text-[11px] font-bold text-red-700">{error}</p>}
+        {warning && <p className="mt-2 text-[11px] font-bold text-amber-700">{warning}</p>}
+
+        <div className="mt-4 flex flex-wrap justify-end gap-2">
+          <button onClick={onClose} disabled={saving} className="rounded-xl border border-border px-3 py-2 text-xs font-bold text-muted-foreground hover:bg-muted disabled:opacity-50">Cancel</button>
+          <button onClick={save} disabled={saving} className="flex items-center gap-1.5 rounded-xl bg-teal-600 px-4 py-2 text-xs font-bold text-white hover:bg-teal-700 disabled:opacity-50">
+            {saving ? <Loader2 className="size-3.5 animate-spin" /> : <CheckCircle2 className="size-3.5" />} Save Changes
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -4686,9 +5045,20 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
   });
   const selectedRows = activeRows.filter(r => selected.has(r.itemName));
 
-  // While actively searching, hide date groups with no matches so the search
-  // reads as global even though rendering stays date-scoped underneath.
-  if (search.trim() && filtered.length === 0) return null;
+  // BUG FIX (2026-08-10): "if we search and enter the data, search again and
+  // enter the data, the records are gone" — this used to `return null` when
+  // the search text matched nothing in THIS date group's rows. Returning
+  // null unmounts this entire component (React destroys all state on
+  // unmount), which took BranchFlatDispatchPanel down with it — every ticked
+  // checkbox, every hand-typed quantity, and every staged extra item, gone
+  // the instant a search keystroke (even transiently, mid-word) matched zero
+  // items for the current branch. Typing to look for one item while an extra
+  // item / selection was already staged is exactly the reported flow. Hiding
+  // via CSS instead of unmounting keeps every child component (and its
+  // in-progress state) alive underneath — the date group just doesn't
+  // render on screen while there's no match, and reappears with everything
+  // intact the moment the search text is cleared or matches again.
+  const hideForSearch = search.trim() !== '' && filtered.length === 0;
 
   return (
     // BUG FIX (2026-08-07): this stayed `overflow-hidden` even while expanded
@@ -4698,7 +5068,7 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
     // the moment it extended past this box, which is exactly what "the
     // dropdown is blocked, we're unable to see the item" looks like. Only
     // clip while collapsed; the expanded body doesn't need it.
-    <div className={cn('rounded-2xl border border-border bg-white shadow-sm', !open && 'overflow-hidden')}>
+    <div style={hideForSearch ? { display: 'none' } : undefined} className={cn('rounded-2xl border border-border bg-white shadow-sm', !open && 'overflow-hidden')}>
       <button type="button" onClick={() => setOpen(v => !v)} className="flex w-full items-center justify-between px-4 py-3 text-left hover:bg-muted/40">
         <div className="flex items-center gap-2">
           <CalendarDays className="size-4 text-muted-foreground" />
@@ -4763,7 +5133,7 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
         plannedRows.length === 0 ? (
           <EmptyState text="No Planned-stock items are currently waiting on a custom sale." />
         ) : (
-          <CustomDispatchPanel rows={plannedRows} orders={orders} onDispatch={submitDispatch} dispatchedBy={currentUser?.displayName || currentUser?.username || 'Planner'} />
+          <CustomDispatchPanel rows={plannedRows} orders={orders} onDispatch={submitDispatch} dispatchedBy={currentUser?.displayName || currentUser?.username || 'Planner'} leftoverBalances={leftoverBalances} />
         )
       ) : subTab === 'planned' ? (
         <PlannedDispatchPanel rows={plannedRows} orders={orders} onDispatch={submitDispatch} dispatchedBy={currentUser?.displayName || 'Planner'} />
@@ -4942,6 +5312,7 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
           onDispatch={submitDispatch}
           dispatchedBy={currentUser?.displayName || 'Planner'}
           onDone={() => { setSelected(new Set()); setBulkOpen(false); }}
+          leftoverBalances={leftoverBalances}
         />
       )}
     </div>
@@ -5083,9 +5454,10 @@ function PlannedDispatchPanel({ rows, orders, onDispatch, dispatchedBy }: {
 // every non-extra dispatch log entry regardless of which branch it's
 // nominally stamped with) — the two tabs can never double-count the same
 // planning stock.
-function CustomDispatchPanel({ rows, orders, onDispatch, dispatchedBy }: {
+function CustomDispatchPanel({ rows, orders, onDispatch, dispatchedBy, leftoverBalances }: {
   rows: ProductionRow[]; orders: BakeryOrder[];
   onDispatch: ReturnType<typeof useBakeryStore.getState>['submitDispatch']; dispatchedBy: string;
+  leftoverBalances: Map<string, { itemName: string; unit: LeftoverUnit; balance: number }>;
 }) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [qty, setQty] = useState<Record<string, string>>({});
@@ -5098,13 +5470,20 @@ function CustomDispatchPanel({ rows, orders, onDispatch, dispatchedBy }: {
   const { getId, reset: resetDispatchIds } = useStableDispatchIds();
   const [review, setReview] = useState<{ actions: PendingDispatchAction[]; customer: { name: string; phone: string; address: string } } | null>(null);
 
+  // BUG FIX (audit, 2026-08-10): this used to suggest/inform off
+  // `row.preparedTotal` alone, unlike BranchFlatDispatchPanel which also
+  // counts the shared Closing Stock leftover balance toward what's
+  // available. A custom walk-in sale of genuinely available leftover stock
+  // could understate how much was really on hand — same fix applied here.
   const lines = useMemo(() => rows.map(row => {
     const plannedRequested = row.perBranch.Planned ?? 0;
     const alreadySent = plannedDispatchedForRow(row, orders);
     const remainingPlanned = Math.max(0, plannedRequested - alreadySent);
-    const defaultQty = Math.round(Math.min(remainingPlanned, row.preparedTotal) * 100) / 100;
-    return { row, plannedRequested, remainingPlanned, defaultQty };
-  }), [rows, orders]);
+    const leftoverBalance = Math.max(0, leftoverBalances.get(closingStockItemSlug(row.itemName))?.balance ?? 0);
+    const available = Math.max(row.preparedTotal, leftoverBalance);
+    const defaultQty = Math.round(Math.min(remainingPlanned, available) * 100) / 100;
+    return { row, plannedRequested, remainingPlanned, available, defaultQty };
+  }), [rows, orders, leftoverBalances]);
 
   const toggleSelect = (itemName: string) => setSelected(prev => {
     const next = new Set(prev);
@@ -5213,16 +5592,17 @@ function CustomDispatchPanel({ rows, orders, onDispatch, dispatchedBy }: {
 
   return (
     <div className="space-y-2 pb-16">
-      {lines.map(({ row, plannedRequested, remainingPlanned, defaultQty }) => {
+      {lines.map(({ row, plannedRequested, remainingPlanned, available, defaultQty }) => {
         const isChecked = selected.has(row.itemName);
         const val = qty[row.itemName] ?? String(defaultQty);
+        const over = Number(val) > available + 0.01;
         return (
           <div key={row.itemName} className={cn('rounded-2xl border bg-white p-3 shadow-sm', isChecked ? 'border-amber-300 ring-1 ring-amber-200' : 'border-border opacity-70')}>
             <div className="flex flex-wrap items-center justify-between gap-2">
               <label className="flex min-w-0 items-center gap-2.5">
                 <input type="checkbox" checked={isChecked} onChange={() => toggleSelect(row.itemName)} className="size-4 shrink-0 accent-amber-600" />
                 <p className="text-sm font-black text-foreground">
-                  {row.itemName} <span className="font-bold text-muted-foreground">(planned {qtyFmt(plannedRequested)} {row.unit} · produced {qtyFmt(row.preparedTotal)} {row.unit} · {qtyFmt(remainingPlanned)} {row.unit} still available)</span>
+                  {row.itemName} <span className="font-bold text-muted-foreground">(planned {qtyFmt(plannedRequested)} {row.unit} · {qtyFmt(available)} {row.unit} available now (produced + leftover) · {qtyFmt(remainingPlanned)} {row.unit} still owed)</span>
                 </p>
               </label>
               <input
@@ -5232,6 +5612,7 @@ function CustomDispatchPanel({ rows, orders, onDispatch, dispatchedBy }: {
                 className="w-24 rounded-lg border border-border bg-background px-2 py-1.5 text-right text-sm font-bold"
               />
             </div>
+            {over && <p className="mt-1 pl-[26px] text-[11px] font-bold text-amber-700">You're selling more than what's currently available — double-check before sending.</p>}
           </div>
         );
       })}
@@ -5251,17 +5632,25 @@ function CustomDispatchPanel({ rows, orders, onDispatch, dispatchedBy }: {
 
 // Lets the planner dispatch several selected items to one branch in a single
 // step, instead of opening the per-item checklist modal one at a time.
-function BulkDispatchModal({ branch, rows, orders, onClose, onDispatch, dispatchedBy, onDone }: {
+function BulkDispatchModal({ branch, rows, orders, onClose, onDispatch, dispatchedBy, onDone, leftoverBalances }: {
   branch: Branch; rows: ProductionRow[]; orders: BakeryOrder[]; onClose: () => void;
   onDispatch: ReturnType<typeof useBakeryStore.getState>['submitDispatch']; dispatchedBy: string; onDone: () => void;
+  leftoverBalances: Map<string, { itemName: string; unit: LeftoverUnit; balance: number }>;
 }) {
+  // BUG FIX (audit, 2026-08-10): only counted `row.preparedTotal` toward
+  // what's available, same gap as CustomDispatchPanel — this is the only
+  // remaining reachable path for this modal (Hosur's legacy "By Item" bulk
+  // dispatch), so its suggested quantity understated real availability
+  // whenever there was Closing Stock leftover on top of fresh production.
   const lines = useMemo(() => rows.map(row => {
     const requested = row.perBranch[branch] ?? 0;
     const alreadySent = branchDispatchedForRow(row, branch, orders);
     const remainingRequested = Math.max(requested - alreadySent, 0);
-    const defaultQty = Math.round(Math.min(remainingRequested, row.preparedTotal) * 100) / 100;
-    return { row, requested, alreadySent, remaining: remainingRequested, defaultQty };
-  }), [rows, branch, orders]);
+    const leftoverBalance = Math.max(0, leftoverBalances.get(closingStockItemSlug(row.itemName))?.balance ?? 0);
+    const available = Math.max(row.preparedTotal, leftoverBalance);
+    const defaultQty = Math.round(Math.min(remainingRequested, available) * 100) / 100;
+    return { row, requested, alreadySent, remaining: remainingRequested, available, defaultQty };
+  }), [rows, branch, orders, leftoverBalances]);
 
   const [qty, setQty] = useState<Record<string, string>>(() => Object.fromEntries(lines.map(l => [l.row.itemName, String(l.defaultQty)])));
   const [error, setError] = useState<string | null>(null);
@@ -5343,9 +5732,10 @@ function BulkDispatchModal({ branch, rows, orders, onClose, onDispatch, dispatch
       <div className="w-full max-w-lg rounded-2xl bg-white p-5 shadow-xl">
         <p className="text-sm font-black text-foreground">Dispatch {lines.length} item{lines.length > 1 ? 's' : ''} to {branch}</p>
         <div className="mt-3 max-h-[50vh] space-y-2 overflow-auto pr-1">
-          {lines.map(({ row, requested, alreadySent, remaining }) => {
+          {lines.map(({ row, requested, alreadySent, remaining, available }) => {
             const val = qty[row.itemName] ?? '';
             const overRemaining = Number(val) > remaining + 0.01;
+            const over = Number(val) > available + 0.01;
             return (
             <div key={row.itemName} className="rounded-xl border border-border p-2.5">
               <div className="flex items-center justify-between gap-2">
@@ -5361,8 +5751,8 @@ function BulkDispatchModal({ branch, rows, orders, onClose, onDispatch, dispatch
                 </div>
               </div>
               <p className="mt-1 text-[11px] font-bold text-muted-foreground">
-                Requested {requested} {row.unit}{alreadySent > 0 ? ` · already sent ${alreadySent} ${row.unit}` : ''} · Produced {row.preparedTotal} {row.unit} · {qtyFmt(remaining)} {row.unit} still owed
-                {overRemaining ? " — this will be capped at what's still owed when you send." : ''}
+                Requested {requested} {row.unit}{alreadySent > 0 ? ` · already sent ${alreadySent} ${row.unit}` : ''} · {qtyFmt(available)} {row.unit} available now (produced + leftover) · {qtyFmt(remaining)} {row.unit} still owed
+                {overRemaining ? " — this will be capped at what's still owed when you send." : over ? " — you're sending more than what's currently available, double-check before sending." : ''}
               </p>
             </div>
             );
