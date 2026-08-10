@@ -1,5 +1,5 @@
 import { cn } from '@/lib/utils';
-import { MENU_CATEGORIES } from '@/constants/config';
+import { useMenuCategories } from '@/hooks/useMenuCategories';
 
 interface CategoryFilterProps {
   selectedCategory: string;
@@ -8,9 +8,10 @@ interface CategoryFilterProps {
 }
 
 export default function CategoryFilter({ selectedCategory, onSelect, showAll = true }: CategoryFilterProps) {
+  const menuCategories = useMenuCategories();
   const categories = showAll
-    ? [{ id: 'all', name: 'All Items', timing: '', icon: '📋' }, ...MENU_CATEGORIES]
-    : MENU_CATEGORIES;
+    ? [{ id: 'all', name: 'All Items', timing: '', icon: '📋' }, ...menuCategories]
+    : menuCategories;
 
   return (
     <div className="order-category-rail" aria-label="Menu categories">

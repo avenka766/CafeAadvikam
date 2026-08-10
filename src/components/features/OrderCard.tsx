@@ -356,7 +356,13 @@ export default function OrderCard({ order, showActions = false, counterOpenedTod
               </div>
             </>
           )}
-          {order.parcelCharges && order.parcelCharges > 0 && (
+          {/* BUG FIX: was `order.parcelCharges && order.parcelCharges > 0 && (...)` —
+              when parcelCharges is exactly 0 (the normal case for a dine-in
+              table order), `0 && anything` short-circuits to the NUMBER 0,
+              and React renders a bare literal "0" on screen (only false/
+              null/undefined are silently skipped — 0 is not). Comparing
+              with `> 0` directly up front always yields a real boolean. */}
+          {(order.parcelCharges ?? 0) > 0 && (
             <div className="flex justify-between text-xs font-body text-amber-600 bg-amber-50 px-2 py-1 rounded-lg border border-amber-200 mb-1">
               <span>📦 Parcel charges</span>
               <span className="tabular-nums font-bold">+{formatCurrency(order.parcelCharges)}</span>
