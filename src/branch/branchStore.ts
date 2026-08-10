@@ -261,6 +261,14 @@ interface BranchState {
     updatedBy: string,
     itemBarcode?: number,
     audit?: { reason?: string; referenceId?: string; notes?: string },
+    // BUG FIX (audit 2026-08-10): optional optimistic-concurrency guard.
+    // When the caller knows what quantity it started editing from (e.g. the
+    // interactive Manual Stock Update panel), pass it here so a concurrent
+    // sale that changed the real DB quantity in between isn't silently
+    // clobbered by this "set absolute value" write. Left undefined for
+    // every other existing caller (Purchase Return, Stock Audit
+    // reconciliation, etc.) so their current behavior is unchanged.
+    expectedCurrentQty?: number,
   ) => Promise<string | null>;
   fetchStockMismatches: () => Promise<void>;
   cleanOldData: () => Promise<void>;
@@ -620,7 +628,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
           id:            d.id,
           itemBarcode:   d.item_barcode != null ? Number(d.item_barcode) : undefined,
           itemName:      d.item_name,
-          quantitySold:  d.quantity_sold,
+          quantitySold:  Number(d.quantity_sold ?? 0),
           soldAt:        d.sold_at,
           soldBy:        d.sold_by,
           branch:        d.branch as Branch,
@@ -736,7 +744,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       id:            d.id,
       itemBarcode:   d.item_barcode != null ? Number(d.item_barcode) : undefined,
       itemName:      d.item_name,
-      quantitySold:  d.quantity_sold,
+      quantitySold:  Number(d.quantity_sold ?? 0),
       soldAt:        d.sold_at,
       soldBy:        d.sold_by,
       branch:        d.branch as Branch,
@@ -816,7 +824,14 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       id:            saleData.id,
       itemBarcode:   saleData.item_barcode != null ? Number(saleData.item_barcode) : resolvedBarcode,
       itemName:      saleData.item_name,
-      quantitySold:  saleData.quantity_sold,
+      // BUG FIX (audit 2026-08-10): quantity_sold is a fractional (kg-item)
+      // Postgres `numeric` column — PostgREST always serializes `numeric` as
+      // a string over JSON, insert-echo included, regardless of what type
+      // was sent in. Every sibling numeric field here is wrapped in
+      // Number(...); this one wasn't, so unguarded `+`/`+=` on quantitySold
+      // elsewhere (History/Reports totals) would string-concatenate instead
+      // of summing once real data included this unwrapped path.
+      quantitySold:  Number(saleData.quantity_sold ?? 0),
       soldAt:        saleData.sold_at,
       soldBy:        saleData.sold_by,
       branch,
@@ -1268,7 +1283,14 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       id:            saleData.id,
       itemBarcode:   saleData.item_barcode != null ? Number(saleData.item_barcode) : resolvedBarcode,
       itemName:      saleData.item_name,
-      quantitySold:  saleData.quantity_sold,
+      // BUG FIX (audit 2026-08-10): quantity_sold is a fractional (kg-item)
+      // Postgres `numeric` column — PostgREST always serializes `numeric` as
+      // a string over JSON, insert-echo included, regardless of what type
+      // was sent in. Every sibling numeric field here is wrapped in
+      // Number(...); this one wasn't, so unguarded `+`/`+=` on quantitySold
+      // elsewhere (History/Reports totals) would string-concatenate instead
+      // of summing once real data included this unwrapped path.
+      quantitySold:  Number(saleData.quantity_sold ?? 0),
       soldAt:        saleData.sold_at,
       soldBy:        saleData.sold_by,
       branch,
@@ -1295,7 +1317,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
   },
 
   // ── Manual stock update — branch staff sets qty for any item ─────────────
-  manualUpdateStock: async (branch, itemName, quantity, updatedBy, itemBarcode, audit) => {
+  manualUpdateStock: async (branch, itemName, quantity, updatedBy, itemBarcode, audit, expectedCurrentQty) => {
     const rounded = Math.round(quantity * 1000) / 1000;
     const now = new Date().toISOString();
 
@@ -1305,6 +1327,22 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       .eq('branch', branch);
     existingQuery = itemBarcode != null ? existingQuery.eq('item_barcode', itemBarcode) : existingQuery.eq('item_name', itemName);
     const { data: existing } = await existingQuery.maybeSingle();
+
+    // BUG FIX (audit 2026-08-10): this write always overwrote `quantity` to
+    // the caller-supplied absolute value with no compare-and-swap, unlike
+    // checkout (which uses the atomic decrement_branch_stock_strict RPCs).
+    // If a sale sells stock in the exact window between a cashier opening
+    // the Manual Stock Update box (seeing e.g. 50) and pressing Save (typing
+    // a recount of 45), that concurrent sale's correct decrement (e.g. to
+    // 47) was silently lost the moment this ran — no error to either side.
+    // When the caller passes the quantity it started editing from, verify
+    // the DB hasn't moved since, and fail loudly instead of clobbering it.
+    if (existing && expectedCurrentQty != null) {
+      const freshQty = Number(existing.quantity ?? 0);
+      if (Math.abs(freshQty - expectedCurrentQty) > 0.0005) {
+        return `Stock changed since you opened this (now ${freshQty}, was ${expectedCurrentQty}) — a sale may have just happened. Please review and try again.`;
+      }
+    }
 
     if (existing) {
       const oldQty = Number(existing.quantity ?? 0);
