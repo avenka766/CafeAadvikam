@@ -245,7 +245,7 @@ export default function CakeMasterDashboard() {
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState('');
-  const [workflowView, setWorkflowView] = useState<'active' | 'corrections' | 'cancelled'>('active');
+  const [workflowView, setWorkflowView] = useState<'active' | 'dispatched' | 'corrections' | 'cancelled'>('active');
   const knownIds = useRef<Set<string> | null>(null);
 
   const load = useCallback(async () => {
@@ -295,12 +295,26 @@ export default function CakeMasterDashboard() {
   }, [load]);
 
   const today = todayStr();
+  // BUG FIX: this used to drop Dispatched orders out of `todaysOrders`
+  // before the workflowView filter ever ran, so a Dispatched tab/subtab
+  // would always show zero results while on the "today" date scope (the
+  // default). Date scoping (today vs all) and status scoping (which tab)
+  // are independent axes -- keep this filter to dates only and let the
+  // workflowView filter below decide what statuses each tab shows.
   const todaysOrders = useMemo(
-    () => orders.filter((o) => o.deliveryDate === today && o.status !== 'Dispatched'),
+    () => orders.filter((o) => o.deliveryDate === today),
     [orders, today],
   );
   const dateOrders = view === 'today' ? todaysOrders : orders;
-  const visibleOrders = dateOrders.filter(order => workflowView === 'corrections' ? order.status === 'Correction Required' : workflowView === 'cancelled' ? order.status === 'Cancelled' : !['Correction Required', 'Cancelled'].includes(order.status));
+  const visibleOrders = dateOrders.filter(order => {
+    if (workflowView === 'dispatched') return order.status === 'Dispatched';
+    if (workflowView === 'corrections') return order.status === 'Correction Required';
+    if (workflowView === 'cancelled') return order.status === 'Cancelled';
+    // Active tab: everything still in flight -- explicitly excludes
+    // Dispatched now that it has its own tab, plus Corrections/Cancelled
+    // which already have theirs.
+    return !['Correction Required', 'Cancelled', 'Dispatched'].includes(order.status);
+  });
 
   const unnoticedIds = useMemo(
     () => new Set(orders.filter((o) => o.status === 'New').map((o) => o.id)),
@@ -355,7 +369,7 @@ export default function CakeMasterDashboard() {
       </div>
 
       <div className="flex flex-wrap gap-2 rounded-2xl border border-slate-200 bg-white p-2 shadow-sm">
-        {([['active', 'Active'], ['corrections', `Corrections (${orders.filter(order => order.status === 'Correction Required').length})`], ['cancelled', `Cancelled (${orders.filter(order => order.status === 'Cancelled').length})`]] as const).map(([id, label]) => <button key={id} type="button" onClick={() => setWorkflowView(id)} className={cn('rounded-xl px-4 py-2 text-xs font-black', workflowView === id ? 'bg-slate-950 text-white' : 'bg-slate-50 text-slate-600')}>{label}</button>)}
+        {([['active', 'Active'], ['dispatched', `Dispatched (${orders.filter(order => order.status === 'Dispatched').length})`], ['corrections', `Corrections (${orders.filter(order => order.status === 'Correction Required').length})`], ['cancelled', `Cancelled (${orders.filter(order => order.status === 'Cancelled').length})`]] as const).map(([id, label]) => <button key={id} type="button" onClick={() => setWorkflowView(id)} className={cn('rounded-xl px-4 py-2 text-xs font-black', workflowView === id ? 'bg-slate-950 text-white' : 'bg-slate-50 text-slate-600')}>{label}</button>)}
       </div>
 
       {error && (
