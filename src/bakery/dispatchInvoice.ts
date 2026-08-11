@@ -17,6 +17,7 @@
 // the same real company details rather than inventing new ones.
 import { supabase } from '@/lib/supabase';
 import { printViaIframe } from '@/lib/printViaIframe';
+import { printViaQz } from '@/lib/qzPrint';
 import type { Branch } from './types';
 
 export interface DispatchInvoiceItem {
@@ -310,8 +311,31 @@ export function renderDispatchInvoiceHtml(record: DispatchInvoiceRecord, mode: '
 // script) whenever that popup was blocked. Now prints via a hidden iframe
 // (see printViaIframe) which never opens a new window/tab, so it can't be
 // blocked by a popup blocker.
-export function printDispatchInvoice(record: DispatchInvoiceRecord, mode: 'a4' | 'thermal') {
-  printViaIframe(renderDispatchInvoiceHtml(record, mode));
+//
+// BUG FIX (2026-08-11): "planner dashboard thermal printer issues — nothing
+// prints / printer not found" on dispatch invoice / bill / walk-in receipt.
+// The hidden-iframe path above only ever calls the browser's native
+// window.print(), which always goes to whatever printer is set as the
+// machine's Windows default (or shows the manual OS picker) — it has no way
+// to target a specific named thermal printer. On a PC where the thermal
+// roll printer isn't (or can't be) set as the OS default — the exact same
+// failure mode already diagnosed and fixed for the Biller dashboard's KOT/
+// Bill printers via QZ Tray (see src/lib/qzPrint.ts + BillingDashboard's
+// Printer Setup modal) — that manifests as "nothing prints" or the OS
+// print dialog reporting no usable/default printer. Planner thermal prints
+// now try QZ Tray first (role 'planner-bill', configured once via Planner's
+// own Printer Setup) and only fall back to the untouched hidden-iframe
+// browser-print path if QZ Tray isn't installed/running or no printer has
+// been assigned yet — so nothing changes for anyone who hasn't set QZ up.
+// A4 prints are unaffected (still meant for a normal page-size printer/PDF,
+// not the raw thermal roll QZ targets).
+export async function printDispatchInvoice(record: DispatchInvoiceRecord, mode: 'a4' | 'thermal') {
+  const html = renderDispatchInvoiceHtml(record, mode);
+  if (mode === 'thermal') {
+    const printedViaQz = await printViaQz('planner-bill', html);
+    if (printedViaQz) return;
+  }
+  printViaIframe(html);
 }
 
 function recordFromRow(row: Record<string, unknown>): DispatchInvoiceRecord {

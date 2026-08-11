@@ -395,8 +395,102 @@ export function autoSplitForItem(orders: BakeryOrder[], itemName: string, totalP
   return split;
 }
 
+// -- Printer Setup modal (2026-08-11) -----------------------------------------
+// BUG FIX: "planner dashboard thermal printer issues — nothing prints /
+// printer not found" on dispatch invoice / bill / walk-in receipt. Root
+// cause: every Planner thermal print (printDispatchInvoice, used directly by
+// the Dispatch tab AND by printWalkinBill) only ever called the browser's
+// native window.print() via a hidden iframe — that always goes to whichever
+// printer Windows has set as its default, with no way to target a specific
+// named thermal printer. If the billing PC's thermal roll printer isn't (or
+// can't be) set as the OS default, that shows up exactly as reported —
+// nothing prints, or the OS print dialog can't find a usable printer. This
+// mirrors the identical failure already diagnosed and fixed for the Biller
+// dashboard's KOT/Bill printers (see BillingDashboard.tsx's PrinterSetupModal
+// + src/lib/qzPrint.ts): QZ Tray, once installed on the machine, lets the app
+// send a print job straight to one named printer, silently, no OS dialog.
+// printDispatchInvoice (dispatchInvoice.ts) now tries QZ Tray first for
+// thermal prints and only falls back to the untouched browser-print path if
+// QZ Tray isn't set up — this modal is where the planner picks (once) which
+// installed printer is the "planner-bill" role QZ should target.
+function PlannerPrinterSetupModal({ onClose }: { onClose: () => void }) {
+  const [qzOnline, setQzOnline] = useState<boolean | null>(null);
+  const [printers, setPrinters] = useState<string[]>([]);
+  const [billPrinter, setBillPrinterState] = useState('');
+  const [checking, setChecking] = useState(true);
+
+  const refresh = useCallback(async () => {
+    setChecking(true);
+    const [{ isQzAvailable, listQzPrinters, getPrinterPref }] = await Promise.all([import('@/lib/qzPrint')]);
+    const online = await isQzAvailable();
+    setQzOnline(online);
+    setPrinters(online ? await listQzPrinters() : []);
+    setBillPrinterState(getPrinterPref('planner-bill'));
+    setChecking(false);
+  }, []);
+
+  useEffect(() => { void refresh(); }, [refresh]);
+
+  const save = async (value: string) => {
+    const { setPrinterPref } = await import('@/lib/qzPrint');
+    setPrinterPref('planner-bill', value);
+    setBillPrinterState(value);
+  };
+
+  return (
+    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 p-4">
+      <div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-xl">
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex gap-3">
+            <div className="size-11 shrink-0 rounded-2xl bg-slate-100 flex items-center justify-center"><Printer className="size-5 text-slate-700" /></div>
+            <div>
+              <h2 className="font-display text-lg font-black">Printer Setup</h2>
+              <p className="text-sm text-muted-foreground">Send dispatch invoices, bills and walk-in receipts straight to your thermal printer.</p>
+            </div>
+          </div>
+          <button onClick={onClose} className="p-2 rounded-xl bg-muted"><X className="size-4" /></button>
+        </div>
+
+        <div className="mt-4 rounded-xl border border-border p-3">
+          <div className="flex items-center gap-2">
+            <span className={cn('size-2 rounded-full', qzOnline ? 'bg-emerald-500' : 'bg-red-500')} />
+            <span className="text-sm font-bold">{checking ? 'Checking QZ Tray…' : qzOnline ? 'QZ Tray connected' : 'QZ Tray not detected'}</span>
+            <button onClick={() => void refresh()} className="ml-auto text-xs font-bold text-muted-foreground underline">Recheck</button>
+          </div>
+          {!checking && !qzOnline && (
+            <div className="mt-2 space-y-2 text-xs text-muted-foreground">
+              <p>
+                Install QZ Tray (free, one-time) from <span className="font-bold">qz.io</span> on this printing computer, then click Recheck.
+                Until it's installed, prints keep using the old way (whatever printer is set as Windows default) — nothing here is required for printing to keep working.
+              </p>
+              <p className="rounded-lg bg-amber-50 p-2 text-amber-800">
+                <span className="font-bold">Already installed and running, but still shows "not detected"?</span> This is normal the first time — this website talks to QZ Tray over a secure connection your browser doesn't trust yet. Fix it once: open a <span className="font-bold">new browser tab</span>, go to <span className="font-bold">https://localhost:8181</span>, click "Advanced" then "Proceed" on the warning page, then come back here and click Recheck.
+              </p>
+            </div>
+          )}
+        </div>
+
+        <div className="mt-4">
+          <label className="text-xs font-black uppercase text-muted-foreground">Bill / Receipt Printer</label>
+          {qzOnline ? (
+            <select value={billPrinter} onChange={(e) => void save(e.target.value)} className="mt-1 w-full rounded-xl border border-border bg-card px-3 py-2 text-sm font-bold">
+              <option value="">Not set — use Windows default</option>
+              {printers.map(p => <option key={p} value={p}>{p}</option>)}
+            </select>
+          ) : (
+            <input value={billPrinter} onChange={(e) => void save(e.target.value)} placeholder="Exact printer name from Windows" className="mt-1 w-full rounded-xl border border-border bg-card px-3 py-2 text-sm font-bold" />
+          )}
+        </div>
+
+        <button onClick={onClose} className="mt-5 w-full rounded-xl bg-slate-950 py-3 text-sm font-black text-white">Done</button>
+      </div>
+    </div>
+  );
+}
+
 export default function PlannerDashboard() {
   const { orders, loading, fetchOrders, subscribe, submitOrder } = useBakeryStore();
+  const [showPrinterSetup, setShowPrinterSetup] = useState(false);
   const [searchParams] = useSearchParams();
   const urlTab = searchParams.get('tab') as PlannerTab | null;
   const tab: PlannerTab = urlTab && TABS.some(t => t.key === urlTab) ? urlTab : 'incoming';
@@ -453,6 +547,16 @@ export default function PlannerDashboard() {
 
   return (
     <div className="min-h-screen warm-gradient">
+      {showPrinterSetup && <PlannerPrinterSetupModal onClose={() => setShowPrinterSetup(false)} />}
+      <button
+        type="button"
+        onClick={() => setShowPrinterSetup(true)}
+        title="Printer setup (route dispatch invoices/bills/walk-in receipts to your thermal printer)"
+        aria-label="Printer setup"
+        className="fixed right-4 top-4 z-40 inline-flex size-9 items-center justify-center rounded-xl border border-border bg-card text-muted-foreground shadow-sm transition-colors hover:bg-muted"
+      >
+        <Printer className="size-4" />
+      </button>
       <main className="mx-auto max-w-7xl px-4 py-6">
         {loading && orders.length === 0 ? (
           <div className="flex justify-center py-20"><Loader2 className="size-6 animate-spin text-muted-foreground" /></div>
