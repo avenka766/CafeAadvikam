@@ -66,6 +66,24 @@ const AdminAlertsPage = lazy(() => import('@/pages/AdminAlertsPage'));
 
 
 
+// Owner Android app — silent auto-login (2026-08-12, explicit owner request:
+// "I don't want the app to have a login screen... they should see the
+// data"). This is a genuine security tradeoff, made knowingly: these
+// credentials ship inside the .apk itself, so anyone who obtains the app
+// package file (not just the phone) could extract them and authenticate as
+// this account remotely. To limit the blast radius of that:
+//   - This is a DEDICATED account ("owner-app-device"), not either real
+//     Owner's personal login — their own usernames/passwords are never
+//     embedded anywhere and keep working independently.
+//   - If this credential ever needs to be revoked, delete/reset just this
+//     one staff record server-side (Staff Management) — it doesn't touch
+//     the real Owner accounts.
+// Only wired in for the native build; the web dashboard (used by every
+// other role, on shared/less-trusted devices) is completely unaffected and
+// still requires a real login.
+const OWNER_AUTOLOGIN_USERNAME = 'owner-app-device';
+const OWNER_AUTOLOGIN_PASSWORD = 'UaUs36zfZmL-MYxlMsYMRMYwE4zP3kKU';
+
 function LiveMenuSync() {
   const { loadMenu, subscribe } = useMenuStore();
   useEffect(() => {
@@ -95,7 +113,25 @@ function AppRoutes() {
     }
   }, [hydrated]);
 
-  if (!hydrated) return (
+  // Owner Android app — silent auto-login. Runs once, after the persisted
+  // session has finished hydrating, only when native and no session was
+  // restored (i.e. a genuinely fresh install, or a wiped one during
+  // testing). See OWNER_AUTOLOGIN_USERNAME/PASSWORD above for the reasoning.
+  // `status` gates rendering below so the real login screen never flashes
+  // on screen while this is in flight — 'done' covers both "logged in
+  // already" and "auto-login finished" (success or failure), the latter
+  // falling through to the normal login screen as a safety net.
+  const [autoLoginStatus, setAutoLoginStatus] = useState<'idle' | 'trying' | 'done'>('idle');
+  useEffect(() => {
+    if (!hydrated) return;
+    if (!native || currentUser) { setAutoLoginStatus('done'); return; }
+    if (autoLoginStatus !== 'idle') return;
+    setAutoLoginStatus('trying');
+    void useAuthStore.getState().login(OWNER_AUTOLOGIN_USERNAME, OWNER_AUTOLOGIN_PASSWORD)
+      .finally(() => setAutoLoginStatus('done'));
+  }, [hydrated, native, currentUser, autoLoginStatus]);
+
+  if (!hydrated || (native && autoLoginStatus !== 'done')) return (
     <div className="min-h-screen bg-background flex items-center justify-center">
       <div className="flex flex-col items-center gap-3">
         <div className="size-10 rounded-2xl bg-primary/10 animate-pulse" />
@@ -136,7 +172,7 @@ function AppRoutes() {
         <Route path="/bakery/receive/snb"   element={<ProtectedRoute allowedRoles={['receiver_snb']}><OrderReceiverDashboard /></ProtectedRoute>} />
         <Route path="/bakery/store"   element={<ProtectedRoute allowedRoles={['store']}><StoreDashboard /></ProtectedRoute>} />
         <Route path="/bakery/cake-master" element={<ProtectedRoute allowedRoles={['cake_master']}><CakeMasterDashboard /></ProtectedRoute>} />
-        <Route path="/bakery/planner" element={<ProtectedRoute allowedRoles={['planner']}><PlannerDashboard /></ProtectedRoute>} />
+        <Route path="/bakery/planner" element={<ProtectedRoute allowedRoles={['planner', 'owner']}><PlannerDashboard /></ProtectedRoute>} />
         <Route path="/bakery/items"   element={<ProtectedRoute allowedRoles={['admin']}><BakeryItemManagement /></ProtectedRoute>} />
         <Route path="/bakery/recipes" element={<ProtectedRoute allowedRoles={['admin']}><RecipeManagement /></ProtectedRoute>} />
 

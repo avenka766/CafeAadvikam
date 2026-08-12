@@ -2141,9 +2141,20 @@
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
   .workspace-redesign .owner-panel {
+    /* BUG FIX (2026-08-12): this rule only ever set radius/padding/min-width
+       — every `<section className="owner-panel">` in OwnerDashboard.tsx is
+       used bare (no other background/border/shadow classes alongside it),
+       so these panels (Payment Breakdown chart, Store Purchases panels,
+       PO Approvals card) were rendering with literally no card surface at
+       all, just floating content on the page background. Give it the same
+       card treatment as owner-metric-card/owner-business-card so it reads
+       as a real panel like everything else in this system. */
     border-radius: 1.45rem;
-    padding: 1rem;
+    padding: 1.1rem;
     min-width: 0;
+    border: 1px solid var(--owner-border);
+    background: rgba(255,255,255,.94);
+    box-shadow: 0 16px 44px rgba(48,29,8,.06), inset 0 1px 0 rgba(255,255,255,.82);
   }
   .workspace-redesign .owner-panel-head {
     display: flex;
@@ -3845,6 +3856,15 @@
   box-shadow: 0 14px 34px rgba(13,58,48,.28);
   border-bottom: 1px solid rgba(212,147,47,.55);
 }
+/* Thin gold hairline along the very top edge — a small premium detail that
+   reads clearly under the phone's status bar/notch. */
+.owner-native-topbar::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, rgba(255,196,91,.9), transparent);
+}
 
 .owner-native-brand { display: flex; align-items: center; gap: .65rem; min-width: 0; }
 .owner-native-mark {
@@ -3948,7 +3968,7 @@
   background: linear-gradient(135deg, var(--owner-native-green), var(--owner-native-green-dark));
   border-color: transparent;
   color: #fff;
-  box-shadow: 0 8px 18px rgba(18,109,82,.30);
+  box-shadow: 0 8px 18px rgba(18,109,82,.30), inset 0 1px 0 rgba(255,255,255,.22);
 }
 
 .owner-native-body {
