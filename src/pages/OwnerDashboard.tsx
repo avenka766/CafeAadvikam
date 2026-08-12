@@ -31,7 +31,7 @@ import { cn } from '@/lib/utils';
 import OwnerCreditTab from '@/components/admin/OwnerCreditTab';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  PieChart, Pie, Cell, AreaChart, Area, LineChart, Line, Legend,
+  PieChart, Pie, Cell, AreaChart, Area, LineChart, Line, Legend, LabelList,
 } from 'recharts';
 import {
   IndianRupee, ShoppingBag, TrendingUp, Users,
@@ -44,7 +44,8 @@ import {
 } from 'lucide-react';
 import { isNativeApp } from '@/lib/platform';
 import { useOperationalBranchCatalog } from '@/hooks/useOperationalBranchCatalog';
-import PlannerDashboard from '@/bakery/PlannerDashboard';
+import { useBakeryStore } from '@/bakery/bakeryStore';
+import { useLeftoverBalanceMap, qtyFmt } from '@/bakery/PlannerLeftoverTab';
 
 // Shared helper for matching a free-text item name against a catalog's name
 // (used to price Stock Variance and Waste & Loss rows against the live
@@ -1088,7 +1089,7 @@ function AttendanceSalaryTab() {
   const allDepts = useMemo(() => [...new Set(employees.map(e => e.department))], [employees]);
   const deptByBranch = useMemo(() => {
     return Object.entries(branchGroups).map(([branch, emps]) => {
-      const row: Record<string, string | number> = { branch };
+      const row: Record<string, string | number> = { branch, total: emps.length };
       allDepts.forEach(dept => { row[dept] = emps.filter(e => e.department === dept).length; });
       return row;
     });
@@ -1227,20 +1228,39 @@ function AttendanceSalaryTab() {
       )}
 
       {deptByBranch.length > 0 && (
+        // FEATURE (2026-08-12): "not at all good add more visualize and it
+        // should be attractive" — added per-branch headcount chips above the
+        // chart, in-segment count labels, a taller chart, and a styled
+        // tooltip so the breakdown reads clearly at a glance instead of
+        // needing to hover every segment.
         <div className="bg-card border border-border rounded-xl p-4">
-          <h3 className="font-display text-base font-bold mb-4 flex items-center gap-2">
-            <Building2 className="size-4 text-primary" />Staff by Branch & Department
-          </h3>
-          <ResponsiveContainer width="100%" height={200}>
-            <BarChart data={deptByBranch}>
-              <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-              <XAxis dataKey="branch" tick={{ fontSize: 10 }} />
-              <YAxis allowDecimals={false} tick={{ fontSize: 10 }} />
-              <Tooltip />
-              <Legend />
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+            <h3 className="font-display text-base font-bold flex items-center gap-2">
+              <Building2 className="size-4 text-primary" />Staff by Branch & Department
+            </h3>
+            <div className="flex flex-wrap gap-2">
+              {deptByBranch.map(row => (
+                <span key={String(row.branch)} className="rounded-full bg-primary/10 px-3 py-1 text-xs font-black text-primary">
+                  {row.branch}: {row.total} staff
+                </span>
+              ))}
+            </div>
+          </div>
+          <ResponsiveContainer width="100%" height={260}>
+            <BarChart data={deptByBranch} barSize={48} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
+              <XAxis dataKey="branch" tick={{ fontSize: 11, fontWeight: 700 }} axisLine={false} tickLine={false} />
+              <YAxis allowDecimals={false} tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
+              <Tooltip
+                cursor={{ fill: 'hsl(var(--muted))', opacity: 0.4 }}
+                contentStyle={{ borderRadius: 12, border: '1px solid hsl(var(--border))', fontSize: 12, fontWeight: 600 }}
+              />
+              <Legend wrapperStyle={{ fontSize: 11, fontWeight: 700, paddingTop: 8 }} />
               {allDepts.map((dept, i) => (
                 <Bar key={dept} dataKey={dept} stackId="a" fill={COLORS[i % COLORS.length]}
-                  radius={i === allDepts.length - 1 ? [4, 4, 0, 0] : [0, 0, 0, 0]} />
+                  radius={i === allDepts.length - 1 ? [8, 8, 0, 0] : [0, 0, 0, 0]}>
+                  <LabelList dataKey={dept} position="inside" fontSize={11} fontWeight={700} fill="#fff" formatter={(v: number) => (v > 0 ? v : '')} />
+                </Bar>
               ))}
             </BarChart>
           </ResponsiveContainer>
@@ -1343,7 +1363,9 @@ function WasteLogsTab() {
   const [branchWasteLoading, setBranchWasteLoading] = useState(true);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [activeSource, setActiveSource] = useState<'kitchen' | 'branches'>('kitchen');
+  // FEATURE (2026-08-12): "make the branch as first tab and kitchen waste as
+  // second tab" — Branch Waste is now both listed first and the default view.
+  const [activeSource, setActiveSource] = useState<'kitchen' | 'branches'>('branches');
 
   const todayStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
   const [fromDate, setFromDate] = useState(todayStr);
@@ -1502,17 +1524,17 @@ function WasteLogsTab() {
         </div>
       </div>
 
-      {/* Source toggle */}
+      {/* Source toggle — Branch Waste first per owner request */}
       <div className="flex gap-2">
-        <button
-          onClick={() => setActiveSource('kitchen')}
-          className={`rounded-xl px-4 py-2 text-xs font-black transition ${activeSource === 'kitchen' ? 'bg-slate-950 text-white' : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'}`}>
-          Kitchen Waste ({entries.length})
-        </button>
         <button
           onClick={() => setActiveSource('branches')}
           className={`rounded-xl px-4 py-2 text-xs font-black transition ${activeSource === 'branches' ? 'bg-slate-950 text-white' : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'}`}>
           Branch Waste ({filteredBranchWaste.length})
+        </button>
+        <button
+          onClick={() => setActiveSource('kitchen')}
+          className={`rounded-xl px-4 py-2 text-xs font-black transition ${activeSource === 'kitchen' ? 'bg-slate-950 text-white' : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'}`}>
+          Kitchen Waste ({entries.length})
         </button>
       </div>
 
@@ -1620,16 +1642,21 @@ function WasteLogsTab() {
               <p className="text-sm font-medium text-muted-foreground">No branch waste logs for this period</p>
             </div>
           )}
-          {/* Summary by branch */}
+          {/* Summary by branch — count AND rupee value per branch (2026-08-12:
+              "I need to see the clear details of each branch waste and its
+              price" — this card grid used to show only entry counts). */}
           {filteredBranchWaste.length > 0 && (
             <div className="grid gap-3 grid-cols-2 sm:grid-cols-4">
               {(['SNB', 'VRSNB', 'Hosur', 'Cafe'] as const).map(branch => {
-                const count = filteredBranchWaste.filter(l => l.branch === branch).length;
+                const branchLogs = filteredBranchWaste.filter(l => l.branch === branch);
+                const branchValue = branchLogs.reduce((sum, l) => sum + (l.lossValue ?? 0), 0);
+                const unpriced = branchLogs.some(l => l.lossValue == null);
                 return (
                   <div key={branch} className="rounded-2xl border border-slate-200 bg-white p-3">
                     <p className="text-[10px] font-black uppercase text-slate-500">{branch}</p>
-                    <p className="text-2xl font-black text-slate-950">{count}</p>
+                    <p className="text-2xl font-black text-slate-950">{branchLogs.length}</p>
                     <p className="text-xs text-slate-500">waste entries</p>
+                    <p className="mt-1 text-sm font-black text-red-600">{formatCurrency(branchValue)}{unpriced && <span className="ml-1 text-[9px] font-bold text-slate-400">+N/A</span>}</p>
                   </div>
                 );
               })}
@@ -1688,6 +1715,20 @@ function OwnerAuditTab() {
   const { fetchBranchData } = useBranchStore();
   const [search, setSearch] = useState('');
   const [branchFilter, setBranchFilter] = useState<string>('all');
+  // FEATURE (2026-08-12): "give some filters by default" — branch + search
+  // already existed; added a source-type filter and a date range that
+  // defaults to the last 7 days (instead of an unbounded all-time list) so
+  // the tab opens to a manageable, relevant window instead of everything at
+  // once. "All time" is still one click away via the date fields.
+  const [sourceFilter, setSourceFilter] = useState<string>('all');
+  const auditToday = ownerDateInput();
+  const auditWeekAgo = useMemo(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 7);
+    return d.toISOString().slice(0, 10);
+  }, []);
+  const [dateFrom, setDateFrom] = useState(auditWeekAgo);
+  const [dateTo, setDateTo] = useState(auditToday);
   // BUG FIX (2026-08-09): "we are unable to see all the logs" — this tab only
   // ever read the `auditLogs` bucket (populated from just 4 call sites app-
   // wide: discount overrides and advance-order edits). Two other genuine
@@ -1744,15 +1785,24 @@ function OwnerAuditTab() {
     ...stockAdjustmentLog,
   ], [auditLogs, activityLog, stockAdjustmentLog]);
 
-  const filtered = useMemo(() =>
-    combinedLogs
+  const filtered = useMemo(() => {
+    const fromMs = dateFrom ? new Date(`${dateFrom}T00:00:00`).getTime() : null;
+    const toMs = dateTo ? new Date(`${dateTo}T23:59:59.999`).getTime() : null;
+    return combinedLogs
       .filter(l => branchFilter === 'all' || l.branch === branchFilter)
+      .filter(l => sourceFilter === 'all' || l.source === sourceFilter)
+      .filter(l => {
+        if (fromMs == null && toMs == null) return true;
+        const t = new Date(l.createdAt).getTime();
+        if (fromMs != null && t < fromMs) return false;
+        if (toMs != null && t > toMs) return false;
+        return true;
+      })
       .filter(l => !search || `${l.action} ${l.user} ${l.branch} ${l.source}`.toLowerCase().includes(search.toLowerCase()))
-      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
-    [combinedLogs, branchFilter, search]
-  );
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  }, [combinedLogs, branchFilter, sourceFilter, search, dateFrom, dateTo]);
 
-  useEffect(() => { setVisibleCount(150); }, [search, branchFilter]);
+  useEffect(() => { setVisibleCount(150); }, [search, branchFilter, sourceFilter, dateFrom, dateTo]);
 
   const BRANCH_COLOR: Record<string, string> = { SNB: 'bg-blue-50 text-blue-700', VRSNB: 'bg-purple-50 text-purple-700', Hosur: 'bg-amber-50 text-amber-700', Cafe: 'bg-emerald-50 text-emerald-700' };
   const SOURCE_COLOR: Record<string, string> = { 'Staff Activity': 'bg-indigo-50 text-indigo-700', 'Stock Adjustment': 'bg-amber-50 text-amber-700', 'Discount / Order Edit': 'bg-rose-50 text-rose-700' };
@@ -1779,9 +1829,28 @@ function OwnerAuditTab() {
           <option value="all">All branches</option>
           {OWNER_FULL_BRANCHES.map(b => <option key={b} value={b}>{ownerBranchDisplay(b)}</option>)}
         </select>
+        <select value={sourceFilter} onChange={e => setSourceFilter(e.target.value)} className="rounded-2xl border border-border bg-card px-3 py-2 text-sm outline-none">
+          <option value="all">All types</option>
+          <option value="Discount / Order Edit">Discount / Order Edit</option>
+          <option value="Staff Activity">Staff Activity</option>
+          <option value="Stock Adjustment">Stock Adjustment</option>
+        </select>
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <label className="text-[11px] font-black uppercase tracking-wide text-muted-foreground">From</label>
+        <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} className="rounded-2xl border border-border bg-card px-3 py-2 text-sm outline-none" />
+        <label className="text-[11px] font-black uppercase tracking-wide text-muted-foreground">To</label>
+        <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} className="rounded-2xl border border-border bg-card px-3 py-2 text-sm outline-none" />
+        <button
+          type="button"
+          onClick={() => { setDateFrom(''); setDateTo(''); }}
+          className="rounded-2xl border border-dashed border-border bg-card px-3 py-2 text-xs font-black text-muted-foreground hover:bg-slate-50"
+        >
+          Show all time
+        </button>
       </div>
 
-      <p className="text-[11px] font-bold text-muted-foreground">{filtered.length} log{filtered.length === 1 ? '' : 's'} across Discount/Order Edits, Staff Activity, and Stock Adjustments</p>
+      <p className="text-[11px] font-bold text-muted-foreground">{filtered.length} log{filtered.length === 1 ? '' : 's'} across Discount/Order Edits, Staff Activity, and Stock Adjustments{dateFrom || dateTo ? ' — filtered by date' : ''}</p>
 
       {filtered.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-12 gap-2 text-center">
@@ -2836,7 +2905,24 @@ function OwnerStockVarianceTab() {
     return null;
   };
 
-  const rows = stockVarianceRecords
+  // FEATURE (2026-08-12): "I need tabs to switch between SNB and VRSNB" —
+  // every row used to be shown mixed together with Branch as just a table
+  // column. Added a branch toggle; options are built from whichever
+  // branches actually have variance records so Hosur/Cafe still show up if
+  // they ever get data, but SNB/VRSNB are always offered first since those
+  // are the two branches that actually run stock counts today.
+  const branchesWithData = useMemo(
+    () => Array.from(new Set(stockVarianceRecords.map(r => r.branch))) as Branch[],
+    [stockVarianceRecords],
+  );
+  const branchOptions = useMemo<Branch[]>(() => {
+    const preferred: Branch[] = ['SNB', 'VRSNB'];
+    const rest = branchesWithData.filter(b => !preferred.includes(b));
+    return [...preferred, ...rest];
+  }, [branchesWithData]);
+  const [branchFilter, setBranchFilter] = useState<'All' | Branch>('All');
+
+  const allRows = stockVarianceRecords
     .slice()
     .sort((a, b) => Number(new Date(b.createdAt)) - Number(new Date(a.createdAt)))
     .map(row => {
@@ -2844,12 +2930,38 @@ function OwnerStockVarianceTab() {
       const lossValue = price != null ? Math.abs(row.difference) * price : null;
       return { ...row, price, lossValue };
     });
+  const rows = branchFilter === 'All' ? allRows : allRows.filter(row => row.branch === branchFilter);
   const shortCount = rows.filter(row => row.difference < 0).length;
   const excessCount = rows.filter(row => row.difference > 0).length;
   // Only short counts (difference < 0) represent an actual loss to the
   // business — excess counts are a counting/recording discrepancy, not
   // money that left the building.
   const totalLossValue = rows.reduce((sum, row) => sum + (row.difference < 0 && row.lossValue != null ? row.lossValue : 0), 0);
+  const totalExcessValue = rows.reduce((sum, row) => sum + (row.difference > 0 && row.lossValue != null ? row.lossValue : 0), 0);
+
+  // FEATURE (2026-08-12): "I should see the Stock Variance by day wise" —
+  // group the filtered rows into per-day buckets (most recent day first),
+  // each with its own short/excess/loss subtotal, instead of one long flat
+  // table.
+  type VarianceRow = (typeof rows)[number];
+  const dayGroups = useMemo(() => {
+    const map = new Map<string, VarianceRow[]>();
+    for (const row of rows) {
+      const key = new Date(row.createdAt).toISOString().slice(0, 10);
+      if (!map.has(key)) map.set(key, []);
+      map.get(key)!.push(row);
+    }
+    return Array.from(map.entries())
+      .sort((a, b) => (a[0] < b[0] ? 1 : -1))
+      .map(([dateKey, dayRows]) => ({
+        dateKey,
+        rows: dayRows,
+        shortCount: dayRows.filter(r => r.difference < 0).length,
+        excessCount: dayRows.filter(r => r.difference > 0).length,
+        lossValue: dayRows.reduce((sum, r) => sum + (r.difference < 0 && r.lossValue != null ? r.lossValue : 0), 0),
+        excessValue: dayRows.reduce((sum, r) => sum + (r.difference > 0 && r.lossValue != null ? r.lossValue : 0), 0),
+      }));
+  }, [rows]);
 
   return (
     // POLISH FIX (2026-08-09 / #284): "owner-section" was never defined in
@@ -2864,6 +2976,43 @@ function OwnerStockVarianceTab() {
         </p>
         <h2 className="mt-1 font-display text-2xl font-black text-foreground">Stock Variance</h2>
       </div>
+
+      <div className="flex flex-wrap gap-1.5">
+        <button
+          type="button"
+          onClick={() => setBranchFilter('All')}
+          className={cn('rounded-xl px-3 py-1.5 text-xs font-black transition-colors', branchFilter === 'All' ? 'bg-primary text-primary-foreground' : 'bg-card border border-border text-muted-foreground hover:text-foreground')}
+        >
+          All Branches
+        </button>
+        {branchOptions.map(b => (
+          <button
+            key={b}
+            type="button"
+            onClick={() => setBranchFilter(b)}
+            className={cn('rounded-xl px-3 py-1.5 text-xs font-black transition-colors', branchFilter === b ? 'bg-primary text-primary-foreground' : 'bg-card border border-border text-muted-foreground hover:text-foreground')}
+          >
+            {ownerBranchDisplay(b)}
+          </button>
+        ))}
+      </div>
+
+      {/* FEATURE (2026-08-12): "explain the minus kg and price loss" —
+          owners kept reading a negative Difference/value as confusing or
+          wrong (this is exactly what the VRSNB sign-bug report below turned
+          out to be about at the data-entry stage). Spell out what each sign
+          means right here so the numbers below are self-explanatory. */}
+      <section className="grid gap-3 sm:grid-cols-2">
+        <div className="rounded-2xl border border-red-200 bg-red-50 p-4">
+          <p className="text-xs font-black uppercase tracking-wide text-red-700">Negative difference = Short (a loss)</p>
+          <p className="mt-1 text-xs text-red-800">Physical count came in <strong>lower</strong> than system stock — e.g. system said 10 kg, actual count was 8 kg, difference shows as <strong>-2 kg</strong>. This is stock that's missing, and its value (qty × item price) is real money lost.</p>
+        </div>
+        <div className="rounded-2xl border border-blue-200 bg-blue-50 p-4">
+          <p className="text-xs font-black uppercase tracking-wide text-blue-700">Positive difference = Excess</p>
+          <p className="mt-1 text-xs text-blue-800">Physical count came in <strong>higher</strong> than system stock — e.g. system said 10 kg, actual count was 12 kg, difference shows as <strong>+2 kg</strong>. Usually a recording/counting gap (like unlogged stock received), not a loss — shown separately below, not included in Estimated Loss Value.</p>
+        </div>
+      </section>
+
       <OwnerToolbar>
         <button
           type="button"
@@ -2895,58 +3044,66 @@ function OwnerStockVarianceTab() {
         <OwnerMetricCard icon={<ArrowUpRight className="size-5" />} label="Excess Count" value={excessCount} tone="blue" />
         <OwnerMetricCard icon={<IndianRupee className="size-5" />} label="Estimated Loss Value" value={formatCurrency(totalLossValue)} tone="red" />
       </section>
-      <section className="owner-table-card">
-        <table>
-          <thead>
-            <tr>
-              <th>Date</th>
-              <th>Branch</th>
-              <th>Report</th>
-              <th>Item</th>
-              <th>System</th>
-              <th>Physical</th>
-              <th>Difference</th>
-              <th>Loss Value</th>
-              <th>Reported By</th>
-              <th>Confirmed By</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map(row => (
-              <tr key={row.id}>
-                <td>{ownerFmtDateTime(row.createdAt)}</td>
-                <td>{ownerBranchDisplay(row.branch)}</td>
-                <td><strong>{row.reportNo}</strong></td>
-                <td>{row.itemName}</td>
-                <td>{row.systemQty} {row.unit}</td>
-                <td>{row.physicalQty} {row.unit}</td>
-                <td><em className={cn('owner-status', row.difference === 0 ? 'ok' : row.difference < 0 ? 'danger' : 'warn')}>{row.difference}</em></td>
-                <td>
-                  {row.difference < 0 ? (
-                    row.lossValue != null
-                      ? <strong className="text-red-600">{formatCurrency(row.lossValue)}</strong>
-                      : <span className="text-muted-foreground">Price N/A</span>
-                  ) : row.difference > 0 && row.lossValue != null ? (
-                    <span className="text-muted-foreground">+{formatCurrency(row.lossValue)}</span>
-                  ) : '—'}
-                </td>
-                <td>{row.reportedBy}</td>
-                <td>{row.confirmedBy}</td>
-              </tr>
-            ))}
-            {!rows.length && (
+
+      {dayGroups.map(group => (
+        <section key={group.dateKey} className="owner-table-card">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border p-3">
+            <h3 className="font-display text-sm font-black text-foreground">{ownerFmtDate(group.dateKey)}</h3>
+            <div className="flex flex-wrap gap-2 text-[11px] font-bold">
+              <span className="rounded-full bg-red-50 px-2.5 py-1 text-red-700">{group.shortCount} short · {formatCurrency(group.lossValue)} loss</span>
+              <span className="rounded-full bg-blue-50 px-2.5 py-1 text-blue-700">{group.excessCount} excess · {formatCurrency(group.excessValue)}</span>
+            </div>
+          </div>
+          <table>
+            <thead>
               <tr>
-                <td colSpan={10}>
-                  <EmptyOwnerState
-                    title="No stock variance yet"
-                    message="Variance lines will appear here once SNB Admin confirms a receiver stock-count report."
-                  />
-                </td>
+                <th>Time</th>
+                <th>Branch</th>
+                <th>Report</th>
+                <th>Item</th>
+                <th>System</th>
+                <th>Physical</th>
+                <th>Difference</th>
+                <th>Loss Value</th>
+                <th>Reported By</th>
+                <th>Confirmed By</th>
               </tr>
-            )}
-          </tbody>
-        </table>
-      </section>
+            </thead>
+            <tbody>
+              {group.rows.map(row => (
+                <tr key={row.id}>
+                  <td>{new Date(row.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</td>
+                  <td>{ownerBranchDisplay(row.branch)}</td>
+                  <td><strong>{row.reportNo}</strong></td>
+                  <td>{row.itemName}</td>
+                  <td>{row.systemQty} {row.unit}</td>
+                  <td>{row.physicalQty} {row.unit}</td>
+                  <td><em className={cn('owner-status', row.difference === 0 ? 'ok' : row.difference < 0 ? 'danger' : 'warn')}>{row.difference}</em></td>
+                  <td>
+                    {row.difference < 0 ? (
+                      row.lossValue != null
+                        ? <strong className="text-red-600">{formatCurrency(row.lossValue)}</strong>
+                        : <span className="text-muted-foreground">Price N/A</span>
+                    ) : row.difference > 0 && row.lossValue != null ? (
+                      <span className="text-muted-foreground">+{formatCurrency(row.lossValue)}</span>
+                    ) : '—'}
+                  </td>
+                  <td>{row.reportedBy}</td>
+                  <td>{row.confirmedBy}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      ))}
+      {!rows.length && (
+        <section className="owner-table-card">
+          <EmptyOwnerState
+            title="No stock variance yet"
+            message="Variance lines will appear here once SNB/VRSNB Admin confirms a receiver stock-count report."
+          />
+        </section>
+      )}
     </section>
   );
 }
@@ -3179,6 +3336,166 @@ async function fetchOwnerEverythingExtras(): Promise<{ data: OwnerEverythingExtr
   } catch (err) {
     return { data: EMPTY_EVERYTHING_EXTRAS, error: err instanceof Error ? err.message : 'Failed to load extras' };
   }
+}
+
+// ── Owner Planner Summary (read-only) ────────────────────────────────────────
+// FEATURE (2026-08-12): "I only need to see the Planner dashboard... only the
+// owner should see the readable data not the whole thing like other tabs" —
+// this used to embed the full interactive <PlannerDashboard /> (15 tabs of
+// forms, dispatch actions, order editing — a full operational tool meant for
+// the Planner role). Replaced with a lightweight, read-only report built off
+// the same underlying data (useBakeryStore's order pipeline, the leftover
+// pool balance, and the same Hosur/production figures already computed for
+// the Everything tab) — numbers and charts only, nothing clickable/editable.
+function OwnerPlannerSummaryTab() {
+  const orders = useBakeryStore(s => s.orders);
+  const fetchOrders = useBakeryStore(s => s.fetchOrders);
+  const { balances: leftoverBalances, refresh: refreshLeftover } = useLeftoverBalanceMap();
+  const [extras, setExtras] = useState<OwnerEverythingExtras>(EMPTY_EVERYTHING_EXTRAS);
+  const [loading, setLoading] = useState(true);
+
+  const loadAll = useCallback(async () => {
+    setLoading(true);
+    await Promise.all([
+      fetchOrders(true, true),
+      (async () => {
+        const { data } = await fetchOwnerEverythingExtras();
+        setExtras(data);
+      })(),
+    ]);
+    refreshLeftover();
+    setLoading(false);
+  }, [fetchOrders, refreshLeftover]);
+
+  useEffect(() => { void loadAll(); }, [loadAll]);
+
+  const pipelineCounts = useMemo(() => {
+    const counts: Record<string, number> = { pending: 0, accepted: 0, store_confirmed: 0, produced: 0, dispatched: 0 };
+    orders.forEach(o => { counts[o.status] = (counts[o.status] || 0) + 1; });
+    return counts;
+  }, [orders]);
+
+  const pipelineChartData = [
+    { stage: 'Pending', count: pipelineCounts.pending + pipelineCounts.accepted },
+    { stage: 'In Production', count: pipelineCounts.store_confirmed + pipelineCounts.produced },
+    { stage: 'Dispatched', count: pipelineCounts.dispatched },
+  ];
+
+  const last7DaysData = useMemo(() => {
+    const days: { date: string; label: string; Orders: number }[] = [];
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      const key = d.toISOString().slice(0, 10);
+      days.push({ date: key, label: d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }), Orders: 0 });
+    }
+    const byDate = new Map(days.map(d => [d.date, d]));
+    orders.forEach(o => {
+      const key = String(o.createdAt || '').slice(0, 10);
+      const row = byDate.get(key);
+      if (row) row.Orders += 1;
+    });
+    return days;
+  }, [orders]);
+
+  const leftoverRows = useMemo(
+    () => Array.from(leftoverBalances.values()).sort((a, b) => b.balance - a.balance),
+    [leftoverBalances],
+  );
+  const leftoverActiveCount = leftoverRows.filter(r => r.balance > 0).length;
+
+  if (loading && orders.length === 0) {
+    return <div className="flex justify-center py-20"><div className="size-8 rounded-2xl bg-primary/10 animate-pulse" /></div>;
+  }
+
+  return (
+    <div className="owner-tab-stack">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="text-xs font-black uppercase tracking-[0.16em] text-muted-foreground">Production, dispatch & Hosur — read-only</p>
+          <h2 className="mt-1 font-display text-2xl font-black text-foreground">Planner Summary</h2>
+        </div>
+        <button type="button" onClick={() => void loadAll()} className="flex items-center gap-1.5 rounded-xl border border-border bg-card px-3 py-2 text-sm font-bold hover:bg-muted">
+          <RefreshCw className={cn('size-4', loading && 'animate-spin')} />Refresh
+        </button>
+      </div>
+
+      <section className="owner-metric-grid">
+        <OwnerMetricCard icon={<Inbox className="size-5" />} label="Pending / Accepted" value={pipelineCounts.pending + pipelineCounts.accepted} tone="amber" />
+        <OwnerMetricCard icon={<Flame className="size-5" />} label="In Production" value={pipelineCounts.store_confirmed + pipelineCounts.produced} tone="blue" />
+        <OwnerMetricCard icon={<Truck className="size-5" />} label="Ready / Dispatched Today" value={extras.readyToDispatchOrders} tone="neutral" />
+        <OwnerMetricCard icon={<ShoppingCart className="size-5" />} label="Pending Hosur Shop Orders" value={extras.pendingHosurShopOrders} tone="amber" />
+      </section>
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <div className="bg-card border border-border rounded-xl p-4">
+          <h3 className="font-display text-base font-bold mb-4">Order Pipeline</h3>
+          <ResponsiveContainer width="100%" height={200}>
+            <BarChart data={pipelineChartData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
+              <XAxis dataKey="stage" tick={{ fontSize: 11, fontWeight: 700 }} axisLine={false} tickLine={false} />
+              <YAxis allowDecimals={false} tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
+              <Tooltip contentStyle={{ borderRadius: 12, border: '1px solid hsl(var(--border))', fontSize: 12 }} />
+              <Bar dataKey="count" fill={COLORS[0]} radius={[8, 8, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+        <div className="bg-card border border-border rounded-xl p-4">
+          <h3 className="font-display text-base font-bold mb-4">Orders — Last 7 Days</h3>
+          <ResponsiveContainer width="100%" height={200}>
+            <AreaChart data={last7DaysData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
+              <XAxis dataKey="label" tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
+              <YAxis allowDecimals={false} tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
+              <Tooltip contentStyle={{ borderRadius: 12, border: '1px solid hsl(var(--border))', fontSize: 12 }} />
+              <Area type="monotone" dataKey="Orders" stroke={COLORS[2]} fill={COLORS[2]} fillOpacity={0.18} strokeWidth={2} />
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <section className="owner-table-card">
+          <div className="flex items-center justify-between gap-2 p-3">
+            <h3 className="font-display text-base font-bold">Closing Stock / Leftover Pool</h3>
+            <span className="text-[11px] font-bold text-muted-foreground">{leftoverActiveCount} item{leftoverActiveCount === 1 ? '' : 's'} in stock</span>
+          </div>
+          <table>
+            <thead><tr><th>Item</th><th>Balance</th></tr></thead>
+            <tbody>
+              {leftoverRows.slice(0, 10).map(row => (
+                <tr key={row.itemName}>
+                  <td>{row.itemName}</td>
+                  <td className={cn('font-black', row.balance <= 0 ? 'text-muted-foreground' : 'text-foreground')}>{qtyFmt(row.balance)} {row.unit}</td>
+                </tr>
+              ))}
+              {!leftoverRows.length && (
+                <tr><td colSpan={2}><EmptyOwnerState title="No leftover pool data" message="Nothing recorded in the leftover pool yet." /></td></tr>
+              )}
+            </tbody>
+          </table>
+        </section>
+
+        <div className="bg-card border border-border rounded-xl p-4">
+          <h3 className="font-display text-base font-bold mb-4 flex items-center gap-2"><IndianRupee className="size-4 text-primary" />Hosur Credit</h3>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="rounded-2xl bg-slate-50 p-3">
+              <p className="text-xl font-black tabular-nums">{formatCurrency(extras.hosurOutstandingCredit)}</p>
+              <p className="text-[10px] font-black uppercase text-slate-500">Outstanding Credit</p>
+            </div>
+            <div className="rounded-2xl bg-red-50 p-3">
+              <p className="text-xl font-black tabular-nums text-red-700">{formatCurrency(extras.hosurOverdueCredit)}</p>
+              <p className="text-[10px] font-black uppercase text-red-700">Overdue Credit</p>
+            </div>
+            <div className="rounded-2xl bg-amber-50 p-3 col-span-2">
+              <p className="text-xl font-black tabular-nums text-amber-700">{extras.hosurOverdueCount}</p>
+              <p className="text-[10px] font-black uppercase text-amber-700">Overdue Bills</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function OwnerEverythingTab() {
@@ -3426,9 +3743,19 @@ export default function OwnerDashboard() {
     setSearchParams(next === 'everything' ? {} : { tab: next });
   };
 
+  // BUG FIX (2026-08-12): "clicking Everything from another tab doesn't
+  // navigate there" — the sidebar's Everything link goes to plain `/owner`
+  // (no `?tab=` param, matching selectTab's own `next === 'everything' ? {}
+  // : ...` pattern below), so `requestedTab` is `null` for it. The old guard
+  // was `if (requestedTab && ...)`, which is falsy for null and so never ran
+  // — `tab` state silently stayed on whatever was active before. Every other
+  // sidebar link worked because it always carries a real `tab` value. Now
+  // resolves the missing param to 'everything' explicitly instead of only
+  // reacting to a truthy one.
   useEffect(() => {
-    if (requestedTab && ownerTabIds.includes(requestedTab) && requestedTab !== tab) {
-      setTab(requestedTab);
+    const resolved: OwnerDashboardTab = requestedTab && ownerTabIds.includes(requestedTab) ? requestedTab : 'everything';
+    if (resolved !== tab) {
+      setTab(resolved);
     }
   }, [requestedTab, ownerTabIds, tab]);
 
@@ -3452,7 +3779,6 @@ export default function OwnerDashboard() {
   const [profileOpen, setProfileOpen] = useState(false);
 
   const tabs: Array<{ id: OwnerDashboardTab; label: string; icon: React.ReactNode; hint: string }> = [
-    { id: 'everything', label: 'Everything',         icon: <Layers        className="size-4" />, hint: 'Your full business, one screen' },
     { id: 'branches',   label: 'Branch Overview',    icon: <Store         className="size-4" />, hint: 'Cafe, SNB, VRSNB, Hosur' },
     { id: 'sales',      label: 'Sales & Profit',     icon: <BarChart3     className="size-4" />, hint: 'Trends and payment split' },
     { id: 'credit',     label: 'Credit Tracking',    icon: <IndianRupee   className="size-4" />, hint: 'Pending collections' },
@@ -3465,7 +3791,9 @@ export default function OwnerDashboard() {
     { id: 'waste',      label: 'Waste & Loss',       icon: <Trash2        className="size-4" />, hint: 'Kitchen loss control' },
     { id: 'complaints', label: 'Complaints',          icon: <AlertTriangle className="size-4" />, hint: 'Branch admin complaints' },
     { id: 'audit',      label: 'Audit Logs',          icon: <ShieldCheck   className="size-4" />, hint: 'Sensitive action history' },
-    { id: 'planner',    label: 'Planner Dashboard',   icon: <Factory       className="size-4" />, hint: 'Full production, dispatch & Hosur view' },
+    { id: 'planner',    label: 'Planner',             icon: <Factory       className="size-4" />, hint: 'Read-only production & dispatch summary' },
+    // Moved to last (2026-08-12, explicit owner request).
+    { id: 'everything', label: 'Everything',         icon: <Layers        className="size-4" />, hint: 'Your full business, one screen' },
   ];
 
   const content = (
@@ -3483,7 +3811,7 @@ export default function OwnerDashboard() {
       {tab === 'waste'      && <WasteLogsTab />}
       {tab === 'complaints' && <OwnerComplaintsTab />}
       {tab === 'audit'      && <OwnerAuditTab />}
-      {tab === 'planner'    && <PlannerDashboard embedded />}
+      {tab === 'planner'    && <OwnerPlannerSummaryTab />}
     </>
   );
 
