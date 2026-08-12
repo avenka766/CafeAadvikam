@@ -41,6 +41,7 @@ import {
   Landmark, CheckCircle2, XCircle, Receipt, Bell, Package, Truck,
   Download, Printer, FileSpreadsheet, Filter, ShieldCheck, Factory, Search, RefreshCw,
   ClipboardList, Loader2, ChevronDown, ChevronUp, LogOut, UserCircle2, Scale,
+  Inbox, Flame, ShoppingCart,
 } from 'lucide-react';
 import { isNativeApp } from '@/lib/platform';
 import { useOperationalBranchCatalog } from '@/hooks/useOperationalBranchCatalog';
@@ -3423,7 +3424,7 @@ function OwnerPlannerSummaryTab() {
       <section className="owner-metric-grid">
         <OwnerMetricCard icon={<Inbox className="size-5" />} label="Pending / Accepted" value={pipelineCounts.pending + pipelineCounts.accepted} tone="amber" />
         <OwnerMetricCard icon={<Flame className="size-5" />} label="In Production" value={pipelineCounts.store_confirmed + pipelineCounts.produced} tone="blue" />
-        <OwnerMetricCard icon={<Truck className="size-5" />} label="Ready / Dispatched Today" value={extras.readyToDispatchOrders} tone="neutral" />
+        <OwnerMetricCard icon={<Truck className="size-5" />} label="Ready / Dispatched Today" value={extras.readyToDispatchOrders} tone="slate" />
         <OwnerMetricCard icon={<ShoppingCart className="size-5" />} label="Pending Hosur Shop Orders" value={extras.pendingHosurShopOrders} tone="amber" />
       </section>
 
