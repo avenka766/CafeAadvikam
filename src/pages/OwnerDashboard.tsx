@@ -12,7 +12,7 @@
 //   • Waste tab: waste cost estimate (maps waste food_item → menu prices)
 //   • Attendance tab: advance-to-salary ratio per employee + attendance rate
 
-import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
+import { useState, useMemo, useEffect, useCallback, useRef, Fragment } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useOrderStore } from '@/stores/orderStore';
 import { useBranchStore } from '@/branch/branchStore';
@@ -46,7 +46,7 @@ import {
 import { isNativeApp } from '@/lib/platform';
 import { useOperationalBranchCatalog } from '@/hooks/useOperationalBranchCatalog';
 import { useBakeryStore } from '@/bakery/bakeryStore';
-import { useLeftoverBalanceMap, qtyFmt } from '@/bakery/PlannerLeftoverTab';
+import { useLeftoverBalanceMap, qtyFmt, fetchLeftoverLedger, type LeftoverLedgerRow } from '@/bakery/PlannerLeftoverTab';
 
 // Shared helper for matching a free-text item name against a catalog's name
 // (used to price Stock Variance and Waste & Loss rows against the live
@@ -3355,6 +3355,25 @@ function OwnerPlannerSummaryTab() {
   const [extras, setExtras] = useState<OwnerEverythingExtras>(EMPTY_EVERYTHING_EXTRAS);
   const [loading, setLoading] = useState(true);
 
+  // FEATURE (2026-08-13): "when they click on the stock they should see the
+  // complete stock and where the items have been dispatched and what is the
+  // value" — the summary used to show only the top 10 balances with no way
+  // to see the rest, and no link between a stock item and where it actually
+  // went. Pulling the full ledger (not just the aggregated balance map) so
+  // each item can expand into its real dispatch/transfer history.
+  const [ledgerRows, setLedgerRows] = useState<LeftoverLedgerRow[]>([]);
+  const { items: stockSnbCatalog } = useOperationalBranchCatalog('SNB');
+  const { items: stockVrsnbCatalog } = useOperationalBranchCatalog('VRSNB');
+  const stockSnbPriceByName = useMemo(() => new Map<string, number>(stockSnbCatalog.map(item => [ownerNormalizeName(item.name), Number(item.price)])), [stockSnbCatalog]);
+  const stockVrsnbPriceByName = useMemo(() => new Map<string, number>(stockVrsnbCatalog.map(item => [ownerNormalizeName(item.name), Number(item.price)])), [stockVrsnbCatalog]);
+  const stockPriceFor = useCallback((branch: Branch | null, itemName: string): number | null => {
+    const key = ownerNormalizeName(itemName);
+    // No branch on the movement (a plain closing-stock entry) or Hosur ->
+    // price against SNB, same fallback used for Transfer Out invoices.
+    if (branch === 'VRSNB') return stockVrsnbPriceByName.get(key) ?? null;
+    return stockSnbPriceByName.get(key) ?? null;
+  }, [stockSnbPriceByName, stockVrsnbPriceByName]);
+
   const loadAll = useCallback(async () => {
     setLoading(true);
     await Promise.all([
@@ -3363,12 +3382,58 @@ function OwnerPlannerSummaryTab() {
         const { data } = await fetchOwnerEverythingExtras();
         setExtras(data);
       })(),
+      (async () => {
+        const { rows } = await fetchLeftoverLedger();
+        setLedgerRows(rows);
+      })(),
     ]);
     refreshLeftover();
     setLoading(false);
   }, [fetchOrders, refreshLeftover]);
 
   useEffect(() => { void loadAll(); }, [loadAll]);
+
+  const [stockSearch, setStockSearch] = useState('');
+  const [expandedSlug, setExpandedSlug] = useState<string | null>(null);
+
+  const stockRows = useMemo(() => {
+    return Array.from(leftoverBalances.entries())
+      .map(([slug, bal]) => {
+        // Value the current balance against whichever branch this item most
+        // recently moved for (falls back to SNB if it's never had a
+        // branch-tagged movement, e.g. a manual closing-stock entry only).
+        const lastBranchedMove = ledgerRows
+          .filter(r => r.itemSlug === slug && r.branch)
+          .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+        const price = stockPriceFor(lastBranchedMove?.branch ?? null, bal.itemName);
+        return { slug, itemName: bal.itemName, unit: bal.unit, balance: bal.balance, price, value: price != null ? price * bal.balance : null };
+      })
+      .filter(row => !stockSearch.trim() || row.itemName.toLowerCase().includes(stockSearch.trim().toLowerCase()))
+      .sort((a, b) => (b.value ?? 0) - (a.value ?? 0) || b.balance - a.balance);
+  }, [leftoverBalances, ledgerRows, stockPriceFor, stockSearch]);
+
+  const totalStockValue = useMemo(() => stockRows.reduce((sum, r) => sum + (r.value ?? 0), 0), [stockRows]);
+
+  // Dispatch/transfer history for whichever item is expanded — every
+  // outbound movement (dispatch to a branch, Hosur shop dispatch, or a
+  // Transfer Out), each priced the same way the item itself is.
+  const dispatchHistoryFor = useCallback((slug: string) => {
+    return ledgerRows
+      .filter(r => r.itemSlug === slug && r.delta < 0 && (r.reason === 'dispatch' || r.reason === 'transfer_out'))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .map(r => {
+        const destination = r.shopName
+          ? `Hosur — ${r.shopName}`
+          : r.reason === 'transfer_out'
+            ? (/\[Destination: (SNB|VRSNB|Custom)\]/.exec(r.notes || '')?.[1] ?? 'Transfer Out')
+            : r.branch
+              ? ownerBranchDisplay(r.branch)
+              : 'Unspecified';
+        const price = stockPriceFor(r.branch, r.itemName);
+        const qty = Math.abs(r.delta);
+        return { id: r.id, date: r.createdAt, destination, qty, unit: r.unit, value: price != null ? price * qty : null, orderNumber: r.orderNumber };
+      });
+  }, [ledgerRows, stockPriceFor]);
 
   const pipelineCounts = useMemo(() => {
     const counts: Record<string, number> = { pending: 0, accepted: 0, store_confirmed: 0, produced: 0, dispatched: 0 };
@@ -3399,12 +3464,6 @@ function OwnerPlannerSummaryTab() {
     return days;
   }, [orders]);
 
-  const leftoverRows = useMemo(
-    () => Array.from(leftoverBalances.values()).sort((a, b) => b.balance - a.balance),
-    [leftoverBalances],
-  );
-  const leftoverActiveCount = leftoverRows.filter(r => r.balance > 0).length;
-
   if (loading && orders.length === 0) {
     return <div className="flex justify-center py-20"><div className="size-8 rounded-2xl bg-primary/10 animate-pulse" /></div>;
   }
@@ -3425,7 +3484,7 @@ function OwnerPlannerSummaryTab() {
         <OwnerMetricCard icon={<Inbox className="size-5" />} label="Pending / Accepted" value={pipelineCounts.pending + pipelineCounts.accepted} tone="amber" />
         <OwnerMetricCard icon={<Flame className="size-5" />} label="In Production" value={pipelineCounts.store_confirmed + pipelineCounts.produced} tone="blue" />
         <OwnerMetricCard icon={<Truck className="size-5" />} label="Ready / Dispatched Today" value={extras.readyToDispatchOrders} tone="slate" />
-        <OwnerMetricCard icon={<ShoppingCart className="size-5" />} label="Pending Hosur Shop Orders" value={extras.pendingHosurShopOrders} tone="amber" />
+        <OwnerMetricCard icon={<IndianRupee className="size-5" />} label="Total Stock Value" value={formatCurrency(totalStockValue)} tone="green" />
       </section>
 
       <div className="grid gap-4 lg:grid-cols-2">
@@ -3455,43 +3514,89 @@ function OwnerPlannerSummaryTab() {
         </div>
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-2">
-        <section className="owner-table-card">
-          <div className="flex items-center justify-between gap-2 p-3">
-            <h3 className="font-display text-base font-bold">Closing Stock / Leftover Pool</h3>
-            <span className="text-[11px] font-bold text-muted-foreground">{leftoverActiveCount} item{leftoverActiveCount === 1 ? '' : 's'} in stock</span>
+      {/* FEATURE (2026-08-13): full Closing Stock list (not just top 10),
+          searchable, each row expandable to show its real dispatch/transfer
+          history — destination and rupee value — instead of just a balance
+          number with nowhere to drill in. */}
+      <section className="owner-table-card">
+        <div className="flex flex-wrap items-center justify-between gap-2 p-3">
+          <div>
+            <h3 className="font-display text-base font-bold">Closing Stock — click an item for full dispatch history</h3>
+            <p className="text-[11px] text-muted-foreground">{stockRows.length} item{stockRows.length === 1 ? '' : 's'} · Total value {formatCurrency(totalStockValue)}</p>
           </div>
-          <table>
-            <thead><tr><th>Item</th><th>Balance</th></tr></thead>
-            <tbody>
-              {leftoverRows.slice(0, 10).map(row => (
-                <tr key={row.itemName}>
-                  <td>{row.itemName}</td>
-                  <td className={cn('font-black', row.balance <= 0 ? 'text-muted-foreground' : 'text-foreground')}>{qtyFmt(row.balance)} {row.unit}</td>
-                </tr>
-              ))}
-              {!leftoverRows.length && (
-                <tr><td colSpan={2}><EmptyOwnerState title="No leftover pool data" message="Nothing recorded in the leftover pool yet." /></td></tr>
-              )}
-            </tbody>
-          </table>
-        </section>
+          <div className="relative w-full max-w-[220px]">
+            <Search className="absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+            <input value={stockSearch} onChange={e => setStockSearch(e.target.value)} placeholder="Search item" className="w-full rounded-xl border border-border bg-card py-1.5 pl-8 pr-3 text-xs outline-none" />
+          </div>
+        </div>
+        <table>
+          <thead><tr><th>Item</th><th>Balance</th><th>Est. Value</th><th></th></tr></thead>
+          <tbody>
+            {stockRows.map(row => {
+              const isOpen = expandedSlug === row.slug;
+              const history = isOpen ? dispatchHistoryFor(row.slug) : [];
+              return (
+                <Fragment key={row.slug}>
+                  <tr className="cursor-pointer hover:bg-muted/40" onClick={() => setExpandedSlug(isOpen ? null : row.slug)}>
+                    <td className="font-semibold">{row.itemName}</td>
+                    <td className={cn('font-black', row.balance <= 0 ? 'text-muted-foreground' : 'text-foreground')}>{qtyFmt(row.balance)} {row.unit}</td>
+                    <td className="font-black text-emerald-700">{row.value != null ? formatCurrency(row.value) : <span className="text-muted-foreground font-normal">N/A</span>}</td>
+                    <td>{isOpen ? <ChevronUp className="size-4 text-muted-foreground" /> : <ChevronDown className="size-4 text-muted-foreground" />}</td>
+                  </tr>
+                  {isOpen && (
+                    <tr key={`${row.slug}-detail`}>
+                      <td colSpan={4} className="bg-muted/20 p-0">
+                        <div className="p-3">
+                          <p className="mb-2 text-[11px] font-black uppercase tracking-wide text-muted-foreground">Dispatched / Transferred Out — where this item went</p>
+                          {history.length === 0 ? (
+                            <p className="py-3 text-center text-xs text-muted-foreground">No dispatch or transfer-out movements recorded for this item yet.</p>
+                          ) : (
+                            <table className="w-full text-xs">
+                              <thead><tr className="text-left text-[10px] uppercase text-muted-foreground"><th className="py-1">Date</th><th className="py-1">Destination</th><th className="py-1">Qty</th><th className="py-1">Value</th></tr></thead>
+                              <tbody>
+                                {history.map(h => (
+                                  <tr key={h.id} className="border-t border-border/60">
+                                    <td className="py-1.5">{new Date(h.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</td>
+                                    <td className="py-1.5 font-semibold">{h.destination}{h.orderNumber ? ` · Order #${h.orderNumber}` : ''}</td>
+                                    <td className="py-1.5 font-black">{qtyFmt(h.qty)} {h.unit}</td>
+                                    <td className="py-1.5 font-black text-emerald-700">{h.value != null ? formatCurrency(h.value) : 'N/A'}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              );
+            })}
+            {!stockRows.length && (
+              <tr><td colSpan={4}><EmptyOwnerState title="No leftover pool data" message="Nothing recorded in the leftover pool yet." /></td></tr>
+            )}
+          </tbody>
+        </table>
+      </section>
 
-        <div className="bg-card border border-border rounded-xl p-4">
-          <h3 className="font-display text-base font-bold mb-4 flex items-center gap-2"><IndianRupee className="size-4 text-primary" />Hosur Credit</h3>
-          <div className="grid grid-cols-2 gap-3">
-            <div className="rounded-2xl bg-slate-50 p-3">
-              <p className="text-xl font-black tabular-nums">{formatCurrency(extras.hosurOutstandingCredit)}</p>
-              <p className="text-[10px] font-black uppercase text-slate-500">Outstanding Credit</p>
-            </div>
-            <div className="rounded-2xl bg-red-50 p-3">
-              <p className="text-xl font-black tabular-nums text-red-700">{formatCurrency(extras.hosurOverdueCredit)}</p>
-              <p className="text-[10px] font-black uppercase text-red-700">Overdue Credit</p>
-            </div>
-            <div className="rounded-2xl bg-amber-50 p-3 col-span-2">
-              <p className="text-xl font-black tabular-nums text-amber-700">{extras.hosurOverdueCount}</p>
-              <p className="text-[10px] font-black uppercase text-amber-700">Overdue Bills</p>
-            </div>
+      <div className="bg-card border border-border rounded-xl p-4">
+        <h3 className="font-display text-base font-bold mb-4 flex items-center gap-2"><IndianRupee className="size-4 text-primary" />Hosur Credit & Shop Orders</h3>
+        <div className="grid grid-cols-2 gap-3">
+          <div className="rounded-2xl bg-slate-50 p-3">
+            <p className="text-xl font-black tabular-nums">{formatCurrency(extras.hosurOutstandingCredit)}</p>
+            <p className="text-[10px] font-black uppercase text-slate-500">Outstanding Credit</p>
+          </div>
+          <div className="rounded-2xl bg-red-50 p-3">
+            <p className="text-xl font-black tabular-nums text-red-700">{formatCurrency(extras.hosurOverdueCredit)}</p>
+            <p className="text-[10px] font-black uppercase text-red-700">Overdue Credit</p>
+          </div>
+          <div className="rounded-2xl bg-amber-50 p-3">
+            <p className="text-xl font-black tabular-nums text-amber-700">{extras.hosurOverdueCount}</p>
+            <p className="text-[10px] font-black uppercase text-amber-700">Overdue Bills</p>
+          </div>
+          <div className="rounded-2xl bg-blue-50 p-3">
+            <p className="text-xl font-black tabular-nums text-blue-700 flex items-center gap-1.5"><ShoppingCart className="size-4" />{extras.pendingHosurShopOrders}</p>
+            <p className="text-[10px] font-black uppercase text-blue-700">Pending Shop Orders</p>
           </div>
         </div>
       </div>
