@@ -221,6 +221,7 @@ export default function BranchBillingProTab({
   const removeHold = useBranchOpsStore((s) => s.removeHold);
   const addNotification = useBranchOpsStore((s) => s.addNotification);
   const refreshSalespeople = useBranchOpsStore((s) => s.refreshSalespeople);
+  const addSalesperson = useBranchOpsStore((s) => s.addSalesperson);
 
   // URGENT FIX: don't rely solely on the general branch-ops hydration for
   // this — fetch the salesperson roster directly whenever this billing
@@ -278,6 +279,17 @@ export default function BranchBillingProTab({
   const [cart, setCart] = useState<BranchBillItem[]>([]);
   const [cartQuantityDrafts, setCartQuantityDrafts] = useState<Record<string, string>>({});
   const [salesperson, setSalesperson] = useState('');
+  // ROOT-CAUSE FIX (2026-08-12): "only 4/16 salespersons visible" kept
+  // recurring not just from stale caching (fixed separately) but because a
+  // brand-new hire simply had nowhere to appear until an admin remembered to
+  // open a *different* screen (Salesperson Report) and add them there first.
+  // On a busy day that step gets skipped, the new person can't bill under
+  // their own name, and the complaint resurfaces. Letting anyone add a
+  // missing name right here, at the point of failure, removes the dependency
+  // on that separate manual step entirely.
+  const [addingSalesperson, setAddingSalesperson] = useState(false);
+  const [newSalespersonName, setNewSalespersonName] = useState('');
+  const [addSalespersonError, setAddSalespersonError] = useState('');
   // BUG FIX: was seeded to 'cash' and never cleared after a bill, so the
   // last-used mode silently carried into the next customer's bill. Starts
   // (and resets to) null so the cashier must actively pick a mode each time.
@@ -346,6 +358,18 @@ export default function BranchBillingProTab({
     const configured = salespeople.filter((p) => p.branch === branch && p.active).map((p) => p.name);
     return Array.from(new Set(configured.filter(Boolean)));
   }, [branch, salespeople]);
+
+  const handleAddSalesperson = useCallback(() => {
+    const name = newSalespersonName.trim();
+    if (!name) { setAddSalespersonError('Enter a name.'); return; }
+    const dup = branchPeople.some((p) => p.toLowerCase() === name.toLowerCase());
+    if (dup) { setAddSalespersonError('That name is already in the list.'); return; }
+    addSalesperson(branch, name, userName);
+    setSalesperson(name);
+    setNewSalespersonName('');
+    setAddSalespersonError('');
+    setAddingSalesperson(false);
+  }, [newSalespersonName, branchPeople, addSalesperson, branch, userName]);
 
   const billingStaff = requiresSalesperson ? salesperson : userName;
   const shortcutHelp = useMemo(() => requiresSalesperson ? BASE_SHORTCUTS : BASE_SHORTCUTS.filter(([key]) => key !== 'F1'), [requiresSalesperson]);
@@ -1218,11 +1242,39 @@ export default function BranchBillingProTab({
           {requiresSalesperson ? (
             <div className="space-y-1 border-b border-slate-200 px-2.5 py-1.5">
               <label className="block text-xs font-black uppercase tracking-wide text-slate-500">Salesperson <span className="text-red-500">*</span></label>
-              <select ref={selectRef} value={salesperson} onChange={(e) => setSalesperson(e.target.value)} className="h-8 w-full rounded-xl border-2 border-slate-200 bg-slate-50 px-3 text-sm font-black text-slate-900 focus:border-amber-400 focus:outline-none">
+              <select
+                ref={selectRef}
+                value={salesperson}
+                onChange={(e) => {
+                  if (e.target.value === '__add_new__') {
+                    setAddingSalesperson(true);
+                    setAddSalespersonError('');
+                    return;
+                  }
+                  setSalesperson(e.target.value);
+                }}
+                className="h-8 w-full rounded-xl border-2 border-slate-200 bg-slate-50 px-3 text-sm font-black text-slate-900 focus:border-amber-400 focus:outline-none"
+              >
                 <option value="">Select salesperson before billing</option>
                 {branchPeople.map((p) => <option key={p} value={p}>{p}</option>)}
+                <option value="__add_new__">+ Add new salesperson...</option>
               </select>
-              {isAdmin && <p className="text-[10px] font-semibold text-slate-500">Admin can manage names in Salesperson Report.</p>}
+              {addingSalesperson && (
+                <div className="mt-1 flex items-center gap-1.5 rounded-xl border-2 border-amber-300 bg-amber-50 p-1.5">
+                  <input
+                    autoFocus
+                    value={newSalespersonName}
+                    onChange={(e) => { setNewSalespersonName(e.target.value); setAddSalespersonError(''); }}
+                    onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleAddSalesperson(); } if (e.key === 'Escape') { setAddingSalesperson(false); setNewSalespersonName(''); setAddSalespersonError(''); } }}
+                    placeholder="New salesperson's name"
+                    className="h-7 flex-1 rounded-lg border border-amber-300 bg-white px-2 text-xs font-black text-slate-900 outline-none focus:border-amber-500"
+                  />
+                  <button type="button" onClick={handleAddSalesperson} className="h-7 shrink-0 rounded-lg bg-emerald-600 px-2 text-[10px] font-black text-white hover:bg-emerald-700">Add</button>
+                  <button type="button" onClick={() => { setAddingSalesperson(false); setNewSalespersonName(''); setAddSalespersonError(''); }} className="h-7 shrink-0 rounded-lg bg-slate-200 px-2 text-[10px] font-black text-slate-700 hover:bg-slate-300">Cancel</button>
+                </div>
+              )}
+              {addSalespersonError && <p className="text-[10px] font-bold text-red-600">{addSalespersonError}</p>}
+              {isAdmin && !addingSalesperson && <p className="text-[10px] font-semibold text-slate-500">Not in the list? Pick "+ Add new salesperson" above.</p>}
               <div className="grid grid-cols-2 gap-1.5 pt-1">
                 <div>
                   <label className="block text-[10px] font-black uppercase tracking-wide text-slate-500">Packing Charge</label>
