@@ -2140,7 +2140,13 @@ function StockCountPanel({
   const differenceCount = rows.filter((row) => {
     if (branch === "SNB" && !countedItems[row.itemName]) return false;
     const physical = Number(counts[row.itemName] || 0);
-    return Math.abs(row.systemQty - physical) > 0.0001;
+    // BUG FIX (2026-08-12): "VRSNB stock increase shown as negative" — this
+    // used to check systemQty - physical, the opposite of the Physical -
+    // System convention used everywhere else in the app (branchOpsStore's
+    // submitStockCountReport, and Owner Dashboard's Stock Variance tab).
+    // Doesn't change the count of rows with a difference (Math.abs), but
+    // kept consistent with the sign fix below for clarity.
+    return Math.abs(physical - row.systemQty) > 0.0001;
   }).length;
 
   const submit = async () => {
@@ -2168,7 +2174,11 @@ function StockCountPanel({
             unit: row.unit,
             systemQty: row.systemQty,
             physicalQty,
-            difference: Math.round((row.systemQty - physicalQty) * 1000) / 1000,
+            // BUG FIX (2026-08-12): Physical minus System, not System minus
+            // Physical — matches the convention branchOpsStore.submitStockCountReport
+            // itself normalizes to, and what Owner Dashboard's Stock Variance
+            // tab assumes (negative = short/loss, positive = excess).
+            difference: Math.round((physicalQty - row.systemQty) * 1000) / 1000,
           };
         }),
       });
@@ -2195,8 +2205,8 @@ function StockCountPanel({
             </h2>
             <p className="text-sm font-body font-bold text-muted-foreground">
               {branch === "SNB"
-                ? "Tap Physical to add stock counted from each location. Difference is System Qty minus Physical Qty."
-                : "Enter counted stock. Difference is System Qty minus Physical Qty."}
+                ? "Tap Physical to add stock counted from each location. Difference is Physical Qty minus System Qty — negative means short, positive means excess."
+                : "Enter counted stock. Difference is Physical Qty minus System Qty — negative means short, positive means excess."}
             </p>
           </div>
           <button
@@ -2249,8 +2259,14 @@ function StockCountPanel({
               {rows.map((row) => {
                 const hasConfirmedCount = branch !== "SNB" || Boolean(countedItems[row.itemName]);
                 const physical = Number(counts[row.itemName] || 0);
+                // BUG FIX (2026-08-12): "physical stock increase showing as
+                // negative" — this preview showed System - Physical, so a
+                // real increase (physical > system) displayed as a negative
+                // number to the person doing the count. Physical - System
+                // matches the rest of the app: negative = short, positive =
+                // excess.
                 const diff = hasConfirmedCount
-                  ? Math.round((row.systemQty - physical) * 1000) / 1000
+                  ? Math.round((physical - row.systemQty) * 1000) / 1000
                   : null;
                 return (
                   <div
@@ -2300,7 +2316,12 @@ function StockCountPanel({
                           ? "bg-slate-100 text-[10px] text-slate-500"
                           : diff === 0
                           ? "bg-emerald-100 text-emerald-700"
-                          : diff > 0
+                          // BUG FIX (2026-08-12): diff is now Physical - System
+                          // (see above), so negative = short (red) and
+                          // positive = excess (blue) — this coloring used to
+                          // be inverted to match the old System - Physical
+                          // sign, which made a real increase show up red.
+                          : diff < 0
                             ? "bg-red-100 text-red-700"
                             : "bg-blue-100 text-blue-700",
                       )}

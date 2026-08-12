@@ -1077,10 +1077,73 @@ export default function PlannerLeftoverTab() {
 // recordLeftoverMovement, so Closing Stock's Daily Report "Transferred Out"
 // column, Movement Log, and Excel/PDF exports keep showing these entries
 // exactly as before, regardless of which tab created them.
+// FEATURE (2026-08-12): "I need the invoice with the value of the item if we
+// select SNB then snb price should come in the invoice and if we select the
+// vrsnb then vrsnb price should come and if we select custom then we need to
+// enter the reason and take the price from snb" — normalizes an item name
+// the same loose way OwnerDashboard's pricing lookups do, so "Milk Peda" and
+// "milk peda " match the catalog row.
+const transferNormalizeName = (name: string) => name.trim().toLowerCase().replace(/\s+/g, ' ');
+
+function transferPriceFor(catalogItems: Record<'SNB' | 'VRSNB', { name: string; price: number }[]>, destination: 'SNB' | 'VRSNB' | 'Custom', itemName: string): number | null {
+  // Custom transfers price against SNB, per explicit owner instruction.
+  const priceBranch: 'SNB' | 'VRSNB' = destination === 'VRSNB' ? 'VRSNB' : 'SNB';
+  const key = transferNormalizeName(itemName);
+  const match = catalogItems[priceBranch].find((it) => transferNormalizeName(it.name) === key);
+  return match ? match.price : null;
+}
+
+function downloadTransferOutInvoice(params: {
+  itemName: string; qty: number; unit: LeftoverUnit; destination: 'SNB' | 'VRSNB' | 'Custom';
+  unitPrice: number | null; reason: string; staffName: string; createdAt: Date; transferNo: string;
+}) {
+  const { itemName, qty, unit, destination, unitPrice, reason, staffName, createdAt, transferNo } = params;
+  const totalValue = unitPrice != null ? unitPrice * qty : null;
+  const doc = new jsPDF({ unit: 'pt', format: 'a5' });
+  const marginX = 36;
+  let y = 46;
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(16); doc.setTextColor(20);
+  doc.text('Cafe Aadvikam — Transfer Out Invoice', marginX, y); y += 20;
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(100);
+  doc.text(`Transfer No: ${transferNo}`, marginX, y); y += 14;
+  doc.text(`Date: ${createdAt.toLocaleString('en-IN')}`, marginX, y); y += 14;
+  doc.text(`Recorded By: ${staffName}`, marginX, y); y += 20;
+  doc.setDrawColor(210); doc.line(marginX, y, doc.internal.pageSize.getWidth() - marginX, y); y += 20;
+
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(11); doc.setTextColor(0);
+  doc.text('Destination', marginX, y);
+  doc.text(destination === 'Custom' ? 'Custom' : destination, marginX + 160, y);
+  y += 18;
+  doc.text('Item', marginX, y);
+  doc.text(itemName, marginX + 160, y);
+  y += 18;
+  doc.text('Quantity', marginX, y);
+  doc.text(`${qtyFmt(qty)} ${unit}`, marginX + 160, y);
+  y += 18;
+  doc.text('Unit Price', marginX, y);
+  doc.text(unitPrice != null ? `Rs. ${unitPrice.toFixed(2)}` : 'N/A', marginX + 160, y);
+  y += 18;
+  doc.setFontSize(13);
+  doc.text('Total Value', marginX, y);
+  doc.text(totalValue != null ? `Rs. ${totalValue.toFixed(2)}` : 'N/A', marginX + 160, y);
+  y += 24;
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(10);
+  doc.text('Reason', marginX, y); y += 14;
+  const reasonLines = doc.splitTextToSize(reason || '-', doc.internal.pageSize.getWidth() - marginX * 2);
+  doc.text(reasonLines, marginX, y);
+  if (destination === 'Custom') {
+    y += reasonLines.length * 12 + 10;
+    doc.setFontSize(8); doc.setTextColor(120);
+    doc.text('Custom transfer — priced against the SNB catalog for reference.', marginX, y);
+  }
+  doc.save(`transfer-out-${transferNo}.pdf`);
+}
+
 export function PlannerTransferOutTab() {
   const { currentUser } = useAuthStore();
   const staffName = currentUser?.displayName || currentUser?.username || 'Planner Staff';
   const catalog = useMergedLeftoverCatalog();
+  const { items: transferCatalogItems } = useBranchCatalogStore();
 
   const [rows, setRows] = useState<LeftoverLedgerRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1102,24 +1165,39 @@ export function PlannerTransferOutTab() {
   const [transferUnit, setTransferUnit] = useState<LeftoverUnit>('kg');
   const [transferReason, setTransferReason] = useState('');
   const [transferSaving, setTransferSaving] = useState(false);
+  // FEATURE (2026-08-12): destination decides which branch's catalog price
+  // gets used on the invoice — SNB dest -> SNB price, VRSNB dest -> VRSNB
+  // price, Custom -> priced against SNB but requires its own reason text.
+  const [transferDestination, setTransferDestination] = useState<'SNB' | 'VRSNB' | 'Custom'>('SNB');
 
-  const resetTransferForm = () => { setTransferQuery(''); setTransferItem(null); setTransferQty(''); setTransferUnit('kg'); setTransferReason(''); };
+  const resetTransferForm = () => { setTransferQuery(''); setTransferItem(null); setTransferQty(''); setTransferUnit('kg'); setTransferReason(''); setTransferDestination('SNB'); };
+
+  const transferItemName = (transferItem?.name || transferQuery).trim();
+  const transferUnitPrice = transferItemName ? transferPriceFor(transferCatalogItems, transferDestination, transferItemName) : null;
+  const transferQtyNumber = Number(transferQty);
+  const transferTotalValue = transferUnitPrice != null && Number.isFinite(transferQtyNumber) && transferQtyNumber > 0 ? transferUnitPrice * transferQtyNumber : null;
 
   const submitTransferOut = async () => {
     setError(''); setMessage('');
-    const name = (transferItem?.name || transferQuery).trim();
+    const name = transferItemName;
     const amount = Number(transferQty);
     if (!name) { setError('Search and pick (or type) an item first.'); return; }
     if (!Number.isFinite(amount) || amount <= 0) { setError('Enter a quantity greater than zero.'); return; }
-    if (!transferReason.trim()) { setError('Enter a reason for this transfer out.'); return; }
+    if (!transferReason.trim()) { setError(transferDestination === 'Custom' ? 'Enter a reason for this custom transfer.' : 'Enter a reason for this transfer out.'); return; }
     setTransferSaving(true);
+    const reasonText = transferReason.trim();
     const result = await recordLeftoverMovement({
       itemName: name, unit: transferUnit, delta: -amount, businessDate: kolkataToday(),
-      reason: 'transfer_out', recordedBy: staffName, notes: transferReason.trim(),
+      reason: 'transfer_out', recordedBy: staffName, notes: `${reasonText} [Destination: ${transferDestination}]`,
     });
     setTransferSaving(false);
     if ('error' in result) { setError(result.error); return; }
-    setMessage(`${name}: ${qtyFmt(amount)} ${transferUnit} transferred out (${transferReason.trim()}). New balance ${qtyFmt(result.newBalance)} ${transferUnit}.`);
+    setMessage(`${name}: ${qtyFmt(amount)} ${transferUnit} transferred out to ${transferDestination} (${reasonText}). New balance ${qtyFmt(result.newBalance)} ${transferUnit}.`);
+    downloadTransferOutInvoice({
+      itemName: name, qty: amount, unit: transferUnit, destination: transferDestination,
+      unitPrice: transferUnitPrice, reason: reasonText, staffName, createdAt: new Date(),
+      transferNo: `TO-${kolkataToday()}-${Date.now().toString().slice(-6)}`,
+    });
     resetTransferForm();
     void refresh();
   };
@@ -1161,6 +1239,24 @@ export function PlannerTransferOutTab() {
         <div className="rounded-2xl border border-orange-200 bg-orange-50/40 p-4 space-y-3">
           <h3 className="font-black text-orange-900">Record a Transfer Out</h3>
           <p className="text-xs text-orange-800/80">Pick any stock item and send it out for a specific reason.</p>
+          <label className="block space-y-1">
+            <span className="text-xs font-black text-orange-900">Destination</span>
+            <div className="grid grid-cols-3 gap-2">
+              {(['SNB', 'VRSNB', 'Custom'] as const).map((dest) => (
+                <button
+                  key={dest}
+                  type="button"
+                  onClick={() => setTransferDestination(dest)}
+                  className={cn('rounded-xl border py-2 text-xs font-black', transferDestination === dest ? 'border-orange-600 bg-orange-600 text-white' : 'border-orange-200 bg-white text-orange-900')}
+                >
+                  {dest}
+                </button>
+              ))}
+            </div>
+            {transferDestination === 'Custom' && (
+              <p className="text-[10px] font-bold text-orange-700/80">Custom transfers are priced against the SNB catalog and require a reason below.</p>
+            )}
+          </label>
           <ItemSearchPicker
             value={transferItem ? transferItem.name : transferQuery}
             onChange={(v) => { setTransferQuery(v); setTransferItem(null); }}
@@ -1177,12 +1273,23 @@ export function PlannerTransferOutTab() {
               <button onClick={() => setTransferUnit('pcs')} className={cn('flex-1 rounded-xl border py-2.5 text-sm font-black', transferUnit === 'pcs' ? 'border-orange-600 bg-orange-600 text-white' : 'border-orange-200 bg-white text-orange-900')}>Pcs</button>
             </div>
           </div>
+          {/* Live price/value preview — SNB dest -> SNB price, VRSNB dest ->
+              VRSNB price, Custom -> SNB price for reference. */}
+          {transferItemName && (
+            <div className="rounded-xl border border-orange-200 bg-white/70 px-3 py-2 text-xs font-bold text-orange-900">
+              {transferUnitPrice != null ? (
+                <>Unit Price ({transferDestination === 'VRSNB' ? 'VRSNB' : 'SNB'} catalog): Rs. {transferUnitPrice.toFixed(2)}
+                  {transferTotalValue != null && <> &middot; Total Value: <strong>Rs. {transferTotalValue.toFixed(2)}</strong></>}
+                </>
+              ) : 'Price not found in catalog for this item — invoice will show N/A.'}
+            </div>
+          )}
           <label className="block space-y-1">
             <span className="text-xs font-black text-orange-900">Reason *</span>
-            <input value={transferReason} onChange={(e) => setTransferReason(e.target.value)} className="h-11 w-full rounded-xl border border-orange-200 bg-white px-3 text-sm font-bold" placeholder="e.g. Sent to Cafe for an event" />
+            <input value={transferReason} onChange={(e) => setTransferReason(e.target.value)} className="h-11 w-full rounded-xl border border-orange-200 bg-white px-3 text-sm font-bold" placeholder={transferDestination === 'Custom' ? 'Required — why is this a custom transfer?' : 'e.g. Sent to Cafe for an event'} />
           </label>
           <button onClick={submitTransferOut} disabled={transferSaving} className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-orange-600 text-sm font-black text-white disabled:opacity-50">
-            {transferSaving ? <Loader2 className="size-4 animate-spin" /> : <Truck className="size-4" />}Transfer Out
+            {transferSaving ? <Loader2 className="size-4 animate-spin" /> : <Truck className="size-4" />}Transfer Out & Generate Invoice
           </button>
         </div>
 
@@ -1206,18 +1313,41 @@ export function PlannerTransferOutTab() {
                   <th className="px-4 py-2.5 text-right">Qty</th>
                   <th className="px-4 py-2.5 text-left">Reason</th>
                   <th className="px-4 py-2.5 text-left">By</th>
+                  <th className="px-4 py-2.5 text-left">Invoice</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border/60">
-                {filteredHistory.length > 0 ? filteredHistory.map((row) => (
-                  <tr key={row.id}>
-                    <td className="px-4 py-2 text-xs text-muted-foreground">{new Date(row.createdAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</td>
-                    <td className="px-4 py-2 font-bold">{row.itemName}</td>
-                    <td className="px-4 py-2 text-right font-black text-orange-700">{qtyFmt(Math.abs(row.delta))} {row.unit}</td>
-                    <td className="px-4 py-2 text-xs text-muted-foreground">{row.notes || '-'}</td>
-                    <td className="px-4 py-2 text-xs text-muted-foreground">{row.recordedBy}</td>
-                  </tr>
-                )) : <tr><td colSpan={5} className="px-4 py-10 text-center text-muted-foreground">No transfers out recorded yet.</td></tr>}
+                {filteredHistory.length > 0 ? filteredHistory.map((row) => {
+                  // Older rows recorded before this feature won't have a
+                  // [Destination: ...] tag in notes — fall back to SNB so
+                  // they can still get an invoice on request.
+                  const destMatch = /\[Destination: (SNB|VRSNB|Custom)\]/.exec(row.notes || '');
+                  const rowDestination = (destMatch?.[1] as 'SNB' | 'VRSNB' | 'Custom') || 'SNB';
+                  const rowReason = (row.notes || '').replace(/\s*\[Destination: (SNB|VRSNB|Custom)\]\s*$/, '').trim();
+                  const rowPrice = transferPriceFor(transferCatalogItems, rowDestination, row.itemName);
+                  return (
+                    <tr key={row.id}>
+                      <td className="px-4 py-2 text-xs text-muted-foreground">{new Date(row.createdAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</td>
+                      <td className="px-4 py-2 font-bold">{row.itemName}</td>
+                      <td className="px-4 py-2 text-right font-black text-orange-700">{qtyFmt(Math.abs(row.delta))} {row.unit}</td>
+                      <td className="px-4 py-2 text-xs text-muted-foreground">{rowReason || '-'} <span className="ml-1 rounded-full bg-slate-100 px-1.5 py-0.5 text-[9px] font-black text-slate-500">{rowDestination}</span></td>
+                      <td className="px-4 py-2 text-xs text-muted-foreground">{row.recordedBy}</td>
+                      <td className="px-4 py-2">
+                        <button
+                          type="button"
+                          onClick={() => downloadTransferOutInvoice({
+                            itemName: row.itemName, qty: Math.abs(row.delta), unit: row.unit, destination: rowDestination,
+                            unitPrice: rowPrice, reason: rowReason, staffName: row.recordedBy, createdAt: new Date(row.createdAt),
+                            transferNo: `TO-${row.id}`,
+                          })}
+                          className="inline-flex items-center gap-1 rounded-lg border border-border px-2 py-1 text-[10px] font-black text-muted-foreground hover:bg-muted"
+                        >
+                          <Printer className="size-3" />PDF
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                }) : <tr><td colSpan={6} className="px-4 py-10 text-center text-muted-foreground">No transfers out recorded yet.</td></tr>}
               </tbody>
             </table>
           </div>

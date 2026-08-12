@@ -583,27 +583,29 @@ export default function PlannerDashboard({ embedded = false }: { embedded?: bool
     // screen.
     <div className={embedded ? undefined : 'min-h-screen warm-gradient'}>
       <main className={embedded ? undefined : 'mx-auto max-w-7xl px-4 py-6'}>
-        {/* In-page tab strip — the only way to switch top-level Planner tabs
-            when embedded (WorkspaceChrome's sidebar only lists these Links
-            for role==='planner', so an owner viewing the embedded tab has no
-            other way to reach Dispatch/Hosur/Closing Stock/etc). Shown for
-            the standalone route too so it isn't solely dependent on the
-            desktop sidebar or native bottom nav. */}
-        <div className="mb-4 -mx-1 flex gap-1.5 overflow-x-auto pb-1">
-          {TABS.map(t => (
-            <button
-              key={t.key}
-              type="button"
-              onClick={() => goToTab(t.key)}
-              className={cn(
-                'flex items-center gap-1.5 whitespace-nowrap rounded-xl px-3 py-2 text-sm font-semibold transition-colors shrink-0',
-                tab === t.key ? 'bg-primary text-primary-foreground shadow-sm' : 'bg-card border border-border text-muted-foreground hover:text-foreground',
-              )}
-            >
-              {t.icon}{t.label}
-            </button>
-          ))}
-        </div>
+        {/* In-page tab strip — ONLY when embedded (e.g. inside Owner
+            Dashboard), where it's the sole way to switch top-level Planner
+            tabs since there's no sidebar in that context. The standalone
+            Planner app already has its own left sidebar nav for this, so
+            rendering this strip there too just duplicated it (2026-08-12
+            fix — this used to render unconditionally). */}
+        {embedded && (
+          <div className="mb-4 -mx-1 flex gap-1.5 overflow-x-auto pb-1">
+            {TABS.map(t => (
+              <button
+                key={t.key}
+                type="button"
+                onClick={() => goToTab(t.key)}
+                className={cn(
+                  'flex items-center gap-1.5 whitespace-nowrap rounded-xl px-3 py-2 text-sm font-semibold transition-colors shrink-0',
+                  tab === t.key ? 'bg-primary text-primary-foreground shadow-sm' : 'bg-card border border-border text-muted-foreground hover:text-foreground',
+                )}
+              >
+                {t.icon}{t.label}
+              </button>
+            ))}
+          </div>
+        )}
         {loading && orders.length === 0 ? (
           <div className="flex justify-center py-20"><Loader2 className="size-6 animate-spin text-muted-foreground" /></div>
         ) : (
