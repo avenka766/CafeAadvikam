@@ -492,6 +492,7 @@ export default function AdminSNBDashboard() {
     bankDeposits,
     notifications,
     expenses,
+    refreshSalespeople,
   } = useBranchOpsStore();
 
   const today = dateInput();
@@ -519,6 +520,17 @@ export default function AdminSNBDashboard() {
     const nextTab = requestedTab && TABS.some((item) => item.id === requestedTab) ? requestedTab : "overview";
     setTab((current) => current === nextTab ? current : nextTab);
   }, [requestedTab]);
+
+  // DURABLE FIX (2026-08-12): fetch the salesperson roster once here, at the
+  // dashboard root, instead of relying on the Salesperson Management tab's
+  // own on-mount refresh — that only runs if an admin happens to open that
+  // specific tab. Doing it at the root guarantees every screen that reads
+  // `salespeople` (management, reports, dropdowns, present or future) always
+  // sees the true current roster, not a stale persisted snapshot. See the
+  // matching fix + longer explanation in BranchDashboard.tsx.
+  useEffect(() => {
+    void refreshSalespeople(BRANCH);
+  }, [refreshSalespeople]);
 
   useEffect(() => {
     void loadCatalog('SNB');
