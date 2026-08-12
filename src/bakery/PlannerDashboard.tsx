@@ -488,12 +488,41 @@ function PlannerPrinterSetupModal({ onClose }: { onClose: () => void }) {
   );
 }
 
-export default function PlannerDashboard() {
+export default function PlannerDashboard({ embedded = false }: { embedded?: boolean } = {}) {
   const { orders, loading, fetchOrders, subscribe, submitOrder } = useBakeryStore();
-  const [showPrinterSetup, setShowPrinterSetup] = useState(false);
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const urlTab = searchParams.get('tab') as PlannerTab | null;
-  const tab: PlannerTab = urlTab && TABS.some(t => t.key === urlTab) ? urlTab : 'incoming';
+  const urlTabValid: PlannerTab | null = urlTab && TABS.some(t => t.key === urlTab) ? urlTab : null;
+  // BUG FIX (2026-08-12): this whole top-level tab used to be derived purely
+  // from the `?tab=` URL param, switched only via WorkspaceChrome's sidebar
+  // Links (role==='planner' only) — there was no in-page control at all.
+  // Now that Owner Dashboard embeds this component directly as one of ITS
+  // OWN tabs (also keyed off a `?tab=` param on the SAME url, e.g.
+  // `/owner?tab=planner`), two problems appeared: (1) an owner viewing the
+  // embedded Planner tab has no sidebar entry for it at all (that sidebar
+  // section is gated to role==='planner'), so they could never navigate off
+  // 'incoming' to Dispatch/Hosur/Closing Stock/etc; (2) even for the
+  // standalone route, any in-page action that wrote `tab` on this shared
+  // param (see HosurUnifiedSection.selectTab below) would silently stomp
+  // Owner's own outer tab selection. Fix: keep local `tab` state that always
+  // drives the render, add a real in-page tab strip below, and only mirror
+  // it into the URL's `tab` key when NOT embedded (so the standalone route's
+  // bookmarks / sidebar deep-links keep working, while the embedded view
+  // never touches its host's URL param).
+  const [localTab, setLocalTab] = useState<PlannerTab>(() => urlTabValid ?? 'incoming');
+  useEffect(() => {
+    if (!embedded && urlTabValid && urlTabValid !== localTab) setLocalTab(urlTabValid);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [embedded, urlTabValid]);
+  const tab = localTab;
+  const goToTab = (next: PlannerTab) => {
+    setLocalTab(next);
+    if (!embedded) {
+      const params = new URLSearchParams(searchParams);
+      params.set('tab', next);
+      setSearchParams(params, { replace: true });
+    }
+  };
 
   // BUG FIX (2026-08-09): "if we add an extra item and come back to search
   // its gone again" — every tab below is conditionally rendered
@@ -546,18 +575,35 @@ export default function PlannerDashboard() {
   const doneOrders         = useMemo(() => orders.filter(o => o.leftoverStatus === 'done'), [orders]);
 
   return (
-    <div className="min-h-screen warm-gradient">
-      {showPrinterSetup && <PlannerPrinterSetupModal onClose={() => setShowPrinterSetup(false)} />}
-      <button
-        type="button"
-        onClick={() => setShowPrinterSetup(true)}
-        title="Printer setup (route dispatch invoices/bills/walk-in receipts to your thermal printer)"
-        aria-label="Printer setup"
-        className="fixed right-4 top-4 z-40 inline-flex size-9 items-center justify-center rounded-xl border border-border bg-card text-muted-foreground shadow-sm transition-colors hover:bg-muted"
-      >
-        <Printer className="size-4" />
-      </button>
-      <main className="mx-auto max-w-7xl px-4 py-6">
+    // BUG FIX (2026-08-12): dropped the forced `min-h-screen warm-gradient`
+    // when embedded — this div used to assume it was always the page root,
+    // but Owner Dashboard now nests it inside its own tab body, which left a
+    // visible extra-viewport-tall background-color seam under Owner's own
+    // background whenever the Planner tab's content was shorter than one
+    // screen.
+    <div className={embedded ? undefined : 'min-h-screen warm-gradient'}>
+      <main className={embedded ? undefined : 'mx-auto max-w-7xl px-4 py-6'}>
+        {/* In-page tab strip — the only way to switch top-level Planner tabs
+            when embedded (WorkspaceChrome's sidebar only lists these Links
+            for role==='planner', so an owner viewing the embedded tab has no
+            other way to reach Dispatch/Hosur/Closing Stock/etc). Shown for
+            the standalone route too so it isn't solely dependent on the
+            desktop sidebar or native bottom nav. */}
+        <div className="mb-4 -mx-1 flex gap-1.5 overflow-x-auto pb-1">
+          {TABS.map(t => (
+            <button
+              key={t.key}
+              type="button"
+              onClick={() => goToTab(t.key)}
+              className={cn(
+                'flex items-center gap-1.5 whitespace-nowrap rounded-xl px-3 py-2 text-sm font-semibold transition-colors shrink-0',
+                tab === t.key ? 'bg-primary text-primary-foreground shadow-sm' : 'bg-card border border-border text-muted-foreground hover:text-foreground',
+              )}
+            >
+              {t.icon}{t.label}
+            </button>
+          ))}
+        </div>
         {loading && orders.length === 0 ? (
           <div className="flex justify-center py-20"><Loader2 className="size-6 animate-spin text-muted-foreground" /></div>
         ) : (
@@ -572,7 +618,7 @@ export default function PlannerDashboard() {
                 <DispatchTab orders={productionSourceOrders} allOrders={orders} />
               </div>
             )}
-            {tab === 'hosur' && <HosurUnifiedSection />}
+            {tab === 'hosur' && <HosurUnifiedSection embedded={embedded} />}
             {tab === 'cake' && <PackingCakeOrdersTab mode="planner" />}
             {tab === 'transfer-in' && <PackingTransferInTab />}
             {tab === 'transfer-out' && <PlannerTransferOutTab />}
@@ -1889,7 +1935,7 @@ const HOSUR_SUB_TAB_GROUPS: { label: string; tabs: { key: HosurSubTab; label: st
   ] },
 ];
 
-function HosurUnifiedSection() {
+function HosurUnifiedSection({ embedded = false }: { embedded?: boolean } = {}) {
   const [searchParams, setSearchParams] = useSearchParams();
   const urlTab = searchParams.get('hosurTab') as HosurSubTab | null;
   const activeTab: HosurSubTab = urlTab && HOSUR_SUB_TAB_GROUPS.some(g => g.tabs.some(t => t.key === urlTab)) ? urlTab : 'place';
@@ -1898,11 +1944,20 @@ function HosurUnifiedSection() {
   const selectTab = (key: HosurSubTab) => {
     const params = new URLSearchParams(searchParams);
     params.set('hosurTab', key);
-    // The outer tab must always stay 'hosur' — these sub-tab keys (credit,
-    // whatsapp, reports, etc.) are not valid top-level PlannerTab values, so
-    // writing them to 'tab' used to make the outer tab fall back to
-    // 'incoming', kicking the user back to the Incoming Orders tab.
-    params.set('tab', 'hosur');
+    // BUG FIX (2026-08-12): when embedded inside Owner Dashboard, this `tab`
+    // key belongs to Owner's OWN outer tab switcher (e.g. `/owner?tab=planner`)
+    // — writing 'hosur' into it here would silently knock Owner off its
+    // Planner tab on the next reload. The top-level PlannerDashboard tab is
+    // already local state when embedded (see goToTab), and is already
+    // 'hosur' by the time this section is even rendered, so this write is
+    // only needed — and only safe — on the standalone /bakery/planner route.
+    if (!embedded) {
+      // The outer tab must always stay 'hosur' — these sub-tab keys (credit,
+      // whatsapp, reports, etc.) are not valid top-level PlannerTab values, so
+      // writing them to 'tab' used to make the outer tab fall back to
+      // 'incoming', kicking the user back to the Incoming Orders tab.
+      params.set('tab', 'hosur');
+    }
     setSearchParams(params, { replace: true });
   };
 
@@ -3297,11 +3352,24 @@ function printWalkinBill(bill: WalkinBillRow, mode: 'thermal' | 'a4' = 'thermal'
 // To Dispatch/Dispatched/Planned/Custom switcher.
 function BillingWalkinTab() {
   const [sub, setSub] = useState<'new' | 'sample'>('new');
+  const [showPrinterSetup, setShowPrinterSetup] = useState(false);
   return (
     <div className="space-y-4">
-      <div className="flex gap-2">
-        <button onClick={() => setSub('new')} className={cn('rounded-xl px-3 py-1.5 text-xs font-bold', sub === 'new' ? 'bg-foreground text-white' : 'bg-muted text-muted-foreground')}>New Bill</button>
-        <button onClick={() => setSub('sample')} className={cn('rounded-xl px-3 py-1.5 text-xs font-bold', sub === 'sample' ? 'cafe-gradient text-white shadow-teal' : 'bg-primary/10 text-primary')}>Sample Bill</button>
+      {showPrinterSetup && <PlannerPrinterSetupModal onClose={() => setShowPrinterSetup(false)} />}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex gap-2">
+          <button onClick={() => setSub('new')} className={cn('rounded-xl px-3 py-1.5 text-xs font-bold', sub === 'new' ? 'bg-foreground text-white' : 'bg-muted text-muted-foreground')}>New Bill</button>
+          <button onClick={() => setSub('sample')} className={cn('rounded-xl px-3 py-1.5 text-xs font-bold', sub === 'sample' ? 'cafe-gradient text-white shadow-teal' : 'bg-primary/10 text-primary')}>Sample Bill</button>
+        </div>
+        <button
+          type="button"
+          onClick={() => setShowPrinterSetup(true)}
+          title="Printer setup (route walk-in receipts to your thermal printer)"
+          aria-label="Printer setup"
+          className="inline-flex size-8 items-center justify-center rounded-xl border border-border bg-card text-muted-foreground transition-colors hover:bg-muted"
+        >
+          <Printer className="size-3.5" />
+        </button>
       </div>
       {sub === 'new' ? <BillingTab /> : <SampleBillTab />}
     </div>
@@ -4833,6 +4901,16 @@ function plannedDispatchedForRow(row: ProductionRow, orders: BakeryOrder[]): num
 function DispatchTab({ orders, allOrders }: { orders: BakeryOrder[]; allOrders: BakeryOrder[] }) {
   const [search, setSearch] = useState('');
   const [dateFilter, setDateFilter] = useState<string>('all');
+  // BUG FIX (2026-08-11): the Printer Setup entry point used to be a
+  // position:fixed button floating at the top-right of the whole page —
+  // it never actually appeared on screen (almost certainly covered by, or
+  // positioned relative to, the app shell's own persistent header instead
+  // of the viewport, since some ancestor of PlannerDashboard likely applies
+  // a CSS transform, which silently changes what `fixed` is relative to).
+  // Moved into this toolbar's normal document flow instead, right next to
+  // Refresh/Export Excel — same in-flow pattern Billing dashboard's own
+  // Printer Setup button already uses successfully.
+  const [showPrinterSetup, setShowPrinterSetup] = useState(false);
   const dateGroups = useMemo(() => groupOrdersByStoreDate(orders), [orders]);
   const visible = dateFilter === 'all' ? dateGroups : dateGroups.filter(g => g.dateKey === dateFilter);
   const exportRows = useMemo(() => dateGroups.flatMap(g => {
@@ -4850,6 +4928,7 @@ function DispatchTab({ orders, allOrders }: { orders: BakeryOrder[]; allOrders: 
 
   return (
     <div className="space-y-4">
+      {showPrinterSetup && <PlannerPrinterSetupModal onClose={() => setShowPrinterSetup(false)} />}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-sm font-black text-foreground">Dispatch <span className="text-xs font-bold text-muted-foreground">({dateGroups.length} date{dateGroups.length === 1 ? '' : 's'})</span></h2>
         <div className="flex items-center gap-2">
@@ -4862,6 +4941,15 @@ function DispatchTab({ orders, allOrders }: { orders: BakeryOrder[]; allOrders: 
             {dateGroups.map(g => <option key={g.dateKey} value={g.dateKey}>{g.label}</option>)}
           </select>
           <RefreshOrdersButton />
+          <button
+            type="button"
+            onClick={() => setShowPrinterSetup(true)}
+            title="Printer setup (route dispatch invoices/bills to your thermal printer)"
+            aria-label="Printer setup"
+            className="inline-flex size-8 items-center justify-center rounded-xl border border-border bg-card text-muted-foreground transition-colors hover:bg-muted"
+          >
+            <Printer className="size-3.5" />
+          </button>
           <ExportButton
             disabled={exportRows.length === 0}
             onClick={() => exportToExcel({
@@ -5132,6 +5220,18 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
   const [hosurView, setHosurView] = useState<'shop' | 'item'>('shop');
 
   useEffect(() => { setSelected(new Set()); }, [branchFilter]);
+  // BUG FIX (2026-08-11): "why am I seeing custom items in the SNB dispatch
+  // tab — it should only be in Custom(Planned)." The 'Planned' subTab used to
+  // stay selectable (and its state could carry over) on every branch filter,
+  // not just 'All' — and it always rendered the exact same unfiltered
+  // plannedRows list via PlannedDispatchPanel regardless of which branch was
+  // picked, so switching to SNB/VRSNB/Hosur while 'planned' was still the
+  // active subTab showed the identical Planned-stock items Custom (Planned)
+  // already owns. Custom (Planned) is the one dedicated place for those —
+  // drop back to 'active' the moment a real branch (or Custom itself, which
+  // has its own To Sell/Dispatched toggle reusing 'active'/'completed') is
+  // selected, so 'planned' is never left active outside the 'All' view.
+  useEffect(() => { if (branchFilter !== 'All' && subTab === 'planned') setSubTab('active'); }, [branchFilter, subTab]);
 
   const dispatchedQtyForItem = (row: ProductionRow) => {
     let sum = 0;
@@ -5281,7 +5381,14 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
       <div className="flex gap-2">
         <button onClick={() => setSubTab('active')} className={cn('rounded-xl px-3 py-1.5 text-xs font-bold', subTab === 'active' ? 'bg-foreground text-white' : 'bg-muted text-muted-foreground')}>To Dispatch ({activeRows.length})</button>
         <button onClick={() => setSubTab('completed')} className={cn('rounded-xl px-3 py-1.5 text-xs font-bold', subTab === 'completed' ? 'bg-foreground text-white' : 'bg-muted text-muted-foreground')}>Dispatched ({completedRows.length})</button>
-        <button onClick={() => setSubTab('planned')} className={cn('rounded-xl px-3 py-1.5 text-xs font-bold', subTab === 'planned' ? 'cafe-gradient text-white shadow-teal' : 'bg-primary/10 text-primary')}>Planned ({plannedRows.length})</button>
+        {/* BUG FIX (2026-08-11): only shown on 'All' — Custom (Planned) is the
+            one dedicated place to work Planned-stock items; surfacing this
+            same button (and the same unfiltered plannedRows list) under
+            SNB/VRSNB/Hosur too made Planned/custom items look like they'd
+            leaked into those branches' own dispatch queues. */}
+        {branchFilter === 'All' && (
+          <button onClick={() => setSubTab('planned')} className={cn('rounded-xl px-3 py-1.5 text-xs font-bold', subTab === 'planned' ? 'cafe-gradient text-white shadow-teal' : 'bg-primary/10 text-primary')}>Planned ({plannedRows.length})</button>
+        )}
       </div>
       )}
 
@@ -5343,7 +5450,7 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
           <CustomDispatchPanel rows={plannedRows} orders={orders} onDispatch={submitDispatch} dispatchedBy={currentUser?.displayName || currentUser?.username || 'Planner'} leftoverBalances={leftoverBalances} />
         )
         )
-      ) : subTab === 'planned' ? (
+      ) : subTab === 'planned' && branchFilter === 'All' ? (
         <PlannedDispatchPanel rows={plannedRows} orders={orders} onDispatch={submitDispatch} dispatchedBy={currentUser?.displayName || 'Planner'} />
       ) : branchFilter === 'Hosur' && hosurView === 'shop' ? (
         // BUG FIX (2026-08-07): this used to pass `shown` (activeRows/

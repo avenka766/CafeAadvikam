@@ -200,16 +200,30 @@ export async function dispatchReceiveAndBill(params: {
   const now = new Date().toISOString();
   const paymentMode = payment.paymentType === 'credit' ? null : (payment.paymentMode ?? 'cash');
 
-  const { error: billUpdateError } = await supabase.from('hosur_bills').update({
+  // BUG FIX (2026-08-12, audit): guard against confirming the same draft bill
+  // twice (this bridge racing with itself, or with HosurDashboard's own
+  // confirmBill, on the same bill) — mirrors the same fix in confirmBill.
+  const { data: updatedBillRow, error: billUpdateError } = await supabase.from('hosur_bills').update({
     paid_amount: paid, credit_amount: credit, payment_type: payment.paymentType,
     payment_mode: paymentMode, due_date: credit > 0 ? payment.dueDate : null,
     status, confirmed_by: userName, confirmed_at: now,
-  }).eq('id', billId);
+  }).eq('id', billId).eq('status', 'draft').select('id').maybeSingle();
   if (billUpdateError) throw billUpdateError;
+  if (!updatedBillRow) throw new Error('This bill has already been confirmed (possibly from another tab/device) — refresh and check its status before retrying.');
 
-  await supabase.from('hosur_orders').update({ status: 'billed', bill_id: billId }).eq('id', order.id);
+  const { error: orderStatusError } = await supabase.from('hosur_orders').update({ status: 'billed', bill_id: billId }).eq('id', order.id);
+  if (orderStatusError) console.warn('[hosurBillingBridge] failed to mark order billed:', orderStatusError.message);
 
   if (credit > 0) {
+    // BUG FIX (2026-08-12, audit): roll the bill back to 'draft' if the
+    // credit ledger insert fails, same reasoning as confirmBill — otherwise
+    // it's left confirmed with a credit balance no ledger row backs.
+    const rollbackToDraft = async () => {
+      await supabase.from('hosur_bills').update({
+        paid_amount: 0, credit_amount: 0, payment_type: null, payment_mode: null,
+        due_date: null, status: 'draft', confirmed_by: null, confirmed_at: null,
+      }).eq('id', billId).eq('status', status);
+    };
     const { data: creditSale, error: ledgerError } = await supabase.from('branch_credit_sales').insert({
       branch: BRANCH, source: 'hosur', source_id: billId, customer_ref: order.shopId, customer_name: order.shopName,
       customer_phone: order.shopWhatsapp,
@@ -217,13 +231,14 @@ export async function dispatchReceiveAndBill(params: {
       subtotal: total, amount_paid: paid, credit_amount: credit, sold_by: userName, bill_no: billNo,
       due_date: payment.dueDate, status: paid > 0 ? 'partial' : 'pending', notes: 'Hosur credit bill',
     }).select('id').single();
-    if (ledgerError) throw ledgerError;
+    if (ledgerError) { await rollbackToDraft(); throw ledgerError; }
     if (paid > 0 && creditSale?.id) {
-      await supabase.from('branch_credit_payments').insert({
+      const { error: paymentError } = await supabase.from('branch_credit_payments').insert({
         credit_sale_id: creditSale.id, branch: BRANCH, bill_no: billNo, amount: paid,
         payment_mode: paymentMode, payment_purpose: 'partial_at_billing', remarks: 'Hosur partial payment at billing',
         collected_by: userName, created_at: now,
       });
+      if (paymentError) { await rollbackToDraft(); await supabase.from('branch_credit_sales').delete().eq('id', creditSale.id); throw paymentError; }
     }
     await notifyAdmin('Hosur credit bill created', `${order.shopName} has credit of ₹${credit.toFixed(2)} on bill ${billNo}.`, billId, billNo, { billId, amount: credit });
   }
