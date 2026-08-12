@@ -14,6 +14,7 @@ import {
   CalendarClock,
   Cake,
   Clock3,
+  Factory,
   FileText,
   Flame,
   History,
@@ -146,6 +147,11 @@ function navForRole(role?: string): NavItem[] {
         { label: 'Audit Logs', path: '/owner?tab=audit', icon: <ShieldCheck className="size-4" />, group: 'Reports' },
         { label: 'Staff & Payroll', path: '/owner?tab=attendance', icon: <CalendarCheck className="size-4" />, group: 'Admin' },
         { label: 'Waste & Loss', path: '/owner?tab=waste', icon: <Trash2 className="size-4" />, group: 'Reports' },
+        // Added alongside the embedded Planner Dashboard tab (2026-08-12) —
+        // this sidebar list is a separate, parallel nav from OwnerDashboard's
+        // own in-page tab strip (same pattern as every other role below), so
+        // adding a new tab there doesn't automatically surface it here.
+        { label: 'Planner Dashboard', path: '/owner?tab=planner', icon: <Factory className="size-4" />, group: 'Operations' },
       ];
     case 'billing':
       return [
