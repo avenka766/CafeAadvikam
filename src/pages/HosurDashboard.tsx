@@ -1538,7 +1538,15 @@ export default function HosurDashboard({ hideNav = false }: { hideNav?: boolean 
     const status: BillStatus = credit <= 0 ? 'paid' : paymentType === 'credit' ? 'credit_open' : 'partial_credit';
     const now = new Date().toISOString();
 
-    const { error: billError } = await supabase.from('hosur_bills').update({
+    // BUG FIX (2026-08-12, audit): this update had no guard against confirming
+    // the same draft bill twice (two tabs/devices, or a double-tap on Confirm)
+    // — both calls would pass, both would go on to insert their own
+    // branch_credit_sales/branch_credit_payments/branch_sales rows below,
+    // duplicating the shop's recorded credit debt. Scoping the update to
+    // `status='draft'` and checking a row actually came back closes that:
+    // the second caller sees zero rows updated and gets a clear error
+    // instead of silently duplicating the ledger entries.
+    const { data: updatedBill, error: billError } = await supabase.from('hosur_bills').update({
       paid_amount: paid,
       credit_amount: credit,
       payment_type: paymentType,
@@ -1547,13 +1555,26 @@ export default function HosurDashboard({ hideNav = false }: { hideNav?: boolean 
       status,
       confirmed_by: userName,
       confirmed_at: now,
-    }).eq('id', bill.id);
+    }).eq('id', bill.id).eq('status', 'draft').select('id').maybeSingle();
     if (billError) throw billError;
+    if (!updatedBill) throw new Error('This bill has already been confirmed (possibly from another tab/device) — refresh and check its status before retrying.');
 
     if (bill.orderId) await supabase.from('hosur_orders').update({ status: 'billed' }).eq('id', bill.orderId);
 
     const items = billItems[bill.id] ?? [];
     if (credit > 0) {
+      // BUG FIX (2026-08-12, audit): if this insert fails, the bill above is
+      // already confirmed with a credit balance but no ledger row exists for
+      // it anywhere — that credit becomes invisible to the Credit tab,
+      // AdminCreditTab and OwnerCreditTab alike, with no way to collect it.
+      // Roll the bill back to 'draft' on failure so the confirm can be
+      // retried cleanly instead of leaving it stuck in this half-done state.
+      const rollbackToDraft = async () => {
+        await supabase.from('hosur_bills').update({
+          paid_amount: 0, credit_amount: 0, payment_type: null, payment_mode: null,
+          due_date: null, status: 'draft', confirmed_by: null, confirmed_at: null,
+        }).eq('id', bill.id).eq('status', status);
+      };
       const { data: creditSale, error: ledgerError } = await supabase.from('branch_credit_sales').insert({
         branch: BRANCH,
         source: 'hosur',
@@ -1577,7 +1598,7 @@ export default function HosurDashboard({ hideNav = false }: { hideNav?: boolean 
         status: paid > 0 ? 'partial' : 'pending',
         notes: 'Hosur credit bill',
       }).select('id').single();
-      if (ledgerError) throw ledgerError;
+      if (ledgerError) { await rollbackToDraft(); throw ledgerError; }
       if (paid > 0 && creditSale?.id) {
         const { error: paymentError } = await supabase.from('branch_credit_payments').insert({
           credit_sale_id: creditSale.id,
@@ -1591,7 +1612,7 @@ export default function HosurDashboard({ hideNav = false }: { hideNav?: boolean 
           collected_role: userRole,
           created_at: now,
         });
-        if (paymentError) throw paymentError;
+        if (paymentError) { await rollbackToDraft(); await supabase.from('branch_credit_sales').delete().eq('id', creditSale.id); throw paymentError; }
       }
       await notifyAdmin('Hosur credit bill created', `${bill.shopName} has ${money(credit)} credit on bill ${bill.billNo}. Due ${toDateLabel(draft.dueDate)}.`, bill.id, bill.billNo, { billId: bill.id, amount: credit });
     }

@@ -44,6 +44,7 @@ import {
 } from 'lucide-react';
 import { isNativeApp } from '@/lib/platform';
 import { useOperationalBranchCatalog } from '@/hooks/useOperationalBranchCatalog';
+import PlannerDashboard from '@/bakery/PlannerDashboard';
 
 // Shared helper for matching a free-text item name against a catalog's name
 // (used to price Stock Variance and Waste & Loss rows against the live
@@ -223,6 +224,148 @@ function moneyNumber(value: number | null | undefined) {
   return Number(value || 0);
 }
 
+// ── Hosur wholesale sales (real source of truth) ────────────────────────────
+// Hosur shop billing writes to hosur_bills/hosur_bill_items, NOT to
+// branch_bill_headers or branch_daily_closures like Cafe/SNB/VRSNB — those
+// tables are simply never populated for Hosur. Everywhere else in this file
+// that derives Hosur "sales" from `bills` (useBranchOpsStore) or ledger
+// closure rows was therefore always reading an empty/irrelevant source. This
+// hook queries hosur_bills directly (confirmed bills only — draft/cancelled
+// excluded) so Owner Dashboard shows real Hosur wholesale revenue, split by
+// shop, matching what Planner's own Hosur Shops & Billing screen records.
+type HosurBillRow = {
+  id: string;
+  shopName: string;
+  revenue: number;
+  paid: number;
+  credit: number;
+  paymentMode: string | null;
+  confirmedAt: string | null;
+};
+type HosurShopSalesRow = { shopName: string; billCount: number; revenue: number; paid: number; credit: number };
+type HosurSalesSummary = {
+  loading: boolean;
+  revenue: number; paid: number; credit: number;
+  cash: number; upi: number; card: number;
+  billCount: number; itemQty: number;
+  byShop: HosurShopSalesRow[];
+  bills: HosurBillRow[];
+  refresh: () => void;
+};
+
+function useHosurSalesSummary(fromKey: string, toKey: string): HosurSalesSummary {
+  const [bills, setBills] = useState<HosurBillRow[]>([]);
+  const [itemQty, setItemQty] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const [nonce, setNonce] = useState(0);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      setLoading(true);
+      const { data, error } = await supabase
+        .from('hosur_bills')
+        .select('id, shop_name, subtotal, paid_amount, credit_amount, payment_mode, confirmed_at, status')
+        .not('confirmed_at', 'is', null)
+        .neq('status', 'cancelled')
+        .gte('confirmed_at', `${fromKey}T00:00:00`)
+        .lte('confirmed_at', `${toKey}T23:59:59.999`);
+      if (!alive) return;
+      if (error) {
+        console.error('Hosur sales fetch failed', error);
+        setBills([]); setItemQty(0); setLoading(false);
+        return;
+      }
+      const rows = (data || []) as Array<Record<string, unknown>>;
+      const mapped: HosurBillRow[] = rows.map(r => ({
+        id: String(r.id),
+        shopName: String(r.shop_name || 'Unknown shop'),
+        revenue: moneyNumber(r.subtotal as number),
+        paid: moneyNumber(r.paid_amount as number),
+        credit: moneyNumber(r.credit_amount as number),
+        paymentMode: (r.payment_mode as string) || null,
+        confirmedAt: (r.confirmed_at as string) || null,
+      }));
+      setBills(mapped);
+      if (mapped.length) {
+        const { data: itemRows } = await supabase.from('hosur_bill_items').select('bill_id, quantity').in('bill_id', mapped.map(b => b.id));
+        if (!alive) return;
+        setItemQty((itemRows || []).reduce((sum, r) => sum + Number((r as { quantity?: number }).quantity || 0), 0));
+      } else {
+        setItemQty(0);
+      }
+      setLoading(false);
+    })();
+    return () => { alive = false; };
+  }, [fromKey, toKey, nonce]);
+
+  return useMemo(() => {
+    const revenue = bills.reduce((s, b) => s + b.revenue, 0);
+    const paid = bills.reduce((s, b) => s + b.paid, 0);
+    const credit = bills.reduce((s, b) => s + b.credit, 0);
+    let cash = 0, upi = 0, card = 0;
+    bills.forEach(b => {
+      const mode = (b.paymentMode || '').toLowerCase();
+      if (mode === 'cash') cash += b.paid;
+      else if (mode === 'upi') upi += b.paid;
+      else if (mode === 'card' || mode === 'bank') card += b.paid;
+    });
+    const shopMap = new Map<string, HosurShopSalesRow>();
+    bills.forEach(b => {
+      const ex = shopMap.get(b.shopName) || { shopName: b.shopName, billCount: 0, revenue: 0, paid: 0, credit: 0 };
+      ex.billCount += 1; ex.revenue += b.revenue; ex.paid += b.paid; ex.credit += b.credit;
+      shopMap.set(b.shopName, ex);
+    });
+    const byShop = [...shopMap.values()].sort((a, b) => b.revenue - a.revenue);
+    return { loading, revenue, paid, credit, cash, upi, card, billCount: bills.length, itemQty, byShop, bills, refresh: () => setNonce(n => n + 1) };
+  }, [bills, itemQty, loading]);
+}
+
+function HosurSalesByShopCard({ hosurSales }: { hosurSales: HosurSalesSummary }) {
+  return (
+    <div className="bg-card border border-border rounded-xl p-4">
+      <div className="flex items-center justify-between mb-1">
+        <h3 className="font-display text-base font-bold flex items-center gap-2">
+          <Truck className="size-4 text-primary" />Hosur Sales by Shop
+        </h3>
+        <button type="button" onClick={() => hosurSales.refresh()} disabled={hosurSales.loading}
+          className="inline-flex items-center gap-1.5 text-xs font-semibold text-muted-foreground hover:text-foreground disabled:opacity-60">
+          <RefreshCw className={cn('size-3.5', hosurSales.loading && 'animate-spin')} />Refresh
+        </button>
+      </div>
+      <p className="text-[10px] text-muted-foreground mb-3">Confirmed Hosur shop bills for the selected range — {hosurSales.billCount} bills, {formatCurrency(hosurSales.paid)} collected, {formatCurrency(hosurSales.credit)} on credit</p>
+      {hosurSales.byShop.length === 0 ? (
+        <p className="text-sm text-muted-foreground py-4 text-center">No confirmed Hosur bills in this range yet.</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-[10px] uppercase tracking-wide text-muted-foreground border-b border-border">
+                <th className="py-1.5 pr-2">Shop</th>
+                <th className="py-1.5 pr-2 text-right">Bills</th>
+                <th className="py-1.5 pr-2 text-right">Revenue</th>
+                <th className="py-1.5 pr-2 text-right">Collected</th>
+                <th className="py-1.5 text-right">Credit Due</th>
+              </tr>
+            </thead>
+            <tbody>
+              {hosurSales.byShop.map(row => (
+                <tr key={row.shopName} className="border-b border-border last:border-0">
+                  <td className="py-1.5 pr-2 font-medium">{row.shopName}</td>
+                  <td className="py-1.5 pr-2 text-right tabular-nums">{row.billCount}</td>
+                  <td className="py-1.5 pr-2 text-right tabular-nums font-semibold">{formatCurrency(row.revenue)}</td>
+                  <td className="py-1.5 pr-2 text-right tabular-nums text-emerald-700">{formatCurrency(row.paid)}</td>
+                  <td className={cn('py-1.5 text-right tabular-nums', row.credit > 0 ? 'text-amber-700 font-semibold' : 'text-muted-foreground')}>{formatCurrency(row.credit)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function OwnerMetricCard({ icon, label, value, sub, tone = 'slate', onClick }: { icon: React.ReactNode; label: string; value: React.ReactNode; sub?: React.ReactNode; tone?: 'green' | 'amber' | 'red' | 'blue' | 'purple' | 'slate'; onClick?: () => void }) {
   const Comp = onClick ? 'button' : 'div';
   return (
@@ -334,6 +477,7 @@ function SalesOverviewTab() {
     return ownerEndOfToday();
   }, [dateRange]);
   const salesLedger = useBranchLedger(ownerDateInput(cutoff), ownerDateInput(cutoffEnd), ['VRSNB', 'SNB', 'Hosur']);
+  const hosurSales = useHosurSalesSummary(ownerDateInput(cutoff), ownerDateInput(cutoffEnd));
 
   const todayStart = useMemo(() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; }, []);
 
@@ -366,9 +510,11 @@ function SalesOverviewTab() {
     const branches: Record<string, { qty: number; count: number; revenue: number }> = {
       VRSNB: { qty: 0, count: 0, revenue: 0 },
       SNB:   { qty: 0, count: 0, revenue: 0 },
-      Hosur: { qty: 0, count: 0, revenue: 0 },
+      // Hosur sourced separately from hosur_bills (see useHosurSalesSummary) —
+      // branch_bill_headers/branch_daily_closures are never populated for Hosur.
+      Hosur: { qty: hosurSales.itemQty, count: hosurSales.billCount, revenue: hosurSales.revenue },
     };
-    (['VRSNB', 'SNB', 'Hosur'] as const).forEach(b => {
+    (['VRSNB', 'SNB'] as const).forEach(b => {
       const ledgerRows = salesLedger.closureRows.filter(row => row.branch === b);
       if (ledgerRows.length > 0) {
         branches[b].revenue = ledgerRows.reduce(
@@ -396,7 +542,7 @@ function SalesOverviewTab() {
       });
     });
     return branches;
-  }, [bills, returns, cutoff, cutoffEnd, salesLedger]);
+  }, [bills, returns, cutoff, cutoffEnd, salesLedger, hosurSales]);
 
   const totalBakeryRevenue = Object.values(branchSales).reduce((a, v) => a + v.revenue, 0);
   const totalBakeryQty     = Object.values(branchSales).reduce((a, v) => a + v.qty, 0);
@@ -426,16 +572,16 @@ function SalesOverviewTab() {
         .reduce((s, sale) => s + ((sale as typeof sale & { unitPrice?: number }).unitPrice || 0) * sale.quantitySold, 0);
       const snbRev = (sales['SNB'] || []).filter(s => s.soldAt && new Date(s.soldAt).toDateString() === dateStr)
         .reduce((s, sale) => s + ((sale as typeof sale & { unitPrice?: number }).unitPrice || 0) * sale.quantitySold, 0);
-      // Hosur wholesale shop-supply revenue (hosur_bills) is NOT included — it lives in a separate
-      // Hosur wholesale bills are mirrored into branch_sales after confirmation.
-      const hosurRev = (sales['Hosur'] || []).filter(s => s.soldAt && new Date(s.soldAt).toDateString() === dateStr)
-        .reduce((s, sale) => s + ((sale as typeof sale & { unitPrice?: number }).unitPrice || 0) * sale.quantitySold, 0);
+      // Hosur revenue sourced from real confirmed hosur_bills (see useHosurSalesSummary),
+      // grouped by the bill's confirmation date.
+      const hosurRev = hosurSales.bills.filter(b => b.confirmedAt && new Date(b.confirmedAt).toDateString() === dateStr)
+        .reduce((s, b) => s + b.revenue, 0);
       const label = d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
       result.push({ date: label, Cafe: cafeRev, VRSNB: vrsnbRev, SNB: snbRev, Hosur: hosurRev,
         Total: cafeRev + vrsnbRev + snbRev + hosurRev });
     }
     return result;
-  }, [cafeOrders, sales, dateRange]);
+  }, [cafeOrders, sales, dateRange, hosurSales]);
 
   const revShareData = [
     { name: 'Cafe',  value: cafeRevenue,              color: COLORS[0] },
@@ -480,10 +626,16 @@ function SalesOverviewTab() {
         cash += (b.split?.cash || 0); upi += (b.split?.upi || 0); card += (b.split?.card || 0);
       }
     });
+    // BUG FIX (2026-08-12): Hosur bills live in hosur_bills, not the `bills`
+    // array above (that's branch_bill_headers, which Hosur never writes to)
+    // — this chart used to silently drop Hosur's whole payment-mode split.
+    if (branchFilter === 'all' || branchFilter === 'Hosur') {
+      cash += hosurSales.cash; upi += hosurSales.upi; card += hosurSales.card; credit += hosurSales.credit;
+    }
     return [{ name: 'Cash', value: cash }, { name: 'UPI', value: upi },
             { name: 'Card', value: card }, { name: 'Credit', value: credit }]
       .filter(p => p.value > 0);
-  }, [cafePayBreakdown, bills, cutoff, cutoffEnd, branchFilter]);
+  }, [cafePayBreakdown, bills, cutoff, cutoffEnd, branchFilter, hosurSales]);
 
   const topCafeItems = useMemo(() => {
     const map = new Map<string, { qty: number; revenue: number }>();
@@ -515,7 +667,7 @@ function SalesOverviewTab() {
       Branch: 'Cafe', Date: ownerFmtDate(o.createdAt),
       Revenue: o.total, Payment: o.paymentType, Items: o.items.length,
     })),
-    ...(['VRSNB', 'SNB', 'Hosur'] as const)
+    ...(['VRSNB', 'SNB'] as const)
       .filter(b => branchFilter === 'all' || branchFilter === b)
       .flatMap(b =>
       (sales[b] || []).filter(s => s.soldAt && new Date(s.soldAt) >= cutoff && new Date(s.soldAt) <= cutoffEnd).map(s => ({
@@ -524,6 +676,10 @@ function SalesOverviewTab() {
         Payment: (s as typeof s & { paymentMethod?: string }).paymentMethod || '-', Items: 1,
       }))
     ),
+    ...(branchFilter === 'all' || branchFilter === 'Hosur' ? hosurSales.bills : []).map(b => ({
+      Branch: 'Hosur (shop: ' + b.shopName + ')', Date: ownerFmtDate(b.confirmedAt),
+      Revenue: b.revenue, Payment: b.paymentMode || (b.credit > 0 ? 'credit' : '-'), Items: 1,
+    })),
   ]);
 
   const DATE_PRESETS: Array<{ label: string; value: typeof dateRange }> = [
@@ -632,6 +788,9 @@ function SalesOverviewTab() {
           </div>
         </div>
       )}
+
+      {/* Hosur Sales by Shop — real hosur_bills detail, not the branch rollup above */}
+      {(branchFilter === 'all' || branchFilter === 'Hosur') && <HosurSalesByShopCard hosurSales={hosurSales} />}
 
       {/* Revenue Share Pie */}
       {revShareData.length > 0 && branchFilter === 'all' && (
@@ -1801,6 +1960,7 @@ function BranchOverviewTab() {
   const fromKey = useMemo(() => ownerDateInput(from), [from]);
   const toKey = useMemo(() => ownerDateInput(to), [to]);
   const ownerLedger = useBranchLedger(fromKey, toKey, ['VRSNB', 'SNB', 'Hosur']);
+  const hosurSales = useHosurSalesSummary(fromKey, toKey);
   // The in-memory `bills` array is capped for performance. Fetch the exact
   // selected preset range directly (across all branches) so this owner
   // overview is never silently clipped by that cap.
@@ -1908,6 +2068,20 @@ function BranchOverviewTab() {
       };
     }
 
+    if (unit === 'Hosur Branch') {
+      // Hosur never writes to branch_daily_closure_ledger or branch_bill_headers
+      // (the generic ledgerRows/dbSales paths below are always empty for it) —
+      // its real sales live in hosur_bills, sourced via useHosurSalesSummary.
+      return {
+        unit, sales: hosurSales.revenue, netSales: hosurSales.revenue,
+        cash: hosurSales.cash, upi: hosurSales.upi, card: hosurSales.card, credit: hosurSales.credit,
+        expenses: 0, purchases: 0, pendingPayments: hosurSales.credit, pendingCredit: hosurSales.credit,
+        stockAlerts: 0,
+        closureStatus: hosurSales.billCount ? `${hosurSales.billCount} bills confirmed` : 'No sale yet',
+        keyAlert: `${(advanceOrders['Hosur'] || []).filter(a => a.status === 'pending').length} advance`,
+      };
+    }
+
     const branch = unit.replace(' Branch', '') as Branch;
     const ledgerRows = ownerLedger.closureRows.filter(row => row.branch === branch);
     if (ledgerRows.length > 0) {
@@ -1971,7 +2145,7 @@ function BranchOverviewTab() {
         ? `${(advanceOrders[branch] || []).filter(a => a.status === 'pending').length} advance`
         : `${(advanceOrders[branch] || []).filter(a => a.status === 'pending').length} advance · ${stockAlertCount} stock alerts`,
     };
-  }), [ownerLedger, orders, sales, advanceOrders, creditSales, bills, returns, cashMovements, cashierClosures, storeOrders, storeInvoiceRows, from, to, branchStockAlertCount, pendingIncomingCount, branchPurchaseSummary]);
+  }), [ownerLedger, orders, sales, advanceOrders, creditSales, bills, returns, cashMovements, cashierClosures, storeOrders, storeInvoiceRows, from, to, branchStockAlertCount, pendingIncomingCount, branchPurchaseSummary, hosurSales]);
 
   const visibleRows = branchRows.filter(r => SALES_UNITS.includes(r.unit));
 
@@ -2370,16 +2544,16 @@ function OwnerAlertsTab() {
           <h3 className="text-sm font-bold text-red-700 flex items-center gap-1.5"><XCircle className="size-4" /> Critical Alerts</h3>
           <div className="space-y-2">
             {criticalAlerts.map((alert, index) => (
-              <article key={`${alert.title}-${index}`} className="bg-red-50 border border-red-200 rounded-xl p-3 flex items-start justify-between gap-3">
+              <article key={`${alert.title}-${index}`} className="bg-gradient-to-br from-red-50 to-white border border-red-200/80 rounded-2xl p-4 shadow-soft flex items-start justify-between gap-3 transition-shadow hover:shadow-lifted">
                 <div className="flex gap-3 items-start">
-                  <strong className="text-xl font-black text-red-700 tabular-nums shrink-0">{alert.value}</strong>
+                  <span className="flex items-center justify-center size-11 rounded-xl bg-red-100 text-red-700 font-black text-lg tabular-nums shrink-0">{alert.value}</span>
                   <div>
                     <h3 className="text-sm font-bold text-red-900">{alert.title}</h3>
-                    <p className="text-xs text-red-700 mt-0.5">{alert.note}</p>
-                    {alert.branch && <em className="text-[10px] px-1.5 py-0.5 rounded-full bg-red-100 text-red-800 font-semibold mt-1 inline-block">{ownerBranchDisplay(alert.branch)}</em>}
+                    <p className="text-xs text-red-700/90 mt-0.5">{alert.note}</p>
+                    {alert.branch && <em className="text-[10px] px-1.5 py-0.5 rounded-full bg-red-100 text-red-800 font-semibold mt-1.5 inline-block">{ownerBranchDisplay(alert.branch)}</em>}
                   </div>
                 </div>
-                <button onClick={() => dismissAlert(alert)} className="text-[10px] text-red-500 hover:text-red-700 shrink-0 border border-red-200 rounded px-1.5 py-0.5">Dismiss</button>
+                <button onClick={() => dismissAlert(alert)} className="text-[10px] font-semibold text-red-600 hover:text-white hover:bg-red-600 shrink-0 border border-red-200 rounded-full px-2.5 py-1 transition-colors">Dismiss</button>
               </article>
             ))}
           </div>
@@ -2390,16 +2564,16 @@ function OwnerAlertsTab() {
           <h3 className="text-sm font-bold text-amber-700 flex items-center gap-1.5"><AlertTriangle className="size-4" /> Warning Alerts</h3>
           <div className="space-y-2">
             {warningAlerts.map((alert, index) => (
-              <article key={`${alert.title}-${index}`} className="bg-amber-50 border border-amber-200 rounded-xl p-3 flex items-start justify-between gap-3">
+              <article key={`${alert.title}-${index}`} className="bg-gradient-to-br from-amber-50 to-white border border-amber-200/80 rounded-2xl p-4 shadow-soft flex items-start justify-between gap-3 transition-shadow hover:shadow-lifted">
                 <div className="flex gap-3 items-start">
-                  <strong className="text-xl font-black text-amber-700 tabular-nums shrink-0">{alert.value}</strong>
+                  <span className="flex items-center justify-center size-11 rounded-xl bg-amber-100 text-amber-700 font-black text-lg tabular-nums shrink-0">{alert.value}</span>
                   <div>
                     <h3 className="text-sm font-bold text-amber-900">{alert.title}</h3>
-                    <p className="text-xs text-amber-700 mt-0.5">{alert.note}</p>
-                    {alert.branch && <em className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-800 font-semibold mt-1 inline-block">{ownerBranchDisplay(alert.branch)}</em>}
+                    <p className="text-xs text-amber-700/90 mt-0.5">{alert.note}</p>
+                    {alert.branch && <em className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-800 font-semibold mt-1.5 inline-block">{ownerBranchDisplay(alert.branch)}</em>}
                   </div>
                 </div>
-                <button onClick={() => dismissAlert(alert)} className="text-[10px] text-amber-500 hover:text-amber-700 shrink-0 border border-amber-200 rounded px-1.5 py-0.5">Dismiss</button>
+                <button onClick={() => dismissAlert(alert)} className="text-[10px] font-semibold text-amber-600 hover:text-white hover:bg-amber-600 shrink-0 border border-amber-200 rounded-full px-2.5 py-1 transition-colors">Dismiss</button>
               </article>
             ))}
           </div>
@@ -2410,16 +2584,16 @@ function OwnerAlertsTab() {
           <h3 className="text-sm font-bold text-slate-600 flex items-center gap-1.5"><Bell className="size-4" /> Operational Notes</h3>
           <div className="space-y-2">
             {operationalAlerts.map((alert, index) => (
-              <article key={`${alert.title}-${index}`} className="bg-slate-50 border border-slate-200 rounded-xl p-3 flex items-start justify-between gap-3">
+              <article key={`${alert.title}-${index}`} className="bg-gradient-to-br from-slate-50 to-white border border-slate-200/80 rounded-2xl p-4 shadow-soft flex items-start justify-between gap-3 transition-shadow hover:shadow-lifted">
                 <div className="flex gap-3 items-start">
-                  <strong className="text-xl font-black text-slate-700 tabular-nums shrink-0">{alert.value}</strong>
+                  <span className="flex items-center justify-center size-11 rounded-xl bg-slate-200/70 text-slate-700 font-black text-lg tabular-nums shrink-0">{alert.value}</span>
                   <div>
                     <h3 className="text-sm font-bold text-slate-900">{alert.title}</h3>
                     <p className="text-xs text-slate-600 mt-0.5">{alert.note}</p>
-                    {alert.branch && <em className="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-200 text-slate-700 font-semibold mt-1 inline-block">{ownerBranchDisplay(alert.branch)}</em>}
+                    {alert.branch && <em className="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-200 text-slate-700 font-semibold mt-1.5 inline-block">{ownerBranchDisplay(alert.branch)}</em>}
                   </div>
                 </div>
-                <button onClick={() => dismissAlert(alert)} className="text-[10px] text-slate-500 hover:text-slate-700 shrink-0 border border-slate-300 rounded px-1.5 py-0.5">Dismiss</button>
+                <button onClick={() => dismissAlert(alert)} className="text-[10px] font-semibold text-slate-600 hover:text-white hover:bg-slate-600 shrink-0 border border-slate-300 rounded-full px-2.5 py-1 transition-colors">Dismiss</button>
               </article>
             ))}
           </div>
@@ -3238,12 +3412,13 @@ type OwnerDashboardTab =
   | 'attendance'
   | 'waste'
   | 'complaints'
-  | 'audit';
+  | 'audit'
+  | 'planner';
 
 export default function OwnerDashboard() {
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedTab = searchParams.get('tab') as OwnerDashboardTab | null;
-  const ownerTabIds = useMemo<OwnerDashboardTab[]>(() => ['everything', 'branches', 'sales', 'credit', 'purchases', 'poApprovals', 'closure', 'variance', 'alerts', 'attendance', 'waste', 'complaints', 'audit'], []);
+  const ownerTabIds = useMemo<OwnerDashboardTab[]>(() => ['everything', 'branches', 'sales', 'credit', 'purchases', 'poApprovals', 'closure', 'variance', 'alerts', 'attendance', 'waste', 'complaints', 'audit', 'planner'], []);
   const initialTab = requestedTab && ownerTabIds.includes(requestedTab) ? requestedTab : 'everything';
   const [tab, setTab] = useState<OwnerDashboardTab>(initialTab);
   const selectTab = (next: OwnerDashboardTab) => {
@@ -3290,6 +3465,7 @@ export default function OwnerDashboard() {
     { id: 'waste',      label: 'Waste & Loss',       icon: <Trash2        className="size-4" />, hint: 'Kitchen loss control' },
     { id: 'complaints', label: 'Complaints',          icon: <AlertTriangle className="size-4" />, hint: 'Branch admin complaints' },
     { id: 'audit',      label: 'Audit Logs',          icon: <ShieldCheck   className="size-4" />, hint: 'Sensitive action history' },
+    { id: 'planner',    label: 'Planner Dashboard',   icon: <Factory       className="size-4" />, hint: 'Full production, dispatch & Hosur view' },
   ];
 
   const content = (
@@ -3307,6 +3483,7 @@ export default function OwnerDashboard() {
       {tab === 'waste'      && <WasteLogsTab />}
       {tab === 'complaints' && <OwnerComplaintsTab />}
       {tab === 'audit'      && <OwnerAuditTab />}
+      {tab === 'planner'    && <PlannerDashboard embedded />}
     </>
   );
 
