@@ -101,7 +101,7 @@ export default function BranchDashboard({ branch }: Props) {
     stockMismatches, fetchBranchData, syncIncomingFromDispatches, cleanOldData, seedBranchItems,
     subscribeToStock, fetchStockMismatches, fetchCreditPayments,
   } = useBranchStore();
-  const { bills, cashMovements, notifications, purchases, advanceCakeOrders } = useBranchOpsStore();
+  const { bills, cashMovements, notifications, purchases, advanceCakeOrders, refreshSalespeople } = useBranchOpsStore();
   const tabStripExpanded = useSnbTabStripStore((s) => s.expanded);
 
   const initializedRef = useRef<Branch | null>(null);
@@ -145,6 +145,22 @@ export default function BranchDashboard({ branch }: Props) {
     void useBranchOpsStore.persist.rehydrate();
     return unsubscribe;
   }, []);
+
+  // DURABLE FIX (2026-08-12): "only 4 salespersons visible" kept recurring
+  // because refreshSalespeople() — the only thing that actually pulls the
+  // current roster from branch_operation_records — was called by only some
+  // individual tabs (Billing) and not others (Salesperson Master/Report,
+  // advance-cake-order dropdown), which just read whatever the persisted
+  // localStorage snapshot happened to contain. A cashier who opened this
+  // dashboard on a device that hadn't visited the Billing tab since the last
+  // new hire was added would keep seeing a stale, smaller list — and every
+  // prior fix patched one more individual screen rather than the pattern
+  // itself. Fetching once here, at the dashboard root, guarantees every tab
+  // (present or future) shares one always-fresh roster instead of each
+  // needing its own opt-in refresh call.
+  useEffect(() => {
+    void refreshSalespeople(branch);
+  }, [branch, refreshSalespeople]);
 
   useEffect(() => {
     fetchBranchData(branch);
