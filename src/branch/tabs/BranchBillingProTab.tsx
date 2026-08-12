@@ -362,7 +362,7 @@ export default function BranchBillingProTab({
   const handleAddSalesperson = useCallback(() => {
     const name = newSalespersonName.trim();
     if (!name) { setAddSalespersonError('Enter a name.'); return; }
-    const dup = branchPeople.some((p) => p.toLowerCase() === name.toLowerCase());
+    const dup = (branchPeople as string[]).some((p) => p.toLowerCase() === name.toLowerCase());
     if (dup) { setAddSalespersonError('That name is already in the list.'); return; }
     addSalesperson(branch, name, userName);
     setSalesperson(name);
