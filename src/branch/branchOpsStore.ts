@@ -2376,12 +2376,25 @@ export const useBranchOpsStore = create<BranchOpsState>()(
         return newReturn;
       },
       addReturn: async (ret) => {
+        // BUG FIX (2026-08-11): this used to be trusted as the FINAL return
+        // number (used directly for the printed receipt, local history, and
+        // mirrored record) — but it's only a best-effort guess computed from
+        // whatever return history happens to be loaded in this browser's
+        // memory right now, which is not guaranteed to include every past
+        // return (a fresh session/reload starts counting from scratch). If
+        // this guess collided with an unrelated older return already in the
+        // real ledger, the server used to silently no-op the whole return
+        // (see process_branch_return's now-fixed duplicate-guard) while this
+        // client still showed success. The server is now the source of
+        // truth: it renumbers on a collision and reports back the number it
+        // actually used (see `finalReturnNo` below) — this is now only the
+        // starting guess sent along with the request.
         const returnNo = `${ret.branch}-RET-${String(seq(`return-${ret.branch}`)).padStart(4, "0")}`;
         const requestedRefundMode = ret.originalPaymentMode === "credit" || ret.originalPaymentMode === "credit_adjustment"
           ? (ret.returnPayMode === "cash" || ret.returnPayMode === "upi" || ret.returnPayMode === "card" ? ret.returnPayMode : "credit_adjustment")
           : (ret.returnPayMode || ret.originalPaymentMode || "cash");
 
-        let ledgerResult: { creditAdjusted?: number; refundAmount?: number; refundMode?: string } | null = null;
+        let ledgerResult: { creditAdjusted?: number; refundAmount?: number; refundMode?: string; returnNo?: string } | null = null;
         try {
           let result = requestedRefundMode === 'wallet'
             ? await supabase.rpc('process_branch_wallet_return_v1', {
@@ -2438,6 +2451,10 @@ export const useBranchOpsStore = create<BranchOpsState>()(
           throw new Error('Return could not be recorded in Supabase ledger. Please run the branch returns migration and try again.');
         }
 
+        // The server may have renumbered this return (see fix above) if our
+        // guess collided with an unrelated existing return — always defer to
+        // whatever number it reports actually using.
+        const finalReturnNo = ledgerResult?.returnNo || returnNo;
         const refundAmount = roundMoney(Number(ledgerResult?.refundAmount ?? (requestedRefundMode === 'credit_adjustment' ? 0 : ret.total)));
         const effectiveMode = refundAmount > 0
           ? (ledgerResult?.refundMode || requestedRefundMode)
@@ -2445,7 +2462,7 @@ export const useBranchOpsStore = create<BranchOpsState>()(
         const newRet: ReturnRecord = {
           ...ret,
           id: uid("ret"),
-          returnNo,
+          returnNo: finalReturnNo,
           returnPayMode: effectiveMode,
           refundAmount,
           creditAdjusted: roundMoney(Number(ledgerResult?.creditAdjusted ?? 0)),
