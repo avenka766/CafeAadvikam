@@ -134,7 +134,6 @@ function navForRole(role?: string): NavItem[] {
       ];
     case 'owner':
       return [
-        { label: 'Everything', path: '/owner', icon: <Layers className="size-4" />, group: 'Main' },
         { label: 'Branch Overview', path: '/owner?tab=branches', icon: <Store className="size-4" />, group: 'Main' },
         { label: 'Sales & Profit', path: '/owner?tab=sales', icon: <BarChart3 className="size-4" />, group: 'Reports' },
         { label: 'Credit Tracking', path: '/owner?tab=credit', icon: <CreditCard className="size-4" />, group: 'Reports' },
@@ -151,7 +150,11 @@ function navForRole(role?: string): NavItem[] {
         // this sidebar list is a separate, parallel nav from OwnerDashboard's
         // own in-page tab strip (same pattern as every other role below), so
         // adding a new tab there doesn't automatically surface it here.
-        { label: 'Planner Dashboard', path: '/owner?tab=planner', icon: <Factory className="size-4" />, group: 'Operations' },
+        { label: 'Planner', path: '/owner?tab=planner', icon: <Factory className="size-4" />, group: 'Operations' },
+        // Moved to last (2026-08-12, explicit owner request) — 'Admin' is
+        // the last group to render, so this puts Everything at the very
+        // bottom of the sidebar instead of the top.
+        { label: 'Everything', path: '/owner', icon: <Layers className="size-4" />, group: 'Admin' },
       ];
     case 'billing':
       return [
