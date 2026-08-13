@@ -1820,7 +1820,7 @@ export const useBranchOpsStore = create<BranchOpsState>()(
         set((s) => {
           const bill = s.bills.find((b) => b.id === billId);
           if (!bill) return s;
-          const updatedBill = { ...bill, printCount: bill.printCount + 1, status: "Duplicate Bill" };
+          const updatedBill = { ...bill, printCount: bill.printCount + 1, status: "Duplicate Bill" as const };
           mirrorOperationRecord(bill.branch, "bill", billId, updatedBill, {
             recordNo: bill.billNo,
             amount: bill.total,

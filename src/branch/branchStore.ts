@@ -157,6 +157,11 @@ export interface IncomingStock {
   disputeReason?: string | null;
   disputedBy?: string | null;
   disputedAt?: string | null;
+  disputedReceivedQuantity?: number | null;
+  returnRequested?: boolean;
+  returnRequestedAt?: string | null;
+  returnRequestedBy?: string | null;
+  transferInReturnId?: string | null;
 }
 
 export interface StockMismatch {
@@ -375,6 +380,11 @@ function applyBranchRealtimeChange(branch: Branch, table: string, payload: unkno
         disputeReason: row.dispute_reason == null ? null : String(row.dispute_reason),
         disputedBy: row.disputed_by == null ? null : String(row.disputed_by),
         disputedAt: row.disputed_at == null ? null : String(row.disputed_at),
+        disputedReceivedQuantity: row.disputed_received_quantity == null ? null : Number(row.disputed_received_quantity),
+        returnRequested: Boolean(row.return_requested),
+        returnRequestedAt: row.return_requested_at == null ? null : String(row.return_requested_at),
+        returnRequestedBy: row.return_requested_by == null ? null : String(row.return_requested_by),
+        transferInReturnId: row.transfer_in_return_id == null ? null : String(row.transfer_in_return_id),
       };
       return { incoming: { ...state.incoming, [branch]: [next, ...current.filter((item) => item.id !== id)].slice(0, 500) } };
     }
@@ -535,7 +545,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         // an earlier day still needs to surface for action, so that's merged in
         // separately below with its own small cap.
         supabase.from('branch_incoming')
-          .select('id,item_barcode,item_name,quantity,unit,received_at,dispatched_by,confirmed,disputed,dispute_reason,disputed_by,disputed_at')
+          .select('id,item_barcode,item_name,quantity,unit,received_at,dispatched_by,confirmed,disputed,dispute_reason,disputed_by,disputed_at,disputed_received_quantity,return_requested,return_requested_at,return_requested_by,transfer_in_return_id')
           .eq('branch', branch)
           .gte('received_at', startOfToday)
           .order('received_at', { ascending: false }).limit(1000),
@@ -581,7 +591,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         // pull those regardless of date too (small cap — this should normally
         // be empty or tiny).
         supabase.from('branch_incoming')
-          .select('id,item_barcode,item_name,quantity,unit,received_at,dispatched_by,confirmed,disputed,dispute_reason,disputed_by,disputed_at')
+          .select('id,item_barcode,item_name,quantity,unit,received_at,dispatched_by,confirmed,disputed,dispute_reason,disputed_by,disputed_at,disputed_received_quantity,return_requested,return_requested_at,return_requested_by,transfer_in_return_id')
           .eq('branch', branch)
           .eq('confirmed', false)
           .order('received_at', { ascending: false })
@@ -655,6 +665,11 @@ export const useBranchStore = create<BranchState>((set, get) => ({
           disputeReason: d.dispute_reason ?? null,
           disputedBy:    d.disputed_by ?? null,
           disputedAt:    d.disputed_at ?? null,
+          disputedReceivedQuantity: d.disputed_received_quantity != null ? Number(d.disputed_received_quantity) : null,
+          returnRequested: d.return_requested ?? false,
+          returnRequestedAt: d.return_requested_at ?? null,
+          returnRequestedBy: d.return_requested_by ?? null,
+          transferInReturnId: d.transfer_in_return_id ?? null,
         }));
 
         advanceOrders[branch] = [

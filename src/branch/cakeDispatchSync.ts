@@ -1,6 +1,5 @@
 import { supabase } from '@/lib/supabase';
 import type { Branch } from './types';
-import { findCakeType } from './cakePricing';
 
 export type CakeDispatchSource = {
   id: string;
@@ -76,7 +75,7 @@ export async function ensureCakeDispatchIncoming(order: CakeDispatchSource, acto
 
   const now = new Date().toISOString();
   const dispatchId = cakeIncomingDispatchId(order.id);
-  const catalogBarcode = firstLine.barcode ?? findCakeType(advance.cakeTypeId || '')?.catalogBarcode;
+  const catalogBarcode = firstLine.barcode; // findCakeType() has no barcode field — name-match fallback covers this downstream
   const { data: existingIncoming, error: incomingLookupError } = await supabase
     .from('branch_incoming')
     .select('id')

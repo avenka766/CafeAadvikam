@@ -4,6 +4,7 @@
 import { BRANCH_LABELS } from './types';
 import type { BranchBillRecord } from './branchOpsStore';
 import { supabase } from '@/lib/supabase';
+import { printViaIframe } from '@/lib/printViaIframe';
 
 export const BRANCH_PRINT_COMPLETE_EVENT = 'cafe-aadvikam:branch-print-complete';
 
@@ -29,34 +30,39 @@ const cashTenderedChangeHtml = (bill: BranchBillRecord, rowClass: string) => {
 };
 
 // ─── Generic HTML print helper ─────────────────────────────────────────────────
+// BUG FIX ("Planner dashboard print... nothing happens", also affects the
+// Cake Dispatch "Print Checklist" button): this used window.open('', '_blank',
+// ...) with only an `if (w)` guard around the write — if the popup was
+// blocked, `w` is null and the call just silently does nothing, no error,
+// no fallback. That's the exact same failure mode already diagnosed and
+// fixed for the dedicated bill/invoice print paths (see printViaIframe.ts).
+// Delegating to the same hidden-iframe pipeline here means every caller of
+// printHtml — Branch reports, Admin SNB/VRSNB printouts, and Planner's
+// cake packing checklist — gets the fix at once instead of one at a time.
 export function printHtml(title: string, body: string) {
-  const w = window.open('', '_blank', 'width=920,height=900');
-  if (w) {
-    w.document.write(
-      `<!doctype html><html><head><title>${title}</title><style>
-        @page{size:A4;margin:10mm}
-        *{box-sizing:border-box}
-        body{margin:0;background:#f8fafc;color:#0f172a;font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:1.45}
-        body:before{content:"";position:fixed;inset:0 0 auto 0;height:12px;background:linear-gradient(90deg,#f97316,#059669,#0f172a)}
-        main{max-width:980px;margin:0 auto;background:#fff;min-height:100vh;padding:28px;box-shadow:0 18px 50px rgba(15,23,42,.08)}
-        main:before{content:"${title}";display:block;margin:-4px 0 18px;padding:14px 16px;border-radius:24px;background:#0f172a;color:#fff;font-size:20px;font-weight:900;letter-spacing:.02em}
-        h1,h2,h3{margin:0 0 10px;color:#0f172a}h1{font-size:24px}h2{font-size:18px}h3{font-size:14px}
-        .b{font-weight:900}.c{text-align:center}.right{text-align:right}.muted{color:#64748b}
-        .stamp{display:inline-block;border:0;border-radius:999px;background:#fff7ed;color:#c2410c;padding:7px 12px;text-align:center;font-weight:900;margin-bottom:12px;letter-spacing:.08em;text-transform:uppercase}
-        .dash{border-top:1px dashed #cbd5e1;margin:12px 0}
-        .row{display:flex;justify-content:space-between;gap:16px;border-bottom:1px solid #e2e8f0;padding:8px 0}
-        .row span:first-child{color:#64748b;font-weight:800}.row b{font-weight:900}
-        table{width:100%;border-collapse:separate;border-spacing:0;overflow:hidden;border:1px solid #e2e8f0;border-radius:16px;background:#fff}
-        th,td{border-bottom:1px solid #e2e8f0;padding:9px 10px;text-align:left;vertical-align:top}
-        th{background:#f1f5f9;color:#475569;font-size:10px;text-transform:uppercase;letter-spacing:.08em;font-weight:900}
-        tr:nth-child(even) td{background:#f8fafc}tr:last-child td{border-bottom:0}
-        td:last-child,th:last-child{text-align:right}
-        .card,.section{border:1px solid #e2e8f0;border-radius:18px;background:#fff;padding:14px;margin-bottom:12px}
-        @media print{body{background:#fff;print-color-adjust:exact;-webkit-print-color-adjust:exact}body:before{position:absolute}main{box-shadow:none;max-width:none;padding:18px}button{display:none}.card,.section,table{break-inside:avoid;page-break-inside:avoid}}
-      </style></head><body><main>${body}</main><script>window.onload=()=>window.print()</script></body></html>`,
-    );
-    w.document.close();
-  }
+  printViaIframe(
+    `<!doctype html><html><head><title>${title}</title><style>
+      @page{size:A4;margin:10mm}
+      *{box-sizing:border-box}
+      body{margin:0;background:#f8fafc;color:#0f172a;font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:1.45}
+      body:before{content:"";position:fixed;inset:0 0 auto 0;height:12px;background:linear-gradient(90deg,#f97316,#059669,#0f172a)}
+      main{max-width:980px;margin:0 auto;background:#fff;min-height:100vh;padding:28px;box-shadow:0 18px 50px rgba(15,23,42,.08)}
+      main:before{content:"${title}";display:block;margin:-4px 0 18px;padding:14px 16px;border-radius:24px;background:#0f172a;color:#fff;font-size:20px;font-weight:900;letter-spacing:.02em}
+      h1,h2,h3{margin:0 0 10px;color:#0f172a}h1{font-size:24px}h2{font-size:18px}h3{font-size:14px}
+      .b{font-weight:900}.c{text-align:center}.right{text-align:right}.muted{color:#64748b}
+      .stamp{display:inline-block;border:0;border-radius:999px;background:#fff7ed;color:#c2410c;padding:7px 12px;text-align:center;font-weight:900;margin-bottom:12px;letter-spacing:.08em;text-transform:uppercase}
+      .dash{border-top:1px dashed #cbd5e1;margin:12px 0}
+      .row{display:flex;justify-content:space-between;gap:16px;border-bottom:1px solid #e2e8f0;padding:8px 0}
+      .row span:first-child{color:#64748b;font-weight:800}.row b{font-weight:900}
+      table{width:100%;border-collapse:separate;border-spacing:0;overflow:hidden;border:1px solid #e2e8f0;border-radius:16px;background:#fff}
+      th,td{border-bottom:1px solid #e2e8f0;padding:9px 10px;text-align:left;vertical-align:top}
+      th{background:#f1f5f9;color:#475569;font-size:10px;text-transform:uppercase;letter-spacing:.08em;font-weight:900}
+      tr:nth-child(even) td{background:#f8fafc}tr:last-child td{border-bottom:0}
+      td:last-child,th:last-child{text-align:right}
+      .card,.section{border:1px solid #e2e8f0;border-radius:18px;background:#fff;padding:14px;margin-bottom:12px}
+      @media print{body{background:#fff;print-color-adjust:exact;-webkit-print-color-adjust:exact}body:before{position:absolute}main{box-shadow:none;max-width:none;padding:18px}button{display:none}.card,.section,table{break-inside:avoid;page-break-inside:avoid}}
+    </style></head><body><main>${body}</main></body></html>`,
+  );
 }
 
 // ─── VRSNB receipt-style counter bill ─────────────────────────────────────────
