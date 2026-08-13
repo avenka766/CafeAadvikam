@@ -74,7 +74,7 @@ const emptyCustomerForm = () => ({
 const customerFormFromWallet = (wallet: WalletCustomer) => ({
   customerName: wallet.customerName, mobile: wallet.mobile, alternateMobile: wallet.alternateMobile || '', email: wallet.email || '',
   dateOfBirth: wallet.dateOfBirth || '', anniversaryDate: wallet.anniversaryDate || '', address: wallet.address || '',
-  customerType: wallet.customerType, preferredBranch: wallet.preferredBranch || '', openingBalance: '', notes: wallet.notes || '', status: wallet.status,
+  customerType: wallet.customerType, preferredBranch: (wallet.preferredBranch || '') as Branch | '', openingBalance: '', notes: wallet.notes || '', status: wallet.status,
   transactionLimit: wallet.transactionLimit?.toString() || '', dailyLimit: wallet.dailyLimit?.toString() || '', highValueAuthorizationLimit: wallet.highValueAuthorizationLimit?.toString() || '', deductionPriority: wallet.deductionPriority,
 });
 
