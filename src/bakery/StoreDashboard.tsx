@@ -49,17 +49,16 @@ const kolkataDateKey = (iso: string) =>
 const kolkataDateLabel = (iso: string) =>
   new Intl.DateTimeFormat('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short' }).format(new Date(iso));
 
-// BUG FIX (2026-08-07): Planner's "Send to Store" (mergeOrdersForStore) sets
-// status straight to 'store_confirmed' — it never passes through 'accepted'.
-// The Orders tab used to filter on status === 'accepted' only, so every
-// order Planner merged and sent skipped Orders entirely and landed only in
-// History, even the moment it was sent. Store staff had no "new, needs my
-// attention" view for same-day sends. Fix: an order sent to Store TODAY
-// (Kolkata calendar day) still counts as a fresh "Order"; it only rolls into
-// History once the day it was sent has passed (or it moves further along to
-// produced/dispatched).
-const wasSentToStoreToday = (o: BakeryOrder) =>
-  !!o.storeConfirmedAt && kolkataDateKey(o.storeConfirmedAt) === kolkataDateKey(new Date().toISOString());
+// PRODUCT DECISION (2026-08-13): "items sent today by Planner should stay
+// in Orders only until Store selects and sends to the Baker — only THEN
+// should it move to History." That's a strict rule with no time exception.
+// This used to also keep a 'store_confirmed' order visible in Orders for
+// the rest of the calendar day it was sent/released, regardless of whether
+// Store had already acted on it — a same-day order that Store had already
+// selected and sent to the Baker could still sit in Orders looking
+// unfinished for the rest of the day. Removed: the only thing that now
+// controls Orders vs. History is needsProductionRelease below — released
+// means History, immediately, full stop.
 
 // FEATURE: an order Planner auto-merged straight to 'store_confirmed' (materials
 // already deducted — see bakeryStore.ts mergeOrdersForStore) still needs Store to
@@ -1365,9 +1364,11 @@ function OrdersTab() {
     return () => { unsubOrders(); unsubStock(); unsubBakeryItems(); };
   }, [fetchOrders, loadStock, loadAllItems, subscribeOrders, subscribeStock, subscribeBakeryItems]);
 
-  // `pending` = everything shown on this tab (still-actionable 'accepted'
-  // orders + today's already-sent 'store_confirmed' ones, so store staff can
-  // see what just went out — see wasSentToStoreToday above).
+  // `pending` = everything shown on this tab: still-actionable 'accepted'
+  // orders, plus 'store_confirmed' orders Planner auto-merged that Store
+  // hasn't released to production yet (needsProductionRelease above). Once
+  // Store releases one, it drops out of here immediately — no same-day
+  // grace period; see needsProductionRelease's product-decision comment.
   //
   // BUG FIX (2026-08-07): "Combine Into One" used to run its byBranch
   // grouping over this SAME `pending` list. Once today's already-sent
@@ -1378,7 +1379,7 @@ function OrdersTab() {
   // silently drop/duplicate items. Only genuinely unsent 'accepted' orders
   // are ever eligible to merge; `mergeable` keeps that separate from what's
   // merely displayed.
-  const pending = orders.filter(o => o.status === 'accepted' || (o.status === 'store_confirmed' && (needsProductionRelease(o) || wasSentToStoreToday(o))));
+  const pending = orders.filter(o => o.status === 'accepted' || (o.status === 'store_confirmed' && needsProductionRelease(o)));
   const mergeable = orders.filter(o => o.status === 'accepted');
 
   const handleMergeAll = async () => {
@@ -1571,7 +1572,7 @@ function StoreHistoryTab() {
   // passed (or once production/dispatch has moved it further along anyway).
   const historyOrders = orders.filter(o =>
     o.status === 'produced' || o.status === 'dispatched' ||
-    (o.status === 'store_confirmed' && !needsProductionRelease(o) && !wasSentToStoreToday(o)));
+    (o.status === 'store_confirmed' && !needsProductionRelease(o)));
 
   if (initialLoading) return <div className="flex justify-center py-16"><Loader2 className="size-6 animate-spin text-muted-foreground" /></div>;
 
@@ -2269,12 +2270,12 @@ export default function StoreDashboard() {
   const requestedTab = searchParams.get('tab') as StoreDashboardTab | null;
   const tab: StoreDashboardTab = requestedTab && STORE_TABS.includes(requestedTab) ? requestedTab : 'orders';
   // Kept in sync with OrdersTab/StoreHistoryTab's own filters (see
-  // wasSentToStoreToday above) so the header counters and tab badges never
-  // disagree with what each tab actually shows.
-  const pending = orders.filter(o => o.status === 'accepted' || (o.status === 'store_confirmed' && (needsProductionRelease(o) || wasSentToStoreToday(o))));
+  // needsProductionRelease above) so the header counters and tab badges
+  // never disagree with what each tab actually shows.
+  const pending = orders.filter(o => o.status === 'accepted' || (o.status === 'store_confirmed' && needsProductionRelease(o)));
   const sentOrders = orders.filter(o =>
     o.status === 'produced' || o.status === 'dispatched' ||
-    (o.status === 'store_confirmed' && !needsProductionRelease(o) && !wasSentToStoreToday(o)));
+    (o.status === 'store_confirmed' && !needsProductionRelease(o)));
   const uniqueStockItems = useMemo(() => {
     const byName = new Map<string, typeof stockItems[number]>();
     stockItems.forEach((item) => {
