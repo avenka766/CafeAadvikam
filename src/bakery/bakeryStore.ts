@@ -371,10 +371,19 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     // step existed, so a sent order just appeared to vanish. Owner asked
     // for this collapsed into one step: sending to Store now goes straight
     // to 'store_confirmed', so it shows in Production/Dispatch immediately.
+    //
+    // MATERIAL DEDUCTION TIMING (2026-08-13): this used to also deduct
+    // stock right here, at send time. Moved to releaseToProduction instead
+    // — materials should come off the shelf when Store actually selects an
+    // item and hands it to the Baker, not when Planner merely sends the
+    // order administratively. This also sidesteps the loadRecipes() timing
+    // bug fixed earlier today more robustly: releaseToProduction always
+    // runs from Store's own dashboard, which already reliably loads live
+    // recipes, so there's no path left where deduction runs from a context
+    // that might still be on the seed recipe list.
     const now = new Date().toISOString();
 
     if (group.length === 1) {
-      await deductForOrder(group[0].items, group[0].id, group[0].orderNumber);
       const { error } = await supabase
         .from('bakery_orders')
         .update({ status: 'store_confirmed', store_confirmed_at: now })
@@ -389,7 +398,7 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
         const { useActivityLogStore } = await import('./activityLogStore');
         void useActivityLogStore.getState().log({
           staffId: user.id, staffName: user.displayName, role: user.role,
-          action: 'Sent To Store (Auto-Confirmed)', detail: `Order #${group[0].orderNumber} — sent to Store and stock auto-confirmed`,
+          action: 'Sent To Store (Auto-Confirmed)', detail: `Order #${group[0].orderNumber} — sent to Store, awaiting Store's selection before materials are deducted`,
           branch: group[0].targetBranch,
         });
       }
@@ -472,7 +481,9 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
         ? (primary.notes?.includes(PLANNED_STOCK_TAG) ? primary.notes : PLANNED_STOCK_TAG)
         : (primary.notes ?? null);
 
-    await deductForOrder(combined, primary.id, primary.orderNumber);
+    // MATERIAL DEDUCTION TIMING (2026-08-13): deduction moved to
+    // releaseToProduction — see the matching comment on the single-order
+    // path above.
 
     const { error: updateError } = await supabase
       .from('bakery_orders')
@@ -614,10 +625,11 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
 
   // Companion to confirmStockSelected, for orders that arrived via Planner's
   // "Send to Store" merge (mergeOrdersForStore) rather than Store's own
-  // manual confirm. Those orders already sit at 'store_confirmed' with
-  // materials already deducted (deductForOrder ran at merge time) — this
-  // action only records WHICH items Store is routing to the Baker right
-  // now; it deliberately never touches stock again.
+  // manual confirm. This is now the single point where materials actually
+  // leave the shelf for a Planner-merged order — deduction was moved here
+  // from mergeOrdersForStore (2026-08-13): stock should come off when Store
+  // actually selects an item and hands it to the Baker, not when Planner
+  // merely sends the order administratively.
   releaseToProduction: async (orderId, selectedIndexes) => {
     const order = get().orders.find(o => o.id === orderId);
     if (!order) throw new Error('Order was not found — please refresh.');
@@ -626,6 +638,11 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     const selectedItems = order.items.filter((_, i) => selectedSet.has(i));
     const remainingItems = order.items.filter((_, i) => !selectedSet.has(i));
     if (selectedItems.length === 0) return;
+
+    // Deduct before writing anything — deductForOrder deliberately throws on
+    // failure (see its own comment), which aborts this whole call rather
+    // than releasing items whose materials were never actually deducted.
+    await deductForOrder(selectedItems, orderId, order.orderNumber);
 
     const now = new Date().toISOString();
 
@@ -649,10 +666,10 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
           created_by: order.createdBy,
           target_branch: order.targetBranch,
           notes: carriedNotes,
-          // Preserve the ORIGINAL confirmation time — materials were deducted
-          // then, not now, so reports keyed on store_confirmed_at should still
-          // reflect when the accounting actually happened.
-          store_confirmed_at: order.storeConfirmedAt ?? now,
+          // Materials are deducted right now (above), at release time — so
+          // unlike the pre-2026-08-13 version of this code, `now` here is
+          // also genuinely when the accounting happened, not a placeholder.
+          store_confirmed_at: now,
           production_released_at: now,
           store_source_order_number: order.orderNumber,
         })
@@ -678,7 +695,7 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
       const { useActivityLogStore } = await import('./activityLogStore');
       void useActivityLogStore.getState().log({
         staffId: user.id, staffName: user.displayName, role: user.role,
-        action: 'Released to Production', detail: `Order #${order.orderNumber} — ${selectedItems.length} item(s) sent to Baker (materials already deducted at Planner send)`,
+        action: 'Released to Production', detail: `Order #${order.orderNumber} — ${selectedItems.length} item(s) sent to Baker, materials deducted`,
         branch: order.targetBranch,
       });
     }

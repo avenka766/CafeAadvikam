@@ -60,11 +60,12 @@ const kolkataDateLabel = (iso: string) =>
 // controls Orders vs. History is needsProductionRelease below — released
 // means History, immediately, full stop.
 
-// FEATURE: an order Planner auto-merged straight to 'store_confirmed' (materials
-// already deducted — see bakeryStore.ts mergeOrdersForStore) still needs Store to
-// choose which items go to the Baker now. Until that happens it must keep behaving
-// like a fresh, actionable "Order" — regardless of which day it arrived — not roll
-// into History the way a genuinely finished order would.
+// FEATURE: an order Planner auto-merged straight to 'store_confirmed' has no
+// materials deducted yet (moved to releaseToProduction — see bakeryStore.ts)
+// and still needs Store to choose which items go to the Baker now. Until
+// that happens it must keep behaving like a fresh, actionable "Order" —
+// regardless of which day it arrived — not roll into History the way a
+// genuinely finished order would.
 const needsProductionRelease = (o: BakeryOrder) => o.status === 'store_confirmed' && !o.productionReleasedAt;
 
 type StoreDashboardTab = 'orders' | 'history' | 'inventory' | 'suppliers' | 'purchaseOrders' | 'invoices' | 'analytics' | 'custom' | 'closure' | 'report';
@@ -579,9 +580,10 @@ function OrderCard({ order }: { order: BakeryOrder }) {
     if (sent || selectedIndexes.length === 0 || sending) return;
     setSending(true); setSendError(null); setSendNotice(null);
 
-    // Planner-merged orders already had their materials deducted the moment
-    // they were sent (mergeOrdersForStore's AUTO-CONFIRM) — this is purely
-    // "which items go to the Baker now", never a second deduction.
+    // Planner-merged orders sit here until Store picks which items go to
+    // the Baker — releaseToProduction is now the actual deduction point
+    // (moved 2026-08-13): materials come off the shelf right here, at
+    // selection time, same as the manual branch below.
     if (needsProductionRelease(order)) {
       try {
         await releaseToProduction(order.id, selectedIndexes);
@@ -589,8 +591,8 @@ function OrderCard({ order }: { order: BakeryOrder }) {
         if (remainingCount === 0) setSent(true);
         setSelectedIndexes([]);
         setSendNotice(remainingCount === 0
-          ? `${selectedEntries.length} item${selectedEntries.length === 1 ? '' : 's'} sent to the Baker. Materials were already deducted when Planner sent this order.`
-          : `${selectedEntries.length} item${selectedEntries.length === 1 ? '' : 's'} sent to the Baker. ${remainingCount} item${remainingCount === 1 ? '' : 's'} still waiting here.`);
+          ? `${selectedEntries.length} item${selectedEntries.length === 1 ? '' : 's'} sent to the Baker and deducted from stock.`
+          : `${selectedEntries.length} item${selectedEntries.length === 1 ? '' : 's'} sent to the Baker and deducted from stock. ${remainingCount} item${remainingCount === 1 ? '' : 's'} still waiting here.`);
       } catch (sendFailure) {
         setSendError(`${sendFailure instanceof Error ? sendFailure.message : 'Failed to release to production.'} Please try again.`);
       } finally {
@@ -733,7 +735,7 @@ function OrderCard({ order }: { order: BakeryOrder }) {
           {accepted && !sent && (
             <p className="rounded-xl bg-primary/5 px-3 py-2 text-xs font-semibold text-primary">
               {needsProductionRelease(order)
-                ? 'Materials for this order were already deducted when Planner sent it — select which items go to the Baker now. Unselected items will wait here.'
+                ? 'Select which items go to the Baker now — materials will be deducted from stock at that point. Unselected items will wait here.'
                 : 'Select the items to send now. Unselected items will remain in this Store order.'}
             </p>
           )}
