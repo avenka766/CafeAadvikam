@@ -2425,8 +2425,8 @@ export default function OrderReceiverDashboard() {
   const meta = role ? BRANCH_META[role] : null;
   const branch = meta?.branch as Branch | undefined;
   const requestedTab = tabFromParams(searchParams.get("tab"));
-  const snbOnlyTabs: TabKey[] = ["po", "purchase-invoice", "purchase-return", "advance", "closure"];
-  const snbOrVrsnbTabs: TabKey[] = ["stock-movements"];
+  const snbOnlyTabs: TabKey[] = ["po", "purchase-invoice", "purchase-return", "closure"];
+  const snbOrVrsnbTabs: TabKey[] = ["stock-movements", "advance"];
   const tab =
     branch !== "SNB" && snbOnlyTabs.includes(requestedTab)
       ? "order"
@@ -2851,8 +2851,18 @@ export default function OrderReceiverDashboard() {
           <SnbStockOperationsPanel branch={branch} />
         )}
 
-        {tab === "advance" && branch === "SNB" && (
-          <AdvanceCakeOrdersTab branch="SNB" branchStock={stock.SNB} source="snb-order" />
+        {/* BUG FIX: hardcoded branch="SNB" / branchStock={stock.SNB} and a
+            branch==="SNB"-only gate meant VRSNB Order staff could never
+            reach this tab at all, and even via direct URL manipulation
+            would have been creating/reading SNB's cake advance orders
+            instead of their own — this is what was breaking "not receiving
+            the cake order from VRSNB". isSnbOrder inside AdvanceCakeOrdersTab
+            already requires branch==='SNB' explicitly (see BranchBusinessModules.tsx),
+            so passing the real branch through here is enough on its own —
+            VRSNB naturally gets the generic (non SNB-counter-session)
+            behavior with no further changes needed there. */}
+        {tab === "advance" && (branch === "SNB" || branch === "VRSNB") && (
+          <AdvanceCakeOrdersTab branch={branch} branchStock={stock[branch]} source="snb-order" />
         )}
 
         {tab === "closure" && branch === "SNB" && (
