@@ -54,6 +54,13 @@ export interface BakeryOrder {
   /** 'pending' = active in Planner, 'done' = fully dispatched/reconciled. */
   leftoverStatus?: 'pending' | 'done';
   storeConfirmedAt?: string;
+  // FEATURE (Store production release, split from stock accounting — see
+  // bakeryStore.ts mergeOrdersForStore / releaseToProduction): null once
+  // Planner auto-confirms materials but before Store has chosen which items
+  // physically go to the Baker now. Set the moment that choice is made
+  // (immediately, for Store's own manual confirm; on demand, for
+  // Planner-merged orders via the new "release to production" action).
+  productionReleasedAt?: string | null;
   plannerNotes?: string;
   /** U-14 FIX: special instructions or notes attached to the bakery order */
   notes?: string;

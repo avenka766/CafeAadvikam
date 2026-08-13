@@ -108,6 +108,11 @@ interface BakeryState {
   // Store selects a subset of items to confirm/send; the rest stays behind
   // in the order (still 'pending'/'accepted') so it keeps showing in Orders.
   confirmStockSelected: (orderId: string, selectedIndexes: number[], sentBy?: string) => Promise<void>;
+  // FEATURE: for orders Planner already auto-confirmed (materials deducted
+  // at send time, no separate accounting step needed here) — lets Store
+  // still choose which items physically go to the Baker right now, without
+  // re-deducting anything. See mergeOrdersForStore's AUTO-CONFIRM comment.
+  releaseToProduction: (orderId: string, selectedIndexes: number[]) => Promise<void>;
   recordProduction: (orderId: string, producedItems: PreparedItem[]) => Promise<void>;
   setDispatchSplit: (orderId: string, split: Record<string, Record<string, number>>) => Promise<void>;
   // RETRY-SAFETY FIX (2026-08-06): `entry.id` is now optional and, when the
@@ -141,6 +146,7 @@ export function rowToOrder(d: Record<string, unknown>): BakeryOrder {
     dispatchSplit: (d.dispatch_split as Record<string, Record<string, number>>) || {},
     leftoverStatus: (d.leftover_status as 'pending' | 'done') || 'pending',
     storeConfirmedAt: d.store_confirmed_at as string | undefined,
+    productionReleasedAt: (d.production_released_at as string | null | undefined) ?? null,
     plannerNotes: d.planner_notes as string | undefined,
     sentToPackingAt: d.sent_to_packing_at as string | undefined,
     dispatchLog: (d.dispatch_log as DispatchEntry[]) || [],
@@ -152,7 +158,7 @@ export function rowToOrder(d: Record<string, unknown>): BakeryOrder {
   };
 }
 
-const BAKERY_ORDER_COLUMNS = 'id, order_number, items, status, created_by, created_at, expected_output, materials_calculated_at, prepared_items, produced_items, dispatch_split, leftover_status, store_confirmed_at, planner_notes, sent_to_packing_at, dispatch_log, target_branch, store_source_order_number, store_send_request_id, notes, correction_request';
+const BAKERY_ORDER_COLUMNS = 'id, order_number, items, status, created_by, created_at, expected_output, materials_calculated_at, prepared_items, produced_items, dispatch_split, leftover_status, store_confirmed_at, production_released_at, planner_notes, sent_to_packing_at, dispatch_log, target_branch, store_source_order_number, store_send_request_id, notes, correction_request';
 let bakeryFetchInFlight: Promise<void> | null = null;
 let bakeryLastFetchedAt = 0;
 const BAKERY_FETCH_FRESH_MS = 60_000;
@@ -506,11 +512,11 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     const now = new Date().toISOString();
     const { error } = await supabase
       .from('bakery_orders')
-      .update({ status: 'store_confirmed', store_confirmed_at: now })
+      .update({ status: 'store_confirmed', store_confirmed_at: now, production_released_at: now })
       .eq('id', orderId);
     if (error) throw new Error('Failed to confirm stock — please try again.');
     set(s => ({
-      orders: s.orders.map(o => o.id === orderId ? { ...o, status: 'store_confirmed', storeConfirmedAt: now } : o),
+      orders: s.orders.map(o => o.id === orderId ? { ...o, status: 'store_confirmed', storeConfirmedAt: now, productionReleasedAt: now } : o),
     }));
     const { useAuthStore } = await import('@/stores/authStore');
     const user = useAuthStore.getState().currentUser;
@@ -560,6 +566,7 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
         target_branch: order.targetBranch,
         notes: carriedNotes,
         store_confirmed_at: now,
+        production_released_at: now,
         store_source_order_number: order.orderNumber,
       })
       .select()
@@ -589,6 +596,78 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
       });
     }
     void sentBy;
+  },
+
+  // Companion to confirmStockSelected, for orders that arrived via Planner's
+  // "Send to Store" merge (mergeOrdersForStore) rather than Store's own
+  // manual confirm. Those orders already sit at 'store_confirmed' with
+  // materials already deducted (deductForOrder ran at merge time) — this
+  // action only records WHICH items Store is routing to the Baker right
+  // now; it deliberately never touches stock again.
+  releaseToProduction: async (orderId, selectedIndexes) => {
+    const order = get().orders.find(o => o.id === orderId);
+    if (!order) throw new Error('Order was not found — please refresh.');
+    if (order.status !== 'store_confirmed') throw new Error('This order is not awaiting production release.');
+    const selectedSet = new Set(selectedIndexes);
+    const selectedItems = order.items.filter((_, i) => selectedSet.has(i));
+    const remainingItems = order.items.filter((_, i) => !selectedSet.has(i));
+    if (selectedItems.length === 0) return;
+
+    const now = new Date().toISOString();
+
+    // Nothing left behind — release the whole order in place, no split needed.
+    if (remainingItems.length === 0) {
+      const { error } = await supabase
+        .from('bakery_orders')
+        .update({ production_released_at: now })
+        .eq('id', orderId);
+      if (error) throw new Error('Failed to send selected items — please try again.');
+      set(s => ({ orders: s.orders.map(o => o.id === orderId ? { ...o, productionReleasedAt: now } : o) }));
+    } else {
+      const hosurTagMatch = String(order.notes ?? '').match(/HOSUR_ORDER_IDS?:[^|]+/);
+      const tagPrefix = hosurTagMatch ? `${hosurTagMatch[0]}|` : isPlannedOrder(order) ? `${PLANNED_STOCK_TAG}|` : '';
+      const carriedNotes = `${tagPrefix}Store batch from order #${order.orderNumber}`;
+      const { data, error: insertError } = await supabase
+        .from('bakery_orders')
+        .insert({
+          items: selectedItems,
+          status: 'store_confirmed',
+          created_by: order.createdBy,
+          target_branch: order.targetBranch,
+          notes: carriedNotes,
+          // Preserve the ORIGINAL confirmation time — materials were deducted
+          // then, not now, so reports keyed on store_confirmed_at should still
+          // reflect when the accounting actually happened.
+          store_confirmed_at: order.storeConfirmedAt ?? now,
+          production_released_at: now,
+          store_source_order_number: order.orderNumber,
+        })
+        .select()
+        .single();
+      if (insertError || !data) throw new Error('Failed to send selected items — please try again.');
+      const releasedOrder = rowToOrder(data as Record<string, unknown>);
+
+      const { error: updateError } = await supabase
+        .from('bakery_orders')
+        .update({ items: remainingItems })
+        .eq('id', orderId);
+      if (updateError) throw new Error('Items were sent, but the remaining order could not be updated — please refresh.');
+
+      set(s => ({
+        orders: [releasedOrder, ...s.orders.map(o => o.id === orderId ? { ...o, items: remainingItems } : o)],
+      }));
+    }
+
+    const { useAuthStore } = await import('@/stores/authStore');
+    const user = useAuthStore.getState().currentUser;
+    if (user) {
+      const { useActivityLogStore } = await import('./activityLogStore');
+      void useActivityLogStore.getState().log({
+        staffId: user.id, staffName: user.displayName, role: user.role,
+        action: 'Released to Production', detail: `Order #${order.orderNumber} — ${selectedItems.length} item(s) sent to Baker (materials already deducted at Planner send)`,
+        branch: order.targetBranch,
+      });
+    }
   },
 
   recordProduction: async (orderId, producedItems) => {

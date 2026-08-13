@@ -547,7 +547,7 @@ export default function PlannerDashboard({ embedded = false }: { embedded?: bool
   const incomingOrders   = useMemo(() => orders.filter(o => o.status === 'pending'), [orders]);
   const sentOrders        = useMemo(() => orders.filter(o => o.status === 'accepted' || o.status === 'store_confirmed' || o.status === 'produced' || o.status === 'dispatched'), [orders]);
   const mergeableOrders    = useMemo(() => orders.filter(o => o.status === 'pending'), [orders]);
-  const readyForProduction = useMemo(() => orders.filter(o => o.status === 'store_confirmed'), [orders]);
+  const readyForProduction = useMemo(() => orders.filter(o => o.status === 'store_confirmed' && !!o.productionReleasedAt), [orders]);
   const producedOrders    = useMemo(() => orders.filter(o => o.status === 'produced'), [orders]);
   // WORKFLOW CHANGE (2026-08-10): reverted the 2026-08-06 "show everything"
   // change — the owner found that orders never sent to Store (still
@@ -567,8 +567,18 @@ export default function PlannerDashboard({ embedded = false }: { embedded?: bool
   // (added 2026-08-10 for real branch orders, and still fully in force for
   // them) so a plan shows in Production Entry / Dispatch the moment it's
   // placed, without needing anyone to "send" it anywhere first.
+  // FEATURE (2026-08-13): a Planner-merged order sitting at 'store_confirmed'
+  // with materials already deducted still needs Store to choose which items
+  // physically go to the Baker (productionReleasedAt) — see StoreDashboard.tsx's
+  // needsProductionRelease / releaseToProduction. Until that happens it must
+  // stay out of Production Entry / Dispatch the same way it would if it were
+  // still sitting un-sent, or Baker would see (and could act on) items Store
+  // never actually routed.
   const productionSourceOrders = useMemo(
-    () => orders.filter(o => ['store_confirmed', 'produced', 'dispatched'].includes(o.status) || (o.status === 'pending' && bucketFor(o) === 'Planned')),
+    () => orders.filter(o =>
+      (o.status === 'store_confirmed' && !!o.productionReleasedAt) ||
+      ['produced', 'dispatched'].includes(o.status) ||
+      (o.status === 'pending' && bucketFor(o) === 'Planned')),
     [orders],
   );
   const activeLeftovers    = useMemo(() => orders.filter(o => (o.leftoverStatus ?? 'pending') === 'pending' && o.status === 'dispatched'), [orders]);

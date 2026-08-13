@@ -61,6 +61,13 @@ const kolkataDateLabel = (iso: string) =>
 const wasSentToStoreToday = (o: BakeryOrder) =>
   !!o.storeConfirmedAt && kolkataDateKey(o.storeConfirmedAt) === kolkataDateKey(new Date().toISOString());
 
+// FEATURE: an order Planner auto-merged straight to 'store_confirmed' (materials
+// already deducted — see bakeryStore.ts mergeOrdersForStore) still needs Store to
+// choose which items go to the Baker now. Until that happens it must keep behaving
+// like a fresh, actionable "Order" — regardless of which day it arrived — not roll
+// into History the way a genuinely finished order would.
+const needsProductionRelease = (o: BakeryOrder) => o.status === 'store_confirmed' && !o.productionReleasedAt;
+
 type StoreDashboardTab = 'orders' | 'history' | 'inventory' | 'suppliers' | 'purchaseOrders' | 'invoices' | 'analytics' | 'custom' | 'closure' | 'report';
 const STORE_TABS: StoreDashboardTab[] = ['orders', 'history', 'inventory', 'suppliers', 'purchaseOrders', 'invoices', 'analytics', 'custom', 'closure', 'report'];
 const CORE_RECIPE_CATEGORIES: ProductionCategory[] = ['Sweets', 'Savouries', 'Bakery', 'Cookies', 'Others'];
@@ -472,16 +479,26 @@ function ItemRow({ order, item, category, selectionEnabled = false, selected = f
 
 // ─── Order Card ──────────────────────────────────────────────────────────────
 function OrderCard({ order }: { order: BakeryOrder }) {
-  const { confirmStockSelected, acceptOrder } = useBakeryStore();
+  const { confirmStockSelected, acceptOrder, releaseToProduction } = useBakeryStore();
   const { deductMaterials } = useStoreStockStore();
   const bakeryItems = useBakeryItemsStore(s => s.items);
   const currentUser = useAuthStore(s => s.currentUser);
+
+  // An order Planner already auto-confirmed (materials deducted at send
+  // time — see mergeOrdersForStore) sits at 'store_confirmed' immediately,
+  // with no window where it was 'accepted'. It still needs Store to choose
+  // which items go to the Baker now, same as a freshly-accepted order does
+  // — it just must never trigger a second material deduction when that
+  // happens. Folding this into `sent` (rather than threading a third state
+  // through every checkbox/button below) means every existing
+  // `accepted && !sent` check already does the right thing unchanged.
+  const computeSent = (o: BakeryOrder) => o.status !== 'pending' && o.status !== 'accepted' && !needsProductionRelease(o);
 
   const [expanded,   setExpanded]   = useState(true);
   const [accepting,  setAccepting]  = useState(false);
   const [accepted,   setAccepted]   = useState(order.status !== 'pending');
   const [sending,    setSending]    = useState(false);
-  const [sent,       setSent]       = useState(order.status !== 'pending' && order.status !== 'accepted');
+  const [sent,       setSent]       = useState(computeSent(order));
   const [sendError,  setSendError]  = useState<string | null>(null);
   const [sendNotice, setSendNotice] = useState<string | null>(null);
   const [selectedIndexes, setSelectedIndexes] = useState<number[]>([]);
@@ -489,8 +506,9 @@ function OrderCard({ order }: { order: BakeryOrder }) {
 
   useEffect(() => {
     setAccepted(order.status !== 'pending');
-    setSent(order.status !== 'pending' && order.status !== 'accepted');
-  }, [order.status]);
+    setSent(computeSent(order));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [order.status, order.productionReleasedAt]);
 
   useEffect(() => {
     setSelectedIndexes(current => current.filter(index => index < order.items.length));
@@ -561,6 +579,27 @@ function OrderCard({ order }: { order: BakeryOrder }) {
     // taps before React flushes state.
     if (sent || selectedIndexes.length === 0 || sending) return;
     setSending(true); setSendError(null); setSendNotice(null);
+
+    // Planner-merged orders already had their materials deducted the moment
+    // they were sent (mergeOrdersForStore's AUTO-CONFIRM) — this is purely
+    // "which items go to the Baker now", never a second deduction.
+    if (needsProductionRelease(order)) {
+      try {
+        await releaseToProduction(order.id, selectedIndexes);
+        const remainingCount = order.items.length - selectedEntries.length;
+        if (remainingCount === 0) setSent(true);
+        setSelectedIndexes([]);
+        setSendNotice(remainingCount === 0
+          ? `${selectedEntries.length} item${selectedEntries.length === 1 ? '' : 's'} sent to the Baker. Materials were already deducted when Planner sent this order.`
+          : `${selectedEntries.length} item${selectedEntries.length === 1 ? '' : 's'} sent to the Baker. ${remainingCount} item${remainingCount === 1 ? '' : 's'} still waiting here.`);
+      } catch (sendFailure) {
+        setSendError(`${sendFailure instanceof Error ? sendFailure.message : 'Failed to release to production.'} Please try again.`);
+      } finally {
+        setSending(false);
+      }
+      return;
+    }
+
     // Deduction and the status write below are two separate awaits, not one
     // atomic transaction — if the status write fails after deduction already
     // committed, a blind retry would deduct the same materials a second
@@ -668,7 +707,7 @@ function OrderCard({ order }: { order: BakeryOrder }) {
             )}
             {accepted && !sent && (
               <span className="text-[9px] font-body font-bold px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 border border-blue-200">
-                Accepted at Store
+                {needsProductionRelease(order) ? 'Awaiting Baker Selection' : 'Accepted at Store'}
               </span>
             )}
             {/* BUG FIX: not-yet-sent orders from a previous day used to look
@@ -692,7 +731,13 @@ function OrderCard({ order }: { order: BakeryOrder }) {
 
       {expanded && (
         <div className="border-t border-border/50 px-4 pb-4 pt-3 space-y-2.5">
-          {accepted && !sent && <p className="rounded-xl bg-primary/5 px-3 py-2 text-xs font-semibold text-primary">Select the items to send now. Unselected items will remain in this Store order.</p>}
+          {accepted && !sent && (
+            <p className="rounded-xl bg-primary/5 px-3 py-2 text-xs font-semibold text-primary">
+              {needsProductionRelease(order)
+                ? 'Materials for this order were already deducted when Planner sent it — select which items go to the Baker now. Unselected items will wait here.'
+                : 'Select the items to send now. Unselected items will remain in this Store order.'}
+            </p>
+          )}
 
           {categorizedItems.map(group => {
             const groupIndexes = group.items.map(entry => entry.index);
@@ -1333,7 +1378,7 @@ function OrdersTab() {
   // silently drop/duplicate items. Only genuinely unsent 'accepted' orders
   // are ever eligible to merge; `mergeable` keeps that separate from what's
   // merely displayed.
-  const pending = orders.filter(o => o.status === 'accepted' || (o.status === 'store_confirmed' && wasSentToStoreToday(o)));
+  const pending = orders.filter(o => o.status === 'accepted' || (o.status === 'store_confirmed' && (needsProductionRelease(o) || wasSentToStoreToday(o))));
   const mergeable = orders.filter(o => o.status === 'accepted');
 
   const handleMergeAll = async () => {
@@ -1526,7 +1571,7 @@ function StoreHistoryTab() {
   // passed (or once production/dispatch has moved it further along anyway).
   const historyOrders = orders.filter(o =>
     o.status === 'produced' || o.status === 'dispatched' ||
-    (o.status === 'store_confirmed' && !wasSentToStoreToday(o)));
+    (o.status === 'store_confirmed' && !needsProductionRelease(o) && !wasSentToStoreToday(o)));
 
   if (initialLoading) return <div className="flex justify-center py-16"><Loader2 className="size-6 animate-spin text-muted-foreground" /></div>;
 
@@ -2226,10 +2271,10 @@ export default function StoreDashboard() {
   // Kept in sync with OrdersTab/StoreHistoryTab's own filters (see
   // wasSentToStoreToday above) so the header counters and tab badges never
   // disagree with what each tab actually shows.
-  const pending = orders.filter(o => o.status === 'accepted' || (o.status === 'store_confirmed' && wasSentToStoreToday(o)));
+  const pending = orders.filter(o => o.status === 'accepted' || (o.status === 'store_confirmed' && (needsProductionRelease(o) || wasSentToStoreToday(o))));
   const sentOrders = orders.filter(o =>
     o.status === 'produced' || o.status === 'dispatched' ||
-    (o.status === 'store_confirmed' && !wasSentToStoreToday(o)));
+    (o.status === 'store_confirmed' && !needsProductionRelease(o) && !wasSentToStoreToday(o)));
   const uniqueStockItems = useMemo(() => {
     const byName = new Map<string, typeof stockItems[number]>();
     stockItems.forEach((item) => {
