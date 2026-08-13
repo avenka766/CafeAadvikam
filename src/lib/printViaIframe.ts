@@ -1,54 +1,38 @@
 // src/lib/printViaIframe.ts
 //
-// Single hardened print pipeline used by every non-Branch print in the app
-// (Planner dashboard, dispatch invoices, walk-in bills, closure reports,
-// registers, checklists).
+// Single print pipeline used by every non-Branch print in the app (Planner
+// dashboard, dispatch invoices, walk-in bills, closure reports, registers,
+// checklists).
 //
-// ── WHY THIS WAS REWRITTEN (2026-08-13) ──────────────────────────────────
-// "Planner printing does nothing" survived ~20 attempted fixes over 10 days.
-// Re-auditing from scratch showed the previous version of this file was
-// already functionally IDENTICAL to the Branch printer that works every day
-// (printCounterBill in src/branch/printUtils.ts): same hidden iframe, same
-// styles, same document.write/close, same injected onload trigger. So the
-// repeated "switch popup -> iframe" fixes were never going to change
-// anything, because the mechanism was never the difference.
+// ── SECOND REWRITE (2026-08-13, later same day) ──────────────────────────
+// The first rewrite earlier today fixed a real bug (a blind 300ms timeout
+// that could fire before the iframe's document was actually ready) but
+// introduced a WORSE one while doing it, and it went undetected because it
+// fails exactly as silently as what it replaced: zero console errors,
+// nothing prints.
 //
-// What the old version DID have were several ways to silently do nothing,
-// which is exactly the reported symptom:
+// That version stripped any print-trigger script out of the incoming HTML
+// and instead had the PARENT page listen for the iframe's own `load` event
+// to call print(). That's an iframe anti-pattern: a `src`-less iframe
+// fires an initial `load` for its empty starting document almost
+// immediately after being appended to the page — BEFORE document.write()
+// ever runs. The one-shot listener very plausibly consumed that premature,
+// empty-document load, called print() on blank content (no dialog, no
+// error), and was gone by the time the real invoice HTML got written a
+// moment later. Identical failure on thermal and A4, since both share this
+// one function.
 //
-//   1. It printed on a blind `setTimeout(..., 300)` instead of waiting for
-//      the iframe to actually finish loading. On a slow POS PC, 300ms can
-//      elapse before the document is ready — print() then fires against a
-//      not-yet-laid-out document and the browser drops it. Nothing prints,
-//      no error.
-//   2. It fired TWO independent print triggers (the injected
-//      `window.onload` script AND the parent-side timeout). Two print()
-//      calls racing on the same document can leave the dialog suppressed.
-//   3. Every failure path was a silent `return` or a swallowed `catch {}`.
-//      If anything went wrong the user saw literally nothing.
-//   4. It skipped injecting the auto-print trigger whenever the incoming
-//      HTML merely CONTAINED the text "window.print(" — which was true for
-//      documents that only had a manual <button onclick="window.print()">.
-//      Those documents then relied entirely on failure mode #1.
-//
-// This version: waits for the real load event, guarantees EXACTLY ONE print
-// trigger, and degrades loudly (popup fallback, then a visible message)
-// instead of failing silently.
-
-// Remove any auto-print trigger baked into the source HTML. Printing is now
-// driven from the parent with a single guarded call, so an inline
-// `window.onload = ... print()` would only re-introduce the double-trigger
-// race described above. Manual "Print" buttons inside the document are left
-// alone — they're harmless and useful in the popup fallback.
-function stripAutoPrintScripts(html: string): string {
-  return html.replace(
-    /<script\b[^>]*>(?:(?!<\/script>)[\s\S])*?window\s*\.\s*print\s*\((?:(?!<\/script>)[\s\S])*?<\/script>/gi,
-    (block) => (/onclick/i.test(block) ? block : ''),
-  );
-}
+// The proven-working Branch bill printer (printCounterBill in
+// src/branch/printUtils.ts, confirmed printing correctly every day) never
+// does this. It embeds the print trigger INSIDE the HTML itself:
+//   <script>window.onload=()=>window.print()</script>
+// That's reliable because it's the DOCUMENT's own load event firing for
+// the DOCUMENT that actually contains it — no ambiguity about which load
+// event is being observed. This version goes back to that exact pattern
+// instead of re-inventing a parent-side listener.
 
 // Last-resort path: a real window the user can print from manually. Only
-// reached if the hidden iframe could not be created or driven at all.
+// reached if the hidden iframe could not be created at all.
 function fallbackToWindow(html: string) {
   let win: Window | null = null;
   try {
@@ -70,7 +54,6 @@ function fallbackToWindow(html: string) {
     win.document.write(html);
     win.document.close();
     win.focus();
-    window.setTimeout(() => { try { win?.print(); } catch { /* user can still Ctrl+P */ } }, 400);
   } catch (err) {
     console.error('[printViaIframe] popup fallback failed:', err);
   }
@@ -108,41 +91,39 @@ export function printViaIframe(html: string) {
       cleaned = true;
       try { frame?.remove(); } catch { /* already detached */ }
     };
+    // Fires once the print dialog is dismissed. If the browser never fires
+    // it (some don't, for iframe-hosted documents), don't leave the hidden
+    // iframe sitting in the DOM forever.
+    target.onafterprint = cleanup;
+    window.setTimeout(cleanup, 120_000);
 
-    // EXACTLY ONE print trigger, whichever fires first.
-    let printed = false;
-    const doPrint = () => {
-      if (printed || cleaned) return;
-      printed = true;
+    // The print trigger lives INSIDE the document being written, not in a
+    // parent-side listener — see the file header for why that distinction
+    // is the actual fix here. It sets a flag on the iframe's own window so
+    // the parent-side safety net below can tell it already ran, from a
+    // completely different JS context, without any race.
+    const printTrigger = '<script>window.onload=function(){window.__printed=true;try{window.print();}catch(e){console.error("[printViaIframe] print() failed inside frame:",e);}};</script>';
+    const withTrigger = /<\/body>/i.test(html)
+      ? html.replace(/<\/body>/i, `${printTrigger}</body>`)
+      : `${html}${printTrigger}`;
+
+    target.document.open();
+    target.document.write(withTrigger);
+    target.document.close();
+
+    // Safety net: if for any reason the injected script never ran (a
+    // future stricter CSP blocking inline scripts, for example) still
+    // print rather than doing nothing. Checks the flag the injected script
+    // itself sets, so this can never double-fire alongside it.
+    window.setTimeout(() => {
+      if (cleaned || (target as unknown as { __printed?: boolean }).__printed) return;
       try {
         target.focus();
         target.print();
       } catch (err) {
-        // A genuine failure to invoke print — surface it and fall back
-        // rather than leaving the user staring at a dead button.
-        console.error('[printViaIframe] target.print() threw:', err);
-        cleanup();
-        fallbackToWindow(html);
+        console.error('[printViaIframe] safety-net print() failed:', err);
       }
-    };
-
-    target.onafterprint = cleanup;
-    // Don't leave the hidden iframe in the DOM forever if onafterprint never
-    // fires (some browsers don't fire it for iframe documents).
-    window.setTimeout(cleanup, 120_000);
-
-    // Primary trigger: the iframe's real load event, so we never print a
-    // document that hasn't finished parsing/laying out.
-    frame.addEventListener('load', doPrint, { once: true });
-
-    target.document.open();
-    target.document.write(stripAutoPrintScripts(html));
-    target.document.close();
-
-    // Safety net, generously timed: if the load event somehow never fires
-    // for this document, still print rather than doing nothing. The
-    // `printed` guard means this can never double-fire with the line above.
-    window.setTimeout(doPrint, 2000);
+    }, 1500);
   } catch (err) {
     console.error('[printViaIframe] failed to set up the print frame:', err);
     try { frame?.remove(); } catch { /* noop */ }
