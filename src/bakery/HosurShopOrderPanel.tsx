@@ -1110,7 +1110,7 @@ function HosurLeftoverAndCancelPanel({ pendingOrders, pendingItems, appliedLefto
     const billsRes = billIds.length > 0
       ? await supabase.from('hosur_bills').select('id, status, credit_amount').in('id', billIds)
       : { data: [] as Record<string, unknown>[] };
-    const billMap = new Map<string, Record<string, unknown>>((billsRes.data ?? []).map((b: Record<string, unknown>) => [String(b.id), b]));
+    const billMap = new Map<string, Record<string, unknown>>((billsRes.data ?? []).map((b: Record<string, unknown>): [string, Record<string, unknown>] => [String(b.id), b]));
     setRecentOrders(orderRows.map(o => {
       const bill = o.bill_id ? billMap.get(o.bill_id as string) : undefined;
       return {

@@ -693,7 +693,7 @@ export default function PlannerLeftoverTab() {
       doc.text(title, marginX, y); y += 14;
       const totalWidth = colWidths.reduce((a, b) => a + b, 0);
       const drawHeader = () => {
-        doc.setFillColor(238); doc.setDrawColor(220);
+        doc.setFillColor(238, 238, 238); doc.setDrawColor(220);
         doc.rect(marginX, y - 10, totalWidth, 16, 'F');
         doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(40);
         let x = marginX;

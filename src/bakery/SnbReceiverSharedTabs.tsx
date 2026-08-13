@@ -453,11 +453,11 @@ export type StockMovementMode = "Dump" | "Damage" | "Trans Out";
 type WasteRow = { id: string; log_type: StockMovementMode; item_name: string; quantity: number | string; unit: string; reason: string; verified_by: string; created_by_username: string; created_at: string };
 type WasteLine = { lineId: string; itemName: string; barcode?: number; quantity: string; unit: string };
 
-export function SnbStockMovementPanel({ mode }: { mode: StockMovementMode }) {
-  const { items: catalogItems } = useOperationalBranchCatalog("SNB");
-  const stock = useBranchStore((state) => state.stock.SNB);
+export function SnbStockMovementPanel({ mode, branch = "SNB" }: { mode: StockMovementMode; branch?: "SNB" | "VRSNB" }) {
+  const { items: catalogItems } = useOperationalBranchCatalog(branch);
+  const stock = useBranchStore((state) => state.stock[branch]);
   const user = useAuthStore((state) => state.currentUser);
-  const userName = user?.displayName || user?.username || "SNB Order";
+  const userName = user?.displayName || user?.username || `${branch} Order`;
   const first = catalogItems[0];
   const unitFor = useCallback((name: string, catalogUom?: string) =>
     stock.find((item) => normal(item.itemName) === normal(name))?.unit
@@ -477,8 +477,8 @@ export function SnbStockMovementPanel({ mode }: { mode: StockMovementMode }) {
 
   useEffect(() => { if (!lineDraft.itemName && first) setLineDraft((current) => ({ ...current, itemName: first.name, barcode: first.barcode, unit: unitFor(first.name, first.uom) })); }, [first, lineDraft.itemName, unitFor]);
   // Reset the item list whenever the subtab changes so a Dump list doesn't bleed into Damage, etc.
-  useEffect(() => { setLines([]); setError(""); setSuccess(""); setDisputeQty(null); setDisputeReason(""); setDisputeMessage(""); }, [mode]);
-  const loadRows = useCallback(async () => { setLoading(true); const { data, error: loadError } = await supabase.from("branch_waste_logs").select("id,log_type,item_name,quantity,unit,reason,verified_by,created_by_username,created_at").eq("branch", "SNB").eq("log_type", mode).order("created_at", { ascending: false }).limit(500); setLoading(false); if (loadError) setError(loadError.message); else setHistory((data || []) as WasteRow[]); }, [mode]);
+  useEffect(() => { setLines([]); setError(""); setSuccess(""); setDisputeQty(null); setDisputeReason(""); setDisputeMessage(""); }, [mode, branch]);
+  const loadRows = useCallback(async () => { setLoading(true); const { data, error: loadError } = await supabase.from("branch_waste_logs").select("id,log_type,item_name,quantity,unit,reason,verified_by,created_by_username,created_at").eq("branch", branch).eq("log_type", mode).order("created_at", { ascending: false }).limit(500); setLoading(false); if (loadError) setError(loadError.message); else setHistory((data || []) as WasteRow[]); }, [mode, branch]);
   useEffect(() => { void loadRows(); }, [loadRows]);
 
   // FIX: previously this only tried a barcode match when both sides had a
@@ -526,7 +526,7 @@ export function SnbStockMovementPanel({ mode }: { mode: StockMovementMode }) {
     if (disputeReason.trim().length < 3) return setDisputeMessage("Enter a reason explaining the quantity mismatch.");
     setRaisingDispute(true);
     const { error: disputeError } = await supabase.rpc("raise_branch_stock_dispute_secure", {
-      p_branch: "SNB",
+      p_branch: branch,
       p_item_name: lineDraft.itemName,
       p_item_barcode: lineDraft.barcode ?? null,
       p_unit: draftStockRow?.unit || lineDraft.unit,
@@ -549,30 +549,30 @@ export function SnbStockMovementPanel({ mode }: { mode: StockMovementMode }) {
     if (!meta.confirmed) return setError("Confirm the physical verification before posting.");
     setSaving(true);
     const { error: saveError } = await supabase.rpc("record_branch_waste_batch_secure", {
-      p_branch: "SNB",
+      p_branch: branch,
       p_log_type: mode,
       p_items: lines.map((line) => ({ itemBarcode: line.barcode ?? null, itemName: line.itemName, quantity: Number(line.quantity), unit: line.unit })),
       p_reason: meta.reason.trim(),
       p_verified_by: meta.verifiedBy.trim(),
-      p_checklist: ["Quantity physically verified", `Entered by SNB Order - ${userName}`],
+      p_checklist: ["Quantity physically verified", `Entered by ${branch} Order - ${userName}`],
     });
     setSaving(false);
     if (saveError) return setError(saveError.message);
-    setSuccess(`${lines.length} item${lines.length > 1 ? "s" : ""} posted as ${mode === "Trans Out" ? "Transfer Out" : mode} and shared with SNB Admin.`);
-    // Notify SNB Admin + Owner - previously a stock write-off had no
+    setSuccess(`${lines.length} item${lines.length > 1 ? "s" : ""} posted as ${mode === "Trans Out" ? "Transfer Out" : mode} and shared with ${branch} Admin.`);
+    // Notify branch Admin + Owner - previously a stock write-off had no
     // cross-dashboard alert at all.
     void useNotificationStore.getState().pushStockMovement({
-      branch: "SNB",
+      branch,
       logType: mode,
       items: lines.map((line) => ({ itemName: line.itemName, quantity: Number(line.quantity), unit: line.unit })),
       totalValue: linesTotalValue,
       reason: meta.reason.trim(),
       postedBy: userName,
-      recipientRoles: ["admin_snb", "owner"],
+      recipientRoles: [branch === "SNB" ? "admin_snb" : "admin_vrsnb", "owner"],
     });
     setLines([]);
     setMeta((current) => ({ ...current, reason: "", confirmed: false }));
-    await Promise.all([loadRows(), useBranchStore.getState().fetchBranchData("SNB")]);
+    await Promise.all([loadRows(), useBranchStore.getState().fetchBranchData(branch)]);
   };
   const title = mode === "Trans Out" ? "Transfer Out" : mode;
   const Icon = mode === "Trans Out" ? Truck : mode === "Damage" ? AlertTriangle : Trash2;
@@ -594,10 +594,10 @@ export function SnbStockMovementPanel({ mode }: { mode: StockMovementMode }) {
           {disputeQty != null && (
             <div className="rounded-2xl border border-red-200 bg-red-50 p-3">
               <p className="text-xs font-black text-red-700">Raise Stock Dispute</p>
-              <p className="mt-1 text-[11px] font-semibold text-red-700">System shows {formatQty(draftRemaining, draftStockRow?.unit || lineDraft.unit)} available for {lineDraft.itemName}, but you're trying to {mode === "Trans Out" ? "transfer out" : mode.toLowerCase()} {formatQty(disputeQty, lineDraft.unit)}. If the physical count is different, explain why below and notify SNB Admin to verify and correct the stock.</p>
+              <p className="mt-1 text-[11px] font-semibold text-red-700">System shows {formatQty(draftRemaining, draftStockRow?.unit || lineDraft.unit)} available for {lineDraft.itemName}, but you're trying to {mode === "Trans Out" ? "transfer out" : mode.toLowerCase()} {formatQty(disputeQty, lineDraft.unit)}. If the physical count is different, explain why below and notify {branch} Admin to verify and correct the stock.</p>
               <textarea className={cn(textareaClass, "mt-2 min-h-16 bg-white")} value={disputeReason} onChange={(event) => setDisputeReason(event.target.value)} placeholder="Explain the mismatch (e.g. found extra stock during physical count, previous entry error, etc.)" />
               {disputeMessage && <p className={cn("mt-2 text-[11px] font-black", disputeMessage.includes("raised") ? "text-emerald-700" : "text-red-700")}>{disputeMessage}</p>}
-              <button type="button" onClick={() => void raiseDispute()} disabled={raisingDispute} className="mt-2 flex h-10 w-full items-center justify-center gap-2 rounded-xl bg-red-600 text-xs font-black text-white disabled:opacity-50">{raisingDispute ? <Loader2 className="size-4 animate-spin" /> : <AlertTriangle className="size-4" />} Notify SNB Admin of Stock Dispute</button>
+              <button type="button" onClick={() => void raiseDispute()} disabled={raisingDispute} className="mt-2 flex h-10 w-full items-center justify-center gap-2 rounded-xl bg-red-600 text-xs font-black text-white disabled:opacity-50">{raisingDispute ? <Loader2 className="size-4 animate-spin" /> : <AlertTriangle className="size-4" />} Notify {branch} Admin of Stock Dispute</button>
             </div>
           )}
 
@@ -618,7 +618,7 @@ export function SnbStockMovementPanel({ mode }: { mode: StockMovementMode }) {
 
           <Field label="Reason / Destination"><textarea className={textareaClass} value={meta.reason} onChange={(event) => setMeta({ ...meta, reason: event.target.value })} placeholder={mode === "Trans Out" ? "Destination and transfer reason" : `${title} reason`} /></Field>
           <Field label="Verified By"><input className={inputClass} value={meta.verifiedBy} onChange={(event) => setMeta({ ...meta, verifiedBy: event.target.value })} /></Field>
-          <label className="flex items-start gap-2 rounded-xl border border-border bg-slate-50 p-3 text-xs font-bold"><input type="checkbox" checked={meta.confirmed} onChange={(event) => setMeta({ ...meta, confirmed: event.target.checked })} className="mt-0.5" /><span>I confirm every item's quantity was physically checked and may be deducted from usable SNB stock.</span></label>
+          <label className="flex items-start gap-2 rounded-xl border border-border bg-slate-50 p-3 text-xs font-bold"><input type="checkbox" checked={meta.confirmed} onChange={(event) => setMeta({ ...meta, confirmed: event.target.checked })} className="mt-0.5" /><span>I confirm every item's quantity was physically checked and may be deducted from usable {branch} stock.</span></label>
           <StatusMessage error={error} success={success} />
           <button type="button" onClick={() => void submit()} disabled={saving || lines.length === 0} className={cn(primaryButton, "w-full")}>{saving ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />} Post {title} ({lines.length} item{lines.length === 1 ? "" : "s"})</button>
         </div>
@@ -628,7 +628,7 @@ export function SnbStockMovementPanel({ mode }: { mode: StockMovementMode }) {
   );
 }
 
-export function SnbStockOperationsPanel() {
+export function SnbStockOperationsPanel({ branch = "SNB" }: { branch?: "SNB" | "VRSNB" }) {
   const [mode, setMode] = useState<"Dump" | "Damage" | "Trans Out">("Dump");
   return (
     <div className="flex h-full min-h-0 flex-col gap-3">
@@ -648,7 +648,7 @@ export function SnbStockOperationsPanel() {
         ))}
       </div>
       <div className="min-h-0 flex-1">
-        <SnbStockMovementPanel mode={mode} />
+        <SnbStockMovementPanel mode={mode} branch={branch} />
       </div>
     </div>
   );

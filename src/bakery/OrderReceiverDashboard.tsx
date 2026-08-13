@@ -2425,8 +2425,14 @@ export default function OrderReceiverDashboard() {
   const meta = role ? BRANCH_META[role] : null;
   const branch = meta?.branch as Branch | undefined;
   const requestedTab = tabFromParams(searchParams.get("tab"));
-  const snbOnlyTabs: TabKey[] = ["po", "purchase-invoice", "purchase-return", "stock-movements", "advance", "closure"];
-  const tab = branch !== "SNB" && snbOnlyTabs.includes(requestedTab) ? "order" : requestedTab;
+  const snbOnlyTabs: TabKey[] = ["po", "purchase-invoice", "purchase-return", "advance", "closure"];
+  const snbOrVrsnbTabs: TabKey[] = ["stock-movements"];
+  const tab =
+    branch !== "SNB" && snbOnlyTabs.includes(requestedTab)
+      ? "order"
+      : branch !== "SNB" && branch !== "VRSNB" && snbOrVrsnbTabs.includes(requestedTab)
+        ? "order"
+        : requestedTab;
   const userName =
     currentUser?.displayName || currentUser?.username || `${branch ?? "SNB"} Receiver`;
 
@@ -2841,7 +2847,9 @@ export default function OrderReceiverDashboard() {
 
         {tab === "purchase-return" && branch === "SNB" && <SnbPurchaseReturnPanel />}
 
-        {tab === "stock-movements" && branch === "SNB" && <SnbStockOperationsPanel />}
+        {tab === "stock-movements" && (branch === "SNB" || branch === "VRSNB") && (
+          <SnbStockOperationsPanel branch={branch} />
+        )}
 
         {tab === "advance" && branch === "SNB" && (
           <AdvanceCakeOrdersTab branch="SNB" branchStock={stock.SNB} source="snb-order" />

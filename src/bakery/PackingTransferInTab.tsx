@@ -2,6 +2,7 @@ import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, ArrowDownToLine, CheckCircle2, Loader2, Package, Printer, RefreshCw, RotateCcw, Search } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
 import { supabase } from '@/lib/supabase';
+import { printViaIframe } from '@/lib/printViaIframe';
 
 type SourceBranch = 'SNB' | 'VRSNB';
 type Unit = 'kg' | 'pcs';
@@ -17,10 +18,13 @@ type TransferIn = {
   received_at: string;
   received_by: string;
   remarks: string | null;
-  status: 'posted' | 'reversed';
+  status: 'pending' | 'posted' | 'reversed';
   reversed_at?: string | null;
   reversed_by?: string | null;
   reversal_reason?: string | null;
+  requested_by?: string | null;
+  requested_at?: string | null;
+  request_reason?: string | null;
 };
 
 const emptyForm = { source: 'SNB' as SourceBranch, reference: '', itemName: '', expected: '', received: '', unit: 'kg' as Unit, remarks: '' };
@@ -104,16 +108,17 @@ export default function PackingTransferInTab() {
     else await loadRows();
   };
 
+  // BUG FIX ("Planner dashboard print... nothing happens"): same broken
+  // window.open('', '_blank', ...) + `if (!win) return;` pattern already
+  // diagnosed and fixed for Planner's other print buttons — a blocked popup
+  // makes `win` falsy and this used to just silently return. Switched to the
+  // hidden-iframe pipeline (printViaIframe) so it can't be popup-blocked.
   const printRegister = () => {
-    const win = window.open('', '_blank', 'width=1100,height=800');
-    if (!win) return;
     const body = filtered.map((row) => {
       const variance = Number(row.variance_quantity);
       return `<tr><td>${escapeHtml(new Date(row.received_at).toLocaleString('en-IN'))}</td><td>${escapeHtml(row.source_branch)}</td><td>${escapeHtml(row.transfer_reference)}</td><td>${escapeHtml(row.item_name)}</td><td>${escapeHtml(row.expected_quantity)} ${escapeHtml(row.unit)}</td><td>${escapeHtml(row.received_quantity)} ${escapeHtml(row.unit)}</td><td>${variance.toFixed(3)}</td><td>${escapeHtml(row.status === 'reversed' ? 'Reversed' : variance === 0 ? 'Matched' : variance < 0 ? 'Shortage' : 'Excess / Leftover')}</td><td>${escapeHtml(row.received_by)}</td><td>${escapeHtml(row.remarks || row.reversal_reason || '-')}</td></tr>`;
     }).join('');
-    win.document.write(`<!doctype html><html><head><title>Packing Transfer In Register</title><style>@page{size:auto;margin:6mm}@media print{html,body{height:auto !important}}body{font-family:Arial;padding:16px;color:#111}h1{font-size:20px;margin:0 0 4px}.muted{font-size:11px;color:#666;margin-bottom:16px}table{width:100%;border-collapse:collapse}th,td{border:1px solid #333;padding:7px;font-size:10px}th{background:#eee;text-align:left}@media print{button{display:none}}</style></head><body><h1>PACKING TRANSFER-IN REGISTER</h1><div class="muted">Generated ${escapeHtml(new Date().toLocaleString('en-IN'))}</div><table><thead><tr><th>Date</th><th>From</th><th>Reference</th><th>Item</th><th>Expected</th><th>Received</th><th>Variance</th><th>Status</th><th>Received By</th><th>Remarks</th></tr></thead><tbody>${body || '<tr><td colspan="10">No records</td></tr>'}</tbody></table></body></html>`);
-    win.document.close();
-    setTimeout(() => win.print(), 250);
+    printViaIframe(`<!doctype html><html><head><title>Packing Transfer In Register</title><style>@page{size:auto;margin:6mm}@media print{html,body{height:auto !important}}body{font-family:Arial;padding:16px;color:#111}h1{font-size:20px;margin:0 0 4px}.muted{font-size:11px;color:#666;margin-bottom:16px}table{width:100%;border-collapse:collapse}th,td{border:1px solid #333;padding:7px;font-size:10px}th{background:#eee;text-align:left}</style></head><body><h1>PACKING TRANSFER-IN REGISTER</h1><div class="muted">Generated ${escapeHtml(new Date().toLocaleString('en-IN'))}</div><table><thead><tr><th>Date</th><th>From</th><th>Reference</th><th>Item</th><th>Expected</th><th>Received</th><th>Variance</th><th>Status</th><th>Received By</th><th>Remarks</th></tr></thead><tbody>${body || '<tr><td colspan="10">No records</td></tr>'}</tbody></table></body></html>`);
   };
 
   return (
@@ -121,7 +126,7 @@ export default function PackingTransferInTab() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h3 className="text-lg font-black">Receive stock from SNB or VRSNB</h3>
-          <p className="text-xs text-muted-foreground">Every receipt is posted centrally, added to the stock movement ledger, and retained for Admin/Owner audit.</p>
+          <p className="text-xs text-muted-foreground">Every receipt is posted centrally, added to the stock movement ledger, and retained for Admin/Owner audit. Branch-requested returns show up here as <b>Pending</b> once confirmed from Daily Closure ▸ Disputes &amp; Returns.</p>
         </div>
         <div className="flex gap-2">
           <button type="button" onClick={() => void loadRows()} className="h-10 rounded-xl border bg-card px-4 text-xs font-bold flex items-center gap-2"><RefreshCw className="size-4" />Refresh</button>
@@ -153,7 +158,7 @@ export default function PackingTransferInTab() {
               <thead className="sticky top-0 bg-foreground text-white"><tr>{['Date','From','Reference','Item','Expected','Received','Variance','Status','Received by','Action'].map((x) => <th key={x} className="p-3 text-left">{x}</th>)}</tr></thead>
               <tbody>
                 {loading && <tr><td colSpan={10} className="p-16 text-center"><Loader2 className="size-6 animate-spin mx-auto" /></td></tr>}
-                {!loading && filtered.map((row) => { const variance = Number(row.variance_quantity); return <tr key={row.id} className={`border-t ${row.status === 'reversed' ? 'bg-muted/40 text-muted-foreground line-through' : ''}`}><td className="p-3">{new Date(row.received_at).toLocaleString('en-IN')}</td><td className="p-3 font-black">{row.source_branch}</td><td className="p-3">{row.transfer_reference}</td><td className="p-3 font-bold">{row.item_name}</td><td className="p-3">{row.expected_quantity} {row.unit}</td><td className="p-3">{row.received_quantity} {row.unit}</td><td className={`p-3 font-black ${variance < 0 ? 'text-red-600' : variance > 0 ? 'text-amber-600' : 'text-teal-600'}`}>{variance.toFixed(3)}</td><td className="p-3">{row.status === 'reversed' ? 'Reversed' : variance === 0 ? 'Matched' : variance < 0 ? 'Shortage' : 'Excess / Leftover'}</td><td className="p-3">{row.received_by}</td><td className="p-3">{row.status === 'posted' && <button type="button" className="inline-flex items-center gap-1 rounded-lg border px-2 py-1 font-bold text-red-600" onClick={() => void reverseRow(row)}><RotateCcw className="size-3" />Reverse</button>}</td></tr>; })}
+                {!loading && filtered.map((row) => { const variance = Number(row.variance_quantity); return <tr key={row.id} className={`border-t ${row.status === 'reversed' ? 'bg-muted/40 text-muted-foreground line-through' : row.status === 'pending' ? 'bg-blue-50/60' : ''}`}><td className="p-3">{new Date(row.received_at).toLocaleString('en-IN')}</td><td className="p-3 font-black">{row.source_branch}</td><td className="p-3">{row.transfer_reference}</td><td className="p-3 font-bold">{row.item_name}</td><td className="p-3">{row.expected_quantity} {row.unit}</td><td className="p-3">{row.status === 'pending' ? '—' : `${row.received_quantity} ${row.unit}`}</td><td className={`p-3 font-black ${variance < 0 ? 'text-red-600' : variance > 0 ? 'text-amber-600' : 'text-teal-600'}`}>{row.status === 'pending' ? '—' : variance.toFixed(3)}</td><td className="p-3">{row.status === 'pending' ? <span className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-1 text-[10px] font-black text-blue-700">Pending — Confirm in Daily Closure</span> : row.status === 'reversed' ? 'Reversed' : variance === 0 ? 'Matched' : variance < 0 ? 'Shortage' : 'Excess / Leftover'}</td><td className="p-3">{row.status === 'pending' ? (row.requested_by || '-') : row.received_by}</td><td className="p-3">{row.status === 'posted' && <button type="button" className="inline-flex items-center gap-1 rounded-lg border px-2 py-1 font-bold text-red-600" onClick={() => void reverseRow(row)}><RotateCcw className="size-3" />Reverse</button>}</td></tr>; })}
                 {!loading && filtered.length === 0 && <tr><td colSpan={10} className="p-16 text-center text-muted-foreground"><Package className="size-8 mx-auto mb-2" />No transfer-in records</td></tr>}
               </tbody>
             </table>

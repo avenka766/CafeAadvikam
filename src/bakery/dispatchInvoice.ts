@@ -17,7 +17,6 @@
 // the same real company details rather than inventing new ones.
 import { supabase } from '@/lib/supabase';
 import { printViaIframe } from '@/lib/printViaIframe';
-import { printViaQz } from '@/lib/qzPrint';
 import type { Branch } from './types';
 
 export interface DispatchInvoiceItem {
@@ -329,12 +328,33 @@ export function renderDispatchInvoiceHtml(record: DispatchInvoiceRecord, mode: '
 // been assigned yet — so nothing changes for anyone who hasn't set QZ up.
 // A4 prints are unaffected (still meant for a normal page-size printer/PDF,
 // not the raw thermal roll QZ targets).
+// ── QZ TRAY REMOVED FROM THIS PATH (2026-08-13) ──────────────────────────
+// The QZ-first branch above was a silent-failure trap and the single most
+// likely cause of "Planner thermal print does nothing", which survived ~20
+// other fixes:
+//
+//   const printedViaQz = await printViaQz('planner-bill', html);
+//   if (printedViaQz) return;          // <-- returns with NO fallback
+//
+// printViaQz resolves TRUE whenever QZ Tray accepts the job — not when
+// paper actually comes out. So if a printer name was ever saved in Planner's
+// Printer Setup and QZ Tray was reachable, but that saved name was stale,
+// offline, renamed in Windows, or pointed at a driver that silently
+// discards the job, this returned early and the reliable browser print path
+// below was NEVER reached. From the user's side: click Print, nothing
+// happens, no error, forever — and no amount of fixing the HTML or the
+// iframe could ever help, because the print never got that far.
+//
+// It also failed closed in a way nobody could see: the saved printer name
+// lives in localStorage on ONE machine, so this could break for the Planner
+// PC while every other dashboard kept printing normally — exactly the
+// reported "Branch and Cafe are fine, only Planner is broken" pattern.
+//
+// Planner now always uses the same browser print pipeline that Branch and
+// Cafe use successfully every day. Choosing the thermal printer is done in
+// the normal OS print dialog (or by setting it as the machine default).
 export async function printDispatchInvoice(record: DispatchInvoiceRecord, mode: 'a4' | 'thermal') {
   const html = renderDispatchInvoiceHtml(record, mode);
-  if (mode === 'thermal') {
-    const printedViaQz = await printViaQz('planner-bill', html);
-    if (printedViaQz) return;
-  }
   printViaIframe(html);
 }
 

@@ -19,7 +19,9 @@ export type NotificationType =
   | 'price_change'
   | 'store_item_change'
   | 'recipe_change'
-  | 'stock_movement';
+  | 'stock_movement'
+  | 'stock_return'
+  | 'stock_dispute';
 
 export interface AdminNotification {
   id: string;

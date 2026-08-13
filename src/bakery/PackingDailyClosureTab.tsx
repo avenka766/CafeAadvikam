@@ -16,6 +16,7 @@ import {
   Send,
   ShieldCheck,
   Truck,
+  Undo2,
   WalletCards,
 } from 'lucide-react';
 import * as XLSX from '@/lib/safeSpreadsheet';
@@ -26,6 +27,8 @@ import { useBakeryStore } from './bakeryStore';
 import { useBranchStore } from '@/branch/branchStore';
 import { BRANCHES } from './types';
 import type { Branch } from './types';
+import { recordLeftoverMovement } from './PlannerLeftoverTab';
+import { printViaIframe } from '@/lib/printViaIframe';
 
 import { PACKING_CLOSURE_KEY_PREFIX, packingBusinessDateToday } from './packingCounter';
 
@@ -82,6 +85,145 @@ function StatCard({ label, value, helper, icon, tone = 'slate' }: {
   return <div className="rounded-2xl border border-border bg-card p-4 shadow-sm"><div className="flex items-start justify-between gap-3"><div><p className="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">{label}</p><p className="mt-2 text-2xl font-display font-black text-foreground">{value}</p>{helper && <p className="mt-1 text-xs text-muted-foreground">{helper}</p>}</div><span className={cn('grid size-10 place-items-center rounded-xl', tones[tone])}>{icon}</span></div></div>;
 }
 
+// ─── Disputes & Returns (Planner review) ───────────────────────────────────
+// Surfaces two things a branch (SNB/VRSNB Order) can raise from its Incoming
+// tab: a quantity Dispute (informational here — Admin resolves it) and a
+// Return request (actionable here — Planner confirms it, which posts the
+// transfer-in receipt and syncs the quantity into Closing Stock). This is
+// the only place Planner sees either, since Planner has no notification
+// bell/alerts page today (that route is admin-only).
+
+type PendingDisputeRow = {
+  id: string; branch: string; item_name: string; quantity: number; unit: string;
+  dispute_reason: string | null; disputed_by: string | null; disputed_at: string | null;
+  disputed_received_quantity: number | null;
+};
+
+type PendingReturnRow = {
+  id: string; source_branch: string; transfer_reference: string; item_name: string;
+  expected_quantity: number; unit: string; request_reason: string | null;
+  requested_by: string | null; requested_at: string | null;
+};
+
+function ConfirmReturnRow({ row, staffName, onDone }: { row: PendingReturnRow; staffName: string; onDone: () => void }) {
+  const [qty, setQty] = useState(String(row.expected_quantity));
+  const [remarks, setRemarks] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState('');
+
+  const confirm = async () => {
+    setErr('');
+    const received = Number(qty);
+    if (!Number.isFinite(received) || received <= 0) { setErr('Enter a received quantity greater than zero.'); return; }
+    setSaving(true);
+    const { data, error } = await supabase.rpc('confirm_packing_transfer_in_secure', {
+      p_id: row.id, p_received_quantity: received, p_remarks: remarks.trim() || null,
+    });
+    if (error) { setErr(error.message); setSaving(false); return; }
+    // Sync into Closing Stock — this is the step post_packing_transfer_in_secure
+    // itself doesn't do (it only writes inventory_ledger for the Packing location).
+    const posted = data as { item_name: string; unit: 'kg' | 'pcs'; received_quantity: number; source_branch: string; transfer_reference: string } | null;
+    if (posted) {
+      const leftoverResult = await recordLeftoverMovement({
+        itemName: posted.item_name, unit: posted.unit, delta: Number(posted.received_quantity),
+        businessDate: packingBusinessDateToday(), reason: 'closing_stock', recordedBy: staffName,
+        branch: posted.source_branch as Branch, notes: `Return confirmed from ${posted.source_branch} · ${posted.transfer_reference}`,
+      });
+      if ('error' in leftoverResult) { setErr(`Return confirmed, but closing stock sync failed: ${leftoverResult.error}`); setSaving(false); return; }
+    }
+    setSaving(false);
+    onDone();
+  };
+
+  return (
+    <div className="rounded-2xl border bg-card p-3 space-y-2">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="font-black">{row.item_name}</p>
+          <p className="text-xs text-muted-foreground">{row.source_branch} · Requested {row.expected_quantity} {row.unit} · {row.requested_by || '-'} · {row.requested_at ? new Date(row.requested_at).toLocaleString('en-IN') : ''}</p>
+          {row.request_reason && <p className="mt-1 text-xs italic text-muted-foreground">"{row.request_reason}"</p>}
+        </div>
+        <span className="shrink-0 rounded-full bg-blue-100 px-2 py-1 text-[10px] font-black text-blue-700">Pending</span>
+      </div>
+      <div className="grid gap-2 sm:grid-cols-[140px_minmax(0,1fr)_auto]">
+        <label className="space-y-1"><span className="text-[10px] font-black text-muted-foreground">Received Qty</span><input type="number" min="0.001" step="0.001" value={qty} onChange={(e) => setQty(e.target.value)} className="h-9 w-full rounded-lg border bg-background px-2 text-sm font-bold" /></label>
+        <label className="space-y-1"><span className="text-[10px] font-black text-muted-foreground">Remarks (optional)</span><input value={remarks} onChange={(e) => setRemarks(e.target.value)} className="h-9 w-full rounded-lg border bg-background px-2 text-sm" /></label>
+        <div className="flex items-end"><button onClick={() => void confirm()} disabled={saving} className="h-9 w-full rounded-lg bg-teal-700 px-4 text-xs font-black text-white disabled:opacity-50 sm:w-auto">{saving ? <Loader2 className="mx-auto size-4 animate-spin" /> : 'Confirm'}</button></div>
+      </div>
+      {err && <p className="text-xs font-bold text-red-600">{err}</p>}
+    </div>
+  );
+}
+
+function DisputesAndReturnsPanel() {
+  const { currentUser } = useAuthStore();
+  const staffName = currentUser?.displayName || currentUser?.username || 'Planner';
+  const [disputes, setDisputes] = useState<PendingDisputeRow[]>([]);
+  const [returns, setReturns] = useState<PendingReturnRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  const load = useCallback(async () => {
+    setLoading(true); setError('');
+    const [disputeRes, returnRes] = await Promise.all([
+      supabase.from('branch_incoming')
+        .select('id,branch,item_name,quantity,unit,dispute_reason,disputed_by,disputed_at,disputed_received_quantity')
+        .eq('disputed', true).eq('confirmed', false)
+        .order('disputed_at', { ascending: false }).limit(200),
+      supabase.rpc('list_packing_transfer_in_secure'),
+    ]);
+    if (disputeRes.error) setError(disputeRes.error.message);
+    else setDisputes((disputeRes.data || []) as PendingDisputeRow[]);
+    if (returnRes.error) setError((prev) => prev || returnRes.error!.message);
+    else setReturns(((returnRes.data || []) as (PendingReturnRow & { status: string })[]).filter((r) => r.status === 'pending'));
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { void load(); }, [load]);
+
+  if (loading) return <div className="flex min-h-[40vh] items-center justify-center"><Loader2 className="size-7 animate-spin text-teal-600" /></div>;
+
+  return (
+    <div className="space-y-5">
+      {error && <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-bold text-red-700"><AlertTriangle className="mr-2 inline size-4" />{error}</div>}
+      <div className="grid gap-3 sm:grid-cols-2">
+        <StatCard label="Pending Returns" value={returns.length} helper="Awaiting your confirmation" icon={<Undo2 className="size-5" />} tone={returns.length ? 'blue' : 'slate'} />
+        <StatCard label="Open Disputes" value={disputes.length} helper="Awaiting Admin review" icon={<AlertTriangle className="size-5" />} tone={disputes.length ? 'amber' : 'slate'} />
+      </div>
+
+      <div className="overflow-hidden rounded-2xl border bg-card">
+        <div className="flex items-center justify-between border-b bg-muted/30 px-4 py-3">
+          <div><h3 className="font-black">Pending Returns from SNB / VRSNB</h3><p className="text-xs text-muted-foreground">Confirming posts the receipt to Packing and adds the quantity back to Closing Stock.</p></div>
+          <button onClick={() => void load()} className="grid size-9 shrink-0 place-items-center rounded-xl border"><RefreshCw className="size-3.5" /></button>
+        </div>
+        <div className="space-y-3 p-4">
+          {returns.length === 0
+            ? <p className="py-8 text-center text-sm text-muted-foreground">No pending returns.</p>
+            : returns.map((row) => <ConfirmReturnRow key={row.id} row={row} staffName={staffName} onDone={() => void load()} />)}
+        </div>
+      </div>
+
+      <div className="overflow-hidden rounded-2xl border bg-card">
+        <div className="border-b bg-muted/30 px-4 py-3"><h3 className="font-black">Open Stock Disputes</h3><p className="text-xs text-muted-foreground">Raised from Incoming Stock at SNB/VRSNB Order. Admin reviews and corrects the stock; shown here for visibility.</p></div>
+        <div className="divide-y">
+          {disputes.length === 0
+            ? <p className="py-8 text-center text-sm text-muted-foreground">No open disputes.</p>
+            : disputes.map((d) => (
+              <div key={d.id} className="flex items-start justify-between gap-3 px-4 py-3">
+                <div>
+                  <p className="font-black">{d.item_name} <span className="ml-1 rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-black text-slate-600">{d.branch}</span></p>
+                  <p className="text-xs text-muted-foreground">Dispatched {d.quantity} {d.unit}{d.disputed_received_quantity != null ? ` · Received ${d.disputed_received_quantity} ${d.unit}` : ''} · {d.disputed_by || '-'} · {d.disputed_at ? new Date(d.disputed_at).toLocaleString('en-IN') : ''}</p>
+                  {d.dispute_reason && <p className="mt-1 text-xs italic text-muted-foreground">"{d.dispute_reason}"</p>}
+                </div>
+                <span className="shrink-0 rounded-full bg-amber-100 px-2 py-1 text-[10px] font-black text-amber-700">Awaiting Admin</span>
+              </div>
+            ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function PackingDailyClosureTab({ onCounterStatusChange }: { onCounterStatusChange?: (isOpen: boolean) => void }) {
   const { currentUser } = useAuthStore();
   const orders = useBakeryStore(state => state.orders);
@@ -101,7 +243,7 @@ export default function PackingDailyClosureTab({ onCounterStatusChange }: { onCo
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
-  const [section, setSection] = useState<'operations'|'cashier'|'history'>('operations');
+  const [section, setSection] = useState<'operations'|'cashier'|'history'|'disputes'>('operations');
 
   const staffName = currentUser?.displayName || currentUser?.username || 'Packing Staff';
 
@@ -398,13 +540,18 @@ export default function PackingDailyClosureTab({ onCounterStatusChange }: { onCo
     XLSX.writeFile(wb, `packing-daily-closure-${date}.xlsx`);
   };
 
+  // BUG FIX ("Planner dashboard print... nothing happens"): this used
+  // window.open('', '_blank', ...) + `if (!win) return;` — the exact broken
+  // pattern already diagnosed for Planner's other print buttons (see
+  // printViaIframe.ts / dispatchInvoice.ts). A popup blocked by the browser
+  // makes `win` falsy and the function just silently returns — no error, no
+  // print, nothing. Switched to the hidden-iframe pipeline every other
+  // Planner print path already uses, which never opens a new window/tab so
+  // it can't be blocked.
   const printClosure = () => {
-    const win = window.open('', '_blank', 'width=1000,height=760');
-    if (!win) return;
     const itemRows = itemSummary.map(row => `<tr><td>${row.itemName}</td><td class="n">${qty(row.kg)}</td><td class="n">${qty(row.pcs)}</td><td class="n">${row.entries}</td><td>${row.branches.join(', ')}</td></tr>`).join('') || '<tr><td colspan="5">No dispatches</td></tr>';
     const branchRows = BRANCHES.map(branch => `<tr><td>${branch}</td><td class="n">${qty(branchSummary[branch].kg)}</td><td class="n">${qty(branchSummary[branch].pcs)}</td><td class="n">${branchSummary[branch].orders}</td></tr>`).join('');
-    win.document.write(`<!doctype html><html><head><title>Packing Closure ${date}</title><style>@page{size:auto;margin:8mm}@media print{html,body{height:auto !important}}*{box-sizing:border-box}body{font-family:Arial;margin:0;color:#111827}h1{margin:0}.muted{color:#6b7280;font-size:12px}.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:18px 0}.k{border:1px solid #d1d5db;border-radius:10px;padding:10px}.k span{font-size:10px;text-transform:uppercase;color:#6b7280}.k b{display:block;font-size:20px;margin-top:5px}table{width:100%;border-collapse:collapse;margin-top:10px;font-size:12px}th,td{border:1px solid #d1d5db;padding:7px;text-align:left}th{background:#f3f4f6}.n{text-align:right}.section{margin-top:20px}.sign{display:grid;grid-template-columns:repeat(3,1fr);gap:28px;margin-top:55px}.line{border-top:1px solid #111;text-align:center;padding-top:6px;font-size:11px}@media print{body{margin:12mm}.no{display:none}}</style></head><body><button class="no" onclick="window.print()" style="float:right">Print</button><h1>Packing Daily / Cashier Closure</h1><p class="muted">${dateLabel(date)} · ${finalized ? 'Finalized' : 'Live preview'} · Staff: ${staffName}</p><div class="grid"><div class="k"><span>Gross Sales</span><b>${money(grossSales)}</b></div><div class="k"><span>Dispatched</span><b>${dispatchedOrderIds.size}</b></div><div class="k"><span>Expected Cash</span><b>${money(expectedCash)}</b></div><div class="k"><span>Difference</span><b>${money(difference)}</b></div></div><div class="section"><h2>Cashier Summary</h2><table><tbody><tr><td>Opening Cash</td><td class="n">${money(Number(openingCash||0))}</td><td>Cash Collection</td><td class="n">${money(cashTotal)}</td></tr><tr><td>UPI</td><td class="n">${money(paymentTotal('upi'))}</td><td>Card</td><td class="n">${money(paymentTotal('card'))}</td></tr><tr><td>Credit Billed</td><td class="n">${money(creditBilled)}</td><td>Credit Collected</td><td class="n">${money(creditCollected)}</td></tr><tr><td>Counted Cash</td><td class="n">${money(counted)}</td><td>Difference</td><td class="n">${money(difference)}</td></tr></tbody></table></div><div class="section"><h2>Item Dispatch</h2><table><thead><tr><th>Item</th><th>KG</th><th>Pcs</th><th>Entries</th><th>Branches</th></tr></thead><tbody>${itemRows}</tbody></table></div><div class="section"><h2>Branch Dispatch</h2><table><thead><tr><th>Branch</th><th>KG</th><th>Pcs</th><th>Orders</th></tr></thead><tbody>${branchRows}</tbody></table></div><div class="section"><h2>Handover Notes</h2><p>${notes || 'No notes'}</p></div><div class="sign"><div class="line">Packing Cashier</div><div class="line">Packing In-Charge</div><div class="line">Accounts</div></div></body></html>`);
-    win.document.close(); win.focus(); setTimeout(() => win.print(), 250);
+    printViaIframe(`<!doctype html><html><head><title>Packing Closure ${date}</title><style>@page{size:auto;margin:8mm}@media print{html,body{height:auto !important}}*{box-sizing:border-box}body{font-family:Arial;margin:0;color:#111827}h1{margin:0}.muted{color:#6b7280;font-size:12px}.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:18px 0}.k{border:1px solid #d1d5db;border-radius:10px;padding:10px}.k span{font-size:10px;text-transform:uppercase;color:#6b7280}.k b{display:block;font-size:20px;margin-top:5px}table{width:100%;border-collapse:collapse;margin-top:10px;font-size:12px}th,td{border:1px solid #d1d5db;padding:7px;text-align:left}th{background:#f3f4f6}.n{text-align:right}.section{margin-top:20px}.sign{display:grid;grid-template-columns:repeat(3,1fr);gap:28px;margin-top:55px}.line{border-top:1px solid #111;text-align:center;padding-top:6px;font-size:11px}@media print{body{margin:12mm}.no{display:none}}</style></head><body><h1>Packing Daily / Cashier Closure</h1><p class="muted">${dateLabel(date)} · ${finalized ? 'Finalized' : 'Live preview'} · Staff: ${staffName}</p><div class="grid"><div class="k"><span>Gross Sales</span><b>${money(grossSales)}</b></div><div class="k"><span>Dispatched</span><b>${dispatchedOrderIds.size}</b></div><div class="k"><span>Expected Cash</span><b>${money(expectedCash)}</b></div><div class="k"><span>Difference</span><b>${money(difference)}</b></div></div><div class="section"><h2>Cashier Summary</h2><table><tbody><tr><td>Opening Cash</td><td class="n">${money(Number(openingCash||0))}</td><td>Cash Collection</td><td class="n">${money(cashTotal)}</td></tr><tr><td>UPI</td><td class="n">${money(paymentTotal('upi'))}</td><td>Card</td><td class="n">${money(paymentTotal('card'))}</td></tr><tr><td>Credit Billed</td><td class="n">${money(creditBilled)}</td><td>Credit Collected</td><td class="n">${money(creditCollected)}</td></tr><tr><td>Counted Cash</td><td class="n">${money(counted)}</td><td>Difference</td><td class="n">${money(difference)}</td></tr></tbody></table></div><div class="section"><h2>Item Dispatch</h2><table><thead><tr><th>Item</th><th>KG</th><th>Pcs</th><th>Entries</th><th>Branches</th></tr></thead><tbody>${itemRows}</tbody></table></div><div class="section"><h2>Branch Dispatch</h2><table><thead><tr><th>Branch</th><th>KG</th><th>Pcs</th><th>Orders</th></tr></thead><tbody>${branchRows}</tbody></table></div><div class="section"><h2>Handover Notes</h2><p>${notes || 'No notes'}</p></div><div class="sign"><div class="line">Packing Cashier</div><div class="line">Packing In-Charge</div><div class="line">Accounts</div></div></body></html>`);
   };
 
   if (loading) return <div className="flex min-h-[55vh] items-center justify-center"><Loader2 className="size-7 animate-spin text-teal-600" /></div>;
@@ -421,7 +568,7 @@ export default function PackingDailyClosureTab({ onCounterStatusChange }: { onCo
     {error && <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-bold text-red-700"><AlertTriangle className="mr-2 inline size-4"/>{error}</div>}
     {message && <div className="rounded-2xl border border-teal-200 bg-teal-50 px-4 py-3 text-sm font-bold text-teal-700"><CheckCircle2 className="mr-2 inline size-4"/>{message}</div>}
 
-    <div className="flex gap-2 overflow-x-auto pb-1"><button onClick={()=>setSection('operations')} className={cn('inline-flex shrink-0 items-center gap-2 rounded-xl border px-4 py-2.5 text-xs font-black',section==='operations'?'border-teal-700 bg-teal-700 text-white':'bg-card')}><PackageCheck className="size-4"/>Packing & Dispatch</button><button onClick={()=>setSection('cashier')} className={cn('inline-flex shrink-0 items-center gap-2 rounded-xl border px-4 py-2.5 text-xs font-black',section==='cashier'?'border-teal-700 bg-teal-700 text-white':'bg-card')}><WalletCards className="size-4"/>Cashier Closure</button><button onClick={()=>setSection('history')} className={cn('inline-flex shrink-0 items-center gap-2 rounded-xl border px-4 py-2.5 text-xs font-black',section==='history'?'border-teal-700 bg-teal-700 text-white':'bg-card')}><History className="size-4"/>Closure History</button></div>
+    <div className="flex gap-2 overflow-x-auto pb-1"><button onClick={()=>setSection('operations')} className={cn('inline-flex shrink-0 items-center gap-2 rounded-xl border px-4 py-2.5 text-xs font-black',section==='operations'?'border-teal-700 bg-teal-700 text-white':'bg-card')}><PackageCheck className="size-4"/>Packing & Dispatch</button><button onClick={()=>setSection('cashier')} className={cn('inline-flex shrink-0 items-center gap-2 rounded-xl border px-4 py-2.5 text-xs font-black',section==='cashier'?'border-teal-700 bg-teal-700 text-white':'bg-card')}><WalletCards className="size-4"/>Cashier Closure</button><button onClick={()=>setSection('disputes')} className={cn('inline-flex shrink-0 items-center gap-2 rounded-xl border px-4 py-2.5 text-xs font-black',section==='disputes'?'border-teal-700 bg-teal-700 text-white':'bg-card')}><Undo2 className="size-4"/>Disputes & Returns</button><button onClick={()=>setSection('history')} className={cn('inline-flex shrink-0 items-center gap-2 rounded-xl border px-4 py-2.5 text-xs font-black',section==='history'?'border-teal-700 bg-teal-700 text-white':'bg-card')}><History className="size-4"/>Closure History</button></div>
 
     {section === 'operations' && <>
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6"><StatCard label="Packed Orders" value={packedOrders.length} helper="Sent to packing today" icon={<PackageCheck className="size-5"/>} tone="blue"/><StatCard label="Dispatched Orders" value={dispatchedOrderIds.size} helper="Completed dispatch" icon={<Truck className="size-5"/>} tone="emerald"/><StatCard label="Pending Orders" value={pendingOrders} helper="Still waiting in packing" icon={<ClipboardCheck className="size-5"/>} tone="amber"/><StatCard label="Dispatch KG" value={qty(dispatchedKg)} helper="Weight-based items" icon={<Send className="size-5"/>} tone="emerald"/><StatCard label="Dispatch Pcs" value={qty(dispatchedPcs)} helper="Piece-based items" icon={<Send className="size-5"/>} tone="blue"/><StatCard label="Leftover" value={`${qty(leftoverKg)} kg`} helper={`${leftoverRows.length} item balances`} icon={<AlertTriangle className="size-5"/>} tone={leftoverRows.length?'red':'slate'}/></div>
@@ -429,6 +576,8 @@ export default function PackingDailyClosureTab({ onCounterStatusChange }: { onCo
     </>}
 
     {section === 'cashier' && <div className="space-y-4"><div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5"><StatCard label="Bills" value={billCount} helper="Unique bill numbers" icon={<ClipboardCheck className="size-5"/>} tone="blue"/><StatCard label="Gross Sales" value={money(grossSales)} helper="Paid sales rows" icon={<IndianRupee className="size-5"/>} tone="emerald"/><StatCard label="Credit Billed" value={money(creditBilled)} helper="New credit balance" icon={<CreditCard className="size-5"/>} tone="amber"/><StatCard label="Credit Collected" value={money(creditCollected)} helper="Later collections" icon={<WalletCards className="size-5"/>} tone="blue"/><StatCard label="Expected Cash" value={money(expectedCash)} helper="Opening + cash collection" icon={<Banknote className="size-5"/>} tone="slate"/></div><div className="grid gap-4 xl:grid-cols-[1.1fr_.9fr]"><div className="rounded-2xl border bg-card p-4 space-y-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="font-display text-lg font-black">Cashier Handover</h3><p className="text-xs text-muted-foreground">Opening the counter is mandatory before billing. Closure requires an exact physical cash match.</p></div><span className={cn('rounded-full px-3 py-1 text-xs font-black',finalized?'bg-slate-100 text-slate-700':record?.status==='draft'?'bg-teal-100 text-teal-700':'bg-amber-100 text-amber-700')}>{finalized?'Closed — Reopen Available':counterOpen?'Counter Open — Billing Unlocked':'Counter Closed — Billing Locked'}</span></div><div className="grid gap-3 sm:grid-cols-2"><label className="space-y-1"><span className="text-xs font-black text-muted-foreground">Opening Cash</span><input type="number" min="0" value={openingCash} disabled={finalized||record?.status==='draft'} onChange={e=>setOpeningCash(e.target.value)} className="h-11 w-full rounded-xl border bg-background px-3 text-sm font-bold"/></label><label className="space-y-1"><span className="text-xs font-black text-muted-foreground">Counted Closing Cash</span><input type="number" min="0" value={countedCash} disabled={finalized || !counterOpen} onChange={e=>setCountedCash(e.target.value)} className="h-11 w-full rounded-xl border bg-background px-3 text-sm font-bold" placeholder="Physical cash count"/></label><label className="space-y-1 sm:col-span-2"><span className="text-xs font-black text-muted-foreground">Handover Notes</span><textarea value={notes} disabled={finalized} onChange={e=>setNotes(e.target.value)} className="min-h-24 w-full rounded-xl border bg-background p-3 text-sm" placeholder="Pending orders, cash variance, leftovers or branch handover notes"/></label></div>{counterOpen && countedCash.trim() && roundedDifference !== 0 && <div className={cn('rounded-xl border px-3 py-2 text-sm font-bold', roundedDifference < 0 ? 'border-red-200 bg-red-50 text-red-700' : 'border-amber-200 bg-amber-50 text-amber-700')}><AlertTriangle className="mr-2 inline size-4" />{roundedDifference < 0 ? `Cash shortage: ${money(Math.abs(roundedDifference))}` : `Cash excess: ${money(roundedDifference)}`}. Resolve the difference before closure.</div>}<div className="flex flex-wrap gap-2"><button onClick={startCounter} disabled={saving||counterOpen||!isToday} className="inline-flex h-11 items-center gap-2 rounded-xl border bg-card px-4 text-xs font-black disabled:opacity-50">{saving?<Loader2 className="size-4 animate-spin"/>:<CheckCircle2 className="size-4"/>}{finalized?'Reopen Counter':'Open Counter'}</button><button onClick={finalize} disabled={saving||!counterOpen||!cashMatches} className="inline-flex h-11 items-center gap-2 rounded-xl bg-teal-700 px-4 text-xs font-black text-white disabled:opacity-50">{saving?<Loader2 className="size-4 animate-spin"/>:<ShieldCheck className="size-4"/>}Finalize Daily Closure</button></div></div><div className="space-y-4"><div className="rounded-2xl border bg-card p-4"><h3 className="font-black">Payment Breakdown</h3><div className="mt-3 space-y-2">{[['Cash',cashTotal],['UPI',paymentTotal('upi')],['Card',paymentTotal('card')],['Bank',paymentTotal('bank')],['Mixed',paymentTotal('mixed')]].map(([label,value])=><div key={String(label)} className="flex items-center justify-between rounded-xl bg-muted/35 px-3 py-2 text-sm"><span>{label}</span><b>{money(Number(value))}</b></div>)}</div></div><div className="rounded-2xl border bg-card p-4"><h3 className="font-black">Cash Reconciliation</h3><div className="mt-3 space-y-2">{[['Opening Cash',Number(openingCash||0)],['Cash Collection',cashTotal],['Expected Cash',expectedCash],['Counted Cash',counted],['Difference',roundedDifference]].map(([label,value])=><div key={String(label)} className="flex items-center justify-between rounded-xl bg-muted/35 px-3 py-2 text-sm"><span>{label}</span><b className={String(label)==='Difference'&&Number(value)!==0?'text-red-600':''}>{money(Number(value))}</b></div>)}</div></div></div></div></div>}
+
+    {section === 'disputes' && <DisputesAndReturnsPanel />}
 
     {section === 'history' && <div className="overflow-hidden rounded-2xl border bg-card"><div className="border-b bg-muted/30 px-4 py-3"><h3 className="font-black">Saved Packing Closures</h3><p className="text-xs text-muted-foreground">Last 30 business dates</p></div><div className="overflow-x-auto"><table className="min-w-full text-sm"><thead className="bg-muted/50 text-[10px] font-black uppercase tracking-wide text-muted-foreground"><tr><th className="px-4 py-3 text-left">Date</th><th className="px-4 py-3 text-left">Status / Staff</th><th className="px-4 py-3 text-right">Gross Sales</th><th className="px-4 py-3 text-right">Dispatched</th><th className="px-4 py-3 text-right">Expected Cash</th><th className="px-4 py-3 text-right">Difference</th></tr></thead><tbody className="divide-y">{history.length?history.map(row=><tr key={row.id} className="cursor-pointer hover:bg-muted/20" onClick={()=>setDate(row.business_date)}><td className="px-4 py-3 font-black">{dateLabel(row.business_date)}</td><td className="px-4 py-3"><span className={cn('rounded-full px-2 py-1 text-[10px] font-black',row.status==='finalized'?'bg-slate-100 text-slate-700':'bg-teal-100 text-teal-700')}>{row.status}</span><p className="mt-1 text-xs text-muted-foreground">{row.closed_by||row.opened_by||row.recorded_by_name}</p></td><td className="px-4 py-3 text-right font-black">{money(Number(row.gross_sales||0))}</td><td className="px-4 py-3 text-right">{row.dispatched_orders}</td><td className="px-4 py-3 text-right">{money(Number(row.expected_cash||0))}</td><td className={cn('px-4 py-3 text-right font-black',Number(row.cash_difference||0)!==0&&'text-red-600')}>{money(Number(row.cash_difference||0))}</td></tr>):<tr><td colSpan={6} className="px-4 py-10 text-center text-muted-foreground">No packing closures saved yet.</td></tr>}</tbody></table></div></div>}
   </section>;

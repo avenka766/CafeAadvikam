@@ -81,7 +81,17 @@ async function performCakeDispatch(order: CakeOrderRow, actor: string) {
     const { error: packedError } = await supabase.rpc('update_cake_master_order_status', { p_id: order.id, p_new_status: 'Packed', p_actor: actor });
     if (packedError) throw new Error(packedError.message);
   }
-  await ensureCakeDispatchIncoming(order, actor);
+  // BUG FIX: 'Planner' cake orders (the isolated custom-cake branch — see the
+  // comment above this component) have no retail branch stock to sync into.
+  // ensureCakeDispatchIncoming() writes to branch_incoming, whose branch
+  // CHECK constraint only allows SNB/VRSNB/Hosur — calling it for a Planner
+  // cake would throw a DB constraint violation. Planner's own "advance order
+  // closed" check (BranchBusinessModules.tsx) only ever looks at this row's
+  // status, so skipping the stock sync and going straight to 'Dispatched' is
+  // both safe and sufficient for that branch.
+  if (order.branch !== 'Planner') {
+    await ensureCakeDispatchIncoming({ ...order, branch: order.branch as 'SNB' | 'VRSNB' }, actor);
+  }
   const { error: dispatchError } = await supabase.rpc('update_cake_master_order_status', { p_id: order.id, p_new_status: 'Dispatched', p_actor: actor });
   if (dispatchError) throw new Error(dispatchError.message);
 }
@@ -610,7 +620,12 @@ function CakeDispatchReviewModal({ orders, dispatchedBy, onClose, onDone }: {
   const createdInvoicesRef = useRef<Map<DispatchInvoiceScope, DispatchInvoiceRecord>>(new Map());
 
   const byBranch = useMemo(() => {
-    const map = new Map<DispatchInvoiceScope, CakeOrderRow[]>();
+    // Keyed on the full CakeOrderRow branch union (includes 'Planner'), not
+    // DispatchInvoiceScope — Planner cakes are grouped here too so their
+    // status still gets a per-order count, but the invoice loop below skips
+    // that group entirely (Planner isn't a valid dispatch-invoice scope; see
+    // performCakeDispatch's matching skip of the branch_incoming stock sync).
+    const map = new Map<CakeOrderRow['branch'], CakeOrderRow[]>();
     for (const o of orders) {
       const list = map.get(o.branch) ?? [];
       list.push(o);
@@ -637,6 +652,7 @@ function CakeDispatchReviewModal({ orders, dispatchedBy, onClose, onDone }: {
       }
       const records: DispatchInvoiceRecord[] = [];
       for (const [branch, group] of byBranch) {
+        if (branch === 'Planner') continue; // no dispatch invoice for Planner-scope cakes
         const already = createdInvoicesRef.current.get(branch);
         if (already) { records.push(already); continue; }
         const items: DispatchInvoiceItem[] = group.map(o => ({

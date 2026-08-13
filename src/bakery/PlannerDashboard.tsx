@@ -3340,6 +3340,7 @@ function walkinBillToInvoiceRecord(bill: WalkinBillRow): DispatchInvoiceRecord {
     paidAt: bill.createdAt,
     notes: `Walk-in Bill · Payment: ${bill.paymentMode.toUpperCase()}`,
     createdAt: bill.createdAt,
+    dispatchEntryIds: [], // not a real dispatch — nothing to trace back to
   };
 }
 
@@ -4177,7 +4178,7 @@ function useHosurShopOrders(rows: ProductionRow[], orders: BakeryOrder[]) {
           }];
         }),
       );
-      const byOrder = new Map<string, { itemName: string; unit: string; requested: number; dispatched: number; cancelled: number; cancellationReason: string | null }[]>();
+      const byOrder = new Map<string, { itemName: string; rawItemName: string; unit: string; requested: number; dispatched: number; cancelled: number; cancellationReason: string | null }[]>();
       for (const item of (itemsData ?? []) as Record<string, unknown>[]) {
         const rawName = String(item.item_name ?? '');
         // Only surface items that belong to the currently-visible row set
