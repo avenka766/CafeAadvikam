@@ -766,7 +766,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch', c
       ? storeLines
       : orderType === 'custom'
         ? (customLines.length > 0 ? customLines : [{ itemName: custom.itemName.trim(), quantity: Number(custom.quantity || 0), unit: custom.unit, price: Number(custom.price || 0), tax:0, discount:0, lineTotal: Number(custom.quantity || 0) * Number(custom.price || 0) }])
-        : [{ barcode: selectedCakeType?.catalogBarcode, itemName: cakeItemName, quantity: cakeWeight, unit:'kg' as const, price: cakeWeight > 0 ? cakeGrandTotal / cakeWeight : 0, tax:0, discount:0, lineTotal: cakeGrandTotal }];
+        : [{ barcode: undefined as number | undefined, itemName: cakeItemName, quantity: cakeWeight, unit:'kg' as const, price: cakeWeight > 0 ? cakeGrandTotal / cakeWeight : 0, tax:0, discount:0, lineTotal: cakeGrandTotal }];
     const orderValue = sourceLines.reduce((sum, line)=>sum+line.lineTotal,0);
     if (orderType === 'cake' && (!selectedCakeType || cakeWeight <= 0 || !cake.flavor.trim() || !cake.shape.trim())) {
       setError('Cream type, cake type, weight, flavor and shape are mandatory.');
@@ -941,6 +941,15 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch', c
     payMode?: 'cash' | 'upi' | 'card' | 'split' | 'credit',
     closingOverrides?: { quantity: number; discount: number; additionalCharges: number; refundMode?: 'cash' | 'upi' | 'card'; paymentSplits?: Array<{ mode: 'cash' | 'upi' | 'card'; amount: number }>; discountReason?: string; creditDueDate?: string },
   ): Promise<string | null> => {
+    // AdvanceCakeOrdersTab's `branch` prop is typed as the strict `Branch`
+    // union because most callers pass a real retail branch and several
+    // functions below (fetchBranchData, submitOrder, nextBranchAdvanceOrderNumberAtomic)
+    // genuinely require that. The one exception is PackingCakeOrdersTab's
+    // Custom Cake Order embed, which force-casts `'Planner' as Branch` (see
+    // the FEATURE comment above ModuleProps) — a real, intentional runtime
+    // value the static type doesn't admit. Compare through `string` here
+    // rather than widening the prop type everywhere else in this component.
+    const isPlannerScope = (branch as string) === 'Planner';
     const fail = (message: string) => {
       setError(message);
       return message;
@@ -1002,14 +1011,14 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch', c
     // for those two branches. For Planner, check that directly against the
     // linked cake_master_orders row's own status instead (see cakeDispatched
     // check just below), and skip the branchStock-quantity check entirely.
-    if (orderKind === 'cake' && !stockAlreadyReserved && branch !== 'Planner') {
+    if (orderKind === 'cake' && !stockAlreadyReserved && !isPlannerScope) {
       const missingLine = orderLines.find((line) => stockQty(branchStock, line.itemName, line.barcode) < line.quantity);
       if (missingLine) {
         const available = stockQty(branchStock, missingLine.itemName, missingLine.barcode);
         return fail(`Advance cake order ${o.orderNo} cannot be closed. ${missingLine.itemName} requires ${missingLine.quantity} ${missingLine.unit}, but only ${available} is in stock. Confirm the dispatched cake in Stock / Incoming, then try again.`);
       }
     }
-    if (orderKind === 'cake' && branch === 'Planner') {
+    if (orderKind === 'cake' && isPlannerScope) {
       const { data: cakeRow, error: cakeCheckError } = await supabase
         .from('cake_master_orders')
         .select('status')
@@ -1030,7 +1039,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch', c
       p_payment_mode: rpcPaymentMode,
       p_salesperson: o.salesperson,
       p_biller: isSnbOrder ? auditActor : (currentUser?.displayName || 'Staff'),
-      p_deduct_stock: orderKind !== 'custom' && !stockAlreadyReserved && branch !== 'Planner',
+      p_deduct_stock: orderKind !== 'custom' && !stockAlreadyReserved && !isPlannerScope,
       p_discount_amount: discountAmount,
       p_additional_charges: additionalCharges,
       p_refund_amount: refundAmount,

@@ -997,7 +997,7 @@ export default function BranchBillingProTab({
             barcode: Number(freeItem.barcode ?? freeItem.itemId) || undefined,
             itemName: String(freeItem.itemName ?? freeItem.name ?? 'Promotion free item'),
             quantity: Number(freeItem.quantity || 0),
-            unit: freeItem.unit === 'kg' ? 'kg' : 'pcs',
+            unit: (freeItem.unit === 'kg' ? 'kg' : 'pcs') as 'kg' | 'pcs',
             price: 0,
             discount: 0,
             tax: 0,

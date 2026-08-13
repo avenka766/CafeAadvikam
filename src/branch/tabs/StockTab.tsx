@@ -4,6 +4,7 @@ import {
   ArrowDownToLine, Package, AlertTriangle, Loader2,
   ChevronDown, ChevronUp, Scale, Hash, CheckCircle2, CheckCheck,
   PencilLine, Search, X, Plus, RefreshCw, TrendingDown, Clock, User,
+  Undo2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { SectionHeader, EmptyState, fmt } from '../components';
@@ -111,7 +112,7 @@ function ConfirmButton({ onConfirm }: { onConfirm: () => Promise<string | null> 
 
   return (
     <button
-      onClick={handleClick}
+      onClick={() => void handleClick()}
       disabled={state === 'loading'}
       className="inline-flex items-center gap-1 text-xs font-semibold text-white bg-primary px-3 py-1 rounded-full disabled:opacity-50 transition active:scale-95"
     >
@@ -403,6 +404,65 @@ function NegativeStockTab({
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
+// Inline Dispute / Return action row. Dispute asks for the quantity actually
+// received before submitting; Return asks for a short reason. Kept as one
+// small component so each incoming row can open its own form independently.
+function IncomingActionForm({ mode, defaultQty, unit, onCancel, onSubmit }: {
+  mode: 'dispute' | 'return';
+  defaultQty: number;
+  unit: string;
+  onCancel: () => void;
+  onSubmit: (qtyOrReason: { quantity?: number; reason: string }) => Promise<void>;
+}) {
+  const [quantity, setQuantity] = useState(String(defaultQty));
+  const [reason, setReason] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState('');
+
+  const submit = async () => {
+    setErr('');
+    if (mode === 'dispute') {
+      const qty = Number(quantity);
+      if (!Number.isFinite(qty) || qty < 0) { setErr('Enter the quantity actually received.'); return; }
+      setSaving(true);
+      await onSubmit({ quantity: qty, reason });
+      setSaving(false);
+    } else {
+      if (reason.trim().length < 3) { setErr('Enter a short reason for the return.'); return; }
+      setSaving(true);
+      await onSubmit({ reason });
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="mt-2 w-full rounded-xl border border-slate-200 bg-slate-50 p-3 space-y-2">
+      {mode === 'dispute' && (
+        <label className="block text-xs font-semibold text-muted-foreground">
+          Quantity actually received ({unit})
+          <input type="number" min="0" step="0.001" value={quantity} onChange={(e) => setQuantity(e.target.value)}
+            className="mt-1 h-9 w-full rounded-lg border border-slate-200 bg-white px-2 text-sm font-bold outline-none focus:ring-2 focus:ring-amber-300" />
+        </label>
+      )}
+      <label className="block text-xs font-semibold text-muted-foreground">
+        {mode === 'dispute' ? 'Reason (optional)' : 'Reason for return'}
+        <textarea value={reason} onChange={(e) => setReason(e.target.value)}
+          placeholder={mode === 'dispute' ? 'Explain the mismatch, if anything beyond the quantity' : 'Why is this being sent back to Packing?'}
+          className="mt-1 min-h-16 w-full rounded-lg border border-slate-200 bg-white p-2 text-xs font-semibold outline-none focus:ring-2 focus:ring-amber-300" />
+      </label>
+      {err && <p className="text-[11px] font-bold text-red-600">{err}</p>}
+      <div className="flex gap-2">
+        <button onClick={() => void submit()} disabled={saving}
+          className={cn('inline-flex h-9 flex-1 items-center justify-center gap-1 rounded-lg text-xs font-black text-white disabled:opacity-50', mode === 'dispute' ? 'bg-red-600' : 'bg-slate-900')}>
+          {saving ? <Loader2 className="size-3.5 animate-spin" /> : mode === 'dispute' ? <AlertTriangle className="size-3.5" /> : <Undo2 className="size-3.5" />}
+          {mode === 'dispute' ? 'Submit Dispute' : 'Request Return'}
+        </button>
+        <button onClick={onCancel} disabled={saving} className="h-9 rounded-lg border border-slate-200 bg-white px-3 text-xs font-black text-slate-600">Cancel</button>
+      </div>
+    </div>
+  );
+}
+
 type StockSubTab = 'incoming' | 'current' | 'manual' | 'negative' | 'threshold';
 
 export function StockTab({ branch, branchStock, branchIncoming, branchThresholds, loading, stockMismatches, allowManualUpdate = true }: Props) {
@@ -492,32 +552,66 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
     setSyncing(false);
   };
 
-  const raiseIncomingDispute = async (inc: IncomingStock) => {
-    const reason = 'Received quantity does not match the dispatched/expected quantity';
+  // Dispute now asks for the quantity actually received and goes through a
+  // secure RPC that also notifies branch admin + Owner + Planner (previously
+  // this fired a fixed-reason local-only notification and left admin_notifications
+  // untouched, so Planner never learned about a dispute at all).
+  const raiseIncomingDispute = async (inc: IncomingStock, receivedQty: number, reasonText: string) => {
+    setDisputeError('');
+    const raisedBy = currentUser?.displayName || currentUser?.username || 'Branch User';
+    const { error } = await supabase.rpc('raise_branch_incoming_dispute_secure', {
+      p_incoming_id: inc.id,
+      p_received_quantity: receivedQty,
+      p_reason: reasonText.trim() || 'Received quantity does not match the dispatched/expected quantity',
+    });
+    if (error) {
+      setDisputeError(error.message);
+      return;
+    }
+    setDisputedIncoming((prev) => ({ ...prev, [inc.id]: true }));
     addNotification({
       branch,
       type: 'Stock Dispute',
       title: 'Incoming stock mismatch raised',
-      details: `${inc.itemName} · Expected/dispatch qty ${formatQtyLabel(inc.quantity, inc.itemName, inc.unit)} · ${reason}`,
-      raisedBy: currentUser?.displayName || currentUser?.username || 'Branch User',
+      details: `${inc.itemName} · Dispatched ${formatQtyLabel(inc.quantity, inc.itemName, inc.unit)} · Received ${formatQtyLabel(receivedQty, inc.itemName, inc.unit)}`,
+      raisedBy,
     });
-    setDisputedIncoming((prev) => ({ ...prev, [inc.id]: true }));
-    const raisedBy = currentUser?.displayName || currentUser?.username || 'Branch User';
-    setDisputeError('');
-    const { error } = await supabase
-      .from('branch_incoming')
-      .update({
-        disputed: true,
-        dispute_reason: reason,
-        disputed_by: raisedBy,
-        disputed_at: new Date().toISOString(),
-      })
-      .eq('id', inc.id);
-    if (error) {
-      setDisputeError(`Dispute notification was created, but the stock row could not be locked in Supabase: ${error.message}`);
-    } else {
-      await fetchBranchData(branch);
+    await fetchBranchData(branch);
+  };
+
+  // Return sends this incoming stock back to Packing: it appears as a
+  // pending request in Planner's Transfer In queue (Daily Closure ▸ Disputes
+  // & Returns), and syncs into closing stock once Planner confirms it.
+  const [returnError, setReturnError] = useState('');
+  const requestReturn = async (inc: IncomingStock, reasonText: string) => {
+    setReturnError('');
+    const { error } = await supabase.rpc('request_packing_transfer_in_return_secure', {
+      p_incoming_id: inc.id,
+      p_reason: reasonText.trim() || 'Returned by branch',
+    });
+    if (error) { setReturnError(error.message); return; }
+    await fetchBranchData(branch);
+  };
+
+  // Which row (if any) has its Dispute/Return inline form open
+  const [openIncomingForm, setOpenIncomingForm] = useState<Record<string, 'dispute' | 'return' | null>>({});
+
+  // Bulk selection for "Confirm Selected"
+  const [selectedIncoming, setSelectedIncoming] = useState<Record<string, boolean>>({});
+  const [confirmingSelected, setConfirmingSelected] = useState(false);
+  const [confirmSelectedError, setConfirmSelectedError] = useState('');
+  const toggleSelected = (id: string) => setSelectedIncoming((prev) => ({ ...prev, [id]: !prev[id] }));
+  const handleConfirmSelected = async () => {
+    const ids = Object.entries(selectedIncoming).filter(([, checked]) => checked).map(([id]) => id);
+    if (ids.length === 0) return;
+    setConfirmingSelected(true);
+    setConfirmSelectedError('');
+    for (const id of ids) {
+      const err = await confirmIncoming(branch, id);
+      if (err) { setConfirmSelectedError(err); break; }
     }
+    setConfirmingSelected(false);
+    setSelectedIncoming({});
   };
 
   const SUBTABS: { id: StockSubTab; label: string }[] = [
@@ -559,12 +653,19 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
             icon={<ArrowDownToLine className="size-4 text-emerald-600" />}
             title="Incoming Stock"
             right={
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <button onClick={handleRefreshIncoming} disabled={syncing}
                   className="inline-flex items-center gap-1 text-xs font-semibold text-muted-foreground bg-muted px-2.5 py-1 rounded-full disabled:opacity-50 transition active:scale-95">
                   <RefreshCw className={cn('size-3', syncing && 'animate-spin')} />
                   {syncing ? 'Checking…' : 'Refresh'}
                 </button>
+                {Object.values(selectedIncoming).some(Boolean) && (
+                  <button onClick={() => void handleConfirmSelected()} disabled={confirmingSelected}
+                    className="inline-flex items-center gap-1 text-xs font-semibold text-white bg-slate-900 px-2.5 py-1 rounded-full disabled:opacity-50 transition active:scale-95">
+                    {confirmingSelected ? <Loader2 className="size-3 animate-spin" /> : <CheckCircle2 className="size-3" />}
+                    {confirmingSelected ? 'Adding…' : `Confirm Selected (${Object.values(selectedIncoming).filter(Boolean).length})`}
+                  </button>
+                )}
                 {todayIncoming.length > 0 && (
                   <>
                     <span className="text-xs text-muted-foreground">{todayIncoming.length} pending</span>
@@ -583,9 +684,19 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
               {confirmAllError}
             </p>
           )}
+          {confirmSelectedError && (
+            <p className="mx-4 mt-2 text-xs text-destructive bg-destructive/10 px-3 py-2 rounded-xl">
+              {confirmSelectedError}
+            </p>
+          )}
           {disputeError && (
             <p className="mx-4 mt-2 text-xs text-destructive bg-destructive/10 px-3 py-2 rounded-xl">
               {disputeError}
+            </p>
+          )}
+          {returnError && (
+            <p className="mx-4 mt-2 text-xs text-destructive bg-destructive/10 px-3 py-2 rounded-xl">
+              {returnError}
             </p>
           )}
           {todayIncoming.length === 0 ? (
@@ -594,9 +705,17 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
             <div className="divide-y">
               {todayIncoming.map((inc) => {
                 const displayUnit = inc.unit ?? detectSellUnit(inc.itemName);
+                const isDisputed = disputedIncoming[inc.id] || inc.disputed;
+                const isReturnRequested = inc.returnRequested;
+                const isLocked = isDisputed || isReturnRequested;
+                const [openForm, setOpenForm] = [openIncomingForm[inc.id], (v: 'dispute' | 'return' | null) => setOpenIncomingForm((p) => ({ ...p, [inc.id]: v }))];
                 return (
-                  <div key={inc.id} className="flex items-center justify-between px-4 py-3 gap-3">
+                  <div key={inc.id} className="flex flex-wrap items-center justify-between px-4 py-3 gap-3">
                     <div className="flex items-center gap-2 min-w-0 flex-1">
+                      {!isLocked && (
+                        <input type="checkbox" checked={!!selectedIncoming[inc.id]} onChange={() => toggleSelected(inc.id)}
+                          className="size-4 shrink-0 rounded border-slate-300" aria-label={`Select ${inc.itemName}`} />
+                      )}
                       {displayUnit === 'kg' ? <Scale className="size-3.5 text-muted-foreground shrink-0" /> : <Hash className="size-3.5 text-muted-foreground shrink-0" />}
                       <div className="min-w-0">
                         <p className="text-sm font-medium truncate">{inc.itemName}</p>
@@ -607,13 +726,37 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
                       <span className="text-sm font-bold text-emerald-600 bg-emerald-50 px-2.5 py-0.5 rounded-full tabular-nums">
                         +{formatQtyLabel(inc.quantity, inc.itemName, inc.unit)}
                       </span>
-                      <button onClick={() => void raiseIncomingDispute(inc)} className={cn('inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold transition active:scale-95', (disputedIncoming[inc.id] || inc.disputed) ? 'bg-amber-100 text-amber-700' : 'bg-red-50 text-red-600 hover:bg-red-100')}>
-                        <AlertTriangle className="size-3.5" /> {(disputedIncoming[inc.id] || inc.disputed) ? 'Disputed' : 'Dispute'}
-                      </button>
-                      {/* Disputed incoming stock stays blocked until admin review. */}
-                      {!(disputedIncoming[inc.id] || inc.disputed) && <ConfirmButton onConfirm={() => confirmIncoming(branch, inc.id)} />}
-                      {(disputedIncoming[inc.id] || inc.disputed) && <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold bg-amber-100 text-amber-700">Awaiting Admin Review</span>}
+                      {!isLocked && (
+                        <>
+                          <button onClick={() => setOpenForm(openForm === 'dispute' ? null : 'dispute')}
+                            className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold bg-red-50 text-red-600 hover:bg-red-100 transition active:scale-95">
+                            <AlertTriangle className="size-3.5" /> Dispute
+                          </button>
+                          <button onClick={() => setOpenForm(openForm === 'return' ? null : 'return')}
+                            className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold bg-slate-100 text-slate-700 hover:bg-slate-200 transition active:scale-95">
+                            <Undo2 className="size-3.5" /> Return
+                          </button>
+                          <ConfirmButton onConfirm={() => confirmIncoming(branch, inc.id)} />
+                        </>
+                      )}
+                      {isDisputed && <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold bg-amber-100 text-amber-700">Awaiting Admin Review</span>}
+                      {!isDisputed && isReturnRequested && <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold bg-blue-100 text-blue-700">Return Requested — Awaiting Planner</span>}
                     </div>
+                    {openForm && !isLocked && (
+                      <div className="w-full">
+                        <IncomingActionForm
+                          mode={openForm}
+                          defaultQty={inc.quantity}
+                          unit={displayUnit}
+                          onCancel={() => setOpenForm(null)}
+                          onSubmit={async ({ quantity, reason }) => {
+                            if (openForm === 'dispute') await raiseIncomingDispute(inc, quantity ?? inc.quantity, reason);
+                            else await requestReturn(inc, reason);
+                            setOpenForm(null);
+                          }}
+                        />
+                      </div>
+                    )}
                   </div>
                 );
               })}
