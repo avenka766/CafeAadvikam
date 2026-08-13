@@ -19,6 +19,7 @@ import { recordLeftoverMovement, kolkataToday } from './PlannerLeftoverTab';
 // StoreDashboard.tsx into materialCalc.ts specifically so both places use
 // the exact same calculation.
 import { combinedMaterialsForItems } from './materialCalc';
+import { useRecipeStore } from './recipeStore';
 import { useStoreStockStore, type DeductionContext } from './storeStockStore';
 
 // Planner's "Planning" tab tags a proactive/extra-production batch with this
@@ -64,6 +65,19 @@ function clampOrderItems(items: BakeryOrderItem[]): BakeryOrderItem[] {
 // original flow (an order was never supposed to reach 'store_confirmed'
 // without its materials being deducted first).
 async function deductForOrder(items: BakeryOrderItem[], orderId: string, orderNumber: number): Promise<void> {
+  // BUG FIX: useRecipeStore starts with only a small hardcoded seed list
+  // (RECIPE_DEFINITIONS) until something calls loadRecipes() to pull the
+  // real, current recipes from bakery_recipes. That call has only ever
+  // lived in components Store itself renders (StoreDashboard.tsx,
+  // RecipeManagement.tsx, BranchStockForm.tsx) — never anywhere in
+  // Planner's dashboard, which is what actually calls this function via
+  // mergeOrdersForStore. So for any item not in that small seed set (e.g.
+  // MYSORE PAK isn't in it at all), combinedMaterialsForItems below was
+  // silently computing zero materials whenever Planner sent the order —
+  // no deduction, no store_material_deductions row, no error of any kind.
+  // loadRecipes() no-ops immediately if already loaded, so this is safe to
+  // call unconditionally on every send.
+  await useRecipeStore.getState().loadRecipes();
   const materials = combinedMaterialsForItems(items);
   if (materials.length === 0) return;
   const { useAuthStore } = await import('@/stores/authStore');

@@ -42,6 +42,8 @@ interface CakeOrderRow {
   correction_reason: string | null;
   correction_requested_by: string | null;
   correction_requested_at: string | null;
+  dispatched_by: string | null;
+  dispatched_at: string | null;
   // FEATURE (2026-08-08): "I need the checklist and the invoice — get the
   // price from the SNB branch advance cake order." These three columns are
   // already populated at order-creation time (backfilled from the advance
@@ -159,7 +161,7 @@ export default function PackingCakeOrdersTab({ mode = 'packing' }: { mode?: 'pac
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState('');
-  const [view, setView] = useState<'ready' | 'in_progress' | 'corrections' | 'custom'>('ready');
+  const [view, setView] = useState<'ready' | 'in_progress' | 'corrections' | 'custom' | 'history'>('ready');
   const [returnId, setReturnId] = useState<string | null>(null);
   const [returnReason, setReturnReason] = useState('');
 
@@ -167,7 +169,7 @@ export default function PackingCakeOrdersTab({ mode = 'packing' }: { mode?: 'pac
     setLoading(true);
     let query = supabase
       .from('cake_master_orders')
-      .select('id,branch,order_no,source_order_id,slip_number,customer_name,delivery_date,delivery_time,cake_kg,prepared_quantity,flavor,shape,cream_type,message_on_cake,design_notes,updated_at,created_at,status,correction_reason,correction_requested_by,correction_requested_at,order_value,advance_amount,balance_amount')
+      .select('id,branch,order_no,source_order_id,slip_number,customer_name,delivery_date,delivery_time,cake_kg,prepared_quantity,flavor,shape,cream_type,message_on_cake,design_notes,updated_at,created_at,status,correction_reason,correction_requested_by,correction_requested_at,dispatched_by,dispatched_at,order_value,advance_amount,balance_amount')
       .order('delivery_date', { ascending: true });
     if (mode !== 'planner') {
       query = query.in('status', ['Ready for Packing', 'Packed', 'Correction Required']);
@@ -220,8 +222,14 @@ export default function PackingCakeOrdersTab({ mode = 'packing' }: { mode?: 'pac
   // fetches these rows in the first place.
   const EARLY_STAGES = ['New', 'Accepted', 'Baking'];
   const inProgressOrders = orders.filter(order => EARLY_STAGES.includes(order.status));
+  // BUG FIX: once dispatched, an order used to stay in this exact same
+  // "Ready" list forever — nothing here excluded status 'Dispatched', so
+  // it kept showing with its "Dispatch to {branch}" button still live,
+  // looking exactly like it still needed dispatching. Dispatched orders
+  // now live only in the new History view below.
+  const dispatchedOrders = orders.filter(order => order.status === 'Dispatched');
   const visibleOrders = orders.filter(order => {
-    if (EARLY_STAGES.includes(order.status)) return false;
+    if (EARLY_STAGES.includes(order.status) || order.status === 'Dispatched') return false;
     return view === 'corrections' ? order.status === 'Correction Required' : order.status !== 'Correction Required';
   });
 
@@ -233,7 +241,7 @@ export default function PackingCakeOrdersTab({ mode = 'packing' }: { mode?: 'pac
           <h3 className="text-sm font-black text-foreground">Cake Packing</h3>
           <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-black text-muted-foreground">{view === 'in_progress' ? inProgressOrders.length : visibleOrders.length}</span>
         </div>
-        <div className="flex items-center gap-2"><div className="flex rounded-xl bg-muted p-1"><button type="button" onClick={() => setView('ready')} className={cn('rounded-lg px-3 py-1.5 text-[11px] font-black', view === 'ready' ? 'bg-white text-slate-950 shadow-sm' : 'text-muted-foreground')}>Ready</button>{mode === 'planner' && <button type="button" onClick={() => setView('in_progress')} className={cn('rounded-lg px-3 py-1.5 text-[11px] font-black', view === 'in_progress' ? 'bg-white text-indigo-700 shadow-sm' : 'text-muted-foreground')}>In Progress ({inProgressOrders.length})</button>}<button type="button" onClick={() => setView('corrections')} className={cn('rounded-lg px-3 py-1.5 text-[11px] font-black', view === 'corrections' ? 'bg-white text-amber-800 shadow-sm' : 'text-muted-foreground')}>Corrections ({orders.filter(order => order.status === 'Correction Required').length})</button><button type="button" onClick={() => setView('custom')} className={cn('rounded-lg px-3 py-1.5 text-[11px] font-black', view === 'custom' ? 'bg-white text-rose-700 shadow-sm' : 'text-muted-foreground')}>{mode === 'planner' ? 'Advance Cake Order' : 'Custom Cake Order'}</button></div>{view !== 'custom' && <button type="button" title="Refresh cake orders" onClick={() => void load()} disabled={loading} className="grid size-9 place-items-center rounded-lg border border-border text-muted-foreground disabled:cursor-wait disabled:opacity-60"><RefreshCcw className={cn('size-3.5', loading && 'animate-spin')} /></button>}</div>
+        <div className="flex items-center gap-2"><div className="flex rounded-xl bg-muted p-1"><button type="button" onClick={() => setView('ready')} className={cn('rounded-lg px-3 py-1.5 text-[11px] font-black', view === 'ready' ? 'bg-white text-slate-950 shadow-sm' : 'text-muted-foreground')}>Ready</button>{mode === 'planner' && <button type="button" onClick={() => setView('in_progress')} className={cn('rounded-lg px-3 py-1.5 text-[11px] font-black', view === 'in_progress' ? 'bg-white text-indigo-700 shadow-sm' : 'text-muted-foreground')}>In Progress ({inProgressOrders.length})</button>}<button type="button" onClick={() => setView('corrections')} className={cn('rounded-lg px-3 py-1.5 text-[11px] font-black', view === 'corrections' ? 'bg-white text-amber-800 shadow-sm' : 'text-muted-foreground')}>Corrections ({orders.filter(order => order.status === 'Correction Required').length})</button>{mode === 'planner' && <button type="button" onClick={() => setView('history')} className={cn('rounded-lg px-3 py-1.5 text-[11px] font-black', view === 'history' ? 'bg-white text-emerald-700 shadow-sm' : 'text-muted-foreground')}>History ({dispatchedOrders.length})</button>}<button type="button" onClick={() => setView('custom')} className={cn('rounded-lg px-3 py-1.5 text-[11px] font-black', view === 'custom' ? 'bg-white text-rose-700 shadow-sm' : 'text-muted-foreground')}>{mode === 'planner' ? 'Advance Cake Order' : 'Custom Cake Order'}</button></div>{view !== 'custom' && <button type="button" title="Refresh cake orders" onClick={() => void load()} disabled={loading} className="grid size-9 place-items-center rounded-lg border border-border text-muted-foreground disabled:cursor-wait disabled:opacity-60"><RefreshCcw className={cn('size-3.5', loading && 'animate-spin')} /></button>}</div>
       </div>
 
       {error && (
@@ -271,7 +279,13 @@ export default function PackingCakeOrdersTab({ mode = 'packing' }: { mode?: 'pac
           <p className="text-sm font-bold text-muted-foreground">Nothing in progress at Cake Master right now.</p>
         </div>
       )}
-      {view !== 'in_progress' && !loading && visibleOrders.length === 0 && (
+      {view === 'history' && !loading && dispatchedOrders.length === 0 && (
+        <div className="flex flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-border py-16 text-center">
+          <Package className="size-8 text-muted-foreground/40" />
+          <p className="text-sm font-bold text-muted-foreground">No cakes dispatched yet.</p>
+        </div>
+      )}
+      {view !== 'in_progress' && view !== 'history' && !loading && visibleOrders.length === 0 && (
         <div className="flex flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-border py-16 text-center">
           <Package className="size-8 text-muted-foreground/40" />
           <p className="text-sm font-bold text-muted-foreground">{view === 'corrections' ? 'No cake weight corrections pending.' : 'No cake orders waiting on Packing right now.'}</p>
@@ -313,7 +327,41 @@ export default function PackingCakeOrdersTab({ mode = 'packing' }: { mode?: 'pac
         </div>
       )}
 
-      {view !== 'in_progress' && <div className="space-y-2.5">
+      {/* History — read-only, same shape as In Progress above. Dispatched
+          orders are never re-actionable (update_cake_master_order_status
+          itself rejects any further transition once status='Dispatched'),
+          so no buttons here, just the record of who dispatched it and when. */}
+      {view === 'history' && (
+        <div className="space-y-2.5">
+          {dispatchedOrders.map(order => (
+            <div key={order.id} className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-emerald-200 bg-emerald-50/40 p-3.5">
+              <div className="flex min-w-0 items-center gap-3">
+                <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-emerald-100">
+                  <Cake className="size-5 text-emerald-600" />
+                </div>
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="rounded-md bg-foreground px-1.5 py-0.5 text-[10px] font-black text-white">{order.branch}</span>
+                    {order.slip_number && <span className="rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-bold text-muted-foreground">Slip {order.slip_number}</span>}
+                    <span className="flex items-center gap-1 rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-bold text-muted-foreground"><Receipt className="size-3" />{order.order_no}</span>
+                    <span className="rounded-md bg-emerald-600 px-1.5 py-0.5 text-[10px] font-black text-white">Dispatched</span>
+                  </div>
+                  <p className="mt-0.5 truncate text-sm font-black text-foreground">{order.customer_name || 'Customer'}</p>
+                  <p className="truncate text-[11px] font-bold text-muted-foreground">
+                    Dispatched: <span className="font-black text-foreground">{order.prepared_quantity ?? order.cake_kg ?? '—'}</span> · {order.flavor || '—'} · {order.shape || '—'} · Delivery {fmtDate(order.delivery_date)} {order.delivery_time || ''}
+                  </p>
+                </div>
+              </div>
+              <div className="text-right text-[11px] font-bold text-muted-foreground">
+                {Number(order.order_value) > 0 && <p className="text-sm font-black text-foreground">Rs. {Number(order.order_value).toFixed(2)}</p>}
+                {order.dispatched_at && <p>{order.dispatched_by ? `${order.dispatched_by} · ` : ''}{new Date(order.dispatched_at).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</p>}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {view !== 'in_progress' && view !== 'history' && <div className="space-y-2.5">
         {visibleOrders.map((order) => (
           <div key={order.id} className={cn('flex flex-wrap items-center justify-between gap-3 rounded-2xl border bg-card p-3.5', selected.has(order.id) ? 'border-teal-300 ring-1 ring-teal-200' : 'border-border')}>
             <div className="flex min-w-0 items-center gap-3">
