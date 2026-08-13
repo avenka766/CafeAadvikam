@@ -526,7 +526,12 @@ function AdminDashboard() {
           netSales: Math.max(0, totalSales - returnsDay),
           expenses: expensesDay,
           purchasePayments: adminLedger.toNumber(savedLedgerClosure?.purchase_payments || 0),
-          bankDeposits: adminLedger.toNumber(savedLedgerClosure?.bank_deposits || 0),
+          // NOTE: branch_daily_closures has no bank_deposits column (see
+          // LedgerSavedClosure) — this summary has never actually had bank
+          // deposit data wired in, so it's always been 0 in practice. Real
+          // bank deposit records live in snb_bank_deposits/vrsnb_bank_deposits,
+          // keyed by date rather than by this closure row.
+          bankDeposits: 0,
           closingBalance,
           differenceAmount,
           remarks: savedLedgerClosure?.notes || (savedLedgerClosure ? 'Closed and verified from Supabase' : 'Pending branch closure'),
@@ -1490,7 +1495,7 @@ function AdminDashboard() {
             {wasteLogs.filter(row => inRange(row.createdAt, fromDate, toDate)).map(row => (
               <tr key={row.id} className="hover:bg-amber-50/50">
                 <td className="whitespace-nowrap px-3 py-3 font-bold text-slate-600">{fmtDateTime(row.createdAt)}</td>
-                <td className="px-3 py-3"><BranchPill branch={row.branch} /></td>
+                <td className="px-3 py-3"><BranchPill branch={row.branch as Branch} /></td>
                 <td className="px-3 py-3 font-black text-slate-800">{row.logType}</td>
                 <td className="px-3 py-3 font-black text-slate-950">{row.itemName}</td>
                 <td className="whitespace-nowrap px-3 py-3 font-black tabular-nums">{row.quantity} {row.unit}</td>

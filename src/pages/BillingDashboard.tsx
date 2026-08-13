@@ -2186,6 +2186,7 @@ function NewBillPanel() {
         items: newItems as Order['items'],
         subtotal: 0, discount: 0, discountType: 'flat', discountValue: 0, total: 0,
         status: 'running',
+        paymentType: 'unpaid',
         createdBy: billedBy,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -2628,7 +2629,7 @@ function NewBillPanel() {
           await printKotSlip({
             id: orderId, orderNumber: kotData.kotNumber, tableNumber, orderType: 'dine_in',
             items: pendingItems as Order['items'], subtotal: 0, discount: 0, discountType: 'flat', discountValue: 0,
-            total: 0, status: 'running', createdBy: billedBy,
+            total: 0, status: 'running', paymentType: 'unpaid', createdBy: billedBy,
             createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
           });
         }

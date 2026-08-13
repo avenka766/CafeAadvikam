@@ -408,11 +408,12 @@ function Panel({
   );
 }
 
-function Field({ label, children }: { label: string; children: ReactNode }) {
+function Field({ label, children, hint }: { label: string; children: ReactNode; hint?: string }) {
   return (
     <label className="space-y-1 text-xs font-black uppercase tracking-wide text-slate-500">
       <span>{label}</span>
       {children}
+      {hint && <span className="block text-[10px] font-semibold normal-case tracking-normal text-slate-400">{hint}</span>}
     </label>
   );
 }

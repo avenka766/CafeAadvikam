@@ -14,7 +14,7 @@ import { tableLabel } from '@/constants/config';
 import type { PaymentType } from '@/types';
 
 const PAYMENT_LABELS: Record<PaymentType, string> = {
-  cash: 'Cash', upi: 'UPI', card: 'Card', part_payment: 'Split Payment', unpaid: 'Unpaid', advance: 'Advance', credit: 'Credit',
+  cash: 'Cash', upi: 'UPI', card: 'Card', wallet: 'Wallet', part_payment: 'Split Payment', unpaid: 'Unpaid', advance: 'Advance', credit: 'Credit',
 };
 const PIE_COLORS = ['#2D7D6F', '#C5973E', '#5BA3C9', '#E07B5B', '#999'];
 const SOURCE_COLORS = ['#3B82F6', '#8B5CF6'];
