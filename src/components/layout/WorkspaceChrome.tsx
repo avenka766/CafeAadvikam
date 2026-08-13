@@ -241,6 +241,7 @@ function navForRole(role?: string): NavItem[] {
         { label: 'History', path: '/bakery/receive/vrsnb?tab=history', icon: <History className="size-4" />, group: 'Main' },
         { label: 'Alert', path: '/bakery/receive/vrsnb?tab=alerts', icon: <Bell className="size-4" />, group: 'Main' },
         { label: 'Stock / Incoming', path: '/bakery/receive/vrsnb?tab=stock', icon: <Package className="size-4" />, group: 'Operations' },
+        { label: 'Dump / Damage / Transfer Out', path: '/bakery/receive/vrsnb?tab=stock-movements', icon: <Truck className="size-4" />, group: 'Stock' },
         { label: 'Stock Count', path: '/bakery/receive/vrsnb?tab=stock-count', icon: <ClipboardCheck className="size-4" />, group: 'Operations' },
       ];
     case 'receiver_snb':

@@ -251,26 +251,6 @@ export default function BottomNav() {
       { label: "Hosur", icon: <ShoppingCart className="size-5" />, path: "/bakery/planner" },
       { label: "Closure", icon: <WalletCards className="size-5" />, path: "/bakery/planner" },
     );
-  } else if (currentUser.role === "branch_vrsnb") {
-    navItems.push(
-      { label: "Bill", icon: <ShoppingCart className="size-5" />, path: "/branch/vrsnb" },
-      { label: "Advance", icon: <FileText className="size-5" />, path: "/branch/vrsnb?tab=advance" },
-      { label: "Returns", icon: <History className="size-5" />, path: "/branch/vrsnb?tab=returns" },
-      { label: "History", icon: <History className="size-5" />, path: "/branch/vrsnb?tab=history" },
-      { label: "Payment Edit", icon: <CreditCard className="size-5" />, path: "/branch/vrsnb?tab=payment-edit" },
-      { label: "Closure", icon: <WalletCards className="size-5" />, path: "/branch/vrsnb?tab=closure" },
-      { label: "Alerts", icon: <Bell className="size-5" />, path: "/branch/vrsnb?tab=alerts" },
-    );
-  } else if (currentUser.role === "branch_snb") {
-    navItems.push(
-      { label: "Bill", icon: <ShoppingCart className="size-5" />, path: "/branch/snb" },
-      { label: "Advance", icon: <FileText className="size-5" />, path: "/branch/snb?tab=advance" },
-      { label: "Returns", icon: <History className="size-5" />, path: "/branch/snb?tab=returns" },
-      { label: "History", icon: <History className="size-5" />, path: "/branch/snb?tab=history" },
-      { label: "Payment Edit", icon: <CreditCard className="size-5" />, path: "/branch/snb?tab=payment-edit" },
-      { label: "Closure", icon: <WalletCards className="size-5" />, path: "/branch/snb?tab=closure" },
-      { label: "Alerts", icon: <Bell className="size-5" />, path: "/branch/snb?tab=alerts" },
-    );
   } else if (currentUser.role === "branch_hosur") {
     // BUG FIX: /branch/hosur was retired — Hosur billing/shops/dispatch are
     // now embedded in the Planner dashboard (see WorkspaceChrome's
