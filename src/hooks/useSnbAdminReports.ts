@@ -370,7 +370,7 @@ async function fetchPaged(
     if (options.orderColumn) query = query.order(options.orderColumn, { ascending: false });
     const { data, error } = await query.range(from, from + pageSize - 1);
     if (error) throw new Error(`${table}: ${error.message}`);
-    const page = (data ?? []) as Record<string, unknown>[];
+    const page = (data ?? []) as unknown as Record<string, unknown>[];
     rows.push(...page);
     if (page.length < pageSize) break;
   }
