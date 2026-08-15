@@ -4356,6 +4356,23 @@ function HosurShopDispatchPanel({ rows, mode, orders, leftoverBalances, onDispat
     setExtraItemsByCard(v => ({ ...v, [orderId]: (v[orderId] ?? []).filter((_, i) => i !== idx) }));
   };
   const [review, setReview] = useState<{ actions: PendingDispatchAction[]; card: HosurShopOrderCard } | null>(null);
+  // FEATURE (2026-08-15): "I need the ability to send more than the ordered
+  // quantity sometimes there will be less production." Previously any typed
+  // quantity above what a shop still owed was silently capped (see the
+  // preserved 2026-08-07 CRITICAL BUG FIX comment below) — the planner could
+  // type 8.610 but the review modal, and the actual dispatch, only ever
+  // used 8. That cap stays the *default* (accidental over-dispatch should
+  // still never happen silently), but it's no longer absolute: when the
+  // typed quantity exceeds what's owed, sending stops here and shows exactly
+  // which items and by how much, requiring one explicit confirm click before
+  // the excess is included. Once confirmed, the excess is sent the same way
+  // a manually-added extra item already is (isExtra: true) — same ledger
+  // tagging, same "EXTRA (non-requested item)" notes — just auto-populated
+  // from the quantity box instead of the separate extra-item form below.
+  const [overOrderPrompt, setOverOrderPrompt] = useState<{
+    card: HosurShopOrderCard;
+    overs: { itemName: string; unit: string; owed: number; typed: number; extra: number }[];
+  } | null>(null);
 
   const availableFor = (itemName: string) => Math.max(0, leftoverBalances.get(closingStockItemSlug(itemName))?.balance ?? 0);
   // BUG FIX (2026-08-09): "we are unable to remove the orders from the hosur
@@ -4379,6 +4396,7 @@ function HosurShopDispatchPanel({ rows, mode, orders, leftoverBalances, onDispat
     }
     setQtyDraft(draft);
     setResult(null);
+    setOverOrderPrompt(null);
     // BUG FIX (2026-08-07): force a fresh fetch of this shop's dispatched
     // totals the moment its card opens, not just after a send succeeds.
     // Live evidence: the same item got sent to the same shop 2-3 times in a
@@ -4390,7 +4408,7 @@ function HosurShopDispatchPanel({ rows, mode, orders, leftoverBalances, onDispat
     // sendCard below is what actually makes over-dispatch impossible.
     reload();
   };
-  const cancel = () => { setSelectedOrderId(null); setQtyDraft({}); setResult(null); };
+  const cancel = () => { setSelectedOrderId(null); setQtyDraft({}); setResult(null); setOverOrderPrompt(null); };
   // "Remove" only zeroes this batch's quantity draft — the item is still
   // owed and will keep blocking the card from ever showing as Dispatched.
   // Use cancelItemRemaining for a permanent, reason-required cancellation.
@@ -4421,36 +4439,64 @@ function HosurShopDispatchPanel({ rows, mode, orders, leftoverBalances, onDispat
   // This used to call onDispatch immediately per item; it now only builds
   // the pending action list and opens DispatchReviewModal — that modal is
   // the sole place submitDispatch actually runs, on explicit confirm.
-  const openReviewForCard = (card: HosurShopOrderCard) => {
-    setResult(null);
+  // Pure builder, no state writes — called once to detect (includeExtra:
+  // false) and again to actually build for review once confirmed
+  // (includeExtra: true). `overs` lists every item where the typed quantity
+  // exceeds what's still owed, whether or not includeExtra is set, so the
+  // caller can always tell whether a confirmation step is needed.
+  const buildActionsForCard = (card: HosurShopOrderCard, includeExtra: boolean) => {
     const actions: PendingDispatchAction[] = [];
     let skippedNoLink = false;
-    let clampedAny = false;
+    const overs: { itemName: string; unit: string; owed: number; typed: number; extra: number }[] = [];
+    const anchorOrderId = orders.find(o => bakeryOrderCoversHosurShopOrder(o, card.orderId))?.id ?? null;
     for (const item of card.items) {
-      // CRITICAL BUG FIX (2026-08-07, preserved): hard-cap every send to
-      // this item's true remaining balance (requested − already dispatched)
-      // — dispatching more than a shop ordered should never be possible.
+      // CRITICAL BUG FIX (2026-08-07, preserved) + FEATURE (2026-08-15):
+      // the order-linked portion is still hard-capped at this item's true
+      // remaining balance (requested − already dispatched) — dispatching
+      // more than a shop *ordered* against its own order record should
+      // never silently happen. Anything typed beyond that is real, but it's
+      // an over-delivery, not order fulfillment, so it's tracked separately
+      // below as an auto-generated extra item, only once confirmed.
       const remaining = remainingFor(item);
       const typed = Number(qtyDraft[item.itemName] || 0);
       const qty = Math.min(typed, remaining);
-      if (typed > remaining + 0.01) clampedAny = true;
-      if (qty <= 0.001) continue;
-      const row = rowsByName.get(item.itemName);
-      if (!row) { skippedNoLink = true; continue; }
-      const targetEntries = orders.filter(o => row.contributingOrderIds.includes(o.id) && bakeryOrderCoversHosurShopOrder(o, card.orderId));
-      if (targetEntries.length === 0) { skippedNoLink = true; continue; }
-      const split = autoSplitForItem(targetEntries, row.itemName, qty);
-      for (const order of targetEntries) {
-        const orderItem = order.items.find(i => sameItem(i.itemName, row.itemName));
-        const orderQty = split[order.id] ?? 0;
-        if (!orderItem || orderQty <= 0) continue;
-        actions.push({
-          orderId: order.id, itemName: orderItem.itemName, quantity: orderQty, unit: orderItem.dispatchUnit || 'kg',
-          dispatchEntryId: getId(`${order.id}:${row.itemName}:${card.orderId}`), targetHosurOrderId: card.orderId,
-        });
+      const extraAmount = Math.max(0, Math.round((typed - remaining) * 100) / 100);
+      if (extraAmount > 0.01) overs.push({ itemName: item.itemName, unit: item.unit, owed: remaining, typed, extra: extraAmount });
+      if (qty > 0.001) {
+        const row = rowsByName.get(item.itemName);
+        if (!row) { skippedNoLink = true; }
+        else {
+          const targetEntries = orders.filter(o => row.contributingOrderIds.includes(o.id) && bakeryOrderCoversHosurShopOrder(o, card.orderId));
+          if (targetEntries.length === 0) { skippedNoLink = true; }
+          else {
+            const split = autoSplitForItem(targetEntries, row.itemName, qty);
+            for (const order of targetEntries) {
+              const orderItem = order.items.find(i => sameItem(i.itemName, row.itemName));
+              const orderQty = split[order.id] ?? 0;
+              if (!orderItem || orderQty <= 0) continue;
+              actions.push({
+                orderId: order.id, itemName: orderItem.itemName, quantity: orderQty, unit: orderItem.dispatchUnit || 'kg',
+                dispatchEntryId: getId(`${order.id}:${row.itemName}:${card.orderId}`), targetHosurOrderId: card.orderId,
+              });
+            }
+          }
+        }
+      }
+      if (includeExtra && extraAmount > 0.001) {
+        if (!anchorOrderId) skippedNoLink = true;
+        else {
+          actions.push({
+            orderId: anchorOrderId, itemName: item.itemName, quantity: extraAmount, unit: item.unit,
+            dispatchEntryId: getId(`extra-auto:${card.orderId}:${item.itemName}`), targetHosurOrderId: card.orderId, isExtra: true,
+          });
+        }
       }
     }
-    const anchorOrderId = orders.find(o => bakeryOrderCoversHosurShopOrder(o, card.orderId))?.id ?? null;
+    return { actions, overs, skippedNoLink, anchorOrderId };
+  };
+
+  const finalizeReview = (card: HosurShopOrderCard, includeExtra: boolean) => {
+    const { actions, skippedNoLink, anchorOrderId } = buildActionsForCard(card, includeExtra);
     const extras = extraItemsByCard[card.orderId] ?? [];
     if (extras.length > 0) {
       // BUG FIX (2026-08-08 audit): same silent-drop issue as
@@ -4474,14 +4520,25 @@ function HosurShopDispatchPanel({ rows, mode, orders, leftoverBalances, onDispat
         ok: false,
         message: skippedNoLink
           ? "Couldn't send — one or more items couldn't be linked back to this shop's order. Refresh the page and try again; if it keeps happening, this order's data may need attention."
-          : clampedAny
-            ? "Nothing to send — every item here is already fully dispatched to this shop."
-            : 'Nothing to send — every item is set to 0.',
+          : 'Nothing to send — every item is set to 0.',
       });
       return;
     }
-    setResult(clampedAny ? { ok: true, message: "One or more items were capped at what this shop actually still owed (some had already been sent)." } : null);
+    setResult(null);
     setReview({ actions, card });
+  };
+
+  const openReviewForCard = (card: HosurShopOrderCard) => {
+    setResult(null);
+    // Detect-only pass first — if anything is typed above what's still
+    // owed, stop and show exactly what before touching anything. Confirming
+    // that prompt is what actually calls finalizeReview(card, true).
+    const { overs } = buildActionsForCard(card, false);
+    if (overs.length > 0) {
+      setOverOrderPrompt({ card, overs });
+      return;
+    }
+    finalizeReview(card, false);
   };
 
   if (shopOrders === null) return <p className="text-xs font-bold text-muted-foreground">Loading shop orders…</p>;
@@ -4550,8 +4607,8 @@ function HosurShopDispatchPanel({ rows, mode, orders, leftoverBalances, onDispat
                         ) : (
                           <div className="flex items-center gap-1.5">
                             <input
-                              type="number" min={0} max={remaining} value={val}
-                              onChange={e => setQtyDraft(v => ({ ...v, [item.itemName]: e.target.value }))}
+                              type="number" min={0} value={val}
+                              onChange={e => { setQtyDraft(v => ({ ...v, [item.itemName]: e.target.value })); setOverOrderPrompt(null); }}
                               className="w-20 rounded-lg border border-border bg-background px-2 py-1 text-right"
                             />
                             <button onClick={() => removeItem(item.itemName)} className="rounded-lg border border-border px-2 py-1 text-[10px] font-black text-muted-foreground hover:bg-muted" title="Not sending this item in this batch — set to 0, still owed">Skip</button>
@@ -4600,6 +4657,28 @@ function HosurShopDispatchPanel({ rows, mode, orders, leftoverBalances, onDispat
                   contextLabel={card.shopName}
                   onAdd={item => addExtraItem(card.orderId, item)}
                 />
+                {overOrderPrompt && overOrderPrompt.card.orderId === card.orderId && (
+                  <div className="rounded-lg border border-amber-300 bg-amber-50 p-2.5">
+                    <p className="text-[11px] font-black text-amber-900">
+                      Sending more than {card.shopName} currently has owed to it:
+                    </p>
+                    <ul className="mt-1 space-y-0.5">
+                      {overOrderPrompt.overs.map(o => (
+                        <li key={o.itemName} className="text-[11px] font-bold text-amber-800">
+                          {o.itemName}: {qtyFmt(o.owed)} {o.unit} owed · sending {qtyFmt(o.typed)} {o.unit} ({qtyFmt(o.extra)} {o.unit} extra, recorded as a non-requested item)
+                        </li>
+                      ))}
+                    </ul>
+                    <div className="mt-1.5 flex flex-wrap gap-1.5">
+                      <button onClick={() => { finalizeReview(card, true); setOverOrderPrompt(null); }} className="rounded-lg bg-amber-600 px-2.5 py-1 text-[10px] font-black text-white hover:bg-amber-700">
+                        Confirm — send the extra too
+                      </button>
+                      <button onClick={() => setOverOrderPrompt(null)} className="rounded-lg border border-amber-300 bg-white px-2.5 py-1 text-[10px] font-black text-amber-800 hover:bg-amber-100">
+                        Back, let me adjust the quantity
+                      </button>
+                    </div>
+                  </div>
+                )}
                 <div className="flex flex-wrap justify-end gap-2 pt-1">
                   <button onClick={cancel} className="rounded-xl border border-border px-3 py-2 text-xs font-bold text-muted-foreground hover:bg-muted">Cancel</button>
                   <button onClick={() => openReviewForCard(card)} className="flex items-center gap-1.5 rounded-xl bg-teal-600 px-3 py-2 text-xs font-bold text-white hover:bg-teal-700 disabled:opacity-50">
