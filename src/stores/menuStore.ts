@@ -167,8 +167,17 @@ export const useMenuStore = create<MenuState>()((set, get) => ({
   },
 
   subscribe: () => {
-    const channel = supabase.channel('menu-items-live').on('postgres_changes', { event: '*', schema: 'public', table: 'menu_items' }, () => { void get().loadMenu(true); }).subscribe();
-    return () => { void supabase.removeChannel(channel); };
+    // EGRESS FIX (2026-08-15): every single insert/update/delete on
+    // menu_items used to fire an immediate full reload — a bulk edit across
+    // many items fired that many back-to-back reloads. Debounce collapses a
+    // burst into one, same fix already proven on cake_master_orders.
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    const scheduleReload = () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => { void get().loadMenu(true); }, 2000);
+    };
+    const channel = supabase.channel('menu-items-live').on('postgres_changes', { event: '*', schema: 'public', table: 'menu_items' }, scheduleReload).subscribe();
+    return () => { if (debounceTimer) clearTimeout(debounceTimer); void supabase.removeChannel(channel); };
   },
 
   setItemImage: async (id: string, imageUrl: string) => {

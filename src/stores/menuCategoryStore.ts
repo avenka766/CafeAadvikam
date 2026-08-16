@@ -125,17 +125,26 @@ export const useMenuCategoryStore = create<MenuCategoryState>((set, get) => ({
   subscribe: (() => {
     let channel: ReturnType<typeof supabase.channel> | null = null;
     let refCount = 0;
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
     return () => {
       refCount += 1;
       if (!channel) {
+        // EGRESS FIX (2026-08-15): debounce collapses a burst of changes
+        // into one reload instead of one per event — same fix already
+        // proven on cake_master_orders.
+        const scheduleReload = () => {
+          if (debounceTimer) clearTimeout(debounceTimer);
+          debounceTimer = setTimeout(() => { void get().loadCategories(true); }, 2000);
+        };
         channel = supabase
           .channel('menu-categories-live')
-          .on('postgres_changes', { event: '*', schema: 'public', table: 'menu_categories' }, () => { void get().loadCategories(true); })
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'menu_categories' }, scheduleReload)
           .subscribe();
       }
       return () => {
         refCount -= 1;
         if (refCount <= 0 && channel) {
+          if (debounceTimer) clearTimeout(debounceTimer);
           void supabase.removeChannel(channel);
           channel = null;
           refCount = 0;
