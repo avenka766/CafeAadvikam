@@ -60,6 +60,7 @@ function fallbackToWindow(html: string) {
 }
 
 export function printViaIframe(html: string) {
+  console.log('[printViaIframe] called, html length:', html.length);
   let frame: HTMLIFrameElement | null = null;
   try {
     frame = document.createElement('iframe');
@@ -76,6 +77,7 @@ export function printViaIframe(html: string) {
     frame.style.opacity = '0';
     frame.style.pointerEvents = 'none';
     document.body.appendChild(frame);
+    console.log('[printViaIframe] iframe created and appended to document.body');
 
     const target = frame.contentWindow;
     if (!target) {
@@ -94,7 +96,7 @@ export function printViaIframe(html: string) {
     // Fires once the print dialog is dismissed. If the browser never fires
     // it (some don't, for iframe-hosted documents), don't leave the hidden
     // iframe sitting in the DOM forever.
-    target.onafterprint = cleanup;
+    target.onafterprint = () => { console.log('[printViaIframe] onafterprint fired — browser confirms the print dialog appeared and was dismissed'); cleanup(); };
     window.setTimeout(cleanup, 120_000);
 
     // The print trigger lives INSIDE the document being written, not in a
@@ -102,7 +104,7 @@ export function printViaIframe(html: string) {
     // is the actual fix here. It sets a flag on the iframe's own window so
     // the parent-side safety net below can tell it already ran, from a
     // completely different JS context, without any race.
-    const printTrigger = '<script>window.onload=function(){window.__printed=true;try{window.print();}catch(e){console.error("[printViaIframe] print() failed inside frame:",e);}};</script>';
+    const printTrigger = '<script>window.onload=function(){window.__printed=true;console.log("[printViaIframe] injected script onload fired, calling window.print()");try{window.print();console.log("[printViaIframe] window.print() call returned with no exception");}catch(e){console.error("[printViaIframe] print() failed inside frame:",e);}};</script>';
     const withTrigger = /<\/body>/i.test(html)
       ? html.replace(/<\/body>/i, `${printTrigger}</body>`)
       : `${html}${printTrigger}`;
@@ -110,16 +112,23 @@ export function printViaIframe(html: string) {
     target.document.open();
     target.document.write(withTrigger);
     target.document.close();
+    console.log('[printViaIframe] document written to iframe, waiting for its onload to fire the print trigger');
 
     // Safety net: if for any reason the injected script never ran (a
     // future stricter CSP blocking inline scripts, for example) still
     // print rather than doing nothing. Checks the flag the injected script
     // itself sets, so this can never double-fire alongside it.
     window.setTimeout(() => {
-      if (cleaned || (target as unknown as { __printed?: boolean }).__printed) return;
+      if (cleaned) return;
+      if ((target as unknown as { __printed?: boolean }).__printed) {
+        console.log('[printViaIframe] safety-net check: injected script already printed, nothing more to do');
+        return;
+      }
+      console.warn('[printViaIframe] safety-net firing — the injected script\'s onload never ran the print trigger within 1.5s. This itself is a real finding: it means either the iframe never finished loading, or its inline <script> never executed (e.g. blocked).');
       try {
         target.focus();
         target.print();
+        console.log('[printViaIframe] safety-net window.print() call returned with no exception');
       } catch (err) {
         console.error('[printViaIframe] safety-net print() failed:', err);
       }
