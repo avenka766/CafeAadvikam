@@ -1,11 +1,11 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { supabase } from '@/lib/supabase';
 import { CAFE_CONFIG } from '@/constants/config';
 import { formatTime, cn } from '@/lib/utils';
 import {
   Leaf, Clock, CheckCircle2, ChefHat, Bell,
-  Loader2, AlertCircle, MapPin,
+  Loader2, AlertCircle, MapPin, RefreshCw,
 } from 'lucide-react';
 import type { Order, OrderStatus, OrderType, CartItem, PaymentType, PaymentBreakdown, OrderSource } from '@/types';
 
@@ -48,6 +48,25 @@ export default function OrderTrackingPage() {
   const [order, setOrder] = useState<Order | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [refreshing, setRefreshing] = useState(false);
+
+  const fetchOrder = useCallback(async () => {
+    if (!orderId) return;
+    const { data, error: fetchErr } = await supabase
+      .from('orders')
+      .select('id, order_number, table_number, order_type, items, subtotal, discount, discount_type, discount_value, total, status, created_by, created_at, updated_at, notes, customer_name, payment_type, payment_breakdown, billed_by, cancel_reason, order_source')
+      .eq('id', orderId)
+      .single();
+
+    if (fetchErr || !data) {
+      setError('Order not found');
+      setLoading(false);
+      return;
+    }
+
+    setOrder(dbRowToOrder(data as Record<string, unknown>));
+    setLoading(false);
+  }, [orderId]);
 
   useEffect(() => {
     if (!orderId) {
@@ -56,43 +75,35 @@ export default function OrderTrackingPage() {
       return;
     }
 
-    const fetchOrder = async () => {
-      const { data, error: fetchErr } = await supabase
-        .from('orders')
-        .select('id, order_number, table_number, order_type, items, subtotal, discount, discount_type, discount_value, total, status, created_by, created_at, updated_at, notes, customer_name, payment_type, payment_breakdown, billed_by, cancel_reason, order_source')
-        .eq('id', orderId)
-        .single();
+    void fetchOrder();
 
-      if (fetchErr || !data) {
-        setError('Order not found');
-        setLoading(false);
-        return;
-      }
+    // EGRESS FIX (2026-08-15): replaced the 30s poll with a Realtime
+    // subscription scoped to just this one order (filter: id=eq.orderId) —
+    // the customer sees status changes the instant staff update them,
+    // instead of waiting up to 30s, and it costs a websocket push instead
+    // of a REST re-fetch every 30 seconds for the whole time this page is
+    // open. visibilitychange covers recovering from a dropped connection
+    // (e.g. phone screen was locked) without a background timer.
+    const channel = supabase
+      .channel(`cafe-order-track-${orderId}`)
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'orders', filter: `id=eq.${orderId}` },
+        (payload) => {
+          const row = payload.new as Record<string, unknown> | undefined;
+          if (row) setOrder(dbRowToOrder(row));
+        }
+      )
+      .subscribe();
 
-      setOrder(dbRowToOrder(data as Record<string, unknown>));
-      setLoading(false);
+    const refreshOnVisible = () => { if (!document.hidden) void fetchOrder(); };
+    document.addEventListener('visibilitychange', refreshOnVisible);
+
+    return () => {
+      document.removeEventListener('visibilitychange', refreshOnVisible);
+      void supabase.removeChannel(channel);
     };
-
-    fetchOrder();
-
-    // EGRESS FIX: Raised from 5 s → 30 s. A customer watching their order status
-    // does not need sub-second updates; 30 s is acceptable and cuts this page's
-    // per-visit egress by 83 %.
-    const interval = setInterval(async () => {
-      if (document.hidden) return;
-      const { data } = await supabase
-        .from('orders')
-        .select('id, order_number, table_number, order_type, items, subtotal, discount, discount_type, discount_value, total, status, created_by, created_at, updated_at, notes, customer_name, payment_type, payment_breakdown, billed_by, cancel_reason, order_source')
-        .eq('id', orderId)
-        .single();
-
-      if (data) {
-        setOrder(dbRowToOrder(data as Record<string, unknown>));
-      }
-    }, 30_000);
-
-    return () => clearInterval(interval);
-  }, [orderId]);
+  }, [orderId, fetchOrder]);
 
   const currentStepIdx = useMemo(() => {
     if (!order) return -1;
@@ -136,9 +147,20 @@ export default function OrderTrackingPage() {
       <div className="px-5 pt-12 pb-12 relative overflow-hidden">
         <div className="absolute inset-0 opacity-10" style={{ backgroundImage: 'radial-gradient(circle at 70% 50%, hsl(34 80% 52%), transparent)' }} />
         <div className="relative z-10">
-          <div className="flex items-center gap-2 mb-6">
-            <Leaf className="size-5 text-white/70" />
-            <span className="text-sm font-body font-medium text-white/70">{CAFE_CONFIG.name}</span>
+          <div className="flex items-center justify-between gap-2 mb-6">
+            <div className="flex items-center gap-2">
+              <Leaf className="size-5 text-white/70" />
+              <span className="text-sm font-body font-medium text-white/70">{CAFE_CONFIG.name}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => { setRefreshing(true); void fetchOrder().finally(() => setRefreshing(false)); }}
+              disabled={refreshing}
+              className="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-body font-semibold text-white/70 hover:text-white disabled:opacity-60"
+              style={{ background: 'rgba(255,255,255,0.12)', border: '1px solid rgba(255,255,255,0.15)' }}
+            >
+              <RefreshCw className={cn('size-3.5', refreshing && 'animate-spin')} /> Refresh
+            </button>
           </div>
           <p className="text-xs font-body font-semibold text-white/50 uppercase tracking-widest mb-1">Order Number</p>
           <p className="font-display text-6xl font-bold text-white leading-none">

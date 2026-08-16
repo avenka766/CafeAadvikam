@@ -7,7 +7,7 @@ import {
 } from 'recharts';
 import {
   TrendingUp, ShoppingBag, IndianRupee,
-  Download, CalendarDays, QrCode, UserCheck,
+  Download, CalendarDays, QrCode, UserCheck, RefreshCw,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { tableLabel } from '@/constants/config';
@@ -32,11 +32,23 @@ function toInputDate(d: Date): string {
 }
 
 export default function SalesReport() {
-  const { orders, startPolling, stopPolling } = useOrderStore();
+  const { orders, startPolling, stopPolling, loadOrders } = useOrderStore();
+  const [refreshing, setRefreshing] = useState(false);
 
   const [startDate, setStartDate] = useState<string>(toInputDate(new Date()));
   const [endDate, setEndDate] = useState<string>(toInputDate(new Date()));
   const [filterMode, setFilterMode] = useState<'today' | 'custom'>('today');
+  // EGRESS FIX (2026-08-15): the date pickers below had no `min`, so picking
+  // a range further back than the 60 days loadOrders(60) actually loads
+  // silently showed an incomplete/empty report with no indication why.
+  // Constraining the picker to the real window is simpler and safer here
+  // than building a second on-demand fetch path (like ReportsTab.tsx's
+  // "Load report" gate) for a report this size.
+  const oldestLoadedDate = useMemo(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 59);
+    return toInputDate(d);
+  }, []);
   // U-05 FIX: flag when the user has set an invalid range so we can show inline error
   const dateRangeInvalid = filterMode === 'custom' && startDate > endDate;
 
@@ -431,9 +443,19 @@ export default function SalesReport() {
     <div className="dashboard-screen min-h-screen bg-transparent pt-0 pb-6">
 
       {/* ── Page title ── */}
-      <div className="px-4 pt-4 pb-3 border-b border-border flex items-center gap-2">
-        <Download className="size-5 text-primary" />
-        <h1 className="font-display text-2xl font-bold text-foreground">Sales Report</h1>
+      <div className="px-4 pt-4 pb-3 border-b border-border flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <Download className="size-5 text-primary" />
+          <h1 className="font-display text-2xl font-bold text-foreground">Sales Report</h1>
+        </div>
+        <button
+          type="button"
+          onClick={() => { setRefreshing(true); void loadOrders(60).finally(() => setRefreshing(false)); }}
+          disabled={refreshing}
+          className="flex items-center gap-1.5 rounded-xl border border-border bg-card px-3 py-2 text-xs font-bold text-muted-foreground hover:bg-muted disabled:opacity-60"
+        >
+          <RefreshCw className={cn('size-3.5', refreshing && 'animate-spin')} /> Refresh
+        </button>
       </div>
 
       {/* ── Filter toolbar ── */}
@@ -460,11 +482,11 @@ export default function SalesReport() {
           <div className="flex gap-2 items-end">
             <div className="flex-1">
               <label className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest mb-1 block">From</label>
-              <input type="date" value={startDate} onChange={(e) => handleStartDateChange(e.target.value)} max={toInputDate(new Date())} className="w-full px-3 py-2.5 bg-card border border-border rounded-xl text-sm font-body" />
+              <input type="date" value={startDate} onChange={(e) => handleStartDateChange(e.target.value)} min={oldestLoadedDate} max={toInputDate(new Date())} className="w-full px-3 py-2.5 bg-card border border-border rounded-xl text-sm font-body" />
             </div>
             <div className="flex-1">
               <label className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest mb-1 block">To</label>
-              <input type="date" value={endDate} onChange={(e) => handleEndDateChange(e.target.value)} max={toInputDate(new Date())} className="w-full px-3 py-2.5 bg-card border border-border rounded-xl text-sm font-body" />
+              <input type="date" value={endDate} onChange={(e) => handleEndDateChange(e.target.value)} min={oldestLoadedDate} max={toInputDate(new Date())} className="w-full px-3 py-2.5 bg-card border border-border rounded-xl text-sm font-body" />
             </div>
           </div>
         )}

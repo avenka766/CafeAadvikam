@@ -11,6 +11,7 @@ import {
   Loader2,
   MapPin,
   PackageCheck,
+  RefreshCw,
   Search,
   ShoppingBag,
   Smartphone,
@@ -209,10 +210,14 @@ export default function OrderTrackingPage() {
 
   useEffect(() => {
     if (!searched || !/^\d{10}$/.test(phone.replace(/\D/g, ''))) return;
-    // EGRESS FIX: Raised from 12 s → 30 s. Order status changes are infrequent;
-    // 30 s refresh is imperceptible to customers waiting for their order.
-    const timer = window.setInterval(() => { if (!document.hidden) void searchOrders(phone, true); }, 30_000);
-    return () => window.clearInterval(timer);
+    // EGRESS FIX (2026-08-15): replaced the 30s poll with a visibilitychange
+    // refresh (catches a phone screen lock/unlock or app switch) plus a
+    // manual Refresh button in the header for the customer to check
+    // on-demand — no background timer running the whole time this page
+    // stays open.
+    const refreshOnVisible = () => { if (!document.hidden) void searchOrders(phone, true); };
+    document.addEventListener('visibilitychange', refreshOnVisible);
+    return () => document.removeEventListener('visibilitychange', refreshOnVisible);
   }, [phone, searchOrders, searched]);
 
   const sortedOrders = useMemo(() => [...orders].sort((a, b) => {
@@ -239,7 +244,7 @@ export default function OrderTrackingPage() {
       <section className="mx-auto max-w-6xl px-4 py-8 sm:px-6">
         {loading ? <div className="grid min-h-64 place-items-center rounded-3xl border border-stone-200 bg-white"><div className="text-center"><Loader2 className="mx-auto size-8 animate-spin text-amber-700" /><p className="mt-3 text-sm font-black text-stone-500">Finding your orders…</p></div></div>
           : searched && sortedOrders.length === 0 ? <div className="grid min-h-64 place-items-center rounded-3xl border border-dashed border-stone-300 bg-white p-8 text-center"><div><AlertCircle className="mx-auto size-10 text-stone-300" /><h2 className="mt-3 text-xl font-black">No orders found</h2><p className="mt-2 max-w-md text-sm font-semibold text-stone-500">Check that the mobile number matches the one entered during payment.</p><button type="button" onClick={() => navigate('/order')} className="mt-5 rounded-2xl bg-stone-950 px-5 py-3 text-sm font-black text-white">Place a new order</button></div></div>
-          : sortedOrders.length > 0 ? <div><div className="mb-5 flex flex-wrap items-end justify-between gap-3"><div><p className="text-[10px] font-black uppercase tracking-[0.2em] text-amber-800">Your bookings</p><h2 className="mt-1 font-display text-2xl font-black">{sortedOrders.length} order{sortedOrders.length === 1 ? '' : 's'} found</h2></div><p className="inline-flex items-center gap-2 text-xs font-bold text-stone-500"><span className="size-2 rounded-full bg-emerald-500 animate-pulse" /> Refreshes automatically</p></div><div className="space-y-4">{sortedOrders.map((order, index) => <OrderCard key={order.id} order={order} initiallyOpen={index === 0} />)}</div></div>
+          : sortedOrders.length > 0 ? <div><div className="mb-5 flex flex-wrap items-end justify-between gap-3"><div><p className="text-[10px] font-black uppercase tracking-[0.2em] text-amber-800">Your bookings</p><h2 className="mt-1 font-display text-2xl font-black">{sortedOrders.length} order{sortedOrders.length === 1 ? '' : 's'} found</h2></div><button type="button" onClick={() => void searchOrders(phone, true)} disabled={loading} className="inline-flex items-center gap-2 rounded-full border border-stone-200 bg-white px-3 py-1.5 text-xs font-bold text-stone-600 shadow-sm hover:bg-stone-50 disabled:opacity-60"><RefreshCw className={cn('size-3.5', loading && 'animate-spin')} /> Refresh status</button></div><div className="space-y-4">{sortedOrders.map((order, index) => <OrderCard key={order.id} order={order} initiallyOpen={index === 0} />)}</div></div>
           : <div className="grid gap-4 sm:grid-cols-3">{[[Smartphone, 'Enter your mobile', 'Use the exact number provided at checkout.'], [PackageCheck, 'See every order', 'Recent paid bakery bookings appear together.'], [Truck, 'Follow progress', 'Track preparation, packing and delivery live.']].map(([Icon, title, copy]) => { const IconComponent = Icon as typeof Smartphone; return <div key={String(title)} className="rounded-3xl border border-stone-200 bg-white p-5 shadow-sm"><IconComponent className="size-7 text-amber-700" /><h2 className="mt-4 font-black">{String(title)}</h2><p className="mt-2 text-sm font-semibold leading-6 text-stone-500">{String(copy)}</p></div>; })}</div>}
       </section>
     </main>
