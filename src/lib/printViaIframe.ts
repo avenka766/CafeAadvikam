@@ -104,7 +104,7 @@ export function printViaIframe(html: string) {
     // is the actual fix here. It sets a flag on the iframe's own window so
     // the parent-side safety net below can tell it already ran, from a
     // completely different JS context, without any race.
-    const printTrigger = '<script>window.onload=function(){window.__printed=true;console.log("[printViaIframe] injected script onload fired, calling window.print()");try{window.print();console.log("[printViaIframe] window.print() call returned with no exception");}catch(e){console.error("[printViaIframe] print() failed inside frame:",e);}};</script>';
+    const printTrigger = '<script>window.onload=function(){if(window.__printed){console.log("[printViaIframe] injected script onload fired, but the immediate synchronous print() already ran — skipping to avoid a duplicate dialog");return;}window.__printed=true;console.log("[printViaIframe] injected script onload fired, calling window.print()");try{window.print();console.log("[printViaIframe] window.print() call returned with no exception");}catch(e){console.error("[printViaIframe] print() failed inside frame:",e);}};</script>';
     const withTrigger = /<\/body>/i.test(html)
       ? html.replace(/<\/body>/i, `${printTrigger}</body>`)
       : `${html}${printTrigger}`;
@@ -113,6 +113,28 @@ export function printViaIframe(html: string) {
     target.document.write(withTrigger);
     target.document.close();
     console.log('[printViaIframe] document written to iframe, waiting for its onload to fire the print trigger');
+
+    // FIX (2026-08-16): "works on other machines, not on the Windows 7
+    // Planner PC." Chrome and Edge dropped Windows 7 support entirely in
+    // early 2023 — Firefox is the only browser still updating there, and
+    // Firefox has historically been stricter than Chrome about showing a
+    // dialog (print/alert/confirm) triggered from anything other than the
+    // exact synchronous user-gesture call stack. The trigger above only
+    // fires once the iframe's onload event fires — necessarily async, since
+    // the browser still needs to process what document.write() wrote —
+    // which moves the print() call outside that direct gesture chain.
+    // Chrome tolerates this; some Firefox builds may silently decline to
+    // show the dialog with zero error, which matches the reported symptom
+    // exactly. document.write()+close() are themselves synchronous, so an
+    // attempt can be made here too, still inside the original click's own
+    // call stack, before ever waiting for onload.
+    try {
+      target.focus();
+      target.print();
+      console.log('[printViaIframe] immediate synchronous print() (before waiting for onload) returned with no exception — note this does NOT prove a dialog actually appeared, only that the call didn\'t throw, which is exactly the ambiguity this fix works around. Not marking __printed here on purpose: the onload trigger and safety net below still run as normal backups. Calling print() again while a dialog is already open is a safe no-op in every major browser, so redundant attempts cost nothing.');
+    } catch (err) {
+      console.warn('[printViaIframe] immediate synchronous print() failed, will rely on the onload trigger / safety net instead:', err);
+    }
 
     // Safety net: if for any reason the injected script never ran (a
     // future stricter CSP blocking inline scripts, for example) still
