@@ -175,19 +175,22 @@ export default function BranchDashboard({ branch }: Props) {
     }
 
     const unsubscribe = subscribeToStock(branch);
-    const refresh = () => { if (!document.hidden) void fetchBranchData(branch); };
-    const refreshOnVisible = () => { if (!document.hidden) void fetchBranchData(branch); };
+    // EGRESS FIX (2026-08-15): dropped the 15-min/10-min recovery-poll
+    // timers — realtime handles normal stock/order changes, and
+    // visibilitychange (below) already covers "recovering from a dropped
+    // websocket while this tab was backgrounded." A blind timer running
+    // whether or not anything actually needed recovering was pure waste on
+    // top of that; the manual Refresh button covers the rest.
+    const refreshOnVisible = () => {
+      if (document.hidden) return;
+      void fetchBranchData(branch);
+      syncIncomingFromDispatches(branch);
+    };
     document.addEventListener('visibilitychange', refreshOnVisible);
-    // Realtime handles normal stock/order changes. This slower poll is only a
-    // recovery path for a dropped websocket connection.
-    const id = setInterval(refresh, 15 * 60_000);
-    const syncId = setInterval(() => { if (!document.hidden) syncIncomingFromDispatches(branch); }, 10 * 60_000);
 
     return () => {
       unsubscribe();
       document.removeEventListener('visibilitychange', refreshOnVisible);
-      clearInterval(id);
-      clearInterval(syncId);
     };
   }, [branch, cleanOldData, fetchBranchData, fetchCreditPayments, fetchStockMismatches, seedBranchItems, subscribeToStock, syncIncomingFromDispatches]);
 
@@ -204,12 +207,8 @@ export default function BranchDashboard({ branch }: Props) {
     void loadTodayLedger();
     const refreshOnVisible = () => { if (!document.hidden) void loadTodayLedger(); };
     document.addEventListener('visibilitychange', refreshOnVisible);
-    // This RPC returns one compact summary row, so keep totals reasonably fresh
-    // without restoring the large branch-table downloads.
-    const id = setInterval(() => { if (!document.hidden) void loadTodayLedger(); }, 2 * 60_000);
     return () => {
       document.removeEventListener('visibilitychange', refreshOnVisible);
-      clearInterval(id);
     };
   }, [loadTodayLedger]);
 
