@@ -354,8 +354,24 @@ export function renderDispatchInvoiceHtml(record: DispatchInvoiceRecord, mode: '
 // Cafe use successfully every day. Choosing the thermal printer is done in
 // the normal OS print dialog (or by setting it as the machine default).
 export async function printDispatchInvoice(record: DispatchInvoiceRecord, mode: 'a4' | 'thermal') {
-  const html = renderDispatchInvoiceHtml(record, mode);
+  // DIAGNOSTIC (2026-08-16): "Planner print does nothing, console is
+  // clean" — every plausible cause found via code review so far (popup
+  // blocker, QZ Tray silently swallowing the job) was already fixed in
+  // prior sessions and confirmed dead in this one. Rather than guess
+  // again, trace every step so the *next* failed attempt tells us exactly
+  // where it stops, instead of nothing. Safe to remove once the real cause
+  // is found — this changes no behavior, only what gets logged.
+  console.log('[printDispatchInvoice] called', { invoiceNo: record.invoiceNo, mode, itemCount: record.items?.length });
+  let html: string;
+  try {
+    html = renderDispatchInvoiceHtml(record, mode);
+    console.log('[printDispatchInvoice] HTML generated ok, length:', html.length);
+  } catch (err) {
+    console.error('[printDispatchInvoice] renderDispatchInvoiceHtml THREW — this is why nothing happened:', err);
+    throw err;
+  }
   printViaIframe(html);
+  console.log('[printDispatchInvoice] printViaIframe call returned (does not mean printing succeeded, just that it was invoked)');
 }
 
 function recordFromRow(row: Record<string, unknown>): DispatchInvoiceRecord {
