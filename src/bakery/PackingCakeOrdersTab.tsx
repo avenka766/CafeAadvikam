@@ -170,7 +170,12 @@ export default function PackingCakeOrdersTab({ mode = 'packing' }: { mode?: 'pac
     let query = supabase
       .from('cake_master_orders')
       .select('id,branch,order_no,source_order_id,slip_number,customer_name,delivery_date,delivery_time,cake_kg,prepared_quantity,flavor,shape,cream_type,message_on_cake,design_notes,updated_at,created_at,status,correction_reason,correction_requested_by,correction_requested_at,dispatched_by,dispatched_at,order_value,advance_amount,balance_amount')
-      .order('delivery_date', { ascending: true });
+      .order('delivery_date', { ascending: true })
+      // EGRESS FIX (2026-08-15): this had no cap and no date filter at all —
+      // by design it's cross-branch/cross-status (planner mode especially),
+      // so a date/branch filter isn't right here, but nothing should ever
+      // fetch unbounded. 2000 is far above current volume with room to grow.
+      .limit(2000);
     if (mode !== 'planner') {
       query = query.in('status', ['Ready for Packing', 'Packed', 'Correction Required']);
     }
@@ -184,11 +189,24 @@ export default function PackingCakeOrdersTab({ mode = 'packing' }: { mode?: 'pac
   useEffect(() => { void load(); }, [load]);
 
   useEffect(() => {
+    // EGRESS FIX (2026-08-15): this had no debounce at all — every single
+    // insert/update/delete on cake_master_orders, from any branch, fired an
+    // immediate full reload. CakeMasterDashboard.tsx's identical channel was
+    // already fixed with exactly this debounce for exactly this reason; this
+    // tab was missed at the time.
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    const scheduleReload = () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => { void load(); }, 2000);
+    };
     const channel = supabase
       .channel('packing_cake_orders_live')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'cake_master_orders' }, () => { void load(); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'cake_master_orders' }, scheduleReload)
       .subscribe();
-    return () => { void supabase.removeChannel(channel); };
+    return () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      void supabase.removeChannel(channel);
+    };
   }, [load]);
 
   // FEATURE (2026-08-08): "I need the ability to select multiple items and

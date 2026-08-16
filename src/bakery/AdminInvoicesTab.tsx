@@ -329,12 +329,13 @@ export default function AdminInvoicesTab() {
     return map;
   }, [purchaseOrders]);
 
-  // Visibility refresh plus a slow recovery poll avoids background egress.
+  // EGRESS FIX (2026-08-15): dropped the interval, keeping just the
+  // visibilitychange refresh below — a timer ticking the whole time this
+  // tab sits open added nothing a refetch-on-return doesn't already cover.
   useEffect(() => {
     const refresh = () => { if (!document.hidden) void load(); };
-    const id = setInterval(refresh, 10 * 60_000);
     document.addEventListener('visibilitychange', refresh);
-    return () => { clearInterval(id); document.removeEventListener('visibilitychange', refresh); };
+    return () => document.removeEventListener('visibilitychange', refresh);
   }, [load]);
 
   const pending  = invoices.filter(i => i.status === 'pending_review').length;

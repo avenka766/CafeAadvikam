@@ -540,8 +540,9 @@ export default function PlannerDashboard({ embedded = false }: { embedded?: bool
   useEffect(() => {
     fetchOrders().catch(() => {});
     const unsubscribe = subscribe();
-    const interval = setInterval(() => { if (!document.hidden) fetchOrders(true); }, 15_000);
-    return () => { unsubscribe(); clearInterval(interval); };
+    const refreshOnVisible = () => { if (!document.hidden) fetchOrders(true).catch(() => {}); };
+    document.addEventListener('visibilitychange', refreshOnVisible);
+    return () => { unsubscribe(); document.removeEventListener('visibilitychange', refreshOnVisible); };
   }, [fetchOrders, subscribe]);
 
   const incomingOrders   = useMemo(() => orders.filter(o => o.status === 'pending'), [orders]);
@@ -3413,6 +3414,7 @@ function BillingTab() {
   // for a screen that stays mounted all session.
   const [counterOpen, setCounterOpen] = useState<boolean | null>(null);
   const [counterError, setCounterError] = useState('');
+  const [refreshingCounter, setRefreshingCounter] = useState(false);
   const refreshCounter = useCallback(async () => {
     try {
       const status = await getPackingCounterStatus();
@@ -3423,10 +3425,15 @@ function BillingTab() {
       setCounterError(err instanceof Error ? err.message : 'Could not check the Daily Closure counter status.');
     }
   }, []);
+  // EGRESS FIX (2026-08-15): replaced the 15s poll with visibilitychange
+  // (catches "counter was opened/closed while I was on another tab", the
+  // common case) plus a manual Refresh button on the banner below (catches
+  // "counter changed on another device while I never left this tab").
   useEffect(() => {
     void refreshCounter();
-    const interval = window.setInterval(() => { if (!document.hidden) void refreshCounter(); }, 15_000);
-    return () => window.clearInterval(interval);
+    const refreshOnVisible = () => { if (!document.hidden) void refreshCounter(); };
+    document.addEventListener('visibilitychange', refreshOnVisible);
+    return () => document.removeEventListener('visibilitychange', refreshOnVisible);
   }, [refreshCounter]);
 
   useEffect(() => { loadCatalog('SNB').catch(() => {}); loadCatalog('VRSNB').catch(() => {}); }, [loadCatalog]);
@@ -3558,7 +3565,15 @@ function BillingTab() {
       {counterOpen === false && (
         <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs font-bold text-amber-900">
           <AlertTriangle className="size-4 shrink-0" />
-          {counterError || "Planner's Daily Closure counter is closed — open it from the Daily Closure tab before billing."}
+          <span className="flex-1">{counterError || "Planner's Daily Closure counter is closed — open it from the Daily Closure tab before billing."}</span>
+          <button
+            type="button"
+            onClick={() => { setRefreshingCounter(true); void refreshCounter().finally(() => setRefreshingCounter(false)); }}
+            disabled={refreshingCounter}
+            className="flex items-center gap-1 rounded-lg border border-amber-300 bg-white px-2 py-1 text-[10px] font-black text-amber-900 hover:bg-amber-100 disabled:opacity-50"
+          >
+            <RefreshCw className={cn('size-3', refreshingCounter && 'animate-spin')} /> Check again
+          </button>
         </div>
       )}
 
@@ -3738,6 +3753,7 @@ function SampleBillTab() {
 
   const [counterOpen, setCounterOpen] = useState<boolean | null>(null);
   const [counterError, setCounterError] = useState('');
+  const [refreshingCounter, setRefreshingCounter] = useState(false);
   const refreshCounter = useCallback(async () => {
     try {
       const status = await getPackingCounterStatus();
@@ -3748,10 +3764,15 @@ function SampleBillTab() {
       setCounterError(err instanceof Error ? err.message : 'Could not check the Daily Closure counter status.');
     }
   }, []);
+  // EGRESS FIX (2026-08-15): replaced the 15s poll with visibilitychange
+  // (catches "counter was opened/closed while I was on another tab", the
+  // common case) plus a manual Refresh button on the banner below (catches
+  // "counter changed on another device while I never left this tab").
   useEffect(() => {
     void refreshCounter();
-    const interval = window.setInterval(() => { if (!document.hidden) void refreshCounter(); }, 15_000);
-    return () => window.clearInterval(interval);
+    const refreshOnVisible = () => { if (!document.hidden) void refreshCounter(); };
+    document.addEventListener('visibilitychange', refreshOnVisible);
+    return () => document.removeEventListener('visibilitychange', refreshOnVisible);
   }, [refreshCounter]);
 
   useEffect(() => { loadCatalog('SNB').catch(() => {}); loadCatalog('VRSNB').catch(() => {}); }, [loadCatalog]);
@@ -3866,7 +3887,15 @@ function SampleBillTab() {
       {counterOpen === false && (
         <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs font-bold text-amber-900">
           <AlertTriangle className="size-4 shrink-0" />
-          {counterError || "Planner's Daily Closure counter is closed — open it from the Daily Closure tab before billing."}
+          <span className="flex-1">{counterError || "Planner's Daily Closure counter is closed — open it from the Daily Closure tab before billing."}</span>
+          <button
+            type="button"
+            onClick={() => { setRefreshingCounter(true); void refreshCounter().finally(() => setRefreshingCounter(false)); }}
+            disabled={refreshingCounter}
+            className="flex items-center gap-1 rounded-lg border border-amber-300 bg-white px-2 py-1 text-[10px] font-black text-amber-900 hover:bg-amber-100 disabled:opacity-50"
+          >
+            <RefreshCw className={cn('size-3', refreshingCounter && 'animate-spin')} /> Check again
+          </button>
         </div>
       )}
 
@@ -4486,7 +4515,7 @@ function HosurShopDispatchPanel({ rows, mode, orders, leftoverBalances, onDispat
         if (!anchorOrderId) skippedNoLink = true;
         else {
           actions.push({
-            orderId: anchorOrderId, itemName: item.itemName, quantity: extraAmount, unit: item.unit,
+            orderId: anchorOrderId, itemName: item.itemName, quantity: extraAmount, unit: item.unit === 'pcs' ? 'pcs' : 'kg',
             dispatchEntryId: getId(`extra-auto:${card.orderId}:${item.itemName}`), targetHosurOrderId: card.orderId, isExtra: true,
           });
         }

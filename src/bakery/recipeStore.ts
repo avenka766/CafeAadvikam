@@ -137,10 +137,17 @@ export const useRecipeStore = create<RecipeState>((set, get) => ({
     return null;
   },
 
-  subscribe: makeSingletonSubscriber('bakery-recipes-live', (ch) =>
-    ch.on('postgres_changes', { event: '*', schema: 'public', table: 'bakery_recipes' },
-      () => { void get().loadRecipes(true); }),
-  ),
+  // EGRESS FIX (2026-08-15): debounce collapses a burst of changes into one
+  // reload instead of one per event — same fix already proven on
+  // cake_master_orders.
+  subscribe: makeSingletonSubscriber('bakery-recipes-live', (ch) => {
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    return ch.on('postgres_changes', { event: '*', schema: 'public', table: 'bakery_recipes' },
+      () => {
+        if (debounceTimer) clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => { void get().loadRecipes(true); }, 2000);
+      });
+  }),
 
   getRecipe: (itemId, itemName) => {
     const key = resolveRecipeKey(get().recipes, itemId, itemName);

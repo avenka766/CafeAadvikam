@@ -2442,10 +2442,12 @@ export default function OrderReceiverDashboard() {
   useEffect(() => {
     stableFetch();
     const unsubscribe = subscribeOrders();
-    const id = setInterval(() => {
-      if (!document.hidden) fetchOrders(true);
-    }, 15 * 60_000);
-    return () => { unsubscribe(); clearInterval(id); };
+    // EGRESS FIX (2026-08-15): dropped the 15-min interval — realtime
+    // (subscribeOrders) handles live updates; visibilitychange below covers
+    // recovering from a dropped connection while backgrounded.
+    const refreshOnVisible = () => { if (!document.hidden) fetchOrders(true); };
+    document.addEventListener('visibilitychange', refreshOnVisible);
+    return () => { unsubscribe(); document.removeEventListener('visibilitychange', refreshOnVisible); };
   }, [stableFetch, fetchOrders, subscribeOrders]);
   useEffect(() => {
     if (refreshKey > 0) stableFetch();
@@ -2453,8 +2455,9 @@ export default function OrderReceiverDashboard() {
 
   useEffect(() => {
     if (!loaded) load();
-    const id = setInterval(() => { if (!document.hidden) load(); }, 10 * 60_000);
-    return () => clearInterval(id);
+    const refreshOnVisible = () => { if (!document.hidden) load(); };
+    document.addEventListener('visibilitychange', refreshOnVisible);
+    return () => document.removeEventListener('visibilitychange', refreshOnVisible);
   }, [load, loaded]);
 
   const loadHosurReceiverData = useCallback(async () => {
@@ -2502,17 +2505,12 @@ export default function OrderReceiverDashboard() {
 
     void refreshStock(true);
     const unsubscribe = subscribeToStock(branch);
-    // EGRESS FIX: this used to poll every 30 seconds and, in the old
-    // implementation, unconditionally re-downloaded the entire branch
-    // dashboard payload (stock, sales, advance/credit orders) each time —
-    // ~2,880 full re-fetches/day just from this one interval. Realtime
-    // (subscribeToStock) now handles live updates, so this is purely a
-    // dropped-connection recovery poll and can run far less often. The header
-    // "Refresh" button (see Header.tsx isReceiverRoute) covers on-demand
-    // refresh for anything this poll would otherwise catch sooner.
-    const refreshId = window.setInterval(() => {
-      if (!document.hidden) void refreshStock(false);
-    }, 5 * 60_000);
+    // EGRESS FIX (2026-08-15): removed the 5-min interval entirely.
+    // Realtime (subscribeToStock) handles live updates; visibilitychange
+    // below and the header "Refresh" button (see Header.tsx isReceiverRoute)
+    // cover recovering from a dropped connection without a background timer.
+    const refreshOnVisible = () => { if (!document.hidden) void refreshStock(false); };
+    document.addEventListener('visibilitychange', refreshOnVisible);
 
     const handleHeaderRefresh = (event: Event) => {
       const complete = (event as CustomEvent<{ complete?: () => void }>).detail?.complete;
@@ -2522,7 +2520,7 @@ export default function OrderReceiverDashboard() {
 
     return () => {
       cancelled = true;
-      window.clearInterval(refreshId);
+      document.removeEventListener('visibilitychange', refreshOnVisible);
       window.removeEventListener('cafe:refresh-branch-dashboard', handleHeaderRefresh);
       unsubscribe();
     };

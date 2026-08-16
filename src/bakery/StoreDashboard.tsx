@@ -1063,8 +1063,9 @@ function InlineDeductionsView() {
 
   useEffect(() => {
     void load();
-    const id = window.setInterval(() => { if (!document.hidden) void load(); }, 2 * 60_000);
-    return () => window.clearInterval(id);
+    const refresh = () => { if (!document.hidden) void load(); };
+    document.addEventListener('visibilitychange', refresh);
+    return () => document.removeEventListener('visibilitychange', refresh);
   }, [load]);
 
   const filtered = useMemo(() => {

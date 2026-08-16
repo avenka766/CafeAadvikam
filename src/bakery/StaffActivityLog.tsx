@@ -55,8 +55,9 @@ export default function StaffActivityLog() {
 
   useEffect(() => { if (!loaded) void load(); }, [loaded, load]);
   useEffect(() => {
-    const id = setInterval(() => { if (!document.hidden) load(); }, 10 * 60_000);
-    return () => clearInterval(id);
+    const refresh = () => { if (!document.hidden) load(); };
+    document.addEventListener('visibilitychange', refresh);
+    return () => document.removeEventListener('visibilitychange', refresh);
   }, [load]);
 
   const roles    = useMemo(() => ['all', ...Array.from(new Set(entries.map(e => e.role)))],    [entries]);

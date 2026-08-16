@@ -174,10 +174,17 @@ export const useBakeryItemsStore = create<BakeryItemsState>((set, get) => ({
     return null;
   },
 
-  subscribe: makeSingletonSubscriber('bakery-items-live', (ch) =>
-    ch.on('postgres_changes', { event: '*', schema: 'public', table: 'bakery_items' },
-      () => { void get().loadAllItems(); }),
-  ),
+  // EGRESS FIX (2026-08-15): debounce collapses a burst of changes into one
+  // reload instead of one per event — same fix already proven on
+  // cake_master_orders.
+  subscribe: makeSingletonSubscriber('bakery-items-live', (ch) => {
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    return ch.on('postgres_changes', { event: '*', schema: 'public', table: 'bakery_items' },
+      () => {
+        if (debounceTimer) clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => { void get().loadAllItems(); }, 2000);
+      });
+  }),
 
   // ── Hard delete ───────────────────────────────────────────────────────────
   deleteItem: async (id) => {

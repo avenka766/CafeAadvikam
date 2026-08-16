@@ -400,7 +400,13 @@ export async function listDispatchInvoices(opts: {
   let query = supabase.from('dispatch_invoices').select('*')
     .gte('created_at', opts.fromDate)
     .lt('created_at', opts.toDate)
-    .order('created_at', { ascending: false });
+    .order('created_at', { ascending: false })
+    // EGRESS FIX (2026-08-15): this had no cap at all — fine while the
+    // table is young, but the exact same "unbounded date range on a
+    // JSONB-heavy table" shape that caused the SNB reports egress problem.
+    // 5000 is comfortably above a full month's dispatch batches today with
+    // room to grow.
+    .limit(5000);
   if (opts.scope) query = query.eq('scope', opts.scope);
   const { data, error } = await query;
   if (error) throw error;

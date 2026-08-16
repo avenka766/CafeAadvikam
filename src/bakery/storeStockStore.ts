@@ -266,8 +266,15 @@ export const useStoreStockStore = create<StoreStockState>()((set, get) => ({
     return warnings.length > 0 ? `Note: ${warnings.join(', ')}` : null;
   },
 
-  subscribe: makeSingletonSubscriber('store-raw-stock-live', (ch) =>
-    ch.on('postgres_changes', { event: '*', schema: 'public', table: 'store_raw_stock' },
-      () => { get().load(); }),
-  ),
+  // EGRESS FIX (2026-08-15): debounce collapses a burst of changes into one
+  // reload instead of one per event — same fix already proven on
+  // cake_master_orders.
+  subscribe: makeSingletonSubscriber('store-raw-stock-live', (ch) => {
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    return ch.on('postgres_changes', { event: '*', schema: 'public', table: 'store_raw_stock' },
+      () => {
+        if (debounceTimer) clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => { get().load(); }, 2000);
+      });
+  }),
 }));

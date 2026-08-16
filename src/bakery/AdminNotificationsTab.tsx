@@ -656,12 +656,13 @@ export default function AdminNotificationsTab() {
 
   useEffect(() => { if (!loaded) void load(); }, [loaded, load]);
 
-  // Refresh on return to the tab; the interval is only a recovery path.
+  // EGRESS FIX (2026-08-15): dropped the interval — visibilitychange already
+  // covers the recovery case (refetch on return to the tab) without a
+  // background timer running the whole time the tab sits open.
   useEffect(() => {
     const refresh = () => { if (!document.hidden) void load(); };
-    const id = setInterval(refresh, 10 * 60_000);
     document.addEventListener('visibilitychange', refresh);
-    return () => { clearInterval(id); document.removeEventListener('visibilitychange', refresh); };
+    return () => document.removeEventListener('visibilitychange', refresh);
   }, [load]);
 
   const unread = unreadCount();

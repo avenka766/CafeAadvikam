@@ -570,13 +570,18 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
   // explanation once the one-time banner above scrolled out of view. Poll it
   // like every other live figure in this app so it self-corrects.
   const [counterOpen, setCounterOpen] = useState<boolean | null>(null);
+  const checkCounter = useCallback(() => getPackingCounterStatus().then(s => setCounterOpen(s.isOpen)).catch(() => setCounterOpen(null)), []);
   useEffect(() => {
-    let cancelled = false;
-    const check = () => getPackingCounterStatus().then(s => { if (!cancelled) setCounterOpen(s.isOpen); }).catch(() => { if (!cancelled) setCounterOpen(null); });
-    check();
-    const interval = setInterval(() => { if (!document.hidden) check(); }, 15_000);
-    return () => { cancelled = true; clearInterval(interval); };
-  }, []);
+    void checkCounter();
+    // EGRESS FIX (2026-08-15): dropped the 15s poll — visibilitychange
+    // still self-corrects on return to this tab (the scenario the comment
+    // above describes: counter opened in a different tab), just without a
+    // background timer ticking the whole time this stays mounted. The
+    // "Refresh Hosur shop data" button (below) also re-checks this now.
+    const refreshOnVisible = () => { if (!document.hidden) void checkCounter(); };
+    document.addEventListener('visibilitychange', refreshOnVisible);
+    return () => document.removeEventListener('visibilitychange', refreshOnVisible);
+  }, [checkCounter]);
 
   // Leftover pool rows the planner has chosen to apply against a currently
   // pending item (keyed by `${orderId}::${itemId}`) — the override quantity
