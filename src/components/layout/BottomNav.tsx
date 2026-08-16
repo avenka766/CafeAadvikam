@@ -57,14 +57,12 @@ export default function BottomNav() {
   useEffect(() => {
     if (!isAnyAdmin) return;
     if (!notifLoaded) loadNotifs();
-    // EGRESS FIX: Raised from 20 s → 90 s. Notification badges don't need
-    // sub-minute freshness; a 90 s cadence is invisible to users while cutting
-    // BottomNav egress by ~78 %.
-    const id = setInterval(() => {
-      if (document.hidden) return;
-      loadNotifs();
-    }, 90_000);
-    return () => clearInterval(id);
+    // EGRESS FIX (2026-08-15): replaced the 90 s timer with a
+    // visibilitychange refresh — a badge count doesn't need to update while
+    // nobody's looking at the screen, only when they come back to it.
+    const refresh = () => { if (!document.hidden) loadNotifs(); };
+    document.addEventListener('visibilitychange', refresh);
+    return () => document.removeEventListener('visibilitychange', refresh);
   }, [isAnyAdmin, notifLoaded, loadNotifs]);
 
   const clearBranchNavHideTimer = useCallback(() => {
