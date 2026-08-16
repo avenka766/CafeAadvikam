@@ -44,20 +44,6 @@ export type LedgerSavedClosure = {
   created_at: string;
 };
 
-export type LedgerOperationRecord = {
-  id: string;
-  branch: Branch;
-  record_type: string;
-  record_id: string;
-  record_no: string | null;
-  amount: number | string | null;
-  status: string | null;
-  actor: string | null;
-  payload: Record<string, unknown>;
-  created_at: string;
-  updated_at: string;
-};
-
 export type LedgerBillHeader = {
   id: string;
   branch: Branch;
@@ -76,13 +62,6 @@ export type LedgerBillHeader = {
 
 const toNumber = (value: number | string | null | undefined) => Number(value ?? 0);
 
-function dateRange(fromDate: string, toDate: string) {
-  return {
-    from: `${fromDate}T00:00:00`,
-    to: `${toDate}T23:59:59.999`,
-  };
-}
-
 function isValidLedgerDate(value: string) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
   const [year, month, day] = value.split('-').map(Number);
@@ -95,8 +74,6 @@ function isValidLedgerDate(value: string) {
 export function useBranchLedger(fromDate: string, toDate: string, branches?: Branch[]) {
   const [closureRows, setClosureRows] = useState<LedgerClosureRow[]>([]);
   const [savedClosures, setSavedClosures] = useState<LedgerSavedClosure[]>([]);
-  const [operationRecords, setOperationRecords] = useState<LedgerOperationRecord[]>([]);
-  const [billHeaders, setBillHeaders] = useState<LedgerBillHeader[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -114,8 +91,6 @@ export function useBranchLedger(fromDate: string, toDate: string, branches?: Bra
     const load = async () => {
       setClosureRows([]);
       setSavedClosures([]);
-      setOperationRecords([]);
-      setBillHeaders([]);
       if (!isValidLedgerDate(fromDate) || !isValidLedgerDate(toDate) || fromDate > toDate) {
         setLoading(false);
         setError('Select a valid From Date and To Date.');
@@ -124,35 +99,26 @@ export function useBranchLedger(fromDate: string, toDate: string, branches?: Bra
 
       setLoading(true);
       setError('');
-      const { from, to } = dateRange(fromDate, toDate);
       const branchList = branches && branches.length > 0 ? branches : null;
 
       let closureQuery = supabase.from('branch_daily_closure_ledger').select('branch, closure_date, bill_count, sales_total, credit_billed, discounts, tax_total, cash_total, upi_total, card_total, credit_collected, advance_collected, advance_balance_collected').gte('closure_date', fromDate).lte('closure_date', toDate);
       let savedClosureQuery = supabase.from('branch_daily_closures').select('id, branch, closure_date, cashier, opening_cash, cash_total, upi_total, card_total, credit_billed, credit_collected, advance_collected, advance_balance_collected, refunds, expenses, purchase_payments, discounts, bill_count, duplicate_prints, expected_cash, actual_cash, difference, notes, created_at').gte('closure_date', fromDate).lte('closure_date', toDate).order('closure_date', { ascending: false });
-      let operationsQuery = supabase.from('branch_operation_records').select('id, branch, record_type, record_id, record_no, amount, status, actor, payload, created_at, updated_at').gte('created_at', from).lte('created_at', to).order('created_at', { ascending: false }).limit(5000);
-      let billsQuery = supabase.from('branch_bill_headers').select('id, branch, bill_no, invoice_no, bill_type, salesperson, biller, total, tendered, balance, discount, tax, created_at').gte('created_at', from).lte('created_at', to).order('created_at', { ascending: false }).limit(5000);
 
       if (branchList) {
         closureQuery = closureQuery.in('branch', branchList);
         savedClosureQuery = savedClosureQuery.in('branch', branchList);
-        operationsQuery = operationsQuery.in('branch', branchList);
-        billsQuery = billsQuery.in('branch', branchList);
       }
 
-      const [closureRes, savedRes, operationsRes, billsRes] = await Promise.all([
+      const [closureRes, savedRes] = await Promise.all([
         closureQuery,
         savedClosureQuery,
-        operationsQuery,
-        billsQuery,
       ]);
 
       if (!active) return;
-      const firstError = [closureRes.error, savedRes.error, operationsRes.error, billsRes.error].find(Boolean);
+      const firstError = [closureRes.error, savedRes.error].find(Boolean);
       if (firstError) {
         setClosureRows([]);
         setSavedClosures([]);
-        setOperationRecords([]);
-        setBillHeaders([]);
         setError(firstError.message || 'Unable to load branch ledger data.');
         setLoading(false);
         return;
@@ -160,8 +126,6 @@ export function useBranchLedger(fromDate: string, toDate: string, branches?: Bra
 
       setClosureRows((closureRes.data || []) as LedgerClosureRow[]);
       setSavedClosures((savedRes.data || []) as LedgerSavedClosure[]);
-      setOperationRecords((operationsRes.data || []) as LedgerOperationRecord[]);
-      setBillHeaders((billsRes.data || []) as LedgerBillHeader[]);
       setLoading(false);
     };
 
@@ -197,8 +161,6 @@ export function useBranchLedger(fromDate: string, toDate: string, branches?: Bra
     refresh,
     closureRows,
     savedClosures,
-    operationRecords,
-    billHeaders,
     closureByBranchDate,
     savedClosureByBranchDate,
     toNumber,

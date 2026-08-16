@@ -311,8 +311,17 @@ async function fetchSnbOperationHistory(fromDate: string, toDate: string): Promi
   toExclusive.setDate(toExclusive.getDate() + 1);
 
   for (let from = 0; from < maxRows; from += pageSize) {
+    // EGRESS FIX (2026-08-15): this used to select the full payload JSONB
+    // from branch_operation_records directly — up to 30,000 rows per date
+    // range, each carrying ~35 fields (wallet/promotion/tax breakdown/print
+    // count/etc.) even though only ~10 are ever read below. Querying the
+    // branch_operation_records_sales_slim view instead returns the exact
+    // same {record_type, payload, created_at} shape, pre-trimmed
+    // server-side to just the fields this function's callers use — see the
+    // view definition for the full field list and the measured size
+    // reduction (roughly half, on real data).
     const { data, error } = await supabase
-      .from('branch_operation_records')
+      .from('branch_operation_records_sales_slim')
       .select('record_type,payload,created_at')
       .eq('branch', 'SNB')
       .in('record_type', ['bill', 'advance_final_bill', 'return'])
