@@ -3,7 +3,7 @@ import type React from 'react';
 import {
   AlertTriangle, Banknote, Bell, Building2, CalendarClock, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ClipboardCheck,
   CreditCard, Download, FileClock, FileText, Gift, History, IndianRupee, Landmark, Loader2, Package,
-  Pencil, Plus, Printer, Receipt, RotateCcw, Search, ShieldCheck, Smartphone, Store, Trash2,
+  Pencil, Plus, Printer, Receipt, RefreshCw, RotateCcw, Search, ShieldCheck, Smartphone, Store, Trash2,
   Truck, UserRound, WalletCards, X, XCircle,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -574,26 +574,30 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch', c
   };
   const counterOpenToday = isSnbOrder ? receiverCounterOpen : (localCounterOpenToday || (cakeOnly && plannerCounterJustOpened));
 
+  const [refreshingReceiverCounter, setRefreshingReceiverCounter] = useState(false);
+  const checkReceiverCounter = useCallback(async () => {
+    setReceiverCounterLoading(true);
+    const { data, error: counterError } = await supabase.rpc('get_my_branch_counter_session_secure', { p_branch: 'SNB' });
+    if (counterError) {
+      setReceiverCounterOpen(false);
+      setError(`Unable to verify the SNB Order counter: ${counterError.message}`);
+    } else {
+      const row = data && typeof data === 'object' ? data as { id?: string } : null;
+      setReceiverCounterOpen(Boolean(row?.id));
+    }
+    setReceiverCounterLoading(false);
+  }, []);
   useEffect(() => {
     if (!isSnbOrder) return;
-    let active = true;
-    const loadCounter = async () => {
-      setReceiverCounterLoading(true);
-      const { data, error: counterError } = await supabase.rpc('get_my_branch_counter_session_secure', { p_branch: 'SNB' });
-      if (!active) return;
-      if (counterError) {
-        setReceiverCounterOpen(false);
-        setError(`Unable to verify the SNB Order counter: ${counterError.message}`);
-      } else {
-        const row = data && typeof data === 'object' ? data as { id?: string } : null;
-        setReceiverCounterOpen(Boolean(row?.id));
-      }
-      setReceiverCounterLoading(false);
-    };
-    void loadCounter();
-    const refreshId = window.setInterval(() => { if (!document.hidden) void loadCounter(); }, 15_000);
-    return () => { active = false; window.clearInterval(refreshId); };
-  }, [isSnbOrder]);
+    void checkReceiverCounter();
+    // EGRESS FIX (2026-08-15): dropped the 15s poll — visibilitychange
+    // (below) catches the common case of the counter changing while this
+    // tab wasn't focused, and the "Check again" button on the banner below
+    // covers the rest without a background timer.
+    const refreshOnVisible = () => { if (!document.hidden) void checkReceiverCounter(); };
+    document.addEventListener('visibilitychange', refreshOnVisible);
+    return () => document.removeEventListener('visibilitychange', refreshOnVisible);
+  }, [isSnbOrder, checkReceiverCounter]);
   const activeOrders = orders.filter((o) => o.status !== 'Paid In Full' && o.status !== 'Cancelled');
   const historyOrders = orders.filter((o) => o.status === 'Paid In Full');
   const cancelledOrders = orders.filter((o) => o.status === 'Cancelled');
@@ -1173,7 +1177,21 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch', c
         <button onClick={openPlannerCounter} disabled={openingPlannerCounter} className="rounded-xl bg-amber-700 px-3 py-1.5 text-xs font-black text-white disabled:opacity-50">{openingPlannerCounter ? 'Opening…' : 'Open Cake Counter'}</button>
       </div>
     )}
-    {!receiverCounterLoading && !counterOpenToday && !cakeOnly && <div className="xl:col-span-2 rounded-2xl bg-amber-50 border border-amber-200 px-4 py-3 text-sm font-black text-amber-800">Open the counter in the Daily Closure tab before taking or collecting an advance order.</div>}
+    {!receiverCounterLoading && !counterOpenToday && !cakeOnly && (
+      <div className="xl:col-span-2 flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-amber-50 border border-amber-200 px-4 py-3 text-sm font-black text-amber-800">
+        <span>Open the counter in the Daily Closure tab before taking or collecting an advance order.</span>
+        {isSnbOrder && (
+          <button
+            type="button"
+            onClick={() => { setRefreshingReceiverCounter(true); void checkReceiverCounter().finally(() => setRefreshingReceiverCounter(false)); }}
+            disabled={refreshingReceiverCounter}
+            className="flex items-center gap-1 rounded-lg border border-amber-300 bg-white px-2 py-1 text-xs font-black text-amber-900 hover:bg-amber-100 disabled:opacity-50"
+          >
+            <RefreshCw className={cn('size-3', refreshingReceiverCounter && 'animate-spin')} /> Check again
+          </button>
+        )}
+      </div>
+    )}
     <Section title="Advance Order" icon={<Gift className="size-5"/>}>
       {!cakeOnly && (
       <div className="mb-4 grid grid-cols-3 gap-2 rounded-2xl bg-slate-100 p-1">
@@ -1904,8 +1922,12 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
       await loadCounterSnapshot();
     };
     void load();
-    const refreshId = window.setInterval(() => { if (!document.hidden) void load(); }, 15_000);
-    return () => { active = false; window.clearInterval(refreshId); };
+    // EGRESS FIX (2026-08-15): dropped the 15s poll — visibilitychange plus
+    // the existing manual Refresh button (below, on the ledger panel) cover
+    // the same freshness need without a background timer.
+    const refreshOnVisible = () => { if (!document.hidden) void load(); };
+    document.addEventListener('visibilitychange', refreshOnVisible);
+    return () => { active = false; document.removeEventListener('visibilitychange', refreshOnVisible); };
   }, [loadCounterSnapshot, loadOpenSession]);
 
   useEffect(() => {

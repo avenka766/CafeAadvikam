@@ -1,6 +1,6 @@
 // src/branch/tabs/ReportsTab.tsx
 import { useState, useMemo, useEffect, useCallback } from 'react';
-import { Download, Filter, Wallet, ClipboardCheck, Package, Truck, ShoppingCart, AlertTriangle } from 'lucide-react';
+import { Download, Filter, Wallet, ClipboardCheck, Package, Truck, ShoppingCart, AlertTriangle, RefreshCw } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { downloadCSV, fmtDate, EmptyState } from '../components';
 import { useBranchStore } from '../branchStore';
@@ -646,9 +646,21 @@ export function ReportsTab({ branch, branchSales, advanceOrders = [] }: Props) {
             </button>
           </div>
         ) : (
-          <p className="text-xs text-muted-foreground">
-            Showing: <span className="font-semibold text-foreground">{rangeLabel}</span>
-            {' · '}{rangeSales.length} transactions · {totalQty} units · {formatCurrency(totalRevenue)}
+          <p className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+            <span>
+              Showing: <span className="font-semibold text-foreground">{rangeLabel}</span>
+              {' · '}{rangeSales.length} transactions · {totalQty} units · {formatCurrency(totalRevenue)}
+            </span>
+            {!isTodayOnly && (
+              <button
+                onClick={() => void loadExtendedRange()}
+                disabled={loadingRange}
+                title="Re-check this range for new sales"
+                className="inline-flex items-center gap-1 rounded-lg border border-border px-2 py-1 text-[10px] font-bold text-muted-foreground hover:bg-muted disabled:opacity-60"
+              >
+                <RefreshCw className={cn('size-3', loadingRange && 'animate-spin')} /> Refresh
+              </button>
+            )}
           </p>
         )}
       </div>
