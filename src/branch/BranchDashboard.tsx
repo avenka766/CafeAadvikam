@@ -175,22 +175,29 @@ export default function BranchDashboard({ branch }: Props) {
     }
 
     const unsubscribe = subscribeToStock(branch);
-    // EGRESS FIX (2026-08-15): dropped the 15-min/10-min recovery-poll
-    // timers — realtime handles normal stock/order changes, and
-    // visibilitychange (below) already covers "recovering from a dropped
-    // websocket while this tab was backgrounded." A blind timer running
-    // whether or not anything actually needed recovering was pure waste on
-    // top of that; the manual Refresh button covers the rest.
+    // Realtime handles normal stock/order changes. These slower polls are
+    // only a recovery path for a dropped websocket connection — bounded
+    // and infrequent on purpose (restored 2026-08-17: an earlier egress
+    // pass removed these entirely in favor of visibilitychange alone,
+    // which covers "tab was backgrounded and regains focus" but not "tab
+    // stayed focused the whole time and the websocket silently died
+    // anyway" — a real, if rarer, failure mode this recovery poll exists
+    // for specifically).
+    const refresh = () => { if (!document.hidden) void fetchBranchData(branch); };
     const refreshOnVisible = () => {
       if (document.hidden) return;
       void fetchBranchData(branch);
       syncIncomingFromDispatches(branch);
     };
     document.addEventListener('visibilitychange', refreshOnVisible);
+    const id = setInterval(refresh, 15 * 60_000);
+    const syncId = setInterval(() => { if (!document.hidden) syncIncomingFromDispatches(branch); }, 10 * 60_000);
 
     return () => {
       unsubscribe();
       document.removeEventListener('visibilitychange', refreshOnVisible);
+      clearInterval(id);
+      clearInterval(syncId);
     };
   }, [branch, cleanOldData, fetchBranchData, fetchCreditPayments, fetchStockMismatches, seedBranchItems, subscribeToStock, syncIncomingFromDispatches]);
 
