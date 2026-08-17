@@ -20,7 +20,7 @@ import { cn } from '@/lib/utils';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/stores/authStore';
 import { useBranchCatalogStore } from '@/stores/branchCatalogStore';
-import { canonicalItemSlug, closingStockItemSlug } from './itemMatcher';
+import { canonicalItemSlug, closingStockItemSlug, resolveItemWeightGrams, kgToPcs } from './itemMatcher';
 import { BRANCHES } from './types';
 import type { Branch } from './types';
 
@@ -1085,12 +1085,31 @@ export default function PlannerLeftoverTab() {
 // "milk peda " match the catalog row.
 const transferNormalizeName = (name: string) => name.trim().toLowerCase().replace(/\s+/g, ' ');
 
-function transferPriceFor(catalogItems: Record<'SNB' | 'VRSNB', { name: string; price: number }[]>, destination: 'SNB' | 'VRSNB' | 'Custom', itemName: string): number | null {
+function transferPriceFor(catalogItems: Record<'SNB' | 'VRSNB', { name: string; price: number; uom: 'Nos' | 'Kgs' }[]>, destination: 'SNB' | 'VRSNB' | 'Custom', itemName: string): { price: number; uom: 'Nos' | 'Kgs' } | null {
   // Custom transfers price against SNB, per explicit owner instruction.
   const priceBranch: 'SNB' | 'VRSNB' = destination === 'VRSNB' ? 'VRSNB' : 'SNB';
   const key = transferNormalizeName(itemName);
   const match = catalogItems[priceBranch].find((it) => transferNormalizeName(it.name) === key);
-  return match ? match.price : null;
+  return match ? { price: match.price, uom: match.uom } : null;
+}
+
+// Converts a transfer's quantity (in whatever unit the staff member picked
+// on the form) to the unit the catalog price actually assumes, using the
+// item's known per-piece weight where one can be resolved. Returns null
+// (never a guessed value) when the two are genuinely different kinds of
+// unit and the weight can't be resolved — same rule as everywhere else
+// this bug class was fixed this session.
+function convertTransferQtyForPricing(itemSlug: string, itemName: string, qty: number, formUnit: LeftoverUnit, catalogUom: 'Nos' | 'Kgs'): { qty: number; unit: LeftoverUnit } | null {
+  const formIsWeight = formUnit === 'kg';
+  const catalogIsCount = catalogUom === 'Nos';
+  if (formIsWeight === !catalogIsCount) return { qty, unit: formUnit }; // already the same kind of unit
+  const weightGrams = resolveItemWeightGrams(itemSlug, itemName);
+  if (weightGrams === null) return null;
+  if (formIsWeight && catalogIsCount) {
+    const pcs = kgToPcs(qty, weightGrams);
+    return pcs === null ? null : { qty: pcs, unit: 'pcs' };
+  }
+  return { qty: Math.round((qty * weightGrams / 1000) * 1000) / 1000, unit: 'kg' };
 }
 
 function downloadTransferOutInvoice(params: {
@@ -1173,9 +1192,21 @@ export function PlannerTransferOutTab() {
   const resetTransferForm = () => { setTransferQuery(''); setTransferItem(null); setTransferQty(''); setTransferUnit('kg'); setTransferReason(''); setTransferDestination('SNB'); };
 
   const transferItemName = (transferItem?.name || transferQuery).trim();
-  const transferUnitPrice = transferItemName ? transferPriceFor(transferCatalogItems, transferDestination, transferItemName) : null;
+  const transferItemSlug = transferItem?.slug ?? canonicalItemSlug(transferItemName);
+  const transferCatalogEntry = transferItemName ? transferPriceFor(transferCatalogItems, transferDestination, transferItemName) : null;
   const transferQtyNumber = Number(transferQty);
-  const transferTotalValue = transferUnitPrice != null && Number.isFinite(transferQtyNumber) && transferQtyNumber > 0 ? transferUnitPrice * transferQtyNumber : null;
+  const transferQtyValid = Number.isFinite(transferQtyNumber) && transferQtyNumber > 0;
+  // BUG FIX (2026-08-17): convert the form's quantity to whatever unit the
+  // catalog price is actually for before multiplying — see
+  // convertTransferQtyForPricing's own comment for the full story. Null
+  // when they're different kinds of unit and no weight could be resolved,
+  // which correctly makes transferTotalValue null too (shown as "Price
+  // N/A" rather than a wrong number) instead of silently pricing a kg
+  // quantity at a per-piece rate or vice versa.
+  const transferConverted = transferCatalogEntry && transferQtyValid
+    ? convertTransferQtyForPricing(transferItemSlug, transferItemName, transferQtyNumber, transferUnit, transferCatalogEntry.uom)
+    : null;
+  const transferTotalValue = transferConverted && transferCatalogEntry ? transferCatalogEntry.price * transferConverted.qty : null;
 
   const submitTransferOut = async () => {
     setError(''); setMessage('');
@@ -1193,9 +1224,13 @@ export function PlannerTransferOutTab() {
     setTransferSaving(false);
     if ('error' in result) { setError(result.error); return; }
     setMessage(`${name}: ${qtyFmt(amount)} ${transferUnit} transferred out to ${transferDestination} (${reasonText}). New balance ${qtyFmt(result.newBalance)} ${transferUnit}.`);
+    // The ledger entry above always uses the form's own unit (transferUnit)
+    // — that's the actual physical movement being recorded and shouldn't
+    // change. Only the PRINTED invoice's quantity/unit are converted, so
+    // the price shown is for the same unit as the quantity shown.
     downloadTransferOutInvoice({
-      itemName: name, qty: amount, unit: transferUnit, destination: transferDestination,
-      unitPrice: transferUnitPrice, reason: reasonText, staffName, createdAt: new Date(),
+      itemName: name, qty: transferConverted?.qty ?? amount, unit: transferConverted?.unit ?? transferUnit, destination: transferDestination,
+      unitPrice: transferCatalogEntry?.price ?? null, reason: reasonText, staffName, createdAt: new Date(),
       transferNo: `TO-${kolkataToday()}-${Date.now().toString().slice(-6)}`,
     });
     resetTransferForm();
@@ -1277,9 +1312,11 @@ export function PlannerTransferOutTab() {
               VRSNB price, Custom -> SNB price for reference. */}
           {transferItemName && (
             <div className="rounded-xl border border-orange-200 bg-white/70 px-3 py-2 text-xs font-bold text-orange-900">
-              {transferUnitPrice != null ? (
-                <>Unit Price ({transferDestination === 'VRSNB' ? 'VRSNB' : 'SNB'} catalog): Rs. {transferUnitPrice.toFixed(2)}
-                  {transferTotalValue != null && <> &middot; Total Value: <strong>Rs. {transferTotalValue.toFixed(2)}</strong></>}
+              {transferCatalogEntry != null ? (
+                <>Unit Price ({transferDestination === 'VRSNB' ? 'VRSNB' : 'SNB'} catalog): Rs. {transferCatalogEntry.price.toFixed(2)} / {transferCatalogEntry.uom}
+                  {transferTotalValue != null
+                    ? <> &middot; Total Value: <strong>Rs. {transferTotalValue.toFixed(2)}</strong></>
+                    : transferQtyValid && <> &middot; <span className="text-destructive">Can't convert {transferUnit} to {transferCatalogEntry.uom} for this item — invoice will show N/A.</span></>}
                 </>
               ) : 'Price not found in catalog for this item — invoice will show N/A.'}
             </div>
@@ -1324,7 +1361,10 @@ export function PlannerTransferOutTab() {
                   const destMatch = /\[Destination: (SNB|VRSNB|Custom)\]/.exec(row.notes || '');
                   const rowDestination = (destMatch?.[1] as 'SNB' | 'VRSNB' | 'Custom') || 'SNB';
                   const rowReason = (row.notes || '').replace(/\s*\[Destination: (SNB|VRSNB|Custom)\]\s*$/, '').trim();
-                  const rowPrice = transferPriceFor(transferCatalogItems, rowDestination, row.itemName);
+                  const rowCatalogEntry = transferPriceFor(transferCatalogItems, rowDestination, row.itemName);
+                  const rowConverted = rowCatalogEntry
+                    ? convertTransferQtyForPricing(row.itemSlug, row.itemName, Math.abs(row.delta), row.unit, rowCatalogEntry.uom)
+                    : null;
                   return (
                     <tr key={row.id}>
                       <td className="px-4 py-2 text-xs text-muted-foreground">{new Date(row.createdAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</td>
@@ -1336,8 +1376,8 @@ export function PlannerTransferOutTab() {
                         <button
                           type="button"
                           onClick={() => downloadTransferOutInvoice({
-                            itemName: row.itemName, qty: Math.abs(row.delta), unit: row.unit, destination: rowDestination,
-                            unitPrice: rowPrice, reason: rowReason, staffName: row.recordedBy, createdAt: new Date(row.createdAt),
+                            itemName: row.itemName, qty: rowConverted?.qty ?? Math.abs(row.delta), unit: rowConverted?.unit ?? row.unit, destination: rowDestination,
+                            unitPrice: rowCatalogEntry?.price ?? null, reason: rowReason, staffName: row.recordedBy, createdAt: new Date(row.createdAt),
                             transferNo: `TO-${row.id}`,
                           })}
                           className="inline-flex items-center gap-1 rounded-lg border border-border px-2 py-1 text-[10px] font-black text-muted-foreground hover:bg-muted"
