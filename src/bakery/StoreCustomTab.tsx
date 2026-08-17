@@ -20,8 +20,10 @@ import { useState, useMemo, useEffect } from 'react';
 import {
   Scissors, Search, Plus, Loader2, CheckCircle2,
   AlertCircle, History, X, Trash2, Package, Printer,
+  ChevronUp, ChevronDown,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { printViaIframe } from '@/lib/printViaIframe';
 import { supabase } from '@/lib/supabase';
 import { useStoreStockStore } from './storeStockStore';
 import type { StockItem } from './storeStockStore';
@@ -37,6 +39,18 @@ interface CustomDeduction {
   reason: string;
   deductedBy: string | null;
   createdAt: string;
+  batchId: string | null;
+}
+
+// A batch is either: several rows genuinely sharing a non-null batchId
+// (a real multi-item submission), or a single old row with no batchId
+// (pre-migration data, or a genuine one-item deduction) treated as its own
+// singleton batch — see the batch_id migration comment for why old rows
+// are never guessed into groups.
+interface DeductionBatch {
+  batchId: string; // real batch_id, or the row's own id for a singleton
+  records: CustomDeduction[];
+  createdAt: string; // most recent record's timestamp, used for sorting
 }
 
 interface DeductionRow {
@@ -70,7 +84,7 @@ const REASON_PRESETS = [
 async function fetchDeductions(): Promise<{ records: CustomDeduction[]; tableReady: boolean }> {
   const { data, error } = await supabase
     .from('store_custom_deductions')
-    .select('id, item_name, item_id, quantity, unit, reason, deducted_by, created_at')
+    .select('id, item_name, item_id, quantity, unit, reason, deducted_by, created_at, batch_id')
     .order('created_at', { ascending: false })
     .limit(100);
 
@@ -88,6 +102,7 @@ async function fetchDeductions(): Promise<{ records: CustomDeduction[]; tableRea
     reason: r.reason as string,
     deductedBy: (r.deducted_by as string) ?? null,
     createdAt: r.created_at as string,
+    batchId: (r.batch_id as string) ?? null,
   }));
 
   return { records, tableReady: true };
@@ -98,6 +113,7 @@ async function insertDeduction(
   quantity: number,
   reason: string,
   deductedBy: string,
+  batchId: string,
 ): Promise<CustomDeduction | null> {
   const { data, error } = await supabase
     .from('store_custom_deductions')
@@ -114,6 +130,7 @@ async function insertDeduction(
       // export's "By" column), unlike the recipe-based deduction path
       // (storeStockStore.deductMaterials), which does thread this through.
       deducted_by: deductedBy || null,
+      batch_id: batchId,
     })
     .select()
     .single();
@@ -132,6 +149,7 @@ async function insertDeduction(
     reason: data.reason as string,
     deductedBy: (data.deducted_by as string) ?? null,
     createdAt: data.created_at as string,
+    batchId: (data.batch_id as string) ?? null,
   };
 }
 
@@ -404,40 +422,117 @@ function DeductionRowEditor({
   );
 }
 
-// ─── History row ───────────────────────────────────────────────────────────────
-function HistoryRow({ record }: { record: CustomDeduction }) {
-  const date = new Date(record.createdAt);
+// ─── History row (one batch — one or more items deducted together) ────────────
+function DeductionBatchCard({ batch }: { batch: DeductionBatch }) {
+  const [expanded, setExpanded] = useState(false);
+  const first = batch.records[0];
+  const date = new Date(first.createdAt);
   const dateLabel = date.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
   const timeLabel = date.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+  const itemCount = batch.records.length;
+  const itemSummary = itemCount === 1
+    ? first.itemName
+    : `${first.itemName} + ${itemCount - 1} more item${itemCount - 1 !== 1 ? 's' : ''}`;
+
   return (
-    <div className="px-4 py-3 flex items-start gap-3">
-      <div className="size-8 rounded-xl bg-destructive/10 flex items-center justify-center shrink-0 mt-0.5">
-        <Scissors className="size-3.5 text-destructive" />
-      </div>
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2 flex-wrap">
-          <p className="text-xs font-body font-bold text-foreground">{record.itemName}</p>
-          <span className="text-[10px] font-body font-bold text-destructive">
-            −{record.quantity} {record.unit}
-          </span>
+    <div>
+      <div className="px-4 py-3 flex items-start gap-3">
+        <button
+          type="button"
+          onClick={() => setExpanded(v => !v)}
+          className="flex-1 min-w-0 flex items-start gap-3 text-left"
+        >
+          <div className="size-8 rounded-xl bg-destructive/10 flex items-center justify-center shrink-0 mt-0.5">
+            <Scissors className="size-3.5 text-destructive" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <p className="text-xs font-body font-bold text-foreground">{itemSummary}</p>
+              {itemCount > 1 && (
+                <span className="text-[10px] font-body font-bold text-primary bg-primary/10 rounded-full px-1.5 py-0.5">
+                  {itemCount} items · batch
+                </span>
+              )}
+            </div>
+            <p className="text-[11px] font-body text-muted-foreground mt-0.5 truncate">{first.reason}</p>
+            <p className="text-[10px] font-body text-muted-foreground mt-0.5">
+              {dateLabel} at {timeLabel}
+              {first.deductedBy && <span className="ml-1">· {first.deductedBy}</span>}
+            </p>
+          </div>
+        </button>
+        <div className="flex items-center gap-1.5 shrink-0">
+          <button
+            type="button"
+            title="Print this batch"
+            onClick={() => printDeductionBatch(batch)}
+            className="size-8 rounded-xl border border-border flex items-center justify-center text-muted-foreground hover:bg-muted hover:text-foreground active:scale-95"
+          >
+            <Printer className="size-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={() => setExpanded(v => !v)}
+            className="size-8 rounded-xl border border-border flex items-center justify-center text-muted-foreground hover:bg-muted active:scale-95"
+          >
+            {expanded ? <ChevronUp className="size-3.5" /> : <ChevronDown className="size-3.5" />}
+          </button>
         </div>
-        <p className="text-[11px] font-body text-muted-foreground mt-0.5 truncate">{record.reason}</p>
-        <p className="text-[10px] font-body text-muted-foreground mt-0.5">
-          {dateLabel} at {timeLabel}
-          {record.deductedBy && <span className="ml-1">· {record.deductedBy}</span>}
-        </p>
       </div>
+      {expanded && (
+        <div className="px-4 pb-3 pl-[52px]">
+          <div className="rounded-xl border border-border overflow-hidden">
+            <table className="w-full text-[11px] font-body">
+              <thead>
+                <tr className="bg-muted/50 border-b border-border">
+                  <th className="text-left px-2.5 py-1.5 font-bold text-muted-foreground">Item</th>
+                  <th className="text-right px-2.5 py-1.5 font-bold text-muted-foreground">Qty</th>
+                </tr>
+              </thead>
+              <tbody>
+                {batch.records.map(r => (
+                  <tr key={r.id} className="border-b border-border/40 last:border-0">
+                    <td className="px-2.5 py-1.5 text-foreground">{r.itemName}</td>
+                    <td className="px-2.5 py-1.5 text-right font-bold text-destructive">−{r.quantity} {r.unit}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
+function deductionSlipHtml(items: { name: string; qty: number; unit: string }[], reason: string, meta?: { deductedBy?: string | null; createdAt?: string }) {
+  const itemRows = items.map(i => `<tr><td>${i.name}</td><td style="text-align:right">${i.qty} ${i.unit}</td></tr>`).join('');
+  const whenLine = meta?.createdAt ? new Date(meta.createdAt).toLocaleString('en-IN') : new Date().toLocaleString('en-IN');
+  return `<!doctype html><html><head><title>Deduction Slip</title><style>@page{size:auto;margin:6mm}@media print{html,body{height:auto !important}}html,body{width:fit-content;height:fit-content}body{font-family:Arial;padding:16px;color:#111}h2,p{margin:0 0 6px}table{width:100%;border-collapse:collapse;margin-top:10px}th,td{border-bottom:1px solid #ddd;padding:6px;text-align:left;font-size:12px}</style></head><body><h2>Cafe Aadvikam</h2><p>Custom Stock Deduction</p><p style="font-size:12px;color:#555">${whenLine}</p><p style="font-size:12px"><b>Reason:</b> ${reason}</p>${meta?.deductedBy ? `<p style="font-size:12px"><b>By:</b> ${meta.deductedBy}</p>` : ''}<table><thead><tr><th>Item</th><th style="text-align:right">Qty</th></tr></thead><tbody>${itemRows}</tbody></table></body></html>`;
+}
+
 function printDeductionSlip(rows: DeductionRow[], reason: string) {
   const validRows = rows.filter(r => r.item && Number(r.quantity) > 0);
-  const itemRows = validRows.map(r => `<tr><td>${r.item!.name}</td><td style="text-align:right">${r.quantity} ${r.item!.unit}</td></tr>`).join('');
-  const win = window.open('', '_blank', 'width=420,height=600');
-  if (!win) return;
-  win.document.write(`<!doctype html><html><head><title>Deduction Slip</title><style>@page{size:auto;margin:6mm}@media print{html,body{height:auto !important}}html,body{width:fit-content;height:fit-content}body{font-family:Arial;padding:16px;color:#111}h2,p{margin:0 0 6px}table{width:100%;border-collapse:collapse;margin-top:10px}th,td{border-bottom:1px solid #ddd;padding:6px;text-align:left;font-size:12px}</style></head><body><h2>Cafe Aadvikam</h2><p>Custom Stock Deduction</p><p style="font-size:12px;color:#555">${new Date().toLocaleString('en-IN')}</p><p style="font-size:12px"><b>Reason:</b> ${reason}</p><table><thead><tr><th>Item</th><th style="text-align:right">Qty</th></tr></thead><tbody>${itemRows}</tbody></table><script>window.onload=()=>window.print()</script></body></html>`);
-  win.document.close();
+  // BUG FIX (2026-08-16): was window.open('', '_blank', ...) with only an
+  // `if (!win) return` guard — silently did nothing whenever the browser's
+  // popup blocker caught it, no error, no fallback. Same class of bug
+  // already found and fixed everywhere else print happens in this app (see
+  // printViaIframe.ts's file header) — hidden iframe instead of a popup, so
+  // it can't be blocked the same way.
+  printViaIframe(deductionSlipHtml(validRows.map(r => ({ name: r.item!.name, qty: Number(r.quantity), unit: r.item!.unit })), reason));
+}
+
+// Reprints an already-saved batch from Deduction History — same slip
+// layout, but sourced from the saved records (so it reflects exactly what
+// was actually deducted, not the in-progress form) and includes who did it
+// and when, since this may be printed long after the fact.
+function printDeductionBatch(batch: DeductionBatch) {
+  const first = batch.records[0];
+  printViaIframe(deductionSlipHtml(
+    batch.records.map(r => ({ name: r.itemName, qty: r.quantity, unit: r.unit })),
+    first.reason,
+    { deductedBy: first.deductedBy, createdAt: first.createdAt },
+  ));
 }
 
 function blankRow(): DeductionRow {
@@ -473,6 +568,25 @@ export default function StoreCustomTab() {
     });
   }, []);
 
+  // `deductions` is already sorted most-recent-first (the fetch's own
+  // order), so the first record encountered per batch key is always that
+  // batch's most recent — grouping preserves that ordering for free.
+  const batches = useMemo<DeductionBatch[]>(() => {
+    const map = new Map<string, DeductionBatch>();
+    const order: string[] = [];
+    for (const d of deductions) {
+      const key = d.batchId ?? d.id; // no batchId (pre-migration row) => its own singleton batch
+      let batch = map.get(key);
+      if (!batch) {
+        batch = { batchId: key, records: [], createdAt: d.createdAt };
+        map.set(key, batch);
+        order.push(key);
+      }
+      batch.records.push(d);
+    }
+    return order.map(key => map.get(key)!);
+  }, [deductions]);
+
   const finalReason = reason === '__custom__' ? customReason.trim() : reason;
 
   const validRows = rows.filter(r => r.item && Number(r.quantity) > 0);
@@ -498,6 +612,11 @@ export default function StoreCustomTab() {
 
     const results: string[] = [];
     const newRecords: CustomDeduction[] = [];
+    // Every item in this submission shares one batchId, however many items
+    // there are — that's what lets Deduction History group them back
+    // together as the single batch this actually was, and what the new
+    // per-batch print button prints.
+    const batchId = crypto.randomUUID();
 
     for (const r of validRows) {
       const qty = Number(r.quantity);
@@ -510,7 +629,7 @@ export default function StoreCustomTab() {
       }
 
       // Log to DB
-      const record = await insertDeduction(r.item!, qty, finalReason, actorName);
+      const record = await insertDeduction(r.item!, qty, finalReason, actorName, batchId);
       if (record) newRecords.push(record);
     }
 
@@ -671,8 +790,10 @@ export default function StoreCustomTab() {
         <div className="px-4 py-3 border-b border-border flex items-center gap-2">
           <History className="size-4 text-muted-foreground" />
           <h3 className="font-display font-bold text-foreground">Deduction History</h3>
-          {deductions.length > 0 && (
-            <span className="ml-auto text-[10px] font-body text-muted-foreground">{deductions.length} record{deductions.length !== 1 ? 's' : ''}</span>
+          {batches.length > 0 && (
+            <span className="ml-auto text-[10px] font-body text-muted-foreground">
+              {batches.length} batch{batches.length !== 1 ? 'es' : ''} · {deductions.length} item{deductions.length !== 1 ? 's' : ''}
+            </span>
           )}
         </div>
 
@@ -680,7 +801,7 @@ export default function StoreCustomTab() {
           <div className="flex justify-center py-10">
             <Loader2 className="size-5 animate-spin text-muted-foreground" />
           </div>
-        ) : deductions.length === 0 ? (
+        ) : batches.length === 0 ? (
           <div className="flex flex-col items-center py-12 gap-3 text-muted-foreground">
             <Package className="size-9 opacity-20" />
             <p className="text-sm font-body">No deductions recorded yet</p>
@@ -688,8 +809,8 @@ export default function StoreCustomTab() {
           </div>
         ) : (
           <div className="divide-y divide-border/40">
-            {deductions.map(d => (
-              <HistoryRow key={d.id} record={d} />
+            {batches.map(b => (
+              <DeductionBatchCard key={b.batchId} batch={b} />
             ))}
           </div>
         )}

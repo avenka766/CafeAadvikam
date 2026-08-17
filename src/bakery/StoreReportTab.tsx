@@ -1,14 +1,20 @@
 import { useCallback, useEffect, useMemo, useState, type ComponentType, type ReactNode } from 'react';
 import * as XLSX from '@/lib/safeSpreadsheet';
-import { Calendar, Download, FileText, Loader2, MinusCircle, Package, Receipt, RefreshCw } from 'lucide-react';
+import { Calendar, Download, FileText, Loader2, MinusCircle, Package, Receipt, RefreshCw, ChevronDown, ChevronUp, LayoutGrid } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { supabase } from '@/lib/supabase';
 import { useInvoiceStore } from './invoiceStore';
+import { matForItem } from './materialCalc';
+import type { ProductionCategory } from './productionRouting';
+import { storeOrderCategory } from './productionRouting';
+import { useBakeryItemsStore } from './bakeryItemsStore';
+import type { BakeryOrder } from './types';
 
 type PeriodKey = 'today' | '7d' | '30d' | 'custom';
 
 interface MaterialDeduction {
   id: string;
+  orderId: string;
   orderNumber: string;
   materialName: string;
   quantity: number;
@@ -28,6 +34,10 @@ interface CustomDeduction {
   deductedBy: string;
   createdAt: string;
 }
+
+interface CategoryMaterialRow { material: string; quantity: number; unit: string; price: number | null; value: number }
+interface CategoryItemRow { itemName: string; totalQuantity: number; unit: string; orderCount: number; materials: CategoryMaterialRow[]; materialsValue: number }
+interface CategoryGroup { category: ProductionCategory; items: CategoryItemRow[]; totalValue: number }
 
 const PERIODS: { key: PeriodKey; label: string; days: number | null }[] = [
   { key: 'today', label: 'Today', days: 0 },
@@ -86,7 +96,7 @@ function StatCard({ icon: Icon, label, value, sub }: { icon: ComponentType<{ cla
 
 export default function StoreReportTab() {
   const { invoices, loaded: invoicesLoaded, load: loadInvoices } = useInvoiceStore();
-  const [view, setView] = useState<'overview' | 'price'>('overview');
+  const [view, setView] = useState<'overview' | 'price' | 'category'>('overview');
   const [period, setPeriod] = useState<PeriodKey>('7d');
   const [customFrom, setCustomFrom] = useState(toInputDate(new Date()));
   const [customTo, setCustomTo] = useState(toInputDate(new Date()));
@@ -102,7 +112,7 @@ export default function StoreReportTab() {
       const [materialRes, customRes] = await Promise.all([
         supabase
           .from('store_material_deductions')
-          .select('id, order_number, material_name, quantity_deducted, unit, stock_before, stock_after, deducted_by, deducted_at')
+          .select('id, order_id, order_number, material_name, quantity_deducted, unit, stock_before, stock_after, deducted_by, deducted_at')
           .gte('deducted_at', range.from)
           .lte('deducted_at', range.to)
           .order('deducted_at', { ascending: false }),
@@ -116,6 +126,7 @@ export default function StoreReportTab() {
 
       setMaterials((materialRes.data ?? []).map((r: Record<string, unknown>) => ({
         id: String(r.id ?? ''),
+        orderId: String(r.order_id ?? ''),
         orderNumber: String(r.order_number ?? ''),
         materialName: String(r.material_name ?? ''),
         quantity: Number(r.quantity_deducted ?? 0),
@@ -164,6 +175,113 @@ export default function StoreReportTab() {
   }, [invoices]);
 
   const [priceSource, setPriceSource] = useState<'all' | 'recipe' | 'custom'>('all');
+
+  // ── Category-wise report ──────────────────────────────────────────────────
+  // "Bakery -> Bread 100 pcs -> raw materials deducted for this, and their
+  // price." store_material_deductions only records materials at the ORDER
+  // level (one flat list per order), but a single order routinely bundles
+  // many different items together (some real orders have 30-50+ items) —
+  // so that log alone can't say which material went to which specific item.
+  // Recomputing per item with matForItem (the exact same function the real
+  // deduction pipeline itself uses — see materialCalc.ts) gives item-level
+  // attribution instead of order-level aggregation.
+  const { items: bakeryItems, loadAllItems, subscribe: subscribeBakeryItems } = useBakeryItemsStore();
+  useEffect(() => { void loadAllItems(); return subscribeBakeryItems(); }, [loadAllItems, subscribeBakeryItems]);
+
+  const [categoryOrders, setCategoryOrders] = useState<Pick<BakeryOrder, 'id' | 'orderNumber' | 'items'>[]>([]);
+  const [categoryLoading, setCategoryLoading] = useState(false);
+
+  const deductionOrderIds = useMemo(
+    () => Array.from(new Set(materials.map(m => m.orderId).filter(Boolean))),
+    [materials],
+  );
+
+  const loadCategoryOrders = useCallback(async () => {
+    if (deductionOrderIds.length === 0) { setCategoryOrders([]); return; }
+    setCategoryLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from('bakery_orders')
+        .select('id, order_number, items')
+        .in('id', deductionOrderIds);
+      if (error) { console.error('[StoreReportTab] category orders fetch:', error.message); setCategoryOrders([]); return; }
+      setCategoryOrders((data ?? []).map((r: Record<string, unknown>) => ({
+        id: String(r.id ?? ''),
+        orderNumber: Number(r.order_number ?? 0),
+        items: Array.isArray(r.items) ? (r.items as BakeryOrder['items']) : [],
+      })));
+    } finally {
+      setCategoryLoading(false);
+    }
+  }, [deductionOrderIds]);
+
+  const [categoryViewVisited, setCategoryViewVisited] = useState(false);
+  useEffect(() => { if (categoryViewVisited) void loadCategoryOrders(); }, [categoryViewVisited, loadCategoryOrders]);
+
+  const categoryReport = useMemo<CategoryGroup[]>(() => {
+    if (categoryOrders.length === 0) return [];
+    // category -> itemName(lowercased) -> accumulator
+    const groups = new Map<ProductionCategory, Map<string, {
+      itemName: string; totalQuantity: number; unit: string; orderCount: number;
+      materials: Map<string, { name: string; quantity: number; unit: string }>;
+    }>>();
+
+    for (const order of categoryOrders) {
+      for (const item of order.items) {
+        const category = storeOrderCategory(item, bakeryItems);
+        const itemMaterials = matForItem(item);
+        if (itemMaterials.length === 0) continue; // no recipe linked — nothing to attribute
+
+        if (!groups.has(category)) groups.set(category, new Map());
+        const itemMap = groups.get(category)!;
+        const key = item.itemName.trim().toLowerCase();
+        const displayQty = item.dispatchUnit === 'pcs' ? (item.originalPcs ?? item.quantity) : item.quantity;
+        const displayUnit = item.dispatchUnit ?? (item.originalPcs != null ? 'pcs' : 'kg');
+
+        let entry = itemMap.get(key);
+        if (!entry) {
+          entry = { itemName: item.itemName, totalQuantity: 0, unit: displayUnit, orderCount: 0, materials: new Map() };
+          itemMap.set(key, entry);
+        }
+        entry.totalQuantity += displayQty;
+        entry.orderCount += 1;
+        for (const m of itemMaterials) {
+          const mKey = m.material.trim().toLowerCase();
+          const existing = entry.materials.get(mKey);
+          if (existing) existing.quantity += m.quantity;
+          else entry.materials.set(mKey, { name: m.material, quantity: m.quantity, unit: m.unit });
+        }
+      }
+    }
+
+    const result: CategoryGroup[] = [];
+    for (const [category, itemMap] of groups) {
+      const items: CategoryItemRow[] = [];
+      for (const entry of itemMap.values()) {
+        const materialRows: CategoryMaterialRow[] = [];
+        for (const [mKey, mVal] of entry.materials) {
+          const price = priceMap.get(mKey)?.price ?? null;
+          const qty = Number(mVal.quantity.toFixed(4));
+          materialRows.push({ material: mVal.name, quantity: qty, unit: mVal.unit, price, value: price !== null ? price * qty : 0 });
+        }
+        materialRows.sort((a, b) => b.value - a.value);
+        items.push({
+          itemName: entry.itemName,
+          totalQuantity: Number(entry.totalQuantity.toFixed(3)),
+          unit: entry.unit,
+          orderCount: entry.orderCount,
+          materials: materialRows,
+          materialsValue: materialRows.reduce((s, m) => s + m.value, 0),
+        });
+      }
+      items.sort((a, b) => b.materialsValue - a.materialsValue);
+      result.push({ category, items, totalValue: items.reduce((s, i) => s + i.materialsValue, 0) });
+    }
+    result.sort((a, b) => b.totalValue - a.totalValue);
+    return result;
+  }, [categoryOrders, bakeryItems, priceMap]);
+
+  const categoryReportTotal = categoryReport.reduce((s, g) => s + g.totalValue, 0);
 
   const priceRows = useMemo(() => {
     type Row = { id: string; itemName: string; quantity: number; unit: string; source: 'Recipe' | 'Custom'; date: string; price: number | null; value: number };
@@ -239,20 +357,38 @@ export default function StoreReportTab() {
       'Price/Unit': r.price ?? '',
       Value: r.value,
     }))), 'Price Consumption');
+    const categoryRows = categoryReport.flatMap(group =>
+      group.items.flatMap(item =>
+        item.materials.map(m => ({
+          Category: group.category,
+          Item: item.itemName,
+          'Item Qty': item.totalQuantity,
+          'Item Unit': item.unit,
+          'Raw Material': m.material,
+          'Material Qty': m.quantity,
+          'Material Unit': m.unit,
+          'Price/Unit': m.price ?? '',
+          Value: m.value,
+        }))
+      )
+    );
+    if (categoryRows.length > 0) {
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(categoryRows), 'Category Wise');
+    }
     XLSX.writeFile(wb, `store-report-${range.fromDate}-to-${range.toDate}.xlsx`);
   };
 
   return (
     <div className="space-y-4 pb-8">
       <div className="flex gap-1.5">
-        {(['overview', 'price'] as const).map(v => (
+        {(['overview', 'price', 'category'] as const).map(v => (
           <button
             key={v}
             type="button"
-            onClick={() => setView(v)}
+            onClick={() => { setView(v); if (v === 'category') setCategoryViewVisited(true); }}
             className={cn('h-9 rounded-xl border px-4 text-xs font-body font-bold capitalize', view === v ? 'border-primary bg-primary text-primary-foreground' : 'border-border bg-background text-muted-foreground hover:bg-muted')}
           >
-            {v === 'price' ? 'Price' : 'Overview'}
+            {v === 'price' ? 'Price' : v === 'category' ? 'Category Wise' : 'Overview'}
           </button>
         ))}
       </div>
@@ -350,6 +486,30 @@ export default function StoreReportTab() {
             )}
           </section>
         </div>
+      ) : view === 'category' ? (
+        <div className="space-y-4">
+          <div className="grid gap-3 sm:grid-cols-3">
+            <StatCard icon={LayoutGrid} label="Stock Value by Category" value={money(categoryReportTotal)} sub={`${range.fromDate} to ${range.toDate}`} />
+            <StatCard icon={Package} label="Categories" value={categoryReport.length} sub="With items sent to baker" />
+            <StatCard icon={Calendar} label="Orders Covered" value={categoryOrders.length} sub={`Of ${deductionOrderIds.length} with deductions`} />
+          </div>
+
+          <section className="rounded-3xl border border-border bg-card p-4 shadow-soft">
+            <h4 className="text-sm font-body font-bold text-foreground mb-1">Raw materials by category</h4>
+            <p className="text-[11px] font-body text-muted-foreground mb-3">Items sent to the baker in this range, grouped by category, with the raw materials and cost each one drew from stock.</p>
+            {categoryLoading ? (
+              <div className="flex justify-center py-10"><Loader2 className="size-5 animate-spin text-muted-foreground" /></div>
+            ) : categoryReport.length === 0 ? (
+              <p className="py-10 text-center text-xs font-body text-muted-foreground">No production found for this range.</p>
+            ) : (
+              <div className="space-y-2">
+                {categoryReport.map(group => (
+                  <CategoryGroupCard key={group.category} group={group} />
+                ))}
+              </div>
+            )}
+          </section>
+        </div>
       ) : (
         <div className="grid gap-4 xl:grid-cols-3">
           <ReportSection title="Deductions" empty="No recipe deductions found.">
@@ -394,6 +554,95 @@ function ReportRow({ title, right, lines }: { title: string; right: string; line
       <div className="mt-1 space-y-0.5">
         {lines.map(line => <p key={line} className="text-[10px] font-body text-muted-foreground">{line}</p>)}
       </div>
+    </div>
+  );
+}
+
+// ─── Category Wise report cards ────────────────────────────────────────────────
+// Category -> Item -> Materials, matching the requested "Bakery -> Bread 100 pcs
+// -> raw materials + price" shape. Two nesting levels, each independently
+// collapsible so a category with 20 items doesn't force-expand all of them.
+function CategoryGroupCard({ group }: { group: CategoryGroup }) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div className="rounded-2xl border border-border overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setExpanded(v => !v)}
+        className="w-full px-4 py-3 flex items-center gap-3 text-left bg-background hover:bg-muted/40"
+      >
+        <span className="size-9 rounded-xl bg-primary/10 text-primary flex items-center justify-center shrink-0">
+          <LayoutGrid className="size-4" />
+        </span>
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-body font-bold text-foreground">{group.category}</p>
+          <p className="text-[11px] font-body text-muted-foreground">{group.items.length} item{group.items.length !== 1 ? 's' : ''} sent to baker</p>
+        </div>
+        <p className="text-sm font-body font-bold text-foreground whitespace-nowrap">{money(group.totalValue)}</p>
+        {expanded ? <ChevronUp className="size-4 text-muted-foreground shrink-0" /> : <ChevronDown className="size-4 text-muted-foreground shrink-0" />}
+      </button>
+      {expanded && (
+        <div className="px-3 pb-3 pt-1 space-y-2 bg-muted/10">
+          {group.items.map(item => (
+            <CategoryItemCard key={item.itemName} item={item} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CategoryItemCard({ item }: { item: CategoryItemRow }) {
+  const [expanded, setExpanded] = useState(false);
+  const missingPrice = item.materials.some(m => m.price === null);
+  return (
+    <div className="rounded-xl border border-border bg-card overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setExpanded(v => !v)}
+        className="w-full px-3 py-2.5 flex items-center gap-2.5 text-left hover:bg-muted/30"
+      >
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <p className="text-xs font-body font-bold text-foreground">{item.itemName}</p>
+            <span className="text-[10px] font-body font-bold text-primary bg-primary/10 rounded-full px-1.5 py-0.5">
+              {item.totalQuantity} {item.unit}
+            </span>
+          </div>
+          <p className="text-[10px] font-body text-muted-foreground mt-0.5">
+            {item.materials.length} raw material{item.materials.length !== 1 ? 's' : ''} · from {item.orderCount} order{item.orderCount !== 1 ? 's' : ''}
+            {missingPrice && <span className="text-amber-600"> · some prices missing</span>}
+          </p>
+        </div>
+        <p className="text-xs font-body font-bold text-foreground whitespace-nowrap">{money(item.materialsValue)}</p>
+        {expanded ? <ChevronUp className="size-3.5 text-muted-foreground shrink-0" /> : <ChevronDown className="size-3.5 text-muted-foreground shrink-0" />}
+      </button>
+      {expanded && (
+        <div className="px-3 pb-2.5">
+          <div className="rounded-lg border border-border overflow-hidden">
+            <table className="w-full text-[11px] font-body">
+              <thead>
+                <tr className="bg-muted/50 border-b border-border">
+                  <th className="text-left px-2.5 py-1.5 font-bold text-muted-foreground">Raw Material</th>
+                  <th className="text-right px-2.5 py-1.5 font-bold text-muted-foreground">Qty</th>
+                  <th className="text-right px-2.5 py-1.5 font-bold text-muted-foreground">Price</th>
+                  <th className="text-right px-2.5 py-1.5 font-bold text-muted-foreground">Value</th>
+                </tr>
+              </thead>
+              <tbody>
+                {item.materials.map(m => (
+                  <tr key={m.material} className="border-b border-border/40 last:border-0">
+                    <td className="px-2.5 py-1.5 text-foreground capitalize">{m.material}</td>
+                    <td className="px-2.5 py-1.5 text-right text-foreground">{m.quantity} {m.unit}</td>
+                    <td className="px-2.5 py-1.5 text-right text-muted-foreground">{m.price !== null ? `Rs ${m.price.toFixed(2)}` : '—'}</td>
+                    <td className="px-2.5 py-1.5 text-right font-bold text-foreground">{m.price !== null ? money(m.value) : '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

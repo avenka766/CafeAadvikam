@@ -1,4 +1,9 @@
-import type { BakeryOrderItem } from './types';
+import type { BakeryOrderItem, BakeryOrder } from './types';
+import { BAKERY_ITEMS } from './types';
+import type { BakeryItem } from './bakeryItemsStore';
+import { itemNamesMatch } from './itemMatcher';
+import { SNB_ITEMS } from '@/branch/snbItems';
+import { VRSNB_ITEMS } from '@/branch/vrsnbItems';
 
 // NOTE: Production-desk destination routing (sweet_master/savouries_master/etc.)
 // was removed with the old Production stage. This file now only classifies
@@ -28,4 +33,24 @@ export function normalizeProductionCategory(category: string | undefined, itemNa
 
 export function itemCategory(item: BakeryOrderItem, liveCategory?: string): ProductionCategory {
   return normalizeProductionCategory(liveCategory, item.itemName);
+}
+
+// MOVED (2026-08-16) from StoreDashboard.tsx to this neutral shared module
+// so StoreReportTab.tsx's category-wise report can reuse the exact same
+// resolution — importing it directly from StoreDashboard.tsx would be a
+// circular import, since StoreDashboard.tsx renders StoreReportTab.
+export const CORE_RECIPE_CATEGORIES: ProductionCategory[] = ['Sweets', 'Savouries', 'Bakery', 'Cookies', 'Others'];
+export type StoreOrderCategory = ProductionCategory;
+
+export function storeOrderCategory(item: BakeryOrder['items'][number], liveItems: BakeryItem[]): StoreOrderCategory {
+  const liveCategory = liveItems.find(entry => entry.id === item.itemId || itemNamesMatch(entry.name, item.itemName))?.category;
+  const fallbackCategory = BAKERY_ITEMS.find(entry => entry.id === item.itemId || itemNamesMatch(entry.name, item.itemName))?.category;
+  const idMatch = item.itemId.toLowerCase().match(/^(snb|vrsnb)-(\d+)$/);
+  const barcode = idMatch ? Number(idMatch[2]) : 0;
+  const branchCategory = idMatch?.[1] === 'snb'
+    ? SNB_ITEMS.find(entry => entry.barcode === barcode)?.category
+    : idMatch?.[1] === 'vrsnb'
+      ? VRSNB_ITEMS.find(entry => entry.barcode === barcode)?.category
+      : undefined;
+  return normalizeProductionCategory(liveCategory || fallbackCategory || branchCategory, item.itemName);
 }

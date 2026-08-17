@@ -29,16 +29,17 @@ import { searchItems, getSuppliersForItem, getAllSupplierNames, getItemsForSuppl
 import { useAuthStore } from '@/stores/authStore';
 import { useNotificationStore } from './notificationStore';
 import type { DeductionContext } from './storeStockStore';
-import { itemNamesMatch, pcsToKg, resolveItemWeightGrams } from './itemMatcher';
+import { resolveItemWeightGrams } from './itemMatcher';
 import { matForItem } from './materialCalc';
 import InvoiceTab from './InvoiceTab';
 import StorePurchaseOrderTab from './StorePurchaseOrderTab';
 import { useStorePurchaseOrderStore } from './storePurchaseOrderStore';
-import { SNB_ITEMS } from '@/branch/snbItems';
-import { VRSNB_ITEMS } from '@/branch/vrsnbItems';
 import {
   normalizeProductionCategory,
+  storeOrderCategory,
+  CORE_RECIPE_CATEGORIES,
   type ProductionCategory,
+  type StoreOrderCategory,
 } from './productionRouting';
 
 // Kolkata-safe date key/label, same pattern used in PlannerDashboard.tsx —
@@ -70,22 +71,7 @@ const needsProductionRelease = (o: BakeryOrder) => o.status === 'store_confirmed
 
 type StoreDashboardTab = 'orders' | 'history' | 'inventory' | 'suppliers' | 'purchaseOrders' | 'invoices' | 'analytics' | 'custom' | 'closure' | 'report';
 const STORE_TABS: StoreDashboardTab[] = ['orders', 'history', 'inventory', 'suppliers', 'purchaseOrders', 'invoices', 'analytics', 'custom', 'closure', 'report'];
-const CORE_RECIPE_CATEGORIES: ProductionCategory[] = ['Sweets', 'Savouries', 'Bakery', 'Cookies', 'Others'];
 const STORE_ORDER_CATEGORIES: ProductionCategory[] = [...CORE_RECIPE_CATEGORIES.slice(0, 2), 'Cookies', 'Puffs', 'Bakery', 'Others'];
-type StoreOrderCategory = ProductionCategory;
-
-function storeOrderCategory(item: BakeryOrder['items'][number], liveItems: ReturnType<typeof useBakeryItemsStore.getState>['items']): StoreOrderCategory {
-  const liveCategory = liveItems.find(entry => entry.id === item.itemId || itemNamesMatch(entry.name, item.itemName))?.category;
-  const fallbackCategory = BAKERY_ITEMS.find(entry => entry.id === item.itemId || itemNamesMatch(entry.name, item.itemName))?.category;
-  const idMatch = item.itemId.toLowerCase().match(/^(snb|vrsnb)-(\d+)$/);
-  const barcode = idMatch ? Number(idMatch[2]) : 0;
-  const branchCategory = idMatch?.[1] === 'snb'
-    ? SNB_ITEMS.find(entry => entry.barcode === barcode)?.category
-    : idMatch?.[1] === 'vrsnb'
-      ? VRSNB_ITEMS.find(entry => entry.barcode === barcode)?.category
-      : undefined;
-  return normalizeProductionCategory(liveCategory || fallbackCategory || branchCategory, item.itemName);
-}
 
 // ─── Shared helpers ───────────────────────────────────────────────────────────
 // matForItem moved to ./materialCalc.ts (2026-08-06) so bakeryStore.ts's
@@ -1357,6 +1343,7 @@ function OrdersTab() {
   const [refreshing, setRefreshing] = useState(false);
   const [merging, setMerging] = useState(false);
   const [mergeError, setMergeError] = useState<string | null>(null);
+  const [search, setSearch] = useState('');
   useEffect(() => {
     fetchOrders().finally(() => setInitialLoading(false));
     loadStock();
@@ -1384,6 +1371,17 @@ function OrdersTab() {
   // merely displayed.
   const pending = orders.filter(o => o.status === 'accepted' || (o.status === 'store_confirmed' && needsProductionRelease(o)));
   const mergeable = orders.filter(o => o.status === 'accepted');
+
+  const filteredPending = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return pending;
+    return pending.filter(o =>
+      String(o.orderNumber).includes(q) ||
+      (o.targetBranch ?? '').toLowerCase().includes(q) ||
+      (o.createdBy ?? '').toLowerCase().includes(q) ||
+      o.items.some(item => item.itemName.toLowerCase().includes(q))
+    );
+  }, [pending, search]);
 
   const handleMergeAll = async () => {
     if (mergeable.length < 2 || merging) return;
@@ -1506,10 +1504,25 @@ function OrdersTab() {
   return (
     <>
       {/* Export / Print header bar */}
-      <div className="flex items-center gap-2 mb-3">
-        <p className="text-xs font-body font-bold text-muted-foreground uppercase flex-1">
-          {pending.length} Pending Order{pending.length !== 1 ? 's' : ''}
+      <div className="flex items-center gap-2 mb-3 flex-wrap">
+        <p className="text-xs font-body font-bold text-muted-foreground uppercase flex-1 min-w-fit">
+          {search.trim() ? `${filteredPending.length} of ${pending.length} Pending Order${pending.length !== 1 ? 's' : ''}` : `${pending.length} Pending Order${pending.length !== 1 ? 's' : ''}`}
         </p>
+        <div className="relative w-full sm:w-56 order-last sm:order-none">
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
+          <input
+            type="text"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search order #, branch, item…"
+            className="h-8 w-full rounded-xl border border-border bg-card pl-8 pr-7 text-xs font-body outline-none focus:ring-2 focus:ring-primary/30"
+          />
+          {search && (
+            <button type="button" onClick={() => setSearch('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
+              <X className="size-3.5" />
+            </button>
+          )}
+        </div>
         <button
           type="button"
           onClick={() => void refreshNow()}
@@ -1544,10 +1557,16 @@ function OrdersTab() {
       </div>
       {mergeError && <p className="mb-3 text-xs font-bold text-destructive">{mergeError}</p>}
 
-      {pending.length > 0 && (
+      {filteredPending.length > 0 && (
         <div className="mb-4 space-y-3">
           <div className="flex items-center gap-2"><Flame className="size-3.5 text-amber-500" /><p className="text-xs font-body font-bold text-muted-foreground uppercase">New Orders</p></div>
-          {pending.map(o => <OrderCard key={o.id} order={o} />)}
+          {filteredPending.map(o => <OrderCard key={o.id} order={o} />)}
+        </div>
+      )}
+      {pending.length > 0 && filteredPending.length === 0 && (
+        <div className="flex flex-col items-center py-24 gap-4">
+          <div className="size-20 rounded-3xl bg-muted flex items-center justify-center"><Search className="size-10 text-muted-foreground opacity-30" /></div>
+          <div className="text-center"><p className="text-sm font-body font-semibold text-foreground">No orders match "{search}"</p><p className="text-xs font-body text-muted-foreground mt-1">Try a different order number, branch, or item name.</p></div>
         </div>
       )}
       {pending.length === 0 && (
