@@ -43,7 +43,7 @@ function fmtDate(iso: string | undefined) {
   return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
 }
 
-export default function AdvanceClosingReportTab({}: Props) {
+export default function AdvanceClosingReportTab(_props: Props) {
   const { fetchBranchData } = useBranchStore();
   const { advanceCakeOrders } = useBranchOpsStore();
 
