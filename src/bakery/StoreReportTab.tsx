@@ -8,6 +8,7 @@ import { matForItem } from './materialCalc';
 import type { ProductionCategory } from './productionRouting';
 import { storeOrderCategory } from './productionRouting';
 import { useBakeryItemsStore } from './bakeryItemsStore';
+import { useStoreStockStore, convertToStockUnit, normaliseName } from './storeStockStore';
 import type { BakeryOrder } from './types';
 
 type PeriodKey = 'today' | '7d' | '30d' | 'custom';
@@ -187,6 +188,8 @@ export default function StoreReportTab() {
   // attribution instead of order-level aggregation.
   const { items: bakeryItems, loadAllItems, subscribe: subscribeBakeryItems } = useBakeryItemsStore();
   useEffect(() => { void loadAllItems(); return subscribeBakeryItems(); }, [loadAllItems, subscribeBakeryItems]);
+  const { items: stockItems, load: loadStock, subscribe: subscribeStock } = useStoreStockStore();
+  useEffect(() => { void loadStock(); return subscribeStock(); }, [loadStock, subscribeStock]);
 
   const [categoryOrders, setCategoryOrders] = useState<Pick<BakeryOrder, 'id' | 'orderNumber' | 'items'>[]>([]);
   const [categoryLoading, setCategoryLoading] = useState(false);
@@ -247,9 +250,27 @@ export default function StoreReportTab() {
         entry.orderCount += 1;
         for (const m of itemMaterials) {
           const mKey = m.material.trim().toLowerCase();
+          // BUG FIX (2026-08-17): "report calculates per gram, should be per
+          // kg." matForItem returns each material in whatever unit its
+          // recipe was authored in — some in kg, some in g, some in ml —
+          // exactly as stored in bakery_recipes (unconverted). Purchase
+          // invoice prices (priceMap, used below) are entered against the
+          // stock item's own canonical unit, almost always kg. Multiplying
+          // a gram quantity by a per-kg price directly inflates the value
+          // ~1000x — precisely what showed up in the screenshot (Icing
+          // Sugar: 1898.7342 g x Rs 292 = Rs 5,54,430, when the real value
+          // is that quantity in KG x that price = Rs 554). The real
+          // deduction pipeline (storeStockStore.deductMaterials) already
+          // solves this by converting to the matched stock item's own unit
+          // before ever logging or deducting anything — same conversion
+          // applied here, so this report's numbers line up with reality
+          // instead of the recipe's raw authoring unit.
+          const stockMatch = stockItems.find(s => normaliseName(s.name) === normaliseName(m.material));
+          const convertedQty = stockMatch ? convertToStockUnit(m.quantity, m.unit, stockMatch.unit) : m.quantity;
+          const convertedUnit = stockMatch?.unit ?? m.unit;
           const existing = entry.materials.get(mKey);
-          if (existing) existing.quantity += m.quantity;
-          else entry.materials.set(mKey, { name: m.material, quantity: m.quantity, unit: m.unit });
+          if (existing) existing.quantity += convertedQty;
+          else entry.materials.set(mKey, { name: m.material, quantity: convertedQty, unit: convertedUnit });
         }
       }
     }
@@ -279,7 +300,7 @@ export default function StoreReportTab() {
     }
     result.sort((a, b) => b.totalValue - a.totalValue);
     return result;
-  }, [categoryOrders, bakeryItems, priceMap]);
+  }, [categoryOrders, bakeryItems, stockItems, priceMap]);
 
   const categoryReportTotal = categoryReport.reduce((s, g) => s + g.totalValue, 0);
 

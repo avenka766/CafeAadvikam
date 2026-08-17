@@ -56,7 +56,7 @@ interface StoreStockState {
   ) => Promise<string | null>;
 }
 
-function convertToStockUnit(qty: number, recipeUnit: string, stockUnit: string): number {
+export function convertToStockUnit(qty: number, recipeUnit: string, stockUnit: string): number {
   const from = recipeUnit.toLowerCase().trim();
   const to   = stockUnit.toLowerCase().trim();
   if (from === to) return qty;
