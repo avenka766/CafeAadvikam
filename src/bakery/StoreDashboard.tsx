@@ -572,13 +572,17 @@ function OrderCard({ order }: { order: BakeryOrder }) {
     // selection time, same as the manual branch below.
     if (needsProductionRelease(order)) {
       try {
-        await releaseToProduction(order.id, selectedIndexes);
+        const deductionWarning = await releaseToProduction(order.id, selectedIndexes);
         const remainingCount = order.items.length - selectedEntries.length;
         if (remainingCount === 0) setSent(true);
         setSelectedIndexes([]);
-        setSendNotice(remainingCount === 0
+        const baseNotice = remainingCount === 0
           ? `${selectedEntries.length} item${selectedEntries.length === 1 ? '' : 's'} sent to the Baker and deducted from stock.`
-          : `${selectedEntries.length} item${selectedEntries.length === 1 ? '' : 's'} sent to the Baker and deducted from stock. ${remainingCount} item${remainingCount === 1 ? '' : 's'} still waiting here.`);
+          : `${selectedEntries.length} item${selectedEntries.length === 1 ? '' : 's'} sent to the Baker and deducted from stock. ${remainingCount} item${remainingCount === 1 ? '' : 's'} still waiting here.`;
+        // BUG FIX (2026-08-17): a "stock not deducted, units don't match"
+        // warning used to only reach the browser console, which nobody on
+        // the floor is looking at. It's now visible right here.
+        setSendNotice(deductionWarning ? `${baseNotice} ⚠ ${deductionWarning}` : baseNotice);
       } catch (sendFailure) {
         setSendError(`${sendFailure instanceof Error ? sendFailure.message : 'Failed to release to production.'} Please try again.`);
       } finally {
@@ -594,6 +598,7 @@ function OrderCard({ order }: { order: BakeryOrder }) {
     // force the planner to make a conscious decision instead of just
     // clicking the same button again.
     let deducted = false;
+    let deductionWarning: string | null = null;
     try {
       // Deduct stock for the selected lines, then hand the order to Planner.
       if (allMats.length > 0) {
@@ -602,20 +607,24 @@ function OrderCard({ order }: { order: BakeryOrder }) {
           orderNumber: order.orderNumber ?? order.id,
           deductedBy:  currentUser?.displayName ?? 'Store',
         };
-        const warn = await deductMaterials(
+        deductionWarning = await deductMaterials(
           allMats.map(m => ({ name: m.material, qty: m.quantity, unit: m.unit })),
           ctx,
         );
         deducted = true;
-        if (warn) console.warn('Stock deduction note:', warn);
       }
       await confirmStockSelected(order.id, selectedIndexes, currentUser?.displayName ?? 'Store');
       const remainingCount = order.items.length - selectedEntries.length;
       if (remainingCount === 0) setSent(true);
       setSelectedIndexes([]);
-      setSendNotice(remainingCount === 0
+      const baseNotice = remainingCount === 0
         ? `${selectedEntries.length} item${selectedEntries.length === 1 ? '' : 's'} confirmed and sent to Planner for production.`
-        : `${selectedEntries.length} item${selectedEntries.length === 1 ? '' : 's'} sent to Planner. ${remainingCount} item${remainingCount === 1 ? '' : 's'} still pending here.`);
+        : `${selectedEntries.length} item${selectedEntries.length === 1 ? '' : 's'} sent to Planner. ${remainingCount} item${remainingCount === 1 ? '' : 's'} still pending here.`;
+      // BUG FIX (2026-08-17): this warning used to get set here, then
+      // immediately clobbered by the unconditional setSendNotice below it —
+      // never actually visible to anyone. Appending to the final notice
+      // instead of setting its own.
+      setSendNotice(deductionWarning ? `${baseNotice} ⚠ ${deductionWarning}` : baseNotice);
     } catch (sendFailure) {
       const baseMsg = sendFailure instanceof Error ? sendFailure.message : 'Failed to confirm stock.';
       if (deducted) {

@@ -64,7 +64,7 @@ function clampOrderItems(items: BakeryOrderItem[]): BakeryOrderItem[] {
 // allowed to THROW — deduction failing should abort the send, same as the
 // original flow (an order was never supposed to reach 'store_confirmed'
 // without its materials being deducted first).
-async function deductForOrder(items: BakeryOrderItem[], orderId: string, orderNumber: number): Promise<void> {
+async function deductForOrder(items: BakeryOrderItem[], orderId: string, orderNumber: number): Promise<string | null> {
   // BUG FIX: useRecipeStore starts with only a small hardcoded seed list
   // (RECIPE_DEFINITIONS) until something calls loadRecipes() to pull the
   // real, current recipes from bakery_recipes. That call has only ever
@@ -79,7 +79,7 @@ async function deductForOrder(items: BakeryOrderItem[], orderId: string, orderNu
   // call unconditionally on every send.
   await useRecipeStore.getState().loadRecipes();
   const materials = combinedMaterialsForItems(items);
-  if (materials.length === 0) return;
+  if (materials.length === 0) return null;
   const { useAuthStore } = await import('@/stores/authStore');
   const deductedBy = useAuthStore.getState().currentUser?.displayName ?? 'Store';
   const ctx: DeductionContext = { orderId, orderNumber, deductedBy };
@@ -87,7 +87,12 @@ async function deductForOrder(items: BakeryOrderItem[], orderId: string, orderNu
     materials.map(m => ({ name: m.material, qty: m.quantity, unit: m.unit })),
     ctx,
   );
+  // BUG FIX (2026-08-17): this used to only console.warn — invisible to
+  // actual staff, who never open devtools. A "stock not deducted, units
+  // don't match" warning needs to reach a person, not just a log nobody
+  // reads. Returned up through releaseToProduction now instead.
   if (warn) console.warn('[mergeOrdersForStore] Stock deduction note:', warn);
+  return warn;
 }
 
 interface BakeryState {
@@ -126,7 +131,7 @@ interface BakeryState {
   // at send time, no separate accounting step needed here) — lets Store
   // still choose which items physically go to the Baker right now, without
   // re-deducting anything. See mergeOrdersForStore's AUTO-CONFIRM comment.
-  releaseToProduction: (orderId: string, selectedIndexes: number[]) => Promise<void>;
+  releaseToProduction: (orderId: string, selectedIndexes: number[]) => Promise<string | null>;
   recordProduction: (orderId: string, producedItems: PreparedItem[]) => Promise<void>;
   setDispatchSplit: (orderId: string, split: Record<string, Record<string, number>>) => Promise<void>;
   // RETRY-SAFETY FIX (2026-08-06): `entry.id` is now optional and, when the
@@ -637,12 +642,15 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     const selectedSet = new Set(selectedIndexes);
     const selectedItems = order.items.filter((_, i) => selectedSet.has(i));
     const remainingItems = order.items.filter((_, i) => !selectedSet.has(i));
-    if (selectedItems.length === 0) return;
+    if (selectedItems.length === 0) return null;
 
     // Deduct before writing anything — deductForOrder deliberately throws on
     // failure (see its own comment), which aborts this whole call rather
     // than releasing items whose materials were never actually deducted.
-    await deductForOrder(selectedItems, orderId, order.orderNumber);
+    // BUG FIX (2026-08-17): now captures and returns the warning instead of
+    // discarding it — a "stock not deducted, units don't match" note needs
+    // to reach whoever's looking at this screen, not just the console.
+    const deductionWarning = await deductForOrder(selectedItems, orderId, order.orderNumber);
 
     const now = new Date().toISOString();
 
@@ -699,6 +707,7 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
         branch: order.targetBranch,
       });
     }
+    return deductionWarning;
   },
 
   recordProduction: async (orderId, producedItems) => {

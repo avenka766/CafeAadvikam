@@ -56,7 +56,7 @@ interface StoreStockState {
   ) => Promise<string | null>;
 }
 
-export function convertToStockUnit(qty: number, recipeUnit: string, stockUnit: string): number {
+export function convertToStockUnit(qty: number, recipeUnit: string, stockUnit: string): number | null {
   const from = recipeUnit.toLowerCase().trim();
   const to   = stockUnit.toLowerCase().trim();
   if (from === to) return qty;
@@ -65,8 +65,22 @@ export function convertToStockUnit(qty: number, recipeUnit: string, stockUnit: s
   if (from === 'ml' && (to === 'l' || to === 'ltr')) return qty / 1000;
   if ((from === 'l' || from === 'ltr') && to === 'ml') return qty * 1000;
   if ((from === 'l' && to === 'ltr') || (from === 'ltr' && to === 'l')) return qty;
-  console.warn(`[storeStockStore] No conversion from "${recipeUnit}" to "${stockUnit}", using raw value`);
-  return qty;
+  // 'pcs' and 'nos' are both just "count of items" — different words for the
+  // same thing, not actually different units, unlike everything else this
+  // function handles (which are genuine unit *conversions*).
+  if ((from === 'pcs' && to === 'nos') || (from === 'nos' && to === 'pcs')) return qty;
+  // BUG FIX (2026-08-17): every other combination this used to silently
+  // fall through to — "using raw value" — is a genuine cross-dimensional
+  // mismatch: mass vs volume (e.g. a recipe's ghee in grams against stock
+  // tracked in litres), mass vs count (grams against a tin/bunch count),
+  // or volume vs count. None of those are safely convertible without
+  // information this function has no way to know (density, pack weight,
+  // pack volume) — silently treating the raw number as if it were already
+  // in the target unit isn't a fallback, it's a wrong answer stated with
+  // full confidence. Every caller must now handle null explicitly instead
+  // of unknowingly multiplying/dividing stock by a bogus figure.
+  console.warn(`[storeStockStore] No valid conversion from "${recipeUnit}" to "${stockUnit}" — these are different kinds of unit (mass/volume/count), not just different names for the same thing. Returning null instead of guessing.`);
+  return null;
 }
 
 export function normaliseName(n: string) { return n.trim().toLowerCase(); }
@@ -203,7 +217,23 @@ export const useStoreStockStore = create<StoreStockState>()((set, get) => ({
       if (!match) { warnings.push(`${d.name} not in stock`); continue; }
       let deductQty = d.qty;
       if (d.unit) {
-        deductQty = convertToStockUnit(d.qty, d.unit, match.unit);
+        const converted = convertToStockUnit(d.qty, d.unit, match.unit);
+        // BUG FIX (2026-08-17): this used to fall back to the raw,
+        // unconverted number whenever the recipe's unit and the stock
+        // item's unit were genuinely different kinds of unit (mass vs
+        // volume vs count) — e.g. a recipe calling for grams of ghee
+        // against stock tracked in litres. That silently deducted the
+        // wrong amount from real stock every single time — confirmed as
+        // the actual cause of NANDHINI GHEE and MILK MAID showing negative
+        // balances. Skipping and warning loudly (same pattern as "not in
+        // stock" below) stops the ongoing corruption; the recipe's unit or
+        // the stock item's unit needs to be fixed to match before this
+        // material can be deducted automatically again.
+        if (converted === null) {
+          warnings.push(`${d.name}: recipe uses "${d.unit}" but stock is tracked in "${match.unit}" — these can't be converted automatically (different kind of unit). Stock NOT deducted for this material — fix the recipe or stock unit to match.`);
+          continue;
+        }
+        deductQty = converted;
       } else {
         if (match.unit === 'g' && deductQty <= 10) {
           deductQty = deductQty * 1000;

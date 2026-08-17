@@ -36,7 +36,7 @@ interface CustomDeduction {
   createdAt: string;
 }
 
-interface CategoryMaterialRow { material: string; quantity: number; unit: string; price: number | null; value: number }
+interface CategoryMaterialRow { material: string; quantity: number; unit: string; price: number | null; value: number; unresolvedUnit: boolean }
 interface CategoryItemRow { itemName: string; totalQuantity: number; unit: string; orderCount: number; materials: CategoryMaterialRow[]; materialsValue: number }
 interface CategoryGroup { category: ProductionCategory; items: CategoryItemRow[]; totalValue: number }
 
@@ -226,7 +226,7 @@ export default function StoreReportTab() {
     // category -> itemName(lowercased) -> accumulator
     const groups = new Map<ProductionCategory, Map<string, {
       itemName: string; totalQuantity: number; unit: string; orderCount: number;
-      materials: Map<string, { name: string; quantity: number; unit: string }>;
+      materials: Map<string, { name: string; quantity: number; unit: string; unresolvedUnit: boolean }>;
     }>>();
 
     for (const order of categoryOrders) {
@@ -251,26 +251,34 @@ export default function StoreReportTab() {
         for (const m of itemMaterials) {
           const mKey = m.material.trim().toLowerCase();
           // BUG FIX (2026-08-17): "report calculates per gram, should be per
-          // kg." matForItem returns each material in whatever unit its
-          // recipe was authored in — some in kg, some in g, some in ml —
-          // exactly as stored in bakery_recipes (unconverted). Purchase
-          // invoice prices (priceMap, used below) are entered against the
-          // stock item's own canonical unit, almost always kg. Multiplying
-          // a gram quantity by a per-kg price directly inflates the value
-          // ~1000x — precisely what showed up in the screenshot (Icing
-          // Sugar: 1898.7342 g x Rs 292 = Rs 5,54,430, when the real value
-          // is that quantity in KG x that price = Rs 554). The real
-          // deduction pipeline (storeStockStore.deductMaterials) already
-          // solves this by converting to the matched stock item's own unit
-          // before ever logging or deducting anything — same conversion
-          // applied here, so this report's numbers line up with reality
-          // instead of the recipe's raw authoring unit.
+          // kg" was one symptom of a bigger issue — matForItem returns each
+          // material in whatever unit its recipe was authored in (kg, g,
+          // ml, all mixed), and purchase invoice prices (priceMap, below)
+          // are entered against the stock item's own canonical unit
+          // (almost always kg). Multiplying a mismatched-unit quantity by
+          // that price gives a confidently wrong number.
+          //
+          // convertToStockUnit only actually converts within the SAME kind
+          // of unit (g<->kg, ml<->L). For genuinely different kinds — mass
+          // vs volume (Nandhini Ghee recipe'd in grams, stock tracked in
+          // litres), mass vs count (Milk Maid in grams, stock tracked as
+          // tins) — it now returns null rather than silently returning the
+          // raw number relabeled with the stock unit (which is what
+          // produced "120.8791 ltr" of ghee for a 5.5kg cake — that number
+          // was really ~121 GRAMS, not litres at all). Those genuinely
+          // can't be auto-converted without information this app doesn't
+          // have (density, pack weight) — shown below with the recipe's
+          // own unit and a mismatch flag instead of a fabricated price.
           const stockMatch = stockItems.find(s => normaliseName(s.name) === normaliseName(m.material));
-          const convertedQty = stockMatch ? convertToStockUnit(m.quantity, m.unit, stockMatch.unit) : m.quantity;
-          const convertedUnit = stockMatch?.unit ?? m.unit;
+          const converted = stockMatch ? convertToStockUnit(m.quantity, m.unit, stockMatch.unit) : null;
           const existing = entry.materials.get(mKey);
-          if (existing) existing.quantity += convertedQty;
-          else entry.materials.set(mKey, { name: m.material, quantity: convertedQty, unit: convertedUnit });
+          if (converted !== null) {
+            if (existing && !existing.unresolvedUnit) existing.quantity += converted;
+            else entry.materials.set(mKey, { name: m.material, quantity: converted, unit: stockMatch!.unit, unresolvedUnit: false });
+          } else {
+            if (existing && existing.unresolvedUnit) existing.quantity += m.quantity;
+            else entry.materials.set(mKey, { name: m.material, quantity: m.quantity, unit: m.unit, unresolvedUnit: true });
+          }
         }
       }
     }
@@ -280,10 +288,14 @@ export default function StoreReportTab() {
       const items: CategoryItemRow[] = [];
       for (const entry of itemMap.values()) {
         const materialRows: CategoryMaterialRow[] = [];
-        for (const [mKey, mVal] of entry.materials) {
-          const price = priceMap.get(mKey)?.price ?? null;
+        for (const [, mVal] of entry.materials) {
+          const mKey = mVal.name.trim().toLowerCase();
+          // Never price a material whose unit couldn't actually be resolved
+          // against stock — a "price" here would just be the same kind of
+          // wrong number this whole fix exists to stop producing.
+          const price = mVal.unresolvedUnit ? null : (priceMap.get(mKey)?.price ?? null);
           const qty = Number(mVal.quantity.toFixed(4));
-          materialRows.push({ material: mVal.name, quantity: qty, unit: mVal.unit, price, value: price !== null ? price * qty : 0 });
+          materialRows.push({ material: mVal.name, quantity: qty, unit: mVal.unit, price, value: price !== null ? price * qty : 0, unresolvedUnit: mVal.unresolvedUnit });
         }
         materialRows.sort((a, b) => b.value - a.value);
         items.push({
@@ -615,7 +627,8 @@ function CategoryGroupCard({ group }: { group: CategoryGroup }) {
 
 function CategoryItemCard({ item }: { item: CategoryItemRow }) {
   const [expanded, setExpanded] = useState(false);
-  const missingPrice = item.materials.some(m => m.price === null);
+  const missingPrice = item.materials.some(m => m.price === null && !m.unresolvedUnit);
+  const unitMismatch = item.materials.some(m => m.unresolvedUnit);
   return (
     <div className="rounded-xl border border-border bg-card overflow-hidden">
       <button
@@ -633,6 +646,7 @@ function CategoryItemCard({ item }: { item: CategoryItemRow }) {
           <p className="text-[10px] font-body text-muted-foreground mt-0.5">
             {item.materials.length} raw material{item.materials.length !== 1 ? 's' : ''} · from {item.orderCount} order{item.orderCount !== 1 ? 's' : ''}
             {missingPrice && <span className="text-amber-600"> · some prices missing</span>}
+            {unitMismatch && <span className="text-destructive"> · unit mismatch, needs fixing</span>}
           </p>
         </div>
         <p className="text-xs font-body font-bold text-foreground whitespace-nowrap">{money(item.materialsValue)}</p>
@@ -652,9 +666,12 @@ function CategoryItemCard({ item }: { item: CategoryItemRow }) {
               </thead>
               <tbody>
                 {item.materials.map(m => (
-                  <tr key={m.material} className="border-b border-border/40 last:border-0">
-                    <td className="px-2.5 py-1.5 text-foreground capitalize">{m.material}</td>
-                    <td className="px-2.5 py-1.5 text-right text-foreground">{m.quantity} {m.unit}</td>
+                  <tr key={m.material} className={cn('border-b border-border/40 last:border-0', m.unresolvedUnit && 'bg-destructive/5')}>
+                    <td className="px-2.5 py-1.5 text-foreground capitalize">
+                      {m.material}
+                      {m.unresolvedUnit && <span className="ml-1.5 text-[9px] font-bold text-destructive align-middle" title="This recipe's unit and the stock item's unit are different kinds of measurement (e.g. weight vs volume) — fix the recipe or the stock item's unit to price this correctly.">⚠ unit mismatch</span>}
+                    </td>
+                    <td className="px-2.5 py-1.5 text-right text-foreground">{m.quantity} {m.unit}{m.unresolvedUnit ? ' (recipe unit)' : ''}</td>
                     <td className="px-2.5 py-1.5 text-right text-muted-foreground">{m.price !== null ? `Rs ${m.price.toFixed(2)}` : '—'}</td>
                     <td className="px-2.5 py-1.5 text-right font-bold text-foreground">{m.price !== null ? money(m.value) : '—'}</td>
                   </tr>
