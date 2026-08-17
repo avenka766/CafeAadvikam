@@ -2266,7 +2266,25 @@ export default function StoreDashboard() {
   const { suppliers } = useSupplierStore();
   const { orders: purchaseOrders, loaded: poLoaded, load: loadPOs } = useStorePurchaseOrderStore();
 
-  useEffect(() => { void loadRecipes(); return subscribeRecipes(); }, [loadRecipes, subscribeRecipes]);
+  useEffect(() => {
+    void loadRecipes();
+    const unsubscribe = subscribeRecipes();
+    // BUG FIX (2026-08-16): "recipe updated in Admin doesn't show in Store."
+    // Traced the whole chain — the save writes to bakery_recipes correctly,
+    // the item is linked correctly, and bakery_recipes is enabled for
+    // Realtime — but this effect had ONLY the realtime subscription with no
+    // fallback at all. A long-lived dashboard tab (which this is — left
+    // open all day) can silently lose its websocket (computer sleep, flaky
+    // store WiFi, an idle connection getting dropped) with no visible error
+    // and no automatic recovery, leaving recipes frozen until a manual
+    // reload. loadRecipes(true) forces a real refetch (loadRecipes() alone
+    // would no-op once `loaded` is already true) whenever the tab regains
+    // focus, so a dropped connection self-corrects instead of staying wrong
+    // indefinitely.
+    const refreshOnVisible = () => { if (!document.hidden) void loadRecipes(true); };
+    document.addEventListener('visibilitychange', refreshOnVisible);
+    return () => { unsubscribe(); document.removeEventListener('visibilitychange', refreshOnVisible); };
+  }, [loadRecipes, subscribeRecipes]);
   useEffect(() => { if (!poLoaded) void loadPOs(); }, [poLoaded, loadPOs]);
   void recipes;
 

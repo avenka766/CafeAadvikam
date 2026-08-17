@@ -620,7 +620,15 @@ export default function RecipeManagement({ embedded = false, storeMode = false }
   const { recipes, loading, loadRecipes, saveRecipe, subscribe: subscribeRecipes, getRecipe: getLiveRecipe } = useRecipeStore();
   useEffect(() => {
     void loadRecipes();
-    return subscribeRecipes();
+    const unsubscribe = subscribeRecipes();
+    // BUG FIX (2026-08-16): same fix as StoreDashboard.tsx's recipe-loading
+    // effect — see that file's comment for the full trace. This component
+    // is the one rendered for both Admin (storeMode=false) and Store
+    // (storeMode=true) recipe editing, so it needs the same self-healing
+    // fallback for a silently-dropped realtime connection.
+    const refreshOnVisible = () => { if (!document.hidden) void loadRecipes(true); };
+    document.addEventListener('visibilitychange', refreshOnVisible);
+    return () => { unsubscribe(); document.removeEventListener('visibilitychange', refreshOnVisible); };
   }, [loadRecipes, subscribeRecipes]);
 
   const getRecipe = (itemId: string): RecipeRow | null => {
