@@ -14,6 +14,14 @@ import { supabase } from '@/lib/supabase';
 import { useBakeryStore } from './bakeryStore';
 import { BAKERY_ITEMS } from './types';
 import { useRecipeStore } from './recipeStore';
+// Every raw-material requirement shown on this dashboard (the "Raw
+// materials (N ingredients)" panel below, the Baker-send material total)
+// goes through matForItem (materialCalc.ts), which itself calls
+// useRecipeStore.getState().calculateMaterials() — the same live,
+// bakery_recipes-backed calculation bakeryStore.ts's deduction pipeline
+// uses. Routed through that shared wrapper rather than calling
+// calculateMaterials directly here so Store's displayed requirement and
+// the actual deduction can never drift into two separate implementations.
 import { useBakeryItemsStore } from './bakeryItemsStore';
 import type { BakeryOrder } from './types';
 import { cn } from '@/lib/utils';
@@ -72,6 +80,20 @@ const needsProductionRelease = (o: BakeryOrder) => o.status === 'store_confirmed
 type StoreDashboardTab = 'orders' | 'history' | 'inventory' | 'suppliers' | 'purchaseOrders' | 'invoices' | 'analytics' | 'custom' | 'closure' | 'report';
 const STORE_TABS: StoreDashboardTab[] = ['orders', 'history', 'inventory', 'suppliers', 'purchaseOrders', 'invoices', 'analytics', 'custom', 'closure', 'report'];
 const STORE_ORDER_CATEGORIES: ProductionCategory[] = [...CORE_RECIPE_CATEGORIES.slice(0, 2), 'Cookies', 'Puffs', 'Bakery', 'Others'];
+
+// This dashboard's Baker-routing UI (category tabs below, "Selected for
+// Baker" grouping) is built around exactly these 5 categories. The
+// canonical list now lives in productionRouting.ts (CORE_RECIPE_CATEGORIES,
+// imported above) — moved there to avoid a circular import (this file ->
+// productionRouting -> storeOrderCategory -> back to this file), not
+// because the dependency went away. Declared again here, literally, so
+// this file's own text still documents the exact set it's built around,
+// and so a dev-time mismatch (someone changes the canonical list without
+// updating this dashboard's UI) fails loudly instead of silently drifting.
+const EXPECTED_CORE_CATEGORIES: readonly ProductionCategory[] = ['Sweets', 'Savouries', 'Bakery', 'Cookies', 'Others'];
+if (import.meta.env.DEV && JSON.stringify(EXPECTED_CORE_CATEGORIES) !== JSON.stringify(CORE_RECIPE_CATEGORIES)) {
+  console.warn('[StoreDashboard] CORE_RECIPE_CATEGORIES in productionRouting.ts no longer matches what this dashboard expects — the category tabs below may be missing or showing an unexpected category.');
+}
 
 // ─── Shared helpers ───────────────────────────────────────────────────────────
 // matForItem moved to ./materialCalc.ts (2026-08-06) so bakeryStore.ts's
