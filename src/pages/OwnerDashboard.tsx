@@ -47,6 +47,7 @@ import { isNativeApp } from '@/lib/platform';
 import { useOperationalBranchCatalog } from '@/hooks/useOperationalBranchCatalog';
 import { useBakeryStore } from '@/bakery/bakeryStore';
 import { useLeftoverBalanceMap, qtyFmt, fetchLeftoverLedger, type LeftoverLedgerRow } from '@/bakery/PlannerLeftoverTab';
+import { resolveItemWeightGrams, kgToPcs } from '@/bakery/itemMatcher';
 
 // Shared helper for matching a free-text item name against a catalog's name
 // (used to price Stock Variance and Waste & Loss rows against the live
@@ -3364,15 +3365,49 @@ function OwnerPlannerSummaryTab() {
   const [ledgerRows, setLedgerRows] = useState<LeftoverLedgerRow[]>([]);
   const { items: stockSnbCatalog } = useOperationalBranchCatalog('SNB');
   const { items: stockVrsnbCatalog } = useOperationalBranchCatalog('VRSNB');
-  const stockSnbPriceByName = useMemo(() => new Map<string, number>(stockSnbCatalog.map(item => [ownerNormalizeName(item.name), Number(item.price)])), [stockSnbCatalog]);
-  const stockVrsnbPriceByName = useMemo(() => new Map<string, number>(stockVrsnbCatalog.map(item => [ownerNormalizeName(item.name), Number(item.price)])), [stockVrsnbCatalog]);
-  const stockPriceFor = useCallback((branch: Branch | null, itemName: string): number | null => {
+  const stockSnbByName = useMemo(() => new Map(stockSnbCatalog.map(item => [ownerNormalizeName(item.name), item])), [stockSnbCatalog]);
+  const stockVrsnbByName = useMemo(() => new Map(stockVrsnbCatalog.map(item => [ownerNormalizeName(item.name), item])), [stockVrsnbCatalog]);
+  // BUG FIX (2026-08-17): this used to price stock purely by name-matched
+  // catalog price, with no check that the QUANTITY being priced was even
+  // in the same unit the catalog price assumes. Confirmed active for real
+  // items — BUN, SPL BUN, BANANA CAKE, and others are tracked in kg
+  // throughout Planner's leftover ledger (that's how they're baked and
+  // dispatched) but sold, and priced, per PIECE at the branch counter
+  // (catalog uom "Nos"). Multiplying a kg quantity by a per-piece price
+  // was the same class of bug as the raw-material fixes elsewhere in this
+  // pass — just one stage further down the chain (retail pricing instead
+  // of raw-material costing). Converts using the item's known per-piece
+  // weight (parsed from the item name, e.g. "Rusk (250G)", or a handful of
+  // known category defaults — see resolveItemWeightGrams) where possible;
+  // returns no price (not a guessed one) when the weight can't be
+  // resolved, same "honest gap over confident wrong number" rule applied
+  // everywhere else this session.
+  const priceForLedgerQty = useCallback((branch: Branch | null, itemSlug: string, itemName: string, qty: number, ledgerUnit: string): { price: number | null; qty: number; unit: string } => {
     const key = ownerNormalizeName(itemName);
-    // No branch on the movement (a plain closing-stock entry) or Hosur ->
-    // price against SNB, same fallback used for Transfer Out invoices.
-    if (branch === 'VRSNB') return stockVrsnbPriceByName.get(key) ?? null;
-    return stockSnbPriceByName.get(key) ?? null;
-  }, [stockSnbPriceByName, stockVrsnbPriceByName]);
+    const catalogItem = branch === 'VRSNB' ? stockVrsnbByName.get(key) : stockSnbByName.get(key);
+    if (!catalogItem) return { price: null, qty, unit: ledgerUnit };
+    const ledgerIsWeight = ledgerUnit.toLowerCase() === 'kg';
+    const catalogIsCount = catalogItem.uom === 'Nos';
+    // Same "kind" of unit already (weight<->weight or count<->count) — no
+    // conversion needed, price directly.
+    if (ledgerIsWeight === !catalogIsCount) return { price: catalogItem.price, qty, unit: ledgerUnit };
+    if (ledgerIsWeight && catalogIsCount) {
+      // Ledger tracks kg, catalog prices per piece — convert kg to pcs.
+      const weightGrams = resolveItemWeightGrams(itemSlug, itemName);
+      if (weightGrams === null) return { price: null, qty, unit: ledgerUnit };
+      const pcs = kgToPcs(qty, weightGrams);
+      if (pcs === null) return { price: null, qty, unit: ledgerUnit };
+      return { price: catalogItem.price, qty: pcs, unit: 'pcs' };
+    }
+    // Ledger tracks pcs, catalog prices per kg — convert pcs to kg.
+    const weightGrams = resolveItemWeightGrams(itemSlug, itemName);
+    if (weightGrams === null) return { price: null, qty, unit: ledgerUnit };
+    const kg = Math.round((qty * weightGrams / 1000) * 1000) / 1000;
+    return { price: catalogItem.price, qty: kg, unit: 'kg' };
+  }, [stockSnbByName, stockVrsnbByName]);
+
+  // (stockPriceFor removed 2026-08-17 — superseded by priceForLedgerQty above,
+  // which does everything this did plus the unit conversion.)
 
   const loadAll = useCallback(async () => {
     setLoading(true);
@@ -3405,12 +3440,12 @@ function OwnerPlannerSummaryTab() {
         const lastBranchedMove = ledgerRows
           .filter(r => r.itemSlug === slug && r.branch)
           .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
-        const price = stockPriceFor(lastBranchedMove?.branch ?? null, bal.itemName);
-        return { slug, itemName: bal.itemName, unit: bal.unit, balance: bal.balance, price, value: price != null ? price * bal.balance : null };
+        const priced = priceForLedgerQty(lastBranchedMove?.branch ?? null, slug, bal.itemName, bal.balance, bal.unit);
+        return { slug, itemName: bal.itemName, unit: priced.unit, balance: priced.qty, price: priced.price, value: priced.price != null ? priced.price * priced.qty : null };
       })
       .filter(row => !stockSearch.trim() || row.itemName.toLowerCase().includes(stockSearch.trim().toLowerCase()))
       .sort((a, b) => (b.value ?? 0) - (a.value ?? 0) || b.balance - a.balance);
-  }, [leftoverBalances, ledgerRows, stockPriceFor, stockSearch]);
+  }, [leftoverBalances, ledgerRows, priceForLedgerQty, stockSearch]);
 
   const totalStockValue = useMemo(() => stockRows.reduce((sum, r) => sum + (r.value ?? 0), 0), [stockRows]);
 
@@ -3429,11 +3464,10 @@ function OwnerPlannerSummaryTab() {
             : r.branch
               ? ownerBranchDisplay(r.branch)
               : 'Unspecified';
-        const price = stockPriceFor(r.branch, r.itemName);
-        const qty = Math.abs(r.delta);
-        return { id: r.id, date: r.createdAt, destination, qty, unit: r.unit, value: price != null ? price * qty : null, orderNumber: r.orderNumber };
+        const priced = priceForLedgerQty(r.branch, r.itemSlug, r.itemName, Math.abs(r.delta), r.unit);
+        return { id: r.id, date: r.createdAt, destination, qty: priced.qty, unit: priced.unit, value: priced.price != null ? priced.price * priced.qty : null, orderNumber: r.orderNumber };
       });
-  }, [ledgerRows, stockPriceFor]);
+  }, [ledgerRows, priceForLedgerQty]);
 
   const pipelineCounts = useMemo(() => {
     const counts: Record<string, number> = { pending: 0, accepted: 0, store_confirmed: 0, produced: 0, dispatched: 0 };
