@@ -15,6 +15,7 @@ import {
 } from 'recharts';
 import { cn } from '@/lib/utils';
 import { useInvoiceStore, type StoreInvoice, type InvoiceLineItem } from './invoiceStore';
+import { useStoreStockStore, normaliseName, convertToStockUnit } from './storeStockStore';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface PurchasePoint {
@@ -27,6 +28,7 @@ interface PurchasePoint {
   invoiceNumber: string;
   diff: number | null;  // difference from previous purchase (null for first)
   diffPct: number | null;
+  unresolvedUnit: boolean;
 }
 
 interface MonthlyAvg {
@@ -89,10 +91,12 @@ function DiffBadge({ diff, pct }: { diff: number | null; pct: number | null }) {
 // ─── Main Component ───────────────────────────────────────────────────────────
 export default function StoreAnalyticsTab() {
   const { invoices, loaded, load } = useInvoiceStore();
+  const { items: stockItems, load: loadStock, subscribe: subscribeStock } = useStoreStockStore();
   const [search, setSearch] = useState('');
   const [selectedItem, setSelectedItem] = useState<string | null>(null);
 
   useEffect(() => { if (!loaded) load(); }, [loaded, load]);
+  useEffect(() => { void loadStock(); return subscribeStock(); }, [loadStock, subscribeStock]);
 
   // Build a deduplicated list of all item names across all approved invoices
   const allItems = useMemo(() => {
@@ -155,30 +159,64 @@ export default function StoreAnalyticsTab() {
 
     raw.sort((a, b) => a.date.localeCompare(b.date));
 
-    return raw.map((r, i) => {
-      const prev = i > 0 ? raw[i - 1].li.pricePerUnit : null;
-      const diff = prev !== null ? parseFloat((r.li.pricePerUnit - prev).toFixed(2)) : null;
-      const diffPct = prev !== null && prev > 0
-        ? parseFloat(((diff! / prev) * 100).toFixed(1))
+    // BUG FIX (2026-08-17): this used to compare pricePerUnit straight
+    // across invoices with no check that they were even the same unit —
+    // confirmed 13 materials in this exact dataset get invoiced in
+    // genuinely different units at different times (e.g. Cow Milk
+    // sometimes by kg, sometimes by litre). A price "jump" here could
+    // just be a unit change, not a real price change. Normalizing every
+    // point to one canonical unit before comparing — the stock item's own
+    // unit when it's in the catalog, otherwise the most common unit this
+    // material has actually been invoiced in — the same conversion used
+    // everywhere else this bug class was found. Points that genuinely
+    // can't convert (different kind of unit, e.g. weight vs count) are
+    // kept visible but excluded from the diff/trend math rather than
+    // silently compared as if compatible.
+    const stockMatch = stockItems.find(s => normaliseName(s.name) === normaliseName(selectedItem));
+    let targetUnit = stockMatch?.unit as string | undefined;
+    if (!targetUnit && raw.length > 0) {
+      const unitCounts = new Map<string, number>();
+      for (const r of raw) unitCounts.set(r.li.unit, (unitCounts.get(r.li.unit) ?? 0) + 1);
+      targetUnit = [...unitCounts.entries()].sort((a, b) => b[1] - a[1])[0][0];
+    }
+
+    let prevNormalized: number | null = null;
+    return raw.map((r) => {
+      const factor = targetUnit ? convertToStockUnit(1, r.li.unit, targetUnit) : null;
+      const unresolvedUnit = factor === null;
+      const normalizedPrice = !unresolvedUnit ? r.li.pricePerUnit / factor! : r.li.pricePerUnit;
+      const diff = !unresolvedUnit && prevNormalized !== null ? parseFloat((normalizedPrice - prevNormalized).toFixed(2)) : null;
+      const diffPct = !unresolvedUnit && prevNormalized !== null && prevNormalized > 0
+        ? parseFloat(((diff! / prevNormalized) * 100).toFixed(1))
         : null;
+      if (!unresolvedUnit) prevNormalized = normalizedPrice;
       return {
         date: r.date,
         dateLabel: new Date(r.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }),
         supplier: r.supplier,
-        pricePerUnit: r.li.pricePerUnit,
+        pricePerUnit: normalizedPrice,
         quantity: r.li.quantity,
-        unit: r.li.unit,
+        unit: unresolvedUnit ? r.li.unit : (targetUnit ?? r.li.unit),
         invoiceNumber: r.inv.invoiceNumber,
         diff,
         diffPct,
+        unresolvedUnit,
       };
     });
-  }, [selectedItem, invoices]);
+  }, [selectedItem, invoices, stockItems]);
+
+  // Aggregate stats and charts below compare/average prices across
+  // purchases — that's only valid once everything is in the same unit.
+  // resolvedPurchasePoints excludes the ones that couldn't be normalized
+  // (see purchasePoints' own comment); the raw purchasePoints (all points,
+  // each flagged) is still used for the plain purchase-history listing so
+  // nothing just disappears silently.
+  const resolvedPurchasePoints = useMemo(() => purchasePoints.filter(p => !p.unresolvedUnit), [purchasePoints]);
 
   // Month-over-month averages
   const monthlyAvgs = useMemo((): MonthlyAvg[] => {
     const byMonth: Record<string, number[]> = {};
-    for (const p of purchasePoints) {
+    for (const p of resolvedPurchasePoints) {
       const key = p.date.slice(0, 7); // "2025-05"
       if (!byMonth[key]) byMonth[key] = [];
       byMonth[key].push(p.pricePerUnit);
@@ -197,12 +235,12 @@ export default function StoreAnalyticsTab() {
           count: prices.length,
         };
       });
-  }, [purchasePoints]);
+  }, [resolvedPurchasePoints]);
 
   // Per-supplier summary
   const supplierSummary = useMemo((): SupplierSummary[] => {
     const bySupplier: Record<string, PurchasePoint[]> = {};
-    for (const p of purchasePoints) {
+    for (const p of resolvedPurchasePoints) {
       if (!bySupplier[p.supplier]) bySupplier[p.supplier] = [];
       bySupplier[p.supplier].push(p);
     }
@@ -221,12 +259,12 @@ export default function StoreAnalyticsTab() {
         };
       })
       .sort((a, b) => a.latestPrice - b.latestPrice);
-  }, [purchasePoints]);
+  }, [resolvedPurchasePoints]);
 
   const cheapestSupplier = supplierSummary[0]?.supplier;
   const mostExpensiveSupplier = supplierSummary[supplierSummary.length - 1]?.supplier;
-  const latestPrice = purchasePoints.at(-1)?.pricePerUnit ?? null;
-  const firstPrice = purchasePoints[0]?.pricePerUnit ?? null;
+  const latestPrice = resolvedPurchasePoints.at(-1)?.pricePerUnit ?? null;
+  const firstPrice = resolvedPurchasePoints[0]?.pricePerUnit ?? null;
   const overallDiff = latestPrice !== null && firstPrice !== null
     ? parseFloat((latestPrice - firstPrice).toFixed(2))
     : null;
@@ -335,7 +373,19 @@ export default function StoreAnalyticsTab() {
         </div>
       )}
 
-      {selectedItem && purchasePoints.length > 0 && (
+      {/* Every purchase for this item is in a unit that can't be compared to
+          its stock unit (or to each other) — same root cause as the
+          per-point flag, just the case where nothing at all is comparable. */}
+      {selectedItem && purchasePoints.length > 0 && resolvedPurchasePoints.length === 0 && (
+        <div className="bg-destructive/10 border border-destructive/30 rounded-2xl p-4 flex gap-3">
+          <Info className="size-4 text-destructive shrink-0 mt-0.5" />
+          <p className="text-sm font-body text-destructive">
+            <strong>{selectedItem}</strong> has {purchasePoints.length} purchase{purchasePoints.length !== 1 ? 's' : ''} recorded, but none can be compared — every invoice used a unit that's a different kind of measurement from this item's stock unit (e.g. weight vs volume vs count). Fix the stock item's unit or the invoice unit to see price trends. See the purchase history below for the raw records.
+          </p>
+        </div>
+      )}
+
+      {selectedItem && resolvedPurchasePoints.length > 0 && (
         <>
           {/* ── KPI Summary ── */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 sm:gap-3">
@@ -343,7 +393,7 @@ export default function StoreAnalyticsTab() {
               {
                 label: 'Latest Price',
                 value: fmt(latestPrice!),
-                sub: purchasePoints.at(-1)!.dateLabel,
+                sub: resolvedPurchasePoints.at(-1)!.dateLabel,
                 color: 'text-foreground',
                 bg: 'bg-card',
               },
@@ -360,14 +410,16 @@ export default function StoreAnalyticsTab() {
               },
               {
                 label: 'Purchases',
-                value: String(purchasePoints.length),
-                sub: `across ${supplierSummary.length} supplier${supplierSummary.length !== 1 ? 's' : ''}`,
+                value: String(resolvedPurchasePoints.length),
+                sub: purchasePoints.length !== resolvedPurchasePoints.length
+                  ? `${purchasePoints.length - resolvedPurchasePoints.length} excluded (unit mismatch)`
+                  : `across ${supplierSummary.length} supplier${supplierSummary.length !== 1 ? 's' : ''}`,
                 color: 'text-primary',
                 bg: 'bg-card',
               },
               {
                 label: 'Price Range',
-                value: `${fmt(Math.min(...purchasePoints.map(p => p.pricePerUnit)))} – ${fmt(Math.max(...purchasePoints.map(p => p.pricePerUnit)))}`,
+                value: `${fmt(Math.min(...resolvedPurchasePoints.map(p => p.pricePerUnit)))} – ${fmt(Math.max(...resolvedPurchasePoints.map(p => p.pricePerUnit)))}`,
                 sub: 'min – max across all buys',
                 color: 'text-foreground',
                 bg: 'bg-card',
@@ -392,10 +444,10 @@ export default function StoreAnalyticsTab() {
             </div>
 
             {/* Price line chart */}
-            {purchasePoints.length >= 2 && (
+            {resolvedPurchasePoints.length >= 2 && (
               <div className="px-2 pt-3 pb-1">
                 <ResponsiveContainer width="100%" height={160}>
-                  <LineChart data={purchasePoints} margin={{ top: 4, right: 12, left: -20, bottom: 0 }}>
+                  <LineChart data={resolvedPurchasePoints} margin={{ top: 4, right: 12, left: -20, bottom: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" />
                     <XAxis
                       dataKey="dateLabel"
@@ -413,7 +465,7 @@ export default function StoreAnalyticsTab() {
                       contentStyle={{ fontSize: 11, borderRadius: 8, border: '1px solid #E5E7EB' }}
                     />
                     <ReferenceLine
-                      y={purchasePoints[0].pricePerUnit}
+                      y={resolvedPurchasePoints[0].pricePerUnit}
                       stroke="#94A3B8"
                       strokeDasharray="4 4"
                       label={{ value: 'First', fontSize: 9, fill: '#94A3B8' }}
@@ -432,24 +484,32 @@ export default function StoreAnalyticsTab() {
               </div>
             )}
 
-            {/* Per-purchase rows */}
+            {/* Per-purchase rows — shows every purchase, including ones that
+                couldn't be compared (flagged below), so nothing is hidden
+                from the raw record even though it's excluded from the
+                chart/stats above. */}
             <div className="divide-y divide-border/40">
               {[...purchasePoints].reverse().map((p, i) => (
-                <div key={i} className={cn('px-4 py-3 flex items-start gap-3 border-b border-border/30', diffBg(p.diff))}>
+                <div key={i} className={cn('px-4 py-3 flex items-start gap-3 border-b border-border/30', p.unresolvedUnit ? 'bg-destructive/5' : diffBg(p.diff))}>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="text-xs font-body font-bold text-foreground">{p.dateLabel}</span>
                       <span className="text-[10px] font-body text-muted-foreground">{p.supplier}</span>
                       <span className="text-[9px] font-body text-muted-foreground opacity-60">{p.invoiceNumber}</span>
+                      {p.unresolvedUnit && (
+                        <span className="text-[9px] font-bold text-destructive" title="This invoice's unit is a different kind of measurement than this item's stock unit — excluded from price trends above until one of them is fixed to match.">
+                          ⚠ unit mismatch, excluded from trends
+                        </span>
+                      )}
                     </div>
                     <div className="flex items-center gap-3 mt-1">
-                      <span className={cn('text-sm font-display font-bold tabular-nums', diffColor(p.diff))}>
-                        {fmt(p.pricePerUnit)} <span className="text-[10px] font-body font-normal text-muted-foreground">/ {p.unit}</span>
+                      <span className={cn('text-sm font-display font-bold tabular-nums', p.unresolvedUnit ? 'text-destructive' : diffColor(p.diff))}>
+                        {fmt(p.pricePerUnit)} <span className="text-[10px] font-body font-normal text-muted-foreground">/ {p.unit}{p.unresolvedUnit ? ' (as invoiced)' : ''}</span>
                       </span>
                       <span className="text-[10px] font-body text-muted-foreground">{p.quantity} {p.unit}</span>
                     </div>
                   </div>
-                  <DiffBadge diff={p.diff} pct={p.diffPct} />
+                  {!p.unresolvedUnit && <DiffBadge diff={p.diff} pct={p.diffPct} />}
                 </div>
               ))}
             </div>
@@ -607,8 +667,8 @@ export default function StoreAnalyticsTab() {
           )}
 
           {/* ── Section D: Price volatility insight ── */}
-          {purchasePoints.length >= 3 && (() => {
-            const prices = purchasePoints.map(p => p.pricePerUnit);
+          {resolvedPurchasePoints.length >= 3 && (() => {
+            const prices = resolvedPurchasePoints.map(p => p.pricePerUnit);
             const avg = prices.reduce((a, b) => a + b, 0) / prices.length;
             const variance = prices.reduce((a, b) => a + (b - avg) ** 2, 0) / prices.length;
             const stdDev = Math.sqrt(variance);

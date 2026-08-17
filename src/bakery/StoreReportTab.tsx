@@ -161,19 +161,43 @@ export default function StoreReportTab() {
   });
   const invoiceTotal = reportInvoices.reduce((sum, inv) => sum + Number(inv.grandTotal || 0), 0);
 
-  // Latest known price per item name, taken from all invoices (not just the selected range).
+  // Latest known price per item name, taken from all invoices (not just the
+  // selected range).
+  //
+  // BUG FIX (2026-08-17): this used to only store the price number, with no
+  // record of what UNIT that price was for. 13 materials in this exact
+  // dataset have genuinely been invoiced in different units at different
+  // times (e.g. Cow Milk sometimes by kg, sometimes by litre) — if the most
+  // recent invoice for one of those happened to be in kg, this map handed
+  // out a kg-based price even when pricing a litre-based quantity
+  // elsewhere, silently wrong the same way the ghee/gram bug was. Now
+  // stores the unit alongside the price so callers can convert it properly
+  // instead of assuming it already matches.
   const priceMap = useMemo(() => {
-    const map = new Map<string, { price: number; at: number }>();
+    const map = new Map<string, { price: number; unit: string; at: number }>();
     for (const inv of invoices) {
       const at = new Date(inv.createdAt).getTime();
       for (const li of inv.lineItems) {
         const key = li.itemName.trim().toLowerCase();
         const existing = map.get(key);
-        if (!existing || at > existing.at) map.set(key, { price: li.pricePerUnit, at });
+        if (!existing || at > existing.at) map.set(key, { price: li.pricePerUnit, unit: li.unit, at });
       }
     }
     return map;
   }, [invoices]);
+
+  // Converts a stored price (recorded per its own invoice unit) to a price
+  // per the unit actually needed — the inverse of a quantity conversion:
+  // if 1g of something costs X, 1kg of it costs X * 1000, not X. Returns
+  // null (never a guessed number) when the two units are genuinely
+  // different kinds of measurement, same as convertToStockUnit itself.
+  const priceForUnit = useCallback((materialKey: string, neededUnit: string): number | null => {
+    const entry = priceMap.get(materialKey);
+    if (!entry) return null;
+    if (entry.unit.toLowerCase().trim() === neededUnit.toLowerCase().trim()) return entry.price;
+    const factor = convertToStockUnit(1, entry.unit, neededUnit);
+    return factor !== null && factor > 0 ? entry.price / factor : null;
+  }, [priceMap]);
 
   const [priceSource, setPriceSource] = useState<'all' | 'recipe' | 'custom'>('all');
 
@@ -293,7 +317,7 @@ export default function StoreReportTab() {
           // Never price a material whose unit couldn't actually be resolved
           // against stock — a "price" here would just be the same kind of
           // wrong number this whole fix exists to stop producing.
-          const price = mVal.unresolvedUnit ? null : (priceMap.get(mKey)?.price ?? null);
+          const price = mVal.unresolvedUnit ? null : priceForUnit(mKey, mVal.unit);
           const qty = Number(mVal.quantity.toFixed(4));
           materialRows.push({ material: mVal.name, quantity: qty, unit: mVal.unit, price, value: price !== null ? price * qty : 0, unresolvedUnit: mVal.unresolvedUnit });
         }
@@ -312,7 +336,7 @@ export default function StoreReportTab() {
     }
     result.sort((a, b) => b.totalValue - a.totalValue);
     return result;
-  }, [categoryOrders, bakeryItems, stockItems, priceMap]);
+  }, [categoryOrders, bakeryItems, stockItems, priceForUnit]);
 
   const categoryReportTotal = categoryReport.reduce((s, g) => s + g.totalValue, 0);
 
@@ -320,16 +344,24 @@ export default function StoreReportTab() {
     type Row = { id: string; itemName: string; quantity: number; unit: string; source: 'Recipe' | 'Custom'; date: string; price: number | null; value: number };
     const rows: Row[] = [];
     for (const m of materials) {
-      const price = priceMap.get(m.materialName.trim().toLowerCase())?.price ?? null;
+      // BUG FIX (2026-08-17): m.unit here is already the stock item's own
+      // canonical unit (store_material_deductions is written post-
+      // conversion by deductMaterials) — but priceMap's price could be
+      // recorded against a *different* unit if that material's invoices
+      // aren't all in the same unit (confirmed real for 13 materials in
+      // this data, e.g. Cow Milk sometimes kg, sometimes litre).
+      // priceForUnit converts the price itself rather than assuming it
+      // already matches.
+      const price = priceForUnit(m.materialName.trim().toLowerCase(), m.unit);
       rows.push({ id: `m-${m.id}`, itemName: m.materialName, quantity: m.quantity, unit: m.unit, source: 'Recipe', date: m.deductedAt, price, value: price !== null ? price * m.quantity : 0 });
     }
     for (const c of custom) {
-      const price = priceMap.get(c.itemName.trim().toLowerCase())?.price ?? null;
+      const price = priceForUnit(c.itemName.trim().toLowerCase(), c.unit);
       rows.push({ id: `c-${c.id}`, itemName: c.itemName, quantity: c.quantity, unit: c.unit, source: 'Custom', date: c.createdAt, price, value: price !== null ? price * c.quantity : 0 });
     }
     const filtered = priceSource === 'all' ? rows : rows.filter(r => r.source.toLowerCase() === priceSource);
     return filtered.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-  }, [materials, custom, priceMap, priceSource]);
+  }, [materials, custom, priceForUnit, priceSource]);
 
   const priceTotal = priceRows.reduce((sum, r) => sum + r.value, 0);
   const priceMissing = priceRows.filter(r => r.price === null).length;

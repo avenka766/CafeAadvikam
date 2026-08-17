@@ -18,7 +18,7 @@ import { useBakeryItemsStore } from './bakeryItemsStore';
 import type { BakeryOrder } from './types';
 import { cn } from '@/lib/utils';
 import {
-  useStoreStockStore, getAllRecipeMaterials, normaliseName,
+  useStoreStockStore, getAllRecipeMaterials, normaliseName, convertToStockUnit,
   type StockUnit, type StockItem,
 } from './storeStockStore';
 import { useSupplierStore, type Supplier } from './supplierStore';
@@ -296,12 +296,21 @@ function ItemRow({ order, item, category, selectionEnabled = false, selected = f
     return mats.map(m => {
       const stock = stockItems.find(s => normaliseName(s.name) === normaliseName(m.material));
       if (!stock) return { status: 'unknown' as const, stock: null };
-      // Convert recipe qty to stock unit for comparison
-      let needed = m.quantity;
-      const from = m.unit.toLowerCase();
-      const to   = stock.unit.toLowerCase();
-      if (from === 'g'  && to === 'kg')  needed = needed / 1000;
-      if (from === 'kg' && to === 'g')   needed = needed * 1000;
+      // BUG FIX (2026-08-17): this used to only handle g<->kg by hand, and
+      // for anything else (ml<->L, or a genuine cross-dimensional mismatch
+      // like a recipe in grams against stock tracked in litres) silently
+      // compared the RAW, unconverted recipe quantity against the stock
+      // quantity as if they were already the same unit. For Nandhini Ghee
+      // (recipe: grams, stock: litres) this happened to still show "out of
+      // stock" only because that stock balance was already negative — with
+      // a normal positive balance it would have silently said "OK" while
+      // comparing grams-needed against litres-available, no actual
+      // comparison happening at all. Same conversion function the real
+      // deduction pipeline uses, which correctly returns null instead of a
+      // wrong number when the units are genuinely not the same kind of
+      // measurement.
+      const needed = convertToStockUnit(m.quantity, m.unit, stock.unit);
+      if (needed === null) return { status: 'unit_mismatch' as const, stock, recipeQty: m.quantity, recipeUnit: m.unit };
       if (needed > stock.quantity) return { status: 'out' as const, stock };
       if (stock.quantity <= stock.minThreshold) return { status: 'low' as const, stock };
       return { status: 'ok' as const, stock };
@@ -310,17 +319,18 @@ function ItemRow({ order, item, category, selectionEnabled = false, selected = f
 
   const anyOut = matStatus.some(s => s.status === 'out');
   const anyMissing = matStatus.some(s => s.status === 'unknown');
+  const anyUnitMismatch = matStatus.some(s => s.status === 'unit_mismatch');
   const anyLow = !anyOut && matStatus.some(s => s.status === 'low');
   const hasConfigurationIssue = Boolean(recipeIssue);
 
   useEffect(() => {
-    if (anyMissing || hasConfigurationIssue) setShowMats(true);
-  }, [anyMissing, hasConfigurationIssue]);
+    if (anyMissing || anyUnitMismatch || hasConfigurationIssue) setShowMats(true);
+  }, [anyMissing, anyUnitMismatch, hasConfigurationIssue]);
 
   return (
     <div className={cn(
       "rounded-xl border bg-muted/30 overflow-hidden",
-      selected ? "border-primary bg-primary/5" : anyOut || anyMissing || hasConfigurationIssue ? "border-red-300" : anyLow ? "border-amber-300" : "border-border"
+      selected ? "border-primary bg-primary/5" : anyOut || anyMissing || anyUnitMismatch || hasConfigurationIssue ? "border-red-300" : anyLow ? "border-amber-300" : "border-border"
     )}>
       {/* Item header */}
       <div className="flex items-center gap-2 px-3 py-2.5">
@@ -389,13 +399,14 @@ function ItemRow({ order, item, category, selectionEnabled = false, selected = f
             onClick={() => setShowMats(v => !v)}
             className={cn(
               "w-full flex items-center justify-between px-3 py-2 text-xs font-body font-semibold active:scale-[0.99]",
-              anyOut || anyMissing ? "bg-red-50 text-red-700" : anyLow ? "bg-amber-50 text-amber-700" : "bg-primary/5 text-primary"
+              anyOut || anyMissing || anyUnitMismatch ? "bg-red-50 text-red-700" : anyLow ? "bg-amber-50 text-amber-700" : "bg-primary/5 text-primary"
             )}
           >
             <div className="flex items-center gap-1.5">
               <Calculator className="size-3.5" />
               Raw materials ({mats.length} ingredients)
               {(anyOut || anyMissing) && <span className="text-[9px] font-bold">- check stock list!</span>}
+              {anyUnitMismatch && <span className="text-[9px] font-bold">- fix unit mismatch before releasing!</span>}
             </div>
             {showMats ? <ChevronUp className="size-3.5" /> : <ChevronDown className="size-3.5" />}
           </button>
@@ -408,20 +419,21 @@ function ItemRow({ order, item, category, selectionEnabled = false, selected = f
                   return (
                     <div key={i} className={cn(
                       "flex items-center justify-between px-3 py-2",
-                      s.status === 'out' || s.status === 'unknown' ? "bg-red-50" : s.status === 'low' ? "bg-amber-50" : "bg-background"
+                      s.status === 'out' || s.status === 'unknown' || s.status === 'unit_mismatch' ? "bg-red-50" : s.status === 'low' ? "bg-amber-50" : "bg-background"
                     )}>
                       <div className="flex items-center gap-1.5 flex-1 min-w-0">
                         {s.status === 'out' && <AlertTriangle className="size-3 text-red-500 shrink-0" />}
                         {s.status === 'unknown' && <AlertTriangle className="size-3 text-red-500 shrink-0" />}
+                        {s.status === 'unit_mismatch' && <AlertTriangle className="size-3 text-red-500 shrink-0" />}
                         {s.status === 'low' && <AlertTriangle className="size-3 text-amber-500 shrink-0" />}
                         <span className={cn(
                           "text-sm font-body",
-                          s.status === 'out' || s.status === 'unknown' ? "text-red-700 font-semibold" : "text-foreground"
+                          s.status === 'out' || s.status === 'unknown' || s.status === 'unit_mismatch' ? "text-red-700 font-semibold" : "text-foreground"
                         )}>{m.material}</span>
                         {s.stock && (
                           <span className={cn(
                             "shrink-0 rounded-full border px-1.5 py-0.5 text-[9px] font-bold",
-                            s.status === 'out'
+                            s.status === 'out' || s.status === 'unit_mismatch'
                               ? "border-red-200 bg-red-100 text-red-700"
                               : s.status === 'low'
                               ? "border-amber-200 bg-amber-100 text-amber-700"
@@ -435,10 +447,18 @@ function ItemRow({ order, item, category, selectionEnabled = false, selected = f
                             Missing from Store inventory
                           </span>
                         )}
+                        {s.status === 'unit_mismatch' && (
+                          <span
+                            className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 border border-red-200 shrink-0"
+                            title="This recipe's unit and the stock item's unit are different kinds of measurement (e.g. weight vs volume) — can't tell if there's enough without fixing one of them to match."
+                          >
+                            Can't compare — recipe unit vs stock unit mismatch
+                          </span>
+                        )}
                       </div>
                       <span className={cn(
                         "text-sm font-body font-bold tabular-nums ml-2 shrink-0",
-                        s.status === 'out' || s.status === 'unknown' ? "text-red-700" : "text-foreground"
+                        s.status === 'out' || s.status === 'unknown' || s.status === 'unit_mismatch' ? "text-red-700" : "text-foreground"
                       )}>
                         {formatMaterialQuantity(m.quantity, m.unit)}
                       </span>
