@@ -435,17 +435,16 @@ function safeHtml(value: unknown): string {
 function buildSlipDocument(title: string, bodyHtml: string): string {
   return `<!DOCTYPE html><html><head><title>${safeHtml(title)}</title>
 <style>
-@page{margin:4mm;size:80mm auto}*{box-sizing:border-box}body{margin:0;width:76mm;font-family:'Courier New',monospace;color:#000;font-size:12px;line-height:1.3}.c{text-align:center}.r{text-align:right}.b{font-weight:900}.muted{color:#444}.big{font-size:16px}.shop{font-size:17px;font-weight:900}.dash{border-top:1px dashed #000;margin:6px 0}.solid{border-top:2px solid #000;margin:6px 0}.kv{width:100%;border-collapse:collapse}.kv td{padding:1px 0;vertical-align:top}.mt{margin-top:6px}.paid{font-size:15px;font-weight:900;text-align:center;margin-bottom:3px}.pick{text-align:right;font-size:16px;font-weight:900}table{width:100%;border-collapse:collapse}td,th{padding:3px 1px;vertical-align:top}th{text-align:left;border-bottom:1px solid #000}tbody tr.item-row td{border-bottom:1px solid #ddd}.num{text-align:right}.grand td{font-size:18px;font-weight:900;padding:6px 0}.thanks{text-align:center;font-size:14px;margin-top:8px}.small{font-size:10px}
+@page{margin:4mm;size:80mm auto}*{box-sizing:border-box}body{margin:0;width:76mm;padding-bottom:10mm;font-family:'Courier New',monospace;color:#000;font-size:12px;line-height:1.3}.c{text-align:center}.r{text-align:right}.b{font-weight:900}.muted{color:#444}.big{font-size:16px}.shop{font-size:17px;font-weight:900}.dash{border-top:1px dashed #000;margin:6px 0}.solid{border-top:2px solid #000;margin:6px 0}.kv{width:100%;border-collapse:collapse}.kv td{padding:1px 0;vertical-align:top}.mt{margin-top:6px}.paid{font-size:15px;font-weight:900;text-align:center;margin-bottom:3px}.pick{text-align:right;font-size:16px;font-weight:900}table{width:100%;border-collapse:collapse}td,th{padding:3px 1px;vertical-align:top}th{text-align:left;border-bottom:1px solid #000}tbody tr.item-row td{border-bottom:1px solid #ddd}.num{text-align:right}.grand td{font-size:18px;font-weight:900;padding:6px 0}.thanks{text-align:center;font-size:14px;margin-top:8px}.small{font-size:10px}
 /* KOT (kitchen ticket) — deliberately larger + heavier than the customer bill so kitchen staff can read it at a glance across the pass. */
-.kot-slip{font-size:15px;font-weight:700}
-.kot-slip .kot-title{font-size:20px;font-weight:900;text-align:center;margin-bottom:2px}
-.kot-slip .kot-meta{font-size:15px;font-weight:900}
-.kot-slip .kot-item{width:100%;border-collapse:collapse;table-layout:fixed;margin:4px 0}
-.kot-slip .kot-item td{padding:2px 0;vertical-align:top}
-.kot-slip .kot-name{font-size:17px;font-weight:900;word-wrap:break-word;white-space:normal;width:auto}
-.kot-slip .kot-qty{font-size:20px;font-weight:900;text-align:right;width:56px;white-space:nowrap}
-.kot-slip .kot-note{font-size:13px;font-weight:700;font-style:italic;padding-top:0;padding-bottom:4px}
-.kot-slip .kot-count{font-size:15px;font-weight:900;text-align:right;margin-top:4px}
+.kot-slip{font-size:14px;font-weight:700}
+.kot-slip .kot-title{font-size:19px;font-weight:900;margin:2px 0}
+.kot-slip .kot-item{width:100%;border-collapse:collapse;margin:4px 0}
+.kot-slip .kot-item th{font-size:12px;font-weight:900;text-align:left;border-bottom:1px solid #000;padding:2px 1px}
+.kot-slip .kot-item td{padding:3px 1px;vertical-align:top;border-bottom:1px dashed #ccc}
+.kot-slip .kot-name{font-size:16px;font-weight:900;word-wrap:break-word;white-space:normal}
+.kot-slip .kot-note-cell{font-size:12px;font-weight:700;font-style:italic;white-space:normal}
+.kot-slip .kot-qty{font-size:18px;font-weight:900;text-align:right;width:40px;white-space:nowrap}
 </style></head><body>${bodyHtml}</body></html>`;
 }
 
@@ -455,8 +454,15 @@ function printCounterSlipViaIframe(title: string, bodyHtml: string) {
   frame.style.position = 'fixed';
   frame.style.left = '-10000px';
   frame.style.bottom = '0';
-  frame.style.width = '1px';
-  frame.style.height = '1px';
+  // BUG FIX (2026-08-18): was 1px x 1px. Chrome's print pipeline computes
+  // the `@page { size: 80mm auto }` height from the iframe's own layout
+  // box in some driver/OS combinations — a near-zero-sized container gave
+  // it no real dimensional context, and trailing content (often the very
+  // last line, e.g. "Thank You & Visit Again") got cut off at the physical
+  // print/cut edge. Still fully invisible (off-screen + opacity 0 +
+  // pointer-events none), just no longer starved for layout space.
+  frame.style.width = '302px';
+  frame.style.height = '2000px';
   frame.style.border = '0';
   frame.style.opacity = '0';
   frame.style.pointerEvents = 'none';
@@ -532,7 +538,7 @@ function receiptDate(value?: string) {
 
 function cafeHeader(status: string, slipTitle: string): string {
   return `
-    <div class="paid">${safeHtml(status)}</div>
+    ${status ? `<div class="paid">${safeHtml(status)}</div>` : ''}
     <div class="c">
       <div class="shop">Cafe Aadvikam</div>
       <div>#109/1C, Hosur main Road, Berigai,</div>
@@ -542,33 +548,19 @@ function cafeHeader(status: string, slipTitle: string): string {
       <div>FSSAI No: 12425011000098</div>
     </div>
     <div class="solid"></div>
-    <div class="c b big">${safeHtml(slipTitle)}</div>
+    ${slipTitle ? `<div class="c b big">${safeHtml(slipTitle)}</div>` : ''}
   `;
-}
-
-function taxableAmount(total: number): number {
-  return Math.round((Number(total || 0) / 1.05) * 100) / 100;
-}
-
-function gstParts(total: number) {
-  const taxable = taxableAmount(total);
-  const tax = Math.max(0, Number(total || 0) - taxable);
-  const cgst = Math.round((tax / 2) * 100) / 100;
-  const sgst = Math.round((tax - cgst) * 100) / 100;
-  return { taxable, cgst, sgst };
 }
 
 function orderItemsRows(order: Pick<Order, 'items'>): string {
   return order.items.map((ci) => {
-    const grossLine = ci.menuItem.price * ci.quantity;
-    const netLine = taxableAmount(grossLine);
-    const netRate = ci.quantity > 0 ? netLine / ci.quantity : 0;
+    const lineAmount = ci.menuItem.price * ci.quantity;
     return `
       <tr class="item-row">
         <td>${safeHtml(ci.menuItem.name)}</td>
         <td class="num">${ci.quantity}</td>
-        <td class="num">${netRate.toFixed(2)}</td>
-        <td class="num">${netLine.toFixed(2)}</td>
+        <td class="num">${ci.menuItem.price.toFixed(2)}</td>
+        <td class="num">${lineAmount.toFixed(2)}</td>
       </tr>
     `;
   }).join('');
@@ -584,15 +576,12 @@ function receiptItemTable(order: Order): string {
 }
 
 function receiptTotals(order: Order, payable: number, extraRows = ''): string {
-  const taxableTotal = order.items.reduce((sum, ci) => sum + taxableAmount(ci.menuItem.price * ci.quantity), 0);
-  const gst = gstParts(order.items.reduce((sum, ci) => sum + ci.menuItem.price * ci.quantity, 0));
+  const itemsTotal = order.items.reduce((sum, ci) => sum + ci.menuItem.price * ci.quantity, 0);
   const totalQty = order.items.reduce((sum, ci) => sum + ci.quantity, 0);
   const parcelCharges = order.parcelCharges ?? 0;
   return `
     <div class="solid"></div>
-    ${kvRow([`Total Qty: ${totalQty}`, 'Sub Total', taxableTotal.toFixed(2)])}
-    ${kvRow(['', 'CGST@2.5 2.5%', gst.cgst.toFixed(2)])}
-    ${kvRow(['', 'SGST@2.5 2.5%', gst.sgst.toFixed(2)])}
+    ${kvRow([`Total Qty: ${totalQty}`, 'Sub Total', itemsTotal.toFixed(2)])}
     ${parcelCharges > 0 ? kvRow(['', 'Parcel', parcelCharges.toFixed(2)]) : ''}
     ${Number(order.discount || 0) > 0 ? kvRow(['', 'Promotion', `-${Number(order.discount).toFixed(2)}`]) : ''}
     ${extraRows}
@@ -616,27 +605,25 @@ function dateTimeLabel(value?: string): string {
 // almost invisible sliver). Notes now get their own bold/italic line below
 // the item instead of being crammed in parentheses on the same line.
 function kotItemRow(name: string, quantity: number, notes?: string): string {
-  return `
-    <table class="kot-item">
-      <tr><td class="kot-name">${safeHtml(name)}</td><td class="kot-qty">x${quantity}</td></tr>
-      ${notes ? `<tr><td colspan="2" class="kot-note">Note: ${safeHtml(notes)}</td></tr>` : ''}
-    </table>
-  `;
+  return `<tr><td class="kot-name">${safeHtml(name)}</td><td class="kot-note-cell">${notes ? safeHtml(notes) : '--'}</td><td class="kot-qty">${quantity}</td></tr>`;
 }
 
 function kotBody(order: Order): string {
   const dt = receiptDate(order.createdAt);
   const rows = order.items.map(ci => kotItemRow(ci.menuItem.name, ci.quantity, ci.notes)).join('');
-  const totalQty = order.items.reduce((sum, ci) => sum + Number(ci.quantity || 0), 0);
+  const pickupLabel = order.orderType === 'dine_in'
+    ? `Dine In: ${order.tableNumber ? tableLabel(order.tableNumber) : '-'}`
+    : 'Pick Up';
   return `
     <div class="kot-slip">
-      <div class="kot-title">*** KOT - ${safeHtml(billNo(order))} ***</div>
-      ${kvRow([`Date: ${safeHtml(dt.date)}`, order.orderType === 'dine_in' ? `TABLE ${order.tableNumber ?? '-'}` : 'PARCEL / PICK UP'], { bold: true })}
-      ${kvRow([`Time: ${safeHtml(dt.time)}`, `Server: ${safeHtml(order.createdBy || '-')}`], { bold: true })}
+      <div class="c">${safeHtml(dt.date)} ${safeHtml(dt.time)}</div>
+      <div class="c kot-title">KOT - ${order.orderNumber}</div>
+      <div class="c b">${safeHtml(pickupLabel)}</div>
       <div class="dash"></div>
-      ${rows}
-      <div class="dash"></div>
-      <div class="kot-count">Total Items: ${totalQty}</div>
+      <table class="kot-item">
+        <thead><tr><th>Item</th><th>Special Note</th><th class="num">Qty.</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
     </div>
   `;
 }
@@ -662,12 +649,12 @@ function billBody(order: Order, copyType: 'original' | 'duplicate' = 'original',
     : '';
   const dt = receiptDate(order.createdAt);
   return `
-    ${cafeHeader('PAID', copyType === 'duplicate' ? 'DUPLICATE BILL' : 'TAX INVOICE')}
+    ${cafeHeader('', copyType === 'duplicate' ? 'DUPLICATE BILL' : '')}
     ${kvRow(['Name:', safeHtml(order.customerName || '')])}
     <div class="solid"></div>
-    ${kvRow([`Date: ${safeHtml(dt.date)}`, order.orderType === 'dine_in' ? `TABLE ${order.tableNumber ?? '-'}` : 'Pick UP'])}
-    ${kvRow([safeHtml(dt.time), `Bill No.: ${safeHtml(billNo(order))}`])}
-    ${kvRow([`Cashier: ${safeHtml(order.billedBy || order.createdBy)}`, ''])}
+    ${kvRow([`Date: ${safeHtml(dt.date)}`, order.orderType === 'dine_in' ? `Dine In: ${safeHtml(order.tableNumber ? tableLabel(order.tableNumber) : '-')}` : 'Pick Up'])}
+    ${kvRow([safeHtml(dt.time), ''])}
+    ${kvRow([`Cashier: ${safeHtml(order.billedBy || order.createdBy)}`, `Bill No.: ${safeHtml(billNo(order))}`])}
     <div class="dash"></div>
     ${receiptItemTable(order)}
     ${receiptTotals(order, order.total)}
