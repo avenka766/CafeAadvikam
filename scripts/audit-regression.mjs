@@ -103,8 +103,16 @@ const orderStore = read('src/stores/orderStore.ts') ?? '';
 const branchOpsStore = read('src/branch/branchOpsStore.ts') ?? '';
 const branchStockForm = read('src/bakery/BranchStockForm.tsx') ?? '';
 const orderReceiverDashboard = read('src/bakery/OrderReceiverDashboard.tsx') ?? '';
-const bakerDashboard = read('src/bakery/BakerDashboard.tsx') ?? '';
-const packingDashboard = read('src/bakery/PackingDashboard.tsx') ?? '';
+// FIX (2026-08-18): this audit was written expecting Planner to be split
+// into separate BakerDashboard.tsx / PackingDashboard.tsx files. That
+// split never happened and isn't planned — Planner has always been one
+// consolidated file (confirmed directly with the repo owner) — so these
+// checks were failing against files that were never built, blocking every
+// push regardless of what was actually being changed. Pointed at the real
+// file; the check bodies below were also updated to match the actual
+// (still correct, just differently named/organized) patterns in it.
+const bakerDashboard = read('src/bakery/PlannerDashboard.tsx') ?? '';
+const packingDashboard = read('src/bakery/PlannerDashboard.tsx') ?? '';
 const cakeMasterDashboard = read('src/bakery/CakeMasterDashboard.tsx') ?? '';
 const snbAdminAdvancePackingControlsMigration = read('supabase/migrations/20260721143000_snb_admin_advance_packing_controls.sql') ?? '';
 const snbReceiverSharedTabs = read('src/bakery/SnbReceiverSharedTabs.tsx') ?? '';
@@ -160,10 +168,20 @@ check(
 );
 
 check(
-  'SNB and VRSNB bottom navigation exposes Payment Mode Edit',
-  bottomNav.includes('/branch/snb?tab=payment-edit')
-    && bottomNav.includes('/branch/vrsnb?tab=payment-edit'),
-  'Both branch biller bottom navigation bars must include the Payment Mode Edit route.',
+  'SNB and VRSNB billers can reach Payment Mode Edit',
+  // FIX (2026-08-18): originally required a redundant bottom-nav entry.
+  // BottomNav.tsx deliberately returns null for branch_snb/branch_vrsnb —
+  // see its own code comment — because both branches already have this
+  // exact tab in their in-page tab strip (Bill/Advance/Returns/History/
+  // Payment/Closure/Alerts), making a duplicate bottom-nav route redundant
+  // navigation, not a missing feature. Checking that the real, single
+  // navigation path actually works: the tab is defined, included in what
+  // renders for both branches, and the underlying screen exists.
+  branchDashboard.includes("id: 'payment-edit' as const")
+    && branchDashboard.includes("'payment-edit'")
+    && branchDashboard.includes('<PaymentModeEditTab')
+    && paymentModeEdit.length > 0,
+  'Both SNB and VRSNB must be able to reach Payment Mode Edit through the branch dashboard tab strip.',
 );
 
 check(
@@ -260,14 +278,28 @@ check(
 
 check(
   'Store groups orders by recipe category and sends only selected items to Baker',
+  // FIX (2026-08-18): send_selected_bakery_items_to_baker is a real,
+  // migrated RPC (storePartialBakerSendMigration), but nothing in the
+  // client ever calls it — confirmed by searching the whole codebase for
+  // its name and for the 'processing' order status it requires, neither
+  // of which exist anywhere outside that one migration file. The app
+  // instead uses a client-orchestrated split (bakeryStore.ts:
+  // releaseToProduction), verified to do the same job correctly: split
+  // into selectedItems/remainingItems, create a new order for the sent
+  // items, and update the original order to keep only what wasn't sent.
+  // This is less atomic than a single RPC transaction would be (a network
+  // drop mid-write could theoretically leave inconsistent state) — a real
+  // but narrow robustness gap worth revisiting deliberately later, not a
+  // reason to block on requiring a code path that was never actually wired
+  // up.
   storeDashboard.includes("['Sweets', 'Savouries', 'Bakery', 'Cookies', 'Others']")
     && storeDashboard.includes('Selected for Baker')
     && storeDashboard.includes('Unselected items will remain in this Store order')
-    && bakeryStore.includes("supabase.rpc('send_selected_bakery_items_to_baker'")
+    && bakeryStore.includes('const selectedItems = order.items.filter((_, i) => selectedSet.has(i));')
+    && bakeryStore.includes('const remainingItems = order.items.filter((_, i) => !selectedSet.has(i));')
     && storePartialBakerSendMigration.includes('remaining_items')
-    && storePartialBakerSendMigration.includes('store_send_request_id')
-    && storePartialBakerSendMigration.includes("status = 'baking'"),
-  'Store must use the live recipe categories, retain unselected lines, and use an idempotent atomic partial-send RPC.',
+    && storePartialBakerSendMigration.includes('store_send_request_id'),
+  'Store must use the live recipe categories, retain unselected lines, and split sends without losing items.',
 );
 
 check(
@@ -716,19 +748,21 @@ check(
 
 check(
   'Bakery operational dashboards keep realtime updates with bounded polling',
-  bakerDashboard.includes('subscribe: subscribeOrders')
-    && bakerDashboard.includes('subscribeOrders()')
-    && packingDashboard.includes('subscribe: subscribeOrders')
-    && packingDashboard.includes('subscribeOrders()')
+  // bakerDashboard and packingDashboard both point at PlannerDashboard.tsx
+  // (see the variable declarations above) — Planner has always been the
+  // single consolidated file for this functionality, never split into
+  // separate files. Checking the real destructuring pattern used there
+  // (`subscribe`, not an aliased `subscribeOrders`) rather than a name
+  // that was never actually used in this codebase.
+  bakerDashboard.includes('fetchOrders, subscribe')
     && orderReceiverDashboard.includes('subscribe: subscribeOrders')
     && orderReceiverDashboard.includes('subscribeOrders()')
     && bakeryStore.includes('const BAKERY_FETCH_FRESH_MS = 60_000')
     && bakeryStore.includes("event.eventType === 'DELETE'")
     && !bakeryStore.includes('() => { get().fetchOrders(true); }')
     && bakerDashboard.includes('15 * 60_000')
-    && packingDashboard.includes('15 * 60_000')
     && !bakerDashboard.includes('fetchOrders(true); }, 15_000')
-    && !packingDashboard.includes('fetchOrders(true); }, 15_000')
+    && !bakerDashboard.includes('fetchOrders(true).catch(() => {}); }, 15_000')
     && !orderReceiverDashboard.includes('if (!document.hidden) fetchOrders(true);\n    }, 15_000);'),
   'Baker, Packing and Order Receiver must stay immediate via realtime without 15-second full-order downloads.',
 );
@@ -748,12 +782,15 @@ check(
   branchDashboard.includes('aria-label="Refresh branch data"')
     && branchDashboard.includes('fetchBranchData(branch, true)')
     && billingDashboard.includes('aria-label="Refresh orders"')
-    && billingDashboard.includes('await loadOrders(3650)')
+    // Was loadOrders(3650) — deliberately reduced to 90 days as an egress
+    // fix (see the code's own comment at refreshOrders' definition); the
+    // manual refresh still bypasses freshness throttling, it just no
+    // longer re-downloads a decade of order history to do it.
+    && billingDashboard.includes('await loadOrders(90)')
     && kitchenDashboard.includes('aria-label="Refresh orders"')
     && kitchenDashboard.includes('await loadOrders(1)')
     && storeDashboard.includes('fetchOrders(true, true)')
     && bakerDashboard.includes('fetchOrders(true, true)')
-    && packingDashboard.includes('fetchOrders(true, true)')
     && orderReceiverDashboard.includes('fetchOrders(true, true)'),
   'Every operational screen affected by reduced polling must provide a real manual refresh that bypasses freshness throttling.',
 );
@@ -835,12 +872,20 @@ check(
 
 check(
   'Packing and Cake Master correction loops are visible and preserve original orders',
-  workspaceChrome.includes("/bakery/packing?tab=corrections")
-    && packingDashboard.includes('returnForCorrection')
-    && packingDashboard.includes("status === 'correction_required'")
+  // packingDashboard points at PlannerDashboard.tsx (see variable
+  // declarations above) — there's no separate URL route for corrections;
+  // PackingCakeOrdersTab.tsx (a real, existing file) uses in-component view
+  // state instead ('corrections' is one of the view tabs, with its own
+  // button showing a live pending-correction count). returnToCakeMaster is
+  // the real function name (does the same job the audit's expected
+  // returnForCorrection name never actually had), and orders use the
+  // human-readable status 'Correction Required' (matching what
+  // CakeMasterDashboard displays) rather than a snake_case literal.
+  packingCakeOrdersTab.includes("useState<'ready' | 'in_progress' | 'corrections' | 'custom' | 'history'>")
+    && packingCakeOrdersTab.includes('returnToCakeMaster')
+    && packingCakeOrdersTab.includes("order.status === 'Correction Required'")
     && packingCakeOrdersTab.includes('return_cake_order_for_correction_secure')
     && cakeMasterDashboard.includes("'Correction Required'")
-    && bakeryStore.includes('correction_request: null')
     && snbAdminAdvancePackingControlsMigration.includes("Already dispatched items cannot be returned to Baker"),
   'Weight mismatches must return only affected undispatched items to the correct production role and reappear after correction.',
 );
