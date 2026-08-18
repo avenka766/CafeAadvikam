@@ -59,6 +59,19 @@ function MatRow({
   inventory: StockItem[];
 }) {
   const [showSuggestions, setShowSuggestions] = useState(false);
+  // BUG FIX (2026-08-18): "unable to add 0.005 kg for a few items." The qty
+  // input's displayed value used to be derived straight from mat.qty (a
+  // number) via `mat.qty || ''` — meaning every time the user typed just
+  // "0" (the exact first character needed to reach "0.005"), that parsed
+  // to the number 0, and `0 || ''` treats 0 as falsy and collapses the
+  // display back to empty. The field visually erased itself after every
+  // "0" keystroke, making it impossible to ever type past a leading zero
+  // into a small decimal — not a rejection on save, a typing-time trap.
+  // Tracking what's actually been typed as its own string here, synced
+  // *out* to the parent's numeric state on every change but never synced
+  // back *in* from it, breaks that round trip.
+  const [qtyDraft, setQtyDraft] = useState(mat.qty === 0 ? '' : String(mat.qty));
+  useEffect(() => { setQtyDraft(mat.qty === 0 ? '' : String(mat.qty)); }, [idx]);
 
   const suggestions = useMemo(() => {
     const q = mat.material.trim().toLowerCase();
@@ -102,8 +115,13 @@ function MatRow({
       <input
         type="number" min={0} step={0.001}
         placeholder="Qty"
-        value={mat.qty || ''}
-        onChange={e => onChange(idx, 'qty', parseFloat(e.target.value) || 0)}
+        value={qtyDraft}
+        onChange={e => {
+          const raw = e.target.value;
+          setQtyDraft(raw);
+          const parsed = parseFloat(raw);
+          onChange(idx, 'qty', Number.isFinite(parsed) ? parsed : 0);
+        }}
         className="w-20 h-8 px-2 text-xs font-body rounded-lg border border-border bg-background focus:outline-none focus:ring-1 focus:ring-primary/30 tabular-nums"
       />
       <select

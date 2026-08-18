@@ -1307,6 +1307,18 @@ function PlanningTab({ orders }: { orders: BakeryOrder[] }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState<string | null>(null);
+  // FEATURE (2026-08-18): "we should be able to add custom items that
+  // aren't in Planner's list." The item picker below was hard-limited to
+  // the SNB+VRSNB catalog with no way to type something that isn't in it —
+  // genuinely no path existed for a one-off or new item. This reuses the
+  // exact same cart/submit mechanism catalog items already use (an order
+  // item is just a name+unit+quantity — nothing downstream requires it to
+  // be a recognized catalog entry; an unrecognized name safely falls into
+  // the 'Others' production category via the same fuzzy-matching every
+  // other unmatched item already goes through).
+  const [customName, setCustomName] = useState('');
+  const [customUnit, setCustomUnit] = useState<'pcs' | 'kg'>('pcs');
+  const [customQty, setCustomQty] = useState('');
 
   useEffect(() => {
     loadCatalog('SNB').catch(() => {});
@@ -1341,6 +1353,17 @@ function PlanningTab({ orders }: { orders: BakeryOrder[] }) {
       else next[item.name] = { itemName: item.name, unit: item.unit, quantity: safe };
       return next;
     });
+  };
+
+  const isCatalogItem = (name: string) => uniqueItems.some(i => i.name.trim().toLowerCase() === name.trim().toLowerCase());
+
+  const addCustomItem = () => {
+    const name = customName.trim();
+    const qty = Number(customQty);
+    if (!name) { setError('Enter a name for the custom item.'); return; }
+    if (!Number.isFinite(qty) || qty <= 0) { setError('Enter a quantity greater than zero for the custom item.'); return; }
+    setQty({ name, unit: customUnit }, qty);
+    setCustomName(''); setCustomQty(''); setError('');
   };
 
   const cartItems = Object.values(cart);
@@ -1396,6 +1419,47 @@ function PlanningTab({ orders }: { orders: BakeryOrder[] }) {
             </div>
           </label>
 
+          {/* Not in the catalog above? Add it as a one-off custom item —
+              still goes through the exact same plan/submit/production flow. */}
+          <div className="rounded-xl border border-dashed border-primary/40 bg-primary/5 p-3">
+            <p className="mb-2 text-[11px] font-black uppercase tracking-wide text-primary">Not in the list? Add a custom item</p>
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                value={customName}
+                onChange={e => setCustomName(e.target.value)}
+                placeholder="Item name"
+                className="h-9 min-w-[10rem] flex-1 rounded-lg border border-border bg-background px-3 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-primary/30"
+              />
+              <div className="flex h-9 overflow-hidden rounded-lg border border-border">
+                {(['pcs', 'kg'] as const).map(u => (
+                  <button
+                    key={u}
+                    type="button"
+                    onClick={() => setCustomUnit(u)}
+                    className={cn('px-3 text-xs font-black', customUnit === u ? 'bg-primary text-primary-foreground' : 'bg-card text-muted-foreground hover:bg-muted')}
+                  >
+                    {u}
+                  </button>
+                ))}
+              </div>
+              <input
+                type="number"
+                step={customUnit === 'pcs' ? 1 : 0.001}
+                value={customQty}
+                onChange={e => setCustomQty(e.target.value)}
+                placeholder="Qty"
+                className="h-9 w-20 rounded-lg border border-border bg-background px-2 text-center text-sm font-black"
+              />
+              <button
+                type="button"
+                onClick={addCustomItem}
+                className="flex h-9 items-center gap-1 rounded-lg bg-primary px-3 text-xs font-black text-primary-foreground hover:opacity-90"
+              >
+                <Plus className="size-3.5" /> Add
+              </button>
+            </div>
+          </div>
+
           {filtered.length === 0 ? (
             <div className="rounded-2xl border border-dashed border-border p-8 text-center text-xs font-bold text-muted-foreground">No items match.</div>
           ) : (
@@ -1428,7 +1492,12 @@ function PlanningTab({ orders }: { orders: BakeryOrder[] }) {
               {cartItems.map(item => (
                 <div key={item.itemName} className="flex items-center justify-between rounded-xl bg-muted/40 p-2.5">
                   <div>
-                    <p className="text-xs font-black text-foreground">{item.itemName}</p>
+                    <div className="flex items-center gap-1.5">
+                      <p className="text-xs font-black text-foreground">{item.itemName}</p>
+                      {!isCatalogItem(item.itemName) && (
+                        <span className="rounded-full bg-primary/10 px-1.5 py-0.5 text-[9px] font-black text-primary">Custom</span>
+                      )}
+                    </div>
                     <p className="text-[11px] font-bold text-muted-foreground">{item.quantity} {item.unit}</p>
                   </div>
                   <button onClick={() => setQty({ name: item.itemName, unit: item.unit }, 0)}><X className="size-3.5 text-destructive" /></button>
