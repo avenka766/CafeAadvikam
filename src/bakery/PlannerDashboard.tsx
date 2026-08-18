@@ -542,7 +542,14 @@ export default function PlannerDashboard({ embedded = false }: { embedded?: bool
     const unsubscribe = subscribe();
     const refreshOnVisible = () => { if (!document.hidden) fetchOrders(true).catch(() => {}); };
     document.addEventListener('visibilitychange', refreshOnVisible);
-    return () => { unsubscribe(); document.removeEventListener('visibilitychange', refreshOnVisible); };
+    // Realtime handles normal order changes. This bounded, infrequent poll
+    // is only a recovery path for a dropped websocket connection that
+    // stays undetected because the tab never lost focus (visibilitychange
+    // alone doesn't catch that case — restored 2026-08-18, matching the
+    // same fix already applied to BranchDashboard.tsx for the identical
+    // reason).
+    const id = setInterval(() => { if (!document.hidden) fetchOrders(true).catch(() => {}); }, 15 * 60_000);
+    return () => { unsubscribe(); document.removeEventListener('visibilitychange', refreshOnVisible); clearInterval(id); };
   }, [fetchOrders, subscribe]);
 
   const incomingOrders   = useMemo(() => orders.filter(o => o.status === 'pending'), [orders]);
