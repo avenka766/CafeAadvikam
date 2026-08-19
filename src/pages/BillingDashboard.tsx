@@ -435,7 +435,7 @@ function safeHtml(value: unknown): string {
 function buildSlipDocument(title: string, bodyHtml: string): string {
   return `<!DOCTYPE html><html><head><title>${safeHtml(title)}</title>
 <style>
-@page{margin:4mm;size:80mm auto}*{box-sizing:border-box}body{margin:0;width:76mm;padding-bottom:10mm;font-family:'Courier New',monospace;color:#000;font-size:12px;line-height:1.3}.c{text-align:center}.r{text-align:right}.b{font-weight:900}.muted{color:#444}.big{font-size:16px}.shop{font-size:17px;font-weight:900}.dash{border-top:1px dashed #000;margin:6px 0}.solid{border-top:2px solid #000;margin:6px 0}.kv{width:100%;border-collapse:collapse}.kv td{padding:1px 0;vertical-align:top}.mt{margin-top:6px}.paid{font-size:15px;font-weight:900;text-align:center;margin-bottom:3px}.pick{text-align:right;font-size:16px;font-weight:900}table{width:100%;border-collapse:collapse}td,th{padding:3px 1px;vertical-align:top}th{text-align:left;border-bottom:1px solid #000}tbody tr.item-row td{border-bottom:1px solid #ddd}.num{text-align:right}.grand td{font-size:18px;font-weight:900;padding:6px 0}.thanks{text-align:center;font-size:14px;margin-top:8px}.small{font-size:10px}
+@page{margin:4mm;size:80mm auto}*{box-sizing:border-box}body{margin:0;width:66mm;padding-bottom:10mm;font-family:'Courier New',monospace;color:#000;font-size:12px;line-height:1.3}.c{text-align:center}.r{text-align:right}.b{font-weight:900}.muted{color:#444}.big{font-size:16px}.shop{font-size:17px;font-weight:900}.dash{border-top:1px dashed #000;margin:6px 0}.solid{border-top:2px solid #000;margin:6px 0}.kv{width:100%;border-collapse:collapse}.kv td{padding:1px 0;vertical-align:top}.mt{margin-top:6px}.paid{font-size:15px;font-weight:900;text-align:center;margin-bottom:3px}.pick{text-align:right;font-size:16px;font-weight:900}table{width:100%;border-collapse:collapse}td,th{padding:3px 1px;vertical-align:top}th{text-align:left;border-bottom:1px solid #000}tbody tr.item-row td{border-bottom:1px solid #ddd}.num{text-align:right}.grand td{font-size:18px;font-weight:900;padding:6px 0}.thanks{text-align:center;font-size:14px;margin-top:8px}.small{font-size:10px}
 /* KOT (kitchen ticket) — deliberately larger + heavier than the customer bill so kitchen staff can read it at a glance across the pass. */
 .kot-slip{font-size:14px;font-weight:700}
 .kot-slip .kot-title{font-size:19px;font-weight:900;margin:2px 0}
@@ -444,7 +444,7 @@ function buildSlipDocument(title: string, bodyHtml: string): string {
 .kot-slip .kot-item td{padding:3px 1px;vertical-align:top;border-bottom:1px dashed #ccc}
 .kot-slip .kot-name{font-size:16px;font-weight:900;word-wrap:break-word;white-space:normal}
 .kot-slip .kot-note-cell{font-size:12px;font-weight:700;font-style:italic;white-space:normal}
-.kot-slip .kot-qty{font-size:18px;font-weight:900;text-align:right;width:40px;white-space:nowrap}
+.kot-slip .kot-qty{font-size:18px;font-weight:900;text-align:center;width:40px;white-space:nowrap}
 </style></head><body>${bodyHtml}</body></html>`;
 }
 
@@ -605,7 +605,7 @@ function dateTimeLabel(value?: string): string {
 // almost invisible sliver). Notes now get their own bold/italic line below
 // the item instead of being crammed in parentheses on the same line.
 function kotItemRow(name: string, quantity: number, notes?: string): string {
-  return `<tr><td class="kot-name">${safeHtml(name)}</td><td class="kot-note-cell">${notes ? safeHtml(notes) : '--'}</td><td class="kot-qty">${quantity}</td></tr>`;
+  return `<tr><td class="kot-name">${safeHtml(name)}</td><td class="kot-qty">${quantity}</td><td class="kot-note-cell">${notes ? safeHtml(notes) : '--'}</td></tr>`;
 }
 
 function kotBody(order: Order): string {
@@ -621,7 +621,13 @@ function kotBody(order: Order): string {
       <div class="c b">${safeHtml(pickupLabel)}</div>
       <div class="dash"></div>
       <table class="kot-item">
-        <thead><tr><th>Item</th><th>Special Note</th><th class="num">Qty.</th></tr></thead>
+        <!-- BUG FIX (2026-08-19): Qty moved from the last column to the
+             middle. The right edge of every line is exactly where a page-
+             width overflow (see the body width fix above) clips content
+             first — Qty being last meant it was the first thing lost.
+             Special Note now sits last instead, since a missing "--" is
+             far less costly than a missing quantity. -->
+        <thead><tr><th>Item</th><th class="num">Qty.</th><th>Special Note</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>
@@ -2141,6 +2147,7 @@ function NewBillPanel() {
       let kotNumber: number;
       let orderId: string;
       let allItems: Order['items'];
+      let resolvedOrderNumber: number;
 
       if (runningOrder) {
         const { data, error } = await supabase.rpc('add_items_to_table_order_v1', {
@@ -2152,6 +2159,14 @@ function NewBillPanel() {
         kotNumber = data.kotNumber;
         orderId = runningOrder.id;
         allItems = data.items as Order['items'];
+        // BUG FIX (2026-08-19): kotNumber here is add_items_to_table_order_v1's
+        // own internal "which ticket is this for this table" counter (1, 2, 3...
+        // per order) — correct for that purpose, but not what should be printed
+        // as the customer/kitchen-facing "KOT - N" number, which needs to match
+        // the same globally-unique, ever-incrementing number the printed bill
+        // uses. runningOrder.orderNumber is already the real one, known
+        // client-side without any extra round trip.
+        resolvedOrderNumber = runningOrder.orderNumber;
       } else {
         const { data, error } = await supabase.rpc('start_table_order_v1', {
           p_table_number: tableNumber,
@@ -2163,11 +2178,12 @@ function NewBillPanel() {
         kotNumber = data.kotNumber;
         orderId = data.orderId;
         allItems = newItems as Order['items'];
+        resolvedOrderNumber = data.orderNumber;
       }
 
       printKotSlip({
         id: orderId,
-        orderNumber: kotNumber,
+        orderNumber: resolvedOrderNumber,
         tableNumber,
         orderType: 'dine_in',
         items: newItems as Order['items'],
@@ -2607,14 +2623,14 @@ function NewBillPanel() {
               quantity: ci.qty,
             })),
           ];
-          const { data: kotData, error: kotError } = await supabase.rpc('add_items_to_table_order_v1', {
+          const { error: kotError } = await supabase.rpc('add_items_to_table_order_v1', {
             p_order_id: orderId,
             p_items: pendingItems,
             p_created_by: billedBy,
           });
           if (kotError) throw new Error(kotError.message);
           await printKotSlip({
-            id: orderId, orderNumber: kotData.kotNumber, tableNumber, orderType: 'dine_in',
+            id: orderId, orderNumber: runningOrder.orderNumber, tableNumber, orderType: 'dine_in',
             items: pendingItems as Order['items'], subtotal: 0, discount: 0, discountType: 'flat', discountValue: 0,
             total: 0, status: 'running', paymentType: 'unpaid', createdBy: billedBy,
             createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
