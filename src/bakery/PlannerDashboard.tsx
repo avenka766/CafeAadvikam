@@ -6362,6 +6362,19 @@ function DispatchChecklistModal({ row, orders, branchFilter, onClose, onDispatch
         // had already been sent — hard-cap every send at what's genuinely
         // still outstanding for this order.
         const requestedForOrder = item.dispatchUnit === 'pcs' && item.originalPcs != null ? item.originalPcs : item.quantity;
+        // BUG FIX (2026-08-19): "dispatching more than requested silently
+        // reverts to the requested amount." The cap below exists to guard
+        // the AUTO-SUGGESTED quantity (autoSplit) against a calculation bug
+        // that could suggest more than genuinely remains outstanding — see
+        // the preserved comment above. It was never meant to also override
+        // a planner's own deliberate choice to type in a larger number (e.g.
+        // sending surplus stock proactively), but qtyFor() doesn't
+        // distinguish the two once it returns a plain number, so the cap was
+        // silently clamping both cases the same way. isManualQty checks the
+        // qty state directly (present only when the planner actually edited
+        // this order's input) so the safety net still applies to
+        // unreviewed auto-suggestions, but a typed-in value is respected as-is.
+        const isManualQty = qty[order.id] !== undefined;
         // BUG FIX (2026-08-09): "Rasamalai 10pcs / Malaikulla 5pcs auto-moving
         // to Dispatched without being dispatched" — an "extra / non-requested
         // item" dispatch (isExtra:true) gets anchored to whatever order
@@ -6376,9 +6389,16 @@ function DispatchChecklistModal({ row, orders, branchFilter, onClose, onDispatch
         // just no longer count toward "requested quantity fulfilled".
         const alreadyForOrder = (order.dispatchLog || []).filter(d => sameItem(d.itemName, item.itemName) && !d.isExtra).reduce((s, d) => s + d.quantity, 0);
         const remainingForOrder = Math.max(0, Math.round((requestedForOrder - alreadyForOrder) * 100) / 100);
-        const cappedQ = Math.min(q, remainingForOrder);
+        const cappedQ = isManualQty ? q : Math.min(q, remainingForOrder);
         if (cappedQ <= 0.001) continue;
-        actions.push({ orderId: order.id, itemName: item.itemName, quantity: cappedQ, unit: item.dispatchUnit || 'kg', dispatchEntryId: getId(`${order.id}:${item.itemName}`) });
+        const withinRequest = Math.min(cappedQ, remainingForOrder);
+        const beyondRequest = Math.round((cappedQ - withinRequest) * 1000) / 1000;
+        if (withinRequest > 0.001) {
+          actions.push({ orderId: order.id, itemName: item.itemName, quantity: withinRequest, unit: item.dispatchUnit || 'kg', dispatchEntryId: getId(`${order.id}:${item.itemName}`) });
+        }
+        if (beyondRequest > 0.001) {
+          actions.push({ orderId: order.id, itemName: item.itemName, quantity: beyondRequest, unit: item.dispatchUnit || 'kg', dispatchEntryId: getId(`${order.id}:${item.itemName}:extra`), isExtra: true });
+        }
       }
       if (actions.length > 0) queue.push({ scope: branch as Branch, actions });
     }
