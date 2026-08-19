@@ -4925,8 +4925,15 @@ function BranchFlatDispatchPanel({ branch, rows, orders, leftoverBalances, onDis
     for (const { row, remaining } of lines) {
       if (!selected.has(row.itemName)) continue;
       const typed = qtyFor(row.itemName);
-      const q = Math.min(typed, remaining);
-      if (typed > remaining + 0.01) clampedAny = true;
+      // BUG FIX (2026-08-19): "dispatching more than requested silently
+      // reverts to the requested amount" — same root cause and same fix as
+      // the single-item DispatchReviewModal flow elsewhere in this file.
+      // touchedRef already exists here specifically to know whether a
+      // quantity is the auto-seeded default or something the planner
+      // deliberately typed — reuse that instead of unconditionally capping.
+      const isManualQty = touchedRef.current.has(row.itemName);
+      const q = isManualQty ? typed : Math.min(typed, remaining);
+      if (!isManualQty && typed > remaining + 0.01) clampedAny = true;
       if (q <= 0.001) continue;
       const entries = orders.filter(o => o.targetBranch === branch && row.contributingOrderIds.includes(o.id));
       if (entries.length === 0) continue;
@@ -4935,10 +4942,28 @@ function BranchFlatDispatchPanel({ branch, rows, orders, leftoverBalances, onDis
         const item = order.items.find(i => sameItem(i.itemName, row.itemName));
         const orderQty = split[order.id] ?? 0;
         if (!item || orderQty <= 0) continue;
-        actions.push({
-          orderId: order.id, itemName: item.itemName, quantity: orderQty, unit: item.dispatchUnit || 'kg',
-          dispatchEntryId: getId(`${order.id}:${row.itemName}`),
-        });
+        // Consistent with the isExtra split in the single-item dispatch flow:
+        // autoSplitForItem can hand this order more than it individually has
+        // outstanding once the total q is allowed to exceed the row's overall
+        // remaining — tag only the genuine surplus portion as extra so
+        // "has this order's actual request been fulfilled" stays accurate.
+        const orderRequested = item.dispatchUnit === 'pcs' && item.originalPcs != null ? item.originalPcs : item.quantity;
+        const orderAlreadySent = (order.dispatchLog || []).filter(d => sameItem(d.itemName, row.itemName) && !d.isExtra).reduce((s, d) => s + d.quantity, 0);
+        const orderRemaining = Math.max(0, Math.round((orderRequested - orderAlreadySent) * 100) / 100);
+        const orderWithinRequest = Math.min(orderQty, orderRemaining);
+        const orderBeyondRequest = Math.round((orderQty - orderWithinRequest) * 1000) / 1000;
+        if (orderWithinRequest > 0.001) {
+          actions.push({
+            orderId: order.id, itemName: item.itemName, quantity: orderWithinRequest, unit: item.dispatchUnit || 'kg',
+            dispatchEntryId: getId(`${order.id}:${row.itemName}`),
+          });
+        }
+        if (orderBeyondRequest > 0.001) {
+          actions.push({
+            orderId: order.id, itemName: item.itemName, quantity: orderBeyondRequest, unit: item.dispatchUnit || 'kg',
+            dispatchEntryId: getId(`${order.id}:${row.itemName}:extra`), isExtra: true,
+          });
+        }
       }
     }
     if (extraItems.length > 0) {
@@ -5860,12 +5885,16 @@ function PlannedDispatchPanel({ rows, orders, onDispatch, dispatchedBy }: {
     const remainingPlanned = Math.max(0, plannedRequested - alreadySent);
     const defaultQty = Math.round(Math.min(remainingPlanned, row.preparedTotal) * 100) / 100;
     const typed = qtyFor[row.itemName] !== undefined ? Number(qtyFor[row.itemName] || 0) : defaultQty;
-    // CRITICAL BUG FIX (audit): this was the only remaining dispatch entry
-    // point with no ceiling against what's still owed — every other panel
-    // (BranchFlatDispatchPanel, HosurShopDispatchPanel, BulkDispatchModal,
-    // DispatchChecklistModal) hard-caps the typed quantity at `remaining`.
-    const q = Math.min(typed, remainingPlanned);
-    const clamped = typed > remainingPlanned + 0.01;
+    // BUG FIX (2026-08-19): same root fix as every other dispatch flow in
+    // this file — a planner who has explicitly typed a value (qtyFor[itemName]
+    // set, as opposed to falling back to defaultQty) is respected as-is,
+    // instead of being silently capped at what was originally planned. The
+    // "CRITICAL BUG FIX (audit)" cap below was guarding against an
+    // un-touched default ever exceeding remaining, not a deliberate
+    // planner override.
+    const isManualQty = qtyFor[row.itemName] !== undefined;
+    const q = isManualQty ? typed : Math.min(typed, remainingPlanned);
+    const clamped = !isManualQty && typed > remainingPlanned + 0.01;
     if (q <= 0) {
       setResult(r => ({ ...r, [row.itemName]: { ok: false, message: 'Nothing to send — quantity must be above 0.' } }));
       return;
@@ -5877,7 +5906,17 @@ function PlannedDispatchPanel({ rows, orders, onDispatch, dispatchedBy }: {
       const item = order.items.find(i => sameItem(i.itemName, row.itemName));
       const orderQty = split[order.id] ?? 0;
       if (!item || orderQty <= 0) continue;
-      actions.push({ orderId: order.id, itemName: item.itemName, quantity: orderQty, unit: item.dispatchUnit || 'kg', dispatchEntryId: getId(`${order.id}:${row.itemName}`) });
+      const orderRequested = item.dispatchUnit === 'pcs' && item.originalPcs != null ? item.originalPcs : item.quantity;
+      const orderAlreadySent = (order.dispatchLog || []).filter(d => sameItem(d.itemName, row.itemName) && !d.isExtra).reduce((s, d) => s + d.quantity, 0);
+      const orderRemaining = Math.max(0, Math.round((orderRequested - orderAlreadySent) * 100) / 100);
+      const orderWithinRequest = Math.min(orderQty, orderRemaining);
+      const orderBeyondRequest = Math.round((orderQty - orderWithinRequest) * 1000) / 1000;
+      if (orderWithinRequest > 0.001) {
+        actions.push({ orderId: order.id, itemName: item.itemName, quantity: orderWithinRequest, unit: item.dispatchUnit || 'kg', dispatchEntryId: getId(`${order.id}:${row.itemName}`) });
+      }
+      if (orderBeyondRequest > 0.001) {
+        actions.push({ orderId: order.id, itemName: item.itemName, quantity: orderBeyondRequest, unit: item.dispatchUnit || 'kg', dispatchEntryId: getId(`${order.id}:${row.itemName}:extra`), isExtra: true });
+      }
     }
     if (actions.length === 0) {
       setResult(r => ({ ...r, [row.itemName]: { ok: false, message: 'Nothing to send — no matching order found.' } }));
@@ -6017,8 +6056,13 @@ function CustomDispatchPanel({ rows, orders, onDispatch, dispatchedBy, leftoverB
     for (const { row, remainingPlanned, defaultQty } of lines) {
       if (!selected.has(row.itemName)) continue;
       const typed = qtyFor(row.itemName, defaultQty);
-      const q = Math.min(typed, remainingPlanned);
-      if (typed > remainingPlanned + 0.01) clampedAny = true;
+      // BUG FIX (2026-08-19): same fix as the other dispatch flows — a
+      // planner-typed quantity (qty[itemName] set explicitly, as opposed to
+      // falling back to defaultQty) is no longer silently capped at what
+      // was originally planned.
+      const isManualQty = qty[row.itemName] !== undefined;
+      const q = isManualQty ? typed : Math.min(typed, remainingPlanned);
+      if (!isManualQty && typed > remainingPlanned + 0.01) clampedAny = true;
       if (q <= 0) continue;
       const entries = plannedContributingOrders(row, orders);
       const split = autoSplitForItem(entries, row.itemName, q);
@@ -6026,7 +6070,17 @@ function CustomDispatchPanel({ rows, orders, onDispatch, dispatchedBy, leftoverB
         const item = order.items.find(i => sameItem(i.itemName, row.itemName));
         const orderQty = split[order.id] ?? 0;
         if (!item || orderQty <= 0) continue;
-        actions.push({ orderId: order.id, itemName: item.itemName, quantity: orderQty, unit: item.dispatchUnit || 'kg', dispatchEntryId: getId(`custom:${order.id}:${row.itemName}`) });
+        const orderRequested = item.dispatchUnit === 'pcs' && item.originalPcs != null ? item.originalPcs : item.quantity;
+        const orderAlreadySent = (order.dispatchLog || []).filter(d => sameItem(d.itemName, row.itemName) && !d.isExtra).reduce((s, d) => s + d.quantity, 0);
+        const orderRemaining = Math.max(0, Math.round((orderRequested - orderAlreadySent) * 100) / 100);
+        const orderWithinRequest = Math.min(orderQty, orderRemaining);
+        const orderBeyondRequest = Math.round((orderQty - orderWithinRequest) * 1000) / 1000;
+        if (orderWithinRequest > 0.001) {
+          actions.push({ orderId: order.id, itemName: item.itemName, quantity: orderWithinRequest, unit: item.dispatchUnit || 'kg', dispatchEntryId: getId(`custom:${order.id}:${row.itemName}`) });
+        }
+        if (orderBeyondRequest > 0.001) {
+          actions.push({ orderId: order.id, itemName: item.itemName, quantity: orderBeyondRequest, unit: item.dispatchUnit || 'kg', dispatchEntryId: getId(`custom:${order.id}:${row.itemName}:extra`), isExtra: true });
+        }
       }
     }
     if (actions.length === 0) {
@@ -6169,6 +6223,11 @@ function BulkDispatchModal({ branch, rows, orders, onClose, onDispatch, dispatch
   const { getId, reset: resetDispatchIds } = useStableDispatchIds();
 
   const qtyFor = (itemName: string) => Number(qty[itemName] || 0);
+  // Mirrors the touchedRef pattern already used in BranchFlatDispatchPanel —
+  // qty here starts pre-populated with defaults at mount (not empty), so
+  // "is this value set" can't distinguish an auto-default from a planner
+  // edit the way it can elsewhere. Tracked explicitly instead.
+  const touchedRef = useRef<Set<string>>(new Set());
 
   // WORKFLOW CHANGE (2026-08-08 audit): this was the last multi-item
   // dispatch surface still calling onDispatch directly with no review,
@@ -6200,8 +6259,14 @@ function BulkDispatchModal({ branch, rows, orders, onClose, onDispatch, dispatch
       // multi-select) was missed and had NO ceiling at all, letting the
       // planner type any quantity and send more than was ever requested.
       const typed = qtyFor(row.itemName);
-      const q = Math.min(typed, remaining);
-      if (typed > remaining + 0.01) clampedAny = true;
+      // BUG FIX (2026-08-19): same root fix as every other dispatch flow in
+      // this file — a planner who has actually edited this field (touchedRef)
+      // is respected as-is; only an un-touched auto-default still gets
+      // capped at what's outstanding, which is what the 2026-08-07 fix
+      // above was actually guarding against.
+      const isManualQty = touchedRef.current.has(row.itemName);
+      const q = isManualQty ? typed : Math.min(typed, remaining);
+      if (!isManualQty && typed > remaining + 0.01) clampedAny = true;
       if (q <= 0) continue;
       const entries = orders.filter(o => o.targetBranch === branch && row.contributingOrderIds.includes(o.id));
       const split = autoSplitForItem(entries, row.itemName, q);
@@ -6209,7 +6274,17 @@ function BulkDispatchModal({ branch, rows, orders, onClose, onDispatch, dispatch
         const item = order.items.find(i => sameItem(i.itemName, row.itemName));
         const orderQty = split[order.id] ?? 0;
         if (!item || orderQty <= 0) continue;
-        actions.push({ orderId: order.id, itemName: item.itemName, quantity: orderQty, unit: item.dispatchUnit || 'kg', dispatchEntryId: getId(`${order.id}:${row.itemName}`) });
+        const orderRequested = item.dispatchUnit === 'pcs' && item.originalPcs != null ? item.originalPcs : item.quantity;
+        const orderAlreadySent = (order.dispatchLog || []).filter(d => sameItem(d.itemName, row.itemName) && !d.isExtra).reduce((s, d) => s + d.quantity, 0);
+        const orderRemaining = Math.max(0, Math.round((orderRequested - orderAlreadySent) * 100) / 100);
+        const orderWithinRequest = Math.min(orderQty, orderRemaining);
+        const orderBeyondRequest = Math.round((orderQty - orderWithinRequest) * 1000) / 1000;
+        if (orderWithinRequest > 0.001) {
+          actions.push({ orderId: order.id, itemName: item.itemName, quantity: orderWithinRequest, unit: item.dispatchUnit || 'kg', dispatchEntryId: getId(`${order.id}:${row.itemName}`) });
+        }
+        if (orderBeyondRequest > 0.001) {
+          actions.push({ orderId: order.id, itemName: item.itemName, quantity: orderBeyondRequest, unit: item.dispatchUnit || 'kg', dispatchEntryId: getId(`${order.id}:${row.itemName}:extra`), isExtra: true });
+        }
       }
     }
     if (actions.length === 0) {
@@ -6256,7 +6331,7 @@ function BulkDispatchModal({ branch, rows, orders, onClose, onDispatch, dispatch
                   <input
                     type="number" max={remaining}
                     value={val}
-                    onChange={e => setQty(prev => ({ ...prev, [row.itemName]: e.target.value }))}
+                    onChange={e => { touchedRef.current.add(row.itemName); setQty(prev => ({ ...prev, [row.itemName]: e.target.value })); }}
                     className="w-20 rounded-lg border border-border px-2 py-1 text-right text-xs font-bold"
                   />
                   <span className="text-[11px] font-bold text-muted-foreground">{row.unit}</span>
