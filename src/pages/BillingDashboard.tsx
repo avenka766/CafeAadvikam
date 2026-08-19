@@ -1970,6 +1970,51 @@ function NewBillPanel() {
     }
   };
 
+  // FEATURE (2026-08-19): "unable to cancel a single item once sent to
+  // kitchen — only the whole order." The already-sent items list above was
+  // deliberately read-only (see its own comment) since there was previously
+  // no way to safely remove just one line without a dedicated RPC — voiding
+  // the whole table's order was the only option. remove_item_from_table_
+  // order_v1 fills that gap; this mirrors handleCancelTable's pattern
+  // (confirm, call RPC, update local state, refresh the table board) at the
+  // scope of a single item instead of the whole order.
+  const [cancellingItemName, setCancellingItemName] = useState<string | null>(null);
+  const handleCancelRunningItem = async (itemName: string) => {
+    if (!runningOrder || !currentUser) return;
+    if (!window.confirm(`Cancel "${itemName}" from this order? It was already sent to the kitchen — this cannot be undone.`)) return;
+    setCancellingItemName(itemName);
+    try {
+      const removedBy = currentUser.displayName || currentUser.username;
+      const { error } = await supabase.rpc('remove_item_from_table_order_v1', {
+        p_order_id: runningOrder.id,
+        p_item_name: itemName,
+        p_removed_by: removedBy,
+        p_reason: 'Removed from billing dashboard',
+      });
+      if (error) {
+        if (error.message?.includes('LAST_ITEM_USE_CANCEL_ORDER')) {
+          setSubmitError(`"${itemName}" is the only item left on this order — use "Cancel Table" to cancel the whole order instead.`);
+        } else {
+          throw new Error(error.message);
+        }
+        return;
+      }
+      setRunningOrder(prev => prev ? {
+        ...prev,
+        items: (() => {
+          const idx = prev.items.findIndex(ci => ci.menuItem.name.trim().toLowerCase() === itemName.trim().toLowerCase());
+          if (idx === -1) return prev.items;
+          return [...prev.items.slice(0, idx), ...prev.items.slice(idx + 1)];
+        })(),
+      } : prev);
+      void loadTableBoard();
+    } catch (err) {
+      setSubmitError(err instanceof Error ? err.message : `Failed to cancel "${itemName}".`);
+    } finally {
+      setCancellingItemName(null);
+    }
+  };
+
   // FEATURE (2026-08-10): "employees will make mistake in table selection
   // and place order... option to move items to different table... complete
   // items to move to different tab" — researched Petpooja's own table
@@ -3826,8 +3871,17 @@ function NewBillPanel() {
                     </div>
                     <p className="text-[11px] text-muted-foreground tabular-nums">{ci.quantity} x {formatCurrency(ci.menuItem.price)}</p>
                   </div>
-                  <div className="text-right shrink-0">
+                  <div className="text-right shrink-0 flex items-center gap-2">
                     <p className="text-sm text-amber-700 font-black tabular-nums">{formatCurrency(ci.menuItem.price * ci.quantity)}</p>
+                    <button
+                      type="button"
+                      onClick={() => void handleCancelRunningItem(ci.menuItem.name)}
+                      disabled={cancellingItemName === ci.menuItem.name}
+                      title={`Cancel ${ci.menuItem.name}`}
+                      className="rounded-full p-1 text-amber-700 hover:bg-amber-200/70 hover:text-amber-900 disabled:opacity-40"
+                    >
+                      <X className="size-3.5" />
+                    </button>
                   </div>
                 </div>
               ))}
