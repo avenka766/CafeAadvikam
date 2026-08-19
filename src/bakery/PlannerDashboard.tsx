@@ -6642,6 +6642,15 @@ function DispatchReviewModal({ scope, hosurShop, customer, actions, dispatchedBy
   const [priceOverrides, setPriceOverrides] = useState<Record<string, string>>({});
   const [discountPct, setDiscountPct] = useState(customer ? 0 : defaultDiscountPct(scope));
   const [sending, setSending] = useState(false);
+  // BUG FIX (2026-08-19): "same invoice shows multiple times after
+  // dispatching" — `sending` is React state, which updates asynchronously.
+  // A fast double-click/double-tap could fire confirm() twice before the
+  // button's own re-render with disabled={sending} actually took effect,
+  // each call independently calling saveDispatchInvoice() and creating a
+  // genuine duplicate row. Same root cause and same fix as
+  // checkoutInFlightRef in BillingDashboard.tsx — a ref is checked and set
+  // synchronously, before any state update or re-render can happen.
+  const sendingRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<DispatchInvoiceRecord | null>(null);
 
@@ -6740,10 +6749,12 @@ function DispatchReviewModal({ scope, hosurShop, customer, actions, dispatchedBy
   };
 
   const confirm = async () => {
+    if (sendingRef.current) return;
     if (missingPriceItems.length > 0) {
       setError(`Enter a price for: ${missingPriceItems.map(i => i.itemName).join(', ')} before dispatching.`);
       return;
     }
+    sendingRef.current = true;
     setSending(true);
     setError(null);
     try {
@@ -6779,6 +6790,7 @@ function DispatchReviewModal({ scope, hosurShop, customer, actions, dispatchedBy
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to dispatch.');
     } finally {
+      sendingRef.current = false;
       setSending(false);
     }
   };
