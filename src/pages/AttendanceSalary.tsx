@@ -32,6 +32,11 @@ interface Employee {
   accountNumber?: string;
   bankName?: string;
   ifscCode?: string;
+  // FEATURE (2026-08-20): contractor filter + fuller bank details, see the
+  // add_employee_payment_mode_and_bank_details migration for column notes.
+  paymentMode?: string;
+  accountHolderName?: string;
+  bankBranchLocation?: string;
 }
 
 interface DayAttendance {
@@ -132,11 +137,14 @@ function dbRowToEmployee(d: Record<string, unknown>): Employee {
     accountNumber: (d.account_number as string) || undefined,
     bankName: (d.bank_name as string) || undefined,
     ifscCode: (d.ifsc_code as string) || undefined,
+    paymentMode: (d.payment_mode as string) || undefined,
+    accountHolderName: (d.account_holder_name as string) || undefined,
+    bankBranchLocation: (d.bank_branch_location as string) || undefined,
   };
 }
 
 async function fetchEmployees(): Promise<Employee[]> {
-  const { data, error } = await supabase.from('employees').select('id, name, branch, department, gross_salary, salary_advance, uniform_deduction, other_deduction, account_number, bank_name, ifsc_code').eq('is_active', true).order('id', { ascending: true });
+  const { data, error } = await supabase.from('employees').select('id, name, branch, department, gross_salary, salary_advance, uniform_deduction, other_deduction, account_number, bank_name, ifsc_code, payment_mode, account_holder_name, bank_branch_location').eq('is_active', true).order('id', { ascending: true });
   if (error) throw error;
   return (data || []).map(dbRowToEmployee);
 }
@@ -174,13 +182,13 @@ async function upsertDeductionDecision(employeeId: string, year: number, month: 
 
 async function insertEmployee(emp: Omit<Employee, 'id'> & { id?: string }): Promise<Employee | null> {
   const id = emp.id || `emp_${Date.now()}`;
-  const { data, error } = await supabase.from('employees').insert({ id, name: emp.name, branch: emp.branch, department: emp.department, gross_salary: emp.grossSalary, salary_advance: emp.salaryAdvance, uniform_deduction: emp.uniformDeduction, other_deduction: emp.otherDeduction, account_number: emp.accountNumber || null, bank_name: emp.bankName || null, ifsc_code: emp.ifscCode || null }).select().single();
+  const { data, error } = await supabase.from('employees').insert({ id, name: emp.name, branch: emp.branch, department: emp.department, gross_salary: emp.grossSalary, salary_advance: emp.salaryAdvance, uniform_deduction: emp.uniformDeduction, other_deduction: emp.otherDeduction, account_number: emp.accountNumber || null, bank_name: emp.bankName || null, ifsc_code: emp.ifscCode || null, payment_mode: emp.paymentMode || null, account_holder_name: emp.accountHolderName || null, bank_branch_location: emp.bankBranchLocation || null }).select().single();
   if (error || !data) { console.error('Insert employee failed:', error?.message); return null; }
   return dbRowToEmployee(data as Record<string, unknown>);
 }
 
 async function updateEmployee(emp: Employee): Promise<boolean> {
-  const { error } = await supabase.from('employees').update({ name: emp.name, branch: emp.branch, department: emp.department, gross_salary: emp.grossSalary, salary_advance: emp.salaryAdvance, uniform_deduction: emp.uniformDeduction, other_deduction: emp.otherDeduction, account_number: emp.accountNumber || null, bank_name: emp.bankName || null, ifsc_code: emp.ifscCode || null }).eq('id', emp.id);
+  const { error } = await supabase.from('employees').update({ name: emp.name, branch: emp.branch, department: emp.department, gross_salary: emp.grossSalary, salary_advance: emp.salaryAdvance, uniform_deduction: emp.uniformDeduction, other_deduction: emp.otherDeduction, account_number: emp.accountNumber || null, bank_name: emp.bankName || null, ifsc_code: emp.ifscCode || null, payment_mode: emp.paymentMode || null, account_holder_name: emp.accountHolderName || null, bank_branch_location: emp.bankBranchLocation || null }).eq('id', emp.id);
   if (error) { console.error('Update employee failed:', error.message); return false; }
   return true;
 }
@@ -668,13 +676,16 @@ function AddEmpModal({ onAdd, onClose }: { onAdd: (e: Employee) => void; onClose
   const [bank, setBank] = useState('');
   const [acc, setAcc] = useState('');
   const [ifsc, setIfsc] = useState('');
+  const [paymentMode, setPaymentMode] = useState('');
+  const [acctHolder, setAcctHolder] = useState('');
+  const [bankBranchLoc, setBankBranchLoc] = useState('');
   const [saving, setSaving] = useState(false);
   const valid = name.trim() && dept.trim();
 
   const handleAdd = async () => {
     if (!valid) return;
     setSaving(true);
-    const result = await insertEmployee({ name: name.trim(), branch, department: dept.trim(), grossSalary: parseInt(salary) || 0, salaryAdvance: parseInt(advance) || 0, uniformDeduction: parseInt(uniform) || 0, otherDeduction: parseInt(other) || 0, bankName: bank || undefined, accountNumber: acc || undefined, ifscCode: ifsc || undefined });
+    const result = await insertEmployee({ name: name.trim(), branch, department: dept.trim(), grossSalary: parseInt(salary) || 0, salaryAdvance: parseInt(advance) || 0, uniformDeduction: parseInt(uniform) || 0, otherDeduction: parseInt(other) || 0, bankName: bank || undefined, accountNumber: acc || undefined, ifscCode: ifsc || undefined, paymentMode: paymentMode.trim() || undefined, accountHolderName: acctHolder.trim() || undefined, bankBranchLocation: bankBranchLoc.trim() || undefined });
     setSaving(false);
     if (result) onAdd(result);
   };
@@ -695,6 +706,13 @@ function AddEmpModal({ onAdd, onClose }: { onAdd: (e: Employee) => void; onClose
             </Field>
             <Field label="Department *"><input className={InputCls()} placeholder="e.g. Bakery" value={dept} onChange={e => setDept(e.target.value)} /></Field>
           </div>
+          <Field label="Payment Mode">
+            <select className={InputCls()} value={paymentMode} onChange={e => setPaymentMode(e.target.value)}>
+              <option value="">Direct (paid normally)</option>
+              <option value="BITTU TEAM">BITTU TEAM</option>
+              <option value="BALA TEAM">BALA TEAM</option>
+            </select>
+          </Field>
           <div className="grid grid-cols-2 gap-3">
             <Field label="Gross Salary (₹)"><input type="number" className={InputCls()} placeholder="18000" value={salary} onChange={e => setSalary(e.target.value)} /></Field>
             <Field label="Salary Advance (₹)"><input type="number" className={InputCls()} placeholder="0" value={advance} onChange={e => setAdvance(e.target.value)} /></Field>
@@ -705,11 +723,13 @@ function AddEmpModal({ onAdd, onClose }: { onAdd: (e: Employee) => void; onClose
           </div>
           <div className="pt-2 border-t border-border space-y-2">
             <p className="text-[10px] font-body font-semibold text-muted-foreground uppercase">Bank Details (optional)</p>
+            <Field label="Account Holder Name"><input className={InputCls()} placeholder="Usually matches employee name" value={acctHolder} onChange={e => setAcctHolder(e.target.value)} /></Field>
             <Field label="Bank Name"><input className={InputCls()} placeholder="e.g. INDIAN BANK" value={bank} onChange={e => setBank(e.target.value)} /></Field>
             <div className="grid grid-cols-2 gap-3">
               <Field label="Account No."><input className={InputCls()} placeholder="Account" value={acc} onChange={e => setAcc(e.target.value)} /></Field>
               <Field label="IFSC Code"><input className={InputCls()} placeholder="IFSC" value={ifsc} onChange={e => setIfsc(e.target.value)} /></Field>
             </div>
+            <Field label="Bank Branch (location)"><input className={InputCls()} placeholder="e.g. BERIGAI" value={bankBranchLoc} onChange={e => setBankBranchLoc(e.target.value)} /></Field>
           </div>
         </div>
         <div className="px-5 pb-5 flex gap-2">
@@ -735,6 +755,12 @@ function EditEmpModal({ emp, onSave, onClose }: { emp: Employee; onSave: (e: Emp
   const [bank, setBank] = useState(emp.bankName || '');
   const [acc, setAcc] = useState(emp.accountNumber || '');
   const [ifsc, setIfsc] = useState(emp.ifscCode || '');
+  // FEATURE (2026-08-20): contractor filter + fuller bank details need an
+  // actual data-entry point, or the filter above would have nothing to
+  // filter by. '' represents a direct employee (no contractor).
+  const [paymentMode, setPaymentMode] = useState(emp.paymentMode || '');
+  const [acctHolder, setAcctHolder] = useState(emp.accountHolderName || '');
+  const [bankBranchLoc, setBankBranchLoc] = useState(emp.bankBranchLocation || '');
   const [saving, setSaving] = useState(false);
   const valid = name.trim() && dept.trim();
 
@@ -754,6 +780,9 @@ function EditEmpModal({ emp, onSave, onClose }: { emp: Employee; onSave: (e: Emp
       bankName: bank || undefined,
       accountNumber: acc || undefined,
       ifscCode: ifsc || undefined,
+      paymentMode: paymentMode.trim() || undefined,
+      accountHolderName: acctHolder.trim() || undefined,
+      bankBranchLocation: bankBranchLoc.trim() || undefined,
     };
     setSaving(true); setSaveError('');
     const ok = await updateEmployee(updated);
@@ -778,6 +807,13 @@ function EditEmpModal({ emp, onSave, onClose }: { emp: Employee; onSave: (e: Emp
             </Field>
             <Field label="Department *"><input className={InputCls()} placeholder="e.g. Bakery" value={dept} onChange={e => setDept(e.target.value)} /></Field>
           </div>
+          <Field label="Payment Mode">
+            <select className={InputCls()} value={paymentMode} onChange={e => setPaymentMode(e.target.value)}>
+              <option value="">Direct (paid normally)</option>
+              <option value="BITTU TEAM">BITTU TEAM</option>
+              <option value="BALA TEAM">BALA TEAM</option>
+            </select>
+          </Field>
           <div className="grid grid-cols-2 gap-3">
             <Field label="Gross Salary (₹)"><input type="number" min="0" className={InputCls()} value={salary} onChange={e => setSalary(e.target.value)} /></Field>
             <Field label="Salary Advance (₹)"><input type="number" min="0" className={InputCls()} value={advance} onChange={e => setAdvance(e.target.value)} /></Field>
@@ -788,11 +824,13 @@ function EditEmpModal({ emp, onSave, onClose }: { emp: Employee; onSave: (e: Emp
           </div>
           <div className="pt-2 border-t border-border space-y-2">
             <p className="text-[10px] font-body font-semibold text-muted-foreground uppercase">Bank Details</p>
+            <Field label="Account Holder Name"><input className={InputCls()} placeholder="Usually matches employee name" value={acctHolder} onChange={e => setAcctHolder(e.target.value)} /></Field>
             <Field label="Bank Name"><input className={InputCls()} placeholder="e.g. INDIAN BANK" value={bank} onChange={e => setBank(e.target.value)} /></Field>
             <div className="grid grid-cols-2 gap-3">
               <Field label="Account No."><input className={InputCls()} placeholder="Account" value={acc} onChange={e => setAcc(e.target.value)} /></Field>
               <Field label="IFSC Code"><input className={InputCls()} placeholder="IFSC" value={ifsc} onChange={e => setIfsc(e.target.value)} /></Field>
             </div>
+            <Field label="Bank Branch (location)"><input className={InputCls()} placeholder="e.g. BERIGAI" value={bankBranchLoc} onChange={e => setBankBranchLoc(e.target.value)} /></Field>
           </div>
         </div>
         <div className="px-5 pb-5 space-y-2">
@@ -1560,29 +1598,52 @@ export default function AttendanceSalary() {
   const [tab, setTab] = useState<'attendance' | 'salary' | 'employees' | 'analytics' | 'advance'>('attendance');
   const [branch, setBranch]   = useState<'All' | Branch>('All');
   const [dept, setDept]       = useState<string>('All');
+  // FEATURE (2026-08-20): contractor team filter — "BITTU TEAM, BALA TEAM,
+  // found under payment mode." 'Direct' represents employees with no
+  // payment_mode set (paid normally, not through a contractor). Options are
+  // derived from the real data the same way DEPT_OPTIONS is, so a newly
+  // added contractor team name shows up automatically without a code change.
+  const [contractor, setContractor] = useState<string>('All');
   const [search, setSearch]   = useState('');
 
   const handleTabChange = (newTab: typeof tab) => {
     setTab(newTab);
     setSearch('');
   };
-  // Derive department options dynamically from actual employee data so ALL
-  // departments are shown — not just hardcoded 'Store' / 'Admin office'.
+  // BUG FIX (2026-08-20): "when they select the branch, that branch's
+  // departments should display." This used to derive departments from ALL
+  // employees regardless of branch — scoping to the currently selected
+  // branch first (falling back to every employee when branch is 'All') is
+  // the actual fix; the dropdown/filter rendering below and the filtering
+  // logic that already consumes DEPT_OPTIONS/dept didn't need to change at
+  // all, since this list was always the single source both relied on.
   const DEPT_OPTIONS = useMemo<string[]>(() => {
+    const scoped = branch === 'All' ? employees : employees.filter(e => e.branch === branch);
     const unique = Array.from(
       new Set(
-        employees
+        scoped
           .map(e => e.department.trim())
           .filter(Boolean)
       )
     ).sort((a, b) => a.localeCompare(b));
     return ['All', ...unique];
-  }, [employees]);
+  }, [employees, branch]);
+  const CONTRACTOR_OPTIONS = useMemo<string[]>(() => {
+    const scoped = branch === 'All' ? employees : employees.filter(e => e.branch === branch);
+    const hasDirect = scoped.some(e => !e.paymentMode || !e.paymentMode.trim());
+    const teams = Array.from(
+      new Set(scoped.map(e => e.paymentMode?.trim()).filter((v): v is string => Boolean(v)))
+    ).sort((a, b) => a.localeCompare(b));
+    return ['All', ...(hasDirect ? ['Direct'] : []), ...teams];
+  }, [employees, branch]);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   // Reset dept filter if the selected dept no longer exists in the employee list
   useEffect(() => {
     if (dept !== 'All' && !DEPT_OPTIONS.includes(dept)) setDept('All');
   }, [DEPT_OPTIONS, dept]);
+  useEffect(() => {
+    if (contractor !== 'All' && !CONTRACTOR_OPTIONS.includes(contractor)) setContractor('All');
+  }, [CONTRACTOR_OPTIONS, contractor]);
 
   const [showBranchDD, setShowBranchDD] = useState(false);
   const [showAddModal, setShowAddModal] = useState(false);
@@ -1687,6 +1748,17 @@ export default function AttendanceSalary() {
     setEditEmp(null);
   };
 
+  // Single shared match function reused at every filter call-site below —
+  // deliberately not duplicated per call-site, since duplicating the same
+  // filter condition in multiple places in this file has been a recurring
+  // source of "one spot got updated, another didn't" bugs elsewhere in this
+  // app's history.
+  const matchesContractor = useCallback((e: Employee) => {
+    if (contractor === 'All') return true;
+    if (contractor === 'Direct') return !e.paymentMode || !e.paymentMode.trim();
+    return (e.paymentMode ?? '').trim().toLowerCase() === contractor.toLowerCase();
+  }, [contractor]);
+
   const filtered = useMemo(() => {
     let list = employees;
     if (branch !== 'All') list = list.filter(e => e.branch === branch);
@@ -1694,13 +1766,15 @@ export default function AttendanceSalary() {
     if (dept !== 'All') list = list.filter(e =>
       e.department.trim().toLowerCase() === dept.toLowerCase()
     );
+    list = list.filter(matchesContractor);
     if (search.trim()) { const q = search.toLowerCase(); list = list.filter(e => e.name.toLowerCase().includes(q) || e.department.toLowerCase().includes(q)); }
     return list;
-  }, [employees, branch, dept, search]);
+  }, [employees, branch, dept, matchesContractor, search]);
 
   const summary = useMemo(() => {
     let list = branch === 'All' ? employees : employees.filter(e => e.branch === branch);
     if (dept !== 'All') list = list.filter(e => e.department.trim().toLowerCase() === dept.toLowerCase());
+    list = list.filter(matchesContractor);
     let gross = 0, net = 0, canteen = 0, advanceTotal = 0;
     list.forEach(e => {
       const d = getDecision(e.id);
@@ -1708,23 +1782,26 @@ export default function AttendanceSalary() {
       gross += e.grossSalary; net += c.net; canteen += c.canteenTotal; advanceTotal += e.salaryAdvance;
     });
     return { count: list.length, gross, net, canteen, advanceTotal };
-  }, [employees, branch, dept, att, activeMonth.daysInMonth, getDecision]);
+  }, [employees, branch, dept, matchesContractor, att, activeMonth.daysInMonth, getDecision]);
 
   const handleExcelExport = () => {
     let list = branch === 'All' ? employees : employees.filter(e => e.branch === branch);
     if (dept !== 'All') list = list.filter(e => e.department.trim().toLowerCase() === dept.toLowerCase());
+    list = list.filter(matchesContractor);
     exportExcel(list, att, decisions, activeMonth.daysInMonth, activeMonth.label, getDecision);
   };
 
   const handleAttendanceExcelExport = () => {
     let list = branch === 'All' ? employees : employees.filter(e => e.branch === branch);
     if (dept !== 'All') list = list.filter(e => e.department.trim().toLowerCase() === dept.toLowerCase());
+    list = list.filter(matchesContractor);
     exportAttendanceExcel(list, att, decisions, activeMonth.daysInMonth, activeMonth.label, getDecision);
   };
 
   const handleAdvanceExcelExport = () => {
     let empList = branch === 'All' ? employees : employees.filter(e => e.branch === branch);
     if (dept !== 'All') empList = empList.filter(e => e.department.trim().toLowerCase() === dept.toLowerCase());
+    empList = empList.filter(matchesContractor);
     exportAdvanceExcel(empList, advanceRecords, activeMonth.label);
   };
 
@@ -1761,10 +1838,10 @@ export default function AttendanceSalary() {
                   {b}
                 </button>
               ))}
-            </div>
+              </div>
           )}
+          </div>
         </div>
-      </div>
 
       {/* Month switcher */}
       <div className="px-4 mb-3">
@@ -1833,6 +1910,31 @@ export default function AttendanceSalary() {
               )}
             >
               {d}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* FEATURE (2026-08-20): Contractor team filter — "BITTU TEAM, BALA
+          TEAM, found under payment mode." Only rendered when there's an
+          actual team to filter by (more than just 'All' + 'Direct'), so it
+          doesn't clutter the screen for a branch with no contractor-paid
+          staff. */}
+      {(tab === 'attendance' || tab === 'advance' || tab === 'salary' || tab === 'employees') && CONTRACTOR_OPTIONS.length > 2 && (
+        <div className="px-4 mb-2 flex items-center gap-2 overflow-x-auto">
+          <span className="text-[10px] font-body font-semibold text-muted-foreground uppercase shrink-0">Team:</span>
+          {CONTRACTOR_OPTIONS.map(c => (
+            <button
+              key={c}
+              onClick={() => setContractor(c)}
+              className={cn(
+                'shrink-0 px-3 py-1.5 rounded-lg text-xs font-body font-semibold border transition-all active:scale-95',
+                contractor === c
+                  ? 'cafe-gradient text-primary-foreground border-transparent shadow-sm'
+                  : 'bg-card border-border text-muted-foreground hover:text-foreground'
+              )}
+            >
+              {c}
             </button>
           ))}
         </div>
