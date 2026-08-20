@@ -5466,7 +5466,15 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
 
   const filtered = rows
     .filter(r => r.itemName.toLowerCase().includes(search.trim().toLowerCase()))
-    .filter(r => branchFilter === 'All' || branchFilter === 'Custom' || !!r.perBranch[branchFilter]);
+    // BUG FIX (2026-08-19): "cancel + dispatch mixed on an order, card still
+    // shows as needing dispatch." !!r.perBranch[branchFilter] treats a
+    // fully-handled item (remaining exactly 0, a perfectly valid, meaningful
+    // value) the same as one that was never on this branch at all (key
+    // absent) — 0 is falsy in JS. Once every order for an item nets to zero
+    // remaining for this branch, this excluded its row entirely, which
+    // cascades into the per-card completion check below never seeing that
+    // item and getting stuck. Check key presence, not truthiness.
+    .filter(r => branchFilter === 'All' || branchFilter === 'Custom' || branchFilter in r.perBranch);
 
   // BUG FIX (2026-08-08): "in All tab to dispatch its showing 74 items but
   // we have dispatched some items its not showing that and its not getting
@@ -5500,7 +5508,9 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
   // meant every keystroke in the search box shrank the set, which reset any
   // quantity you'd already typed for items outside the current search text.
   const flatPanelRows = rows
-    .filter(r => branchFilter === 'All' || branchFilter === 'Custom' || !!r.perBranch[branchFilter])
+    // BUG FIX (2026-08-19): same falsy-zero bug as the `filtered` list
+    // above — check key presence, not truthiness.
+    .filter(r => branchFilter === 'All' || branchFilter === 'Custom' || branchFilter in r.perBranch)
     .filter(r => !fullyDispatched(r))
     .sort((a, b) => (dispatchedQtyForItem(b) > 0 ? 1 : 0) - (dispatchedQtyForItem(a) > 0 ? 1 : 0));
   // BUG FIX (2026-08-08): same class of bug as flatPanelRows above, but for
@@ -5511,7 +5521,20 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
   // reading exactly like "search again and the saved data is gone." This
   // keeps the full Hosur-scoped row set (both dispatched + pending)
   // search-independent, the same way flatPanelRows already is.
-  const hosurPanelRows = rows.filter(r => !!r.perBranch.Hosur);
+  // BUG FIX (2026-08-19): "cancel some items, dispatch some items on a Hosur
+  // order — the card still shows in the dispatch tab, even after everything
+  // is fully dispatched." Confirmed against live data: an order with a
+  // single item, fully accounted for (dispatched + cancelled = requested),
+  // where every OTHER Hosur shop's need for that same item was also fully
+  // satisfied, netting the aggregate remaining to exactly 0. !!r.perBranch.
+  // Hosur excluded that row entirely, since 0 is falsy in JS — cascading
+  // into useHosurShopOrders's item-name match failing, that item silently
+  // dropping out of card.items, and the card either losing the one item
+  // that proved it was done, or (if it was the order's only item)
+  // disappearing from both the active and completed views rather than
+  // correctly bucketing into completed. Checking key presence instead of
+  // truthiness fixes this at the root, matching the same fix just above.
+  const hosurPanelRows = rows.filter(r => 'Hosur' in r.perBranch);
   // Items with a "Planned" (Planning-tab) component still awaiting a
   // branch + quantity decision at dispatch time.
   const plannedRows = useMemo(

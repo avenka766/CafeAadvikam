@@ -1633,6 +1633,7 @@ function OrdersTab() {
 function StoreHistoryTab() {
   const { orders, fetchOrders, subscribe: subscribeOrders } = useBakeryStore();
   const [initialLoading, setInitialLoading] = useState(true);
+  const [search, setSearch] = useState('');
 
   useEffect(() => {
     fetchOrders().finally(() => setInitialLoading(false));
@@ -1647,6 +1648,19 @@ function StoreHistoryTab() {
     o.status === 'produced' || o.status === 'dispatched' ||
     (o.status === 'store_confirmed' && !needsProductionRelease(o)));
 
+  // FEATURE (2026-08-19): "need search bar in history tab as well" — same
+  // filter fields as OrdersTab's search, applied to this tab's own list.
+  const filteredHistoryOrders = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return historyOrders;
+    return historyOrders.filter(o =>
+      String(o.orderNumber).includes(q) ||
+      (o.targetBranch ?? '').toLowerCase().includes(q) ||
+      (o.createdBy ?? '').toLowerCase().includes(q) ||
+      o.items.some(item => item.itemName.toLowerCase().includes(q))
+    );
+  }, [historyOrders, search]);
+
   if (initialLoading) return <div className="flex justify-center py-16"><Loader2 className="size-6 animate-spin text-muted-foreground" /></div>;
 
   return (
@@ -1659,14 +1673,40 @@ function StoreHistoryTab() {
         <p className="text-xs font-body text-muted-foreground mt-1">In progress, packed and dispatched orders stay here for store follow-up.</p>
       </div>
 
-      {historyOrders.length > 0 ? (
-        <div className="space-y-2">
-          {historyOrders.map(o => <OrderCard key={o.id} order={o} />)}
+      <div className="flex items-center gap-2">
+        <p className="text-xs font-body font-bold text-muted-foreground uppercase flex-1 min-w-fit">
+          {search.trim() ? `${filteredHistoryOrders.length} of ${historyOrders.length} Order${historyOrders.length !== 1 ? 's' : ''}` : `${historyOrders.length} Order${historyOrders.length !== 1 ? 's' : ''}`}
+        </p>
+        <div className="relative w-full sm:w-56">
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
+          <input
+            type="text"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search order #, branch, item…"
+            className="h-8 w-full rounded-xl border border-border bg-card pl-8 pr-7 text-xs font-body outline-none focus:ring-2 focus:ring-primary/30"
+          />
+          {search && (
+            <button type="button" onClick={() => setSearch('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
+              <X className="size-3.5" />
+            </button>
+          )}
         </div>
-      ) : (
+      </div>
+
+      {historyOrders.length === 0 ? (
         <div className="flex flex-col items-center py-24 gap-4 rounded-3xl border border-border bg-card">
           <div className="size-20 rounded-3xl bg-muted flex items-center justify-center"><History className="size-10 text-muted-foreground opacity-30" /></div>
           <div className="text-center"><p className="text-sm font-body font-semibold text-foreground">No sent orders yet</p><p className="text-xs font-body text-muted-foreground mt-1">Once a new order is sent to baker, it moves here.</p></div>
+        </div>
+      ) : filteredHistoryOrders.length === 0 ? (
+        <div className="flex flex-col items-center py-24 gap-4 rounded-3xl border border-border bg-card">
+          <div className="size-20 rounded-3xl bg-muted flex items-center justify-center"><Search className="size-10 text-muted-foreground opacity-30" /></div>
+          <div className="text-center"><p className="text-sm font-body font-semibold text-foreground">No orders match "{search}"</p><p className="text-xs font-body text-muted-foreground mt-1">Try a different order number, branch, or item name.</p></div>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {filteredHistoryOrders.map(o => <OrderCard key={o.id} order={o} />)}
         </div>
       )}
     </div>
