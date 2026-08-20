@@ -1444,7 +1444,19 @@ function OrdersTab() {
   // are ever eligible to merge; `mergeable` keeps that separate from what's
   // merely displayed.
   const pending = orders.filter(o => o.status === 'accepted' || (o.status === 'store_confirmed' && needsProductionRelease(o)));
-  const mergeable = orders.filter(o => o.status === 'accepted');
+  // BUG FIX (2026-08-20): "still don't see them combine." mergeable used to
+  // only match status==='accepted' — but the real, current workflow (see
+  // AUTO-CONFIRM 2026-08-06 above) sends orders straight to
+  // 'store_confirmed', skipping 'accepted' almost entirely. mergeable was
+  // therefore nearly always empty in practice, so nothing ever had 2+
+  // orders to combine. Broadened to match `pending`'s own filter exactly —
+  // verified safe by reading releaseToProduction: a partial release always
+  // splits the order, moving the released portion into its own separate
+  // record with productionReleasedAt already set, so anything still
+  // matching needsProductionRelease is guaranteed to have zero items
+  // already deducted. This is the same filter `pending` already relies on
+  // for safe display, not a new, unproven condition.
+  const mergeable = orders.filter(o => o.status === 'accepted' || (o.status === 'store_confirmed' && needsProductionRelease(o)));
 
   const filteredPending = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -1469,9 +1481,18 @@ function OrdersTab() {
       // shown. Group no-branch orders into their own bucket instead of
       // discarding them, and surface a clear message when there's genuinely
       // nothing to combine.
+      //
+      // FEATURE (2026-08-20): "only combine orders that come in that date —
+      // older orders should stay as they are until sent to production."
+      // Grouping key now includes the order's own store-date (Kolkata
+      // calendar day, same boundary used everywhere else date grouping
+      // happens in this app) alongside branch, so a stale order sitting
+      // unprocessed from a previous day never gets silently folded into
+      // today's fresh batch — it stays its own group, visible and
+      // untouched, until someone deliberately acts on it.
       const byBranch = new Map<string, string[]>();
       for (const o of mergeable) {
-        const key = o.targetBranch ?? 'unassigned';
+        const key = `${o.targetBranch ?? 'unassigned'}__${kolkataDateKey(o.createdAt)}`;
         const list = byBranch.get(key) ?? [];
         list.push(o.id);
         byBranch.set(key, list);
