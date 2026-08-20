@@ -101,8 +101,16 @@ const CHART_COLORS = ['#E07A3A', '#2563EB', '#059669', '#F59E0B', '#DC2626', '#7
 const ak = (eid: string, d: number) => `${eid}_${d}`;
 const defaultDay = (): DayAttendance => ({ present: false, half: false, woff: false, bf: false, lunch: false, dinner: false });
 const defaultDecision = (): DeductionDecision => ({ deductAdvance: false, deductOther: true, deductUniform: true, deductESI: false, deductPF: false });
+// BUG FIX (2026-08-20): "why did you remove the 5-day Admin Office rule?" —
+// this was never removed, it was always here. The real spreadsheet's
+// department header is "ADMIN OFFICE STAFFS" (imported verbatim, correctly),
+// not the bare "Admin Office" this exact-match was written against, so
+// those 6 employees were silently falling through to the 4-day default.
+// .includes() catches "ADMIN OFFICE STAFFS" and any other "admin office ..."
+// variant while staying specific enough not to match STORE STAFFS, PACKING
+// STAFFS, or any of the other "... STAFFS" departments in the same sheet.
 const weekOffLimit = (employee: Pick<Employee, 'department'>) =>
-  employee.department.trim().toLowerCase() === 'admin office' ? 5 : 4;
+  employee.department.trim().toLowerCase().includes('admin office') ? 5 : 4;
 
 // ─── Month helpers ─────────────────────────────────────────────────────────────
 function getMonthMeta(year: number, month: number) {
