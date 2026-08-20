@@ -506,7 +506,7 @@ function ItemRow({ order, item, category, selectionEnabled = false, selected = f
 }
 
 // ─── Order Card ──────────────────────────────────────────────────────────────
-function OrderCard({ order }: { order: BakeryOrder }) {
+function OrderCard({ order, searchTerm = '' }: { order: BakeryOrder; searchTerm?: string }) {
   const { confirmStockSelected, acceptOrder, releaseToProduction } = useBakeryStore();
   const { deductMaterials } = useStoreStockStore();
   const bakeryItems = useBakeryItemsStore(s => s.items);
@@ -543,10 +543,22 @@ function OrderCard({ order }: { order: BakeryOrder }) {
     sendRequest.current = null;
   }, [order.items]);
 
-  const categorizedItems = useMemo(() => STORE_ORDER_CATEGORIES.map(category => ({
-    category,
-    items: order.items.map((item, index) => ({ item, index, category: storeOrderCategory(item, bakeryItems) })).filter(entry => entry.category === category),
-  })).filter(group => group.items.length > 0), [order.items, bakeryItems]);
+  const categorizedItems = useMemo(() => {
+    const q = searchTerm.trim().toLowerCase();
+    return STORE_ORDER_CATEGORIES.map(category => ({
+      category,
+      // FEATURE (2026-08-20): "when we search the item it shouldn't show the
+      // whole order combined." The index below is captured from order.items
+      // BEFORE this search filter runs, so it always points to that item's
+      // real position — safe to filter which items are DISPLAYED without
+      // touching what selectedIndexes/confirmStockSelected/releaseToProduction
+      // actually operate on downstream.
+      items: order.items
+        .map((item, index) => ({ item, index, category: storeOrderCategory(item, bakeryItems) }))
+        .filter(entry => entry.category === category)
+        .filter(entry => !q || entry.item.itemName.toLowerCase().includes(q)),
+    })).filter(group => group.items.length > 0);
+  }, [order.items, bakeryItems, searchTerm]);
 
   const selectedEntries = useMemo(() => selectedIndexes
     .map(index => ({ item: order.items[index], index }))
@@ -1395,6 +1407,17 @@ function OrdersTab() {
   const [merging, setMerging] = useState(false);
   const [mergeError, setMergeError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
+  // FEATURE (2026-08-20): "why are orders showing as separate — it should
+  // show combined orders of the day." "Combine Into One" already existed
+  // and does exactly this (see mergeOrdersForStore below) but required a
+  // manual click nobody necessarily knew to make. autoMergedRef makes it
+  // fire once automatically after the first load, covering the common case
+  // (several orders already piled up before Store even opens this tab)
+  // without repeatedly re-merging in the background while someone has a
+  // card open and items selected — that risk is exactly why this only runs
+  // once per session rather than on every new arrival; the manual button
+  // stays available below for anything that arrives after that point.
+  const autoMergedRef = useRef(false);
   useEffect(() => {
     fetchOrders().finally(() => setInitialLoading(false));
     loadStock();
@@ -1434,7 +1457,7 @@ function OrdersTab() {
     );
   }, [pending, search]);
 
-  const handleMergeAll = async () => {
+  const runMerge = async (silent: boolean) => {
     if (mergeable.length < 2 || merging) return;
     setMerging(true); setMergeError(null);
     try {
@@ -1457,15 +1480,29 @@ function OrdersTab() {
       for (const ids of byBranch.values()) {
         if (ids.length > 1) { await mergeOrdersForStore(ids); mergedAny = true; }
       }
-      if (!mergedAny) {
+      // Only a real manual click should show "nothing to combine" — an
+      // automatic background attempt finding nothing to do isn't news to
+      // anyone and shouldn't surface as an error banner.
+      if (!mergedAny && !silent) {
         setMergeError('Nothing to combine — each pending order already targets a different branch, so there\'s nothing to merge together.');
       }
     } catch (err) {
-      setMergeError(err instanceof Error ? err.message : 'Failed to combine orders — please try again.');
+      if (!silent) setMergeError(err instanceof Error ? err.message : 'Failed to combine orders — please try again.');
     } finally {
       setMerging(false);
     }
   };
+  const handleMergeAll = () => runMerge(false);
+
+  useEffect(() => {
+    if (initialLoading || autoMergedRef.current || mergeable.length < 2) return;
+    autoMergedRef.current = true;
+    void runMerge(true);
+    // Deliberately only re-checking when initialLoading/mergeable.length
+    // actually change; runMerge/mergeable are rebuilt every render and
+    // would defeat the once-only guard above if included here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialLoading, mergeable.length]);
 
 
   const refreshNow = async () => {
@@ -1611,7 +1648,7 @@ function OrdersTab() {
       {filteredPending.length > 0 && (
         <div className="mb-4 space-y-3">
           <div className="flex items-center gap-2"><Flame className="size-3.5 text-amber-500" /><p className="text-xs font-body font-bold text-muted-foreground uppercase">New Orders</p></div>
-          {filteredPending.map(o => <OrderCard key={o.id} order={o} />)}
+          {filteredPending.map(o => <OrderCard key={o.id} order={o} searchTerm={search} />)}
         </div>
       )}
       {pending.length > 0 && filteredPending.length === 0 && (
