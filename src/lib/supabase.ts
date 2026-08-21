@@ -58,6 +58,18 @@ const sessionAwareFetch: typeof fetch = async (input, init: RequestInit = {}) =>
         }
         if (sessionExpired) {
           window.dispatchEvent(new CustomEvent('cafe:session-expired', { detail: { at: Date.now() } }));
+        } else if (/LAST_ITEM_USE_CANCEL_ORDER/i.test(responseMessage)) {
+          // BUG FIX (2026-08-21): "cancelling the last item on an order shows
+          // a scary 'business data may be incomplete' banner." This is a
+          // correctly-working validation response (you can't remove an
+          // order's only remaining item this way — use Cancel Table
+          // instead), already surfaced as a clear, friendly inline message
+          // by the caller (see handleCancelRunningItem in
+          // BillingDashboard.tsx). It isn't a real data/infrastructure
+          // problem, so it shouldn't trigger the same alarming top-of-screen
+          // banner reserved for genuine failures — same principle as the
+          // SESSION_REQUIRED case just above, just without needing its own
+          // dedicated banner since the caller's own message already covers it.
         } else {
           window.dispatchEvent(new CustomEvent('cafe:data-error', { detail: {
             message: responseMessage,
