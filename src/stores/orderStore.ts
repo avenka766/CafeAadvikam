@@ -17,6 +17,12 @@ const POLL_INTERVAL_MS = 15 * 60_000;
 // of the steady-state 15-minute poll cadence.
 const POLL_BACKOFF_BASE_MS = 5_000;
 const POLL_BACKOFF_MAX_MS = 5 * 60_000;
+// EGRESS FIX (2026-08-21): how far back the recurring background poll looks
+// on each tick — see the refreshRecentOrders/startPolling comments below for
+// the full reasoning. Deliberately small; the one-time initial load on
+// first open is unaffected and still uses whatever window the caller
+// requested (e.g. 90 days for advance bookings).
+const POLL_REFRESH_DAYS = 3;
 let orderRealtimeChannel: ReturnType<typeof supabase.channel> | null = null;
 let orderFetchInFlight = false;
 // BUG FIX (2026-08-09): "Owner Dashboard page is keep on refreshing 10 times
@@ -99,6 +105,11 @@ interface OrderState {
   getAdvanceCartCount: () => number;
 
   loadOrders: (days?: number) => Promise<void>;
+  // EGRESS FIX (2026-08-21): see the implementation below and the comment on
+  // startPolling for the full reasoning — a merge-based, small-window
+  // refresh used for the recurring background poll instead of loadOrders,
+  // which always re-fetches and replaces the entire requested window.
+  refreshRecentOrders: (days: number) => Promise<void>;
   submitOrder: (params: { tableNumber?: number; orderType: OrderType; notes?: string; customerName?: string; createdBy: string; orderSource?: OrderSource; parcelCharges?: number; paymentType?: PaymentType; paymentBreakdown?: PaymentBreakdown; billedBy?: string; status?: OrderStatus; }) => Promise<string>;
   submitAdvanceOrder: (params: { tableNumber?: number; orderType: OrderType; notes?: string; customerName?: string; createdBy: string; advanceAmount: number; advancePaidBy: string; deliveryDate: string; isFullPayment?: boolean; }) => Promise<string>;
   updateOrderStatus: (orderId: string, status: OrderStatus, cancelReason?: string) => Promise<void>;
@@ -252,7 +263,10 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
         set({ pollTimer: null });
         const retryTimer = setTimeout(() => {
           set({ _pollBackoffTimer: null });
-          const newTimer = setInterval(() => { if (!document.hidden) get().loadOrders(days); }, POLL_INTERVAL_MS);
+          // Matches the lightweight steady-state interval in startPolling —
+          // this is re-arming after a retry, not doing the one-time initial
+          // load itself (that's the loadOrders(days) call right below).
+          const newTimer = setInterval(() => { if (!document.hidden) get().refreshRecentOrders(POLL_REFRESH_DAYS); }, POLL_INTERVAL_MS);
           set({ pollTimer: newTimer });
           get().loadOrders(days);
         }, backoffMs);
@@ -261,6 +275,52 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     } finally {
       orderFetchInFlight = false;
       set({ loading: false });
+    }
+  },
+
+  // EGRESS FIX (2026-08-21): "1.12GB used in 6 days, would exceed the 5GB
+  // free-tier monthly limit." Root cause traced to startPolling's recurring
+  // background poll re-fetching its ENTIRE requested window (as wide as 90
+  // days, up to 8000 rows, full items/payment_breakdown JSONB per row) on
+  // every 15-minute tick, for as long as any screen using this store stayed
+  // open — across every branch's billing terminal simultaneously. The
+  // pattern the Payment Mode Edit tab already uses (full history only on an
+  // explicit, user-triggered lookup) is the correct one; this generalizes
+  // it to the background poll itself rather than fixing one call site's
+  // `days` number at a time. The initial load when a screen first opens
+  // still uses loadOrders with its full requested window (nothing about
+  // what's visible when you first open a dashboard changes) — only the
+  // ongoing, repeated refresh underneath it is now this lightweight,
+  // merge-based fetch of just the last `days` (kept deliberately simple,
+  // no dedicated retry/backoff, since realtime remains the primary sync
+  // path per the POLL_INTERVAL_MS comment above — a missed tick here is
+  // caught by the next one 15 minutes later).
+  refreshRecentOrders: async (days) => {
+    if (orderFetchInFlight) return;
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - days);
+    try {
+      const { data, error } = await supabase
+        .from('orders')
+        .select('id, order_number, table_number, order_type, items, subtotal, discount, discount_type, discount_value, total, status, created_by, created_at, updated_at, notes, customer_name, payment_type, payment_breakdown, billed_by, cancel_reason, order_source, advance_amount, advance_paid_by, balance_due, full_amount, fully_paid_at, balance_payment_type, balance_paid_by, balance_order_id, parcel_charges, delivery_date, wallet_id, wallet_amount, wallet_transaction_id, promotion_discount, promotion_ids, wallet_cashback')
+        .gte('created_at', cutoff.toISOString())
+        .order('created_at', { ascending: false })
+        .limit(2000);
+      if (error) throw error;
+      if (!data) return;
+      const fresh = data.map(dbRowToOrder);
+      const freshIds = new Set(fresh.map(o => o.id));
+      set(state => ({
+        // Anything outside this fetch's window is left exactly as it was —
+        // this is a merge, never a wholesale replace. Anything inside the
+        // window is fully replaced with the fresh copy so status/payment
+        // changes on recent orders are still reflected.
+        orders: [...fresh, ...state.orders.filter(o => !freshIds.has(o.id))]
+          .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+        _pollFailCount: 0,
+      }));
+    } catch (e) {
+      console.error('[refreshRecentOrders] fetch failed (will retry on next poll tick):', e);
     }
   },
 
@@ -761,7 +821,14 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
         })
         .subscribe();
     }
-    const timer = setInterval(() => { if (!document.hidden) get().loadOrders(days); }, POLL_INTERVAL_MS);
+    // EGRESS FIX (2026-08-21): the recurring tick now refreshes only a
+    // small, recent window via refreshRecentOrders (merged into existing
+    // state, not a replace) instead of re-fetching the caller's entire
+    // `days` window every 15 minutes — see the comment on
+    // refreshRecentOrders above for the full reasoning. The one-time
+    // initial load two lines down is untouched, so a caller that asks for
+    // 90 days still sees 90 days the moment this screen opens.
+    const timer = setInterval(() => { if (!document.hidden) get().refreshRecentOrders(POLL_REFRESH_DAYS); }, POLL_INTERVAL_MS);
     set({ polling: true, pollTimer: timer });
     get().loadOrders(days);
   },
