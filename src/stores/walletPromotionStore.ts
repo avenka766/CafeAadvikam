@@ -13,6 +13,20 @@ import type {
 } from '@/features/commerce/types';
 
 const amount = (value: unknown) => Math.round((Number(value || 0) + Number.EPSILON) * 100) / 100;
+
+// EGRESS FIX (2026-08-21): loadBillingPromotions had no caching at all —
+// unlike loadWallets/loadPromotions just above it in this same file, which
+// both already have a 30-second freshness check. It's called from a
+// useEffect keyed on [branch, loadBillingPromotions] in WalletOffersPanel,
+// part of the regular checkout flow, with nothing preventing it firing
+// again on every re-render/remount. The underlying RPC likely returns a
+// small payload (a branch only has a handful of active promotions at
+// once), so this is lower-impact than the order-table fixes, but there's
+// no reason to leave it uncached when the same pattern already exists
+// right here for the sibling function. Keyed per-branch since different
+// branches need different results.
+const billingPromotionsCache = new Map<string, { at: number; data: PromotionCampaign[] }>();
+const BILLING_PROMOTIONS_FRESH_MS = 30_000;
 const text = (value: unknown) => value == null ? null : String(value);
 const normalizePhone = (value: string) => value.replace(/\D/g, '').slice(-10);
 
@@ -292,9 +306,13 @@ export const useWalletPromotionStore = create<WalletPromotionState>((set, get) =
   },
 
   loadBillingPromotions: async (branch) => {
+    const cached = billingPromotionsCache.get(branch);
+    if (cached && Date.now() - cached.at < BILLING_PROMOTIONS_FRESH_MS) return cached.data;
     const { data, error } = await supabase.rpc('get_active_promotions_for_billing_secure', { p_branch: branch });
     if (error) throw new Error(error.message);
-    return (Array.isArray(data) ? data : []).map((row) => campaignFromRow(row as Record<string, unknown>));
+    const result = (Array.isArray(data) ? data : []).map((row) => campaignFromRow(row as Record<string, unknown>));
+    billingPromotionsCache.set(branch, { at: Date.now(), data: result });
+    return result;
   },
 
   recordPromotionExposure: async (campaignId, branch, eventType, idempotencyKey, incrementalAmount = 0) => {
