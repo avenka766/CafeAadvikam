@@ -180,7 +180,20 @@ export function rowToOrder(d: Record<string, unknown>): BakeryOrder {
 const BAKERY_ORDER_COLUMNS = 'id, order_number, items, status, created_by, created_at, expected_output, materials_calculated_at, prepared_items, produced_items, dispatch_split, leftover_status, store_confirmed_at, production_released_at, planner_notes, sent_to_packing_at, dispatch_log, target_branch, store_source_order_number, store_send_request_id, notes, correction_request';
 let bakeryFetchInFlight: Promise<void> | null = null;
 let bakeryLastFetchedAt = 0;
+// EGRESS FIX (2026-08-21): tracks whether this store has ever successfully
+// completed a fetch this session — used below to decide between a full
+// 60-day populate (only needed once, when there's nothing in local state
+// yet to merge into) versus a small, recent-window merge (every fetch
+// after that). Deliberately a separate flag rather than checking
+// orders.length === 0, since a genuinely empty result (no pending bakery
+// orders at all right now) shouldn't be mistaken for "never loaded" and
+// trigger a full re-populate it doesn't need.
+let bakeryHasEverLoaded = false;
 const BAKERY_FETCH_FRESH_MS = 60_000;
+// EGRESS FIX (2026-08-21): how far back a non-first-load fetch checks for
+// recent changes — see the fetchOrders comment below for the full
+// reasoning. The true first load of a session still uses a full 60 days.
+const BAKERY_REFRESH_WINDOW_DAYS = 3;
 
 // Standalone, on-demand query — deliberately NOT part of the polled Zustand
 // store above. Used by features that need an arbitrary/historical date range
@@ -230,8 +243,24 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     const request = (async () => {
       if (!silent) set({ loading: true });
       try {
+        // EGRESS FIX (2026-08-21): this used to re-fetch and fully replace
+        // the entire 60-day window (uncapped row count, several JSONB
+        // columns per row — items, prepared_items, produced_items,
+        // dispatch_split, dispatch_log) on EVERY call, from at least 14
+        // different trigger points across Planner, Store, OrderReceiver,
+        // and Packing — mount effects, a 15-minute interval, a
+        // tab-visibility-change handler, and manual refreshes. Every one
+        // of those after the very first was largely re-downloading data
+        // already sitting in this store. Every status this data is
+        // actually filtered on elsewhere (pending/accepted/store_confirmed/
+        // produced/dispatched, leftoverStatus) is checked without any
+        // reference to how old the order is, so nothing here depends on a
+        // wide time window except the very first populate of an empty
+        // store — every fetch after that only needs to catch what's
+        // changed recently and merge it in, never replace everything.
+        const cutoffDays = bakeryHasEverLoaded ? BAKERY_REFRESH_WINDOW_DAYS : 60;
         const cutoff = new Date();
-        cutoff.setDate(cutoff.getDate() - 60);
+        cutoff.setDate(cutoff.getDate() - cutoffDays);
         const query = supabase
           .from('bakery_orders')
           .select(BAKERY_ORDER_COLUMNS)
@@ -239,7 +268,24 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
           .order('created_at', { ascending: false });
         const { data, error } = await query;
         if (!error && data) {
-          set({ orders: data.map(d => rowToOrder(d as Record<string, unknown>)) });
+          const fresh = data.map(d => rowToOrder(d as Record<string, unknown>));
+          if (!bakeryHasEverLoaded) {
+            // True first load this session — nothing in local state to
+            // merge into yet, so this is a full, wide-window populate.
+            set({ orders: fresh });
+            bakeryHasEverLoaded = true;
+          } else {
+            // Every subsequent fetch: merge the fresh, recent-window
+            // results into whatever's already there rather than
+            // replacing it — anything older than the window (e.g. a
+            // dispatched order still awaiting leftover resolution from
+            // weeks ago) stays exactly as it was, untouched.
+            const freshIds = new Set(fresh.map(o => o.id));
+            set(s => ({
+              orders: [...fresh, ...s.orders.filter(o => !freshIds.has(o.id))]
+                .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+            }));
+          }
           bakeryLastFetchedAt = Date.now();
         }
       } catch (e) {
