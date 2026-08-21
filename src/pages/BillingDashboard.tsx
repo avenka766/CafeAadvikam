@@ -435,7 +435,7 @@ function safeHtml(value: unknown): string {
 function buildSlipDocument(title: string, bodyHtml: string): string {
   return `<!DOCTYPE html><html><head><title>${safeHtml(title)}</title>
 <style>
-@page{margin:4mm;size:80mm auto}*{box-sizing:border-box}body{margin:0;width:66mm;padding-bottom:10mm;font-family:'Courier New',monospace;color:#000;font-size:12px;line-height:1.3}.c{text-align:center}.r{text-align:right}.b{font-weight:900}.muted{color:#444}.big{font-size:16px}.shop{font-size:17px;font-weight:900}.dash{border-top:1px dashed #000;margin:6px 0}.solid{border-top:2px solid #000;margin:6px 0}.kv{width:100%;border-collapse:collapse}.kv td{padding:1px 0;vertical-align:top}.mt{margin-top:6px}.paid{font-size:15px;font-weight:900;text-align:center;margin-bottom:3px}.pick{text-align:right;font-size:16px;font-weight:900}table{width:100%;border-collapse:collapse}td,th{padding:3px 1px;vertical-align:top}th{text-align:left;border-bottom:1px solid #000}tbody tr.item-row td{border-bottom:1px solid #ddd}.num{text-align:right}.grand td{font-size:18px;font-weight:900;padding:6px 0}.thanks{text-align:center;font-size:14px;margin-top:8px}.small{font-size:10px}
+@page{margin:4mm;size:80mm auto}*{box-sizing:border-box}body{margin:0;width:66mm;padding-bottom:10mm;font-family:'Courier New',monospace;color:#000;font-size:12px;line-height:1.3}.c{text-align:center}.r{text-align:right}.b{font-weight:900}.muted{color:#444}.big{font-size:16px}.shop{font-size:17px;font-weight:900}.dash{border-top:1px dashed #000;margin:6px 0}.solid{border-top:2px solid #000;margin:6px 0}.kv{width:100%;border-collapse:collapse}.kv td{padding:1px 0;vertical-align:top}.mt{margin-top:6px}.paid{font-size:15px;font-weight:900;text-align:center;margin-bottom:3px}.pick{text-align:right;font-size:16px;font-weight:900}table{width:100%;border-collapse:collapse}td,th{padding:3px 6px;vertical-align:top}th{text-align:left;border-bottom:1px solid #000}tbody tr.item-row td{border-bottom:1px solid #ddd}.num{text-align:right}.qty{text-align:center}.grand td{font-size:18px;font-weight:900;padding:6px 0}.thanks{text-align:center;font-size:14px;margin-top:8px}.small{font-size:10px}
 /* KOT (kitchen ticket) — deliberately larger + heavier than the customer bill so kitchen staff can read it at a glance across the pass. */
 .kot-slip{font-size:14px;font-weight:700}
 .kot-slip .kot-title{font-size:19px;font-weight:900;margin:2px 0}
@@ -558,7 +558,7 @@ function orderItemsRows(order: Pick<Order, 'items'>): string {
     return `
       <tr class="item-row">
         <td>${safeHtml(ci.menuItem.name)}</td>
-        <td class="num">${ci.quantity}</td>
+        <td class="qty">${ci.quantity}</td>
         <td class="num">${ci.menuItem.price.toFixed(2)}</td>
         <td class="num">${lineAmount.toFixed(2)}</td>
       </tr>
@@ -569,7 +569,7 @@ function orderItemsRows(order: Pick<Order, 'items'>): string {
 function receiptItemTable(order: Order): string {
   return `
     <table>
-      <thead><tr><th>Item</th><th class="num">Qty.</th><th class="num">Price</th><th class="num">Amount</th></tr></thead>
+      <thead><tr><th>Item</th><th class="qty">Qty.</th><th class="num">Price</th><th class="num">Amount</th></tr></thead>
       <tbody>${orderItemsRows(order)}</tbody>
     </table>
   `;
