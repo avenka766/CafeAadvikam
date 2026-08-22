@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { supabase } from '@/lib/supabase';
 import { makeSingletonSubscriber } from '@/lib/realtimeChannel';
+import { getCached, setCached } from '@/lib/localCache';
 import type { BakeryOrder, BakeryOrderItem, PreparedItem, DispatchEntry, WorkflowStatus, Branch } from './types';
 import { useNotificationStore } from './notificationStore'; // BUG #16 FIX: needed to fire baker shortage notifications
 // CLOSING STOCK LINK (2026-08-06): submitDispatch is the single shared path
@@ -189,6 +190,30 @@ let bakeryLastFetchedAt = 0;
 // orders at all right now) shouldn't be mistaken for "never loaded" and
 // trigger a full re-populate it doesn't need.
 let bakeryHasEverLoaded = false;
+// EGRESS FIX (2026-08-21): persists orders to IndexedDB after every
+// successful fetch, and hydrates from it before the very first network
+// fetch of a session — same mechanism, same reasoning, as the analogous
+// change in orderStore.ts. A cache hit here also sets bakeryHasEverLoaded
+// = true, so the very first fetch of the session goes through the narrow,
+// merge-based path below instead of the full 60-day populate.
+const BAKERY_ORDERS_CACHE_KEY = 'bakery_orders_v1';
+let bakeryCacheHydration: Promise<boolean> | null = null;
+
+function hydrateBakeryOrdersFromCache(set: (partial: { orders: BakeryOrder[] }) => void): Promise<boolean> {
+  if (!bakeryCacheHydration) {
+    bakeryCacheHydration = (async () => {
+      const cached = await getCached<BakeryOrder[]>(BAKERY_ORDERS_CACHE_KEY);
+      if (cached && cached.length > 0) {
+        set({ orders: cached });
+        bakeryHasEverLoaded = true;
+        return true;
+      }
+      return false;
+    })();
+  }
+  return bakeryCacheHydration;
+}
+
 const BAKERY_FETCH_FRESH_MS = 60_000;
 // EGRESS FIX (2026-08-21): how far back a non-first-load fetch checks for
 // recent changes — see the fetchOrders comment below for the full
@@ -243,6 +268,15 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     const request = (async () => {
       if (!silent) set({ loading: true });
       try {
+        // EGRESS FIX (2026-08-21): try the local cache before falling back
+        // to a network fetch to decide the window. If a previous session
+        // already persisted a full copy of `orders` here, this sets
+        // bakeryHasEverLoaded = true as a side effect, so the check just
+        // below correctly treats this as a narrow catch-up fetch rather
+        // than a full 60-day populate — even though, from this specific
+        // call's point of view, it's technically the first fetch this
+        // page load has made.
+        if (!bakeryHasEverLoaded) await hydrateBakeryOrdersFromCache(set);
         // EGRESS FIX (2026-08-21): this used to re-fetch and fully replace
         // the entire 60-day window (uncapped row count, several JSONB
         // columns per row — items, prepared_items, produced_items,
@@ -274,6 +308,7 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
             // merge into yet, so this is a full, wide-window populate.
             set({ orders: fresh });
             bakeryHasEverLoaded = true;
+            void setCached(BAKERY_ORDERS_CACHE_KEY, fresh);
           } else {
             // Every subsequent fetch: merge the fresh, recent-window
             // results into whatever's already there rather than
@@ -281,10 +316,10 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
             // dispatched order still awaiting leftover resolution from
             // weeks ago) stays exactly as it was, untouched.
             const freshIds = new Set(fresh.map(o => o.id));
-            set(s => ({
-              orders: [...fresh, ...s.orders.filter(o => !freshIds.has(o.id))]
-                .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
-            }));
+            const merged = [...fresh, ...get().orders.filter(o => !freshIds.has(o.id))]
+              .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+            set({ orders: merged });
+            void setCached(BAKERY_ORDERS_CACHE_KEY, merged);
           }
           bakeryLastFetchedAt = Date.now();
         }
