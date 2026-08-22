@@ -3,6 +3,7 @@ import { supabase } from '@/lib/supabase';
 import type { CartItem, MenuItem, Order, OrderType, OrderStatus, PaymentType, PaymentBreakdown, OrderSource } from '@/types';
 import { generateId } from '@/lib/utils';
 import { useMenuStore } from '@/stores/menuStore';
+import { getCached, setCached } from '@/lib/localCache';
 
 // EGRESS FIX: originally raised from 5 s → 30 s here, then raised again to
 // 15 minutes once Supabase Realtime (postgres_changes) became the primary
@@ -23,6 +24,30 @@ const POLL_BACKOFF_MAX_MS = 5 * 60_000;
 // first open is unaffected and still uses whatever window the caller
 // requested (e.g. 90 days for advance bookings).
 const POLL_REFRESH_DAYS = 3;
+// EGRESS FIX (2026-08-21): persists the orders array to IndexedDB after
+// every successful fetch, and tries to hydrate from it before the first
+// network request of a session — so a page reload / browser restart (very
+// common on a POS device left running all day, or restarted between
+// shifts) doesn't need to re-download the full requested window again.
+// See localCache.ts for the read/write mechanics; everything here degrades
+// gracefully to today's exact behavior if the cache is empty or unavailable.
+const ORDERS_CACHE_KEY = 'orders_v1';
+let orderCacheHydration: Promise<boolean> | null = null;
+
+function hydrateOrdersFromCache(set: (partial: Partial<OrderState>) => void): Promise<boolean> {
+  if (!orderCacheHydration) {
+    orderCacheHydration = (async () => {
+      const cached = await getCached<Order[]>(ORDERS_CACHE_KEY);
+      if (cached && cached.length > 0) {
+        set({ orders: cached });
+        return true;
+      }
+      return false;
+    })();
+  }
+  return orderCacheHydration;
+}
+
 let orderRealtimeChannel: ReturnType<typeof supabase.channel> | null = null;
 let orderFetchInFlight = false;
 // BUG FIX (2026-08-09): "Owner Dashboard page is keep on refreshing 10 times
@@ -239,7 +264,11 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
         .limit(8000);
 
       if (error) throw error;
-      if (data) set({ orders: data.map(dbRowToOrder), _pollFailCount: 0 });
+      if (data) {
+        const mapped = data.map(dbRowToOrder);
+        set({ orders: mapped, _pollFailCount: 0 });
+        void setCached(ORDERS_CACHE_KEY, mapped);
+      }
     } catch (e) {
       const failCount = (get()._pollFailCount || 0) + 1;
       set({ _pollFailCount: failCount });
@@ -310,15 +339,14 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       if (!data) return;
       const fresh = data.map(dbRowToOrder);
       const freshIds = new Set(fresh.map(o => o.id));
-      set(state => ({
-        // Anything outside this fetch's window is left exactly as it was —
-        // this is a merge, never a wholesale replace. Anything inside the
-        // window is fully replaced with the fresh copy so status/payment
-        // changes on recent orders are still reflected.
-        orders: [...fresh, ...state.orders.filter(o => !freshIds.has(o.id))]
-          .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
-        _pollFailCount: 0,
-      }));
+      const merged = [...fresh, ...get().orders.filter(o => !freshIds.has(o.id))]
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      // Anything outside this fetch's window is left exactly as it was —
+      // this is a merge, never a wholesale replace. Anything inside the
+      // window is fully replaced with the fresh copy so status/payment
+      // changes on recent orders are still reflected.
+      set({ orders: merged, _pollFailCount: 0 });
+      void setCached(ORDERS_CACHE_KEY, merged);
     } catch (e) {
       console.error('[refreshRecentOrders] fetch failed (will retry on next poll tick):', e);
     }
@@ -830,7 +858,23 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     // 90 days still sees 90 days the moment this screen opens.
     const timer = setInterval(() => { if (!document.hidden) get().refreshRecentOrders(POLL_REFRESH_DAYS); }, POLL_INTERVAL_MS);
     set({ polling: true, pollTimer: timer });
-    get().loadOrders(days);
+    // EGRESS FIX (2026-08-21): check the local cache before deciding how to
+    // do the initial load. If a previous session already persisted a full
+    // copy of `orders` (see setCached calls in loadOrders/
+    // refreshRecentOrders), hydrate from that instantly and only fetch a
+    // small, recent catch-up window over the network — instead of
+    // re-downloading the entire requested `days` window again just because
+    // the page was reloaded. Falls back to exactly today's wide fetch if
+    // there's nothing cached yet (first-ever visit) or the cache is
+    // unavailable for any reason.
+    void (async () => {
+      const hydrated = await hydrateOrdersFromCache(set);
+      if (hydrated) {
+        await get().refreshRecentOrders(POLL_REFRESH_DAYS);
+      } else {
+        await get().loadOrders(days);
+      }
+    })();
   },
 
   stopPolling: () => {
