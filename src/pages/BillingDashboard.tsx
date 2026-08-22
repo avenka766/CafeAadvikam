@@ -1412,7 +1412,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
       </div>
 
       {/* -- COL 3: Cart + Advance form --------------------- */}
-      <div className="biller-cart-panel shrink-0 flex flex-col border-l border-border bg-card overflow-hidden" style={{ width: "clamp(270px, 22vw, 340px)" }}>
+      <div className="biller-cart-panel shrink-0 flex flex-col border-l border-border bg-card overflow-hidden" style={{ width: "clamp(320px, 26vw, 420px)" }}>
         <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0" style={{ background: 'rgba(217,119,6,0.06)' }}>
           <div className="flex items-center gap-2">
             <Wallet className="size-4 text-amber-600" />
@@ -1474,7 +1474,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
         </div>
 
         {/* Advance form + pending - fixed bottom */}
-        <div className="biller-cart-footer border-t border-border shrink-0 overflow-y-auto">
+        <div className="biller-cart-footer border-t border-border shrink-0">
           {!allEmpty && (
             <div className="px-4 py-3 space-y-3 bg-muted/20">
               <div className="grid grid-cols-2 gap-2">
@@ -3522,7 +3522,7 @@ function NewBillPanel() {
       </div>
 
       {/* -- COL 3: Bill summary ------------------------ */}
-      <div className="biller-cart-panel shrink-0 flex flex-col border-l border-border bg-card overflow-hidden" style={{ width: "clamp(270px, 22vw, 340px)" }}>
+      <div className="biller-cart-panel shrink-0 flex flex-col border-l border-border bg-card overflow-hidden" style={{ width: "clamp(320px, 26vw, 420px)" }}>
         {/* SPACE FIX (2026-08-08): the "New Bill" title bar (icon + heading +
             item-count badge) sat above this context row saying nothing the
             context row itself doesn't already show, and ate vertical space
@@ -3939,7 +3939,7 @@ function NewBillPanel() {
         </div>
 
         {showBillFooter && (
-          <div className="biller-cart-footer border-t border-border px-4 py-3 space-y-3 bg-muted/20 shrink-0 overflow-y-auto">
+          <div className="biller-cart-footer border-t border-border px-4 py-3 space-y-3 bg-muted/20 shrink-0">
             {/* -- Payment Mode -- */}
             <div className="grid grid-cols-3 gap-2">
               <button onClick={() => { setPaymentMode('regular'); setBillMethod('cash'); setCreditError(''); }}
@@ -4026,26 +4026,19 @@ function NewBillPanel() {
                 )}
               </div>
             )}
-            {orderType === 'takeaway' && paymentMode !== 'credit' ? (
-              <div className="relative">
-                <UserIcon className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
-                <input type="text" placeholder="Customer name (optional)" value={customerName} onChange={e => setCustomerName(e.target.value)}
-                  className="w-full pl-8 pr-3 py-3 bg-card border border-border rounded-xl text-sm font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 transition-all" />
-              </div>
-            ) : null}
-            <div className="relative">
-              <StickyNote className="absolute left-3 top-2.5 size-3.5 text-muted-foreground" />
-              <textarea placeholder="Order notes (optional)" value={notes} onChange={e => setNotes(e.target.value)} rows={2}
-                className="w-full pl-8 pr-3 py-2.5 bg-card border border-border rounded-xl text-sm font-body placeholder:text-muted-foreground resize-none focus:outline-none focus:ring-2 focus:ring-primary/30 transition-all" />
-            </div>
-            <div className="flex flex-wrap gap-1">
-              {QUICK_NOTES.slice(0, 4).map(n => (
-                <button key={n} onClick={() => setNotes(prev => prev ? `${prev}, ${n}` : n)}
-                  className="px-3 py-1.5 rounded-lg text-xs font-body font-semibold bg-muted border border-border text-muted-foreground hover:bg-primary/10 hover:text-primary hover:border-primary/30 active:scale-95 transition-all">
-                  + {n}
-                </button>
-              ))}
-            </div>
+            {/* FEATURE (2026-08-22): "remove customer name field and order
+                notes and less spicy for takeaway, and order notes/less
+                spicy for dine in too — cart is too small, cashier can't
+                see the create bill button." These three inputs (customer
+                name, order notes, quick-notes) were adding real vertical
+                height to an already width-constrained panel, directly
+                contributing to the checkout button being pushed out of
+                view — removed per explicit request, not just to save
+                space. customerName/notes state variables are left
+                completely alone; they're still referenced safely
+                elsewhere (receipt printing, order submission) as empty
+                strings, matching how an absent value is already handled
+                everywhere else in this file. */}
             <div className="pt-1 border-t border-border space-y-2">
               {menuTotal > 0 && customTotal > 0 && (
                 <div className="space-y-1">
