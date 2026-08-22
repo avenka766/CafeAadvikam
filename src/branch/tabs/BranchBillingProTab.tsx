@@ -4,7 +4,7 @@ import { BRANCH_PRINT_COMPLETE_EVENT, printCounterBill } from '../printUtils';
 import {
   AlertTriangle, Banknote, CreditCard, FileText, HelpCircle, IndianRupee, Lock,
   Package, PauseCircle, Printer, Receipt, Search, Smartphone,
-  Trash2, WalletCards, XCircle, ClipboardList, ScanBarcode, Keyboard,
+  Trash2, WalletCards, XCircle, ClipboardList, ScanBarcode, Keyboard, Loader2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import WalletOffersPanel, { type WalletOtherMode } from '@/components/commerce/WalletOffersPanel';
@@ -319,6 +319,44 @@ export default function BranchBillingProTab({
   const [saving, setSaving] = useState(false);
   const checkoutInFlightRef = useRef(false);
   const [lastBill, setLastBill] = useState<BranchBillRecord | null>(null);
+  // FEATURE (2026-08-22): "I need this duplicate bill SNB-18818" — the
+  // existing "Print duplicate" button only ever reprints lastBill, the
+  // most recent bill made in this session. There was no way to look up and
+  // reprint an OLDER bill by number at all. Accepts either the bare number
+  // ("18818") or the full billNo ("SNB-18818"), since a customer or staff
+  // member is just as likely to read off either.
+  const [oldBillSearch, setOldBillSearch] = useState('');
+  const [oldBillSearching, setOldBillSearching] = useState(false);
+  const [oldBillError, setOldBillError] = useState('');
+  const findAndPrintOldBill = async () => {
+    const query = oldBillSearch.trim();
+    if (!query) return;
+    setOldBillSearching(true);
+    setOldBillError('');
+    try {
+      const normalized = query.toUpperCase().startsWith(`${branch.toUpperCase()}-`)
+        ? query.toUpperCase()
+        : `${branch.toUpperCase()}-${query.replace(/^[A-Za-z]+-/, '')}`;
+      const { data, error: fetchError } = await supabase
+        .from('branch_operation_records')
+        .select('payload')
+        .eq('branch', branch)
+        .eq('record_type', 'bill')
+        .eq('payload->>billNo', normalized)
+        .maybeSingle();
+      if (fetchError) throw new Error(fetchError.message);
+      if (!data) {
+        setOldBillError(`No bill found matching "${query}".`);
+        return;
+      }
+      await printCounterBill(data.payload as BranchBillRecord, true);
+      setOldBillSearch('');
+    } catch (e) {
+      setOldBillError(e instanceof Error ? e.message : 'Could not find or print that bill.');
+    } finally {
+      setOldBillSearching(false);
+    }
+  };
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [showHold, setShowHold] = useState(false);
   const [qtyPopupItem, setQtyPopupItem] = useState<BillingItem | null>(null);
@@ -1493,6 +1531,23 @@ export default function BranchBillingProTab({
               <button onClick={checkout} disabled={checkoutDisabled} className="inline-flex min-w-[88px] items-center justify-center gap-1 rounded-xl bg-orange-500 px-2 py-1.5 text-xs font-black text-white shadow-md shadow-orange-200 disabled:opacity-50"><Printer className="size-3.5"/>{saving ? 'Saving' : 'Final Bill'} <span className="text-[8px] opacity-70">F10</span></button>
             </div>
             {lastBill && <button onClick={() => { void printCounterBill(lastBill, true); }} className="mx-2.5 mb-1.5 w-[calc(100%-1.25rem)] rounded-xl border border-slate-200 bg-white py-1.5 text-xs font-black text-slate-700">Print duplicate: {lastBill.billNo}</button>}
+            <div className="mx-2.5 mb-1.5 flex items-center gap-1.5">
+              <input
+                value={oldBillSearch}
+                onChange={(e) => { setOldBillSearch(e.target.value); setOldBillError(''); }}
+                onKeyDown={(e) => { if (e.key === 'Enter') void findAndPrintOldBill(); }}
+                placeholder="Reprint an older bill # (e.g. 18818)"
+                className="h-8 min-w-0 flex-1 rounded-xl border border-slate-200 bg-white px-2.5 text-xs font-bold outline-none focus:ring-2 focus:ring-orange-200"
+              />
+              <button
+                onClick={() => void findAndPrintOldBill()}
+                disabled={oldBillSearching || !oldBillSearch.trim()}
+                className="h-8 shrink-0 rounded-xl bg-slate-950 px-3 text-xs font-black text-white disabled:opacity-40"
+              >
+                {oldBillSearching ? <Loader2 className="size-3.5 animate-spin" /> : 'Find & Print'}
+              </button>
+            </div>
+            {oldBillError && <p className="mx-2.5 mb-1.5 text-[11px] font-bold text-red-600">{oldBillError}</p>}
           </div>
         </aside>
 
