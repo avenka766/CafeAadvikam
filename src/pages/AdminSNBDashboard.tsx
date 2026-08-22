@@ -91,6 +91,44 @@ import {
 } from "lucide-react";
 
 const BRANCH: Branch = "SNB";
+
+// FEATURE (2026-08-22): "this issue should not occur again" — the root
+// cause of missing supplier names was that the purchase invoice/order
+// forms accept a typed supplier name without requiring it to match the
+// formal Suppliers list, so real suppliers used on real invoices were
+// never actually added there. This keeps the two in sync going forward:
+// called right before an invoice/order save, it checks the name
+// (trimmed, case-insensitive — matching how the historical backfill
+// consolidated case variants like "VRSNB Foods LLP" / "vrsnb foods llp")
+// against the existing list for this branch, and only creates a new
+// supplier record if nothing matches. Mobile uses the same
+// clearly-labeled placeholder as the backfill, since invoices don't carry
+// a supplier phone number — an admin can fill in the real one later from
+// the Suppliers tab, same as with the backfilled entries.
+function ensureSupplierExists(
+  supplierName: string,
+  suppliers: { branch: Branch; name: string }[],
+  addSupplier: ReturnType<typeof useBranchOpsStore.getState>["addSupplier"],
+  userName: string,
+) {
+  const trimmed = supplierName.trim();
+  if (!trimmed) return;
+  const alreadyExists = suppliers.some(
+    (s) => s.branch === BRANCH && s.name.trim().toLowerCase() === trimmed.toLowerCase(),
+  );
+  if (alreadyExists) return;
+  addSupplier({
+    branch: BRANCH,
+    name: trimmed,
+    mobile: "NEEDS PHONE NUMBER",
+    address: "",
+    gstNumber: "",
+    itemsProvided: "",
+    notes: "Auto-added from a purchase invoice/order — mobile number needs to be added.",
+    createdBy: userName,
+  });
+}
+
 type TabId =
   | "overview"
   | "sales"
@@ -3988,7 +4026,7 @@ function CashierClosureTab(props: any) {
 
 function PurchaseOrdersTab({ userName }: { userName: string }) {
   const catalogItems = useSNBCatalog();
-  const { purchaseOrders, addPurchaseOrder, updatePoStatus } =
+  const { purchaseOrders, addPurchaseOrder, updatePoStatus, suppliers, addSupplier } =
     useBranchOpsStore();
   const [form, setForm] = useState({
     supplier: "",
@@ -4017,6 +4055,7 @@ function PurchaseOrdersTab({ userName }: { userName: string }) {
         ? [{ itemName: form.itemName, quantity: Number(form.quantity), expectedRate: Number(form.expectedRate), totalAmount: Number(form.quantity) * Number(form.expectedRate) }]
         : [];
     if (!form.supplier.trim() || draftLines.length === 0) return;
+    ensureSupplierExists(form.supplier, suppliers, addSupplier, userName);
     const first = draftLines[0];
     addPurchaseOrder({
       branch: BRANCH,
@@ -4239,6 +4278,7 @@ export function PurchaseInvoicesTab({
     updatePurchase,
     markPurchaseSynced,
     addAuditLog,
+    addSupplier,
   } = useBranchOpsStore();
 
   const itemFromCatalog = (itemName: string) =>
@@ -4751,6 +4791,7 @@ export function PurchaseInvoicesTab({
       setNotice(`Invoice total cannot be below the already paid amount of ${money(paidFor(selectedPurchase))}.`);
       return;
     }
+    ensureSupplierExists(form.supplier, suppliers, addSupplier, userName);
 
     const first = normalizedLines[0];
     const invoiceData = {
