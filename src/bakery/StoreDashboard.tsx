@@ -75,7 +75,25 @@ const kolkataDateLabel = (iso: string) =>
 // that happens it must keep behaving like a fresh, actionable "Order" —
 // regardless of which day it arrived — not roll into History the way a
 // genuinely finished order would.
-const needsProductionRelease = (o: BakeryOrder) => o.status === 'store_confirmed' && !o.productionReleasedAt;
+// BUG FIX (2026-08-23): "orders sent by planner going directly to History,
+// without Store ever touching them." Root cause traced to submitDispatch
+// (in bakeryStore.ts) — whenever the Planner dispatches ANY item from an
+// order, even a single one, and not every item has been formally recorded
+// as prepared first, it falls back to marking the WHOLE order 'produced'.
+// That status change has nothing to do with Store — it's purely the
+// Planner's own dispatch action — but the History tab's filter checked
+// status === 'produced' directly, so the order jumped straight there the
+// moment the Planner dispatched anything, without Store ever clicking
+// Confirm. production_released_at is the one field that's only ever set
+// by a genuine Store action (confirmed by tracing every place it's set —
+// there's no automatic path). Checking it for 'produced' orders too, not
+// just 'store_confirmed' ones, means an order the Planner has started
+// dispatching but Store hasn't actually released stays visible in Orders
+// until Store genuinely acts on it — while a real, fully 'dispatched'
+// order (a separate, direct status check elsewhere) is unaffected by this
+// change either way.
+const needsProductionRelease = (o: BakeryOrder) =>
+  (o.status === 'store_confirmed' || o.status === 'produced') && !o.productionReleasedAt;
 
 type StoreDashboardTab = 'orders' | 'history' | 'inventory' | 'suppliers' | 'purchaseOrders' | 'invoices' | 'analytics' | 'custom' | 'closure' | 'report';
 const STORE_TABS: StoreDashboardTab[] = ['orders', 'history', 'inventory', 'suppliers', 'purchaseOrders', 'invoices', 'analytics', 'custom', 'closure', 'report'];
@@ -1443,7 +1461,7 @@ function OrdersTab() {
   // silently drop/duplicate items. Only genuinely unsent 'accepted' orders
   // are ever eligible to merge; `mergeable` keeps that separate from what's
   // merely displayed.
-  const pending = orders.filter(o => o.status === 'accepted' || (o.status === 'store_confirmed' && needsProductionRelease(o)));
+  const pending = orders.filter(o => o.status === 'accepted' || needsProductionRelease(o));
   // BUG FIX (2026-08-20): "still don't see them combine." mergeable used to
   // only match status==='accepted' — but the real, current workflow (see
   // AUTO-CONFIRM 2026-08-06 above) sends orders straight to
@@ -1703,8 +1721,8 @@ function StoreHistoryTab() {
   // visible in Orders as "new"; it only falls back here once that day has
   // passed (or once production/dispatch has moved it further along anyway).
   const historyOrders = orders.filter(o =>
-    o.status === 'produced' || o.status === 'dispatched' ||
-    (o.status === 'store_confirmed' && !needsProductionRelease(o)));
+    o.status === 'dispatched' ||
+    ((o.status === 'produced' || o.status === 'store_confirmed') && !needsProductionRelease(o)));
 
   // FEATURE (2026-08-19): "need search bar in history tab as well" — same
   // filter fields as OrdersTab's search, applied to this tab's own list.
@@ -2461,10 +2479,10 @@ export default function StoreDashboard() {
   // Kept in sync with OrdersTab/StoreHistoryTab's own filters (see
   // needsProductionRelease above) so the header counters and tab badges
   // never disagree with what each tab actually shows.
-  const pending = orders.filter(o => o.status === 'accepted' || (o.status === 'store_confirmed' && needsProductionRelease(o)));
+  const pending = orders.filter(o => o.status === 'accepted' || needsProductionRelease(o));
   const sentOrders = orders.filter(o =>
-    o.status === 'produced' || o.status === 'dispatched' ||
-    (o.status === 'store_confirmed' && !needsProductionRelease(o)));
+    o.status === 'dispatched' ||
+    ((o.status === 'produced' || o.status === 'store_confirmed') && !needsProductionRelease(o)));
   const uniqueStockItems = useMemo(() => {
     const byName = new Map<string, typeof stockItems[number]>();
     stockItems.forEach((item) => {
