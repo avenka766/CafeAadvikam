@@ -1985,7 +1985,12 @@ function ProductionEntryDateGroup({ label, orders, rows, search, defaultOpen }: 
     // row total (which would double-count what's already been produced).
     const remainingRequested = Math.max(0, Math.round((row.totalRequested - row.preparedTotal) * 100) / 100);
     const enteredQty = qty[row.itemName] ? Number(qty[row.itemName]) : (status === 'completed' ? remainingRequested : 0);
-    if (enteredQty <= 0) return;
+    // BUG FIX (audit item #13): this already silently blocked a zero/
+    // negative quantity from actually being written (the underlying data
+    // was never at risk), but did so with zero feedback — clicking Save
+    // just appeared to do nothing. Now shows why, same setSaveError this
+    // function already uses for every other failure path below.
+    if (enteredQty <= 0) { setSaveError('Enter a quantity greater than zero before saving.'); return; }
     setSaving(row.itemName);
     setSaveError(null);
     try {
@@ -2097,7 +2102,7 @@ function ProductionEntryDateGroup({ label, orders, rows, search, defaultOpen }: 
                             {sourcesOpen ? 'Hide' : 'Show'} sources ({sources.length} order{sources.length === 1 ? '' : 's'})
                           </button>
                         </div>
-                        <input type="number" placeholder="Qty produced" value={qty[row.itemName] ?? ''} onChange={e => setQty(v => ({ ...v, [row.itemName]: e.target.value }))}
+                        <input type="number" min={0} placeholder="Qty produced" value={qty[row.itemName] ?? ''} onChange={e => setQty(v => ({ ...v, [row.itemName]: e.target.value }))}
                           className="w-28 rounded-lg border border-border bg-background px-2 py-1.5 text-right text-xs font-bold" />
                         <button onClick={() => setAskItem(row)} disabled={saving === row.itemName || !qty[row.itemName]}
                           className="flex items-center gap-1.5 rounded-xl cafe-gradient px-4 py-2 text-xs font-bold text-white shadow-teal disabled:opacity-40">
@@ -5553,8 +5558,14 @@ function EditDispatchInvoiceModal({ invoice, onClose, onSaved }: {
   };
 
   const subtotal = lines.reduce((s, l) => s + Math.round(l.quantity * l.unitPrice * 100) / 100, 0);
-  const discountAmount = Math.round(subtotal * (discountPct / 100) * 100) / 100;
-  const total = Math.round(subtotal - discountAmount);
+  // BUG FIX (audit item #12): discountPct's own onChange already clamps to
+  // 0-100 on input, but this recomputes defensively anyway (belt-and-
+  // suspenders against any other path that could set it) — and total was
+  // missing Math.max(0, ...) entirely, unlike the two invoice flows
+  // (Walk-in Billing, Sample Bill) that already clamp both correctly.
+  const clampedDiscountPct = Math.max(0, Math.min(100, Number(discountPct) || 0));
+  const discountAmount = Math.round(subtotal * (clampedDiscountPct / 100) * 100) / 100;
+  const total = Math.max(0, Math.round(subtotal - discountAmount));
 
   const save = async () => {
     setError(null);
@@ -7073,8 +7084,12 @@ function DispatchReviewModal({ scope, hosurShop, customer, actions, dispatchedBy
   });
   const missingPriceItems = displayItems.filter(d => priceFor(d.itemName) === null);
   const subtotal = invoiceLines.reduce((s, i) => s + i.lineTotal, 0);
-  const discountAmount = Math.round(subtotal * (discountPct / 100) * 100) / 100;
-  const total = Math.round(subtotal - discountAmount);
+  // BUG FIX (audit item #12): same fix as EditDispatchInvoiceModal above —
+  // clamp discountPct defensively and add the missing Math.max(0, ...) on
+  // total, matching the two invoice flows that already do both correctly.
+  const clampedDiscountPct = Math.max(0, Math.min(100, Number(discountPct) || 0));
+  const discountAmount = Math.round(subtotal * (clampedDiscountPct / 100) * 100) / 100;
+  const total = Math.max(0, Math.round(subtotal - discountAmount));
 
   const printChecklist = (mode: 'thermal' | 'a4') => {
     const business = businessFor(scope);
