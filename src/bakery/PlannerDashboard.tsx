@@ -31,7 +31,7 @@ import { exportToExcel } from '@/lib/exportExcel';
 import HosurDashboard from '@/pages/HosurDashboard';
 import HosurShopOrderPanel, { leftoverReasonLabel } from './HosurShopOrderPanel';
 import PackingCakeOrdersTab from './PackingCakeOrdersTab';
-import PlannerLeftoverTab, { PlannerTransferOutTab, useLeftoverBalanceMap, recordLeftoverMovement, kolkataToday, qtyFmt, type LeftoverUnit, useMergedLeftoverCatalog, useBranchOnlyCatalog, ItemSearchPicker, type MergedCatalogItem } from './PlannerLeftoverTab';
+import PlannerLeftoverTab, { PlannerTransferOutTab, useLeftoverBalanceMap, recordLeftoverMovement, kolkataToday, qtyFmt, type LeftoverUnit, useMergedLeftoverCatalog, useMergedCatalogWithPrice, useBranchOnlyCatalog, ItemSearchPicker, type MergedCatalogItem } from './PlannerLeftoverTab';
 import { canonicalItemSlug, closingStockItemSlug, parseWeightGrams, pcsToKg, resolveItemWeightGrams } from './itemMatcher';
 import { useBranchCatalogStore } from '@/stores/branchCatalogStore';
 import {
@@ -1325,20 +1325,12 @@ function PlanningTab({ orders }: { orders: BakeryOrder[] }) {
     loadCatalog('VRSNB').catch(() => {});
   }, [loadCatalog]);
 
-  // Combined VRSNB + SNB catalog, active items only, deduplicated by
-  // normalized name (case/spacing-insensitive) so an item listed in both
-  // branch catalogs only shows once.
-  const uniqueItems = useMemo(() => {
-    const map = new Map<string, { name: string; unit: 'pcs' | 'kg'; category: string }>();
-    for (const branch of ['VRSNB', 'SNB'] as const) {
-      for (const item of catalogItems[branch] ?? []) {
-        if (!item.active) continue;
-        const key = item.name.trim().toLowerCase();
-        if (!map.has(key)) map.set(key, { name: item.name, unit: item.uom === 'Kgs' ? 'kg' : 'pcs', category: item.category });
-      }
-    }
-    return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
-  }, [catalogItems]);
+  // FEATURE (2026-08-23): now the same shared, canonicalItemSlug-based
+  // dedup useMergedLeftoverCatalog already used (strips size/weight
+  // suffixes and punctuation, not just casing) instead of this file's own
+  // separate, weaker copy — see useMergedCatalogWithPrice's comment in
+  // PlannerLeftoverTab.tsx for the full reasoning.
+  const uniqueItems = useMergedCatalogWithPrice();
 
   const filtered = useMemo(
     () => uniqueItems.filter(i => !search.trim() || i.name.toLowerCase().includes(search.trim().toLowerCase())),
@@ -3522,18 +3514,9 @@ function BillingTab() {
   }, []);
   useEffect(() => { loadRecent().catch(() => {}); }, [loadRecent]);
 
-  // Deduplicated SNB + VRSNB catalog, active items only, with real prices.
-  const catalog = useMemo(() => {
-    const map = new Map<string, { name: string; unit: 'pcs' | 'kg'; category: string; price: number }>();
-    for (const branch of ['SNB', 'VRSNB'] as const) {
-      for (const item of catalogItems[branch] ?? []) {
-        if (!item.active) continue;
-        const key = item.name.trim().toLowerCase();
-        if (!map.has(key)) map.set(key, { name: item.name, unit: item.uom === 'Kgs' ? 'kg' : 'pcs', category: item.category, price: item.price });
-      }
-    }
-    return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
-  }, [catalogItems]);
+  // FEATURE (2026-08-23): shared, robust dedup — see the comment on
+  // PlanningTab's uniqueItems above for the full reasoning.
+  const catalog = useMergedCatalogWithPrice();
 
   const filtered = useMemo(
     () => catalog.filter(i => !search.trim() || i.name.toLowerCase().includes(search.trim().toLowerCase())),
@@ -3865,17 +3848,9 @@ function SampleBillTab() {
   }, []);
   useEffect(() => { loadRecent().catch(() => {}); }, [loadRecent]);
 
-  const catalog = useMemo(() => {
-    const map = new Map<string, { name: string; unit: 'pcs' | 'kg'; category: string; price: number }>();
-    for (const branch of ['SNB', 'VRSNB'] as const) {
-      for (const item of catalogItems[branch] ?? []) {
-        if (!item.active) continue;
-        const key = item.name.trim().toLowerCase();
-        if (!map.has(key)) map.set(key, { name: item.name, unit: item.uom === 'Kgs' ? 'kg' : 'pcs', category: item.category, price: item.price });
-      }
-    }
-    return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
-  }, [catalogItems]);
+  // FEATURE (2026-08-23): shared, robust dedup — see the comment on
+  // PlanningTab's uniqueItems above for the full reasoning.
+  const catalog = useMergedCatalogWithPrice();
 
   const filtered = useMemo(
     () => catalog.filter(i => !search.trim() || i.name.toLowerCase().includes(search.trim().toLowerCase())),

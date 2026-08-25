@@ -289,6 +289,41 @@ export function useMergedLeftoverCatalog(): MergedCatalogItem[] {
   }, [catalogItems]);
 }
 
+// FEATURE (2026-08-23): "Planner search should show VRSNB+SNB, remove
+// duplicates." Three separate places in PlannerDashboard.tsx (Planning
+// Tab's item picker, and two "extra produced item" pickers) each had their
+// own local, weaker dedup — matching only on exact lowercased name, so
+// "Rusk" (VRSNB) and "Rusk (250G)" (SNB) showed as two separate entries
+// for what the item-master sync above just confirmed is the same product.
+// useMergedLeftoverCatalog just above already solved this correctly for
+// the Closing Stock picker, using canonicalItemSlug — which strips size/
+// weight suffixes and normalizes punctuation, not just casing. This reuses
+// that exact same matching, just extended to also carry price/unit/
+// category, which those three call sites need and MergedCatalogItem
+// doesn't carry (left that type alone since two other places already
+// depend on its current shape).
+export interface MergedCatalogItemWithPrice { slug: string; name: string; unit: 'pcs' | 'kg'; category: string; price: number; branches: Branch[] }
+export function useMergedCatalogWithPrice(): MergedCatalogItemWithPrice[] {
+  const { items: catalogItems, loadCatalog } = useBranchCatalogStore();
+  useEffect(() => { void loadCatalog('SNB'); void loadCatalog('VRSNB'); }, [loadCatalog]);
+  return useMemo(() => {
+    const map = new Map<string, MergedCatalogItemWithPrice>();
+    (['SNB', 'VRSNB'] as const).forEach((branch) => {
+      (catalogItems[branch] ?? []).filter((item) => item.active).forEach((item) => {
+        const slug = canonicalItemSlug(item.name);
+        if (!slug) return;
+        const existing = map.get(slug);
+        if (existing) { if (!existing.branches.includes(branch)) existing.branches.push(branch); }
+        else map.set(slug, {
+          slug, name: item.name, branches: [branch],
+          unit: item.uom === 'Kgs' ? 'kg' : 'pcs', category: item.category, price: item.price,
+        });
+      });
+    });
+    return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
+  }, [catalogItems]);
+}
+
 function StatCard({ label, value, helper, icon, tone = 'slate' }: {
   label: string; value: React.ReactNode; helper?: string; icon: React.ReactNode; tone?: 'slate' | 'emerald' | 'blue' | 'amber' | 'red' | 'orange';
 }) {
