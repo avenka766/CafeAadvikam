@@ -2630,7 +2630,7 @@ function printWasteLog(entry: any, branchLabel: string) {
   printHtml(`${branchLabel} Waste Log - ${entry.itemName}`, body);
 }
 
-function printWasteLogBatch(entries: Array<{ itemName: string; quantity: number; unit: string }>, logType: string, reason: string, verifiedBy: string, createdBy: string, checklist: string[], branchLabel: string) {
+export function printWasteLogBatch(entries: Array<{ itemName: string; quantity: number; unit: string }>, logType: string, reason: string, verifiedBy: string, createdBy: string, checklist: string[], branchLabel: string) {
   const itemRows = entries
     .map((entry) => `<div class="row"><span>${entry.itemName}</span><b>${entry.quantity} ${entry.unit}</b></div>`)
     .join("");
