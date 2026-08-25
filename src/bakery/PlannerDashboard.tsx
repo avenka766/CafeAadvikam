@@ -426,6 +426,36 @@ export function autoSplitForItem(orders: BakeryOrder[], itemName: string, totalP
   return split;
 }
 
+// FEATURE (2026-08-26): "orders correctly displayed / dispatchable across
+// branches" — companion to autoSplitForItem above, specifically for
+// dispatch. Left autoSplitForItem itself untouched since it's also used
+// for production-entry splitting, where branch genuinely doesn't matter.
+// For a cross-branch merged item, "how much of this order's contribution
+// belongs to branch X" is item.branchSplit[X], NOT the item's full
+// combined quantity — using the full quantity there would double-count
+// the order into every branch's dispatch pool instead of just its own
+// real share.
+function autoSplitForItemByBranch(orders: BakeryOrder[], itemName: string, branch: Branch, totalToDispatch: number): Record<string, number> {
+  const shares: { orderId: string; requested: number }[] = [];
+  for (const o of orders) {
+    const item = o.items.find(i => sameItem(i.itemName, itemName));
+    if (!item) continue;
+    if (item.branchSplit && Object.keys(item.branchSplit).length > 0) {
+      const share = item.branchSplit[branch];
+      if (share) shares.push({ orderId: o.id, requested: share });
+    } else if (o.targetBranch === branch) {
+      const isPcs = item.dispatchUnit === 'pcs';
+      shares.push({ orderId: o.id, requested: isPcs && item.originalPcs != null ? item.originalPcs : item.quantity });
+    }
+  }
+  const totalRequested = shares.reduce((s, x) => s + x.requested, 0) || 1;
+  const split: Record<string, number> = {};
+  for (const s of shares) {
+    split[s.orderId] = Math.round((totalToDispatch * (s.requested / totalRequested)) * 100) / 100;
+  }
+  return split;
+}
+
 // -- Printer Setup modal (2026-08-11) -----------------------------------------
 // BUG FIX: "planner dashboard thermal printer issues — nothing prints /
 // printer not found" on dispatch invoice / bill / walk-in receipt. Root
@@ -732,9 +762,13 @@ function extractHosurOrderIds(notes: string | null | undefined): string[] {
 }
 function useHosurShopNames(orders: BakeryOrder[]): Map<string, string> {
   const [byOrderId, setByOrderId] = useState<Map<string, string>>(new Map());
+  // BUG FIX (audit 2026-08-26): same fix as collectHosurOrderIds — gating
+  // on targetBranch === 'Hosur' misses a merged order that genuinely
+  // carries the Hosur tag in its notes but whose surviving primary branch
+  // (target_branch) isn't itself 'Hosur'.
   const hosurIds = useMemo(() => {
     const ids = new Set<string>();
-    for (const o of orders) if (o.targetBranch === 'Hosur') extractHosurOrderIds(o.notes).forEach(id => ids.add(id));
+    for (const o of orders) extractHosurOrderIds(o.notes).forEach(id => ids.add(id));
     return Array.from(ids);
   }, [orders]);
   const key = hosurIds.join(',');
@@ -747,7 +781,6 @@ function useHosurShopNames(orders: BakeryOrder[]): Map<string, string> {
       const shopNameById = new Map(((data ?? []) as Record<string, unknown>[]).map(r => [r.id as string, String(r.shop_name ?? 'Unknown shop')]));
       const result = new Map<string, string>();
       for (const o of orders) {
-        if (o.targetBranch !== 'Hosur') continue;
         const ids = extractHosurOrderIds(o.notes);
         if (ids.length === 0) continue;
         result.set(o.id, ids.map(id => shopNameById.get(id) ?? 'Unknown shop').join(', '));
@@ -4327,9 +4360,18 @@ function SampleBillTab() {
 // Sum of everything already dispatched to one specific branch for one row,
 // so per-branch progress can be shown/checked independently of other branches.
 function branchDispatchedForRow(row: ProductionRow, branch: Branch, orders: BakeryOrder[]): number {
+  // BUG FIX (audit 2026-08-26): this used to filter the ORDER by
+  // targetBranch === branch first — for a cross-branch merged order
+  // (target_branch is just whichever source order survived as primary,
+  // e.g. 'VRSNB'), that filter drops the order entirely before ever
+  // looking at its dispatchLog, even though each dispatch entry already
+  // carries its own accurate branch. Result: dispatched-so-far for the
+  // secondary branch (e.g. SNB) would always read 0, even after real
+  // dispatches to SNB had already happened. Filter by contributing orders
+  // only, then check each dispatch entry's OWN branch field instead.
   return orders
-    .filter(o => o.targetBranch === branch && row.contributingOrderIds.includes(o.id))
-    .reduce((s, o) => s + (o.dispatchLog || []).filter(d => sameItem(d.itemName, row.itemName) && !d.isExtra).reduce((s2, d) => s2 + d.quantity, 0), 0);
+    .filter(o => row.contributingOrderIds.includes(o.id))
+    .reduce((s, o) => s + (o.dispatchLog || []).filter(d => sameItem(d.itemName, row.itemName) && !d.isExtra && d.branch === branch).reduce((s2, d) => s2 + d.quantity, 0), 0);
 }
 
 // Same idea as branchDispatchedForRow, but for the "Planned" bucket (Planning
@@ -4339,7 +4381,15 @@ function branchDispatchedForRow(row: ProductionRow, branch: Branch, orders: Bake
 // bakery orders (HOSUR_ORDER_ID / HOSUR_ORDER_IDS in notes — see
 // mergeOrdersForStore's collectHosurIds for how these get written/merged).
 function collectHosurOrderIds(row: ProductionRow, orders: BakeryOrder[]): string[] {
-  const contributing = orders.filter(o => row.contributingOrderIds.includes(o.id) && o.targetBranch === 'Hosur');
+  // BUG FIX (audit 2026-08-26): this used to require targetBranch ===
+  // 'Hosur' — but mergeOrdersForStore already correctly preserves the
+  // HOSUR_ORDER_IDS tag in notes from every contributing order, even when
+  // the merge's surviving primary order isn't itself Hosur-targeted (a
+  // date-only cross-branch merge could combine a Hosur order with a
+  // VRSNB/SNB one). Checking the tag's actual presence in notes, rather
+  // than a branch field a merged order may not carry, means this doesn't
+  // silently drop shop-level tracking for a merged order.
+  const contributing = orders.filter(o => row.contributingOrderIds.includes(o.id) && /HOSUR_ORDER_IDS?:/.test(o.notes ?? ''));
   const ids = new Set<string>();
   for (const o of contributing) {
     const text = String(o.notes ?? '');
@@ -5196,20 +5246,42 @@ function BranchFlatDispatchPanel({ branch, rows, orders, leftoverBalances, onDis
       const q = isManualQty ? typed : Math.min(typed, remaining);
       if (!isManualQty && typed > remaining + 0.01) clampedAny = true;
       if (q <= 0.001) continue;
-      const entries = orders.filter(o => o.targetBranch === branch && row.contributingOrderIds.includes(o.id));
+      // BUG FIX (audit 2026-08-26): "orders correctly displayed / actually
+      // dispatchable" — this used to filter entries by o.targetBranch ===
+      // branch, which completely excludes a cross-branch merged order when
+      // dispatching its SECONDARY branch (target_branch is only ever the
+      // surviving primary order's own branch, e.g. 'VRSNB' — an order
+      // genuinely also containing SNB items via branchSplit would never
+      // match branch === 'SNB' here). The item's own branchSplit is the
+      // real source of truth for "does this order contribute to this
+      // branch," not the order-level targetBranch field.
+      const entries = orders.filter(o => {
+        if (!row.contributingOrderIds.includes(o.id)) return false;
+        const item = o.items.find(i => sameItem(i.itemName, row.itemName));
+        if (item?.branchSplit && Object.keys(item.branchSplit).length > 0) return !!item.branchSplit[branch];
+        return o.targetBranch === branch;
+      });
       if (entries.length === 0) continue;
-      const split = autoSplitForItem(entries, row.itemName, q);
+      const split = autoSplitForItemByBranch(entries, row.itemName, branch, q);
       for (const order of entries) {
         const item = order.items.find(i => sameItem(i.itemName, row.itemName));
         const orderQty = split[order.id] ?? 0;
         if (!item || orderQty <= 0) continue;
         // Consistent with the isExtra split in the single-item dispatch flow:
-        // autoSplitForItem can hand this order more than it individually has
-        // outstanding once the total q is allowed to exceed the row's overall
-        // remaining — tag only the genuine surplus portion as extra so
-        // "has this order's actual request been fulfilled" stays accurate.
-        const orderRequested = item.dispatchUnit === 'pcs' && item.originalPcs != null ? item.originalPcs : item.quantity;
-        const orderAlreadySent = (order.dispatchLog || []).filter(d => sameItem(d.itemName, row.itemName) && !d.isExtra).reduce((s, d) => s + d.quantity, 0);
+        // autoSplitForItemByBranch can hand this order more than it
+        // individually has outstanding once the total q is allowed to
+        // exceed the row's overall remaining — tag only the genuine
+        // surplus portion as extra so "has this order's actual request
+        // been fulfilled" stays accurate.
+        // Same fix as entries/split above: for a merged item, THIS
+        // branch's requested amount is its own branchSplit share, not the
+        // item's full combined quantity (which would double-count this
+        // order into every branch it's split across).
+        const orderRequested = item.branchSplit?.[branch] ?? (item.dispatchUnit === 'pcs' && item.originalPcs != null ? item.originalPcs : item.quantity);
+        // Same fix: only THIS branch's own dispatch entries count toward
+        // "already sent" for this branch — a merged order's dispatches to
+        // a different branch must not inflate this branch's remaining calc.
+        const orderAlreadySent = (order.dispatchLog || []).filter(d => sameItem(d.itemName, row.itemName) && !d.isExtra && d.branch === branch).reduce((s, d) => s + d.quantity, 0);
         const orderRemaining = Math.max(0, Math.round((orderRequested - orderAlreadySent) * 100) / 100);
         const orderWithinRequest = Math.min(orderQty, orderRemaining);
         const orderBeyondRequest = Math.round((orderQty - orderWithinRequest) * 1000) / 1000;
@@ -5257,7 +5329,12 @@ function BranchFlatDispatchPanel({ branch, rows, orders, leftoverBalances, onDis
   // active order already targeting this branch works, since a DispatchEntry
   // is keyed by its own itemName/quantity, not by which order's row it lives
   // in (see ExtraItemDispatchForm's comment for why this is safe).
-  const anchorOrderId = orders.find(o => o.targetBranch === branch)?.id ?? null;
+  // BUG FIX (audit 2026-08-26): broadened to also match via branchSplit —
+  // if every active order for this branch happened to be folded into a
+  // cross-branch merge (surviving order's own targetBranch now something
+  // else), the old check would find no anchor at all even though a
+  // perfectly valid one exists.
+  const anchorOrderId = orders.find(o => o.targetBranch === branch || o.items.some(i => i.branchSplit?.[branch]))?.id ?? null;
 
   const reviewModal = reviewActions && (
     <DispatchReviewModal
@@ -6632,14 +6709,27 @@ function BulkDispatchModal({ branch, rows, orders, onClose, onDispatch, dispatch
       const q = isManualQty ? typed : Math.min(typed, remaining);
       if (!isManualQty && typed > remaining + 0.01) clampedAny = true;
       if (q <= 0) continue;
-      const entries = orders.filter(o => o.targetBranch === branch && row.contributingOrderIds.includes(o.id));
-      const split = autoSplitForItem(entries, row.itemName, q);
+      // BUG FIX (audit 2026-08-26): same fix as the identical pattern
+      // earlier in this file (VRSNB/SNB dispatch flow) — filtering entries
+      // by o.targetBranch === branch completely excludes a cross-branch
+      // merged order when dispatching its secondary branch. The item's own
+      // branchSplit is the real source of truth for which branches an
+      // order actually contributes to.
+      const entries = orders.filter(o => {
+        if (!row.contributingOrderIds.includes(o.id)) return false;
+        const item = o.items.find(i => sameItem(i.itemName, row.itemName));
+        if (item?.branchSplit && Object.keys(item.branchSplit).length > 0) return !!item.branchSplit[branch];
+        return o.targetBranch === branch;
+      });
+      const split = autoSplitForItemByBranch(entries, row.itemName, branch, q);
       for (const order of entries) {
         const item = order.items.find(i => sameItem(i.itemName, row.itemName));
         const orderQty = split[order.id] ?? 0;
         if (!item || orderQty <= 0) continue;
-        const orderRequested = item.dispatchUnit === 'pcs' && item.originalPcs != null ? item.originalPcs : item.quantity;
-        const orderAlreadySent = (order.dispatchLog || []).filter(d => sameItem(d.itemName, row.itemName) && !d.isExtra).reduce((s, d) => s + d.quantity, 0);
+        // Same fix as above: use this branch's own share for a merged
+        // item, not the item's full combined quantity.
+        const orderRequested = item.branchSplit?.[branch] ?? (item.dispatchUnit === 'pcs' && item.originalPcs != null ? item.originalPcs : item.quantity);
+        const orderAlreadySent = (order.dispatchLog || []).filter(d => sameItem(d.itemName, row.itemName) && !d.isExtra && d.branch === branch).reduce((s, d) => s + d.quantity, 0);
         const orderRemaining = Math.max(0, Math.round((orderRequested - orderAlreadySent) * 100) / 100);
         const orderWithinRequest = Math.min(orderQty, orderRemaining);
         const orderBeyondRequest = Math.round((orderQty - orderWithinRequest) * 1000) / 1000;
@@ -6734,15 +6824,30 @@ function DispatchChecklistModal({ row, orders, branchFilter, onClose, onDispatch
   // accidentally dispatch to a branch you weren't even looking at. When
   // the page is scoped to one branch, scope this modal to that same branch;
   // only the unfiltered "All" view still shows every requesting branch.
+  // BUG FIX (audit 2026-08-26): this used to require order.targetBranch to
+  // literally equal the bucket branch — for a cross-branch merged item
+  // (branchSplit), that meant the item was only ever visible under
+  // whichever branch happened to survive as the order's own target_branch,
+  // making its OTHER branch's portion invisible and undispatchable from
+  // this modal (same bug class already fixed in the VRSNB/SNB dispatch
+  // flows elsewhere in this file). Now includes one entry per branch the
+  // item is actually split across, each carrying its own requestedQty so
+  // downstream code uses the real per-branch share, not the item's full
+  // combined quantity.
   const branchOrders = useMemo(() => {
-    const map = new Map<string, { order: BakeryOrder; item: BakeryOrderItem }[]>();
+    const map = new Map<string, { order: BakeryOrder; item: BakeryOrderItem; requestedQty: number }[]>();
     for (const orderId of row.contributingOrderIds) {
       const order = orders.find(o => o.id === orderId);
       const item = order?.items.find(i => sameItem(i.itemName, row.itemName));
-      if (!order || !item || !order.targetBranch) continue;
-      if (branchFilter !== 'All' && order.targetBranch !== branchFilter) continue;
-      if (!map.has(order.targetBranch)) map.set(order.targetBranch, []);
-      map.get(order.targetBranch)!.push({ order, item });
+      if (!order || !item) continue;
+      const splitEntries: [string, number][] = item.branchSplit && Object.keys(item.branchSplit).length > 0
+        ? Object.entries(item.branchSplit).filter(([, q]) => q)
+        : (order.targetBranch ? [[order.targetBranch, item.dispatchUnit === 'pcs' && item.originalPcs != null ? item.originalPcs : item.quantity]] : []);
+      for (const [branch, requestedQty] of splitEntries) {
+        if (branchFilter !== 'All' && branch !== branchFilter) continue;
+        if (!map.has(branch)) map.set(branch, []);
+        map.get(branch)!.push({ order, item, requestedQty });
+      }
     }
     return map;
   }, [row, orders, branchFilter]);
@@ -6756,7 +6861,25 @@ function DispatchChecklistModal({ row, orders, branchFilter, onClose, onDispatch
   // taking whichever is larger is just a safety margin against a
   // momentarily stale balance read, not double-counting.
   const availableToDispatch = Math.max(row.preparedTotal, leftoverBalance);
-  const autoSplit = useMemo(() => autoSplitForItem(orders, row.itemName, availableToDispatch), [orders, row, availableToDispatch]);
+  // BUG FIX (audit 2026-08-26): autoSplitForItem is branch-unaware (it
+  // splits by whole-order quantity, not by branch) — for a merged item now
+  // appearing under multiple branches (see branchOrders above), that would
+  // suggest the SAME order's full combined quantity under both branches at
+  // once. Compute the suggestion directly from each entry's own
+  // requestedQty instead, proportional across every entry from every
+  // branch bucket combined, keyed by orderId::branch so the same order's
+  // two branch portions get independent suggested amounts.
+  const entryKey = (orderId: string, branch: string) => `${orderId}::${branch}`;
+  const autoSplit = useMemo(() => {
+    const allEntries: { key: string; requestedQty: number }[] = [];
+    for (const [branch, entries] of branchOrders) {
+      for (const { order, requestedQty } of entries) allEntries.push({ key: entryKey(order.id, branch), requestedQty });
+    }
+    const totalRequested = allEntries.reduce((s, e) => s + e.requestedQty, 0) || 1;
+    const split: Record<string, number> = {};
+    for (const e of allEntries) split[e.key] = Math.round((availableToDispatch * (e.requestedQty / totalRequested)) * 100) / 100;
+    return split;
+  }, [branchOrders, availableToDispatch]);
   const [qty, setQty] = useState<Record<string, string>>({});
   const branchKeys = useMemo(() => Array.from(branchOrders.keys()), [branchOrders]);
   // Which branches to actually dispatch right now — defaults to all, but the
@@ -6765,7 +6888,10 @@ function DispatchChecklistModal({ row, orders, branchFilter, onClose, onDispatch
   useEffect(() => { setSelectedBranches(branchKeys); }, [branchKeys.join(',')]);
   const toggleBranch = (b: string) => setSelectedBranches(prev => prev.includes(b) ? prev.filter(x => x !== b) : [...prev, b]);
 
-  const qtyFor = (orderId: string) => qty[orderId] !== undefined ? Number(qty[orderId] || 0) : Math.round((autoSplit[orderId] ?? 0) * 100) / 100;
+  const qtyFor = (orderId: string, branch: string) => {
+    const k = entryKey(orderId, branch);
+    return qty[k] !== undefined ? Number(qty[k] || 0) : Math.round((autoSplit[k] ?? 0) * 100) / 100;
+  };
   const { getId, reset: resetDispatchIds } = useStableDispatchIds();
 
   const CHECKLIST_BY_BRANCH: Record<string, string[]> = {
@@ -6793,14 +6919,19 @@ function DispatchChecklistModal({ row, orders, branchFilter, onClose, onDispatch
     for (const [branch, entries] of branchOrders) {
       if (!selectedBranches.includes(branch)) continue;
       const actions: PendingDispatchAction[] = [];
-      for (const { order, item } of entries) {
-        const q = qtyFor(order.id);
+      for (const { order, item, requestedQty } of entries) {
+        const q = qtyFor(order.id, branch);
         if (q <= 0) continue;
         // CRITICAL BUG FIX (2026-08-07, preserved): the suggested quantity
         // above (autoSplit) never subtracted what this specific order-item
         // had already been sent — hard-cap every send at what's genuinely
         // still outstanding for this order.
-        const requestedForOrder = item.dispatchUnit === 'pcs' && item.originalPcs != null ? item.originalPcs : item.quantity;
+        // BUG FIX (audit 2026-08-26): use requestedQty (this entry's own
+        // per-branch share, already correct whether or not the item is
+        // merged) instead of the item's full combined quantity, which
+        // would overstate what's outstanding for a merged item's single
+        // branch portion.
+        const requestedForOrder = requestedQty;
         // BUG FIX (2026-08-19): "dispatching more than requested silently
         // reverts to the requested amount." The cap below exists to guard
         // the AUTO-SUGGESTED quantity (autoSplit) against a calculation bug
@@ -6813,7 +6944,7 @@ function DispatchChecklistModal({ row, orders, branchFilter, onClose, onDispatch
         // qty state directly (present only when the planner actually edited
         // this order's input) so the safety net still applies to
         // unreviewed auto-suggestions, but a typed-in value is respected as-is.
-        const isManualQty = qty[order.id] !== undefined;
+        const isManualQty = qty[entryKey(order.id, branch)] !== undefined;
         // BUG FIX (2026-08-09): "Rasamalai 10pcs / Malaikulla 5pcs auto-moving
         // to Dispatched without being dispatched" — an "extra / non-requested
         // item" dispatch (isExtra:true) gets anchored to whatever order
@@ -6826,7 +6957,11 @@ function DispatchChecklistModal({ row, orders, branchFilter, onClose, onDispatch
         // hide) a real order's own never-actually-dispatched line for the
         // same item. Extra entries are still recorded and reported — they
         // just no longer count toward "requested quantity fulfilled".
-        const alreadyForOrder = (order.dispatchLog || []).filter(d => sameItem(d.itemName, item.itemName) && !d.isExtra).reduce((s, d) => s + d.quantity, 0);
+        // Same fix as the other dispatch flows above: only this branch's
+        // own dispatch entries count toward "already sent" for this
+        // branch — a merged order's dispatches to a different branch must
+        // not inflate this branch's remaining calc.
+        const alreadyForOrder = (order.dispatchLog || []).filter(d => sameItem(d.itemName, item.itemName) && !d.isExtra && d.branch === branch).reduce((s, d) => s + d.quantity, 0);
         const remainingForOrder = Math.max(0, Math.round((requestedForOrder - alreadyForOrder) * 100) / 100);
         const cappedQ = isManualQty ? q : Math.min(q, remainingForOrder);
         if (cappedQ <= 0.001) continue;
@@ -6847,10 +6982,14 @@ function DispatchChecklistModal({ row, orders, branchFilter, onClose, onDispatch
 
   const printChecklist = (mode: 'thermal' | 'a4') => {
     const sections = Array.from(branchOrders.entries()).filter(([branch]) => selectedBranches.includes(branch)).map(([branch, entries]) => {
-      const qtyTotal = entries.reduce((s, { order }) => s + qtyFor(order.id), 0);
+      const qtyTotal = entries.reduce((s, { order }) => s + qtyFor(order.id, branch), 0);
       const requested = row.perBranch[branch as Branch] ?? 0;
-      const orderLines = entries.map(({ order }) =>
-        `<div class="order-line">Order #${order.orderNumber} — requested ${order.items.find(i => sameItem(i.itemName, row.itemName))?.quantity ?? '-'} ${row.unit}, dispatching ${qtyFor(order.id)} ${row.unit}</div>`
+      // BUG FIX (audit 2026-08-26): use requestedQty (this entry's own
+      // per-branch share) instead of the item's full combined quantity —
+      // otherwise a merged item's printed checklist would show the whole
+      // combined amount as "requested" under each branch section.
+      const orderLines = entries.map(({ order, requestedQty }) =>
+        `<div class="order-line">Order #${order.orderNumber} — requested ${requestedQty} ${row.unit}, dispatching ${qtyFor(order.id, branch)} ${row.unit}</div>`
       ).join('');
       const checks = checklistFor(branch).map(s => `<label class="check"><input type="checkbox" /> ${s}</label>`).join('');
       return `
@@ -6931,10 +7070,10 @@ function DispatchChecklistModal({ row, orders, branchFilter, onClose, onDispatch
               {Array.from(branchOrders.entries()).filter(([branch]) => selectedBranches.includes(branch)).map(([branch, entries]) => (
                 <div key={branch} className="rounded-xl border border-border p-3">
                   <p className="mb-1.5 text-xs font-black text-foreground">{branch} (requested {row.perBranch[branch as Branch] ?? 0} {row.unit})</p>
-                  {entries.map(({ order, item }) => (
+                  {entries.map(({ order, requestedQty }) => (
                     <div key={order.id} className="flex items-center justify-between gap-2 py-1">
-                      <span className="text-xs font-bold text-muted-foreground">Order #{order.orderNumber} · requested {item.quantity} {row.unit}</span>
-                      <input type="number" value={qty[order.id] ?? qtyFor(order.id)} onChange={e => setQty(v => ({ ...v, [order.id]: e.target.value }))} className="w-24 rounded-lg border border-border px-2 py-1 text-right text-xs font-bold" />
+                      <span className="text-xs font-bold text-muted-foreground">Order #{order.orderNumber} · requested {requestedQty} {row.unit}</span>
+                      <input type="number" value={qty[entryKey(order.id, branch)] ?? qtyFor(order.id, branch)} onChange={e => setQty(v => ({ ...v, [entryKey(order.id, branch)]: e.target.value }))} className="w-24 rounded-lg border border-border px-2 py-1 text-right text-xs font-bold" />
                     </div>
                   ))}
                   <ul className="mt-2 space-y-1 text-[11px] font-semibold text-muted-foreground">
@@ -7272,6 +7411,16 @@ function DispatchReviewModal({ scope, hosurShop, customer, actions, dispatchedBy
 // reconciliation checklist so nothing that used to work is lost.
 function LeftoverDoneTab({ active, done }: { active: BakeryOrder[]; done: BakeryOrder[] }) {
   const { markDone } = useBakeryStore();
+  // BUG FIX (audit 2026-08-26): same fix as OrderCard's branch badge in
+  // StoreDashboard — a merged, cross-branch order's own targetBranch is
+  // only whichever source order survived as primary; show every branch
+  // it actually involves via branchSplit instead.
+  const branchLabelFor = (order: BakeryOrder): string => {
+    const set = new Set<string>();
+    for (const item of order.items) if (item.branchSplit) for (const b of Object.keys(item.branchSplit)) set.add(b);
+    if (set.size === 0 && order.targetBranch) set.add(order.targetBranch);
+    return Array.from(set).join(' + ') || '—';
+  };
   return (
     <div className="space-y-6 rounded-2xl border border-border bg-white p-4 shadow-sm">
       <div>
@@ -7286,8 +7435,8 @@ function LeftoverDoneTab({ active, done }: { active: BakeryOrder[]; done: Bakery
               filename: 'leftover-done', sheetName: 'Leftover-Done', title: 'Planner — Leftover / Done',
               columns: [{ header: 'Order #', key: 'orderNumber' }, { header: 'Branch', key: 'branch' }, { header: 'Status', key: 'status' }],
               rows: [
-                ...active.map(o => ({ orderNumber: o.orderNumber, branch: o.targetBranch, status: 'Active Leftover' })),
-                ...done.map(o => ({ orderNumber: o.orderNumber, branch: o.targetBranch, status: 'Done' })),
+                ...active.map(o => ({ orderNumber: o.orderNumber, branch: branchLabelFor(o), status: 'Active Leftover' })),
+                ...done.map(o => ({ orderNumber: o.orderNumber, branch: branchLabelFor(o), status: 'Done' })),
               ],
             })}
           />
@@ -7298,7 +7447,7 @@ function LeftoverDoneTab({ active, done }: { active: BakeryOrder[]; done: Bakery
             {active.map(order => (
               <div key={order.id} className="flex items-center justify-between rounded-2xl border border-amber-200 bg-amber-50 p-4">
                 <div>
-                  <p className="text-sm font-black text-amber-800">{order.targetBranch} · Order #{order.orderNumber}</p>
+                  <p className="text-sm font-black text-amber-800">{branchLabelFor(order)} · Order #{order.orderNumber}</p>
                   <p className="text-xs font-semibold text-amber-700">Dispatched — awaiting reconciliation.</p>
                 </div>
                 <button onClick={() => markDone(order.id)} className="flex items-center gap-1.5 rounded-xl bg-amber-600 px-3 py-2 text-xs font-bold text-white hover:bg-amber-700">
@@ -7315,7 +7464,7 @@ function LeftoverDoneTab({ active, done }: { active: BakeryOrder[]; done: Bakery
           <div className="space-y-2">
             {done.map(order => (
               <div key={order.id} className="rounded-2xl border border-teal-200 bg-teal-50 p-4">
-                <p className="text-sm font-black text-teal-800">{order.targetBranch} · Order #{order.orderNumber} — Done</p>
+                <p className="text-sm font-black text-teal-800">{branchLabelFor(order)} · Order #{order.orderNumber} — Done</p>
               </div>
             ))}
           </div>

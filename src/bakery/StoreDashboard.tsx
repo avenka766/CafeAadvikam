@@ -260,7 +260,15 @@ function printItemRecipe(
       </style>
     </head>
     <body>
-      <h1>${item.itemName}${order.targetBranch ? `<span class="badge">${order.targetBranch}</span>` : ''}</h1>
+      <h1>${item.itemName}${(() => {
+        // BUG FIX (audit 2026-08-26): this printed baker label used
+        // order.targetBranch only — for an item split across branches by
+        // a cross-branch Store merge (branchSplit), that's misleading:
+        // the baker would see e.g. just "VRSNB" on a label for an item
+        // that's genuinely partly for SNB too.
+        const branches = item.branchSplit ? Object.keys(item.branchSplit) : (order.targetBranch ? [order.targetBranch] : []);
+        return branches.map(b => `<span class="badge">${b}</span>`).join('');
+      })()}</h1>
       <p class="sub">Order #${order.orderNumber} · Printed: ${new Date().toLocaleString('en-IN')}</p>
       <p class="qty">Quantity: ${qtyLabel}</p>
 
@@ -539,6 +547,23 @@ function OrderCard({ order, searchTerm = '' }: { order: BakeryOrder; searchTerm?
   // through every checkbox/button below) means every existing
   // `accepted && !sent` check already does the right thing unchanged.
   const computeSent = (o: BakeryOrder) => o.status !== 'pending' && o.status !== 'accepted' && !needsProductionRelease(o);
+  // BUG FIX (audit 2026-08-26): "are orders correctly displayed in Store's
+  // Orders tab" — a merged, cross-branch order (see StoreDashboard's own
+  // cross-branch merge feature and branchSplit) keeps target_branch as
+  // whichever source order happened to survive as primary, e.g. 'VRSNB' —
+  // but genuinely contains items for other branches too. This badge used
+  // to show ONLY order.targetBranch, so Store staff looking at a merged
+  // order would see just "VRSNB" and have no way to know part of it is
+  // actually for SNB too. Union every item's own branchSplit keys instead,
+  // falling back to targetBranch for a normal, never-merged order.
+  const involvedBranches = (() => {
+    const set = new Set<string>();
+    for (const item of order.items) {
+      if (item.branchSplit) { for (const b of Object.keys(item.branchSplit)) set.add(b); }
+    }
+    if (set.size === 0 && order.targetBranch) set.add(order.targetBranch);
+    return Array.from(set);
+  })();
 
   const [expanded,   setExpanded]   = useState(true);
   const [accepting,  setAccepting]  = useState(false);
@@ -771,11 +796,11 @@ function OrderCard({ order, searchTerm = '' }: { order: BakeryOrder; searchTerm?
             <span className="flex items-center gap-1 text-[9px] font-body font-bold px-2 py-0.5 rounded-full border bg-muted/60 text-muted-foreground border-border">
               <Calendar className="size-2.5" />{kolkataDateLabel((sent && order.storeConfirmedAt) ? order.storeConfirmedAt : order.createdAt)}
             </span>
-            {order.targetBranch && (
-              <span className={cn('text-[9px] font-body font-bold px-2 py-0.5 rounded-full border', branchColor[order.targetBranch] ?? 'bg-muted text-muted-foreground border-border')}>
-                {order.targetBranch}
+            {involvedBranches.map(b => (
+              <span key={b} className={cn('text-[9px] font-body font-bold px-2 py-0.5 rounded-full border', branchColor[b] ?? 'bg-muted text-muted-foreground border-border')}>
+                {b}
               </span>
-            )}
+            ))}
             {sent && (
               <span className="text-[9px] font-body font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 border border-emerald-200">
                 Sent to Production
@@ -1515,6 +1540,11 @@ function OrdersTab() {
     return pending.filter(o =>
       String(o.orderNumber).includes(q) ||
       (o.targetBranch ?? '').toLowerCase().includes(q) ||
+      // BUG FIX (audit 2026-08-26): searching "SNB" wouldn't find a merged
+      // order whose surviving primary branch is VRSNB but genuinely
+      // contains SNB items via branchSplit — match any branch it actually
+      // touches, not just the one order.targetBranch happens to be.
+      o.items.some(item => item.branchSplit && Object.keys(item.branchSplit).some(b => b.toLowerCase().includes(q))) ||
       (o.createdBy ?? '').toLowerCase().includes(q) ||
       o.items.some(item => item.itemName.toLowerCase().includes(q))
     );
@@ -1596,15 +1626,25 @@ function OrdersTab() {
     ];
     for (const o of pending) {
       for (const item of o.items) {
-        rows.push([
-          String(o.orderNumber),
-          o.status,
-          o.targetBranch ?? '',
-          item.itemName,
-          String(item.quantity),
-          item.dispatchUnit ?? 'pcs',
-          new Date(o.createdAt).toLocaleString('en-IN'),
-        ]);
+        // BUG FIX (audit 2026-08-26): a cross-branch merged item used to
+        // export as ONE row under order.targetBranch showing the FULL
+        // combined quantity — misleading on two counts at once (wrong
+        // branch label, wrong quantity for that branch). Split into one
+        // row per actual contributing branch when branchSplit exists.
+        const splits = item.branchSplit && Object.keys(item.branchSplit).length > 0
+          ? Object.entries(item.branchSplit)
+          : [[o.targetBranch ?? '', item.quantity] as [string, number]];
+        for (const [branch, qty] of splits) {
+          rows.push([
+            String(o.orderNumber),
+            o.status,
+            branch,
+            item.itemName,
+            String(qty),
+            item.dispatchUnit ?? 'pcs',
+            new Date(o.createdAt).toLocaleString('en-IN'),
+          ]);
+        }
       }
     }
     const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
@@ -1625,14 +1665,21 @@ function OrdersTab() {
           <span class="time">${new Date(o.createdAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</span>
         </td>
       </tr>
-      ${o.items.map(item => `
+      ${o.items.map(item => {
+        // Same fix as downloadExcel above — one line per contributing
+        // branch instead of the full combined quantity under one branch.
+        const splits = item.branchSplit && Object.keys(item.branchSplit).length > 0
+          ? Object.entries(item.branchSplit)
+          : [[o.targetBranch ?? '—', item.quantity] as [string, number]];
+        return splits.map(([branch, qty]) => `
         <tr>
           <td style="padding-left:24px">${item.itemName}</td>
-          <td>${item.quantity} ${item.dispatchUnit ?? 'pcs'}</td>
+          <td>${qty} ${item.dispatchUnit ?? 'pcs'}</td>
           <td>${o.status}</td>
-          <td>${o.targetBranch ?? '—'}</td>
+          <td>${branch}</td>
         </tr>
-      `).join('')}
+      `).join('');
+      }).join('')}
     `).join('');
 
     const win = window.open('', '_blank', 'width=800,height=600');
@@ -1772,6 +1819,8 @@ function StoreHistoryTab() {
     return historyOrders.filter(o =>
       String(o.orderNumber).includes(q) ||
       (o.targetBranch ?? '').toLowerCase().includes(q) ||
+      // Same fix as OrdersTab's own search filter above.
+      o.items.some(item => item.branchSplit && Object.keys(item.branchSplit).some(b => b.toLowerCase().includes(q))) ||
       (o.createdBy ?? '').toLowerCase().includes(q) ||
       o.items.some(item => item.itemName.toLowerCase().includes(q))
     );
