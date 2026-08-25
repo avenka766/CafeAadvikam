@@ -3194,15 +3194,28 @@ function QuotationsTab({ userName }: { userName: string }) {
     const item = catalogItems.find((i) => i.name === form.itemName);
     const name = mode === "custom" ? form.customName.trim() : form.itemName;
     const rate = mode === "custom" ? Number(form.rate) : Number(item?.price || form.rate);
-    if (!name || !qty || !rate) return;
+    // BUG FIX (audit item #16): this was a truthy check (`!qty || !rate`),
+    // not a sign check — a negative Qty or Rate (e.g. -5) passed straight
+    // through into lineTotal: qty * rate, silently reducing the quotation
+    // subtotal. Same bug class as #12/#13 on other screens.
+    if (!name || !(qty > 0) || !(rate > 0)) return;
     setLines((current) => [...current, { itemName: name, quantity: qty, unit: form.unit, price: rate, tax: 0, discount: 0, lineTotal: qty * rate }]);
     setForm({ ...form, customName: "", qty: "1", rate: "" });
   };
   const subtotal = lines.reduce((sum, line) => sum + line.lineTotal, 0);
-  const total = Math.max(0, subtotal + Number(form.deliveryCharges || 0) + Number(form.packingCharges || 0) + Number(form.extraCharges || 0) - Number(form.discount || 0));
+  // BUG FIX (audit item #16): Delivery/Packing/Extra/Discount fed straight
+  // into total with only the final total floored at 0 — each field itself
+  // could be negative (e.g. a negative "Discount" would INCREASE the
+  // total instead of reducing it). Clamp each individually, matching the
+  // pattern already used correctly in Planner's Walk-in Billing.
+  const clampedDelivery = Math.max(0, Number(form.deliveryCharges) || 0);
+  const clampedPacking = Math.max(0, Number(form.packingCharges) || 0);
+  const clampedExtra = Math.max(0, Number(form.extraCharges) || 0);
+  const clampedDiscount = Math.max(0, Number(form.discount) || 0);
+  const total = Math.max(0, subtotal + clampedDelivery + clampedPacking + clampedExtra - clampedDiscount);
   const save = () => {
     if (!form.customerName.trim() || !form.mobile.trim() || lines.length === 0) return;
-    const saved = addQuotation({ branch: BRANCH, customerName: form.customerName, companyName: form.companyName, mobile: form.mobile, gstNumber: form.gstNumber, items: lines, customItems: lines.filter((l) => !catalogItems.some((i) => i.name === l.itemName)), subtotal, deliveryCharges: Number(form.deliveryCharges || 0), packingCharges: Number(form.packingCharges || 0), extraCharges: Number(form.extraCharges || 0), discount: Number(form.discount || 0), total, salesperson: userName });
+    const saved = addQuotation({ branch: BRANCH, customerName: form.customerName, companyName: form.companyName, mobile: form.mobile, gstNumber: form.gstNumber, items: lines, customItems: lines.filter((l) => !catalogItems.some((i) => i.name === l.itemName)), subtotal, deliveryCharges: clampedDelivery, packingCharges: clampedPacking, extraCharges: clampedExtra, discount: clampedDiscount, total, salesperson: userName });
     setLines([]);
     setForm({ ...form, customerName: "", companyName: "", mobile: "", gstNumber: "", deliveryCharges: "0", packingCharges: "0", extraCharges: "0", discount: "0" });
     downloadQuotationPdf(saved);

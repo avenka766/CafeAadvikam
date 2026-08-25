@@ -1559,7 +1559,17 @@ export default function HosurDashboard({ hideNav = false }: { hideNav?: boolean 
     if (billError) throw billError;
     if (!updatedBill) throw new Error('This bill has already been confirmed (possibly from another tab/device) — refresh and check its status before retrying.');
 
-    if (bill.orderId) await supabase.from('hosur_orders').update({ status: 'billed' }).eq('id', bill.orderId);
+    // BUG FIX (audit #17 sweep): this update's own error was never checked
+    // at all — if it silently failed, the bill above would be genuinely
+    // confirmed while this order's own status field stayed stale, risking
+    // it reappearing in an "unbilled" list even though it's actually done.
+    // hosur_bills.status is the real source of truth for "is this billed,"
+    // so a failure here doesn't warrant unwinding the already-successful
+    // bill confirmation — just make it visible rather than silent.
+    if (bill.orderId) {
+      const { error: orderStatusError } = await supabase.from('hosur_orders').update({ status: 'billed' }).eq('id', bill.orderId);
+      if (orderStatusError) console.error('[confirmBill] Failed to mark hosur_orders as billed (bill itself is confirmed):', orderStatusError);
+    }
 
     const items = billItems[bill.id] ?? [];
     if (credit > 0) {
@@ -1570,10 +1580,15 @@ export default function HosurDashboard({ hideNav = false }: { hideNav?: boolean 
       // Roll the bill back to 'draft' on failure so the confirm can be
       // retried cleanly instead of leaving it stuck in this half-done state.
       const rollbackToDraft = async () => {
-        await supabase.from('hosur_bills').update({
+        // BUG FIX (audit #17 sweep): the rollback's own error was never
+        // checked either — not worth unwinding further (this already IS
+        // the recovery path for a prior failure), but worth logging so a
+        // failed rollback isn't completely invisible.
+        const { error: rollbackError } = await supabase.from('hosur_bills').update({
           paid_amount: 0, credit_amount: 0, payment_type: null, payment_mode: null,
           due_date: null, status: 'draft', confirmed_by: null, confirmed_at: null,
         }).eq('id', bill.id).eq('status', status);
+        if (rollbackError) console.error('[confirmBill] Rollback-to-draft itself failed:', rollbackError);
       };
       const { data: creditSale, error: ledgerError } = await supabase.from('branch_credit_sales').insert({
         branch: BRANCH,
