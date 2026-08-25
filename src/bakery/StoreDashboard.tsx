@@ -617,11 +617,19 @@ function OrderCard({ order, searchTerm = '' }: { order: BakeryOrder; searchTerm?
       for (const m of mats) {
         const stock = stockItems.find(s => normaliseName(s.name) === normaliseName(m.material));
         if (!stock) return true;
-        let needed = m.quantity;
-        const from = m.unit.toLowerCase();
-        const to   = stock.unit.toLowerCase();
-        if (from === 'g'  && to === 'kg')  needed /= 1000;
-        if (from === 'kg' && to === 'g')   needed *= 1000;
+        // BUG FIX (audit 2026-08-24): this hand-rolled g<->kg conversion
+        // was a second, independent copy of the exact bug already fixed in
+        // ItemRow's matStatus above (see that BUG FIX comment) — any other
+        // unit pairing (ml<->L, or a genuine cross-dimensional mismatch
+        // like grams vs litres) compared raw, unconverted numbers, so this
+        // could silently return false (no warning) for a case ItemRow
+        // correctly flags red on the very same screen. Same shared
+        // conversion function, same "null means can't verify — treat as a
+        // problem" handling ItemRow already uses; this is a single boolean
+        // flag rather than ItemRow's own separate unit_mismatch status, so
+        // null folds into "true" here rather than a distinct state.
+        const needed = convertToStockUnit(m.quantity, m.unit, stock.unit);
+        if (needed === null) return true;
         if (needed > stock.quantity) return true;
       }
     }
@@ -951,8 +959,12 @@ function AddItemModal({ onClose, onSave }: { onClose: () => void; onSave: (name:
     try {
       await onSave(name, unit, q, m, selectedSuppliers);
       onClose();
-    } catch {
-      setError('Save failed — please try again.');
+    } catch (err) {
+      // BUG FIX (audit 2026-08-24): this bare catch discarded the actual
+      // thrown error and always showed a generic message — now that the
+      // parent wrapper throws the real reason (e.g. addItem's own error
+      // string), show that instead of hiding it behind "Save failed."
+      setError(err instanceof Error ? err.message : 'Save failed — please try again.');
     } finally {
       setSaving(false);
     }
@@ -1043,15 +1055,24 @@ function EditItemModal({ item, onClose, onSave }: { item: StockItem; onClose: ()
   const [min, setMin]   = useState(String(item.minThreshold));
   const [unit, setUnit] = useState<StockUnit>(item.unit);
   const [saving, setSaving] = useState(false);
+  // BUG FIX (audit 2026-08-24): this used to have no error state at all —
+  // its catch block's own comment claimed "parent shows errors via its own
+  // mechanism," but no such mechanism existed anywhere (the parent only
+  // console.warn'd, invisibly). Combined with StoreInventoryTab's wrapper
+  // unconditionally closing the modal regardless of outcome, a failed save
+  // gave the user zero indication anything went wrong. Now that the
+  // wrapper throws on failure instead, this needs its own visible error
+  // display too, matching AddItemModal's existing pattern.
+  const [error, setError] = useState('');
   const handleSave = async () => {
     const q = parseFloat(qty), m = parseFloat(min);
     if (isNaN(q) || isNaN(m)) return;
-    setSaving(true);
+    setSaving(true); setError('');
     try {
       await onSave({ quantity: q, minThreshold: m, unit });
       onClose();
-    } catch {
-      // silent — parent shows errors via its own mechanism
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Save failed — please try again.');
     } finally {
       setSaving(false);
     }
@@ -1064,6 +1085,7 @@ function EditItemModal({ item, onClose, onSave }: { item: StockItem; onClose: ()
           <div><h3 className="font-display font-bold text-foreground">{item.name}</h3><p className="text-[10px] font-body text-muted-foreground">Update stock</p></div>
           <button onClick={onClose} className="size-8 flex items-center justify-center rounded-xl hover:bg-muted"><X className="size-4" /></button>
         </div>
+        {error && <p className="rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs font-bold text-destructive">{error}</p>}
         <div>
           <label className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-1.5 block">Unit</label>
           <div className="flex gap-2 flex-wrap">
@@ -1393,23 +1415,34 @@ function StoreInventoryTab() {
         </>
 
       {showAdd && <AddItemModal onClose={() => setShowAdd(false)} onSave={async (n, u, q, m, suppliers) => {
+        // BUG FIX (audit 2026-08-24): addItem/updateItem return an error
+        // string rather than throwing, but AddItemModal/EditItemModal's own
+        // handleSave only calls onClose() inside their try block — meaning
+        // it only actually closes on a THROWN failure, not a returned one.
+        // The wrapper here used to just console.warn the error and let
+        // execution fall through normally, so the modal's try "succeeded"
+        // (await didn't reject), closed as if the save worked, and staff
+        // had no way to know the item was never actually added. Throwing
+        // here lets the modal's own catch block do its job.
         const before = items.length;
         const err = await addItem(n, u, q, m, suppliers);
-        if (!err) {
-          const created = useStoreStockStore.getState().items.find(item => normaliseName(item.name) === normaliseName(n));
-          await notifyStockChange('created', created?.id || n, n, `stock ${q} ${u}, low alert ${m}`);
+        if (err || useStoreStockStore.getState().items.length === before) {
+          throw new Error(err || 'Item could not be added — please try again.');
         }
-        if (err || useStoreStockStore.getState().items.length === before) console.warn('[StoreInventoryTab] stock add note:', err);
+        const created = useStoreStockStore.getState().items.find(item => normaliseName(item.name) === normaliseName(n));
+        await notifyStockChange('created', created?.id || n, n, `stock ${q} ${u}, low alert ${m}`);
       }} />}
       {editItem && <EditItemModal item={editItem} onClose={() => setEditItem(null)} onSave={async (u) => {
+        // Same fix as AddItemModal above. Also removed this wrapper's own
+        // unconditional setEditItem(null) — EditItemModal's onClose prop
+        // (passed above) already closes it on success; keeping a second,
+        // unconditional close here was forcing the modal shut even when
+        // the save had just failed.
         const before = editItem;
         const err = await updateItem(editItem.id, u);
-        if (!err) {
-          const qtyNote = u.quantity !== undefined ? `stock ${before.quantity} ${before.unit} to ${u.quantity} ${u.unit || before.unit}` : 'details changed';
-          await notifyStockChange('updated', before.id, before.name, qtyNote);
-        }
-        setEditItem(null);
-        if (err) console.warn('[StoreInventoryTab] stock update failed:', err);
+        if (err) throw new Error(err);
+        const qtyNote = u.quantity !== undefined ? `stock ${before.quantity} ${before.unit} to ${u.quantity} ${u.unit || before.unit}` : 'details changed';
+        await notifyStockChange('updated', before.id, before.name, qtyNote);
       }} />}
     </div>
   );
@@ -1508,9 +1541,16 @@ function OrdersTab() {
       // unprocessed from a previous day never gets silently folded into
       // today's fresh batch — it stays its own group, visible and
       // untouched, until someone deliberately acts on it.
+      // FEATURE (2026-08-26): "merge orders from different branches too,
+      // as long as they came in on the same date" — grouping key is now
+      // date-only. What branchSplit exists for: mergeOrdersForStore now
+      // records each source order's own branch contribution on every
+      // combined item, so Dispatch can still split the merged batch
+      // correctly per branch later, even though the separate order rows
+      // (and their individual target_branch values) are gone after this.
       const byBranch = new Map<string, string[]>();
       for (const o of mergeable) {
-        const key = `${o.targetBranch ?? 'unassigned'}__${kolkataDateKey(o.createdAt)}`;
+        const key = kolkataDateKey(o.createdAt);
         const list = byBranch.get(key) ?? [];
         list.push(o.id);
         byBranch.set(key, list);

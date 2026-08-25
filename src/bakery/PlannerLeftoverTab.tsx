@@ -25,7 +25,7 @@ import { BRANCHES } from './types';
 import type { Branch } from './types';
 
 export type LeftoverUnit = 'kg' | 'pcs';
-export type LeftoverReason = 'closing_stock' | 'production_carryover' | 'dispatch' | 'adjustment' | 'transfer_out';
+export type LeftoverReason = 'closing_stock' | 'production_carryover' | 'dispatch' | 'adjustment' | 'transfer_out' | 'return';
 
 export interface LeftoverLedgerRow {
   id: string;
@@ -56,7 +56,7 @@ export const kolkataToday = () =>
 
 export const qtyFmt = (v: number) => Number(v || 0).toLocaleString('en-IN', { maximumFractionDigits: 3 });
 const dateLabel = (value: string) => new Date(`${value}T00:00:00`).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
-const reasonLabel = (r: LeftoverReason) => r === 'closing_stock' ? 'Closing stock entry' : r === 'production_carryover' ? 'Unused production' : r === 'dispatch' ? 'Dispatched' : r === 'transfer_out' ? 'Transfer Out' : 'Adjustment';
+const reasonLabel = (r: LeftoverReason) => r === 'closing_stock' ? 'Closing stock entry' : r === 'production_carryover' ? 'Unused production' : r === 'dispatch' ? 'Dispatched' : r === 'transfer_out' ? 'Transfer Out' : r === 'return' ? 'Return' : 'Adjustment';
 
 function mapLedgerRow(row: Record<string, unknown>): LeftoverLedgerRow {
   return {
@@ -620,7 +620,7 @@ export default function PlannerLeftoverTab() {
         } else if (row.reason === 'transfer_out') {
           entry.transferredOut += Math.abs(row.delta);
           if (row.notes) entry.transferOutReasons.push(row.notes);
-        } else if (row.reason === 'adjustment') {
+        } else if (row.reason === 'adjustment' || row.reason === 'return') {
           entry.adjusted += row.delta;
           if (row.notes) entry.adjustReasons.push(row.notes);
         } else if (row.reason === 'production_carryover') {

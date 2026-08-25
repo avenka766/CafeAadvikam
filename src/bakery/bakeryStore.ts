@@ -512,9 +512,18 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
         if (existing) {
           existing.quantity += item.quantity;
           if (item.originalPcs != null) existing.originalPcs = (existing.originalPcs ?? 0) + item.originalPcs;
+          // FEATURE (2026-08-26): "merge across branches too" — track each
+          // source order's own targetBranch contribution to this combined
+          // item, so a later dispatch can still split it correctly per
+          // branch even after the separate order rows are gone. Only
+          // tracked when the source order actually has a branch (Planned-
+          // bucket orders have none, and don't need this).
+          if (o.targetBranch) {
+            existing.branchSplit = { ...existing.branchSplit, [o.targetBranch]: (existing.branchSplit?.[o.targetBranch] ?? 0) + item.quantity };
+          }
           targetItemId = existing.itemId;
         } else {
-          combined.push({ ...item });
+          combined.push({ ...item, branchSplit: o.targetBranch ? { [o.targetBranch]: item.quantity } : item.branchSplit });
           targetItemId = item.itemId;
         }
         const prod = (o.producedItems || []).find(p => p.itemId === item.itemId);
@@ -1404,7 +1413,13 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
           unit: removedEntry.unit === 'pcs' ? 'pcs' : 'kg',
           delta: Math.abs(Number(removedEntry.quantity) || 0),
           businessDate: kolkataToday(),
-          reason: 'adjustment',
+          // FEATURE (2026-08-25): "record returns in a report" — this
+          // function is exclusively called from updateDispatchInvoice's
+          // line-removal path (confirmed: its only two call sites are both
+          // there), so every credit-back through here genuinely represents
+          // a return, not a generic adjustment. Shows up distinctly in the
+          // existing Closing Stock ledger view via reasonLabel().
+          reason: 'return',
           recordedBy: removedEntry.dispatchedBy || 'Planner',
           branch: removedEntry.branch,
           orderId,

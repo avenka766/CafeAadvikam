@@ -13,7 +13,7 @@ import {
   ChevronDown, ChevronUp, X, RefreshCw, AlertTriangle, FileSpreadsheet, Clock3,
   Store, CreditCard, WalletCards, MessageCircle, Bell, CalendarDays,
   Search, Printer, Receipt, ListPlus, BarChart3, FileText, Minus, IndianRupee,
-  ShoppingCart, Percent, Trash2, Scale, PackageMinus, Pencil,
+  ShoppingCart, Percent, Trash2, Scale, PackageMinus, Pencil, RotateCcw,
 } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import * as XLSX from 'xlsx';
@@ -34,6 +34,10 @@ import PackingCakeOrdersTab from './PackingCakeOrdersTab';
 import PlannerLeftoverTab, { PlannerTransferOutTab, useLeftoverBalanceMap, recordLeftoverMovement, kolkataToday, qtyFmt, type LeftoverUnit, useMergedLeftoverCatalog, useMergedCatalogWithPrice, useBranchOnlyCatalog, ItemSearchPicker, type MergedCatalogItem } from './PlannerLeftoverTab';
 import { canonicalItemSlug, closingStockItemSlug, parseWeightGrams, pcsToKg, resolveItemWeightGrams } from './itemMatcher';
 import { useBranchCatalogStore } from '@/stores/branchCatalogStore';
+import { useRecipeStore } from './recipeStore';
+import { useBranchStore } from '@/branch/branchStore';
+import { useNotificationStore } from '@/bakery/notificationStore';
+import { printWasteLogBatch } from '@/pages/AdminSNBDashboard';
 import {
   businessFor, defaultDiscountPct, saveDispatchInvoice, printDispatchInvoice, listDispatchInvoices, markDispatchInvoicePaid, updateDispatchInvoice,
   type DispatchInvoiceRecord, type DispatchInvoiceItem,
@@ -49,7 +53,7 @@ import { getPackingCounterStatus } from './packingCounter';
 // list rendered as a panel inside it. The 'done' key is kept in the type
 // (but no longer in TABS/nav) purely so any stale bookmarked URL still
 // resolves instead of erroring.
-type PlannerTab = 'incoming' | 'sent' | 'merged' | 'planning' | 'production' | 'dispatch' | 'hosur' | 'cake' | 'transfer-in' | 'transfer-out' | 'closure' | 'leftover-stock' | 'invoice' | 'reports' | 'billing' | 'done';
+type PlannerTab = 'incoming' | 'sent' | 'merged' | 'planning' | 'production' | 'dispatch' | 'hosur' | 'cake' | 'transfer-in' | 'transfer-out' | 'closure' | 'leftover-stock' | 'invoice' | 'reports' | 'billing' | 'waste' | 'done';
 const TABS: { key: PlannerTab; label: string; icon: React.ReactNode }[] = [
   { key: 'incoming',    label: 'Incoming Orders',  icon: <ClipboardList className="size-4" /> },
   { key: 'sent',        label: 'Sent',             icon: <Send className="size-4" /> },
@@ -61,6 +65,7 @@ const TABS: { key: PlannerTab; label: string; icon: React.ReactNode }[] = [
   { key: 'cake',        label: 'Cake Dispatch',    icon: <Cake className="size-4" /> },
   { key: 'transfer-in', label: 'Transfer In',      icon: <ArrowRightLeft className="size-4" /> },
   { key: 'transfer-out', label: 'Transfer Out',    icon: <PackageMinus className="size-4" /> },
+  { key: 'waste',       label: 'Dump / Damage',    icon: <Trash2 className="size-4" /> },
   { key: 'closure',     label: 'Daily Closure',    icon: <Calendar className="size-4" /> },
   { key: 'leftover-stock', label: 'Closing Stock', icon: <Scale className="size-4" /> },
   { key: 'invoice',     label: 'Invoice',          icon: <Receipt className="size-4" /> },
@@ -148,19 +153,29 @@ export function computeMergedSummary(orders: BakeryOrder[]): MergedRow[] {
     const bucket: MergeBucket = bucketFor(order);
     for (const item of order.items) {
       const unit = item.dispatchUnit === 'pcs' ? 'pcs' : 'kg';
-      const qty = unit === 'pcs' && item.originalPcs != null ? item.originalPcs : item.quantity;
       const key = `${item.itemName.trim().toLowerCase()}__${unit}`;
       const existing = rows.get(key);
+      // FEATURE (2026-08-26): "merge across branches too" — same fix as
+      // computeMergedSummaryDisplay above: an item with branchSplit came
+      // from a cross-branch Store merge, so its quantity needs splitting
+      // back across each contributing branch instead of all going to
+      // bucketFor(order) alone.
+      const splits: Array<[MergeBucket, number]> = item.branchSplit && Object.keys(item.branchSplit).length > 0
+        ? Object.entries(item.branchSplit).filter(([, q]) => q) as Array<[MergeBucket, number]>
+        : [[bucket, unit === 'pcs' && item.originalPcs != null ? item.originalPcs : item.quantity]];
+      const totalQty = splits.reduce((s, [, q]) => s + q, 0);
       if (existing) {
-        existing.totalRequested += qty;
-        existing.perBranch[bucket] = (existing.perBranch[bucket] || 0) + qty;
+        existing.totalRequested += totalQty;
+        for (const [splitBucket, splitQty] of splits) existing.perBranch[splitBucket] = (existing.perBranch[splitBucket] || 0) + splitQty;
         if (!existing.contributingOrderIds.includes(order.id)) existing.contributingOrderIds.push(order.id);
       } else {
+        const perBranch: Partial<Record<MergeBucket, number>> = {};
+        for (const [splitBucket, splitQty] of splits) perBranch[splitBucket] = (perBranch[splitBucket] || 0) + splitQty;
         rows.set(key, {
           itemName: item.itemName,
           unit,
-          totalRequested: qty,
-          perBranch: { [bucket]: qty },
+          totalRequested: totalQty,
+          perBranch,
           contributingOrderIds: [order.id],
         });
       }
@@ -261,13 +276,29 @@ export function computeMergedSummaryDisplay(orders: BakeryOrder[]): MergedRow[] 
     const bucket: MergeBucket = bucketFor(order);
     for (const item of order.items) {
       const unit = item.dispatchUnit === 'pcs' ? 'pcs' : 'kg';
-      const qty = unit === 'pcs' && item.originalPcs != null ? item.originalPcs : item.quantity;
       const grams = unit === 'pcs'
         ? (item.weightGrams ?? parseWeightGrams(item.itemName) ?? resolveItemWeightGrams(item.itemId, item.itemName))
         : null;
       const key = mergeGroupKey(item.itemName) || item.itemName.trim().toLowerCase();
       const list = groups.get(key) ?? [];
-      list.push({ itemId: item.itemId, itemName: item.itemName, unit, qty, grams, bucket, orderId: order.id });
+      // FEATURE (2026-08-26): "merge across branches too" — an item
+      // carrying a branchSplit came from a Store Dashboard merge that
+      // combined orders from more than one branch; bucketFor(order) alone
+      // would incorrectly attribute the WHOLE combined quantity to just
+      // the surviving order's own branch. Split it back into one entry
+      // per contributing branch instead, using each branch's own qty.
+      if (item.branchSplit && Object.keys(item.branchSplit).length > 0) {
+        for (const [splitBranch, splitQty] of Object.entries(item.branchSplit)) {
+          if (!splitQty) continue;
+          const qty = unit === 'pcs' && item.originalPcs != null
+            ? Math.round((splitQty / item.quantity) * item.originalPcs * 1000) / 1000
+            : splitQty;
+          list.push({ itemId: item.itemId, itemName: item.itemName, unit, qty, grams, bucket: splitBranch as MergeBucket, orderId: order.id });
+        }
+      } else {
+        const qty = unit === 'pcs' && item.originalPcs != null ? item.originalPcs : item.quantity;
+        list.push({ itemId: item.itemId, itemName: item.itemName, unit, qty, grams, bucket, orderId: order.id });
+      }
       groups.set(key, list);
     }
   }
@@ -642,6 +673,7 @@ export default function PlannerDashboard({ embedded = false }: { embedded?: bool
             {tab === 'cake' && <PackingCakeOrdersTab mode="planner" />}
             {tab === 'transfer-in' && <PackingTransferInTab />}
             {tab === 'transfer-out' && <PlannerTransferOutTab />}
+            {tab === 'waste' && <PlannerWasteLogsTab />}
             {tab === 'closure' && <PackingDailyClosureTab />}
             {tab === 'leftover-stock' && (
               <div className="space-y-6">
@@ -686,6 +718,48 @@ function RefreshOrdersButton({ className }: { className?: string }) {
 }
 
 // ─── Tab: Incoming Orders ───────────────────────────────────────────────────
+// FEATURE (2026-08-24): "Incoming Orders: Hosur shop name not shown" —
+// same HOSUR_ORDER_ID(S) notes-tag pattern used by collectHosurOrderIds/
+// the Dispatch tab's shop lookup (see mergeOrdersForStore's collectHosurIds
+// for how the tag gets written), extracted into one shared hook so
+// Incoming doesn't duplicate its own copy of this parsing+fetch.
+function extractHosurOrderIds(notes: string | null | undefined): string[] {
+  const text = String(notes ?? '');
+  const plural = text.match(/HOSUR_ORDER_IDS:([^|]+)/);
+  if (plural?.[1]) return plural[1].split(',').map(s => s.trim()).filter(Boolean);
+  const singular = text.match(/HOSUR_ORDER_ID:([^|]+)/);
+  return singular?.[1] ? [singular[1].trim()] : [];
+}
+function useHosurShopNames(orders: BakeryOrder[]): Map<string, string> {
+  const [byOrderId, setByOrderId] = useState<Map<string, string>>(new Map());
+  const hosurIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const o of orders) if (o.targetBranch === 'Hosur') extractHosurOrderIds(o.notes).forEach(id => ids.add(id));
+    return Array.from(ids);
+  }, [orders]);
+  const key = hosurIds.join(',');
+  useEffect(() => {
+    let cancelled = false;
+    if (hosurIds.length === 0) { setByOrderId(new Map()); return; }
+    (async () => {
+      const { data } = await supabase.from('hosur_orders').select('id, shop_name').in('id', hosurIds);
+      if (cancelled) return;
+      const shopNameById = new Map(((data ?? []) as Record<string, unknown>[]).map(r => [r.id as string, String(r.shop_name ?? 'Unknown shop')]));
+      const result = new Map<string, string>();
+      for (const o of orders) {
+        if (o.targetBranch !== 'Hosur') continue;
+        const ids = extractHosurOrderIds(o.notes);
+        if (ids.length === 0) continue;
+        result.set(o.id, ids.map(id => shopNameById.get(id) ?? 'Unknown shop').join(', '));
+      }
+      setByOrderId(result);
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the stable joined id string, not the orders array reference.
+  }, [key]);
+  return byOrderId;
+}
+
 function IncomingOrdersTab({ orders, onAdd }: { orders: BakeryOrder[]; onAdd: ReturnType<typeof useBakeryStore.getState>['submitOrder'] }) {
   const [showAdd, setShowAdd] = useState(false);
   const [branch, setBranch] = useState<Branch>('SNB');
@@ -820,6 +894,7 @@ function IncomingOrdersTab({ orders, onAdd }: { orders: BakeryOrder[]; onAdd: Re
 // have already moved past Store) swaps the plain item bullet list for
 // EditableIncomingOrderCard's inline edit form.
 function DayGroupedOrderList({ orders, badgeLabel, badgeTone, editable = false }: { orders: BakeryOrder[]; badgeLabel: string | ((o: BakeryOrder) => string); badgeTone: string | ((o: BakeryOrder) => string); editable?: boolean }) {
+  const hosurShopNameByOrderId = useHosurShopNames(orders);
   const groups = useMemo(() => {
     const map = new Map<string, BakeryOrder[]>();
     for (const order of orders) {
@@ -846,7 +921,7 @@ function DayGroupedOrderList({ orders, badgeLabel, badgeTone, editable = false }
               const tone = typeof badgeTone === 'function' ? badgeTone(order) : badgeTone;
               const bucket = bucketFor(order);
               return editable ? (
-                <EditableIncomingOrderCard key={order.id} order={order} bucket={bucket} label={label} tone={tone} />
+                <EditableIncomingOrderCard key={order.id} order={order} bucket={bucket} label={label} tone={tone} hosurShopName={hosurShopNameByOrderId.get(order.id)} />
               ) : (
                 <div key={order.id} className={cn('rounded-2xl border p-4 shadow-sm', BRANCH_META[bucket].bg)}>
                   <div className="flex items-center justify-between">
@@ -895,8 +970,8 @@ function draftFromItem(item: BakeryOrderItem): EditableItemDraft {
 // per the planner's explicit ask to edit "name, quantity, unit etc." Only
 // ever rendered for status==='pending' orders (see DayGroupedOrderList),
 // matching updateOrderItems' own guard in bakeryStore.
-function EditableIncomingOrderCard({ order, bucket, label, tone }: {
-  order: BakeryOrder; bucket: keyof typeof BRANCH_META; label: string; tone: string;
+function EditableIncomingOrderCard({ order, bucket, label, tone, hosurShopName }: {
+  order: BakeryOrder; bucket: keyof typeof BRANCH_META; label: string; tone: string; hosurShopName?: string;
 }) {
   const { updateOrderItems } = useBakeryStore();
   const [editing, setEditing] = useState(false);
@@ -967,7 +1042,7 @@ function EditableIncomingOrderCard({ order, bucket, label, tone }: {
     <div className={cn('rounded-2xl border p-4 shadow-sm', BRANCH_META[bucket].bg)}>
       <div className="flex items-center justify-between gap-2">
         <span className={cn('text-sm font-black', BRANCH_META[bucket].text)}>
-          {BRANCH_META[bucket].icon} {bucket === 'Planned' ? 'Planned Stock' : bucket} — Order #{order.orderNumber}
+          {BRANCH_META[bucket].icon} {bucket === 'Planned' ? 'Planned Stock' : bucket}{hosurShopName ? ` — ${hosurShopName}` : ''} — Order #{order.orderNumber}
         </span>
         <div className="flex items-center gap-2">
           <span className={cn('rounded-full px-2 py-1 text-[10px] font-black', tone)}>{label}</span>
@@ -1130,9 +1205,85 @@ function SentDayGroup({ dayKey, label, orders, open, onToggle }: { dayKey: strin
 
 // ─── Tab: Merged Summary ────────────────────────────────────────────────────
 function MergedSummaryTab({ orders }: { orders: BakeryOrder[] }) {
-  const { mergeOrdersForStore } = useBakeryStore();
+  const { mergeOrdersForStore, updateOrderItems } = useBakeryStore();
   const merged = useMemo(() => computeMergedSummaryDisplay(orders), [orders]);
+  // FEATURE (2026-08-24): "no closure-stock indicator" — reuses the same
+  // Closing Stock ledger balance/slug matching Extra Produced Item and the
+  // Closing Stock tab already use, so "in stock" here means the same thing
+  // it means everywhere else in Planner.
+  const { balances: closureBalances } = useLeftoverBalanceMap();
+  // FEATURE (2026-08-24): "no edit/remove" — a merged row can span several
+  // contributing orders, and editing all of them proportionally risks
+  // introducing fractional-rounding drift across orders for a decision the
+  // audit itself flagged as unresolved. Simpler, lower-risk choice: edit
+  // (or remove) the item on whichever single contributing order holds the
+  // LARGEST quantity of it — reuses the exact same updateOrderItems() the
+  // Incoming tab's own per-order edit card already uses, no new store
+  // action needed.
+  const [editingKey, setEditingKey] = useState<string | null>(null);
+  const [editValue, setEditValue] = useState('');
+  const [rowError, setRowError] = useState<string | null>(null);
+  const [rowSaving, setRowSaving] = useState<string | null>(null);
+
+  const largestContributor = (row: MergedRow): { order: BakeryOrder; item: BakeryOrderItem } | null => {
+    let best: { order: BakeryOrder; item: BakeryOrderItem } | null = null;
+    for (const order of orders) {
+      if (!row.contributingOrderIds.includes(order.id)) continue;
+      for (const item of order.items) {
+        if (!sameItem(item.itemName, row.itemName)) continue;
+        const qty = item.dispatchUnit === 'pcs' && item.originalPcs != null ? item.originalPcs : item.quantity;
+        if (!best || qty > (best.item.dispatchUnit === 'pcs' && best.item.originalPcs != null ? best.item.originalPcs : best.item.quantity)) {
+          best = { order, item };
+        }
+      }
+    }
+    return best;
+  };
+
+  const saveRowEdit = async (row: MergedRow, key: string) => {
+    const target = largestContributor(row);
+    if (!target) { setRowError('Could not find the source order for this item.'); return; }
+    const newQty = Number(editValue);
+    if (!editValue.trim() || !(newQty > 0)) { setRowError('Enter a quantity above 0.'); return; }
+    setRowSaving(key); setRowError(null);
+    try {
+      const items = target.order.items.map(i => i === target.item
+        ? { ...i, quantity: newQty, originalPcs: i.dispatchUnit === 'pcs' ? newQty : undefined }
+        : i);
+      await updateOrderItems(target.order.id, items);
+      setEditingKey(null);
+    } catch (err) {
+      setRowError(err instanceof Error ? err.message : 'Failed to save — please try again.');
+    } finally {
+      setRowSaving(null);
+    }
+  };
+
+  const removeRow = async (row: MergedRow, key: string) => {
+    const target = largestContributor(row);
+    if (!target) { setRowError('Could not find the source order for this item.'); return; }
+    if (!confirm(`Remove "${row.itemName}" (${target.item.quantity} ${row.unit}) from order #${target.order.orderNumber}?`)) return;
+    setRowSaving(key); setRowError(null);
+    try {
+      const items = target.order.items.filter(i => i !== target.item);
+      await updateOrderItems(target.order.id, items);
+    } catch (err) {
+      setRowError(err instanceof Error ? err.message : 'Failed to remove — please try again.');
+    } finally {
+      setRowSaving(null);
+    }
+  };
   const [sendingAll, setSendingAll] = useState(false);
+  // BUG FIX (2026-08-25 audit item #5): "Sent tab: quantity inflates" — the
+  // audit's own hypothesis was that a planner clicking fast enough could
+  // invoke handleSendToStore twice before React actually repaints the
+  // button as disabled (setSendingAll(true) runs synchronously first, but
+  // the DOM's disabled attribute only updates on the NEXT render, a
+  // separate step — state changing isn't the same moment as the screen
+  // changing). A plain ref changes immediately, with no render in between,
+  // so it closes that window. Same exact pattern already used and proven
+  // in DispatchReviewModal's confirm() elsewhere in this file.
+  const sendingRef = useRef(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
   // FEATURE (2026-08-09 / #280): "Beetroot Muruku" vs "Beetroot Muruku
@@ -1149,6 +1300,8 @@ function MergedSummaryTab({ orders }: { orders: BakeryOrder[] }) {
   });
 
   const handleSendToStore = async () => {
+    if (sendingRef.current) return;
+    sendingRef.current = true;
     setSendingAll(true); setNotice(null); setSendError(null);
     try {
       const ids = Array.from(new Set(merged.flatMap(r => r.contributingOrderIds)));
@@ -1175,6 +1328,7 @@ function MergedSummaryTab({ orders }: { orders: BakeryOrder[] }) {
       // Dashboard's sibling button.
       setSendError(err instanceof Error ? err.message : 'Failed to send to Store — please try again.');
     } finally {
+      sendingRef.current = false;
       setSendingAll(false);
     }
   };
@@ -1211,6 +1365,7 @@ function MergedSummaryTab({ orders }: { orders: BakeryOrder[] }) {
       </div>
       {notice && <div className="rounded-xl bg-teal-50 border border-teal-200 px-3 py-2 text-xs font-bold text-teal-700">{notice}</div>}
       {sendError && <div className="rounded-xl bg-red-50 border border-red-200 px-3 py-2 text-xs font-bold text-red-700">{sendError}</div>}
+      {rowError && <div className="rounded-xl bg-red-50 border border-red-200 px-3 py-2 text-xs font-bold text-red-700">{rowError}</div>}
       {merged.length === 0 ? <EmptyState text="No pending orders to merge yet." /> : (
         <div className="overflow-x-auto rounded-2xl border border-border bg-white shadow-sm">
           <table className="w-full text-sm">
@@ -1266,17 +1421,52 @@ function MergedSummaryTab({ orders }: { orders: BakeryOrder[] }) {
                             merged
                           </span>
                         )}
+                        {(() => {
+                          const stock = closureBalances.get(closingStockItemSlug(row.itemName));
+                          return stock
+                            ? <span className="rounded-full bg-emerald-100 px-1.5 py-0.5 text-[9px] font-black text-emerald-700">In stock: {qtyFmt(stock.balance)} {stock.unit}</span>
+                            : <span className="rounded-full bg-muted px-1.5 py-0.5 text-[9px] font-bold text-muted-foreground">Not in closing stock</span>;
+                        })()}
                       </span>
                     </td>
                     {DISPLAY_BUCKETS.map(b => (
                       <td key={b} className="px-4 py-3 text-right text-muted-foreground">{row.perBranch[b] ? `${row.perBranch[b]} ${row.unit}` : '—'}</td>
                     ))}
                     <td className="px-4 py-3 text-right font-black text-foreground">
-                      {row.totalRequested} {row.unit}
-                      {hasVariants && (
-                        <button type="button" onClick={() => toggleUnmerge(key)} className="ml-2 rounded-lg border border-teal-300 px-2 py-0.5 text-[10px] font-black text-teal-800 hover:bg-teal-50">
-                          Unmerge
-                        </button>
+                      {editingKey === key ? (
+                        <span className="inline-flex items-center gap-1">
+                          <input
+                            type="number" min={0} step="0.001" value={editValue} autoFocus
+                            onChange={e => setEditValue(e.target.value)}
+                            className="w-20 rounded-lg border border-teal-300 px-2 py-1 text-right text-xs font-bold"
+                          />
+                          <span className="text-xs font-bold text-muted-foreground">{row.unit}</span>
+                          <button type="button" disabled={rowSaving === key} onClick={() => void saveRowEdit(row, key)} className="rounded-lg bg-teal-600 px-2 py-1 text-[10px] font-black text-white disabled:opacity-50">
+                            {rowSaving === key ? '…' : 'Save'}
+                          </button>
+                          <button type="button" onClick={() => { setEditingKey(null); setRowError(null); }} className="rounded-lg border border-border px-2 py-1 text-[10px] font-black text-muted-foreground">
+                            Cancel
+                          </button>
+                        </span>
+                      ) : (
+                        <>
+                          {row.totalRequested} {row.unit}
+                          {hasVariants && (
+                            <button type="button" onClick={() => toggleUnmerge(key)} className="ml-2 rounded-lg border border-teal-300 px-2 py-0.5 text-[10px] font-black text-teal-800 hover:bg-teal-50">
+                              Unmerge
+                            </button>
+                          )}
+                          {!hasVariants && (
+                            <span className="ml-2 inline-flex gap-1">
+                              <button type="button" title="Edit (applies to the order contributing the most of this item)" onClick={() => { setEditingKey(key); setEditValue(String(row.totalRequested)); setRowError(null); }} className="rounded-lg border border-border p-1 text-muted-foreground hover:bg-muted">
+                                <Pencil className="size-3" />
+                              </button>
+                              <button type="button" disabled={rowSaving === key} title="Remove (from the order contributing the most of this item)" onClick={() => void removeRow(row, key)} className="rounded-lg border border-red-200 p-1 text-red-600 hover:bg-red-50 disabled:opacity-50">
+                                <X className="size-3" />
+                              </button>
+                            </span>
+                          )}
+                        </>
                       )}
                     </td>
                   </tr>
@@ -1302,6 +1492,12 @@ function PlanningTab({ orders }: { orders: BakeryOrder[] }) {
   const { submitPlannedOrder } = useBakeryStore();
   const currentUser = useAuthStore(s => s.currentUser);
   const [search, setSearch] = useState('');
+  // FEATURE (2026-08-26): "add a Batch Calculation sub-tab" — kept as a
+  // simple local sub-tab switch rather than a new PlannerTab entry, since
+  // the audit and every prior feature request treated "Planning" as one
+  // screen; this is a calculator living inside it, not a new top-level
+  // workflow with its own data to load/merge/dispatch.
+  const [subTab, setSubTab] = useState<'order' | 'batch'>('order');
   const [cart, setCart] = useState<Record<string, { itemName: string; unit: 'pcs' | 'kg'; quantity: number }>>({});
   const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
@@ -1401,6 +1597,18 @@ function PlanningTab({ orders }: { orders: BakeryOrder[] }) {
         <RefreshOrdersButton />
       </div>
 
+      <div className="flex gap-2">
+        <button type="button" onClick={() => setSubTab('order')} className={cn('rounded-xl px-4 py-2 text-xs font-black', subTab === 'order' ? 'bg-primary text-primary-foreground' : 'border border-border bg-card text-foreground')}>
+          Add Order
+        </button>
+        <button type="button" onClick={() => setSubTab('batch')} className={cn('rounded-xl px-4 py-2 text-xs font-black', subTab === 'batch' ? 'bg-primary text-primary-foreground' : 'border border-border bg-card text-foreground')}>
+          Batch Calculation
+        </button>
+      </div>
+
+      {subTab === 'batch' && <BatchCalculationSubTab />}
+      {subTab === 'order' && (
+      <>
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_22rem]">
         <section className="space-y-3 card-base p-5">
           <label className="space-y-1">
@@ -1510,6 +1718,8 @@ function PlanningTab({ orders }: { orders: BakeryOrder[] }) {
         <h3 className="mb-2 text-sm font-black text-foreground">Already Planned ({plannedOrders.length})</h3>
         <DayGroupedOrderList orders={plannedOrders} badgeLabel="Planned" badgeTone="bg-primary/10 text-primary" />
       </div>
+      </>
+      )}
     </div>
   );
 }
@@ -1558,41 +1768,39 @@ function groupOrdersByStoreDate(orders: BakeryOrder[]): DateGroup[] {
 // getting folded into today's total.
 function ProductionEntryTab({ orders }: { orders: BakeryOrder[] }) {
   const [search, setSearch] = useState('');
-  const [dateFilter, setDateFilter] = useState<string>('all');
-  const dateGroups = useMemo(() => groupOrdersByStoreDate(orders), [orders]);
-  const rowsByDate = useMemo(() => dateGroups.map(g => ({ ...g, rows: computeProductionRows(g.orders).filter(r => r.itemStatus !== 'completed') })), [dateGroups]);
-  const visible = dateFilter === 'all' ? rowsByDate : rowsByDate.filter(g => g.dateKey === dateFilter);
-  const totalPending = rowsByDate.reduce((s, g) => s + g.rows.length, 0);
+  // FEATURE (2026-08-24): "date-wise grouping should be removed, add new
+  // quantity to old" — computeProductionRows already sums by item across
+  // whatever order set it's given; the date split was only ever imposed by
+  // this tab partitioning its input by day first. A single call across all
+  // orders (no partition) makes "old + new" quantities combine naturally.
+  const rows = useMemo(() => computeProductionRows(orders).filter(r => r.itemStatus !== 'completed'), [orders]);
+  const totalPending = rows.length;
 
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="font-display text-lg font-bold text-foreground">Production Entry <span className="text-sm font-bold text-muted-foreground">({totalPending} items · {rowsByDate.filter(g => g.rows.length > 0).length} date{rowsByDate.filter(g => g.rows.length > 0).length === 1 ? '' : 's'})</span></h2>
+        <h2 className="font-display text-lg font-bold text-foreground">Production Entry <span className="text-sm font-bold text-muted-foreground">({totalPending} items)</span></h2>
         <div className="flex items-center gap-2">
           <div className="relative">
             <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
             <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search item..." className="rounded-xl border border-border py-1.5 pl-8 pr-3 text-xs font-bold" />
           </div>
-          <select value={dateFilter} onChange={e => setDateFilter(e.target.value)} className="rounded-xl border border-border px-3 py-1.5 text-xs font-bold text-foreground">
-            <option value="all">All dates</option>
-            {dateGroups.map(g => <option key={g.dateKey} value={g.dateKey}>{g.label}</option>)}
-          </select>
           <RefreshOrdersButton />
           <ExportButton
             disabled={totalPending === 0}
             onClick={() => exportToExcel({
               filename: 'production-entry', sheetName: 'Production', title: 'Planner — Production Entry',
-              columns: [{ header: 'Date', key: 'date' }, { header: 'Category', key: 'category' }, { header: 'Item', key: 'item' }, { header: 'Ordered Qty', key: 'ordered' }, { header: 'Produced So Far', key: 'produced' }, { header: 'Unit', key: 'unit' }, { header: 'Status', key: 'status' }],
-              rows: rowsByDate.flatMap(g => g.rows.map(row => ({ date: g.label, category: row.category, item: row.itemName, ordered: row.totalRequested, produced: row.preparedTotal, unit: row.unit, status: row.itemStatus }))),
+              columns: [{ header: 'Category', key: 'category' }, { header: 'Item', key: 'item' }, { header: 'Ordered Qty', key: 'ordered' }, { header: 'Produced So Far', key: 'produced' }, { header: 'Unit', key: 'unit' }, { header: 'Status', key: 'status' }],
+              rows: rows.map(row => ({ category: row.category, item: row.itemName, ordered: row.totalRequested, produced: row.preparedTotal, unit: row.unit, status: row.itemStatus })),
             })}
           />
         </div>
       </div>
       <ExtraProducedItemForm />
-      {dateGroups.length === 0 && <EmptyState text="No items waiting on production entry." />}
-      {visible.map((g, idx) => (
-        <ProductionEntryDateGroup key={g.dateKey} dateKey={g.dateKey} label={g.label} orders={g.orders} rows={g.rows} search={search} defaultOpen={idx === 0} />
-      ))}
+      {rows.length === 0 && <EmptyState text="No items waiting on production entry." />}
+      {rows.length > 0 && (
+        <ProductionEntryDateGroup dateKey="all" label="Pending Production" orders={orders} rows={rows} search={search} defaultOpen />
+      )}
     </div>
   );
 }
@@ -3373,6 +3581,7 @@ interface WalkinBillRow {
   id: string; billNo: string; items: WalkinBillItem[]; subtotal: number;
   discountType: 'none' | 'percent' | 'amount'; discountValue: number; discountAmount: number; total: number;
   paymentMode: string; cashierName: string | null; status: 'active' | 'cancelled'; createdAt: string;
+  customerName: string | null; customerMobile: string | null;
 }
 
 function mapWalkinBill(d: Record<string, unknown>): WalkinBillRow {
@@ -3388,6 +3597,8 @@ function mapWalkinBill(d: Record<string, unknown>): WalkinBillRow {
     cashierName: (d.cashier_name as string | null) ?? null,
     status: (d.status as WalkinBillRow['status']) || 'active',
     createdAt: d.created_at as string,
+    customerName: (d.customer_name as string | null) ?? null,
+    customerMobile: (d.customer_mobile as string | null) ?? null,
   };
 }
 
@@ -3405,8 +3616,8 @@ function walkinBillToInvoiceRecord(bill: WalkinBillRow): DispatchInvoiceRecord {
     invoiceNo: bill.billNo,
     scope: 'SNB',
     hosurShopId: null, hosurShopName: null, hosurShopPhone: null,
-    customerName: 'Walk-in Customer',
-    customerPhone: null,
+    customerName: bill.customerName || 'Walk-in Customer',
+    customerPhone: bill.customerMobile,
     customerAddress: null,
     dispatchedBy: bill.cashierName || 'Planner',
     items: bill.items.map(i => ({ itemName: i.itemName, unit: i.unit, quantity: i.quantity, unitPrice: i.price, lineTotal: i.lineTotal })),
@@ -3464,6 +3675,10 @@ function BillingTab() {
   const [search, setSearch] = useState('');
   const [cart, setCart] = useState<Record<string, { itemName: string; unit: 'pcs' | 'kg'; price: number; quantity: number }>>({});
   const [discountType, setDiscountType] = useState<'none' | 'percent' | 'amount'>('none');
+  // FEATURE (2026-08-24): "Billing (Walk-in): no customer name/mobile
+  // fields" — optional, defaults preserve existing behavior when skipped.
+  const [customerName, setCustomerName] = useState('');
+  const [customerMobile, setCustomerMobile] = useState('');
   const [discountValue, setDiscountValue] = useState('');
   const [paymentMode, setPaymentMode] = useState<typeof WALKIN_PAYMENT_MODES[number]['key']>('cash');
   const [saving, setSaving] = useState(false);
@@ -3540,7 +3755,7 @@ function BillingTab() {
     : Math.round(Math.min(subtotal, Math.max(0, Number(discountValue) || 0)) * 100) / 100;
   const total = Math.max(0, Math.round((subtotal - discountAmount) * 100) / 100);
 
-  const resetCart = () => { setCart({}); setDiscountType('none'); setDiscountValue(''); };
+  const resetCart = () => { setCart({}); setDiscountType('none'); setDiscountValue(''); setCustomerName(''); setCustomerMobile(''); };
 
   const saveBill = async () => {
     if (cartLines.length === 0) { setError('Add at least one item.'); return; }
@@ -3565,6 +3780,7 @@ function BillingTab() {
       const { data, error: insertError } = await supabase.from('bakery_walkin_bills').insert({
         bill_no: billNo, items, subtotal, discount_type: discountType, discount_value: Number(discountValue) || 0,
         discount_amount: discountAmount, total, payment_mode: paymentMode, cashier_name: currentUser?.displayName || 'Planner',
+        customer_name: customerName.trim() || 'Walk-in Customer', customer_mobile: customerMobile.trim() || null,
       }).select().single();
       if (insertError || !data) throw new Error('Failed to save the bill — please try again.');
       const bill = mapWalkinBill(data as Record<string, unknown>);
@@ -3686,6 +3902,11 @@ function BillingTab() {
               ))}
             </div>
           )}
+
+          <div className="grid grid-cols-2 gap-2">
+            <input value={customerName} onChange={e => setCustomerName(e.target.value)} placeholder="Customer name (optional)" className="h-10 rounded-xl border border-border bg-background px-3 text-xs font-bold" />
+            <input value={customerMobile} onChange={e => setCustomerMobile(e.target.value.replace(/\D/g, '').slice(0, 10))} placeholder="Mobile (optional)" inputMode="numeric" className="h-10 rounded-xl border border-border bg-background px-3 text-xs font-bold" />
+          </div>
 
           <div className="space-y-2 rounded-xl border border-border bg-muted/20 p-3">
             <div className="flex items-center gap-1.5"><Percent className="size-3.5 text-muted-foreground" /><span className="text-[11px] font-black uppercase tracking-wide text-muted-foreground">Discount</span></div>
@@ -4435,7 +4656,7 @@ function HosurShopDispatchPanel({ rows, mode, orders, leftoverBalances, onDispat
   const removeExtraItem = (orderId: string, idx: number) => {
     setExtraItemsByCard(v => ({ ...v, [orderId]: (v[orderId] ?? []).filter((_, i) => i !== idx) }));
   };
-  const [review, setReview] = useState<{ actions: PendingDispatchAction[]; card: HosurShopOrderCard } | null>(null);
+  const [review, setReview] = useState<{ actions: PendingDispatchAction[]; card: HosurShopOrderCard; unders?: { itemName: string; unit: string; owed: number; typed: number; shortBy: number }[] } | null>(null);
   // FEATURE (2026-08-15): "I need the ability to send more than the ordered
   // quantity sometimes there will be less production." Previously any typed
   // quantity above what a shop still owed was silently capped (see the
@@ -4453,6 +4674,11 @@ function HosurShopDispatchPanel({ rows, mode, orders, leftoverBalances, onDispat
     card: HosurShopOrderCard;
     overs: { itemName: string; unit: string; owed: number; typed: number; extra: number }[];
   } | null>(null);
+  const [underQtyPrompt, setUnderQtyPrompt] = useState<{
+    card: HosurShopOrderCard;
+    unders: { itemName: string; unit: string; owed: number; typed: number; shortBy: number }[];
+  } | null>(null);
+  const [underQtyBusy, setUnderQtyBusy] = useState(false);
 
   const availableFor = (itemName: string) => Math.max(0, leftoverBalances.get(closingStockItemSlug(itemName))?.balance ?? 0);
   // BUG FIX (2026-08-09): "we are unable to remove the orders from the hosur
@@ -4528,6 +4754,12 @@ function HosurShopDispatchPanel({ rows, mode, orders, leftoverBalances, onDispat
     const actions: PendingDispatchAction[] = [];
     let skippedNoLink = false;
     const overs: { itemName: string; unit: string; owed: number; typed: number; extra: number }[] = [];
+    // FEATURE (2026-08-24): "under-qty confirmation" — mirrors the overs
+    // pattern right above (which already exists for the opposite case).
+    // Only items where something was actually typed (typed > 0) count —
+    // an item left at 0 just isn't being sent this round, that's not an
+    // under-delivery needing confirmation.
+    const unders: { itemName: string; unit: string; owed: number; typed: number; shortBy: number }[] = [];
     const anchorOrderId = orders.find(o => bakeryOrderCoversHosurShopOrder(o, card.orderId))?.id ?? null;
     for (const item of card.items) {
       // CRITICAL BUG FIX (2026-08-07, preserved) + FEATURE (2026-08-15):
@@ -4542,6 +4774,7 @@ function HosurShopDispatchPanel({ rows, mode, orders, leftoverBalances, onDispat
       const qty = Math.min(typed, remaining);
       const extraAmount = Math.max(0, Math.round((typed - remaining) * 100) / 100);
       if (extraAmount > 0.01) overs.push({ itemName: item.itemName, unit: item.unit, owed: remaining, typed, extra: extraAmount });
+      if (typed > 0.001 && typed < remaining - 0.01) unders.push({ itemName: item.itemName, unit: item.unit, owed: remaining, typed, shortBy: Math.round((remaining - typed) * 100) / 100 });
       if (qty > 0.001) {
         const row = rowsByName.get(item.itemName);
         if (!row) { skippedNoLink = true; }
@@ -4572,11 +4805,11 @@ function HosurShopDispatchPanel({ rows, mode, orders, leftoverBalances, onDispat
         }
       }
     }
-    return { actions, overs, skippedNoLink, anchorOrderId };
+    return { actions, overs, unders, skippedNoLink, anchorOrderId };
   };
 
   const finalizeReview = (card: HosurShopOrderCard, includeExtra: boolean) => {
-    const { actions, skippedNoLink, anchorOrderId } = buildActionsForCard(card, includeExtra);
+    const { actions, unders, skippedNoLink, anchorOrderId } = buildActionsForCard(card, includeExtra);
     const extras = extraItemsByCard[card.orderId] ?? [];
     if (extras.length > 0) {
       // BUG FIX (2026-08-08 audit): same silent-drop issue as
@@ -4605,7 +4838,7 @@ function HosurShopDispatchPanel({ rows, mode, orders, leftoverBalances, onDispat
       return;
     }
     setResult(null);
-    setReview({ actions, card });
+    setReview({ actions, card, unders });
   };
 
   const openReviewForCard = (card: HosurShopOrderCard) => {
@@ -4613,9 +4846,13 @@ function HosurShopDispatchPanel({ rows, mode, orders, leftoverBalances, onDispat
     // Detect-only pass first — if anything is typed above what's still
     // owed, stop and show exactly what before touching anything. Confirming
     // that prompt is what actually calls finalizeReview(card, true).
-    const { overs } = buildActionsForCard(card, false);
+    const { overs, unders } = buildActionsForCard(card, false);
     if (overs.length > 0) {
       setOverOrderPrompt({ card, overs });
+      return;
+    }
+    if (unders.length > 0) {
+      setUnderQtyPrompt({ card, unders });
       return;
     }
     finalizeReview(card, false);
@@ -4759,6 +4996,28 @@ function HosurShopDispatchPanel({ rows, mode, orders, leftoverBalances, onDispat
                     </div>
                   </div>
                 )}
+                {underQtyPrompt && underQtyPrompt.card.orderId === card.orderId && (
+                  <div className="rounded-lg border border-orange-300 bg-orange-50 p-2.5">
+                    <p className="text-[11px] font-black text-orange-900">
+                      Sending less than {card.shopName} ordered — the rest will be cancelled, not left pending:
+                    </p>
+                    <ul className="mt-1 space-y-0.5">
+                      {underQtyPrompt.unders.map(u => (
+                        <li key={u.itemName} className="text-[11px] font-bold text-orange-800">
+                          {u.itemName}: {qtyFmt(u.owed)} {u.unit} owed · sending {qtyFmt(u.typed)} {u.unit} · {qtyFmt(u.shortBy)} {u.unit} will be cancelled
+                        </li>
+                      ))}
+                    </ul>
+                    <div className="mt-1.5 flex flex-wrap gap-1.5">
+                      <button disabled={underQtyBusy} onClick={() => { finalizeReview(card, false); setUnderQtyPrompt(null); }} className="rounded-lg bg-orange-600 px-2.5 py-1 text-[10px] font-black text-white hover:bg-orange-700 disabled:opacity-50">
+                        Confirm — send this much, cancel the rest
+                      </button>
+                      <button onClick={() => setUnderQtyPrompt(null)} className="rounded-lg border border-orange-300 bg-white px-2.5 py-1 text-[10px] font-black text-orange-800 hover:bg-orange-100">
+                        Back, let me adjust the quantity
+                      </button>
+                    </div>
+                  </div>
+                )}
                 <div className="flex flex-wrap justify-end gap-2 pt-1">
                   <button onClick={cancel} className="rounded-xl border border-border px-3 py-2 text-xs font-bold text-muted-foreground hover:bg-muted">Cancel</button>
                   <button onClick={() => openReviewForCard(card)} className="flex items-center gap-1.5 rounded-xl bg-teal-600 px-3 py-2 text-xs font-bold text-white hover:bg-teal-700 disabled:opacity-50">
@@ -4784,6 +5043,21 @@ function HosurShopDispatchPanel({ rows, mode, orders, leftoverBalances, onDispat
             setExtraItemsByCard(v => ({ ...v, [review.card.orderId]: [] }));
             setSelectedOrderId(null);
             setQtyDraft({});
+            // FEATURE (2026-08-24): "under-qty confirmation... on confirm,
+            // dispatch and move straight to Dispatched" — this only runs
+            // after dispatch has actually succeeded (this callback fires
+            // post-success), so the shortfall gets cancelled on top of a
+            // real, completed dispatch, never before or instead of one.
+            if (review.unders && review.unders.length > 0) {
+              for (const u of review.unders) {
+                const item = review.card.items.find(i => i.itemName === u.itemName);
+                if (!item) continue;
+                void supabase.rpc('cancel_hosur_order_item_remaining_secure', {
+                  p_order_id: review.card.orderId, p_item_name: item.rawItemName,
+                  p_reason: 'Under-dispatched — confirmed by planner, remainder cancelled',
+                });
+              }
+            }
             setResult({ ok: true, message: `Sent ${review.card.shopName}'s order to Hosur dispatch.` });
             reload();
             onDone();
@@ -4897,8 +5171,15 @@ function BranchFlatDispatchPanel({ branch, rows, orders, leftoverBalances, onDis
     setResult(null);
     const actions: PendingDispatchAction[] = [];
     let clampedAny = false;
-    for (const { row, remaining } of lines) {
-      if (!selected.has(row.itemName)) continue;
+    // FEATURE (2026-08-25): "selection order, not alphabetical" — iterate
+    // `selected` directly (Set preserves insertion/click order in JS)
+    // instead of filtering `lines` (which has its own sort), so the review
+    // list reflects the order items were actually checked.
+    const lineByName = new Map(lines.map(l => [l.row.itemName, l]));
+    for (const itemName of selected) {
+      const line = lineByName.get(itemName);
+      if (!line) continue;
+      const { row, remaining } = line;
       const typed = qtyFor(row.itemName);
       // BUG FIX (2026-08-19): "dispatching more than requested silently
       // reverts to the requested amount" — same root cause and same fix as
@@ -5097,7 +5378,6 @@ function plannedDispatchedForRow(row: ProductionRow, orders: BakeryOrder[]): num
 // stay under "Yesterday" instead of silently folding into "Today".
 function DispatchTab({ orders, allOrders }: { orders: BakeryOrder[]; allOrders: BakeryOrder[] }) {
   const [search, setSearch] = useState('');
-  const [dateFilter, setDateFilter] = useState<string>('all');
   // BUG FIX (2026-08-11): the Printer Setup entry point used to be a
   // position:fixed button floating at the top-right of the whole page —
   // it never actually appeared on screen (almost certainly covered by, or
@@ -5108,35 +5388,32 @@ function DispatchTab({ orders, allOrders }: { orders: BakeryOrder[]; allOrders: 
   // Refresh/Export Excel — same in-flow pattern Billing dashboard's own
   // Printer Setup button already uses successfully.
   const [showPrinterSetup, setShowPrinterSetup] = useState(false);
-  const dateGroups = useMemo(() => groupOrdersByStoreDate(orders), [orders]);
-  const visible = dateFilter === 'all' ? dateGroups : dateGroups.filter(g => g.dateKey === dateFilter);
-  const exportRows = useMemo(() => dateGroups.flatMap(g => {
-    // WORKFLOW CHANGE (2026-08-06): used to hide items with zero production
-    // recorded ('not_started') — owner asked for Dispatch to list everything
-    // ordered, produced or not, so nothing waiting on Store/production is
-    // ever invisible here.
-    const rows = computeProductionRows(g.orders);
+  // FEATURE (2026-08-24): "no date-wise split for VRSNB/SNB, add to old
+  // quantity" — same reasoning and same fix shape as ProductionEntryTab's
+  // own date-grouping removal above: DispatchDateGroup already computes
+  // rows across whatever order set it's given, and already has its own
+  // branchFilter tabs (VRSNB/SNB/Hosur/Custom) nested inside it — removing
+  // the date split here surfaces those as the primary navigation, without
+  // needing to touch DispatchDateGroup's own internals at all.
+  const exportRows = useMemo(() => {
+    const rows = computeProductionRows(orders);
     return rows.map(row => {
-      const dispatched = g.orders.filter(o => row.contributingOrderIds.includes(o.id))
+      const dispatched = orders.filter(o => row.contributingOrderIds.includes(o.id))
         .reduce((s, o) => s + (o.dispatchLog || []).filter(d => sameItem(d.itemName, row.itemName) && !d.isExtra).reduce((s2, d) => s2 + d.quantity, 0), 0);
-      return { date: g.label, item: row.itemName, VRSNB: row.perBranch.VRSNB ?? '', SNB: row.perBranch.SNB ?? '', Hosur: row.perBranch.Hosur ?? '', produced: row.preparedTotal, dispatched, status: row.itemStatus };
+      return { item: row.itemName, VRSNB: row.perBranch.VRSNB ?? '', SNB: row.perBranch.SNB ?? '', Hosur: row.perBranch.Hosur ?? '', produced: row.preparedTotal, dispatched, status: row.itemStatus };
     });
-  }), [dateGroups]);
+  }, [orders]);
 
   return (
     <div className="space-y-4">
       {showPrinterSetup && <PlannerPrinterSetupModal onClose={() => setShowPrinterSetup(false)} />}
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-sm font-black text-foreground">Dispatch <span className="text-xs font-bold text-muted-foreground">({dateGroups.length} date{dateGroups.length === 1 ? '' : 's'})</span></h2>
+        <h2 className="text-sm font-black text-foreground">Dispatch</h2>
         <div className="flex items-center gap-2">
           <div className="relative">
             <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
             <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search item..." className="rounded-xl border border-border py-1.5 pl-8 pr-3 text-xs font-bold" />
           </div>
-          <select value={dateFilter} onChange={e => setDateFilter(e.target.value)} className="rounded-xl border border-border px-3 py-1.5 text-xs font-bold text-foreground">
-            <option value="all">All dates</option>
-            {dateGroups.map(g => <option key={g.dateKey} value={g.dateKey}>{g.label}</option>)}
-          </select>
           <RefreshOrdersButton />
           <button
             type="button"
@@ -5151,16 +5428,16 @@ function DispatchTab({ orders, allOrders }: { orders: BakeryOrder[]; allOrders: 
             disabled={exportRows.length === 0}
             onClick={() => exportToExcel({
               filename: 'dispatch', sheetName: 'Dispatch', title: 'Planner — Dispatch',
-              columns: [{ header: 'Date', key: 'date' }, { header: 'Item', key: 'item' }, ...BRANCHES.map(b => ({ header: `${b} Req`, key: b })), { header: 'Produced', key: 'produced' }, { header: 'Dispatched', key: 'dispatched' }, { header: 'Status', key: 'status' }],
+              columns: [{ header: 'Item', key: 'item' }, ...BRANCHES.map(b => ({ header: `${b} Req`, key: b })), { header: 'Produced', key: 'produced' }, { header: 'Dispatched', key: 'dispatched' }, { header: 'Status', key: 'status' }],
               rows: exportRows,
             })}
           />
         </div>
       </div>
-      {dateGroups.length === 0 && <EmptyState text="Nothing waiting on dispatch." />}
-      {visible.map((g, idx) => (
-        <DispatchDateGroup key={g.dateKey} dateKey={g.dateKey} label={g.label} orders={g.orders} allOrders={allOrders} search={search} defaultOpen={idx === 0} />
-      ))}
+      {orders.length === 0 && <EmptyState text="Nothing waiting on dispatch." />}
+      {orders.length > 0 && (
+        <DispatchDateGroup dateKey="all" label="Pending Dispatch" orders={orders} allOrders={allOrders} search={search} defaultOpen />
+      )}
     </div>
   );
 }
@@ -5349,9 +5626,15 @@ function EditDispatchInvoiceModal({ invoice, onClose, onSaved }: {
                 value={l.unitPrice || ''} onChange={e => updateLine(l.key, { unitPrice: Number(e.target.value) || 0 })}
                 type="number" min={0} placeholder="Price" className="rounded-lg border border-border px-2 py-1.5 text-right text-xs font-bold"
               />
-              <button type="button" onClick={() => removeLine(l.key)} className="flex items-center justify-center gap-1 rounded-lg border border-red-300 bg-red-50 px-2 py-1.5 text-[11px] font-black text-red-700 hover:bg-red-100">
-                <Trash2 className="size-3.5" />
-              </button>
+              {l.key < invoice.items.length ? (
+                <button type="button" onClick={() => removeLine(l.key)} title="Return this item — restores it to stock and removes it from the bill total when you save" className="flex items-center justify-center gap-1 rounded-lg border border-amber-300 bg-amber-50 px-2 py-1.5 text-[11px] font-black text-amber-800 hover:bg-amber-100">
+                  <RotateCcw className="size-3.5" /> Return
+                </button>
+              ) : (
+                <button type="button" onClick={() => removeLine(l.key)} title="Remove this line from the bill (never saved, nothing to return)" className="flex items-center justify-center gap-1 rounded-lg border border-red-300 bg-red-50 px-2 py-1.5 text-[11px] font-black text-red-700 hover:bg-red-100">
+                  <Trash2 className="size-3.5" />
+                </button>
+              )}
               {l.isExtra && <span className="col-span-full -mt-1 text-[10px] font-black uppercase text-amber-700">Extra / non-requested item</span>}
             </div>
           ))}
@@ -5394,7 +5677,6 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
 }) {
   // Anything not dated "Today" is a past date with items still awaiting
   // dispatch — flag it so it's never mistaken for today's dispatch queue.
-  const isPastDate = label !== 'Today';
   const { submitDispatch } = useBakeryStore();
   const currentUser = useAuthStore(s => s.currentUser);
   const { balances: leftoverBalances, refresh: refreshLeftover } = useLeftoverBalanceMap();
@@ -5531,7 +5813,11 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
     if (next.has(itemName)) next.delete(itemName); else next.add(itemName);
     return next;
   });
-  const selectedRows = activeRows.filter(r => selected.has(r.itemName));
+  // FEATURE (2026-08-25): "selection order, not alphabetical" — Set
+  // preserves insertion order in JS, so iterating `selected` directly
+  // (in the order items were checked) instead of filtering activeRows
+  // (which has its own sort) gives the actual click order for free.
+  const selectedRows = Array.from(selected).map(name => activeRows.find(r => r.itemName === name)).filter((r): r is ProductionRow => r != null);
 
   // BUG FIX (2026-08-10): "if we search and enter the data, search again and
   // enter the data, the records are gone" — this used to `return null` when
@@ -5563,11 +5849,6 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
           <span className="text-sm font-black text-foreground">{label}</span>
           <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-bold text-muted-foreground">{activeRows.length} to dispatch</span>
           {completedRows.length > 0 && <span className="rounded-full bg-teal-100 px-2 py-0.5 text-[10px] font-bold text-teal-700">{completedRows.length} done</span>}
-          {isPastDate && activeRows.length > 0 && (
-            <span className="flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-black text-red-700">
-              <AlertTriangle className="size-3" /> Past date — still pending
-            </span>
-          )}
         </div>
         <ChevronDown className={cn('size-4 text-muted-foreground transition-transform', open && 'rotate-180')} />
       </button>
@@ -5731,6 +6012,19 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
         {shown.map(row => {
           const dispatched = dispatchedQtyForItem(row);
           const canSelect = subTab === 'active' && branchFilter !== 'All';
+          // FEATURE (2026-08-25): "no date-wise split... show days-pending
+          // instead" — since removing the date grouping, this is the
+          // per-item replacement for the old "Past date — still pending"
+          // group badge: how long the OLDEST order still contributing to
+          // this row has been waiting, computed from real order data, not
+          // a stale group label.
+          const oldestPendingDays = (() => {
+            if (row.itemStatus === 'completed') return 0;
+            const contributing = orders.filter(o => row.contributingOrderIds.includes(o.id));
+            if (contributing.length === 0) return 0;
+            const oldest = contributing.reduce((min, o) => o.createdAt < min ? o.createdAt : min, contributing[0].createdAt);
+            return Math.floor((Date.now() - new Date(oldest).getTime()) / 86400000);
+          })();
           return (
             <div key={row.itemName} className={cn('rounded-2xl border bg-white p-3 shadow-sm', selected.has(row.itemName) ? 'border-teal-400 ring-1 ring-teal-300' : 'border-border')}>
               <div className="flex items-center justify-between gap-3">
@@ -5739,7 +6033,14 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
                     <input type="checkbox" className="size-4 accent-teal-600" checked={selected.has(row.itemName)} onChange={() => toggleSelect(row.itemName)} />
                   )}
                   <div className="min-w-0">
-                    <p className="truncate text-sm font-black text-foreground">{row.itemName} <span className={cn('ml-1 rounded-full px-1.5 py-0.5 text-[10px] font-black', row.itemStatus === 'completed' ? 'bg-teal-100 text-teal-700' : row.itemStatus === 'not_started' ? 'bg-slate-200 text-slate-600' : 'bg-amber-100 text-amber-700')}>{row.itemStatus === 'completed' ? 'Completed' : row.itemStatus === 'not_started' ? 'Not produced yet' : 'More to come'}</span></p>
+                    <p className="truncate text-sm font-black text-foreground">
+                      {row.itemName} <span className={cn('ml-1 rounded-full px-1.5 py-0.5 text-[10px] font-black', row.itemStatus === 'completed' ? 'bg-teal-100 text-teal-700' : row.itemStatus === 'not_started' ? 'bg-slate-200 text-slate-600' : 'bg-amber-100 text-amber-700')}>{row.itemStatus === 'completed' ? 'Completed' : row.itemStatus === 'not_started' ? 'Not produced yet' : 'More to come'}</span>
+                      {oldestPendingDays >= 1 && (
+                        <span className={cn('ml-1 inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-black', oldestPendingDays >= 2 ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700')}>
+                          <AlertTriangle className="size-2.5" /> {oldestPendingDays} day{oldestPendingDays === 1 ? '' : 's'} pending
+                        </span>
+                      )}
+                    </p>
                     <p className="text-xs font-bold text-muted-foreground">Produced {row.preparedTotal} {row.unit}{dispatched > 0 ? ` · Dispatched ${dispatched} ${row.unit}` : ''}</p>
                   </div>
                 </div>
@@ -5862,6 +6163,7 @@ function PlannedDispatchPanel({ rows, orders, onDispatch, dispatchedBy }: {
   rows: ProductionRow[]; orders: BakeryOrder[];
   onDispatch: ReturnType<typeof useBakeryStore.getState>['submitDispatch']; dispatchedBy: string;
 }) {
+  const { updateOrderItems } = useBakeryStore();
   const [branchFor, setBranchFor] = useState<Record<string, Branch>>({});
   const [qtyFor, setQtyFor] = useState<Record<string, string>>({});
   const [result, setResult] = useState<Record<string, { ok: boolean; message: string }>>({});
@@ -5872,11 +6174,20 @@ function PlannedDispatchPanel({ rows, orders, onDispatch, dispatchedBy }: {
   // PendingDispatchAction batch for this row's branch and opens
   // DispatchReviewModal — that modal is the sole place submitDispatch
   // actually gets called, after price/discount entry.
-  const [review, setReview] = useState<{ itemName: string; branch: Branch; actions: PendingDispatchAction[] } | null>(null);
+  const [review, setReview] = useState<{ itemName: string; branch: Branch; actions: PendingDispatchAction[]; shortfalls?: { orderId: string; newQuantity: number }[] } | null>(null);
+  // FEATURE (2026-08-24): "under-qty confirmation" for the Planned bucket —
+  // same idea as the Hosur shop-card version above, but there's no
+  // equivalent single-RPC "cancel remaining" here since a Planned item is
+  // just a normal order line, not tied to a shop order. Confirming reduces
+  // each affected contributing order's quantity for this item down to
+  // whatever's actually been sent (via updateOrderItems, the same function
+  // #4's Merged Summary edit already uses) — applied only after dispatch
+  // succeeds, same sequencing as the Hosur version.
+  const [underQtyPrompt, setUnderQtyPrompt] = useState<{ row: ProductionRow; branch: Branch; owed: number; typed: number; shortBy: number } | null>(null);
 
   if (rows.length === 0) return <EmptyState text="No planned-stock items waiting on a dispatch decision." />;
 
-  const buildReview = (row: ProductionRow) => {
+  const buildReview = (row: ProductionRow, confirmedUnderQty = false) => {
     const branch = branchFor[row.itemName] ?? 'SNB';
     const plannedRequested = row.perBranch.Planned ?? 0;
     const alreadySent = plannedDispatchedForRow(row, orders);
@@ -5897,9 +6208,14 @@ function PlannedDispatchPanel({ rows, orders, onDispatch, dispatchedBy }: {
       setResult(r => ({ ...r, [row.itemName]: { ok: false, message: 'Nothing to send — quantity must be above 0.' } }));
       return;
     }
+    if (isManualQty && !confirmedUnderQty && q < remainingPlanned - 0.01) {
+      setUnderQtyPrompt({ row, branch, owed: remainingPlanned, typed: q, shortBy: Math.round((remainingPlanned - q) * 100) / 100 });
+      return;
+    }
     const entries = plannedContributingOrders(row, orders);
     const split = autoSplitForItem(entries, row.itemName, q);
     const actions: PendingDispatchAction[] = [];
+    const shortfalls: { orderId: string; newQuantity: number }[] = [];
     for (const order of entries) {
       const item = order.items.find(i => sameItem(i.itemName, row.itemName));
       const orderQty = split[order.id] ?? 0;
@@ -5911,6 +6227,12 @@ function PlannedDispatchPanel({ rows, orders, onDispatch, dispatchedBy }: {
       const orderBeyondRequest = Math.round((orderQty - orderWithinRequest) * 1000) / 1000;
       if (orderWithinRequest > 0.001) {
         actions.push({ orderId: order.id, itemName: item.itemName, quantity: orderWithinRequest, unit: item.dispatchUnit || 'kg', dispatchEntryId: getId(`${order.id}:${row.itemName}`) });
+        // This order's requested quantity exceeds what it'll actually have
+        // sent after this dispatch — flagged for reduction to "already
+        // sent" once dispatch succeeds, so it stops showing as pending.
+        if (confirmedUnderQty && orderWithinRequest < orderRemaining - 0.001) {
+          shortfalls.push({ orderId: order.id, newQuantity: Math.round((orderAlreadySent + orderWithinRequest) * 1000) / 1000 });
+        }
       }
       if (orderBeyondRequest > 0.001) {
         actions.push({ orderId: order.id, itemName: item.itemName, quantity: orderBeyondRequest, unit: item.dispatchUnit || 'kg', dispatchEntryId: getId(`${order.id}:${row.itemName}:extra`), isExtra: true });
@@ -5921,7 +6243,7 @@ function PlannedDispatchPanel({ rows, orders, onDispatch, dispatchedBy }: {
       return;
     }
     setResult(r => ({ ...r, [row.itemName]: clamped ? { ok: true, message: `Capped at ${remainingPlanned} ${row.unit} still owed.` } : undefined as any }));
-    setReview({ itemName: row.itemName, branch, actions });
+    setReview({ itemName: row.itemName, branch, actions, shortfalls });
   };
 
   if (review) {
@@ -5937,6 +6259,16 @@ function PlannedDispatchPanel({ rows, orders, onDispatch, dispatchedBy }: {
           // planner may want to print the invoice up to 3x before closing);
           // it closes itself via onClose when the planner clicks "Done" there.
           resetDispatchIds();
+          if (review.shortfalls && review.shortfalls.length > 0) {
+            for (const s of review.shortfalls) {
+              const order = orders.find(o => o.id === s.orderId);
+              if (!order) continue;
+              const items = order.items.map(i => sameItem(i.itemName, review.itemName)
+                ? { ...i, quantity: s.newQuantity, originalPcs: i.dispatchUnit === 'pcs' ? s.newQuantity : undefined }
+                : i);
+              void updateOrderItems(order.id, items);
+            }
+          }
           setQtyFor(v => ({ ...v, [review.itemName]: '' }));
           setResult(r => ({ ...r, [review.itemName]: { ok: true, message: `Sent to ${review.branch}.` } }));
         }}
@@ -5984,6 +6316,24 @@ function PlannedDispatchPanel({ rows, orders, onDispatch, dispatchedBy }: {
             </div>
             {res && (
               <p className={cn('mt-2 rounded-lg px-3 py-1.5 text-xs font-bold', res.ok ? 'bg-teal-50 text-teal-700 border border-teal-200' : 'bg-red-50 text-red-700 border border-red-200')}>{res.message}</p>
+            )}
+            {underQtyPrompt && underQtyPrompt.row.itemName === row.itemName && (
+              <div className="mt-2 rounded-lg border border-orange-300 bg-orange-50 p-2.5">
+                <p className="text-[11px] font-black text-orange-900">
+                  Sending less than planned — the rest will be cancelled, not left pending:
+                </p>
+                <p className="mt-1 text-[11px] font-bold text-orange-800">
+                  {row.itemName}: {qtyFmt(underQtyPrompt.owed)} {row.unit} owed · sending {qtyFmt(underQtyPrompt.typed)} {row.unit} · {qtyFmt(underQtyPrompt.shortBy)} {row.unit} will be cancelled
+                </p>
+                <div className="mt-1.5 flex flex-wrap gap-1.5">
+                  <button onClick={() => { buildReview(row, true); setUnderQtyPrompt(null); }} className="rounded-lg bg-orange-600 px-2.5 py-1 text-[10px] font-black text-white hover:bg-orange-700">
+                    Confirm — send this much, cancel the rest
+                  </button>
+                  <button onClick={() => setUnderQtyPrompt(null)} className="rounded-lg border border-orange-300 bg-white px-2.5 py-1 text-[10px] font-black text-orange-800 hover:bg-orange-100">
+                    Back, let me adjust the quantity
+                  </button>
+                </div>
+              </div>
             )}
           </div>
         );
@@ -6051,8 +6401,13 @@ function CustomDispatchPanel({ rows, orders, onDispatch, dispatchedBy, leftoverB
     setError(null);
     const actions: PendingDispatchAction[] = [];
     let clampedAny = false;
-    for (const { row, remainingPlanned, defaultQty } of lines) {
-      if (!selected.has(row.itemName)) continue;
+    // FEATURE (2026-08-25): "selection order, not alphabetical" — same fix
+    // as the other two dispatch flows above.
+    const lineByName = new Map(lines.map(l => [l.row.itemName, l]));
+    for (const itemName of selected) {
+      const line = lineByName.get(itemName);
+      if (!line) continue;
+      const { row, remainingPlanned, defaultQty } = line;
       const typed = qtyFor(row.itemName, defaultQty);
       // BUG FIX (2026-08-19): same fix as the other dispatch flows — a
       // planner-typed quantity (qty[itemName] set explicitly, as opposed to
@@ -6972,6 +7327,339 @@ function EmptyState({ text }: { text: string }) {
     <div className="flex flex-col items-center gap-2 rounded-2xl border border-dashed border-border py-12 text-center">
       <AlertTriangle className="size-6 text-slate-300" />
       <p className="text-xs font-bold text-muted-foreground">{text}</p>
+    </div>
+  );
+}
+
+// FEATURE (2026-08-25, audit #11): "New Dump/Damage tab, copied from SNB
+// Admin" — adapted from AdminSNBDashboard.tsx's WasteLogsTab, generalized
+// for Planner's multi-branch context (a branch selector, since Planner
+// operates across VRSNB and SNB rather than one fixed branch). Deliberately
+// scoped down from the reference implementation in two ways:
+// 1. Only Dump/Damage sub-tabs — omits "Trans Out", since Planner already
+//    has a separate, working Transfer Out tab (PlannerTransferOutTab) built
+//    on a different backing table (planner_leftover_ledger). Duplicating
+//    that here with a second, different mechanism would be confusing.
+// 2. Logging + history only, no edit/cancel — the reference implementation's
+//    edit/cancel RPCs (edit_snb_waste_log_secure, cancel_snb_waste_log_secure)
+//    turned out to be genuinely hardcoded to SNB only (branch='SNB' baked
+//    directly into the query, not a parameter), which is a much larger,
+//    separate change than generalizing the logging path. Left out rather
+//    than rushed.
+// The actual stock-deducting RPC (record_branch_waste_batch_secure /
+// record_branch_waste_secure) already supported SNB and VRSNB generically —
+// it just didn't allow the 'planner' role, and the shared permission
+// function hardcodes 'planner' to a single home branch ('Hosur'), which
+// would've blocked this even after adding the role. Fixed narrowly, inside
+// only that one RPC, without touching the shared function other RPCs rely on.
+function PlannerWasteLogsTab() {
+  const currentUser = useAuthStore(s => s.currentUser);
+  const userName = currentUser?.displayName || currentUser?.username || 'Planner';
+  const { items: catalogItems, loadCatalog } = useBranchCatalogStore();
+  const { stock, fetchBranchData } = useBranchStore();
+  const [branch, setBranch] = useState<'VRSNB' | 'SNB'>('VRSNB');
+  const [subTab, setSubTab] = useState<'Dump' | 'Damage'>('Dump');
+
+  useEffect(() => { void loadCatalog(branch); void fetchBranchData(branch); }, [branch, loadCatalog, fetchBranchData]);
+
+  const activeCatalog = useMemo(() => (catalogItems[branch] ?? []).filter(i => i.active).sort((a, b) => a.name.localeCompare(b.name)), [catalogItems, branch]);
+  const branchStock = stock[branch] ?? [];
+  const stockRowFor = (itemName: string) => {
+    const catalogItem = activeCatalog.find(i => i.name.trim().toLowerCase() === itemName.trim().toLowerCase());
+    return branchStock.find(s =>
+      catalogItem?.barcode != null && s.itemBarcode != null
+        ? s.itemBarcode === catalogItem.barcode
+        : s.itemName.trim().toLowerCase() === itemName.trim().toLowerCase());
+  };
+
+  const [lineDraft, setLineDraft] = useState({ itemName: '', quantity: '', unit: 'pcs' as string });
+  useEffect(() => {
+    if (!lineDraft.itemName && activeCatalog.length > 0) {
+      const first = activeCatalog[0];
+      setLineDraft({ itemName: first.name, quantity: '', unit: first.uom === 'Kgs' ? 'kg' : 'pcs' });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only seed the default once catalog loads, not on every re-render.
+  }, [activeCatalog.length]);
+  const [lines, setLines] = useState<Array<{ lineId: string; itemName: string; quantity: string; unit: string }>>([]);
+  const [meta, setMeta] = useState({ reason: '', verifiedBy: '' });
+  const [validationError, setValidationError] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [notice, setNotice] = useState('');
+
+  // Reset queued lines when switching sub-tab or branch, same reasoning as
+  // the reference implementation: a Dump list shouldn't bleed into Damage,
+  // and a VRSNB list shouldn't bleed into SNB.
+  useEffect(() => { setLines([]); setValidationError(''); }, [subTab, branch]);
+
+  const draftCurrentQty = Number(stockRowFor(lineDraft.itemName)?.quantity || 0);
+  const queuedForDraftItem = lines.filter(l => l.itemName.trim().toLowerCase() === lineDraft.itemName.trim().toLowerCase()).reduce((s, l) => s + Number(l.quantity || 0), 0);
+  const draftRemaining = Math.max(0, draftCurrentQty - queuedForDraftItem);
+
+  const addLine = () => {
+    setValidationError('');
+    const qty = Number(lineDraft.quantity);
+    if (!lineDraft.itemName || !Number.isFinite(qty) || qty <= 0) {
+      setValidationError('Enter a valid quantity greater than zero.');
+      return;
+    }
+    if (qty > draftRemaining) {
+      setValidationError(`Cannot queue ${qty} ${lineDraft.unit} for ${lineDraft.itemName}; only ${draftRemaining} available (after items already added).`);
+      return;
+    }
+    setLines(prev => [...prev, { lineId: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, itemName: lineDraft.itemName, quantity: lineDraft.quantity, unit: lineDraft.unit }]);
+    setLineDraft(prev => ({ ...prev, quantity: '' }));
+  };
+  const removeLine = (lineId: string) => setLines(prev => prev.filter(l => l.lineId !== lineId));
+
+  const [rows, setRows] = useState<Array<{ id: string; logType: string; itemName: string; quantity: number; unit: string; reason: string; verifiedBy: string; createdBy: string; createdAt: string }>>([]);
+  const [rowsLoading, setRowsLoading] = useState(true);
+  const loadRows = useCallback(async () => {
+    setRowsLoading(true);
+    const { data, error: loadError } = await supabase
+      .from('branch_waste_logs')
+      .select('id,log_type,item_name,quantity,unit,reason,verified_by,created_by_username,created_at,status')
+      .eq('branch', branch)
+      .in('log_type', ['Dump', 'Damage'])
+      .order('created_at', { ascending: false })
+      .limit(200);
+    setRowsLoading(false);
+    if (!loadError && data) {
+      setRows((data as Record<string, unknown>[]).map(d => ({
+        id: d.id as string, logType: d.log_type as string, itemName: d.item_name as string,
+        quantity: Number(d.quantity) || 0, unit: d.unit as string, reason: (d.reason as string) || '',
+        verifiedBy: (d.verified_by as string) || '', createdBy: (d.created_by_username as string) || '',
+        createdAt: d.created_at as string,
+      })).filter(r => (data.find(d => d.id === r.id) as Record<string, unknown>)?.status !== 'Cancelled'));
+    }
+  }, [branch]);
+  useEffect(() => { void loadRows(); }, [loadRows]);
+
+  const save = async () => {
+    setValidationError(''); setNotice('');
+    if (lines.length === 0) { setValidationError('Add at least one item to the list before saving.'); return; }
+    if (!meta.reason.trim() || !meta.verifiedBy.trim()) { setValidationError('Reason and Verified By are mandatory.'); return; }
+    setSaving(true);
+    try {
+      const { error: rpcError } = await supabase.rpc('record_branch_waste_batch_secure', {
+        p_branch: branch,
+        p_log_type: subTab,
+        p_items: lines.map(line => {
+          const catalogItem = activeCatalog.find(i => i.name.trim().toLowerCase() === line.itemName.trim().toLowerCase());
+          const currentRow = stockRowFor(line.itemName);
+          return { itemBarcode: catalogItem?.barcode ?? null, itemName: currentRow?.itemName || line.itemName, quantity: Number(line.quantity), unit: line.unit };
+        }),
+        p_reason: meta.reason.trim(),
+        p_verified_by: meta.verifiedBy.trim(),
+        p_checklist: [],
+      });
+      if (rpcError) throw rpcError;
+      void useNotificationStore.getState().pushStockMovement({
+        branch, logType: subTab,
+        items: lines.map(l => ({ itemName: l.itemName, quantity: Number(l.quantity), unit: l.unit })),
+        totalValue: lines.reduce((s, l) => s + (activeCatalog.find(i => i.name.trim().toLowerCase() === l.itemName.trim().toLowerCase())?.price || 0) * Number(l.quantity || 0), 0),
+        reason: meta.reason.trim(), postedBy: userName, recipientRoles: ['owner'],
+      });
+      printWasteLogBatch(
+        lines.map(l => ({ itemName: l.itemName, quantity: Number(l.quantity), unit: l.unit })),
+        subTab, meta.reason, meta.verifiedBy, userName, [], branch,
+      );
+      setNotice(`${lines.length} item${lines.length > 1 ? 's' : ''} recorded as ${subTab} for ${branch}.`);
+      setLines([]);
+      setMeta({ reason: '', verifiedBy: '' });
+      await Promise.all([loadRows(), fetchBranchData(branch, true)]);
+    } catch (err) {
+      setValidationError(err instanceof Error ? err.message : 'Unable to save — please try again.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="font-display text-lg font-bold text-foreground">Dump / Damage</h2>
+        <div className="flex gap-1.5 rounded-xl border border-border bg-muted/30 p-1">
+          {(['VRSNB', 'SNB'] as const).map(b => (
+            <button key={b} type="button" onClick={() => setBranch(b)} className={cn('rounded-lg px-3 py-1.5 text-xs font-black', branch === b ? 'bg-primary text-primary-foreground' : 'text-muted-foreground')}>
+              {b}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="flex gap-2">
+        {(['Dump', 'Damage'] as const).map(name => (
+          <button key={name} type="button" onClick={() => setSubTab(name)} className={cn('rounded-xl px-4 py-2 text-xs font-black', subTab === name ? 'bg-red-600 text-white' : 'border border-border bg-card text-foreground')}>
+            {name}
+          </button>
+        ))}
+      </div>
+      {notice && <div className="rounded-xl border border-teal-200 bg-teal-50 px-3 py-2 text-xs font-bold text-teal-700">{notice}</div>}
+      {validationError && <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700">{validationError}</div>}
+      <div className="grid gap-4 xl:grid-cols-[420px_minmax(0,1fr)]">
+        <div className="space-y-3 rounded-2xl border border-border bg-card p-4">
+          <h3 className="text-sm font-black text-foreground">{subTab} Entry — {branch}</h3>
+          <label className="block space-y-1">
+            <span className="text-xs font-black text-muted-foreground">Item — in stock: {draftRemaining} {lineDraft.unit}</span>
+            <select
+              className="h-10 w-full rounded-xl border border-border px-3 text-sm font-bold"
+              value={lineDraft.itemName}
+              onChange={e => { const unit = stockRowFor(e.target.value)?.unit || 'pcs'; setLineDraft({ itemName: e.target.value, quantity: '', unit }); }}
+            >
+              {activeCatalog.map(i => <option key={i.barcode} value={i.name}>{i.name}</option>)}
+            </select>
+          </label>
+          <div className="grid grid-cols-2 gap-3">
+            <label className="space-y-1">
+              <span className="text-xs font-black text-muted-foreground">Quantity</span>
+              <input type="number" min="0" step="0.001" value={lineDraft.quantity} onChange={e => setLineDraft(prev => ({ ...prev, quantity: e.target.value }))} className="h-10 w-full rounded-xl border border-border px-3 text-sm font-bold" />
+            </label>
+            <label className="space-y-1">
+              <span className="text-xs font-black text-muted-foreground">Unit</span>
+              <input value={lineDraft.unit} readOnly disabled title="Unit is fixed to the item's live stock unit" className="h-10 w-full rounded-xl border border-border bg-muted px-3 text-sm font-bold text-muted-foreground" />
+            </label>
+          </div>
+          <button type="button" onClick={addLine} className="flex w-full items-center justify-center gap-1.5 rounded-xl bg-amber-500 py-2.5 text-sm font-black text-white hover:bg-amber-600">
+            <Plus className="size-4" /> Add item to list
+          </button>
+          {lines.length > 0 && (
+            <div className="space-y-1.5 rounded-xl bg-muted/30 p-3">
+              <p className="text-[10px] font-black uppercase tracking-wide text-muted-foreground">{lines.length} item{lines.length > 1 ? 's' : ''} queued</p>
+              {lines.map(line => (
+                <div key={line.lineId} className="flex items-center justify-between gap-2 rounded-lg border border-border bg-card px-3 py-2">
+                  <span className="text-sm font-bold text-foreground">{line.itemName} · {line.quantity} {line.unit}</span>
+                  <button type="button" onClick={() => removeLine(line.lineId)} className="rounded-lg p-1 text-muted-foreground hover:bg-red-50 hover:text-red-600"><X className="size-3.5" /></button>
+                </div>
+              ))}
+            </div>
+          )}
+          <label className="block space-y-1">
+            <span className="text-xs font-black text-muted-foreground">Reason</span>
+            <input value={meta.reason} onChange={e => setMeta(prev => ({ ...prev, reason: e.target.value }))} className="h-10 w-full rounded-xl border border-border px-3 text-sm font-bold" placeholder="Why this stock is being removed" />
+          </label>
+          <label className="block space-y-1">
+            <span className="text-xs font-black text-muted-foreground">Verified By</span>
+            <input value={meta.verifiedBy} onChange={e => setMeta(prev => ({ ...prev, verifiedBy: e.target.value }))} className="h-10 w-full rounded-xl border border-border px-3 text-sm font-bold" placeholder="Who checked this" />
+          </label>
+          <button type="button" disabled={saving} onClick={() => void save()} className="flex w-full items-center justify-center gap-1.5 rounded-xl bg-red-600 py-2.5 text-sm font-black text-white hover:bg-red-700 disabled:opacity-50">
+            {saving ? 'Saving…' : `Save ${subTab} Batch`}
+          </button>
+        </div>
+        <div className="space-y-2">
+          <h3 className="text-sm font-black text-foreground">Recent {subTab} entries — {branch}</h3>
+          {rowsLoading && <p className="text-xs font-bold text-muted-foreground">Loading…</p>}
+          {!rowsLoading && rows.filter(r => r.logType === subTab).length === 0 && <EmptyState text={`No ${subTab.toLowerCase()} entries yet for ${branch}.`} />}
+          <div className="space-y-1.5">
+            {rows.filter(r => r.logType === subTab).map(r => (
+              <div key={r.id} className="rounded-xl border border-border bg-card p-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-black text-foreground">{r.itemName}</span>
+                  <span className="text-sm font-bold text-muted-foreground">{r.quantity} {r.unit}</span>
+                </div>
+                <p className="text-xs text-muted-foreground">{r.reason} · verified by {r.verifiedBy} · {r.createdBy} · {new Date(r.createdAt).toLocaleString('en-IN')}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// FEATURE (2026-08-26): "Batch Calculation sub-tab in Planning" — pick a
+// recipe item and a number of batches, get the total kg/pcs output.
+// bakery_recipes.output_qty is exactly "how much one batch of this recipe
+// yields" (confirmed directly against the table — e.g. Athirasam: 100 pcs
+// per batch, Mysore Pak: 8.5 kg per batch), so the calculation itself is
+// just outputQty × batches — the useRecipeStore data already carries
+// everything needed, no new backend work required.
+function BatchCalculationSubTab() {
+  const { recipes, loadRecipes } = useRecipeStore();
+  useEffect(() => { void loadRecipes(); }, [loadRecipes]);
+
+  const recipeList = useMemo(() => {
+    return Object.values(recipes)
+      .filter(r => r.outputQty != null && r.outputQty > 0 && r.outputUnit != null)
+      .map(r => ({
+        itemId: r.itemId,
+        // Seed-only recipes (no database override yet) may not carry a
+        // separate itemName — fall back to a readable version of the id
+        // rather than showing a raw slug.
+        itemName: r.itemName || r.itemId.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
+        outputQty: r.outputQty as number,
+        outputUnit: r.outputUnit as string,
+      }))
+      .sort((a, b) => a.itemName.localeCompare(b.itemName));
+  }, [recipes]);
+
+  const [search, setSearch] = useState('');
+  const [selected, setSelected] = useState<typeof recipeList[number] | null>(null);
+  const [batches, setBatches] = useState('');
+
+  const filtered = useMemo(
+    () => !search.trim() ? recipeList : recipeList.filter(r => r.itemName.toLowerCase().includes(search.trim().toLowerCase())),
+    [recipeList, search],
+  );
+
+  const batchNumber = Number(batches);
+  const batchValid = Number.isFinite(batchNumber) && batchNumber > 0;
+  const totalOutput = selected && batchValid ? Math.round(selected.outputQty * batchNumber * 1000) / 1000 : null;
+
+  return (
+    <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_22rem]">
+      <section className="space-y-3 card-base p-5">
+        <label className="space-y-1">
+          <span className="text-[11px] font-black uppercase tracking-wide text-muted-foreground">Search recipe item</span>
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+            <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search item..." className="h-11 w-full rounded-xl border border-border bg-background pl-9 pr-3 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-primary/30" />
+          </div>
+        </label>
+        {recipeList.length === 0 && <EmptyState text="No recipes with a batch yield found yet." />}
+        <div className="max-h-[28rem] space-y-1.5 overflow-y-auto">
+          {filtered.map(r => (
+            <button
+              key={r.itemId}
+              type="button"
+              onClick={() => setSelected(r)}
+              className={cn('flex w-full items-center justify-between gap-2 rounded-xl border px-3 py-2.5 text-left', selected?.itemId === r.itemId ? 'border-primary bg-primary/5' : 'border-border bg-card hover:bg-muted')}
+            >
+              <span className="text-sm font-bold text-foreground">{r.itemName}</span>
+              <span className="text-xs font-bold text-muted-foreground">{r.outputQty} {r.outputUnit} / batch</span>
+            </button>
+          ))}
+        </div>
+      </section>
+
+      <aside className="space-y-3 card-base p-5">
+        <h3 className="text-sm font-black text-foreground">Batch Calculator</h3>
+        {!selected && <p className="text-xs font-bold text-muted-foreground">Pick an item on the left first.</p>}
+        {selected && (
+          <>
+            <div className="rounded-xl border border-border bg-muted/30 p-3">
+              <p className="text-sm font-black text-foreground">{selected.itemName}</p>
+              <p className="text-xs font-bold text-muted-foreground">1 batch = {selected.outputQty} {selected.outputUnit}</p>
+            </div>
+            <label className="block space-y-1">
+              <span className="text-xs font-black text-muted-foreground">Number of batches</span>
+              <input
+                type="number" min="0" step="0.5" value={batches}
+                onChange={e => setBatches(e.target.value)}
+                placeholder="e.g. 3"
+                className="h-11 w-full rounded-xl border border-border bg-background px-3 text-sm font-bold"
+              />
+            </label>
+            {batches.trim() !== '' && !batchValid && (
+              <p className="text-xs font-bold text-destructive">Enter a batch number greater than 0.</p>
+            )}
+            {totalOutput != null && (
+              <div className="rounded-xl border border-primary/30 bg-primary/5 p-4 text-center">
+                <p className="text-[11px] font-black uppercase tracking-wide text-muted-foreground">Total output</p>
+                <p className="font-display text-3xl font-black text-primary">{totalOutput} {selected.outputUnit}</p>
+              </div>
+            )}
+          </>
+        )}
+      </aside>
     </div>
   );
 }

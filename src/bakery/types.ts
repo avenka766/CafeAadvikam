@@ -24,6 +24,19 @@ export interface BakeryOrderItem {
    * Defaults to 'kg' when absent (legacy orders).
    */
   dispatchUnit?: 'pcs' | 'kg';
+  /**
+   * FEATURE (2026-08-26): "merge orders from different branches on the same
+   * date too" — when Store's "Combine Into One" merges orders that
+   * originally targeted DIFFERENT branches, the surviving merged item's
+   * total quantity would otherwise be indistinguishable from a single-
+   * branch order — losing which branch needs how much, which Dispatch
+   * genuinely needs later. Set ONLY when a merge actually combined
+   * cross-branch quantities for this item; absent (undefined) for every
+   * normal, single-branch order — existing code that doesn't know about
+   * this field keeps working exactly as before. Keys are branch names,
+   * values are that branch's share of `quantity` above (they sum to it).
+   */
+  branchSplit?: Partial<Record<Branch, number>>;
 }
 
 export interface BakeryOrder {
