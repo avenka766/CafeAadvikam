@@ -242,12 +242,17 @@ export default function BottomNav() {
       { label: "Reports", icon: <BarChart3 className="size-5" />, path: "/bakery/store?tab=report" },
     );
   } else if (currentUser.role === "planner") {
+    // BUG FIX: all five items used to point at the bare "/bakery/planner"
+    // path with no `?tab=`, so they shared one React key (duplicate-key
+    // warning) and every button navigated to the exact same place — the
+    // mobile bottom nav couldn't actually switch tabs. Query values must
+    // match PlannerDashboard's PlannerTab keys (see PlannerDashboard.tsx).
     navItems.push(
-      { label: "Orders", icon: <Flame className="size-5" />, path: "/bakery/planner" },
-      { label: "Production", icon: <Package className="size-5" />, path: "/bakery/planner" },
-      { label: "Dispatch", icon: <History className="size-5" />, path: "/bakery/planner" },
-      { label: "Hosur", icon: <ShoppingCart className="size-5" />, path: "/bakery/planner" },
-      { label: "Closure", icon: <WalletCards className="size-5" />, path: "/bakery/planner" },
+      { label: "Orders", icon: <Flame className="size-5" />, path: "/bakery/planner?tab=incoming" },
+      { label: "Production", icon: <Package className="size-5" />, path: "/bakery/planner?tab=production" },
+      { label: "Dispatch", icon: <History className="size-5" />, path: "/bakery/planner?tab=dispatch" },
+      { label: "Hosur", icon: <ShoppingCart className="size-5" />, path: "/bakery/planner?tab=hosur" },
+      { label: "Closure", icon: <WalletCards className="size-5" />, path: "/bakery/planner?tab=closure" },
     );
   } else if (currentUser.role === "branch_hosur") {
     // BUG FIX: /branch/hosur was retired — Hosur billing/shops/dispatch are

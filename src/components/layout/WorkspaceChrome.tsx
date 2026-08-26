@@ -111,12 +111,12 @@ function navForRole(role?: string): NavItem[] {
     case 'admin':
       return [
         { label: 'Online Orders', path: '/admin-dashboard?tab=public-orders', icon: <Smartphone className="size-4" />, group: 'Main' },
-        { label: 'Planning', path: '/admin-dashboard/planning', icon: <ClipboardList className="size-4" />, group: 'Main' },
         { label: 'Wallet', path: '/admin-dashboard?tab=wallet', icon: <WalletCards className="size-4" />, group: 'Main' },
         { label: 'Promotions', path: '/admin-dashboard?tab=promotions', icon: <Sparkles className="size-4" />, group: 'Main' },
         { label: 'Dashboard Overview', path: '/admin-dashboard?tab=overview', icon: <LayoutDashboard className="size-4" />, group: 'Main' },
         { label: 'Cafe Control', path: '/admin-dashboard?tab=cafe', icon: <Store className="size-4" />, group: 'Main' },
         { label: 'Branch Sales', path: '/admin-dashboard?tab=branches', icon: <BarChart3 className="size-4" />, group: 'Main' },
+        { label: 'Hosur Sales', path: '/admin-dashboard?tab=hosur', icon: <Truck className="size-4" />, group: 'Main' },
         { label: 'Items', path: '/bakery/items', icon: <Package className="size-4" />, group: 'Operations' },
         { label: 'Daily Closure', path: '/admin-dashboard?tab=daily-closure', icon: <WalletCards className="size-4" />, group: 'Operations' },
         { label: 'Credit Pending', path: '/admin-dashboard?tab=credits', icon: <CreditCard className="size-4" />, group: 'Operations' },
