@@ -32,6 +32,14 @@ import { printViaIframe } from '@/lib/printViaIframe';
 
 import { PACKING_CLOSURE_KEY_PREFIX, packingBusinessDateToday } from './packingCounter';
 
+// BUG FIX: same case-sensitivity bug found repeatedly across this audit —
+// raw itemName === itemName comparison silently misses a match whenever
+// two records for the same logical item were typed with different casing
+// (e.g. "Bun" vs "BUN"), which for this leftover calculation specifically
+// means dispatched quantity gets undercounted, overstating "leftover" for
+// an item that was actually fully sent.
+const sameItem = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
+
 const businessDate = (value?: string | null) => value ? new Intl.DateTimeFormat('en-CA', {
   timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit',
 }).format(new Date(value)) : '';
@@ -341,9 +349,13 @@ export default function PackingDailyClosureTab({ onCounterStatusChange }: { onCo
   const itemSummary = useMemo(() => {
     const map = new Map<string, { itemName: string; kg: number; pcs: number; entries: number; branches: Set<string> }>();
     dayDispatches.forEach(({ entry }) => {
-      const row = map.get(entry.itemName) ?? { itemName: entry.itemName, kg: 0, pcs: 0, entries: 0, branches: new Set<string>() };
+      // BUG FIX: same case-sensitivity bug as above — raw entry.itemName
+      // as the map key would split e.g. "Bun"/"BUN" into two separate
+      // summary rows instead of one combined total.
+      const key = entry.itemName.trim().toLowerCase();
+      const row = map.get(key) ?? { itemName: entry.itemName, kg: 0, pcs: 0, entries: 0, branches: new Set<string>() };
       if (entry.unit === 'pcs') row.pcs += entry.quantity; else row.kg += entry.quantity;
-      row.entries += 1; row.branches.add(entry.branch); map.set(entry.itemName, row);
+      row.entries += 1; row.branches.add(entry.branch); map.set(key, row);
     });
     return Array.from(map.values()).map(row => ({ ...row, branches: Array.from(row.branches) })).sort((a,b) => b.kg + b.pcs - (a.kg + a.pcs));
   }, [dayDispatches]);
@@ -360,8 +372,8 @@ export default function PackingDailyClosureTab({ onCounterStatusChange }: { onCo
     // exactly the status that should have been included here.
     if (!['produced', 'dispatched'].includes(order.status)) return [];
     return (order.preparedItems ?? []).flatMap(prepared => {
-      const source = order.items.find(item => item.itemId === prepared.itemId || item.itemName === prepared.itemName);
-      const dispatches = (order.dispatchLog ?? []).filter(entry => entry.itemName === prepared.itemName);
+      const source = order.items.find(item => item.itemId === prepared.itemId || sameItem(item.itemName, prepared.itemName));
+      const dispatches = (order.dispatchLog ?? []).filter(entry => sameItem(entry.itemName, prepared.itemName));
       const dispatchedKg = dispatches.reduce((sum, entry) => {
         if (entry.unit === 'pcs' && source?.weightGrams) return sum + (entry.quantity * source.weightGrams) / 1000;
         return sum + entry.quantity;

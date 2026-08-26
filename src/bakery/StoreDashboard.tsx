@@ -186,13 +186,26 @@ function formatMaterialQuantity(quantity: number, unit: string): string {
   return `${fmtPreciseQty(quantity)} ${unit}`;
 }
 
+// BUG FIX: this used `d.toISOString().slice(0, 10)` — UTC, not Kolkata
+// time. Between midnight and 5:30 AM IST, UTC is still on the PREVIOUS
+// calendar day (Kolkata is UTC+5:30), so a Store staff member opening the
+// Daily Closure tab during an early-morning shift would silently see
+// yesterday's date pre-filled instead of today's, querying the wrong
+// day's deductions by default. Every other date computation in this app
+// (kolkataDateKey/kolkataDateLabel above) already accounts for this —
+// this was the one that didn't.
 function inputDate(d: Date) {
-  return d.toISOString().slice(0, 10);
+  return kolkataDateKey(d.toISOString());
 }
 
 function dayWindow(date: string) {
-  const from = new Date(`${date}T00:00:00`);
-  const to = new Date(`${date}T23:59:59.999`);
+  // Build the UTC instant range that corresponds to midnight-to-midnight
+  // in Kolkata time for this calendar date, since the database stores
+  // timestamps in UTC — a naive `${date}T00:00:00` (parsed in the
+  // browser's own local timezone) would shift the window by whatever the
+  // browser's offset happens to be, same class of bug as inputDate above.
+  const from = new Date(`${date}T00:00:00+05:30`);
+  const to = new Date(`${date}T23:59:59.999+05:30`);
   return { from: from.toISOString(), to: to.toISOString() };
 }
 
@@ -1164,14 +1177,18 @@ function InlineDeductionsView() {
 
   const load = useCallback(async () => {
     setLoading(true);
-    const today = new Date();
-    const from = new Date(today); from.setHours(0,0,0,0);
-    const to   = new Date(today); to.setHours(23,59,59,999);
+    // BUG FIX: this used new Date() + setHours(0,0,0,0)/(23,59,59,999) —
+    // the BROWSER's own local timezone, not Kolkata time. Every other date
+    // boundary in this app explicitly avoids depending on the device's own
+    // timezone setting being correct (kolkataDateKey/dayWindow above) —
+    // this "today's deductions" view was the one place still trusting it,
+    // risking the wrong day's data on a misconfigured device.
+    const { from, to } = dayWindow(inputDate(new Date()));
     const { data, error } = await supabase
       .from('store_material_deductions')
       .select('id, order_number, material_name, quantity_deducted, unit, stock_before, stock_after, deducted_by, deducted_at')
-      .gte('deducted_at', from.toISOString())
-      .lte('deducted_at', to.toISOString())
+      .gte('deducted_at', from)
+      .lte('deducted_at', to)
       .order('deducted_at', { ascending: false });
     if (!error && data) {
       setRows(data.map((r: Record<string, unknown>) => ({
@@ -1308,9 +1325,14 @@ function StoreInventoryTab() {
   const lowItems = items.filter(i => i.quantity >= 0 && i.quantity <= i.minThreshold);
   const filtered = useMemo(() => {
     const q = search.toLowerCase();
-    const base = stockView === 'low' ? lowItems : items;
+    // BUG FIX: the "Low/Neg" tab's own badge counts lowItems.length +
+    // negativeItems.length, but this list only ever showed lowItems —
+    // lowItems explicitly requires quantity >= 0, so a negative-stock item
+    // (the most critical case to actually see) never appeared here at all,
+    // despite being counted in the badge that led someone to click in.
+    const base = stockView === 'low' ? [...negativeItems, ...lowItems] : items;
     return base.filter(i => !q || i.name.toLowerCase().includes(q));
-  }, [items, lowItems, search, stockView]);
+  }, [items, lowItems, negativeItems, search, stockView]);
 
   const actor = currentUser?.displayName || currentUser?.username || 'Store user';
   const notifyStockChange = async (action: 'created' | 'updated', itemId: string, itemName: string, summary: string) => {
@@ -1552,9 +1574,18 @@ function OrdersTab() {
   // splits the order, moving the released portion into its own separate
   // record with productionReleasedAt already set, so anything still
   // matching needsProductionRelease is guaranteed to have zero items
-  // already deducted. This is the same filter `pending` already relies on
-  // for safe display, not a new, unproven condition.
-  const mergeable = orders.filter(o => o.status === 'accepted' || (o.status === 'store_confirmed' && needsProductionRelease(o)));
+  // BUG FIX: the comment above claimed this was "broadened to match
+  // pending's own filter exactly," but it wasn't — it kept an extra
+  // `o.status === 'store_confirmed'` restriction that pending doesn't
+  // have. needsProductionRelease(o) already correctly determines safety
+  // (produced with productionReleasedAt still null included the same as
+  // store_confirmed), so that extra restriction just silently excluded
+  // 'produced'-status orders from ever being combinable — even though
+  // they show up as pending and display "Awaiting Baker Selection" the
+  // same as any other. If every currently-pending order happened to be
+  // 'produced' status, mergeable.length was 0 and the Combine button
+  // simply never appeared, no matter how many pending orders existed.
+  const mergeable = orders.filter(o => o.status === 'accepted' || needsProductionRelease(o));
 
   const filteredPending = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -1601,27 +1632,20 @@ function OrdersTab() {
       // combined item, so Dispatch can still split the merged batch
       // correctly per branch later, even though the separate order rows
       // (and their individual target_branch values) are gone after this.
-      const byBranch = new Map<string, string[]>();
-      for (const o of mergeable) {
-        const key = kolkataDateKey(o.createdAt);
-        const list = byBranch.get(key) ?? [];
-        list.push(o.id);
-        byBranch.set(key, list);
-      }
-      let mergedAny = false;
-      for (const ids of byBranch.values()) {
-        if (ids.length > 1) { await mergeOrdersForStore(ids); mergedAny = true; }
-      }
-      // Only a real manual click should show "nothing to combine" — an
-      // automatic background attempt finding nothing to do isn't news to
-      // anyone and shouldn't surface as an error banner.
-      if (!mergedAny && !silent) {
-        // BUG FIX: this message was written before the date-only grouping
-        // change above and still blamed "different branch" — the real
-        // reason nothing merged is that no two pending orders share the
-        // same calendar date, not branch (branch no longer matters here).
-        setMergeError('Nothing to combine — no two pending orders were created on the same date yet, so there\'s nothing to merge together.');
-      }
+      // FEATURE (2026-08-26): "the date should be considered when the
+      // planner sends, not when the order was placed" — grouping used to
+      // be each order's own createdAt date, which meant an order sitting
+      // pending from an earlier day would never combine with today's
+      // orders even though Store is processing/sending them all together
+      // right now. Every order in `mergeable` is, by definition, being
+      // acted on in this single "Combine" action today, so there's only
+      // ever one group now — merge them all together directly rather than
+      // building a Map keyed by a value that's the same for everything.
+      // Reaching here means mergeable.length >= 2 already (checked at the
+      // top of this function, and mergeable can't change mid-call), so
+      // this always has something to combine now that grouping is a
+      // single "today" bucket rather than a per-date split.
+      await mergeOrdersForStore(mergeable.map(o => o.id));
     } catch (err) {
       if (!silent) setMergeError(err instanceof Error ? err.message : 'Failed to combine orders — please try again.');
     } finally {
@@ -2191,16 +2215,18 @@ function SupplierItemsSelector({
 
 function SupplierModal({
   initial,
+  initialBusinessName,
   onClose,
   onSave,
 }: {
   initial?: Supplier;
+  initialBusinessName?: string;
   onClose: () => void;
   onSave: (data: SupplierFormData) => Promise<string | null>;
 }) {
   const { items: stockItems, loaded: stockLoaded, load: loadStock } = useStoreStockStore();
   const [form, setForm] = useState<Omit<SupplierFormData, 'itemsSupplied'>>({
-    businessName: initial?.businessName ?? '',
+    businessName: initial?.businessName ?? initialBusinessName ?? '',
     contactName: initial?.contactName ?? '',
     phone: initial?.phone ?? '',
     email: initial?.email ?? '',
@@ -2313,6 +2339,11 @@ function SuppliersTab() {
   const [search, setSearch]         = useState('');
   const [showAdd, setShowAdd]       = useState(false);
   const [editSupplier, setEditSupplier] = useState<Supplier | null>(null);
+  // BUG FIX: "tap to register" implied clicking a known-from-master name
+  // would prefill it into the Add form — the button only opened a blank
+  // form (setShowAdd(true), the name itself was never passed anywhere),
+  // silently requiring the exact same name to be retyped by hand.
+  const [prefillName, setPrefillName] = useState('');
 
   useEffect(() => { if (!loaded) load(); }, [loaded, load]);
 
@@ -2346,7 +2377,7 @@ function SuppliersTab() {
         <button onClick={() => load()} disabled={loading} className="size-10 flex items-center justify-center rounded-xl border border-border hover:bg-muted active:scale-90">
           <RefreshCw className={cn('size-3.5 text-muted-foreground', loading && 'animate-spin')} />
         </button>
-        <button onClick={() => setShowAdd(true)}
+        <button onClick={() => { setPrefillName(''); setShowAdd(true); }}
           className="h-10 px-3 rounded-xl cafe-gradient text-primary-foreground text-xs font-body font-bold flex items-center gap-1.5 active:scale-95">
           <Plus className="size-3.5" /> Add
         </button>
@@ -2367,7 +2398,7 @@ function SuppliersTab() {
           <p className="text-[10px] font-body font-bold text-amber-700 uppercase mb-2">Known from Item Master — tap to register</p>
           <div className="flex flex-wrap gap-1.5">
             {unregisteredMaster.map(n => (
-              <button key={n} onClick={() => setShowAdd(true)}
+              <button key={n} onClick={() => { setPrefillName(n); setShowAdd(true); }}
                 className="text-[10px] font-body font-semibold px-2.5 py-1 rounded-full bg-amber-100 text-amber-800 border border-amber-300 hover:bg-amber-200 active:scale-95">
                 + {n}
               </button>
@@ -2392,7 +2423,8 @@ function SuppliersTab() {
 
       {showAdd && (
         <SupplierModal
-          onClose={() => setShowAdd(false)}
+          initialBusinessName={prefillName}
+          onClose={() => { setShowAdd(false); setPrefillName(''); }}
           onSave={addSupplier}
         />
       )}

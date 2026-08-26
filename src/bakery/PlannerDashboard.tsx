@@ -966,21 +966,31 @@ function IncomingOrdersTab({ orders, onAdd }: { orders: BakeryOrder[]; onAdd: Re
 function DayGroupedOrderList({ orders, badgeLabel, badgeTone, editable = false }: { orders: BakeryOrder[]; badgeLabel: string | ((o: BakeryOrder) => string); badgeTone: string | ((o: BakeryOrder) => string); editable?: boolean }) {
   const hosurShopNameByOrderId = useHosurShopNames(orders);
   const groups = useMemo(() => {
-    const map = new Map<string, BakeryOrder[]>();
+    const map = new Map<string, { label: string; orders: BakeryOrder[] }>();
     for (const order of orders) {
-      const day = new Date(order.createdAt).toLocaleDateString('en-IN', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' });
-      if (!map.has(day)) map.set(day, []);
-      map.get(day)!.push(order);
+      // BUG FIX: this used to call toLocaleDateString with no timeZone
+      // option at all — browser-local time, unlike every other date
+      // grouping in this app (kolkataDateKey/kolkataDateLabel). An order
+      // created late at night IST could silently group under the wrong
+      // calendar day if the browser's own timezone differs from IST (or
+      // is simply misconfigured on the device). Key by the actual Kolkata
+      // calendar date; keep the same display label format, just computed
+      // in the same timezone as the key instead of the browser's own.
+      const dayKey = kolkataDateKey(order.createdAt);
+      const label = new Intl.DateTimeFormat('en-IN', { timeZone: 'Asia/Kolkata', weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' }).format(new Date(order.createdAt));
+      const entry = map.get(dayKey) ?? { label, orders: [] };
+      entry.orders.push(order);
+      map.set(dayKey, entry);
     }
-    return Array.from(map.entries()).sort((a, b) => new Date(b[1][0].createdAt).getTime() - new Date(a[1][0].createdAt).getTime());
+    return Array.from(map.entries()).sort((a, b) => b[0].localeCompare(a[0]));
   }, [orders]);
 
   if (orders.length === 0) return <EmptyState text="Nothing here right now." />;
 
   return (
     <div className="space-y-5">
-      {groups.map(([day, dayOrders]) => (
-        <div key={day}>
+      {groups.map(([dayKey, { label: day, orders: dayOrders }]) => (
+        <div key={dayKey}>
           <div className="mb-2 flex items-center gap-2">
             <h3 className="text-xs font-black uppercase tracking-wide text-muted-foreground">{day}</h3>
             <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-bold text-muted-foreground">{dayOrders.length}</span>
@@ -1079,8 +1089,15 @@ function EditableIncomingOrderCard({ order, bucket, label, tone, hosurShopName }
       const k = `${d.itemName.trim().toLowerCase()}|${d.unit}`;
       const existing = mergedByKey.get(k);
       if (existing) {
-        existing.qty = String((Number(existing.qty) || 0) + (Number(d.qty) || 0));
-        if (d.unit === 'pcs') existing.originalPcs = (existing.originalPcs ?? Number(existing.qty)) + (Number(d.qty) || 0);
+        // BUG FIX: this used to read existing.qty for the originalPcs
+        // fallback AFTER already overwriting it with the summed total a
+        // line above — inflating originalPcs by double-counting this
+        // draft's own qty a second time (e.g. merging 10+5 pcs produced
+        // qty=15 but originalPcs=20, not 15). Capture the pre-update
+        // value first, before existing.qty gets reassigned.
+        const priorQty = Number(existing.qty) || 0;
+        existing.qty = String(priorQty + (Number(d.qty) || 0));
+        if (d.unit === 'pcs') existing.originalPcs = (existing.originalPcs ?? priorQty) + (Number(d.qty) || 0);
       } else {
         mergedByKey.set(k, { ...d });
       }
@@ -2526,23 +2543,31 @@ function InvoiceTab({ orders }: { orders: BakeryOrder[] }) {
   // not what was merely ordered) on the selected date.
   const perBranchRows = useMemo(() => {
     const result: Record<Branch, InvoiceRow[]> = { VRSNB: [], SNB: [], Hosur: [] };
-    const totals: Record<Branch, Map<string, { quantity: number; unit: string }>> = {
+    // BUG FIX: "Sent tab showing the same item split into duplicate rows"
+    // — this used raw entry.itemName (straight from dispatch_log database
+    // rows) as the map key. Different dispatch events for the same item
+    // can genuinely have different casing (e.g. one dispatch tagged "Bun",
+    // another "BUN") since they're recorded independently over time —
+    // each casing variant silently became its own separate row instead of
+    // combining into one. Key is now case-normalized; itemName is stored
+    // as its own value (first-seen casing) rather than reconstructed from
+    // the key, so the display still shows a real name, not a lowercased one.
+    const totals: Record<Branch, Map<string, { itemName: string; quantity: number; unit: string }>> = {
       VRSNB: new Map(), SNB: new Map(), Hosur: new Map(),
     };
     for (const order of orders) {
       for (const entry of order.dispatchLog || []) {
         if (kolkataDateKey(entry.dispatchedAt) !== date) continue;
         const b = entry.branch;
-        const key = `${entry.itemName}__${entry.unit || 'kg'}`;
-        const cur = totals[b].get(key) ?? { quantity: 0, unit: entry.unit || 'kg' };
+        const key = `${entry.itemName.trim().toLowerCase()}__${entry.unit || 'kg'}`;
+        const cur = totals[b].get(key) ?? { itemName: entry.itemName, quantity: 0, unit: entry.unit || 'kg' };
         cur.quantity += entry.quantity;
         totals[b].set(key, cur);
       }
     }
     for (const b of BRANCHES) {
       const rows: InvoiceRow[] = [];
-      for (const [key, { quantity, unit }] of totals[b]) {
-        const itemName = key.slice(0, key.lastIndexOf('__'));
+      for (const { itemName, quantity, unit } of totals[b].values()) {
         const unitPrice = priceFor(b, itemName);
         rows.push({ itemName, unit, quantity: Math.round(quantity * 1000) / 1000, unitPrice, lineTotal: Math.round(quantity * unitPrice * 100) / 100 });
       }
@@ -2584,23 +2609,27 @@ function InvoiceTab({ orders }: { orders: BakeryOrder[] }) {
   }, [hosurTargetOrderIdsForDateKey]);
 
   const hosurShopRows = useMemo(() => {
-    const byShop = new Map<string, Map<string, { quantity: number; unit: string }>>();
+    // BUG FIX: same case-sensitivity bug as perBranchRows/hosurShopSummary
+    // above — raw entry.itemName as the key would split e.g. "Bun"/"BUN"
+    // into separate rows within a shop's own breakdown. itemName now
+    // stored as its own value (first-seen casing) instead of reconstructed
+    // from the key, same fix pattern as the other two.
+    const byShop = new Map<string, Map<string, { itemName: string; quantity: number; unit: string }>>();
     for (const order of orders) {
       for (const entry of order.dispatchLog || []) {
         if (entry.branch !== 'Hosur') continue;
         if (kolkataDateKey(entry.dispatchedAt) !== date) continue;
         const shopName = entry.targetHosurOrderId ? (hosurShopNameById.get(entry.targetHosurOrderId) ?? 'Unknown shop') : 'Unassigned (not shop-tagged)';
-        const items = byShop.get(shopName) ?? new Map<string, { quantity: number; unit: string }>();
-        const key = `${entry.itemName}__${entry.unit || 'kg'}`;
-        const cur = items.get(key) ?? { quantity: 0, unit: entry.unit || 'kg' };
+        const items = byShop.get(shopName) ?? new Map<string, { itemName: string; quantity: number; unit: string }>();
+        const key = `${entry.itemName.trim().toLowerCase()}__${entry.unit || 'kg'}`;
+        const cur = items.get(key) ?? { itemName: entry.itemName, quantity: 0, unit: entry.unit || 'kg' };
         cur.quantity += entry.quantity;
         items.set(key, cur);
         byShop.set(shopName, items);
       }
     }
     return Array.from(byShop.entries()).map(([shopName, items]) => {
-      const rows: InvoiceRow[] = Array.from(items.entries()).map(([key, { quantity, unit }]) => {
-        const itemName = key.slice(0, key.lastIndexOf('__'));
+      const rows: InvoiceRow[] = Array.from(items.values()).map(({ itemName, quantity, unit }) => {
         const unitPrice = priceFor('Hosur', itemName);
         return { itemName, unit, quantity: Math.round(quantity * 1000) / 1000, unitPrice, lineTotal: Math.round(quantity * unitPrice * 100) / 100 };
       }).sort((a, c) => a.itemName.localeCompare(c.itemName));
@@ -3047,8 +3076,17 @@ function ReportsTab({ orders }: { orders: BakeryOrder[] }) {
       // pre-cutoff Hosur leftover/adjustment activity never resurfaces here,
       // regardless of what date range the user picks.
       const effectiveFrom = reportsCutoff && reportsCutoff > dateFrom ? reportsCutoff : dateFrom;
-      const fromIso = `${effectiveFrom}T00:00:00`;
-      const toIso = `${dateTo}T23:59:59`;
+      // BUG FIX: these lacked a timezone offset entirely — Postgres would
+      // interpret the naive string using its own session timezone
+      // (typically UTC for Supabase), not Kolkata time like every other
+      // date boundary in this app assumes. That shifts the actual query
+      // window by 5.5 hours from the intended Kolkata calendar-day
+      // boundaries — early-morning entries near the start of the range
+      // could be silently excluded, and late-evening entries just past
+      // the end of the range could be silently included. Explicit +05:30
+      // offset, same pattern dayWindow already uses correctly.
+      const fromIso = `${effectiveFrom}T00:00:00+05:30`;
+      const toIso = `${dateTo}T23:59:59+05:30`;
       const [leftoverRes, adjustmentRes] = await Promise.all([
         supabase.from('hosur_leftover_pool').select('item_name, unit, quantity, unit_price, source_shop_name, reason, status, created_at').gte('created_at', fromIso).lte('created_at', toIso).order('created_at', { ascending: false }),
         supabase.from('hosur_bill_adjustments').select('item_name, unit, quantity, adjustment_amount, reason, created_at').gte('created_at', fromIso).lte('created_at', toIso).order('created_at', { ascending: false }),
@@ -3111,25 +3149,44 @@ function ReportsTab({ orders }: { orders: BakeryOrder[] }) {
   const extraDispatchRows = useMemo(() => ordersInRange.flatMap(o =>
     (o.dispatchLog || [])
       .filter(d => d.isExtra)
+      // BUG FIX: this only relied on ordersInRange's own order-level date
+      // filter — but dispatches for one order can span multiple days
+      // (partial dispatches over time), so an extra item dispatched
+      // OUTSIDE the selected range could still show up here just because
+      // its order happened to be sent within range. Every other
+      // dispatch_log-based computation in this tab (hosurShopRows,
+      // perBranchRows) filters each entry's own dispatchedAt date — this
+      // one didn't, and should, for the same date-scoped report to be
+      // consistent about what "in this range" actually means.
+      .filter(d => {
+        const key = kolkataDateKey(d.dispatchedAt);
+        return key >= dateFrom && key <= dateTo && (!reportsCutoff || key >= reportsCutoff);
+      })
       .map(d => ({
         itemName: d.itemName, quantity: d.quantity, unit: d.unit || 'kg',
         branch: d.branch, dispatchedAt: d.dispatchedAt, dispatchedBy: d.dispatchedBy,
         orderNumber: o.orderNumber, shopName: resolveHosurShopName(d),
       })),
-  ).sort((a, b) => b.dispatchedAt.localeCompare(a.dispatchedAt)), [ordersInRange, hosurShopNameById]);
+  ).sort((a, b) => b.dispatchedAt.localeCompare(a.dispatchedAt)), [ordersInRange, hosurShopNameById, dateFrom, dateTo, reportsCutoff]);
 
   // Every Hosur dispatch (not just extras) broken out by the actual shop it
   // went to, so "Hosur" stops being one combined bucket in the report.
   const hosurShopDispatchRows = useMemo(() => ordersInRange.flatMap(o =>
     (o.dispatchLog || [])
       .filter(d => d.branch === 'Hosur')
+      // BUG FIX: same fix as extraDispatchRows above — filter each
+      // entry's own dispatch date, not just the order's sent-date.
+      .filter(d => {
+        const key = kolkataDateKey(d.dispatchedAt);
+        return key >= dateFrom && key <= dateTo && (!reportsCutoff || key >= reportsCutoff);
+      })
       .map(d => ({
         shopName: resolveHosurShopName(d) || 'Unassigned (not shop-tagged)',
         itemName: d.itemName, quantity: d.quantity, unit: d.unit || 'kg',
         isExtra: Boolean(d.isExtra), dispatchedAt: d.dispatchedAt, dispatchedBy: d.dispatchedBy,
         orderNumber: o.orderNumber,
       })),
-  ), [ordersInRange, hosurShopNameById]);
+  ), [ordersInRange, hosurShopNameById, dateFrom, dateTo, reportsCutoff]);
 
   const hosurShopSummary = useMemo(() => {
     const byShop = new Map<string, { shopName: string; totalDispatches: number; extraCount: number; items: Map<string, { itemName: string; unit: string; quantity: number }> }>();
@@ -3137,7 +3194,12 @@ function ReportsTab({ orders }: { orders: BakeryOrder[] }) {
       const entry = byShop.get(r.shopName) ?? { shopName: r.shopName, totalDispatches: 0, extraCount: 0, items: new Map() };
       entry.totalDispatches += 1;
       if (r.isExtra) entry.extraCount += 1;
-      const itemKey = `${r.itemName}|${r.unit}`;
+      // BUG FIX: same case-sensitivity bug as displayItems/rowsByName/
+      // perBranchRows above — raw, unnormalized r.itemName (straight from
+      // a dispatch_log entry) as the key would split "Bun" and "BUN" into
+      // two separate item rows within this shop's summary instead of one
+      // combined total.
+      const itemKey = `${r.itemName.trim().toLowerCase()}|${r.unit}`;
       const itemEntry = entry.items.get(itemKey) ?? { itemName: r.itemName, unit: r.unit, quantity: 0 };
       itemEntry.quantity += r.quantity;
       entry.items.set(itemKey, itemEntry);
@@ -3158,8 +3220,11 @@ function ReportsTab({ orders }: { orders: BakeryOrder[] }) {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const fromIso = `${dateFrom}T00:00:00`;
-      const toIso = `${dateTo}T23:59:59`;
+      // BUG FIX: same timezone bug as the Hosur leftover/adjustment query
+      // above — naive timestamps get interpreted by Postgres's own
+      // session timezone (typically UTC), not Kolkata time.
+      const fromIso = `${dateFrom}T00:00:00+05:30`;
+      const toIso = `${dateTo}T23:59:59+05:30`;
       const { data } = await supabase.from('cake_master_orders').select('branch, status, order_value, created_at').gte('created_at', fromIso).lte('created_at', toIso);
       if (cancelled) return;
       setCakeOrdersInRange((data ?? []) as { branch: string; status: string; order_value: number; created_at: string }[]);
@@ -3895,7 +3960,32 @@ function BillingTab() {
   const cancelBill = async (bill: WalkinBillRow) => {
     if (!window.confirm(`Cancel bill ${bill.billNo}? This can't be undone.`)) return;
     const { error: updateError } = await supabase.from('bakery_walkin_bills').update({ status: 'cancelled', cancelled_at: new Date().toISOString() }).eq('id', bill.id);
-    if (!updateError) loadRecent();
+    if (!updateError) {
+      // BUG FIX: cancelling a bill only ever flipped its status — the
+      // stock deduction saveBill made for every line item (via
+      // recordLeftoverMovement) was never reversed, so the Closing Stock
+      // pool permanently showed less stock than actually exists for a
+      // sale that got cancelled and never happened. Reverse it here with
+      // the same best-effort philosophy saveBill's own deduction uses — a
+      // ledger hiccup must never block the cancellation itself.
+      for (const line of bill.items) {
+        try {
+          const result = await recordLeftoverMovement({
+            itemName: line.itemName,
+            unit: line.unit === 'pcs' ? 'pcs' : 'kg',
+            delta: Math.abs(line.quantity),
+            businessDate: kolkataToday(),
+            reason: 'return',
+            recordedBy: currentUser?.displayName || 'Planner',
+            notes: `Cancelled Walk-in Bill #${bill.billNo}`,
+          });
+          if ('error' in result) console.error('[BillingTab] Closing Stock pool reversal on cancel failed:', result.error);
+        } catch (err) {
+          console.error('[BillingTab] Closing Stock pool reversal on cancel threw:', err);
+        }
+      }
+      loadRecent();
+    }
   };
 
   return (
@@ -4730,7 +4820,14 @@ function HosurShopDispatchPanel({ rows, mode, orders, leftoverBalances, onDispat
   onDone: () => void;
 }) {
   const { shopOrders, reload } = useHosurShopOrders(rows, orders);
-  const rowsByName = useMemo(() => new Map(rows.map(r => [r.itemName, r])), [rows]);
+  // BUG FIX: same case-sensitivity bug as displayItems in DispatchReviewModal
+  // — this map's key was the row's own (first-seen) casing, but every
+  // lookup used a raw order item's itemName, which can differ in case from
+  // a different contributing order. A mismatch here silently set
+  // skippedNoLink = true, meaning the item's Hosur dispatch just didn't
+  // happen at all, with no error — normalizing both the key and every
+  // lookup below fixes this.
+  const rowsByName = useMemo(() => new Map(rows.map(r => [r.itemName.trim().toLowerCase(), r])), [rows]);
   const [shopSearch, setShopSearch] = useState('');
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
   const [qtyDraft, setQtyDraft] = useState<Record<string, string>>({});
@@ -4868,7 +4965,7 @@ function HosurShopDispatchPanel({ rows, mode, orders, leftoverBalances, onDispat
       if (extraAmount > 0.01) overs.push({ itemName: item.itemName, unit: item.unit, owed: remaining, typed, extra: extraAmount });
       if (typed > 0.001 && typed < remaining - 0.01) unders.push({ itemName: item.itemName, unit: item.unit, owed: remaining, typed, shortBy: Math.round((remaining - typed) * 100) / 100 });
       if (qty > 0.001) {
-        const row = rowsByName.get(item.itemName);
+        const row = rowsByName.get(item.itemName.trim().toLowerCase());
         if (!row) { skippedNoLink = true; }
         else {
           const targetEntries = orders.filter(o => row.contributingOrderIds.includes(o.id) && bakeryOrderCoversHosurShopOrder(o, card.orderId));
@@ -5701,7 +5798,13 @@ function EditDispatchInvoiceModal({ invoice, onClose, onSaved }: {
       const result = await updateDispatchInvoice({
         invoiceId: invoice.id,
         updatedItems: cleaned.map(({ key: _key, ...rest }) => rest),
-        updatedDiscountPct: discountPct,
+        // BUG FIX: the input's own onChange clamps discountPct to 0-100,
+        // but only when it actually fires — if the invoice's original,
+        // stored discountPct was already out of range (e.g. from before
+        // this clamp existed) and the user never touches this specific
+        // field while editing other lines, the raw, unclamped value would
+        // still reach here. Use the already-computed clamped value instead.
+        updatedDiscountPct: clampedDiscountPct,
         editedBy: currentUser?.displayName || currentUser?.username || 'Planner',
       });
       if ('error' in result) { setError(result.error); return; }
@@ -7289,9 +7392,28 @@ function DispatchReviewModal({ scope, hosurShop, customer, actions, dispatchedBy
   const displayItems = useMemo(() => {
     const byName = new Map<string, { itemName: string; unit: string; quantity: number }>();
     for (const a of actions) {
-      const cur = byName.get(a.itemName) ?? { itemName: a.itemName, unit: a.unit, quantity: 0 };
-      cur.quantity = Math.round((cur.quantity + a.quantity) * 1000) / 1000;
-      byName.set(a.itemName, cur);
+      // BUG FIX: "Bun showing twice, quantities split across two rows" —
+      // this map was keyed by the raw, case-sensitive itemName. Two
+      // contributing orders with the same logical item but different
+      // casing (e.g. "Bun" from one order, "BUN" from another — branches
+      // aren't always perfectly consistent about case) landed in two
+      // separate map entries, each showing only its own partial quantity
+      // instead of the combined total under one row. Normalize the KEY
+      // only (matching sameItem()'s case-insensitive comparison used
+      // throughout this file) — the row still displays whichever casing
+      // was seen first, so nothing changes for the normal case where
+      // every contributing order already agrees on casing.
+      const key = a.itemName.trim().toLowerCase();
+      const cur = byName.get(key) ?? { itemName: a.itemName, unit: a.unit, quantity: 0 };
+      // BUG FIX: "for pcs item never allow decimal points" — round each
+      // action's own contribution before summing, matching exactly how
+      // confirm() rounds each action individually before submitting (each
+      // action is one order's own separate dispatch entry, so rounding
+      // per-action rather than the combined total keeps the displayed sum
+      // consistent with what actually gets dispatched to each order).
+      const contribution = a.unit === 'pcs' ? Math.round(a.quantity) : a.quantity;
+      cur.quantity = Math.round((cur.quantity + contribution) * 1000) / 1000;
+      byName.set(key, cur);
     }
     // BUG FIX: "selection order still showing alphabetical" — this was the
     // actual root cause. Map already preserves insertion order matching
@@ -7371,10 +7493,20 @@ function DispatchReviewModal({ scope, hosurShop, customer, actions, dispatchedBy
     setError(null);
     try {
       for (const a of actions) {
+        // BUG FIX: "for pcs item never allow decimal points" — proportional
+        // splitting (across contributing orders, or across branches for a
+        // merged item) can produce a fractional result like 11.64 pcs,
+        // which is physically meaningless — you can't dispatch 0.64 of a
+        // piece. Rounded here, at the single point every dispatch flow
+        // (VRSNB/SNB, Hosur, Custom, Planned) funnels through to actually
+        // submit, rather than in each upstream split function separately.
+        // kg quantities are untouched — fractional kg is completely normal.
+        const quantity = a.unit === 'pcs' ? Math.round(a.quantity) : a.quantity;
+        if (a.unit === 'pcs' && quantity <= 0) continue; // rounds to nothing — skip rather than submit a zero/negative dispatch
         await onDispatch(a.orderId, {
           id: a.dispatchEntryId,
           itemName: a.itemName,
-          quantity: a.quantity,
+          quantity,
           unit: a.unit,
           branch: scope,
           dispatchedBy,
