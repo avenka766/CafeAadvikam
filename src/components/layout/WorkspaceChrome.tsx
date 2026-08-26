@@ -220,10 +220,16 @@ function navForRole(role?: string): NavItem[] {
         // list from Planner's own in-page tab bar, so the old link kept
         // showing here even after the in-page tab was removed. Removed.
         { label: 'Closing Stock', path: '/bakery/planner?tab=leftover-stock', icon: <Scale className="size-4" />, group: 'Stock' },
+        // BUG FIX: this sidebar nav is a completely separate list from
+        // PlannerDashboard.tsx's own in-page NAV_ITEMS array — adding a tab
+        // there (or renaming one) never touches this file, so both went
+        // stale here even after being changed in-page. Added the missing
+        // Dump/Damage entry and matched the Sales rename below.
+        { label: 'Dump / Damage', path: '/bakery/planner?tab=waste', icon: <Trash2 className="size-4" />, group: 'Stock' },
         // Walk-in billing (SNB+VRSNB dedup counter sales) — added alongside
         // the Reports tab below when the Planner Dashboard gained its own
         // reporting + billing surfaces; both were missing from this sidebar.
-        { label: 'Billing (Walk-in)', path: '/bakery/planner?tab=billing', icon: <ShoppingCart className="size-4" />, group: 'Operations' },
+        { label: 'Sales', path: '/bakery/planner?tab=billing', icon: <ShoppingCart className="size-4" />, group: 'Operations' },
         // End-of-day financial close-out.
         { label: 'Daily Closure', path: '/bakery/planner?tab=closure', icon: <Calendar className="size-4" />, group: 'Reports' },
         { label: 'Invoice', path: '/bakery/planner?tab=invoice', icon: <Receipt className="size-4" />, group: 'Reports' },
