@@ -101,18 +101,32 @@ export function useBranchLedger(fromDate: string, toDate: string, branches?: Bra
       setError('');
       const branchList = branches && branches.length > 0 ? branches : null;
 
-      let closureQuery = supabase.from('branch_daily_closure_ledger').select('branch, closure_date, bill_count, sales_total, credit_billed, discounts, tax_total, cash_total, upi_total, card_total, credit_collected, advance_collected, advance_balance_collected').gte('closure_date', fromDate).lte('closure_date', toDate);
-      let savedClosureQuery = supabase.from('branch_daily_closures').select('id, branch, closure_date, cashier, opening_cash, cash_total, upi_total, card_total, credit_billed, credit_collected, advance_collected, advance_balance_collected, refunds, expenses, purchase_payments, discounts, bill_count, duplicate_prints, expected_cash, actual_cash, difference, notes, created_at').gte('closure_date', fromDate).lte('closure_date', toDate).order('closure_date', { ascending: false });
+      const buildClosureQuery = () => {
+        let q = supabase.from('branch_daily_closure_ledger').select('branch, closure_date, bill_count, sales_total, credit_billed, discounts, tax_total, cash_total, upi_total, card_total, credit_collected, advance_collected, advance_balance_collected').gte('closure_date', fromDate).lte('closure_date', toDate);
+        if (branchList) q = q.in('branch', branchList);
+        return q;
+      };
+      const buildSavedClosureQuery = () => {
+        let q = supabase.from('branch_daily_closures').select('id, branch, closure_date, cashier, opening_cash, cash_total, upi_total, card_total, credit_billed, credit_collected, advance_collected, advance_balance_collected, refunds, expenses, purchase_payments, discounts, bill_count, duplicate_prints, expected_cash, actual_cash, difference, notes, created_at').gte('closure_date', fromDate).lte('closure_date', toDate).order('closure_date', { ascending: false });
+        if (branchList) q = q.in('branch', branchList);
+        return q;
+      };
 
-      if (branchList) {
-        closureQuery = closureQuery.in('branch', branchList);
-        savedClosureQuery = savedClosureQuery.in('branch', branchList);
-      }
-
-      const [closureRes, savedRes] = await Promise.all([
-        closureQuery,
-        savedClosureQuery,
+      let [closureRes, savedRes] = await Promise.all([
+        buildClosureQuery(),
+        buildSavedClosureQuery(),
       ]);
+
+      // RESILIENCE: a transient "statement timeout" under concurrent load (seen when
+      // several dashboard queries fire together) otherwise silently zeroes out this
+      // hook's data with no visible loading/error recovery. One retry after a short
+      // backoff (against freshly-built query objects — Postgrest builders are
+      // single-use thenables) clears it in practice — matches the retry pattern
+      // already used for the paginated fetches in AdminDashboard.tsx.
+      if ((closureRes.error || savedRes.error) && active) {
+        await new Promise((resolve) => setTimeout(resolve, 800));
+        [closureRes, savedRes] = await Promise.all([buildClosureQuery(), buildSavedClosureQuery()]);
+      }
 
       if (!active) return;
       const firstError = [closureRes.error, savedRes.error].find(Boolean);
