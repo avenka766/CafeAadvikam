@@ -24,6 +24,8 @@ import { PurchaseInvoicesTab } from "@/pages/AdminSNBDashboard";
 import { AdvancePaymentsTab } from "@/branch/tabs/AdvancePaymentsTab";
 import { useNotificationStore } from "./notificationStore";
 import type { BakeryOrder } from "./types";
+import type { Branch } from "@/branch/types";
+import { displayQty, itemsForBranch } from "./OrderReceiverDashboard";
 
 const panelClass = "rounded-2xl border border-border bg-white shadow-sm";
 const inputClass = "h-10 w-full rounded-xl border border-border bg-white px-3 text-sm font-bold outline-none focus:ring-2 focus:ring-amber-300";

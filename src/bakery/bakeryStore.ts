@@ -461,7 +461,19 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
   },
 
   mergeOrdersForStore: async (orderIds) => {
-    const group = orderIds
+    // BUG FIX (audit 2026-08-27): "Sent tab quantity keeps increasing" —
+    // confirmed live on real orders (#620→#621→#622): dozens of unrelated
+    // items scaled by an exact, uniform multiplier across a merge (×7 for
+    // one item subset, ×5.5 for another) — the unmistakable signature of
+    // the same source order being summed into `combined` more than once,
+    // not organic demand. However the caller ends up with a duplicate ID
+    // in `orderIds` (a stale local array, a remount racing a real-time
+    // update, whatever), every occurrence turns into another full pass
+    // over that order's items below. Deduplicating here makes the merge
+    // itself safe regardless of what upstream state produced the
+    // duplicate, instead of chasing every possible caller-side cause.
+    const uniqueOrderIds = Array.from(new Set(orderIds));
+    const group = uniqueOrderIds
       .map(id => get().orders.find(o => o.id === id))
       .filter((o): o is BakeryOrder => Boolean(o));
     if (group.length === 0) return;

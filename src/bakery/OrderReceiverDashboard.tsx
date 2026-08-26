@@ -524,7 +524,7 @@ function mapHosurOrderItem(row: Record<string, unknown>): HosurOrderItem {
 // own order saw the whole merged total (e.g. 406 pcs Bun) instead of just
 // SNB's real share (328 pcs) — the rest belonged to Hosur. Same ratio-based
 // pcs conversion as computeMergedSummaryDisplay in PlannerDashboard.tsx.
-function displayQty(item: BakeryOrderItem, branch?: Branch): number {
+export function displayQty(item: BakeryOrderItem, branch?: Branch): number {
   const full = item.dispatchUnit === "pcs" && item.originalPcs != null
     ? item.originalPcs
     : item.quantity;
@@ -538,6 +538,17 @@ function displayQty(item: BakeryOrderItem, branch?: Branch): number {
 
 function displayUnit(item: BakeryOrderItem): "pcs" | "kg" {
   return item.dispatchUnit ?? "kg";
+}
+
+// Items actually relevant to `branch` on this order. Most orders target this
+// branch directly, so every item qualifies. For an order merged into a
+// DIFFERENT branch's target (see displayQty's branchSplit note above), only
+// items carrying a real positive share for this branch belong here — an
+// item with no share (or an explicit 0) is entirely the other branch's, and
+// must not appear at all, not just with a wrong/full quantity.
+export function itemsForBranch(order: BakeryOrder, branch?: Branch): BakeryOrderItem[] {
+  if (!branch || order.targetBranch === branch) return order.items;
+  return order.items.filter((item) => (item.branchSplit?.[branch] ?? 0) > 0);
 }
 
 function statusBadgeClass(status: BakeryOrder["status"]): string {
@@ -954,11 +965,27 @@ function PlacedOrdersPanel({
     setLoading(true);
     setLoadError("");
     try {
-      const [rows, countResult] = await Promise.all([
+      const [ownRows, mergedRows, countResult] = await Promise.all([
         fetchBakeryOrdersInRange({
           fromIso: range.start.toISOString(),
           toIso: range.end.toISOString(),
           targetBranch: branch,
+        }),
+        // BUG FIX: a Planner/Store merge can combine this branch's request
+        // into an order targeting a DIFFERENT branch (see branchSplit on
+        // BakeryOrderItem) — the item still carries this branch's real
+        // share, but the order row itself is filed under the other branch's
+        // target_branch, so the .eq('target_branch', branch) fetch above
+        // never sees it. This branch's own order history then silently
+        // under-counted everything that arrived via a cross-branch merge
+        // (confirmed live: SNB's dashboard was missing 2 whole orders and
+        // ~3,600 pcs of Egg Puff alone for one day). Fetch the full
+        // unfiltered range once and keep only orders actually relevant to
+        // this branch — its own target_branch, OR any item carrying a
+        // positive branchSplit share for it.
+        fetchBakeryOrdersInRange({
+          fromIso: range.start.toISOString(),
+          toIso: range.end.toISOString(),
         }),
         // Lightweight count-only query (head:true returns zero rows, just a
         // count) so the lifetime total stat stays accurate without pulling
@@ -968,6 +995,16 @@ function PlacedOrdersPanel({
           .select("id", { count: "exact", head: true })
           .eq("target_branch", branch),
       ]);
+      const merged = mergedRows.filter(
+        (order) =>
+          order.targetBranch !== branch &&
+          order.items.some((item) => (item.branchSplit?.[branch] ?? 0) > 0),
+      );
+      const byId = new Map(ownRows.map((order) => [order.id, order]));
+      merged.forEach((order) => byId.set(order.id, order));
+      const rows = Array.from(byId.values()).sort(
+        (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+      );
       setFilteredOrders(rows);
       setTotalBranchOrderCount(countResult.count ?? null);
     } catch (e) {
@@ -980,14 +1017,14 @@ function PlacedOrdersPanel({
   useEffect(() => { void load(); }, [load]);
 
   const itemCount = filteredOrders.reduce(
-    (sum, order) => sum + order.items.length,
+    (sum, order) => sum + itemsForBranch(order, branch).length,
     0,
   );
 
   const downloadExcelReport = () => {
     const summary = new Map<string, { itemName: string; unit: string; quantity: number }>();
     filteredOrders.forEach((order) => {
-      order.items.forEach((item) => {
+      itemsForBranch(order, branch).forEach((item) => {
         const key = `${item.itemName}|${displayUnit(item)}`;
         const existing = summary.get(key) ?? { itemName: item.itemName, unit: displayUnit(item), quantity: 0 };
         existing.quantity += displayQty(item, branch);
@@ -1019,7 +1056,7 @@ function PlacedOrdersPanel({
       ],
       ...filteredOrders.flatMap((order) => {
         const created = new Date(order.createdAt);
-        return order.items.map((item) => [
+        return itemsForBranch(order, branch).map((item) => [
           order.orderNumber,
           created.toLocaleDateString("en-IN"),
           created.toLocaleTimeString("en-IN", {
@@ -1250,7 +1287,7 @@ function PlacedOrdersPanel({
                   </div>
                 ) : null}
                 <div className="mt-3 flex flex-wrap gap-1.5">
-                  {order.items.map((item, i) => {
+                  {itemsForBranch(order, branch).map((item, i) => {
                     const removedItems = (order as unknown as { removed_items?: Array<{ itemName: string }> }).removed_items ?? [];
                     const isRemoved = removedItems.some(r => r.itemName === item.itemName);
                     return (
@@ -2552,7 +2589,13 @@ export default function OrderReceiverDashboard() {
   }
 
   const today = new Date().toDateString();
-  const branchOrders = orders.filter((o) => o.targetBranch === branch);
+  // BUG FIX: same cross-branch merge gap as PlacedOrdersPanel's load() above
+  // — an order merged into a different branch's target still carries this
+  // branch's real share on individual items via branchSplit, and must not
+  // be dropped just because targetBranch points elsewhere.
+  const branchOrders = orders.filter(
+    (o) => o.targetBranch === branch || o.items.some((item) => (item.branchSplit?.[branch] ?? 0) > 0),
+  );
   const todayCount = branchOrders.filter(
     (o) => new Date(o.createdAt).toDateString() === today,
   ).length;

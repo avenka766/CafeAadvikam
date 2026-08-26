@@ -1606,6 +1606,25 @@ function OrdersTab() {
   // 'produced' status, mergeable.length was 0 and the Combine button
   // simply never appeared, no matter how many pending orders existed.
   const mergeable = orders.filter(o => o.status === 'accepted' || needsProductionRelease(o));
+  // BUG FIX (audit 2026-08-27): "Sent tab quantity keeps increasing" —
+  // confirmed live, an order already produced by an earlier merge (e.g.
+  // #622: status 'store_confirmed', productionReleasedAt still null) stays
+  // in `mergeable` above until Store explicitly releases it — that's
+  // intentional so the manual "Combine Into One" button can still fold in
+  // late-arriving orders. But the AUTO-merge effect below has no human
+  // confirmation at all: it fires the instant this screen (re)mounts with
+  // 2+ mergeable orders, and autoMergedRef resets on every remount. If
+  // Store navigates away and back before releasing an already-merged order,
+  // that order — already carrying the FULL combined total from the first
+  // merge — silently gets folded into a brand new auto-merge group again,
+  // compounding its quantities each time (verified: one real order's Egg
+  // Puff total for Hosur was ~25x the sum of every real shop order that
+  // ever contributed to it). Auto-merge only ever fires unattended, so it
+  // must never touch an order that's already been through a merge —
+  // restrict it to genuinely fresh 'accepted' orders; the manual button
+  // keeps the broader `mergeable` since a deliberate human click is at
+  // least an auditable, single-shot action.
+  const autoMergeable = orders.filter(o => o.status === 'accepted');
 
   const filteredPending = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -1623,8 +1642,8 @@ function OrdersTab() {
     );
   }, [pending, search]);
 
-  const runMerge = async (silent: boolean) => {
-    if (mergeable.length < 2 || mergingRef.current) return;
+  const runMerge = async (silent: boolean, group: BakeryOrder[] = mergeable) => {
+    if (group.length < 2 || mergingRef.current) return;
     mergingRef.current = true;
     setMerging(true); setMergeError(null);
     try {
@@ -1661,11 +1680,11 @@ function OrdersTab() {
       // acted on in this single "Combine" action today, so there's only
       // ever one group now — merge them all together directly rather than
       // building a Map keyed by a value that's the same for everything.
-      // Reaching here means mergeable.length >= 2 already (checked at the
-      // top of this function, and mergeable can't change mid-call), so
+      // Reaching here means group.length >= 2 already (checked at the
+      // top of this function, and group can't change mid-call), so
       // this always has something to combine now that grouping is a
       // single "today" bucket rather than a per-date split.
-      await mergeOrdersForStore(mergeable.map(o => o.id));
+      await mergeOrdersForStore(group.map(o => o.id));
     } catch (err) {
       if (!silent) setMergeError(err instanceof Error ? err.message : 'Failed to combine orders — please try again.');
     } finally {
@@ -1676,14 +1695,14 @@ function OrdersTab() {
   const handleMergeAll = () => runMerge(false);
 
   useEffect(() => {
-    if (initialLoading || autoMergedRef.current || mergeable.length < 2) return;
+    if (initialLoading || autoMergedRef.current || autoMergeable.length < 2) return;
     autoMergedRef.current = true;
-    void runMerge(true);
-    // Deliberately only re-checking when initialLoading/mergeable.length
-    // actually change; runMerge/mergeable are rebuilt every render and
+    void runMerge(true, autoMergeable);
+    // Deliberately only re-checking when initialLoading/autoMergeable.length
+    // actually change; runMerge/autoMergeable are rebuilt every render and
     // would defeat the once-only guard above if included here.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialLoading, mergeable.length]);
+  }, [initialLoading, autoMergeable.length]);
 
 
   const refreshNow = async () => {
