@@ -30,8 +30,18 @@ export default class ErrorBoundary extends Component<Props, State> {
       /Failed to fetch dynamically imported module/i.test(error.message) ||
       /Importing a module script failed/i.test(error.message) ||
       /Loading chunk [\w-]+ failed/i.test(error.message);
-    if (isStaleChunkError && !sessionStorage.getItem('cafe:chunk-reload-attempted')) {
-      sessionStorage.setItem('cafe:chunk-reload-attempted', '1');
+    // BUG FIX (2026-08-26): this checked the same sessionStorage key as
+    // main.tsx's reloadOnceForStaleChunk, but as a bare "ever set" flag —
+    // once EITHER handler used its one lifetime attempt, every later,
+    // genuinely separate stale-chunk event (a different lazy route hit
+    // after yet another new deploy) fell straight through to this
+    // diagnostic screen instead of getting its own reload attempt. Reads
+    // the same timestamp-based key main.tsx now writes, so both handlers
+    // share one real cooldown window instead of one shared "used forever" flag.
+    const lastAttempt = Number(sessionStorage.getItem('cafe:chunk-reload-attempted-at') || 0);
+    const withinCooldown = lastAttempt && Date.now() - lastAttempt < 30_000;
+    if (isStaleChunkError && !withinCooldown) {
+      sessionStorage.setItem('cafe:chunk-reload-attempted-at', String(Date.now()));
       window.location.reload();
       return;
     }
