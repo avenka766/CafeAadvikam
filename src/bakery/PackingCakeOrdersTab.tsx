@@ -161,7 +161,7 @@ export default function PackingCakeOrdersTab({ mode = 'packing' }: { mode?: 'pac
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState('');
-  const [view, setView] = useState<'ready' | 'in_progress' | 'corrections' | 'custom' | 'history'>('ready');
+  const [view, setView] = useState<'ready' | 'in_progress' | 'corrections' | 'custom' | 'history' | 'invoice'>('ready');
   const [returnId, setReturnId] = useState<string | null>(null);
   const [returnReason, setReturnReason] = useState('');
 
@@ -259,7 +259,8 @@ export default function PackingCakeOrdersTab({ mode = 'packing' }: { mode?: 'pac
           <h3 className="text-sm font-black text-foreground">Cake Packing</h3>
           <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-black text-muted-foreground">{view === 'in_progress' ? inProgressOrders.length : visibleOrders.length}</span>
         </div>
-        <div className="flex items-center gap-2"><div className="flex rounded-xl bg-muted p-1"><button type="button" onClick={() => setView('ready')} className={cn('rounded-lg px-3 py-1.5 text-[11px] font-black', view === 'ready' ? 'bg-white text-slate-950 shadow-sm' : 'text-muted-foreground')}>Ready</button>{mode === 'planner' && <button type="button" onClick={() => setView('in_progress')} className={cn('rounded-lg px-3 py-1.5 text-[11px] font-black', view === 'in_progress' ? 'bg-white text-indigo-700 shadow-sm' : 'text-muted-foreground')}>In Progress ({inProgressOrders.length})</button>}<button type="button" onClick={() => setView('corrections')} className={cn('rounded-lg px-3 py-1.5 text-[11px] font-black', view === 'corrections' ? 'bg-white text-amber-800 shadow-sm' : 'text-muted-foreground')}>Corrections ({orders.filter(order => order.status === 'Correction Required').length})</button>{mode === 'planner' && <button type="button" onClick={() => setView('history')} className={cn('rounded-lg px-3 py-1.5 text-[11px] font-black', view === 'history' ? 'bg-white text-emerald-700 shadow-sm' : 'text-muted-foreground')}>History ({dispatchedOrders.length})</button>}<button type="button" onClick={() => setView('custom')} className={cn('rounded-lg px-3 py-1.5 text-[11px] font-black', view === 'custom' ? 'bg-white text-rose-700 shadow-sm' : 'text-muted-foreground')}>{mode === 'planner' ? 'Advance Cake Order' : 'Custom Cake Order'}</button></div>{view !== 'custom' && <button type="button" title="Refresh cake orders" onClick={() => void load()} disabled={loading} className="grid size-9 place-items-center rounded-lg border border-border text-muted-foreground disabled:cursor-wait disabled:opacity-60"><RefreshCcw className={cn('size-3.5', loading && 'animate-spin')} /></button>}</div>
+        <div className="flex items-center gap-2"><div className="flex rounded-xl bg-muted p-1"><button type="button" onClick={() => setView('ready')} className={cn('rounded-lg px-3 py-1.5 text-[11px] font-black', view === 'ready' ? 'bg-white text-slate-950 shadow-sm' : 'text-muted-foreground')}>Ready</button>{mode === 'planner' && <button type="button" onClick={() => setView('in_progress')} className={cn('rounded-lg px-3 py-1.5 text-[11px] font-black', view === 'in_progress' ? 'bg-white text-indigo-700 shadow-sm' : 'text-muted-foreground')}>In Progress ({inProgressOrders.length})</button>}<button type="button" onClick={() => setView('corrections')} className={cn('rounded-lg px-3 py-1.5 text-[11px] font-black', view === 'corrections' ? 'bg-white text-amber-800 shadow-sm' : 'text-muted-foreground')}>Corrections ({orders.filter(order => order.status === 'Correction Required').length})</button>{mode === 'planner' && <button type="button" onClick={() => setView('history')} className={cn('rounded-lg px-3 py-1.5 text-[11px] font-black', view === 'history' ? 'bg-white text-emerald-700 shadow-sm' : 'text-muted-foreground')}>History ({dispatchedOrders.length})</button>}{mode === 'planner' && <button type="button" onClick={() => setView('invoice')} className={cn('rounded-lg px-3 py-1.5 text-[11px] font-black', view === 'invoice' ? 'bg-white text-purple-700 shadow-sm' : 'text-muted-foreground')}>Invoice</button>}<button type="button" onClick={() => setView('custom')} className={cn('rounded-lg px-3 py-1.5 text-[11px] font-black', view === 'custom' ? 'bg-white text-rose-700 shadow-sm' : 'text-muted-foreground')}>{mode === 'planner' ? 'Advance Cake Order' : 'Custom Cake Order'}</button></div>{view !== 'custom' && <button type="button" title="Refresh cake orders" onClick={() => void load()} disabled={loading} className="grid size-9 place-items-center rounded-lg border border-border text-muted-foreground disabled:cursor-wait disabled:opacity-60"><RefreshCcw className={cn('size-3.5', loading && 'animate-spin')} /></button>}</div>
+      {view === 'invoice' && <CakeInvoiceTab />}
       </div>
 
       {error && (
@@ -826,6 +827,150 @@ function CakeDispatchReviewModal({ orders, dispatchedBy, onClose, onDone }: {
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+// FEATURE: "Cake dispatch tab — new Invoice sub-tab: customer/company name,
+// mobile, item name (cake or other), price, unit, discount, GST invoice in
+// A4 print format." Self-contained — doesn't require a new database table:
+// reuses printHtml (the same print-window helper already used elsewhere in
+// this file) rather than dispatch_invoices, since that table's own scope
+// column is DB-constrained to VRSNB/SNB/Hosur only and widening it is a
+// separate, larger change than this feature needs.
+const CAKE_INVOICE_BUSINESS = {
+  name: 'CAFE AADVIKAM',
+  lines: ['Hosur, Tamil Nadu'],
+  gstin: '33AMTPR1760M1ZE',
+};
+
+interface CakeInvoiceLine { id: string; itemName: string; unit: string; qty: string; price: string; discountPct: string }
+
+function CakeInvoiceTab() {
+  const { currentUser } = useAuthStore();
+  const [customerName, setCustomerName] = useState('');
+  const [companyName, setCompanyName] = useState('');
+  const [mobile, setMobile] = useState('');
+  const [lines, setLines] = useState<CakeInvoiceLine[]>([{ id: crypto.randomUUID(), itemName: '', unit: 'kg', qty: '1', price: '', discountPct: '0' }]);
+  const [error, setError] = useState('');
+
+  const addLine = () => setLines(prev => [...prev, { id: crypto.randomUUID(), itemName: '', unit: 'kg', qty: '1', price: '', discountPct: '0' }]);
+  const removeLine = (id: string) => setLines(prev => prev.filter(l => l.id !== id));
+  const patchLine = (id: string, patch: Partial<CakeInvoiceLine>) => setLines(prev => prev.map(l => l.id === id ? { ...l, ...patch } : l));
+
+  const computedLines = lines.map(l => {
+    const qty = Number(l.qty) || 0;
+    const price = Number(l.price) || 0;
+    const discountPct = Math.max(0, Math.min(100, Number(l.discountPct) || 0));
+    const gross = qty * price;
+    const discountAmount = Math.round(gross * (discountPct / 100) * 100) / 100;
+    const lineTotal = Math.round((gross - discountAmount) * 100) / 100;
+    return { ...l, qty, price, discountPct, gross, discountAmount, lineTotal };
+  });
+  const subtotal = computedLines.reduce((s, l) => s + l.gross, 0);
+  const totalDiscount = computedLines.reduce((s, l) => s + l.discountAmount, 0);
+  const grandTotal = Math.round((subtotal - totalDiscount) * 100) / 100;
+
+  const generateInvoice = () => {
+    setError('');
+    if (!customerName.trim()) { setError('Enter the customer or company name.'); return; }
+    const validLines = computedLines.filter(l => l.itemName.trim() && l.qty > 0);
+    if (validLines.length === 0) { setError('Add at least one item with a name and quantity.'); return; }
+
+    const invoiceNo = `CAKE-${Date.now().toString().slice(-8)}`;
+    const dateStr = new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+    const rowsHtml = validLines.map((l, i) => `
+      <tr>
+        <td style="text-align:center">${i + 1}</td>
+        <td>${l.itemName}</td>
+        <td style="text-align:center">${l.qty} ${l.unit}</td>
+        <td style="text-align:right">₹${l.price.toFixed(2)}</td>
+        <td style="text-align:center">${l.discountPct}%</td>
+        <td style="text-align:right">₹${l.lineTotal.toFixed(2)}</td>
+      </tr>`).join('');
+
+    printHtml(invoiceNo, `
+      <div style="font-family: Georgia, serif; max-width: 720px; margin: 0 auto; padding: 32px; color: #1a1a1a;">
+        <div style="text-align:center; border-bottom: 2px solid #1a1a1a; padding-bottom: 12px; margin-bottom: 16px;">
+          <h1 style="margin:0; font-size: 22px; letter-spacing: 1px;">${CAKE_INVOICE_BUSINESS.name}</h1>
+          ${CAKE_INVOICE_BUSINESS.lines.map(l => `<p style="margin:2px 0; font-size:11px;">${l}</p>`).join('')}
+          <p style="margin:2px 0; font-size:11px; font-weight:bold;">GSTIN: ${CAKE_INVOICE_BUSINESS.gstin}</p>
+        </div>
+        <div style="display:flex; justify-content:space-between; font-size:12px; margin-bottom:16px;">
+          <div>
+            <p style="margin:2px 0;"><strong>Bill To:</strong> ${customerName}</p>
+            ${companyName.trim() ? `<p style="margin:2px 0;">${companyName}</p>` : ''}
+            ${mobile.trim() ? `<p style="margin:2px 0;">Mobile: ${mobile}</p>` : ''}
+          </div>
+          <div style="text-align:right;">
+            <p style="margin:2px 0;"><strong>Invoice No:</strong> ${invoiceNo}</p>
+            <p style="margin:2px 0;"><strong>Date:</strong> ${dateStr}</p>
+          </div>
+        </div>
+        <table style="width:100%; border-collapse: collapse; font-size:12px;">
+          <thead>
+            <tr style="border-top:1px solid #1a1a1a; border-bottom:1px solid #1a1a1a; font-weight:bold;">
+              <td style="padding:6px; text-align:center;">#</td>
+              <td style="padding:6px;">Item</td>
+              <td style="padding:6px; text-align:center;">Qty</td>
+              <td style="padding:6px; text-align:right;">Price</td>
+              <td style="padding:6px; text-align:center;">Discount</td>
+              <td style="padding:6px; text-align:right;">Amount</td>
+            </tr>
+          </thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>
+        <div style="border-top:1px solid #1a1a1a; margin-top:8px; padding-top:8px; text-align:right; font-size:12px;">
+          <p style="margin:2px 0;">Subtotal: ₹${subtotal.toFixed(2)}</p>
+          <p style="margin:2px 0;">Discount: ₹${totalDiscount.toFixed(2)}</p>
+          <p style="margin:6px 0; font-size:16px; font-weight:bold;">Grand Total: ₹${grandTotal.toFixed(2)}</p>
+        </div>
+        <p style="margin-top:32px; font-size:11px; text-align:center; color:#666;">Prepared by ${currentUser?.displayName || currentUser?.username || 'Planner'} · This is a computer-generated invoice.</p>
+      </div>
+    `);
+  };
+
+  return (
+    <div className="space-y-4">
+      {error && <p className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700">{error}</p>}
+      <div className="grid gap-3 sm:grid-cols-3">
+        <label className="space-y-1">
+          <span className="text-xs font-black text-muted-foreground">Customer / Company Name *</span>
+          <input value={customerName} onChange={e => setCustomerName(e.target.value)} className="h-11 w-full rounded-xl border border-border px-3 text-sm font-bold" />
+        </label>
+        <label className="space-y-1">
+          <span className="text-xs font-black text-muted-foreground">Company (optional)</span>
+          <input value={companyName} onChange={e => setCompanyName(e.target.value)} className="h-11 w-full rounded-xl border border-border px-3 text-sm font-bold" />
+        </label>
+        <label className="space-y-1">
+          <span className="text-xs font-black text-muted-foreground">Mobile Number</span>
+          <input value={mobile} onChange={e => setMobile(e.target.value.replace(/\D/g, '').slice(0, 10))} inputMode="numeric" className="h-11 w-full rounded-xl border border-border px-3 text-sm font-bold" />
+        </label>
+      </div>
+
+      <div className="space-y-2">
+        {computedLines.map(l => (
+          <div key={l.id} className="grid grid-cols-12 gap-2 rounded-xl border border-border bg-card p-2">
+            <input value={l.itemName} onChange={e => patchLine(l.id, { itemName: e.target.value })} placeholder="Item name (e.g. Cake, Cookies)" className="col-span-4 h-10 rounded-lg border border-border px-2 text-xs font-bold" />
+            <input type="number" min="0" value={l.qty} onChange={e => patchLine(l.id, { qty: e.target.value })} placeholder="Qty" className="col-span-2 h-10 rounded-lg border border-border px-2 text-xs font-bold" />
+            <select value={l.unit} onChange={e => patchLine(l.id, { unit: e.target.value })} className="col-span-1 h-10 rounded-lg border border-border px-1 text-xs font-bold">
+              <option value="kg">kg</option><option value="pcs">pcs</option>
+            </select>
+            <input type="number" min="0" value={l.price} onChange={e => patchLine(l.id, { price: e.target.value })} placeholder="Price" className="col-span-2 h-10 rounded-lg border border-border px-2 text-xs font-bold" />
+            <input type="number" min="0" max="100" value={l.discountPct} onChange={e => patchLine(l.id, { discountPct: e.target.value })} placeholder="Disc %" className="col-span-2 h-10 rounded-lg border border-border px-2 text-xs font-bold" />
+            <button type="button" onClick={() => removeLine(l.id)} className="col-span-1 flex items-center justify-center rounded-lg text-muted-foreground hover:bg-red-50 hover:text-red-600"><X className="size-4" /></button>
+          </div>
+        ))}
+        <button type="button" onClick={addLine} className="rounded-xl border border-dashed border-border px-3 py-2 text-xs font-bold text-muted-foreground hover:bg-muted">+ Add item</button>
+      </div>
+
+      <div className="rounded-xl border border-border bg-muted/30 p-3 text-right text-sm font-bold">
+        Grand Total: ₹{grandTotal.toFixed(2)}
+      </div>
+
+      <button onClick={generateInvoice} className="flex w-full items-center justify-center gap-2 rounded-xl bg-purple-600 py-3 text-sm font-black text-white hover:bg-purple-700">
+        <Printer className="size-4" /> Generate & Print Invoice (A4)
+      </button>
     </div>
   );
 }

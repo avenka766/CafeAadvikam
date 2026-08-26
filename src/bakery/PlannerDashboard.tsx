@@ -69,7 +69,7 @@ const TABS: { key: PlannerTab; label: string; icon: React.ReactNode }[] = [
   { key: 'closure',     label: 'Daily Closure',    icon: <Calendar className="size-4" /> },
   { key: 'leftover-stock', label: 'Closing Stock', icon: <Scale className="size-4" /> },
   { key: 'invoice',     label: 'Invoice',          icon: <Receipt className="size-4" /> },
-  { key: 'billing',     label: 'Billing (Walk-in)', icon: <ShoppingCart className="size-4" /> },
+  { key: 'billing',     label: 'Sales',             icon: <ShoppingCart className="size-4" /> },
   { key: 'reports',     label: 'Reports',          icon: <BarChart3 className="size-4" /> },
 ];
 
@@ -179,6 +179,28 @@ export function computeMergedSummary(orders: BakeryOrder[]): MergedRow[] {
           contributingOrderIds: [order.id],
         });
       }
+    }
+  }
+  // BUG FIX: "sometimes unable to select an item" — every downstream
+  // consumer (checkboxes, React `key` props, the `selected` Set used for
+  // bulk dispatch) treats row.itemName as a unique identifier, but this
+  // map is keyed by name+unit together — meaning the exact same item name
+  // ordered in kg by one branch and pcs by another produces two separate
+  // rows sharing one itemName. That collision meant selecting one variant
+  // could silently also affect the other, and gave React two elements
+  // with the same key (undefined, intermittent render behavior — matching
+  // the "sometimes" in the report). Disambiguate by appending the unit
+  // only in the rare case this actually happens, so the vast majority of
+  // items (a single unit) are completely unaffected.
+  const nameCounts = new Map<string, number>();
+  for (const row of rows.values()) {
+    const key = row.itemName.trim().toLowerCase();
+    nameCounts.set(key, (nameCounts.get(key) ?? 0) + 1);
+  }
+  for (const row of rows.values()) {
+    const key = row.itemName.trim().toLowerCase();
+    if ((nameCounts.get(key) ?? 0) > 1) {
+      row.itemName = `${row.itemName} (${row.unit})`;
     }
   }
   return Array.from(rows.values()).sort((a, b) => b.totalRequested - a.totalRequested);
@@ -363,6 +385,21 @@ export function computeMergedSummaryDisplay(orders: BakeryOrder[]): MergedRow[] 
     // Never guess a conversion — anything whose packet weight couldn't be
     // resolved stays as its own untouched pcs row.
     mergeGroup(unresolvedPcs, 'pcs', false);
+  }
+  // BUG FIX: same fix as computeMergedSummary above — this function can
+  // also push two separate rows (kg and pcs) for the same underlying item
+  // name when no unit conversion is available between them, producing the
+  // same itemName collision.
+  const nameCounts = new Map<string, number>();
+  for (const row of rows) {
+    const key = row.itemName.trim().toLowerCase();
+    nameCounts.set(key, (nameCounts.get(key) ?? 0) + 1);
+  }
+  for (const row of rows) {
+    const key = row.itemName.trim().toLowerCase();
+    if ((nameCounts.get(key) ?? 0) > 1) {
+      row.itemName = `${row.itemName} (${row.unit})`;
+    }
   }
   return rows.sort((a, b) => b.totalRequested - a.totalRequested);
 }
@@ -3869,7 +3906,7 @@ function BillingTab() {
             <ShoppingCart className="size-5" />
           </span>
           <div>
-            <h2 className="font-display text-xl font-bold text-foreground">Billing (Walk-in)</h2>
+            <h2 className="font-display text-xl font-bold text-foreground">Sales</h2>
             <p className="text-xs font-bold text-muted-foreground font-body">For customers who walk in directly. Combined SNB + VRSNB catalog, deduplicated.</p>
           </div>
         </div>
@@ -5777,7 +5814,7 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
   const [checklistItem, setChecklistItem] = useState<ProductionRow | null>(null);
   // 'All' shows every item like before. Picking a branch filters to only items
   // that branch actually ordered, and turns on multi-select + bulk dispatch.
-  const [branchFilter, setBranchFilter] = useState<'All' | Branch | 'Custom'>('All');
+  const [branchFilter, setBranchFilter] = useState<'All' | Branch | 'Custom'>(BRANCHES[0]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkOpen, setBulkOpen] = useState(false);
   // Hosur dispatch can be viewed item-first (original) or shop-first (shop
@@ -5846,6 +5883,34 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
     .sort((a, b) => (dispatchedQtyForItem(b) > 0 ? 1 : 0) - (dispatchedQtyForItem(a) > 0 ? 1 : 0));
   const completedRows = filtered.filter(r => fullyDispatched(r));
   const shown = subTab === 'active' ? activeRows : completedRows;
+  // FEATURE: "Hosur and Custom(Planned) need date-wise orders, VRSNB and
+  // SNB should NOT" — Custom(Planned) already renders through its own,
+  // separate components (CustomDispatchPanel/PlannedDispatchPanel) above,
+  // so only Hosur needs date-grouping added here. Groups by the oldest
+  // contributing order's own date, same date-key logic already used for
+  // the days-pending badge — VRSNB/SNB pass through as a single, flat
+  // group (no visible change for them).
+  const rowDateGroups = useMemo(() => {
+    if (branchFilter !== 'Hosur') return [{ dateKey: 'all', label: '', rows: shown }];
+    const groups = new Map<string, ProductionRow[]>();
+    for (const row of shown) {
+      const contributing = orders.filter(o => row.contributingOrderIds.includes(o.id));
+      const oldest = contributing.length > 0
+        ? contributing.reduce((min, o) => o.createdAt < min ? o.createdAt : min, contributing[0].createdAt)
+        : null;
+      const dateKey = oldest ? kolkataDateKey(oldest) : 'unknown-date';
+      const list = groups.get(dateKey) ?? [];
+      list.push(row);
+      groups.set(dateKey, list);
+    }
+    const todayKey = kolkataDateKey(new Date().toISOString());
+    return Array.from(groups.entries())
+      .sort((a, b) => b[0].localeCompare(a[0]))
+      .map(([dateKey, rows]) => ({
+        dateKey, rows,
+        label: dateKey === 'unknown-date' ? 'Date unknown' : dateKey === todayKey ? 'Today' : new Date(dateKey).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }),
+      }));
+  }, [shown, orders, branchFilter]);
   // BUG FIX (2026-08-07): search-independent version of activeRows, for the
   // VRSNB/SNB flat dispatch panel only. That panel keeps its own
   // quantity/selection state keyed by item name and re-seeds it whenever its
@@ -5946,7 +6011,7 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
           with a checkbox on each card to bulk-dispatch several items at once. */}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-wrap gap-2">
-          {(['All', ...BRANCHES, 'Custom'] as const).map(b => (
+          {([...BRANCHES, 'Custom'] as const).map(b => (
             <button
               key={b}
               onClick={() => setBranchFilter(b)}
@@ -6096,8 +6161,11 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
       ) : (
       <>
       {shown.length === 0 && <EmptyState text={subTab === 'active' ? 'Nothing waiting on dispatch.' : 'Nothing dispatched yet.'} />}
+      {rowDateGroups.map(group => (
+      <div key={group.dateKey} className="space-y-2">
+      {group.label && <p className="pt-1 text-[11px] font-black uppercase tracking-wide text-muted-foreground">{group.label}</p>}
       <div className="space-y-2">
-        {shown.map(row => {
+        {group.rows.map(row => {
           const dispatched = dispatchedQtyForItem(row);
           const canSelect = subTab === 'active' && branchFilter !== 'All';
           // FEATURE (2026-08-25): "no date-wise split... show days-pending
@@ -6170,6 +6238,8 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
           );
         })}
       </div>
+      </div>
+      ))}
       </>
       )}
       {/* Bulk-dispatch bar — appears once the planner has ticked one or more
@@ -6256,6 +6326,30 @@ function PlannedDispatchPanel({ rows, orders, onDispatch, dispatchedBy }: {
   const [qtyFor, setQtyFor] = useState<Record<string, string>>({});
   const [result, setResult] = useState<Record<string, { ok: boolean; message: string }>>({});
   const { getId, reset: resetDispatchIds } = useStableDispatchIds();
+  // FEATURE: "Hosur and Custom(Planned) need date-wise orders" — same
+  // date-grouping pattern just added to the VRSNB/SNB/Hosur panel above,
+  // applied here for Custom(Planned) too. Placed here, before any early
+  // return below, since hooks must run unconditionally on every render.
+  const plannedDateGroups = useMemo(() => {
+    const groups = new Map<string, ProductionRow[]>();
+    for (const row of rows) {
+      const contributing = orders.filter(o => row.contributingOrderIds.includes(o.id));
+      const oldest = contributing.length > 0
+        ? contributing.reduce((min, o) => o.createdAt < min ? o.createdAt : min, contributing[0].createdAt)
+        : null;
+      const dateKey = oldest ? kolkataDateKey(oldest) : 'unknown-date';
+      const list = groups.get(dateKey) ?? [];
+      list.push(row);
+      groups.set(dateKey, list);
+    }
+    const todayKey = kolkataDateKey(new Date().toISOString());
+    return Array.from(groups.entries())
+      .sort((a, b) => b[0].localeCompare(a[0]))
+      .map(([dateKey, groupRows]) => ({
+        dateKey, rows: groupRows,
+        label: dateKey === 'unknown-date' ? 'Date unknown' : dateKey === todayKey ? 'Today' : new Date(dateKey).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }),
+      }));
+  }, [rows, orders]);
   // WORKFLOW CHANGE (2026-08-08 audit): this was the last remaining dispatch
   // entry point that still called onDispatch directly with no review, price,
   // or invoice step. "Dispatch to <branch>" now only builds one
@@ -6366,7 +6460,10 @@ function PlannedDispatchPanel({ rows, orders, onDispatch, dispatchedBy }: {
 
   return (
     <div className="space-y-2 pb-16">
-      {rows.map(row => {
+      {plannedDateGroups.map(group => (
+      <div key={group.dateKey} className="space-y-2">
+      <p className="pt-1 text-[11px] font-black uppercase tracking-wide text-muted-foreground">{group.label}</p>
+      {group.rows.map(row => {
         const plannedRequested = row.perBranch.Planned ?? 0;
         const alreadySent = plannedDispatchedForRow(row, orders);
         const remainingPlanned = Math.max(0, plannedRequested - alreadySent);
@@ -6426,6 +6523,8 @@ function PlannedDispatchPanel({ rows, orders, onDispatch, dispatchedBy }: {
           </div>
         );
       })}
+      </div>
+      ))}
     </div>
   );
 }
@@ -7194,7 +7293,13 @@ function DispatchReviewModal({ scope, hosurShop, customer, actions, dispatchedBy
       cur.quantity = Math.round((cur.quantity + a.quantity) * 1000) / 1000;
       byName.set(a.itemName, cur);
     }
-    return Array.from(byName.values()).sort((a, b) => a.itemName.localeCompare(b.itemName));
+    // BUG FIX: "selection order still showing alphabetical" — this was the
+    // actual root cause. Map already preserves insertion order matching
+    // actions' own order (which the earlier upstream fix made match click
+    // order) — this leftover .sort(a,b => localeCompare) was silently
+    // re-alphabetizing right at this final display step, undoing that fix
+    // entirely without it being visible anywhere upstream.
+    return Array.from(byName.values());
   }, [actions]);
 
   const priceFor = (itemName: string): number | null => {

@@ -869,6 +869,20 @@ function OrderCard({ order, searchTerm = '' }: { order: BakeryOrder; searchTerm?
                 return <tr key={`${item.itemId}-${index}`} className="border-t border-border"><td className="px-3 py-2 font-semibold">{item.itemName}</td><td className="px-3 py-2 text-muted-foreground">{category}</td><td className="px-3 py-2 text-right font-bold">{item.quantity} {item.dispatchUnit || 'kg'}</td><td className="px-2 py-1"><button type="button" onClick={() => toggleIndex(index)} title="Remove selection" className="rounded-lg p-1.5 text-muted-foreground hover:bg-red-50 hover:text-red-600"><X className="size-3.5" /></button></td></tr>;
               })}</tbody>
             </table></div>
+            {/* BUG FIX: "Send to Production" used to sit only at the very
+                bottom of the card, past every item and every warning below —
+                requiring a scroll past the whole order just to confirm a
+                selection made right at the top. Placed here too, right where
+                the selection itself is visible, so the action is right next
+                to what it acts on. The original bottom button also stays
+                (harmless duplicate — same handler, same disabled state) in
+                case someone scrolls past this point first. */}
+            <div className="border-t border-primary/10 p-2">
+              <button onClick={handleConfirmStock} disabled={sending}
+                className="w-full h-11 rounded-xl text-sm font-body font-bold flex items-center justify-center gap-2 transition-all active:scale-[0.98] disabled:opacity-50 cafe-gradient text-primary-foreground shadow-md">
+                {sending ? <Loader2 className="size-4 animate-spin" /> : <><CheckCircle2 className="size-4" /> Send to Production</>}
+              </button>
+            </div>
           </div>}
 
           {sendError && <p className="text-xs font-body text-destructive text-center pt-1">{sendError}</p>}
@@ -1481,6 +1495,14 @@ function OrdersTab() {
   const [initialLoading, setInitialLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [merging, setMerging] = useState(false);
+  // BUG FIX: "Sent tab quantity keeps increasing" — merging is React state,
+  // which updates asynchronously (a render away from actually blocking a
+  // second call). The auto-merge effect and a manual click racing each
+  // other could both pass the `merging` check and each independently
+  // re-merge the same orders, repeatedly inflating quantities. Same fix
+  // as the identical class of bug already closed on Planner's own "Send
+  // Merged Order" button — a plain ref changes immediately, no render gap.
+  const mergingRef = useRef(false);
   const [mergeError, setMergeError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   // FEATURE (2026-08-20): "why are orders showing as separate — it should
@@ -1551,7 +1573,8 @@ function OrdersTab() {
   }, [pending, search]);
 
   const runMerge = async (silent: boolean) => {
-    if (mergeable.length < 2 || merging) return;
+    if (mergeable.length < 2 || mergingRef.current) return;
+    mergingRef.current = true;
     setMerging(true); setMergeError(null);
     try {
       // BUG FIX (2026-08-06): orders with no targetBranch (e.g. Planner's own
@@ -1593,11 +1616,16 @@ function OrdersTab() {
       // automatic background attempt finding nothing to do isn't news to
       // anyone and shouldn't surface as an error banner.
       if (!mergedAny && !silent) {
-        setMergeError('Nothing to combine — each pending order already targets a different branch, so there\'s nothing to merge together.');
+        // BUG FIX: this message was written before the date-only grouping
+        // change above and still blamed "different branch" — the real
+        // reason nothing merged is that no two pending orders share the
+        // same calendar date, not branch (branch no longer matters here).
+        setMergeError('Nothing to combine — no two pending orders were created on the same date yet, so there\'s nothing to merge together.');
       }
     } catch (err) {
       if (!silent) setMergeError(err instanceof Error ? err.message : 'Failed to combine orders — please try again.');
     } finally {
+      mergingRef.current = false;
       setMerging(false);
     }
   };

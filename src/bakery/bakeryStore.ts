@@ -196,7 +196,20 @@ let bakeryHasEverLoaded = false;
 // change in orderStore.ts. A cache hit here also sets bakeryHasEverLoaded
 // = true, so the very first fetch of the session goes through the narrow,
 // merge-based path below instead of the full 60-day populate.
-const BAKERY_ORDERS_CACHE_KEY = 'bakery_orders_v1';
+// BUG FIX (2026-08-26): "cleared bakery_orders but still seeing old orders
+// everywhere" — the merge logic below (`[...fresh, ...get().orders.filter(
+// o => !freshIds.has(o.id))]`) only ever ADDS/updates from the recent
+// window; it never removes an order that's no longer in the database,
+// since anything outside that window gets unconditionally preserved from
+// local state. After a bulk delete of old orders (anything past the
+// narrow refresh window), those deleted rows stayed in every browser's
+// local state and IndexedDB cache indefinitely — not just this once, this
+// would recur after any future bulk clear too. Bumped the cache key so
+// every existing browser's stale cache is ignored on next load, and
+// force=true (an explicit, deliberate refresh) now does a genuine full
+// replace instead of a merge, so it can actually correct this if it
+// happens again.
+const BAKERY_ORDERS_CACHE_KEY = 'bakery_orders_v2';
 let bakeryCacheHydration: Promise<boolean> | null = null;
 
 function hydrateBakeryOrdersFromCache(set: (partial: { orders: BakeryOrder[] }) => void): Promise<boolean> {
@@ -292,7 +305,7 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
         // wide time window except the very first populate of an empty
         // store — every fetch after that only needs to catch what's
         // changed recently and merge it in, never replace everything.
-        const cutoffDays = bakeryHasEverLoaded ? BAKERY_REFRESH_WINDOW_DAYS : 60;
+        const cutoffDays = (bakeryHasEverLoaded && !force) ? BAKERY_REFRESH_WINDOW_DAYS : 60;
         const cutoff = new Date();
         cutoff.setDate(cutoff.getDate() - cutoffDays);
         const query = supabase
@@ -303,9 +316,12 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
         const { data, error } = await query;
         if (!error && data) {
           const fresh = data.map(d => rowToOrder(d as Record<string, unknown>));
-          if (!bakeryHasEverLoaded) {
-            // True first load this session — nothing in local state to
-            // merge into yet, so this is a full, wide-window populate.
+          if (!bakeryHasEverLoaded || force) {
+            // True first load this session, OR an explicit, deliberate
+            // refresh — a full, wide-window REPLACE rather than a merge.
+            // This is the only path that can ever reflect a deletion —
+            // the merge path below, by design, only adds/updates and
+            // never removes, so it can't correct a bulk clear on its own.
             set({ orders: fresh });
             bakeryHasEverLoaded = true;
             void setCached(BAKERY_ORDERS_CACHE_KEY, fresh);
@@ -1303,6 +1319,12 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
           .maybeSingle();
 
     if (!existingRow && !newEntry.isCustomSale) {
+      // BUG FIX: branch_incoming has a DB check constraint requiring
+      // quantity > 0 — surface a clear error here instead of letting a
+      // zero/negative dispatch quantity crash with a raw constraint code.
+      if (!(newEntry.quantity > 0)) {
+        throw new Error('Dispatch quantity must be greater than zero.');
+      }
       const { error: incomingErr } = await supabase.from('branch_incoming').insert({
         dispatch_id:   newEntry.id,
         branch:        newEntry.branch,
