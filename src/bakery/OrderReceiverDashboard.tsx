@@ -516,10 +516,24 @@ function mapHosurOrderItem(row: Record<string, unknown>): HosurOrderItem {
   };
 }
 
-function displayQty(item: BakeryOrderItem): number {
-  return item.dispatchUnit === "pcs" && item.originalPcs != null
+// BUG FIX: a merged production order (one bakery order combining requests
+// from several branches, e.g. an SNB order merged with a Hosur shop order —
+// see HOSUR_ORDER_IDS in notes) stores the branch breakdown per item in
+// branchSplit, but this always returned the item's FULL combined quantity
+// regardless of which branch was viewing. An SNB receiver looking at their
+// own order saw the whole merged total (e.g. 406 pcs Bun) instead of just
+// SNB's real share (328 pcs) — the rest belonged to Hosur. Same ratio-based
+// pcs conversion as computeMergedSummaryDisplay in PlannerDashboard.tsx.
+function displayQty(item: BakeryOrderItem, branch?: Branch): number {
+  const full = item.dispatchUnit === "pcs" && item.originalPcs != null
     ? item.originalPcs
     : item.quantity;
+  if (!branch || !item.branchSplit || item.branchSplit[branch] == null) return full;
+  const splitQty = item.branchSplit[branch] as number;
+  if (item.dispatchUnit === "pcs" && item.originalPcs != null && item.quantity) {
+    return Math.round((splitQty / item.quantity) * item.originalPcs * 1000) / 1000;
+  }
+  return splitQty;
 }
 
 function displayUnit(item: BakeryOrderItem): "pcs" | "kg" {
@@ -976,7 +990,7 @@ function PlacedOrdersPanel({
       order.items.forEach((item) => {
         const key = `${item.itemName}|${displayUnit(item)}`;
         const existing = summary.get(key) ?? { itemName: item.itemName, unit: displayUnit(item), quantity: 0 };
-        existing.quantity += displayQty(item);
+        existing.quantity += displayQty(item, branch);
         summary.set(key, existing);
       });
     });
@@ -1017,7 +1031,7 @@ function PlacedOrdersPanel({
           orderLocationLabel(order.status),
           orderAcceptedBy(order) || "-",
           item.itemName,
-          displayQty(item),
+          displayQty(item, branch),
           displayUnit(item),
           order.createdBy,
           order.notes || "-",
@@ -1249,7 +1263,7 @@ function PlacedOrdersPanel({
                             : "bg-muted text-muted-foreground"
                         )}
                       >
-                        {item.itemName} × {displayQty(item)} {displayUnit(item)}
+                        {item.itemName} × {displayQty(item, branch)} {displayUnit(item)}
                         {!isRemoved && (
                           <button
                             type="button"

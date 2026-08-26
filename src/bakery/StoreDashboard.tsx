@@ -843,6 +843,26 @@ function OrderCard({ order, searchTerm = '' }: { order: BakeryOrder; searchTerm?
         {expanded ? <ChevronUp className="size-4 text-muted-foreground shrink-0" /> : <ChevronDown className="size-4 text-muted-foreground shrink-0" />}
       </button>
 
+      {/* BUG FIX: the prior fix (see comment below, near the selected-items
+          table) placed "Send to Production" right after that table — but the
+          table itself renders AFTER the full item list, so on a large order
+          (dozens of items across several categories) the button was still
+          many screens below wherever the planner had just ticked a checkbox.
+          A fixed floating bar shows the instant a selection exists, pinned to
+          the viewport regardless of scroll position, so it's visible right
+          after the tap that created it — no scrolling required either way.
+          Cleared above the mobile BottomNav; the original in-flow buttons
+          stay too (harmless duplicates, same handler/disabled state). */}
+      {expanded && accepted && !sent && selectedEntries.length > 0 && (
+        <div className="fixed inset-x-0 bottom-[88px] z-40 flex justify-center px-4 md:bottom-4">
+          <button onClick={handleConfirmStock} disabled={sending}
+            className="flex items-center gap-2 rounded-2xl cafe-gradient px-5 py-3 text-sm font-body font-bold text-primary-foreground shadow-xl active:scale-[0.98] disabled:opacity-50">
+            {sending ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
+            Send to Production ({selectedEntries.length})
+          </button>
+        </div>
+      )}
+
       {expanded && (
         <div className="border-t border-border/50 px-4 pb-4 pt-3 space-y-2.5">
           {accepted && !sent && (

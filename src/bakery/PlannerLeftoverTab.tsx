@@ -54,6 +54,20 @@ export interface LeftoverLedgerRow {
 export const kolkataToday = () =>
   new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
 
+// FEATURE: "pcs" items must stay whole numbers — "12.5 pcs" doesn't make
+// physical sense and has been a source of data-entry mistakes. Strips any
+// decimal point (and everything typed after it) from a quantity field the
+// moment the field's unit is 'pcs'; a 'kg' field is returned unchanged.
+// Keeps a leading "-" (only editBalanceQty below can legitimately go
+// negative, to correct a balance into a backorder) but drops every other
+// non-digit character.
+export function sanitizeQtyForUnit(raw: string, unit: LeftoverUnit): string {
+  if (unit !== 'pcs') return raw;
+  const negative = raw.trim().startsWith('-');
+  const digits = raw.replace(/[^0-9]/g, '');
+  return negative ? (digits ? `-${digits}` : '-') : digits;
+}
+
 export const qtyFmt = (v: number) => Number(v || 0).toLocaleString('en-IN', { maximumFractionDigits: 3 });
 const dateLabel = (value: string) => new Date(`${value}T00:00:00`).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
 const reasonLabel = (r: LeftoverReason) => r === 'closing_stock' ? 'Closing stock entry' : r === 'production_carryover' ? 'Unused production' : r === 'dispatch' ? 'Dispatched' : r === 'transfer_out' ? 'Transfer Out' : r === 'return' ? 'Return' : 'Adjustment';
@@ -853,7 +867,7 @@ export default function PlannerLeftoverTab() {
             <div className="grid grid-cols-2 gap-3">
               <label className="space-y-1">
                 <span className="text-xs font-black text-muted-foreground">Quantity</span>
-                <input type="number" min="0" step="0.001" value={qty} onChange={(e) => setQty(e.target.value)} className="h-11 w-full rounded-xl border bg-background px-3 text-sm font-bold" placeholder="0" />
+                <input type="number" min="0" step={unit === 'pcs' ? 1 : 0.001} value={qty} onChange={(e) => setQty(sanitizeQtyForUnit(e.target.value, unit))} className="h-11 w-full rounded-xl border bg-background px-3 text-sm font-bold" placeholder="0" />
               </label>
               <label className="space-y-1">
                 <span className="text-xs font-black text-muted-foreground">Business Date</span>
@@ -887,7 +901,7 @@ export default function PlannerLeftoverTab() {
                         <td className="px-4 py-2.5" colSpan={3}>
                           <div className="flex flex-wrap items-center gap-1.5">
                             <input autoFocus value={editBalanceName} onChange={(e) => setEditBalanceName(e.target.value)} placeholder="Item name" className="h-8 min-w-[140px] flex-1 rounded-lg border bg-background px-2 text-xs font-bold" />
-                            <input type="number" step="0.001" value={editBalanceQty} onChange={(e) => setEditBalanceQty(e.target.value)} placeholder="Balance qty" className="h-8 w-24 rounded-lg border bg-background px-2 text-right text-xs font-bold" />
+                            <input type="number" step={editBalanceUnit === 'pcs' ? 1 : 0.001} value={editBalanceQty} onChange={(e) => setEditBalanceQty(sanitizeQtyForUnit(e.target.value, editBalanceUnit))} placeholder="Balance qty" className="h-8 w-24 rounded-lg border bg-background px-2 text-right text-xs font-bold" />
                             <select value={editBalanceUnit} onChange={(e) => setEditBalanceUnit(e.target.value as LeftoverUnit)} className="h-8 rounded-lg border bg-background px-1 text-xs font-bold">
                               <option value="kg">kg</option>
                               <option value="pcs">pcs</option>
@@ -909,7 +923,7 @@ export default function PlannerLeftoverTab() {
                     <td className="px-4 py-2.5 text-right">
                       {adjustingSlug === key ? (
                         <div className="flex items-center justify-end gap-1">
-                          <input autoFocus type="number" min="0" step="0.001" value={adjustQty} onChange={(e) => setAdjustQty(e.target.value)} className="h-8 w-20 rounded-lg border bg-background px-2 text-xs" placeholder="qty" />
+                          <input autoFocus type="number" min="0" step={row.unit === 'pcs' ? 1 : 0.001} value={adjustQty} onChange={(e) => setAdjustQty(sanitizeQtyForUnit(e.target.value, row.unit))} className="h-8 w-20 rounded-lg border bg-background px-2 text-xs" placeholder="qty" />
                           <button onClick={() => submitAdjustment(row)} disabled={adjustSaving} className="rounded-lg bg-red-600 px-2 py-1.5 text-[10px] font-black text-white">{adjustSaving ? '…' : 'Remove'}</button>
                           <button onClick={() => { setAdjustingSlug(null); setAdjustQty(''); setAdjustNote(''); }} className="rounded-lg bg-muted px-1.5 py-1.5"><X className="size-3" /></button>
                         </div>
@@ -1049,7 +1063,7 @@ export default function PlannerLeftoverTab() {
                       <td className="px-4 py-2"><input autoFocus value={editName} onChange={(e) => setEditName(e.target.value)} className="h-8 w-full rounded-lg border bg-background px-2 text-xs font-bold" /></td>
                       <td className="px-4 py-2">
                         <div className="flex items-center justify-end gap-1">
-                          <input type="number" min="0" step="0.001" value={editQty} onChange={(e) => setEditQty(e.target.value)} className="h-8 w-20 rounded-lg border bg-background px-2 text-right text-xs font-bold" />
+                          <input type="number" min="0" step={editUnit === 'pcs' ? 1 : 0.001} value={editQty} onChange={(e) => setEditQty(sanitizeQtyForUnit(e.target.value, editUnit))} className="h-8 w-20 rounded-lg border bg-background px-2 text-right text-xs font-bold" />
                           <select value={editUnit} onChange={(e) => setEditUnit(e.target.value as LeftoverUnit)} className="h-8 rounded-lg border bg-background px-1 text-xs font-bold">
                             <option value="kg">kg</option>
                             <option value="pcs">pcs</option>

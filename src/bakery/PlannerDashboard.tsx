@@ -31,7 +31,7 @@ import { exportToExcel } from '@/lib/exportExcel';
 import HosurDashboard from '@/pages/HosurDashboard';
 import HosurShopOrderPanel, { leftoverReasonLabel } from './HosurShopOrderPanel';
 import PackingCakeOrdersTab from './PackingCakeOrdersTab';
-import PlannerLeftoverTab, { PlannerTransferOutTab, useLeftoverBalanceMap, recordLeftoverMovement, kolkataToday, qtyFmt, type LeftoverUnit, useMergedLeftoverCatalog, useMergedCatalogWithPrice, useBranchOnlyCatalog, ItemSearchPicker, type MergedCatalogItem } from './PlannerLeftoverTab';
+import PlannerLeftoverTab, { PlannerTransferOutTab, useLeftoverBalanceMap, recordLeftoverMovement, kolkataToday, qtyFmt, sanitizeQtyForUnit, type LeftoverUnit, useMergedLeftoverCatalog, useMergedCatalogWithPrice, useBranchOnlyCatalog, ItemSearchPicker, type MergedCatalogItem } from './PlannerLeftoverTab';
 import { canonicalItemSlug, closingStockItemSlug, parseWeightGrams, pcsToKg, resolveItemWeightGrams } from './itemMatcher';
 import { useBranchCatalogStore } from '@/stores/branchCatalogStore';
 import { useRecipeStore } from './recipeStore';
@@ -929,7 +929,7 @@ function IncomingOrdersTab({ orders, onAdd }: { orders: BakeryOrder[]; onAdd: Re
               />
             </div>
             <div className="flex gap-2">
-              <input value={qty} onChange={e => setQty(e.target.value)} type="number" placeholder="Qty" className="w-full rounded-xl border border-border px-3 py-2 text-sm" />
+              <input value={qty} onChange={e => setQty(sanitizeQtyForUnit(e.target.value, unit))} type="number" step={unit === 'pcs' ? 1 : 0.001} placeholder="Qty" className="w-full rounded-xl border border-border px-3 py-2 text-sm" />
               <select value={unit} onChange={e => setUnit(e.target.value as 'pcs' | 'kg')} className="rounded-xl border border-border px-2 py-2 text-sm">
                 <option value="kg">kg</option>
                 <option value="pcs">pcs</option>
@@ -2189,7 +2189,7 @@ function ProductionEntryDateGroup({ label, orders, rows, search, defaultOpen }: 
                             {sourcesOpen ? 'Hide' : 'Show'} sources ({sources.length} order{sources.length === 1 ? '' : 's'})
                           </button>
                         </div>
-                        <input type="number" min={0} placeholder="Qty produced" value={qty[row.itemName] ?? ''} onChange={e => setQty(v => ({ ...v, [row.itemName]: e.target.value }))}
+                        <input type="number" min={0} step={row.unit === 'pcs' ? 1 : 0.001} placeholder="Qty produced" value={qty[row.itemName] ?? ''} onChange={e => setQty(v => ({ ...v, [row.itemName]: sanitizeQtyForUnit(e.target.value, row.unit) }))}
                           className="w-28 rounded-lg border border-border bg-background px-2 py-1.5 text-right text-xs font-bold" />
                         <button onClick={() => setAskItem(row)} disabled={saving === row.itemName || !qty[row.itemName]}
                           className="flex items-center gap-1.5 rounded-xl cafe-gradient px-4 py-2 text-xs font-bold text-white shadow-teal disabled:opacity-40">
@@ -5539,8 +5539,8 @@ function BranchFlatDispatchPanel({ branch, rows, orders, leftoverBalances, onDis
                   </p>
                 </label>
                 <input
-                  type="number" min={0} max={remaining} value={val}
-                  onChange={e => { touchedRef.current.add(row.itemName); setQty(v => ({ ...v, [row.itemName]: e.target.value })); }}
+                  type="number" min={0} max={remaining} step={row.unit === 'pcs' ? 1 : 0.001} value={val}
+                  onChange={e => { touchedRef.current.add(row.itemName); setQty(v => ({ ...v, [row.itemName]: sanitizeQtyForUnit(e.target.value, row.unit) })); }}
                   className="w-24 rounded-lg border border-border bg-background px-2 py-1.5 text-right text-sm font-bold"
                 />
               </div>
@@ -6591,9 +6591,10 @@ function PlannedDispatchPanel({ rows, orders, onDispatch, dispatchedBy }: {
                 <input
                   type="number"
                   max={remainingPlanned}
+                  step={row.unit === 'pcs' ? 1 : 0.001}
                   placeholder={String(defaultQty)}
                   value={qtyFor[row.itemName] ?? ''}
-                  onChange={e => setQtyFor(v => ({ ...v, [row.itemName]: e.target.value }))}
+                  onChange={e => setQtyFor(v => ({ ...v, [row.itemName]: sanitizeQtyForUnit(e.target.value, row.unit) }))}
                   className="w-24 rounded-lg border border-border bg-background px-2 py-1.5 text-right text-xs font-bold"
                 />
                 <span className="text-[11px] font-bold text-muted-foreground">{row.unit} · {qtyFmt(remainingPlanned)} owed</span>
@@ -6815,9 +6816,9 @@ function CustomDispatchPanel({ rows, orders, onDispatch, dispatchedBy, leftoverB
                 </p>
               </label>
               <input
-                type="number" min={0} max={remainingPlanned}
+                type="number" min={0} max={remainingPlanned} step={row.unit === 'pcs' ? 1 : 0.001}
                 value={val}
-                onChange={e => setQty(v => ({ ...v, [row.itemName]: e.target.value }))}
+                onChange={e => setQty(v => ({ ...v, [row.itemName]: sanitizeQtyForUnit(e.target.value, row.unit) }))}
                 className="w-24 rounded-lg border border-border bg-background px-2 py-1.5 text-right text-sm font-bold"
               />
             </div>
@@ -6985,9 +6986,9 @@ function BulkDispatchModal({ branch, rows, orders, onClose, onDispatch, dispatch
                 <p className="text-sm font-black text-foreground">{row.itemName}</p>
                 <div className="flex items-center gap-1">
                   <input
-                    type="number" max={remaining}
+                    type="number" max={remaining} step={row.unit === 'pcs' ? 1 : 0.001}
                     value={val}
-                    onChange={e => { touchedRef.current.add(row.itemName); setQty(prev => ({ ...prev, [row.itemName]: e.target.value })); }}
+                    onChange={e => { touchedRef.current.add(row.itemName); setQty(prev => ({ ...prev, [row.itemName]: sanitizeQtyForUnit(e.target.value, row.unit) })); }}
                     className="w-20 rounded-lg border border-border px-2 py-1 text-right text-xs font-bold"
                   />
                   <span className="text-[11px] font-bold text-muted-foreground">{row.unit}</span>
@@ -7275,7 +7276,7 @@ function DispatchChecklistModal({ row, orders, branchFilter, onClose, onDispatch
                   {entries.map(({ order, requestedQty }) => (
                     <div key={order.id} className="flex items-center justify-between gap-2 py-1">
                       <span className="text-xs font-bold text-muted-foreground">Order #{order.orderNumber} · requested {requestedQty} {row.unit}</span>
-                      <input type="number" value={qty[entryKey(order.id, branch)] ?? qtyFor(order.id, branch)} onChange={e => setQty(v => ({ ...v, [entryKey(order.id, branch)]: e.target.value }))} className="w-24 rounded-lg border border-border px-2 py-1 text-right text-xs font-bold" />
+                      <input type="number" step={row.unit === 'pcs' ? 1 : 0.001} value={qty[entryKey(order.id, branch)] ?? qtyFor(order.id, branch)} onChange={e => setQty(v => ({ ...v, [entryKey(order.id, branch)]: sanitizeQtyForUnit(e.target.value, row.unit) }))} className="w-24 rounded-lg border border-border px-2 py-1 text-right text-xs font-bold" />
                     </div>
                   ))}
                   <ul className="mt-2 space-y-1 text-[11px] font-semibold text-muted-foreground">

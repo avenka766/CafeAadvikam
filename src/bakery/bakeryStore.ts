@@ -525,21 +525,36 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
           c.itemName.trim().toLowerCase() === item.itemName.trim().toLowerCase() &&
           (c.dispatchUnit === 'pcs' ? 'pcs' : 'kg') === unit);
         let targetItemId: string;
+        // BUG FIX (2026-08-26): "Sent/Store totals inflate every re-merge" —
+        // `item` here can itself be the surviving row of an EARLIER merge,
+        // in which case it already carries its own multi-branch
+        // `branchSplit` (e.g. {SNB: 279, Hosur: 279}) that doesn't match its
+        // single outer `targetBranch` column. The original code below always
+        // attributed this item's WHOLE quantity to just `o.targetBranch`,
+        // discarding that inner split — so a branch's true share got
+        // silently replaced by the item's full combined total every time it
+        // passed through another merge, inflating that branch's number a
+        // little further on each subsequent "Send to Store". Fold the
+        // item's own existing split in first when present; only fall back to
+        // crediting the whole quantity to `o.targetBranch` for a genuinely
+        // single-branch item that has no split of its own yet.
+        const itemSplit: Partial<Record<Branch, number>> =
+          item.branchSplit && Object.keys(item.branchSplit).length > 0
+            ? item.branchSplit
+            : (o.targetBranch ? { [o.targetBranch]: item.quantity } : {});
         if (existing) {
           existing.quantity += item.quantity;
           if (item.originalPcs != null) existing.originalPcs = (existing.originalPcs ?? 0) + item.originalPcs;
-          // FEATURE (2026-08-26): "merge across branches too" — track each
-          // source order's own targetBranch contribution to this combined
-          // item, so a later dispatch can still split it correctly per
-          // branch even after the separate order rows are gone. Only
-          // tracked when the source order actually has a branch (Planned-
-          // bucket orders have none, and don't need this).
-          if (o.targetBranch) {
-            existing.branchSplit = { ...existing.branchSplit, [o.targetBranch]: (existing.branchSplit?.[o.targetBranch] ?? 0) + item.quantity };
+          if (Object.keys(itemSplit).length > 0) {
+            const nextSplit = { ...existing.branchSplit };
+            for (const [branch, qty] of Object.entries(itemSplit)) {
+              nextSplit[branch as Branch] = (nextSplit[branch as Branch] ?? 0) + (qty ?? 0);
+            }
+            existing.branchSplit = nextSplit;
           }
           targetItemId = existing.itemId;
         } else {
-          combined.push({ ...item, branchSplit: o.targetBranch ? { [o.targetBranch]: item.quantity } : item.branchSplit });
+          combined.push({ ...item, branchSplit: Object.keys(itemSplit).length > 0 ? itemSplit : undefined });
           targetItemId = item.itemId;
         }
         const prod = (o.producedItems || []).find(p => p.itemId === item.itemId);
