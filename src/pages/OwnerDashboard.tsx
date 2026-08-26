@@ -520,15 +520,19 @@ function SalesOverviewTab() {
     (['VRSNB', 'SNB'] as const).forEach(b => {
       const ledgerRows = salesLedger.closureRows.filter(row => row.branch === b);
       if (ledgerRows.length > 0) {
-        branches[b].revenue = ledgerRows.reduce(
-          (sum, row) => sum + Math.max(
-            0,
-            salesLedger.toNumber(row.sales_total)
-              - salesLedger.toNumber(row.advance_collected)
-              - salesLedger.toNumber(row.advance_balance_collected),
-          ),
-          0,
-        );
+        // BUG FIX: "branch sales data is wrong." This used to subtract
+        // advance_collected/advance_balance_collected from sales_total,
+        // producing a headline revenue figure that didn't match the sum of
+        // that same ledger row's own cash_total+upi_total+card_total+
+        // credit_billed (those were never similarly adjusted, since the
+        // ledger doesn't break advance amounts down by payment mode) — e.g.
+        // SNB showing ₹95,917 up top while its own Cash/UPI/Card/Credit
+        // breakdown directly below summed to ₹1,02,552, a real branch owner
+        // could see was self-inconsistent. sales_total is the actual,
+        // confirmed-correct total (matches branch_bill_headers exactly);
+        // use it directly so the headline number always equals the sum of
+        // its own breakdown.
+        branches[b].revenue = ledgerRows.reduce((sum, row) => sum + salesLedger.toNumber(row.sales_total), 0);
       }
       bills.filter(bill => bill.branch === b && bill.status !== 'Returned' && new Date(bill.createdAt) >= cutoff && new Date(bill.createdAt) <= cutoffEnd).forEach(bill => {
         branches[b].qty += bill.items.reduce((sum, item) => sum + item.quantity, 0);
@@ -2156,15 +2160,13 @@ function BranchOverviewTab() {
     const branch = unit.replace(' Branch', '') as Branch;
     const ledgerRows = ownerLedger.closureRows.filter(row => row.branch === branch);
     if (ledgerRows.length > 0) {
-      const gross = ledgerRows.reduce(
-        (sum, row) => sum + Math.max(
-          0,
-          ownerLedger.toNumber(row.sales_total)
-            - ownerLedger.toNumber(row.advance_collected)
-            - ownerLedger.toNumber(row.advance_balance_collected),
-        ),
-        0,
-      );
+      // BUG FIX: see the matching comment on branchSales above — sales_total
+      // used to have advance_collected/advance_balance_collected subtracted
+      // here, while the cash/upi/card/credit breakdown below never was,
+      // making this card's own headline total disagree with its own payment
+      // breakdown (e.g. SNB: ₹95,917 up top vs ₹1,02,552 across Cash/UPI/
+      // Card/Credit). Use sales_total directly so both always match.
+      const gross = ledgerRows.reduce((sum, row) => sum + ownerLedger.toNumber(row.sales_total), 0);
       const cash = ledgerRows.reduce((sum, row) => sum + ownerLedger.toNumber(row.cash_total), 0);
       const upi = ledgerRows.reduce((sum, row) => sum + ownerLedger.toNumber(row.upi_total), 0);
       const card = ledgerRows.reduce((sum, row) => sum + ownerLedger.toNumber(row.card_total), 0);
@@ -2361,12 +2363,10 @@ function buildOwnerClosureRows(
     const ledger = ownerLedger.closureByBranchDate.get(`${b}:${date}`);
     const savedLedgerClosure = ownerLedger.savedClosureByBranchDate.get(`${b}:${date}`);
     if (ledger) {
-      const gross = Math.max(
-        0,
-        ownerLedger.toNumber(ledger.sales_total)
-          - ownerLedger.toNumber(ledger.advance_collected)
-          - ownerLedger.toNumber(ledger.advance_balance_collected),
-      );
+      // BUG FIX: see the matching comment on branchSales above — same
+      // advance-subtraction-vs-unadjusted-breakdown mismatch, here on the
+      // Daily Closure tab's Gross/Net Sales figures.
+      const gross = ownerLedger.toNumber(ledger.sales_total);
       const ret = ownerLedger.toNumber(savedLedgerClosure?.refunds || 0);
       const cash = ownerLedger.toNumber(ledger.cash_total);
       const upi = ownerLedger.toNumber(ledger.upi_total);

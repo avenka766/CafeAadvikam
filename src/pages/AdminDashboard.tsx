@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState, type ElementType, type ReactNode } from 'react';
-import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
+import { Fragment, useCallback, useEffect, useMemo, useState, type ElementType, type ReactNode } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useOrderStore } from '@/stores/orderStore';
 import { useShallow } from 'zustand/react/shallow';
 import { useBranchStore } from '@/branch/branchStore';
@@ -14,7 +14,6 @@ import VrsnbItemsTab from '@/components/admin/VrsnbItemsTab';
 import AdminCreditTab from '@/components/admin/AdminCreditTab';
 import AdminAdvanceTab from '@/components/admin/AdminAdvanceTab';
 import AttendanceSalary from '@/pages/AttendanceSalary';
-import AdminPlanningTab from '@/components/admin/AdminPlanningTab';
 import AdminWalletTab from '@/components/admin/AdminWalletTab';
 import AdminPromotionsTab from '@/components/admin/AdminPromotionsTab';
 import AdminInvoicesTab from '@/bakery/AdminInvoicesTab';
@@ -22,24 +21,25 @@ import AdminPurchaseOrdersTab from '@/bakery/AdminPurchaseOrdersTab';
 import { useBranchLedger } from '@/hooks/useBranchLedger';
 import { useNotificationStore } from '@/bakery/notificationStore';
 import { supabase } from '@/lib/supabase';
+import { exportWorkbook, exportReportPdf, pdfMoney } from '@/lib/exportAdminReport';
 import {
   Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Line, LineChart,
   Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from 'recharts';
 import {
   Activity, AlertTriangle, Banknote, BarChart3, Bell, CalendarClock,
-  CheckCircle2, ChevronDown, ClipboardList, CreditCard, Download,
+  CheckCircle2, ChevronDown, ClipboardList, CreditCard, Download, FileDown,
   FileSpreadsheet, Filter, History, IndianRupee, Landmark, LayoutDashboard,
   Lock, Package, PackageSearch, Printer, RefreshCw, Search,
   ShieldCheck, ShoppingBag, Smartphone, Store, TrendingDown, TrendingUp,
-  Trash2, WalletCards, Gift, X,
+  Trash2, WalletCards, Gift, X, Truck,
 } from 'lucide-react';
 
 const CHART_COLORS = ['#2563eb', '#d97706', '#059669', '#7c3aed', '#dc2626', '#0891b2', '#ea580c'];
 const PAYMENT_COLORS = ['#16a34a', '#2563eb', '#7c3aed', '#f97316', '#dc2626'];
 
 // CHANGE 3: Removed 'stock-alerts' from AdminTab union
-type AdminTab = 'public-orders' | 'planning' | 'wallet' | 'promotions' | 'overview' | 'cafe' | 'branches' | 'items' | 'daily-closure' | 'credits' | 'advance' | 'stock-disputes' | 'stock-variance' | 'waste' | 'audit' | 'invoices' | 'purchase-orders' | 'alerts' | 'complaints' | 'attendance';
+type AdminTab = 'public-orders' | 'wallet' | 'promotions' | 'overview' | 'cafe' | 'branches' | 'hosur' | 'items' | 'daily-closure' | 'credits' | 'advance' | 'stock-disputes' | 'stock-variance' | 'waste' | 'audit' | 'invoices' | 'purchase-orders' | 'alerts' | 'complaints' | 'attendance';
 
 type SalesTxn = {
   id: string; branch: Branch; itemName: string; qty: number; revenue: number;
@@ -52,6 +52,7 @@ type ClosureRow = {
   netSales: number; expenses: number; purchasePayments: number; bankDeposits: number;
   closingBalance: number; differenceAmount: number; remarks: string;
   status: 'Closed' | 'Pending' | 'Review'; closedBy: string; closedAt: string;
+  advanceCollected: number; advanceBalanceCollected: number;
 };
 
 // CHANGE 3: Removed 'stock-alerts' nav item
@@ -69,12 +70,12 @@ const PUBLIC_ORDER_STATUS_OPTIONS = [
 
 const NAV_ITEMS: Array<{ id: AdminTab; label: string; description: string; icon: ElementType; adminOnly?: boolean }> = [
   { id: 'public-orders', label: 'Online Orders', description: 'Paid landing-page orders from Razorpay', icon: Smartphone, adminOnly: true },
-  { id: 'planning', label: 'Planning', description: 'Plan SNB and custom production items for Store', icon: ClipboardList, adminOnly: true },
   { id: 'wallet', label: 'Wallet', description: 'Create prepaid wallets, credit balances and audit usage', icon: WalletCards, adminOnly: true },
   { id: 'promotions', label: 'Promotions', description: 'Create, test, schedule and analyse promotional campaigns', icon: Gift, adminOnly: true },
   { id: 'overview', label: 'Dashboard Overview', description: 'Business KPIs, charts and reports', icon: LayoutDashboard },
   { id: 'cafe', label: 'Cafe Control', description: 'Cafe sales and payment split', icon: Store },
-  { id: 'branches', label: 'Branch Sales', description: 'SNB, VRSNB and Hosur performance', icon: BarChart3 },
+  { id: 'branches', label: 'Branch Sales', description: 'SNB and VRSNB performance', icon: BarChart3 },
+  { id: 'hosur', label: 'Hosur Sales', description: 'Hosur wholesale shop billing and dispatch', icon: Truck },
   { id: 'items', label: 'Items', description: 'SNB and VRSNB item controls', icon: PackageSearch, adminOnly: true },
   { id: 'daily-closure', label: 'Daily Closure', description: 'Cafe and branch closing verification', icon: CalendarClock, adminOnly: true },
   { id: 'credits', label: 'Credit Pending', description: 'Customer credit and due collection', icon: WalletCards, adminOnly: true },
@@ -100,13 +101,6 @@ function inRange(iso: string, fromDate: string, toDate: string) { const t = new 
 function localDateKey(iso: string) { return todayInput(new Date(iso)); }
 function fmtDate(iso: string) { return new Date(iso).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }); }
 function fmtDateTime(iso: string) { return new Date(iso).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }); }
-function csvDownload(filename: string, rows: Array<Record<string, string | number | null | undefined>>) {
-  const safeRows = rows.length ? rows : [{ Note: 'No records for selected filters' }];
-  const headers = Object.keys(safeRows[0]);
-  const csv = [headers.join(','), ...safeRows.map(row => headers.map(h => `"${String(row[h] ?? '').replace(/"/g, '""')}"`).join(','))].join('\n');
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = filename; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 0);
-}
 function paymentIncludes(payment: string | null | undefined, key: 'cash' | 'upi' | 'card' | 'credit') {
   const m = (payment || '').toLowerCase();
   if (key === 'cash') return m === 'cash' || m.includes('cash');
@@ -218,13 +212,11 @@ const ADMIN_BRANCHES: Branch[] = ['Cafe', 'VRSNB', 'SNB', 'Hosur'];
 
 function AdminDashboard() {
   const { currentUser } = useAuthStore();
-  const location = useLocation();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const isAdmin = ['admin', 'owner'].includes(currentUser?.role || '');
   const adminName = currentUser?.displayName || currentUser?.username || 'Admin';
-  const routeTab: AdminTab | null = location.pathname.endsWith('/planning') ? 'planning' : null;
-  const requestedTab = routeTab ?? searchParams.get('tab') as AdminTab | null;
+  const requestedTab = searchParams.get('tab') as AdminTab | null;
   const allowedNavItems = useMemo(() => NAV_ITEMS.filter((item) => !item.adminOnly || isAdmin), [isAdmin]);
   const activeTab: AdminTab = requestedTab && allowedNavItems.some((item) => item.id === requestedTab) ? requestedTab : 'overview';
   const [publicOrders, setPublicOrders] = useState<PublicOrder[]>([]);
@@ -238,6 +230,8 @@ function AdminDashboard() {
   const [toDate, setToDate] = useState(todayInput());
   const [closureDate, setClosureDate] = useState(todayInput());
   const [branchFilter, setBranchFilter] = useState<Branch | 'all'>('all');
+  const [expandedBillId, setExpandedBillId] = useState<string | null>(null);
+  const [billSearch, setBillSearch] = useState('');
   const [itemsSection, setItemsSection] = useState<'snb' | 'vrsnb'>('snb');
   // Audit tab filters
   const [auditSearch, setAuditSearch] = useState('');
@@ -247,7 +241,7 @@ function AdminDashboard() {
     useShallow(s => ({ orders: s.orders, polling: s.polling, startPolling: s.startPolling, stopPolling: s.stopPolling }))
   );
   const { stock, sales, incoming, creditSales, stockMismatches, fetchBranchData, fetchStockMismatches, confirmIncoming } = useBranchStore();
-  const { bills, returns, purchases, purchasePayments, cashMovements, bankDeposits, cashierClosures, stockVarianceRecords, auditLogs, notifications, updateNotificationStatus, complaints, updateComplaintStatus, fetchBillsInRange } = useBranchOpsStore();
+  const { bills, returns, purchasePayments, cashMovements, bankDeposits, cashierClosures, stockVarianceRecords, auditLogs, notifications, updateNotificationStatus, complaints, updateComplaintStatus, fetchBillsInRange } = useBranchOpsStore();
   // The in-memory `bills` array is capped for performance (see
   // branchOpsStore's hydration limit). Whenever the selected report range
   // changes, fetch that exact range directly (across all branches, since this
@@ -257,6 +251,11 @@ function AdminDashboard() {
   }, [fromDate, toDate, fetchBillsInRange]);
   const { notifications: adminNotifications, load: loadAdminNotifications, markRead } = useNotificationStore();
   const adminLedger = useBranchLedger(fromDate, toDate, ['VRSNB', 'SNB', 'Hosur']);
+  // Daily Closure tab has its own independent date picker (closureDate), separate
+  // from the Overview's fromDate/toDate range — needs its own ledger fetch scoped
+  // to that exact date, or it silently misses whenever closureDate falls outside
+  // the Overview range (see BUG FIX note in closureRows below).
+  const closureLedger = useBranchLedger(closureDate, closureDate, ['VRSNB', 'SNB', 'Hosur']);
   const selectTab = (next: AdminTab) => {
     setSearchParams(next === 'overview' ? {} : { tab: next });
   };
@@ -302,6 +301,209 @@ function AdminDashboard() {
     })();
     return () => { cancelled = true; };
   }, [fromDate, toDate]);
+
+  // BUG FIX: "Branch sales data is wrong." Branch-wise revenue/trend/payment-
+  // split above all derived from `opsBillsInRange` (useBranchOpsStore's
+  // `bills`, hydrated from branch_operation_records — a recovery mirror, not
+  // the source of truth) merged with `branchTransactions` (the old per-item
+  // `branch_sales` table, superseded once real billing moved to
+  // branch_bill_headers/branch_bill_items). Investigation found the mirror's
+  // payload shape changed over time — many historical bill rows only carry
+  // {items, payments, creditAmount} with no `id`/`createdAt`/`total`, so
+  // fetchBillsInRange's `.filter(p => p?.id)` silently drops them, making
+  // months of real revenue vanish from every branch chart (flat zero, then a
+  // spike only on the most recent day). branch_bill_headers +
+  // branch_bill_items are the tables the app actually bills against — they
+  // have complete, correct data back to day one (confirmed directly against
+  // the DB) — same fix pattern Owner Dashboard already applies for Hosur
+  // (see useHosurSalesSummary there querying hosur_bills directly instead of
+  // this same broken mirror). Also gives Admin real bill-level + item-level
+  // drill-down, not just aggregate totals.
+  const [realBills, setRealBills] = useState<Array<{
+    id: string; billNo: string; branch: Branch; total: number; subtotal: number;
+    discount: number; createdAt: string; status: 'original' | 'returned' | 'duplicate_printed';
+    salesperson: string; biller: string;
+  }>>([]);
+  const [realBillItems, setRealBillItems] = useState<Array<{
+    billId: string; branch: Branch; itemName: string; quantity: number; unit: string;
+    unitPrice: number; lineTotal: number;
+  }>>([]);
+  const [realPayments, setRealPayments] = useState<Array<{ billId: string; mode: string; amount: number }>>([]);
+  const [realSalesLoading, setRealSalesLoading] = useState(false);
+  const [realSalesError, setRealSalesError] = useState('');
+  // FEATURE: "Hosur Sales" tab — orders Planner has already dispatched to a
+  // shop but that never got billed (bill_id still null). Found while
+  // investigating why Hosur revenue always showed ₹0: Planner's Dispatch &
+  // Billing Queue is the step that's supposed to confirm receipt and create
+  // the bill, but it's very rarely being completed — as of this
+  // investigation, 106 dispatched orders worth ~₹1.86L had never been
+  // billed. Surfacing this list directly (not just the revenue total) is
+  // the whole point of "show all the data clearly" for Hosur.
+  const [hosurUnbilledDispatched, setHosurUnbilledDispatched] = useState<Array<{
+    id: string; orderNumber: string; shopName: string; subtotal: number; createdAt: string;
+  }>>([]);
+  // BUG FIX: "Purchases & Expenses" — the store's own `purchases`/`expenses`
+  // arrays (fed by branchOpsStore's paginated branch_operation_records
+  // hydration, capped at 2 pages of 2500 for admin/owner's no-branch-filter
+  // path) were badly truncated: real 2-month Expenses total ₹2.97L (143
+  // records) showed as ₹1,000 (1 record — just whichever single expense
+  // happened to survive being in the top-2500-most-recent-of-19-mixed-types
+  // window); real Purchases ₹1.22 crore (750 invoices) showed as ₹10.5L
+  // (~9%). Fetch both directly, paged properly, scoped to the exact
+  // selected range — same fix pattern as realBills/realBillItems above.
+  const [realExpenses, setRealExpenses] = useState<Array<{ id: string; branch: string; amount: number; mode: string; category: string; description: string; createdAt: string }>>([]);
+  const [realPurchases, setRealPurchases] = useState<Array<{ id: string; branch: string; supplier: string; total: number; createdAt: string }>>([]);
+
+  useEffect(() => {
+    if (!fromDate || !toDate) return;
+    let cancelled = false;
+    (async () => {
+      setRealSalesLoading(true);
+      setRealSalesError('');
+      const fromTs = `${fromDate}T00:00:00`;
+      const toTs = `${toDate}T23:59:59.999`;
+      // BUG FIX: PostgREST caps rows per request (commonly 1000) regardless
+      // of a `.limit()` requesting more — a single request for
+      // branch_bill_items on a day with 400+ bills (several items each)
+      // silently came back truncated to the first page, so most bills in
+      // the "Bills" drill-down below showed 0 items even though the DB had
+      // them (confirmed directly against the DB: a bill with 11 real items
+      // rendered "No line items recorded"). Page through every query
+      // instead of trusting one request to return everything.
+      // BUG FIX: this runs 9 independently-paginated fetch streams (headers,
+      // items, payments, hosur bills/items, unbilled x2, expenses,
+      // purchases) all at once via Promise.all — enough concurrent load on
+      // the DB that a page occasionally hits a genuine "canceling statement
+      // due to statement timeout" (confirmed live: the exact same query
+      // that ran in ~0.4-0.8s standalone timed out here under combined
+      // load). One retry after a short backoff clears a transient
+      // contention spike without needing to throttle overall concurrency.
+      const fetchAllRows = async <T,>(
+        build: () => any,
+        pageSize = 1000,
+        maxRows = 50000,
+      ): Promise<{ data: T[]; error: { message: string } | null }> => {
+        const rows: T[] = [];
+        for (let from = 0; from < maxRows; from += pageSize) {
+          let { data, error } = await build().range(from, from + pageSize - 1);
+          for (let attempt = 1; error && attempt <= 2; attempt++) {
+            await new Promise((resolve) => setTimeout(resolve, attempt * 800));
+            ({ data, error } = await build().range(from, from + pageSize - 1));
+          }
+          if (error) return { data: rows, error };
+          const page = (data || []) as T[];
+          rows.push(...page);
+          if (page.length < pageSize) break;
+        }
+        return { data: rows, error: null };
+      };
+
+      const [headersRes, itemsRes, paymentsRes, hosurRes, hosurItemsRes, unbilledRes, unbilledArchiveRes, expensesRes, purchasesRes] = await Promise.all([
+        fetchAllRows(() => supabase.from('branch_bill_headers')
+          .select('id, branch, bill_no, subtotal, discount, total, status, created_at, salesperson, biller')
+          .in('branch', ['SNB', 'VRSNB'])
+          .gte('created_at', fromTs).lte('created_at', toTs)
+          .order('created_at', { ascending: false })),
+        fetchAllRows(() => supabase.from('branch_bill_items')
+          .select('bill_id, branch, item_name, quantity, unit, unit_price, line_total')
+          .in('branch', ['SNB', 'VRSNB'])
+          .gte('created_at', fromTs).lte('created_at', toTs)),
+        fetchAllRows(() => supabase.from('branch_sale_payments')
+          .select('bill_id, payment_mode, amount')
+          .in('branch', ['SNB', 'VRSNB'])
+          .in('payment_purpose', ['bill_collection', 'credit_upfront'])
+          .gte('created_at', fromTs).lte('created_at', toTs)),
+        fetchAllRows(() => supabase.from('hosur_bills')
+          .select('id, bill_no, shop_name, subtotal, paid_amount, credit_amount, payment_mode, confirmed_at, status')
+          .not('confirmed_at', 'is', null)
+          .neq('status', 'cancelled')
+          .gte('confirmed_at', fromTs).lte('confirmed_at', toTs)),
+        fetchAllRows(() => supabase.from('hosur_bill_items')
+          .select('bill_id, item_name, quantity, unit, unit_price, line_total')),
+        fetchAllRows(() => supabase.from('hosur_orders')
+          .select('id, order_number, shop_name, subtotal, created_at')
+          .eq('status', 'dispatched').is('bill_id', null)
+          .gte('created_at', fromTs).lte('created_at', toTs)),
+        // hosur_orders_archive_20260827 is a one-time snapshot table from an
+        // archival pass on that date — the same "dispatched, never billed"
+        // gap exists there for older orders. If a future archive round adds
+        // a new dated table, add it here too.
+        fetchAllRows(() => supabase.from('hosur_orders_archive_20260827')
+          .select('id, order_number, shop_name, subtotal, created_at')
+          .eq('status', 'dispatched').is('bill_id', null)
+          .gte('created_at', fromTs).lte('created_at', toTs)),
+        fetchAllRows(() => supabase.from('branch_operation_records')
+          .select('payload, created_at')
+          .eq('record_type', 'expense')
+          .gte('created_at', fromTs).lte('created_at', toTs)),
+        fetchAllRows(() => supabase.from('branch_operation_records')
+          .select('payload, created_at')
+          .eq('record_type', 'purchase_invoice')
+          .gte('created_at', fromTs).lte('created_at', toTs)),
+      ]);
+      if (cancelled) return;
+      const err = headersRes.error || itemsRes.error || paymentsRes.error || hosurRes.error || hosurItemsRes.error || unbilledRes.error || unbilledArchiveRes.error || expensesRes.error || purchasesRes.error;
+      if (err) { setRealSalesError(err.message); setRealSalesLoading(false); return; }
+      setHosurUnbilledDispatched(([...unbilledRes.data, ...unbilledArchiveRes.data] as Array<Record<string, unknown>>).map((o) => ({
+        id: String(o.id), orderNumber: String(o.order_number ?? ''), shopName: String(o.shop_name ?? ''),
+        subtotal: Number(o.subtotal || 0), createdAt: String(o.created_at),
+      })));
+      setRealExpenses((expensesRes.data as Array<{ payload: Record<string, unknown>; created_at: string }>).map((r) => ({
+        id: String(r.payload?.id ?? ''), branch: String(r.payload?.branch ?? ''), amount: Number(r.payload?.amount || 0),
+        mode: String(r.payload?.mode ?? ''), category: String(r.payload?.category ?? ''), description: String(r.payload?.description ?? ''),
+        createdAt: String(r.payload?.createdAt ?? r.created_at),
+      })));
+      setRealPurchases((purchasesRes.data as Array<{ payload: Record<string, unknown>; created_at: string }>).map((r) => ({
+        id: String(r.payload?.id ?? ''), branch: String(r.payload?.branch ?? ''), supplier: String(r.payload?.supplier ?? ''),
+        total: Number(r.payload?.total || 0), createdAt: String(r.payload?.createdAt ?? r.created_at),
+      })));
+
+      const headers = (headersRes.data || []) as Array<Record<string, unknown>>;
+      const hosurBills = (hosurRes.data || []) as Array<Record<string, unknown>>;
+      const hosurBillIds = new Set(hosurBills.map((b) => String(b.id)));
+
+      setRealBills([
+        ...headers.map((h) => ({
+          id: String(h.id), billNo: String(h.bill_no ?? ''), branch: h.branch as Branch,
+          total: Number(h.total || 0), subtotal: Number(h.subtotal || 0), discount: Number(h.discount || 0),
+          createdAt: String(h.created_at), status: (h.status as 'original' | 'returned' | 'duplicate_printed') || 'original',
+          salesperson: String(h.salesperson ?? ''), biller: String(h.biller ?? ''),
+        })),
+        ...hosurBills.map((h) => ({
+          id: String(h.id), billNo: String(h.bill_no ?? ''), branch: 'Hosur' as Branch,
+          total: Number(h.subtotal || 0), subtotal: Number(h.subtotal || 0), discount: 0,
+          createdAt: String(h.confirmed_at), status: 'original' as const,
+          salesperson: '', biller: String(h.shop_name ?? ''),
+        })),
+      ]);
+
+      const items = (itemsRes.data || []) as Array<Record<string, unknown>>;
+      const hosurItems = (hosurItemsRes.data || []) as Array<Record<string, unknown>>;
+      setRealBillItems([
+        ...items.map((i) => ({
+          billId: String(i.bill_id), branch: i.branch as Branch, itemName: String(i.item_name ?? ''),
+          quantity: Number(i.quantity || 0), unit: String(i.unit ?? ''), unitPrice: Number(i.unit_price || 0),
+          lineTotal: Number(i.line_total || 0),
+        })),
+        // hosur_bill_items has no branch/date column of its own — scope it to
+        // just the confirmed Hosur bills already fetched in this same range.
+        ...hosurItems.filter((i) => hosurBillIds.has(String(i.bill_id))).map((i) => ({
+          billId: String(i.bill_id), branch: 'Hosur' as Branch, itemName: String(i.item_name ?? ''),
+          quantity: Number(i.quantity || 0), unit: String(i.unit ?? ''), unitPrice: Number(i.unit_price || 0),
+          lineTotal: Number(i.line_total || 0),
+        })),
+      ]);
+
+      const payments = (paymentsRes.data || []) as Array<Record<string, unknown>>;
+      setRealPayments([
+        ...payments.map((p) => ({ billId: String(p.bill_id), mode: String(p.payment_mode ?? '').toLowerCase(), amount: Number(p.amount || 0) })),
+        ...hosurBills.map((h) => ({ billId: String(h.id), mode: String(h.payment_mode ?? '').toLowerCase() || 'cash', amount: Number(h.paid_amount || 0) })),
+      ]);
+      setRealSalesLoading(false);
+    })();
+    return () => { cancelled = true; };
+  }, [fromDate, toDate]);
+
   useEffect(() => { void loadAdminNotifications(); }, [loadAdminNotifications]);
   const loadPublicOrders = useCallback(async () => {
     setPublicOrdersLoading(true);
@@ -391,21 +593,59 @@ function AdminDashboard() {
   const branchSalesTotal = opsBillRevenue + legacyOnlyRevenue;
   const businessTotalSales = cafeSalesTotal + branchSalesTotal;
 
+  // Real, non-returned bills for the selected range — see the fetch effect
+  // above for why this replaces opsBillsInRange/branchTransactions as the
+  // source of truth for every branch-sales figure below.
+  const realBillsInRange = useMemo(() => realBills.filter(b => b.status !== 'returned'), [realBills]);
+
   const branchSalesByBranch = useMemo(() => {
     return BRANCHES.map(branch => {
       if (branch === 'Cafe') return { branch, label: 'Cafe', sales: cafeSalesTotal, orders: cafeServedOrders.length, returns: 0 };
-      const txns = branchTransactions.filter(t => t.branch === branch);
-      const ops = opsBillsInRange.filter(b => b.branch === branch && b.status !== 'Returned');
-      const representedBills = new Set(ops.map((bill) => bill.billNo).filter(Boolean));
-      const legacy = txns.filter((transaction) => !transaction.billNo || !representedBills.has(transaction.billNo));
-      const revenue = ops.reduce((sum, bill) => sum + Number(bill.total || 0), 0) + legacy.reduce((sum, transaction) => sum + transaction.revenue, 0);
-      const legacyOrders = new Set(legacy.map((transaction) => transaction.billNo || transaction.id)).size;
-      return { branch, label: branch, sales: revenue, orders: ops.length + legacyOrders, returns: returns.filter(r => r.branch === branch && inRange(r.createdAt, fromDate, toDate)).reduce((sum, r) => sum + Number(r.total || 0), 0) };
+      const bills = realBillsInRange.filter(b => b.branch === branch);
+      const revenue = bills.reduce((sum, bill) => sum + bill.total, 0);
+      return { branch, label: branch, sales: revenue, orders: bills.length, returns: returns.filter(r => r.branch === branch && inRange(r.createdAt, fromDate, toDate)).reduce((sum, r) => sum + Number(r.total || 0), 0) };
     });
-  }, [cafeSalesTotal, cafeServedOrders.length, branchTransactions, opsBillsInRange, returns, fromDate, toDate]);
+  }, [cafeSalesTotal, cafeServedOrders.length, realBillsInRange, returns, fromDate, toDate]);
 
   // CHANGE 5: filtered branch sales for overview
   const filteredBranchSalesByBranch = useMemo(() => branchFilter === 'all' ? branchSalesByBranch : branchSalesByBranch.filter(b => b.branch === branchFilter), [branchSalesByBranch, branchFilter]);
+
+  // FEATURE: "Admin should see complete details of each branch — total
+  // sales including advance amount and advance collected and expenses all
+  // those." Full financial breakdown per branch for the selected date
+  // range, reusing the same real ledger/purchase/expense records Owner
+  // Dashboard already reads from (not the broken bills mirror) so these
+  // numbers are trustworthy and match what Owner sees.
+  const branchFinancialDetail = useMemo(() => {
+    return BRANCHES.map((branch) => {
+      if (branch === 'Cafe') {
+        return {
+          branch, totalSales: cafeSalesTotal, advanceCollected: 0, advanceBalanceCollected: 0,
+          cash: cafePaymentSplit.cash, upi: cafePaymentSplit.upi, card: cafePaymentSplit.card, credit: cafePaymentSplit.credit,
+          expenses: 0, purchases: 0, returns: 0, orderCount: cafeServedOrders.length,
+        };
+      }
+      const ledgerRows = adminLedger.closureRows.filter((row) => row.branch === branch);
+      const totalSales = ledgerRows.reduce((sum, row) => sum + adminLedger.toNumber(row.sales_total), 0);
+      const advanceCollected = ledgerRows.reduce((sum, row) => sum + adminLedger.toNumber(row.advance_collected), 0);
+      const advanceBalanceCollected = ledgerRows.reduce((sum, row) => sum + adminLedger.toNumber(row.advance_balance_collected), 0);
+      const cash = ledgerRows.reduce((sum, row) => sum + adminLedger.toNumber(row.cash_total), 0);
+      const upi = ledgerRows.reduce((sum, row) => sum + adminLedger.toNumber(row.upi_total), 0);
+      const card = ledgerRows.reduce((sum, row) => sum + adminLedger.toNumber(row.card_total), 0);
+      const credit = ledgerRows.reduce((sum, row) => sum + adminLedger.toNumber(row.credit_billed), 0);
+      // BUG FIX: was summing branch_daily_closures.expenses (only populated
+      // when a cashier has actually submitted a closure for that day) and
+      // the flaky `purchases` store field (same truncation as expenseTotal/
+      // purchaseTotal above — confirmed via direct DB check). Both now use
+      // the same direct, fully-paginated fetch used everywhere else on this
+      // page.
+      const expensesForBranch = realExpenses.filter((e) => e.branch === branch).reduce((sum, e) => sum + e.amount, 0);
+      const purchasesForBranch = realPurchases.filter((p) => p.branch === branch).reduce((sum, p) => sum + p.total, 0);
+      const returnsForBranch = returns.filter((r) => r.branch === branch && inRange(r.createdAt, fromDate, toDate)).reduce((sum, r) => sum + Number(r.total || 0), 0);
+      const orderCount = ledgerRows.reduce((sum, row) => sum + Number(row.bill_count || 0), 0);
+      return { branch, totalSales, advanceCollected, advanceBalanceCollected, cash, upi, card, credit, expenses: expensesForBranch, purchases: purchasesForBranch, returns: returnsForBranch, orderCount };
+    });
+  }, [adminLedger, cafeSalesTotal, cafeServedOrders.length, cafePaymentSplit, realExpenses, realPurchases, returns, fromDate, toDate]);
 
   const dailySalesTrend = useMemo(() => {
     const days: Record<string, { date: string; Cafe: number; SNB: number; VRSNB: number; Hosur: number; Total: number }> = {};
@@ -414,14 +654,12 @@ function AdminDashboard() {
       days[key] = { date: d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }), Cafe: 0, SNB: 0, VRSNB: 0, Hosur: 0, Total: 0 };
     }
     cafeServedOrders.forEach(o => { const key = localDateKey(o.createdAt); if (!days[key]) return; days[key].Cafe += Number(o.total || 0); days[key].Total += Number(o.total || 0); });
-    const representedBills = new Set(opsBillsInRange.map((bill) => bill.billNo).filter(Boolean));
-    opsBillsInRange.filter((bill) => bill.branch !== 'Cafe' && bill.status !== 'Returned').forEach((bill) => {
+    realBillsInRange.forEach((bill) => {
       const key = localDateKey(bill.createdAt); if (!days[key]) return;
-      days[key][bill.branch] += Number(bill.total || 0); days[key].Total += Number(bill.total || 0);
+      days[key][bill.branch] += bill.total; days[key].Total += bill.total;
     });
-    branchTransactions.filter((transaction) => !transaction.billNo || !representedBills.has(transaction.billNo)).forEach(t => { const key = localDateKey(t.soldAt); if (!days[key] || t.branch === 'Cafe') return; days[key][t.branch] += t.revenue; days[key].Total += t.revenue; });
     return Object.values(days);
-  }, [fromDate, toDate, cafeServedOrders, branchTransactions, opsBillsInRange]);
+  }, [fromDate, toDate, cafeServedOrders, realBillsInRange]);
 
   const filteredDailySalesTrend = useMemo(() => {
     if (branchFilter === 'all') return dailySalesTrend;
@@ -450,19 +688,19 @@ function AdminDashboard() {
   const topSellingItems = useMemo(() => {
     const map = new Map<string, { item: string; qty: number; revenue: number }>();
     const filteredCafeOrders = branchFilter === 'all' || branchFilter === 'Cafe' ? cafeServedOrders : [];
-    const filteredTxns = branchFilter === 'all' ? branchTransactions : branchTransactions.filter(t => t.branch === branchFilter);
+    const filteredItems = branchFilter === 'all' || branchFilter === 'Cafe' ? realBillItems : realBillItems.filter(i => i.branch === branchFilter);
     filteredCafeOrders.forEach(o => o.items.forEach(ci => {
       const key = ci.menuItem.name;
       const existing = map.get(key) || { item: key, qty: 0, revenue: 0 };
       existing.qty += Number(ci.quantity || 0); existing.revenue += Number(ci.menuItem.price || 0) * Number(ci.quantity || 0);
       map.set(key, existing);
     }));
-    filteredTxns.forEach(t => {
-      const existing = map.get(t.itemName) || { item: t.itemName, qty: 0, revenue: 0 };
-      existing.qty += t.qty; existing.revenue += t.revenue; map.set(t.itemName, existing);
+    filteredItems.forEach(i => {
+      const existing = map.get(i.itemName) || { item: i.itemName, qty: 0, revenue: 0 };
+      existing.qty += i.quantity; existing.revenue += i.lineTotal; map.set(i.itemName, existing);
     });
     return [...map.values()].sort((a, b) => b.revenue - a.revenue).slice(0, 10).map(item => ({ ...item, short: item.item.length > 16 ? `${item.item.slice(0, 16)}…` : item.item }));
-  }, [cafeServedOrders, branchTransactions, branchFilter]);
+  }, [cafeServedOrders, realBillItems, branchFilter]);
 
   // CHANGE 3: stockAlerts kept for OverviewTab KpiCard only (no StockAlertsTab)
   const stockAlerts = useMemo(() => {
@@ -474,8 +712,15 @@ function AdminDashboard() {
   }, [stock]);
 
   const creditPendingTotal = useMemo(() => BRANCHES.reduce((sum, branch) => sum + (creditSales[branch] || []).filter(c => c.status !== 'settled').reduce((s, c) => s + Number(c.creditAmount || 0), 0), 0), [creditSales]);
-  const purchaseTotal = useMemo(() => purchases.filter(p => inRange(p.createdAt, fromDate, toDate)).reduce((sum, p) => sum + Number(p.total || 0), 0), [purchases, fromDate, toDate]);
-  const expenseTotal = useMemo(() => cashMovements.filter(m => inRange(m.dateTime, fromDate, toDate) && m.direction === 'out' && m.purpose.toLowerCase().includes('expense')).reduce((sum, m) => sum + Number(m.amount || 0), 0), [cashMovements, fromDate, toDate]);
+  const purchaseTotal = useMemo(() => realPurchases.reduce((sum, p) => sum + p.total, 0), [realPurchases]);
+  // BUG FIX: "Purchases & Expenses" always showed ₹0 for Expenses regardless
+  // of range — it was reading `cashMovements` (till cash in/out adjustments,
+  // record_type 'cash_movement') filtered for a purpose containing
+  // "expense", but real expenses are recorded as their own distinct
+  // `record_type: 'expense'` (143 real records confirmed in the DB) and
+  // already load into this same store's dedicated `expenses` array — this
+  // just wasn't reading it.
+  const expenseTotal = useMemo(() => realExpenses.reduce((sum, e) => sum + e.amount, 0), [realExpenses]);
 
   const balanceSummary = useMemo(() => {
     const totals = { cash: 0, upi: 0, card: 0, bank: 0 };
@@ -490,21 +735,37 @@ function AdminDashboard() {
       if (d.paymentMode === 'UPI Transfer') totals.upi -= amount;
       if (d.paymentMode === 'Card Settlement') totals.card -= amount;
     });
+    // BUG FIX: real expenses (record_type 'expense') never show up as a
+    // 'cash_movement' entry — confirmed against the DB, every cash_movement
+    // row in this business is "Advance balance collection" (direction:
+    // in), never an expense outflow — so this balance was overstated by
+    // the full expense total (₹2.97L over a recent 2-month check) because
+    // money genuinely spent on expenses was never subtracted anywhere.
+    realExpenses.forEach((e) => {
+      if (e.mode === 'cash') totals.cash -= e.amount;
+      else if (e.mode === 'upi') totals.upi -= e.amount;
+      else if (e.mode === 'card') totals.card -= e.amount;
+      else if (e.mode === 'bank') totals.bank -= e.amount;
+    });
     return totals;
-  }, [cashMovements, bankDeposits, fromDate, toDate]);
+  }, [cashMovements, bankDeposits, realExpenses, fromDate, toDate]);
 
   const closureRows = useMemo<ClosureRow[]>(() => {
     return BRANCHES.map(branch => {
-      const ledger = adminLedger.closureByBranchDate.get(`${branch}:${closureDate}`);
-      const savedLedgerClosure = adminLedger.savedClosureByBranchDate.get(`${branch}:${closureDate}`);
+      const ledger = closureLedger.closureByBranchDate.get(`${branch}:${closureDate}`);
+      const savedLedgerClosure = closureLedger.savedClosureByBranchDate.get(`${branch}:${closureDate}`);
       if (branch !== 'Cafe' && ledger) {
         const openingBalance = Number(savedLedgerClosure?.opening_cash || 0);
-        const totalSales = Math.max(
-          0,
-          adminLedger.toNumber(ledger.sales_total)
-            - adminLedger.toNumber(ledger.advance_collected)
-            - adminLedger.toNumber(ledger.advance_balance_collected),
-        );
+        // BUG FIX: "branch sales data is wrong" / see the matching fix in
+        // OwnerDashboard.tsx — totalSales used to subtract advance_collected
+        // + advance_balance_collected from sales_total, so it disagreed with
+        // this same row's own cash/upi/card/credit breakdown just below
+        // (those were never adjusted). Use sales_total directly so both
+        // always match; advance amounts now surface as their own explicit
+        // fields instead of silently being subtracted out of the total.
+        const totalSales = adminLedger.toNumber(ledger.sales_total);
+        const advanceCollected = adminLedger.toNumber(ledger.advance_collected);
+        const advanceBalanceCollected = adminLedger.toNumber(ledger.advance_balance_collected);
         const cashSales = adminLedger.toNumber(ledger.cash_total);
         const upiSales = adminLedger.toNumber(ledger.upi_total);
         const cardSales = adminLedger.toNumber(ledger.card_total);
@@ -538,12 +799,22 @@ function AdminDashboard() {
           status,
           closedBy: savedLedgerClosure?.cashier || '-',
           closedAt: savedLedgerClosure ? fmtDateTime(savedLedgerClosure.created_at) : '-',
+          advanceCollected,
+          advanceBalanceCollected,
         };
       }
       const closureRecords = cashierClosures.filter(c => c.branch === branch && localDateKey(c.createdAt) === closureDate);
       const latestClosure = closureRecords[0] || null;
-      const txns = branch === 'Cafe' ? [] : branchTransactions.filter(t => t.branch === branch && localDateKey(t.soldAt) === closureDate);
-      const opsBills = opsBillsInRange.filter(b => b.branch === branch && localDateKey(b.createdAt) === closureDate);
+      // BUG FIX: previously sourced from branchTransactions/opsBillsInRange, which
+      // are pre-filtered to the Overview tab's fromDate/toDate range. This tab has
+      // its own independent closureDate picker, so whenever closureDate fell
+      // outside that range (the common case), these silently returned empty and
+      // the whole card showed ₹0 sales despite a real saved closing balance.
+      // Read straight from the raw, unscoped store arrays instead.
+      const txns: SalesTxn[] = branch === 'Cafe' ? [] : (sales[branch] || [])
+        .filter(s => localDateKey(s.soldAt) === closureDate)
+        .map(s => ({ id: s.id, branch, itemName: s.itemName, qty: Number(s.quantitySold || 0), revenue: Number(s.unitPrice || 0) * Number(s.quantitySold || 0), payment: s.paymentMethod || '-', soldAt: s.soldAt, soldBy: s.soldBy, billNo: s.billNo }));
+      const opsBills = bills.filter(b => b.branch === branch && localDateKey(b.createdAt) === closureDate);
       const cafeDayOrders = branch === 'Cafe' ? orders.filter(o => localDateKey(o.createdAt) === closureDate && o.status === 'served') : [];
       const representedBills = new Set(opsBills.map((bill) => bill.billNo).filter(Boolean));
       const legacyTxns = txns.filter((transaction) => !transaction.billNo || !representedBills.has(transaction.billNo));
@@ -562,9 +833,9 @@ function AdminDashboard() {
       const differenceAmount = latestClosure ? Number(latestClosure.difference || 0) : 0;
       // CHANGE 9b: improved status badge logic
       const status: ClosureRow['status'] = latestClosure ? (Math.abs(differenceAmount) >= 10 ? 'Review' : 'Closed') : 'Pending';
-      return { branch, openingBalance, totalSales, cashSales, upiSales, cardSales, creditSales: creditSalesDay, returns: returnsDay, netSales: totalSales - returnsDay, expenses: expensesDay, purchasePayments: paymentsDay, bankDeposits: depositsDay, closingBalance, differenceAmount, remarks: latestClosure?.notes || (latestClosure ? 'Closed and verified' : 'Pending branch closure'), status, closedBy: latestClosure?.cashier || '-', closedAt: latestClosure ? fmtDateTime(latestClosure.createdAt) : '-' };
+      return { branch, openingBalance, totalSales, cashSales, upiSales, cardSales, creditSales: creditSalesDay, returns: returnsDay, netSales: totalSales - returnsDay, expenses: expensesDay, purchasePayments: paymentsDay, bankDeposits: depositsDay, closingBalance, differenceAmount, remarks: latestClosure?.notes || (latestClosure ? 'Closed and verified' : 'Pending branch closure'), status, closedBy: latestClosure?.cashier || '-', closedAt: latestClosure ? fmtDateTime(latestClosure.createdAt) : '-', advanceCollected: 0, advanceBalanceCollected: 0 };
     });
-  }, [adminLedger, cashierClosures, branchTransactions, opsBillsInRange, orders, returns, cashMovements, purchasePayments, bankDeposits, closureDate]);
+  }, [closureLedger, cashierClosures, sales, bills, orders, returns, cashMovements, purchasePayments, bankDeposits, closureDate]);
 
   const closureStatusChart = useMemo(() => [
     { status: 'Closed', count: closureRows.filter(r => r.status === 'Closed').length },
@@ -583,15 +854,42 @@ function AdminDashboard() {
     diff: filteredClosureRows.reduce((s, r) => s + Math.abs(r.differenceAmount), 0),
   }), [filteredClosureRows]);
 
-  const exportDailyClosure = () => {
-    csvDownload(`Admin_DailyClosure_${closureDate}.csv`, filteredClosureRows.map(r => ({
+  const exportDailyClosure = () => exportWorkbook(`Admin_DailyClosure_${closureDate}`, [{
+    name: 'Sales Details', title: `Daily Closure — Sales Detail (${closureDate})`,
+    columns: [
+      { header: 'Branch', key: 'Branch' }, { header: 'Opening Balance', key: 'Opening Balance' }, { header: 'Total Sales', key: 'Total Sales' },
+      { header: 'Cash Sales', key: 'Cash Sales' }, { header: 'UPI Sales', key: 'UPI Sales' }, { header: 'Card Sales', key: 'Card Sales' }, { header: 'Credit Sales', key: 'Credit Sales' },
+      { header: 'Returns', key: 'Returns' }, { header: 'Net Sales', key: 'Net Sales' }, { header: 'Expenses', key: 'Expenses' }, { header: 'Purchase Payments', key: 'Purchase Payments' },
+      { header: 'Bank Deposits', key: 'Bank Deposits' }, { header: 'Closing Balance', key: 'Closing Balance' }, { header: 'Difference', key: 'Difference' },
+      { header: 'Remarks', key: 'Remarks', width: 24 }, { header: 'Status', key: 'Status' }, { header: 'Closed By', key: 'Closed By' }, { header: 'Closed At', key: 'Closed At', width: 18 },
+    ],
+    rows: filteredClosureRows.map(r => ({
       Branch: BRANCH_LABELS[r.branch], 'Opening Balance': r.openingBalance, 'Total Sales': r.totalSales,
       'Cash Sales': r.cashSales, 'UPI Sales': r.upiSales, 'Card Sales': r.cardSales, 'Credit Sales': r.creditSales,
       Returns: r.returns, 'Net Sales': r.netSales, Expenses: r.expenses, 'Purchase Payments': r.purchasePayments,
       'Bank Deposits': r.bankDeposits, 'Closing Balance': r.closingBalance, Difference: r.differenceAmount,
       Remarks: r.remarks, Status: r.status, 'Closed By': r.closedBy, 'Closed At': r.closedAt,
-    })));
-  };
+    })),
+  }]);
+
+  const exportDailyClosurePdf = () => exportReportPdf({
+    filename: `Admin_DailyClosure_${closureDate}`,
+    title: 'Daily Closure Verification',
+    subtitle: `Date: ${closureDate}`,
+    kpis: [
+      { label: 'Total Sales', value: formatCurrency(closureTotals.sales) },
+      { label: 'Cash', value: formatCurrency(closureTotals.cash) },
+      { label: 'UPI', value: formatCurrency(closureTotals.upi) },
+      { label: 'Card', value: formatCurrency(closureTotals.card) },
+      { label: 'Credit', value: formatCurrency(closureTotals.credit) },
+      { label: 'Difference', value: formatCurrency(closureTotals.diff) },
+    ],
+    sections: [{
+      heading: 'Branch Closure Detail',
+      columns: [{ header: 'Branch', width: 22 }, { header: 'Status', width: 18 }, { header: 'Opening', width: 20, align: 'right' }, { header: 'Total Sales', width: 22, align: 'right' }, { header: 'Cash', width: 20, align: 'right' }, { header: 'UPI', width: 20, align: 'right' }, { header: 'Card', width: 18, align: 'right' }, { header: 'Credit', width: 20, align: 'right' }, { header: 'Returns', width: 18, align: 'right' }, { header: 'Closing', width: 20, align: 'right' }, { header: 'Difference', width: 20, align: 'right' }, { header: 'Closed By', width: 30 }],
+      rows: filteredClosureRows.map(r => [BRANCH_LABELS[r.branch], r.status, pdfMoney(r.openingBalance), pdfMoney(r.totalSales), pdfMoney(r.cashSales), pdfMoney(r.upiSales), pdfMoney(r.cardSales), pdfMoney(r.creditSales), pdfMoney(r.returns), pdfMoney(r.closingBalance), pdfMoney(r.differenceAmount), r.closedBy]),
+    }],
+  });
 
   const printDailyClosure = () => {
     const rows = filteredClosureRows.map(r => `<tr><td>${BRANCH_LABELS[r.branch]}</td><td>${r.status}</td><td>₹${r.openingBalance.toFixed(2)}</td><td>₹${r.totalSales.toFixed(2)}</td><td>₹${r.cashSales.toFixed(2)}</td><td>₹${r.upiSales.toFixed(2)}</td><td>₹${r.cardSales.toFixed(2)}</td><td>₹${r.creditSales.toFixed(2)}</td><td>₹${r.returns.toFixed(2)}</td><td>₹${r.purchasePayments.toFixed(2)}</td><td>₹${r.bankDeposits.toFixed(2)}</td><td>₹${r.closingBalance.toFixed(2)}</td><td>₹${r.differenceAmount.toFixed(2)}</td><td>${r.closedBy}</td><td>${r.remarks}</td></tr>`).join('');
@@ -634,26 +932,58 @@ function AdminDashboard() {
       totals.card += cafePaymentSplit.card; totals.credit += cafePaymentSplit.credit;
     }
     if (isAll || !isCafe) {
-      const filteredBills = branchFilter === 'all' ? opsBillsInRange : opsBillsInRange.filter(b => b.branch === branchFilter);
-      filteredBills.forEach(b => {
-        if (b.paymentMode === 'cash') totals.cash += Number(b.total || 0);
-        else if (b.paymentMode === 'upi') totals.upi += Number(b.total || 0);
-        else if (b.paymentMode === 'card') totals.card += Number(b.total || 0);
-        else if (b.paymentMode === 'credit') totals.credit += Number(b.total || 0);
-        else if (b.paymentMode === 'split') { totals.cash += Number(b.split?.cash || 0); totals.upi += Number(b.split?.upi || 0); totals.card += Number(b.split?.card || 0); }
+      const filteredBills = isAll ? realBillsInRange : realBillsInRange.filter(b => b.branch === branchFilter);
+      const billIds = new Set(filteredBills.map(b => b.id));
+      // What was actually collected, by mode — sum straight from
+      // branch_sale_payments/hosur_bills rather than a single paymentMode
+      // string per bill, so a split payment counts correctly under each mode.
+      const paidByBill = new Map<string, number>();
+      realPayments.filter(p => billIds.has(p.billId)).forEach(p => {
+        if (p.mode === 'cash') totals.cash += p.amount;
+        else if (p.mode === 'upi') totals.upi += p.amount;
+        else if (p.mode === 'card' || p.mode === 'card_pos' || p.mode === 'card_swipe') totals.card += p.amount;
+        paidByBill.set(p.billId, (paidByBill.get(p.billId) || 0) + p.amount);
       });
-      const representedBills = new Set(filteredBills.map((bill) => bill.billNo).filter(Boolean));
-      const filteredTxns = (branchFilter === 'all' ? branchTransactions : branchTransactions.filter(t => t.branch === branchFilter))
-        .filter((transaction) => !transaction.billNo || !representedBills.has(transaction.billNo));
-      filteredTxns.forEach(t => {
-        if (paymentIncludes(t.payment, 'cash')) totals.cash += t.revenue;
-        else if (paymentIncludes(t.payment, 'upi')) totals.upi += t.revenue;
-        else if (paymentIncludes(t.payment, 'card')) totals.card += t.revenue;
-        else if (paymentIncludes(t.payment, 'credit')) totals.credit += t.revenue;
+      // Whatever a bill's total isn't covered by a collected payment is the
+      // credit portion — matches how the branch billing screens themselves
+      // treat an under-collected bill (see branch_credit_sales).
+      filteredBills.forEach(b => {
+        const shortfall = b.total - (paidByBill.get(b.id) || 0);
+        if (shortfall > 0.5) totals.credit += shortfall;
       });
     }
     return [{ name: 'Cash', value: totals.cash }, { name: 'UPI', value: totals.upi }, { name: 'Card', value: totals.card }, { name: 'Credit', value: totals.credit }].filter(item => item.value > 0);
-  }, [branchFilter, cafePaymentSplit, opsBillsInRange, branchTransactions]);
+  }, [branchFilter, cafePaymentSplit, realBillsInRange, realPayments]);
+
+  const exportOverviewExcel = () => exportWorkbook(`Admin_Overview_${fromDate}_${toDate}`, [
+    {
+      name: 'Sales Details', title: `Dashboard Overview — Sales (${fromDate} to ${toDate})`,
+      columns: [{ header: 'Branch', key: 'branch' }, { header: 'Sales', key: 'sales' }, { header: 'Transactions', key: 'orders' }, { header: 'Returns', key: 'returns' }],
+      rows: filteredBranchSalesByBranch.map(r => ({ branch: r.label, sales: r.sales, orders: r.orders, returns: r.returns })),
+    },
+    {
+      name: 'Payment Split', title: `Dashboard Overview — Payment Mode Split (${fromDate} to ${toDate})`,
+      columns: [{ header: 'Mode', key: 'name' }, { header: 'Amount', key: 'value' }],
+      rows: overviewPaymentSplit,
+    },
+  ]);
+
+  const exportOverviewPdf = () => exportReportPdf({
+    filename: `Admin_Overview_${fromDate}_${toDate}`,
+    title: 'Dashboard Overview',
+    subtitle: `${fromDate} to ${toDate} · ${branchFilter === 'all' ? 'All branches' : BRANCH_LABELS[branchFilter]}`,
+    kpis: overviewPaymentSplit.map(p => ({ label: p.name, value: formatCurrency(p.value) })),
+    sections: [
+      {
+        heading: 'Branch-wise Sales', columns: [{ header: 'Branch', width: 60 }, { header: 'Sales', width: 50, align: 'right' }, { header: 'Transactions', width: 50, align: 'right' }, { header: 'Returns', width: 50, align: 'right' }],
+        rows: filteredBranchSalesByBranch.map(r => [r.label, pdfMoney(r.sales), String(r.orders), pdfMoney(r.returns)]),
+      },
+      {
+        heading: 'Payment Mode Split', columns: [{ header: 'Mode', width: 60 }, { header: 'Amount', width: 60, align: 'right' }],
+        rows: overviewPaymentSplit.map(p => [p.name, pdfMoney(p.value)]),
+      },
+    ],
+  });
 
   const OverviewTab = (
     <div className="space-y-5">
@@ -671,9 +1001,13 @@ function AdminDashboard() {
             <option value="all">All branches</option>
             {BRANCHES.map(branch => <option key={branch} value={branch}>{BRANCH_LABELS[branch]}</option>)}
           </select>
-          <button onClick={() => csvDownload(`Admin_Overview_${fromDate}_${toDate}.csv`, filteredBranchSalesByBranch.map(r => ({ Branch: r.label, Sales: r.sales, Transactions: r.orders, Returns: r.returns, 'Date From': fromDate, 'Date To': toDate })))}
+          <button onClick={exportOverviewExcel}
             className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-3 py-2 text-xs font-black text-white">
             <FileSpreadsheet className="size-3.5" /> Excel
+          </button>
+          <button onClick={exportOverviewPdf}
+            className="inline-flex items-center gap-2 rounded-2xl bg-slate-950 px-3 py-2 text-xs font-black text-white">
+            <FileDown className="size-3.5" /> PDF
           </button>
         </div>
       </div>
@@ -781,6 +1115,47 @@ function AdminDashboard() {
     </div>
   );
 
+  const exportCafeExcel = () => exportWorkbook(`Admin_Cafe_${fromDate}_${toDate}`, [
+    {
+      name: 'Sales Details', title: `Cafe Control — Sales (${fromDate} to ${toDate})`,
+      columns: [{ header: 'Metric', key: 'metric' }, { header: 'Amount', key: 'amount' }],
+      rows: [
+        { metric: 'Total Sales', amount: cafeSalesTotal },
+        { metric: 'Served Orders', amount: cafeServedOrders.length },
+        { metric: 'Cancelled Orders', amount: cafeCancelledOrders.length },
+        { metric: 'Cash', amount: cafePaymentSplit.cash },
+        { metric: 'UPI', amount: cafePaymentSplit.upi },
+        { metric: 'Card', amount: cafePaymentSplit.card },
+        { metric: 'Credit', amount: cafePaymentSplit.credit },
+      ],
+    },
+    {
+      name: 'Bill Details', title: `Cafe Control — Orders (${fromDate} to ${toDate})`,
+      columns: [{ header: 'Order No', key: 'orderNo' }, { header: 'Customer', key: 'customer' }, { header: 'Items', key: 'items' }, { header: 'Payment', key: 'payment' }, { header: 'Total', key: 'total' }, { header: 'Status', key: 'status' }, { header: 'Time', key: 'time', width: 20 }],
+      rows: cafeOrdersInRange.map(o => ({ orderNo: o.orderNumber, customer: o.customerName || '-', items: o.items.reduce((s, i) => s + i.quantity, 0), payment: o.paymentType || '-', total: o.total || 0, status: o.status, time: fmtDateTime(o.createdAt) })),
+    },
+  ]);
+
+  const exportCafePdf = () => exportReportPdf({
+    filename: `Admin_Cafe_${fromDate}_${toDate}`,
+    title: 'Cafe Control',
+    subtitle: `${fromDate} to ${toDate}`,
+    kpis: [
+      { label: 'Total Sales', value: formatCurrency(cafeSalesTotal) },
+      { label: 'Served Orders', value: String(cafeServedOrders.length) },
+      { label: 'Cancelled', value: String(cafeCancelledOrders.length) },
+      { label: 'Cash', value: formatCurrency(cafePaymentSplit.cash) },
+      { label: 'UPI', value: formatCurrency(cafePaymentSplit.upi) },
+      { label: 'Card', value: formatCurrency(cafePaymentSplit.card) },
+    ],
+    sections: [
+      {
+        heading: 'Orders', columns: [{ header: 'Order No', width: 30 }, { header: 'Customer', width: 45 }, { header: 'Items', width: 20, align: 'right' }, { header: 'Payment', width: 30 }, { header: 'Total', width: 30, align: 'right' }, { header: 'Status', width: 25 }, { header: 'Time', width: 40 }],
+        rows: cafeOrdersInRange.map(o => [String(o.orderNumber), o.customerName || '-', String(o.items.reduce((s, i) => s + i.quantity, 0)), o.paymentType || '-', pdfMoney(o.total || 0), o.status, fmtDateTime(o.createdAt)]),
+      },
+    ],
+  });
+
   // CHANGE 14: Removed top KPI grid from CafeTab. CHANGE 4/6: Added date presets + Excel download, no branch filter (cafe only)
   const CafeTab = (
     <div className="space-y-5">
@@ -794,9 +1169,13 @@ function AdminDashboard() {
           <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
             To<input type="date" value={toDate} onChange={e => setToDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
           </label>
-          <button onClick={() => csvDownload(`Admin_Cafe_${fromDate}_${toDate}.csv`, cafeOrdersInRange.map(o => ({ OrderNo: o.orderNumber, Customer: o.customerName || '-', Items: o.items.reduce((s, i) => s + i.quantity, 0), Payment: o.paymentType || '-', Total: o.total || 0, Status: o.status, Time: fmtDateTime(o.createdAt) })))}
+          <button onClick={exportCafeExcel}
             className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-3 py-2 text-xs font-black text-white">
             <FileSpreadsheet className="size-3.5" /> Excel
+          </button>
+          <button onClick={exportCafePdf}
+            className="inline-flex items-center gap-2 rounded-2xl bg-slate-950 px-3 py-2 text-xs font-black text-white">
+            <FileDown className="size-3.5" /> PDF
           </button>
         </div>
       </div>
@@ -870,13 +1249,143 @@ function AdminDashboard() {
           </div>
         )}
       </Panel>
+
+      {/* FEATURE: "cafe cancelled details" — a dedicated view of just the
+          cancelled orders (the KPI card above only showed a count), with
+          full item and value detail per order. */}
+      <Panel title="Cancelled Orders" subtitle={`${cafeCancelledOrders.length} cancelled order${cafeCancelledOrders.length === 1 ? '' : 's'} in selected range`}>
+        {cafeCancelledOrders.length === 0 ? <EmptyState label="No cancelled orders in this range." /> : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[720px] text-sm">
+              <thead><tr className="border-b bg-slate-50 text-left text-xs uppercase text-slate-500"><th className="p-3">Order</th><th className="p-3">Customer</th><th className="p-3">Items</th><th className="p-3 text-right">Value</th><th className="p-3">Time</th></tr></thead>
+              <tbody className="divide-y">
+                {cafeCancelledOrders.map(o => {
+                  // BUG FIX: a cancelled order's `total` is never actually
+                  // computed/stored (confirmed against the DB — cancellation
+                  // happens before checkout totals the order), so every
+                  // cancelled order showed a misleading ₹0 here even with
+                  // real items attached. Compute the would-have-been value
+                  // from the items themselves so this reflects real lost
+                  // revenue, not a data gap.
+                  const itemsValue = o.items.reduce((sum, i) => sum + Number(i.menuItem.price || 0) * Number(i.quantity || 0), 0);
+                  return (
+                    <tr key={o.id} className="hover:bg-red-50/40">
+                      <td className="p-3 font-bold">#{String(o.orderNumber).padStart(3, '0')}</td>
+                      <td className="p-3">{o.customerName || '-'}</td>
+                      <td className="p-3 text-slate-500">{o.items.map(i => `${i.menuItem.name} × ${i.quantity}`).join(', ')}</td>
+                      <td className="p-3 text-right font-black text-red-600">{formatCurrency(o.total || itemsValue)}</td>
+                      <td className="p-3 text-slate-500">{fmtDateTime(o.createdAt)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            <p className="mt-3 text-xs font-semibold text-slate-500">Total value cancelled: <span className="font-black text-red-600">{formatCurrency(cafeCancelledOrders.reduce((sum, o) => sum + (Number(o.total) || o.items.reduce((s, i) => s + Number(i.menuItem.price || 0) * Number(i.quantity || 0), 0)), 0))}</span></p>
+          </div>
+        )}
+      </Panel>
     </div>
   );
 
   // CHANGE 7: Branch filter + date presets + Excel. CHANGE 14: Removed KPI grid. Cafe excluded from branch filter
-  const BRANCH_ONLY_OPTIONS: Branch[] = ['VRSNB', 'SNB', 'Hosur'];
-  const filteredBranchTxns = branchFilter === 'all' || branchFilter === 'Cafe' ? branchTransactions : branchTransactions.filter(t => t.branch === branchFilter);
-  const branchOnlyFilter = (branchFilter === 'Cafe' ? 'all' : branchFilter) as Branch | 'all';
+  // FEATURE: "Branch Sales tab should show VRSNB/SNB only, Hosur gets its
+  // own tab" — Hosur is a wholesale/shop-billing business with a completely
+  // different flow (dispatch-then-bill, not counter billing), so mixing it
+  // into the same branch comparison charts/table was more confusing than
+  // useful. See the 'hosur' tab below for its dedicated view.
+  const BRANCH_ONLY_OPTIONS: Branch[] = ['VRSNB', 'SNB'];
+  const branchOnlyFilter = (branchFilter === 'Cafe' || branchFilter === 'Hosur' ? 'all' : branchFilter) as Branch | 'all';
+  // Real bills for the "Branch Sales Transactions" drill-down below — see
+  // realBillsInRange for why this replaced the old per-item branchTransactions list.
+  const filteredRealBills = useMemo(() => {
+    const snbVrsnb = realBillsInRange.filter(b => b.branch === 'VRSNB' || b.branch === 'SNB');
+    const scoped = branchOnlyFilter === 'all' ? snbVrsnb : snbVrsnb.filter(b => b.branch === branchOnlyFilter);
+    const q = billSearch.trim().toLowerCase();
+    const searched = q ? scoped.filter(b => b.billNo.toLowerCase().includes(q) || b.biller.toLowerCase().includes(q) || b.salesperson.toLowerCase().includes(q)) : scoped;
+    return [...searched].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  }, [realBillsInRange, branchOnlyFilter, billSearch]);
+  const realBillItemsByBillId = useMemo(() => {
+    const map = new Map<string, typeof realBillItems>();
+    realBillItems.forEach(item => {
+      const list = map.get(item.billId) ?? [];
+      list.push(item);
+      map.set(item.billId, list);
+    });
+    return map;
+  }, [realBillItems]);
+  const billPaidByMode = useMemo(() => {
+    const map = new Map<string, { cash: number; upi: number; card: number }>();
+    realPayments.forEach(p => {
+      const row = map.get(p.billId) ?? { cash: 0, upi: 0, card: 0 };
+      if (p.mode === 'cash') row.cash += p.amount;
+      else if (p.mode === 'upi') row.upi += p.amount;
+      else row.card += p.amount;
+      map.set(p.billId, row);
+    });
+    return map;
+  }, [realPayments]);
+  const branchFinancialDetailScoped = useMemo(
+    () => branchFinancialDetail.filter(row => (row.branch === 'VRSNB' || row.branch === 'SNB') && (branchOnlyFilter === 'all' || row.branch === branchOnlyFilter)),
+    [branchFinancialDetail, branchOnlyFilter],
+  );
+
+  const exportBranchSalesExcel = () => exportWorkbook(`Admin_BranchSales_${fromDate}_${toDate}`, [
+    {
+      name: 'Sales Details', title: `Branch Sales — Sales Detail (${fromDate} to ${toDate})`,
+      columns: [
+        { header: 'Branch', key: 'branch' }, { header: 'Total Sales', key: 'totalSales' }, { header: 'Advance Collected', key: 'advanceCollected' },
+        { header: 'Advance Balance Collected', key: 'advanceBalanceCollected', width: 22 }, { header: 'Cash', key: 'cash' }, { header: 'UPI', key: 'upi' },
+        { header: 'Card', key: 'card' }, { header: 'Credit', key: 'credit' }, { header: 'Expenses', key: 'expenses' }, { header: 'Purchases', key: 'purchases' },
+        { header: 'Returns', key: 'returns' }, { header: 'Bills', key: 'orderCount' },
+      ],
+      rows: branchFinancialDetailScoped,
+    },
+    {
+      name: 'Bill Details', title: `Branch Sales — Bill Detail (${fromDate} to ${toDate})`,
+      columns: [
+        { header: 'Branch', key: 'branch' }, { header: 'Bill No', key: 'billNo' }, { header: 'Item', key: 'item' }, { header: 'Qty', key: 'qty' },
+        { header: 'Unit Price', key: 'unitPrice' }, { header: 'Line Total', key: 'lineTotal' }, { header: 'Bill Total', key: 'billTotal' },
+        { header: 'Salesperson', key: 'salesperson' }, { header: 'Biller', key: 'biller' }, { header: 'Time', key: 'time', width: 20 },
+      ],
+      rows: filteredRealBills.flatMap(b => {
+        const items = realBillItemsByBillId.get(b.id) ?? [];
+        return items.length > 0
+          ? items.map(i => ({ branch: b.branch, billNo: b.billNo, item: i.itemName, qty: i.quantity, unitPrice: i.unitPrice, lineTotal: i.lineTotal, billTotal: b.total, salesperson: b.salesperson, biller: b.biller, time: fmtDateTime(b.createdAt) }))
+          : [{ branch: b.branch, billNo: b.billNo, item: '', qty: 0, unitPrice: 0, lineTotal: 0, billTotal: b.total, salesperson: b.salesperson, biller: b.biller, time: fmtDateTime(b.createdAt) }];
+      }),
+    },
+  ]);
+
+  const exportBranchSalesPdf = () => {
+    const PDF_BILL_CAP = 300;
+    const cappedBills = filteredRealBills.slice(0, PDF_BILL_CAP);
+    return exportReportPdf({
+      filename: `Admin_BranchSales_${fromDate}_${toDate}`,
+      title: 'Branch Sales',
+      subtitle: `${fromDate} to ${toDate} · ${branchOnlyFilter === 'all' ? 'VRSNB & SNB' : BRANCH_LABELS[branchOnlyFilter]}`,
+      kpis: [
+        { label: 'Total Sales', value: formatCurrency(branchFinancialDetailScoped.reduce((s, r) => s + r.totalSales, 0)) },
+        { label: 'Cash', value: formatCurrency(branchFinancialDetailScoped.reduce((s, r) => s + r.cash, 0)) },
+        { label: 'UPI', value: formatCurrency(branchFinancialDetailScoped.reduce((s, r) => s + r.upi, 0)) },
+        { label: 'Card', value: formatCurrency(branchFinancialDetailScoped.reduce((s, r) => s + r.card, 0)) },
+        { label: 'Credit', value: formatCurrency(branchFinancialDetailScoped.reduce((s, r) => s + r.credit, 0)) },
+        { label: 'Bills', value: String(filteredRealBills.length) },
+      ],
+      sections: [
+        {
+          heading: 'Branch Financial Detail',
+          columns: [{ header: 'Branch', width: 25 }, { header: 'Total Sales', width: 28, align: 'right' }, { header: 'Advance', width: 25, align: 'right' }, { header: 'Cash', width: 25, align: 'right' }, { header: 'UPI', width: 25, align: 'right' }, { header: 'Card', width: 22, align: 'right' }, { header: 'Credit', width: 25, align: 'right' }, { header: 'Expenses', width: 25, align: 'right' }, { header: 'Purchases', width: 25, align: 'right' }, { header: 'Returns', width: 25, align: 'right' }, { header: 'Bills', width: 18, align: 'right' }],
+          rows: branchFinancialDetailScoped.map(r => [BRANCH_LABELS[r.branch], pdfMoney(r.totalSales), pdfMoney(r.advanceCollected), pdfMoney(r.cash), pdfMoney(r.upi), pdfMoney(r.card), pdfMoney(r.credit), pdfMoney(r.expenses), pdfMoney(r.purchases), pdfMoney(r.returns), String(r.orderCount)]),
+        },
+        {
+          heading: filteredRealBills.length > PDF_BILL_CAP ? `Bills (first ${PDF_BILL_CAP} of ${filteredRealBills.length} — full list in Excel export)` : 'Bills',
+          columns: [{ header: 'Branch', width: 20 }, { header: 'Bill No', width: 28 }, { header: 'Total', width: 25, align: 'right' }, { header: 'Salesperson', width: 35 }, { header: 'Biller', width: 35 }, { header: 'Time', width: 40 }],
+          rows: cappedBills.map(b => [b.branch, b.billNo, pdfMoney(b.total), b.salesperson, b.biller, fmtDateTime(b.createdAt)]),
+        },
+      ],
+    });
+  };
+
   const BranchesTab = (
     <div className="space-y-5">
       {/* TOP BAR: date presets + branch filter (no Cafe) + excel */}
@@ -893,26 +1402,71 @@ function AdminDashboard() {
             <option value="all">All branches</option>
             {BRANCH_ONLY_OPTIONS.map(branch => <option key={branch} value={branch}>{BRANCH_LABELS[branch]}</option>)}
           </select>
-          <button onClick={() => csvDownload(`Admin_BranchSales_${fromDate}_${toDate}.csv`, filteredBranchTxns.map(t => ({ Branch: t.branch, Item: t.itemName, Qty: t.qty, Payment: t.payment, Revenue: t.revenue, 'Sold By': t.soldBy, Time: fmtDateTime(t.soldAt) })))}
+          <button onClick={exportBranchSalesExcel}
             className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-3 py-2 text-xs font-black text-white">
             <FileSpreadsheet className="size-3.5" /> Excel
+          </button>
+          <button onClick={exportBranchSalesPdf}
+            className="inline-flex items-center gap-2 rounded-2xl bg-slate-950 px-3 py-2 text-xs font-black text-white">
+            <FileDown className="size-3.5" /> PDF
           </button>
         </div>
       </div>
 
       {/* Branch KPI Cards */}
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        {branchSalesByBranch.filter(b => b.branch !== 'Cafe').map((b, i) => (
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+        {branchSalesByBranch.filter(b => b.branch === 'VRSNB' || b.branch === 'SNB').map((b, i) => (
           <KpiCard key={b.branch} label={b.label} value={formatCurrency(b.sales)} icon={<Store className="size-5" />} tone={(['green', 'blue', 'purple'] as const)[i % 3]} sub={`${b.orders} transactions`} />
         ))}
-        <KpiCard label="Total Branch Revenue" value={formatCurrency(branchSalesByBranch.filter(b => b.branch !== 'Cafe').reduce((sum, b) => sum + b.sales, 0))} icon={<TrendingUp className="size-5" />} tone="amber" />
+        <KpiCard label="Total Branch Revenue" value={formatCurrency(branchSalesByBranch.filter(b => b.branch === 'VRSNB' || b.branch === 'SNB').reduce((sum, b) => sum + b.sales, 0))} icon={<TrendingUp className="size-5" />} tone="amber" />
       </div>
+
+      <Panel title="Branch Financial Detail" subtitle="Total sales, advance, expenses, purchases and returns — SNB and VRSNB, for the selected range">
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[1100px] text-sm">
+            <thead>
+              <tr className="border-b bg-slate-50 text-left text-xs uppercase text-slate-500">
+                <th className="p-3">Branch</th>
+                <th className="p-3 text-right">Total Sales</th>
+                <th className="p-3 text-right">Advance Collected</th>
+                <th className="p-3 text-right">Advance Balance Collected</th>
+                <th className="p-3 text-right">Cash</th>
+                <th className="p-3 text-right">UPI</th>
+                <th className="p-3 text-right">Card</th>
+                <th className="p-3 text-right">Credit</th>
+                <th className="p-3 text-right">Expenses</th>
+                <th className="p-3 text-right">Purchases</th>
+                <th className="p-3 text-right">Returns</th>
+                <th className="p-3 text-right">Bills</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y">
+              {branchFinancialDetailScoped.map(row => (
+                <tr key={row.branch} className="hover:bg-slate-50">
+                  <td className="p-3"><BranchPill branch={row.branch} /></td>
+                  <td className="p-3 text-right font-black">{formatCurrency(row.totalSales)}</td>
+                  <td className="p-3 text-right tabular-nums">{formatCurrency(row.advanceCollected)}</td>
+                  <td className="p-3 text-right tabular-nums">{formatCurrency(row.advanceBalanceCollected)}</td>
+                  <td className="p-3 text-right tabular-nums">{formatCurrency(row.cash)}</td>
+                  <td className="p-3 text-right tabular-nums">{formatCurrency(row.upi)}</td>
+                  <td className="p-3 text-right tabular-nums">{formatCurrency(row.card)}</td>
+                  <td className="p-3 text-right tabular-nums">{formatCurrency(row.credit)}</td>
+                  <td className="p-3 text-right tabular-nums text-red-600">{formatCurrency(row.expenses)}</td>
+                  <td className="p-3 text-right tabular-nums text-red-600">{formatCurrency(row.purchases)}</td>
+                  <td className="p-3 text-right tabular-nums text-red-600">{formatCurrency(row.returns)}</td>
+                  <td className="p-3 text-right tabular-nums text-slate-500">{row.orderCount}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Panel>
 
       <div className="grid gap-5 xl:grid-cols-2">
         <Panel title="Branch Sales Comparison" subtitle="Revenue by branch for selected range">
           <ChartWrap>
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={branchOnlyFilter === 'all' ? branchSalesByBranch.filter(b => b.branch !== 'Cafe') : branchSalesByBranch.filter(b => b.branch === branchOnlyFilter)}>
+              <BarChart data={branchOnlyFilter === 'all' ? branchSalesByBranch.filter(b => b.branch === 'VRSNB' || b.branch === 'SNB') : branchSalesByBranch.filter(b => b.branch === branchOnlyFilter)}>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} />
                 <XAxis dataKey="label" tick={{ fontSize: 11 }} />
                 <YAxis tick={{ fontSize: 11 }} tickFormatter={v => `₹${Number(v) / 1000}k`} width={72} />
@@ -930,7 +1484,6 @@ function AdminDashboard() {
                 <defs>
                   <linearGradient id="snbFill" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#2563eb" stopOpacity={0.25} /><stop offset="95%" stopColor="#2563eb" stopOpacity={0} /></linearGradient>
                   <linearGradient id="vrsnbFill" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#7c3aed" stopOpacity={0.25} /><stop offset="95%" stopColor="#7c3aed" stopOpacity={0} /></linearGradient>
-                  <linearGradient id="hosurFill" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#d97706" stopOpacity={0.25} /><stop offset="95%" stopColor="#d97706" stopOpacity={0} /></linearGradient>
                 </defs>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} />
                 <XAxis dataKey="date" tick={{ fontSize: 11 }} />
@@ -938,30 +1491,226 @@ function AdminDashboard() {
                 <Tooltip formatter={value => formatCurrency(Number(value))} />
                 {(branchOnlyFilter === 'all' || branchOnlyFilter === 'SNB') && <Area type="monotone" dataKey="SNB" stroke="#2563eb" fill="url(#snbFill)" strokeWidth={2} />}
                 {(branchOnlyFilter === 'all' || branchOnlyFilter === 'VRSNB') && <Area type="monotone" dataKey="VRSNB" stroke="#7c3aed" fill="url(#vrsnbFill)" strokeWidth={2} />}
-                {(branchOnlyFilter === 'all' || branchOnlyFilter === 'Hosur') && <Area type="monotone" dataKey="Hosur" stroke="#d97706" fill="url(#hosurFill)" strokeWidth={2} />}
               </AreaChart>
             </ResponsiveContainer>
           </ChartWrap>
         </Panel>
       </div>
 
-      <Panel title="Branch Sales Transactions" subtitle="SNB, VRSNB and Hosur sales details">
-        {filteredBranchTxns.length === 0 ? <EmptyState label="No branch sales in this range." /> : (
+      <Panel title="Bills" subtitle={`SNB and VRSNB bills — every bill and its line items, real source of truth${realSalesLoading ? ' (loading…)' : ''}`}>
+        <div className="mb-3 flex items-center gap-2">
+          <Search className="size-4 text-slate-400" />
+          <input value={billSearch} onChange={e => setBillSearch(e.target.value)} placeholder="Search bill no, biller or salesperson…"
+            className="w-full max-w-sm rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none" />
+          <span className="ml-auto text-xs font-semibold text-slate-500">{filteredRealBills.length} bill{filteredRealBills.length === 1 ? '' : 's'}</span>
+        </div>
+        {realSalesError && <p className="mb-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700">{realSalesError}</p>}
+        {filteredRealBills.length === 0 ? <EmptyState label={realSalesLoading ? 'Loading bills…' : 'No bills in this range.'} /> : (
           <div className="overflow-x-auto">
             <table className="w-full min-w-[860px] text-sm">
-              <thead><tr className="border-b bg-slate-50 text-left text-xs uppercase text-slate-500"><th className="p-3">Branch</th><th className="p-3">Item</th><th className="p-3 text-right">Qty</th><th className="p-3">Payment</th><th className="p-3 text-right">Revenue</th><th className="p-3">Sold By</th><th className="p-3">Time</th></tr></thead>
+              <thead><tr className="border-b bg-slate-50 text-left text-xs uppercase text-slate-500"><th className="p-3 w-8" /><th className="p-3">Branch</th><th className="p-3">Bill No</th><th className="p-3 text-right">Items</th><th className="p-3 text-right">Bill Price</th><th className="p-3">Biller / Salesperson</th><th className="p-3">Time</th></tr></thead>
               <tbody className="divide-y">
-                {filteredBranchTxns.slice(0, 100).map(t => (
-                  <tr key={t.id} className="hover:bg-slate-50">
-                    <td className="p-3"><BranchPill branch={t.branch} /></td>
-                    <td className="p-3 font-semibold">{t.itemName}</td>
-                    <td className="p-3 text-right tabular-nums">{t.qty}</td>
-                    <td className="p-3 uppercase text-slate-500">{t.payment}</td>
-                    <td className="p-3 text-right font-black">{formatCurrency(t.revenue)}</td>
-                    <td className="p-3 text-slate-500">{t.soldBy}</td>
-                    <td className="p-3 text-slate-500">{fmtDateTime(t.soldAt)}</td>
+                {filteredRealBills.slice(0, 200).map(b => {
+                  const items = realBillItemsByBillId.get(b.id) ?? [];
+                  const paid = billPaidByMode.get(b.id);
+                  const expanded = expandedBillId === b.id;
+                  return (
+                    <Fragment key={b.id}>
+                      <tr onClick={() => setExpandedBillId(expanded ? null : b.id)} className="cursor-pointer hover:bg-slate-50">
+                        <td className="p-3"><ChevronDown className={cn('size-4 text-slate-400 transition-transform', expanded && 'rotate-180')} /></td>
+                        <td className="p-3"><BranchPill branch={b.branch} /></td>
+                        <td className="p-3 font-semibold">{b.billNo || '—'}{b.status === 'returned' && <span className="ml-2 rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-black uppercase text-red-700">Returned</span>}</td>
+                        <td className="p-3 text-right tabular-nums text-slate-500">{items.length}</td>
+                        <td className="p-3 text-right font-black">{formatCurrency(b.total)}</td>
+                        <td className="p-3 text-slate-500">{b.biller || b.salesperson || '—'}</td>
+                        <td className="p-3 text-slate-500">{fmtDateTime(b.createdAt)}</td>
+                      </tr>
+                      {expanded && (
+                        <tr key={`${b.id}-detail`}>
+                          <td colSpan={7} className="bg-slate-50/70 p-4">
+                            {items.length === 0 ? <p className="text-xs text-slate-500">No line items recorded for this bill.</p> : (
+                              <table className="w-full text-xs">
+                                <thead><tr className="text-left uppercase text-slate-400"><th className="py-1.5">Item</th><th className="py-1.5 text-right">Qty</th><th className="py-1.5">Unit</th><th className="py-1.5 text-right">Unit Price</th><th className="py-1.5 text-right">Line Total</th></tr></thead>
+                                <tbody className="divide-y divide-slate-200">
+                                  {items.map((i, idx) => (
+                                    <tr key={idx}>
+                                      <td className="py-1.5 font-semibold text-slate-700">{i.itemName}</td>
+                                      <td className="py-1.5 text-right tabular-nums">{i.quantity}</td>
+                                      <td className="py-1.5 text-slate-500">{i.unit}</td>
+                                      <td className="py-1.5 text-right tabular-nums">{formatCurrency(i.unitPrice)}</td>
+                                      <td className="py-1.5 text-right font-bold">{formatCurrency(i.lineTotal)}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            )}
+                            <div className="mt-3 flex flex-wrap gap-4 border-t border-slate-200 pt-3 text-xs font-semibold text-slate-500">
+                              <span>Subtotal: <b className="text-slate-800">{formatCurrency(b.subtotal)}</b></span>
+                              <span>Discount: <b className="text-slate-800">{formatCurrency(b.discount)}</b></span>
+                              <span>Cash paid: <b className="text-slate-800">{formatCurrency(paid?.cash || 0)}</b></span>
+                              <span>UPI paid: <b className="text-slate-800">{formatCurrency(paid?.upi || 0)}</b></span>
+                              <span>Card paid: <b className="text-slate-800">{formatCurrency(paid?.card || 0)}</b></span>
+                              <span>Bill total: <b className="text-slate-800">{formatCurrency(b.total)}</b></span>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
+    </div>
+  );
+
+  // FEATURE: dedicated "Hosur Sales" tab — Hosur is wholesale shop billing
+  // (dispatch first, bill later), not counter billing like SNB/VRSNB, so it
+  // never belonged in the same comparison charts. Shows real confirmed
+  // billing (hosur_bills, same source Owner Dashboard's Hosur card already
+  // uses) AND, just as importantly, the dispatched-but-never-billed backlog
+  // — the real reason Hosur revenue always looked like ₹0 elsewhere.
+  const hosurBillsInRange = useMemo(() => realBillsInRange.filter(b => b.branch === 'Hosur'), [realBillsInRange]);
+  const hosurBillItemsInRange = useMemo(() => realBillItems.filter(i => i.branch === 'Hosur'), [realBillItems]);
+  const hosurTotalBilled = useMemo(() => hosurBillsInRange.reduce((sum, b) => sum + b.total, 0), [hosurBillsInRange]);
+  const hosurUnbilledTotal = useMemo(() => hosurUnbilledDispatched.reduce((sum, o) => sum + o.subtotal, 0), [hosurUnbilledDispatched]);
+  const hosurPaidByMode = useMemo(() => {
+    const totals = { cash: 0, upi: 0, card: 0 };
+    const hosurBillIds = new Set(hosurBillsInRange.map(b => b.id));
+    realPayments.filter(p => hosurBillIds.has(p.billId)).forEach(p => {
+      if (p.mode === 'cash') totals.cash += p.amount;
+      else if (p.mode === 'upi') totals.upi += p.amount;
+      else totals.card += p.amount;
+    });
+    return totals;
+  }, [realPayments, hosurBillsInRange]);
+
+  const exportHosurPdf = () => {
+    const PDF_BILL_CAP = 300;
+    return exportReportPdf({
+      filename: `Admin_Hosur_${fromDate}_${toDate}`,
+      title: 'Hosur Sales',
+      subtitle: `${fromDate} to ${toDate}`,
+      kpis: [
+        { label: 'Billed Sales', value: formatCurrency(hosurTotalBilled) },
+        { label: 'Dispatched, Not Billed', value: formatCurrency(hosurUnbilledTotal) },
+        { label: 'Cash Collected', value: formatCurrency(hosurPaidByMode.cash) },
+        { label: 'UPI Collected', value: formatCurrency(hosurPaidByMode.upi) },
+      ],
+      sections: [
+        {
+          heading: 'Dispatched, Not Yet Billed',
+          columns: [{ header: 'Order', width: 30 }, { header: 'Shop', width: 45 }, { header: 'Value', width: 30, align: 'right' }, { header: 'Dispatched', width: 40 }],
+          rows: [...hosurUnbilledDispatched].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()).slice(0, PDF_BILL_CAP).map(o => [o.orderNumber || '—', o.shopName || '—', pdfMoney(o.subtotal), fmtDateTime(o.createdAt)]),
+        },
+        {
+          heading: hosurBillsInRange.length > PDF_BILL_CAP ? `Confirmed Bills (first ${PDF_BILL_CAP} of ${hosurBillsInRange.length})` : 'Confirmed Bills',
+          columns: [{ header: 'Bill No', width: 30 }, { header: 'Items', width: 20, align: 'right' }, { header: 'Total', width: 30, align: 'right' }, { header: 'Biller', width: 40 }, { header: 'Time', width: 40 }],
+          rows: hosurBillsInRange.slice(0, PDF_BILL_CAP).map(b => [b.billNo || '—', String((realBillItemsByBillId.get(b.id) ?? []).length), pdfMoney(b.total), b.biller || b.salesperson || '—', fmtDateTime(b.createdAt)]),
+        },
+      ],
+    });
+  };
+
+  const HosurTab = (
+    <div className="space-y-5">
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+        <DatePresets fromDate={fromDate} toDate={toDate} setFromDate={setFromDate} setToDate={setToDate} />
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
+            From<input type="date" value={fromDate} onChange={e => setFromDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
+          </label>
+          <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
+            To<input type="date" value={toDate} onChange={e => setToDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
+          </label>
+          <button onClick={exportHosurPdf}
+            className="inline-flex items-center gap-2 rounded-2xl bg-slate-950 px-3 py-2 text-xs font-black text-white">
+            <FileDown className="size-3.5" /> PDF
+          </button>
+        </div>
+      </div>
+
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <KpiCard label="Billed Sales" value={formatCurrency(hosurTotalBilled)} icon={<IndianRupee className="size-5" />} tone="green" sub={`${hosurBillsInRange.length} confirmed bills`} />
+        <KpiCard label="Dispatched, Not Yet Billed" value={formatCurrency(hosurUnbilledTotal)} icon={<AlertTriangle className="size-5" />} tone="red" sub={`${hosurUnbilledDispatched.length} orders`} />
+        <KpiCard label="Cash Collected" value={formatCurrency(hosurPaidByMode.cash)} icon={<Banknote className="size-5" />} tone="blue" />
+        <KpiCard label="UPI Collected" value={formatCurrency(hosurPaidByMode.upi)} icon={<Smartphone className="size-5" />} tone="purple" />
+      </div>
+
+      {hosurUnbilledDispatched.length > 0 && (
+        <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-800">
+          <AlertTriangle className="mr-2 inline size-4" />
+          {hosurUnbilledDispatched.length} order{hosurUnbilledDispatched.length === 1 ? '' : 's'} worth {formatCurrency(hosurUnbilledTotal)} {hosurUnbilledDispatched.length === 1 ? 'has' : 'have'} been dispatched to shops but never confirmed/billed in Planner's Hosur Shops &amp; Billing → Dispatch &amp; Billing Queue. This is real revenue not yet tracked as collected.
+        </div>
+      )}
+
+      <Panel title="Dispatched, Not Yet Billed" subtitle="Orders sitting in the Dispatch & Billing Queue that were never confirmed into a bill">
+        {hosurUnbilledDispatched.length === 0 ? <EmptyState label="Nothing outstanding — every dispatched order in this range has been billed." /> : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[600px] text-sm">
+              <thead><tr className="border-b bg-slate-50 text-left text-xs uppercase text-slate-500"><th className="p-3">Order</th><th className="p-3">Shop</th><th className="p-3 text-right">Value</th><th className="p-3">Dispatched</th></tr></thead>
+              <tbody className="divide-y">
+                {hosurUnbilledDispatched.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()).slice(0, 200).map(o => (
+                  <tr key={o.id} className="hover:bg-red-50/40">
+                    <td className="p-3 font-bold">{o.orderNumber || '—'}</td>
+                    <td className="p-3">{o.shopName || '—'}</td>
+                    <td className="p-3 text-right font-black text-red-600">{formatCurrency(o.subtotal)}</td>
+                    <td className="p-3 text-slate-500">{fmtDateTime(o.createdAt)}</td>
                   </tr>
                 ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
+
+      <Panel title="Confirmed Bills" subtitle={`Hosur bills actually confirmed and collected in this range${realSalesLoading ? ' (loading…)' : ''}`}>
+        {realSalesError && <p className="mb-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700">{realSalesError}</p>}
+        {hosurBillsInRange.length === 0 ? <EmptyState label={realSalesLoading ? 'Loading bills…' : 'No confirmed Hosur bills in this range.'} /> : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[860px] text-sm">
+              <thead><tr className="border-b bg-slate-50 text-left text-xs uppercase text-slate-500"><th className="p-3 w-8" /><th className="p-3">Bill No</th><th className="p-3">Shop</th><th className="p-3 text-right">Items</th><th className="p-3 text-right">Bill Price</th><th className="p-3">Time</th></tr></thead>
+              <tbody className="divide-y">
+                {[...hosurBillsInRange].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()).slice(0, 200).map(b => {
+                  const items = hosurBillItemsInRange.filter(i => i.billId === b.id);
+                  const expanded = expandedBillId === b.id;
+                  return (
+                    <Fragment key={b.id}>
+                      <tr onClick={() => setExpandedBillId(expanded ? null : b.id)} className="cursor-pointer hover:bg-slate-50">
+                        <td className="p-3"><ChevronDown className={cn('size-4 text-slate-400 transition-transform', expanded && 'rotate-180')} /></td>
+                        <td className="p-3 font-semibold">{b.billNo || '—'}</td>
+                        <td className="p-3">{b.biller || '—'}</td>
+                        <td className="p-3 text-right tabular-nums text-slate-500">{items.length}</td>
+                        <td className="p-3 text-right font-black">{formatCurrency(b.total)}</td>
+                        <td className="p-3 text-slate-500">{fmtDateTime(b.createdAt)}</td>
+                      </tr>
+                      {expanded && (
+                        <tr>
+                          <td colSpan={6} className="bg-slate-50/70 p-4">
+                            {items.length === 0 ? <p className="text-xs text-slate-500">No line items recorded for this bill.</p> : (
+                              <table className="w-full text-xs">
+                                <thead><tr className="text-left uppercase text-slate-400"><th className="py-1.5">Item</th><th className="py-1.5 text-right">Qty</th><th className="py-1.5">Unit</th><th className="py-1.5 text-right">Unit Price</th><th className="py-1.5 text-right">Line Total</th></tr></thead>
+                                <tbody className="divide-y divide-slate-200">
+                                  {items.map((i, idx) => (
+                                    <tr key={idx}>
+                                      <td className="py-1.5 font-semibold text-slate-700">{i.itemName}</td>
+                                      <td className="py-1.5 text-right tabular-nums">{i.quantity}</td>
+                                      <td className="py-1.5 text-slate-500">{i.unit}</td>
+                                      <td className="py-1.5 text-right tabular-nums">{formatCurrency(i.unitPrice)}</td>
+                                      <td className="py-1.5 text-right font-bold">{formatCurrency(i.lineTotal)}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            )}
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -1127,7 +1876,7 @@ function AdminDashboard() {
         ))}
       </div>
       <Panel title="Daily Closure Verification" subtitle="Cafe, SNB Branch, VRSNB Branch and Hosur Branch"
-        action={<div className="flex flex-wrap gap-2"><button onClick={() => adminLedger.refresh()} disabled={adminLedger.loading} className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-black disabled:opacity-60"><RefreshCw className={cn('size-3.5', adminLedger.loading && 'animate-spin')} />Refresh</button><button onClick={printDailyClosure} className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-black"><Printer className="size-3.5" />Print</button><button onClick={exportDailyClosure} className="inline-flex items-center gap-2 rounded-2xl bg-slate-950 px-3 py-2 text-xs font-black text-white"><Download className="size-3.5" />Export</button></div>}>
+        action={<div className="flex flex-wrap gap-2"><button onClick={() => closureLedger.refresh()} disabled={closureLedger.loading} className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-black disabled:opacity-60"><RefreshCw className={cn('size-3.5', closureLedger.loading && 'animate-spin')} />Refresh</button><button onClick={printDailyClosure} className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-black"><Printer className="size-3.5" />Print</button><button onClick={exportDailyClosure} className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-3 py-2 text-xs font-black text-white"><FileSpreadsheet className="size-3.5" />Excel</button><button onClick={exportDailyClosurePdf} className="inline-flex items-center gap-2 rounded-2xl bg-slate-950 px-3 py-2 text-xs font-black text-white"><FileDown className="size-3.5" />PDF</button></div>}>
         <div className="mb-4 grid gap-2 lg:grid-cols-[180px_220px_1fr]">
           <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
             Date<input type="date" value={closureDate} onChange={e => setClosureDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
@@ -1231,6 +1980,30 @@ function AdminDashboard() {
     </div>
   );
 
+  const exportAdvanceExcel = () => exportWorkbook(`Admin_AdvanceOrders_${fromDate}_${toDate}`, [{
+    name: 'Advance Orders', title: `Advance Orders (${fromDate} to ${toDate})`,
+    columns: [{ header: 'Branch', key: 'Branch' }, { header: 'Customer', key: 'Customer' }, { header: 'Delivery Date', key: 'Delivery Date' }, { header: 'Subtotal', key: 'Subtotal' }, { header: 'Advance Paid', key: 'Advance Paid' }, { header: 'Balance Due', key: 'Balance Due' }, { header: 'Status', key: 'Status' }],
+    rows: allAdvances.map(a => ({ Branch: a.branch, Customer: a.customerName || '-', 'Delivery Date': a.deliveryDate || '-', Subtotal: a.subtotal || 0, 'Advance Paid': a.advanceAmount || 0, 'Balance Due': a.balanceDue || 0, Status: a.status })),
+  }]);
+
+  const exportAdvancePdf = () => exportReportPdf({
+    filename: `Admin_AdvanceOrders_${fromDate}_${toDate}`,
+    title: 'Advance Orders',
+    subtitle: `${fromDate} to ${toDate}`,
+    kpis: [
+      { label: 'Total Orders', value: String(allAdvances.length) },
+      { label: 'Active', value: String(pendingAdvances.length) },
+      { label: 'Delivered', value: String(deliveredAdvances.length) },
+      { label: 'Balance Due', value: formatCurrency(advanceBalanceDue) },
+      { label: 'Total Value', value: formatCurrency(totalAdvanceValue) },
+    ],
+    sections: [{
+      heading: 'Advance Orders',
+      columns: [{ header: 'Branch', width: 20 }, { header: 'Customer', width: 40 }, { header: 'Delivery Date', width: 25 }, { header: 'Subtotal', width: 25, align: 'right' }, { header: 'Advance Paid', width: 25, align: 'right' }, { header: 'Balance Due', width: 25, align: 'right' }, { header: 'Status', width: 20 }],
+      rows: allAdvances.map(a => [a.branch, a.customerName || '-', a.deliveryDate || '-', pdfMoney(a.subtotal || 0), pdfMoney(a.advanceAmount || 0), pdfMoney(a.balanceDue || 0), a.status]),
+    }],
+  });
+
   // AdvanceTab — improved with top bar + KPI summary
   const AdvanceTab = (
     <div className="space-y-5">
@@ -1243,9 +2016,13 @@ function AdminDashboard() {
           <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibond text-slate-600">
             To<input type="date" value={toDate} onChange={e => setToDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
           </label>
-          <button onClick={() => csvDownload(`Admin_AdvanceOrders_${fromDate}_${toDate}.csv`, allAdvances.map(a => ({ Branch: a.branch, Customer: a.customerName || '-', 'Delivery Date': a.deliveryDate || '-', Subtotal: a.subtotal || 0, 'Advance Paid': a.advanceAmount || 0, 'Balance Due': a.balanceDue || 0, Status: a.status })))}
+          <button onClick={exportAdvanceExcel}
             className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-3 py-2 text-xs font-black text-white">
             <FileSpreadsheet className="size-3.5" /> Excel
+          </button>
+          <button onClick={exportAdvancePdf}
+            className="inline-flex items-center gap-2 rounded-2xl bg-slate-950 px-3 py-2 text-xs font-black text-white">
+            <FileDown className="size-3.5" /> PDF
           </button>
         </div>
       </div>
@@ -1271,6 +2048,28 @@ function AdminDashboard() {
   const excessVariance = filteredVarianceRecords.filter(r => r.difference > 0);
   const shortVariance = filteredVarianceRecords.filter(r => r.difference < 0);
 
+  const exportStockVarianceExcel = () => exportWorkbook('Admin_StockVariance', [{
+    name: 'Stock Variance', title: 'Stock Variance Records',
+    columns: [{ header: 'Date', key: 'Date', width: 18 }, { header: 'Branch', key: 'Branch' }, { header: 'Report', key: 'Report' }, { header: 'Item', key: 'Item' }, { header: 'Unit', key: 'Unit' }, { header: 'System Qty', key: 'System Qty' }, { header: 'Physical Qty', key: 'Physical Qty' }, { header: 'Difference', key: 'Difference' }, { header: 'Reported By', key: 'Reported By' }, { header: 'Confirmed By', key: 'Confirmed By' }],
+    rows: filteredVarianceRecords.map(r => ({ Date: fmtDateTime(r.createdAt), Branch: r.branch, Report: r.reportNo, Item: r.itemName, Unit: r.unit || '', 'System Qty': r.systemQty, 'Physical Qty': r.physicalQty, Difference: r.difference, 'Reported By': r.reportedBy, 'Confirmed By': r.confirmedBy })),
+  }]);
+
+  const exportStockVariancePdf = () => exportReportPdf({
+    filename: 'Admin_StockVariance',
+    title: 'Stock Variance Records',
+    subtitle: 'Physical stock-count differences confirmed by branch admin',
+    kpis: [
+      { label: 'Total Variances', value: String(filteredVarianceRecords.length) },
+      { label: 'Excess', value: String(excessVariance.length) },
+      { label: 'Short', value: String(shortVariance.length) },
+    ],
+    sections: [{
+      heading: 'Stock Variance Records',
+      columns: [{ header: 'Date', width: 30 }, { header: 'Branch', width: 20 }, { header: 'Report', width: 25 }, { header: 'Item', width: 40 }, { header: 'System', width: 20, align: 'right' }, { header: 'Physical', width: 20, align: 'right' }, { header: 'Difference', width: 20, align: 'right' }, { header: 'Reported By', width: 30 }],
+      rows: filteredVarianceRecords.map(r => [fmtDateTime(r.createdAt), r.branch, r.reportNo || '-', `${r.itemName}${r.unit ? ` (${r.unit})` : ''}`, String(r.systemQty), String(r.physicalQty), String(r.difference), r.reportedBy || '-']),
+    }],
+  });
+
   const StockVarianceTab = (
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
@@ -1284,9 +2083,13 @@ function AdminDashboard() {
             <input value={varianceSearch} onChange={e => setVarianceSearch(e.target.value)} placeholder="Search item or report" className="rounded-2xl border border-slate-200 bg-white py-2 pl-9 pr-3 text-sm outline-none" />
           </div>
         </div>
-        <button onClick={() => csvDownload('Admin_StockVariance.csv', filteredVarianceRecords.map(r => ({ Date: fmtDateTime(r.createdAt), Branch: r.branch, Report: r.reportNo, Item: r.itemName, Unit: r.unit || '', 'System Qty': r.systemQty, 'Physical Qty': r.physicalQty, Difference: r.difference, 'Reported By': r.reportedBy, 'Confirmed By': r.confirmedBy })))}
+        <button onClick={exportStockVarianceExcel}
           className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-3 py-2 text-xs font-black text-white">
           <FileSpreadsheet className="size-3.5" /> Excel
+        </button>
+        <button onClick={exportStockVariancePdf}
+          className="inline-flex items-center gap-2 rounded-2xl bg-slate-950 px-3 py-2 text-xs font-black text-white">
+          <FileDown className="size-3.5" /> PDF
         </button>
       </div>
       <div className="grid gap-3 sm:grid-cols-3">
@@ -1339,7 +2142,7 @@ function AdminDashboard() {
               className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700 hover:bg-slate-50">
               <RefreshCw className="size-3.5" />Refresh
             </button>
-            <button onClick={() => csvDownload('Admin_AuditLogs.csv', filteredAuditLogs.map(l => ({ Time: fmtDateTime(l.createdAt), Branch: l.branch, User: l.user, Action: l.action })))}
+            <button onClick={() => exportWorkbook('Admin_AuditLogs', [{ name: 'Audit Logs', title: 'Admin Audit Logs', columns: [{ header: 'Time', key: 'Time', width: 18 }, { header: 'Branch', key: 'Branch' }, { header: 'User', key: 'User', width: 22 }, { header: 'Action', key: 'Action', width: 28 }], rows: filteredAuditLogs.map(l => ({ Time: fmtDateTime(l.createdAt), Branch: l.branch, User: l.user, Action: l.action })) }])}
               className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-3 py-2 text-xs font-black text-white">
               <FileSpreadsheet className="size-3.5" />Excel
             </button>
@@ -1436,7 +2239,7 @@ function AdminDashboard() {
       </div>
       <Panel title="Branch Admin Complaints" subtitle="Complaints raised by VRSNB and SNB admins"
         action={
-          <button onClick={() => csvDownload('Admin_Complaints.csv', adminComplaints.map(c => ({ Branch: c.branch, Area: c.complaintArea, Title: c.title, Details: c.details, 'Raised By': c.raisedBy, Status: c.status, Date: fmtDate(c.createdAt) })))}
+          <button onClick={() => exportWorkbook('Admin_Complaints', [{ name: 'Complaints', title: 'Branch Admin Complaints', columns: [{ header: 'Branch', key: 'Branch' }, { header: 'Area', key: 'Area', width: 20 }, { header: 'Title', key: 'Title', width: 24 }, { header: 'Details', key: 'Details', width: 40 }, { header: 'Raised By', key: 'Raised By', width: 22 }, { header: 'Status', key: 'Status' }, { header: 'Date', key: 'Date', width: 14 }], rows: adminComplaints.map(c => ({ Branch: c.branch, Area: c.complaintArea, Title: c.title, Details: c.details, 'Raised By': c.raisedBy, Status: c.status, Date: fmtDate(c.createdAt) })) }])}
             className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-3 py-2 text-xs font-black text-white">
             <FileSpreadsheet className="size-3.5" /> Excel
           </button>
@@ -1484,15 +2287,30 @@ function AdminDashboard() {
     </div>
   );
 
+  const filteredWasteLogs = useMemo(() => wasteLogs.filter(row => inRange(row.createdAt, fromDate, toDate)), [wasteLogs, fromDate, toDate]);
+
+  const exportWastePdf = () => exportReportPdf({
+    filename: `Admin_WasteLoss_${fromDate}_${toDate}`,
+    title: 'Branch Waste & Loss',
+    subtitle: `${fromDate} to ${toDate} · Confirmed dump, damage and transfer-out entries from all branches`,
+    kpis: [{ label: 'Total Entries', value: String(filteredWasteLogs.length) }],
+    sections: [{
+      heading: 'Waste & Loss Log',
+      columns: [{ header: 'Date', width: 35 }, { header: 'Branch', width: 20 }, { header: 'Type', width: 25 }, { header: 'Item', width: 40 }, { header: 'Quantity', width: 25, align: 'right' }, { header: 'Reason', width: 45 }, { header: 'Verified By', width: 30 }],
+      rows: filteredWasteLogs.map(row => [fmtDateTime(row.createdAt), row.branch, row.logType, row.itemName, `${row.quantity} ${row.unit}`, row.reason || '-', row.verifiedBy || '-']),
+    }],
+  });
+
   const WasteTab = (
-    <Panel title="Branch Waste & Loss" subtitle="Confirmed dump, damage and transfer-out entries from all branches">
+    <Panel title="Branch Waste & Loss" subtitle="Confirmed dump, damage and transfer-out entries from all branches"
+      action={<button onClick={exportWastePdf} className="inline-flex items-center gap-2 rounded-2xl bg-slate-950 px-3 py-2 text-xs font-black text-white"><FileDown className="size-3.5" /> PDF</button>}>
       <div className="overflow-x-auto">
         <table className="min-w-full text-left text-sm">
           <thead className="bg-slate-50 text-xs font-black uppercase text-slate-500">
             <tr>{['Date', 'Branch', 'Type', 'Item', 'Quantity', 'Reason', 'Verified By'].map(label => <th key={label} className="px-3 py-3">{label}</th>)}</tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
-            {wasteLogs.filter(row => inRange(row.createdAt, fromDate, toDate)).map(row => (
+            {filteredWasteLogs.map(row => (
               <tr key={row.id} className="hover:bg-amber-50/50">
                 <td className="whitespace-nowrap px-3 py-3 font-bold text-slate-600">{fmtDateTime(row.createdAt)}</td>
                 <td className="px-3 py-3"><BranchPill branch={row.branch as Branch} /></td>
@@ -1505,7 +2323,7 @@ function AdminDashboard() {
             ))}
           </tbody>
         </table>
-        {!wasteLogs.some(row => inRange(row.createdAt, fromDate, toDate)) && <p className="p-8 text-center text-sm font-bold text-slate-500">No branch waste recorded for this period.</p>}
+        {filteredWasteLogs.length === 0 && <p className="p-8 text-center text-sm font-bold text-slate-500">No branch waste recorded for this period.</p>}
       </div>
     </Panel>
   );
@@ -1553,12 +2371,12 @@ function AdminDashboard() {
 
   const activeContent: Record<AdminTab, ReactNode> = {
     'public-orders': PublicOrdersTab,
-    planning: <AdminPlanningTab />,
     wallet: <AdminWalletTab />,
     promotions: <AdminPromotionsTab />,
     overview: OverviewTab,
     cafe: CafeTab,
     branches: BranchesTab,
+    hosur: HosurTab,
     items: ItemsTab,
     'daily-closure': DailyClosureTab,
     credits: CreditsTab,

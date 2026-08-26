@@ -5,7 +5,7 @@ import {
   Download, UserPlus, X, Pencil, Loader2,
   AlertCircle, CheckCircle2, BarChart3, CreditCard,
 } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { cn, formatCurrency } from '@/lib/utils';
 import { supabase } from '@/lib/supabase';
 import { businessDate } from '@/lib/businessDate';
 import { useScrollLock } from '@/hooks/useScrollLock';
@@ -1813,6 +1813,33 @@ export default function AttendanceSalary() {
     exportAdvanceExcel(empList, advanceRecords, activeMonth.label);
   };
 
+  const handleSalaryPdfExport = async () => {
+    const { exportReportPdf, pdfMoney } = await import('@/lib/exportAdminReport');
+    let list = branch === 'All' ? employees : employees.filter(e => e.branch === branch);
+    if (dept !== 'All') list = list.filter(e => e.department.trim().toLowerCase() === dept.toLowerCase());
+    list = list.filter(matchesContractor);
+    const rows = list.map(e => ({ e, c: calcSalary(e, att, activeMonth.daysInMonth, getDecision(e.id)) }));
+    const totalGross = rows.reduce((s, r) => s + r.e.grossSalary, 0);
+    const totalNet = rows.reduce((s, r) => s + r.c.net, 0);
+    const totalDed = rows.reduce((s, r) => s + r.c.totalDed, 0);
+    await exportReportPdf({
+      filename: `CafeAadvikam_SalaryReport_${activeMonth.label.replace(' ', '_')}`,
+      title: 'Salary Report',
+      subtitle: `${activeMonth.label} · Cafe Aadvikam Group`,
+      kpis: [
+        { label: 'Employees', value: String(rows.length) },
+        { label: 'Total Gross', value: formatCurrency(totalGross) },
+        { label: 'Total Deductions', value: formatCurrency(totalDed) },
+        { label: 'Total Net Payable', value: formatCurrency(totalNet) },
+      ],
+      sections: [{
+        heading: 'Salary Summary',
+        columns: [{ header: 'Name', width: 40 }, { header: 'Branch', width: 22 }, { header: 'Gross', width: 24, align: 'right' }, { header: 'Days Present', width: 22, align: 'right' }, { header: 'Worked', width: 20, align: 'right' }, { header: 'Earned', width: 24, align: 'right' }, { header: 'Deductions', width: 24, align: 'right' }, { header: 'Net Payable', width: 26, align: 'right' }],
+        rows: rows.map(({ e, c }) => [e.name, e.branch, pdfMoney(e.grossSalary), String(c.presentDays), String(c.worked), pdfMoney(c.earned), pdfMoney(c.totalDed), pdfMoney(c.net)]),
+      }],
+    });
+  };
+
   if (loading) {
     return (
       <div className="min-h-[100dvh] bg-background flex items-center justify-center">
@@ -1964,9 +1991,14 @@ export default function AttendanceSalary() {
             </button>
           )}
           {tab === 'salary' && (
-            <button onClick={handleExcelExport} className="shrink-0 h-10 px-3 rounded-xl bg-emerald-600 text-white flex items-center gap-1 text-xs font-body font-semibold transition-colors hover:bg-emerald-700 active:scale-95">
-              <Download className="size-4" /> Excel
-            </button>
+            <>
+              <button onClick={handleExcelExport} className="shrink-0 h-10 px-3 rounded-xl bg-emerald-600 text-white flex items-center gap-1 text-xs font-body font-semibold transition-colors hover:bg-emerald-700 active:scale-95">
+                <Download className="size-4" /> Excel
+              </button>
+              <button onClick={handleSalaryPdfExport} className="shrink-0 h-10 px-3 rounded-xl bg-slate-950 text-white flex items-center gap-1 text-xs font-body font-semibold transition-colors hover:bg-slate-800 active:scale-95">
+                <Download className="size-4" /> PDF
+              </button>
+            </>
           )}
           {tab === 'advance' && (
             <button onClick={handleAdvanceExcelExport} className="shrink-0 h-10 px-3 rounded-xl bg-emerald-600 text-white flex items-center gap-1 text-xs font-body font-semibold transition-colors hover:bg-emerald-700 active:scale-95">
