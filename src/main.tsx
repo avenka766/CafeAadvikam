@@ -20,8 +20,24 @@ import './index.css';
 // Same guard as ErrorBoundary now applied here too: reload at most once per
 // session, then stop and let the visible error UI/banner take over instead
 // of looping forever.
+// BUG FIX (2026-08-26): "still hitting the stale-chunk error, stuck on the
+// fallback screen" — the guard below used to be a pure boolean, set once
+// and never cleared except by a successful mount 5s later. In a single
+// long-running session (a receiver terminal left open all day, exactly
+// the kind of tab this app is meant to run in), if the guard was already
+// used by an EARLIER stale-chunk event and the app is currently between
+// mounts (e.g. navigating to a fresh lazy route right as another new
+// deploy just went out), a second, entirely separate stale-chunk event
+// found the guard still set and gave up immediately — showing the
+// fallback error instead of attempting the one reload that would have
+// fixed it. Storing a timestamp instead of a bare flag still blocks the
+// original bug (a tight reload loop firing many times a second), but lets
+// a new attempt through once enough time has passed for it to plausibly
+// be a different, later deploy event rather than the same loop.
+const CHUNK_RELOAD_COOLDOWN_MS = 30_000;
 function reloadOnceForStaleChunk() {
-  if (sessionStorage.getItem('cafe:chunk-reload-attempted')) {
+  const lastAttempt = Number(sessionStorage.getItem('cafe:chunk-reload-attempted-at') || 0);
+  if (lastAttempt && Date.now() - lastAttempt < CHUNK_RELOAD_COOLDOWN_MS) {
     // Already tried the one-shot auto-reload this session and the same
     // error fired again — reloading again would just resume the loop this
     // fix exists to stop. Surface the visible error banner instead of
@@ -35,7 +51,7 @@ function reloadOnceForStaleChunk() {
     } }));
     return;
   }
-  sessionStorage.setItem('cafe:chunk-reload-attempted', '1');
+  sessionStorage.setItem('cafe:chunk-reload-attempted-at', String(Date.now()));
   window.location.reload();
 }
 
@@ -82,7 +98,7 @@ try {
   // ErrorBoundary.tsx) so a future deploy's stale-chunk error can trigger
   // one more auto-reload instead of silently giving up because a flag from
   // a previous session/incident was still sitting in sessionStorage.
-  window.setTimeout(() => sessionStorage.removeItem('cafe:chunk-reload-attempted'), 5000);
+  window.setTimeout(() => sessionStorage.removeItem('cafe:chunk-reload-attempted-at'), 5000);
 } catch (err) {
   // If React fails to mount (e.g. module-level crash in a dependency),
   // show a visible error instead of a blank white page.
