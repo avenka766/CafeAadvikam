@@ -521,7 +521,7 @@ interface AdminCreditTabProps {
 }
 
 export default function AdminCreditTab({ branches, accentColor = 'text-primary' }: AdminCreditTabProps) {
-  const { creditSales, fetchCreditSales, fetchCreditPayments } = useBranchStore();
+  const { creditSales, creditPayments, fetchCreditSales, fetchCreditPayments } = useBranchStore();
   const [statusFilter, setStatusFilter] = useState<'all' | CreditSale['status']>('all');
   const [branchFilter, setBranchFilter] = useState<Branch | 'all'>('all');
   const [searchQuery, setSearchQuery] = useState('');
@@ -624,9 +624,27 @@ export default function AdminCreditTab({ branches, accentColor = 'text-primary' 
 
   const showBranchFilter = branches.length > 1;
 
+  // Every collection event across the filtered sales — the actual cash/UPI/
+  // card/bank breakdown, since one credit sale can be paid down over several
+  // separate collections.
+  const allPayments = useMemo(() => {
+    const filteredIds = new Set(sorted.map(s => s.id));
+    const result: (CreditPayment & { customerName: string })[] = [];
+    branches.forEach(branch => {
+      (creditPayments[branch] || []).forEach(p => {
+        if (!filteredIds.has(p.creditSaleId)) return;
+        const sale = sorted.find(s => s.id === p.creditSaleId);
+        result.push({ ...p, customerName: sale?.customerName ?? '' });
+      });
+    });
+    return result.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  }, [creditPayments, branches, sorted]);
+
   const handleExcelDownload = async () => {
     const XLSX = await import('@/lib/safeSpreadsheet');
-    const rows = sorted.map(s => ({
+    const wb = XLSX.utils.book_new();
+
+    const salesRows = sorted.map(s => ({
       'Branch':           s.branch,
       'Bill No':          s.billNo ?? '',
       'Customer Name':    s.customerName,
@@ -641,10 +659,51 @@ export default function AdminCreditTab({ branches, accentColor = 'text-primary' 
       'Due Date':         s.dueDate ? new Date(s.dueDate).toLocaleDateString('en-IN') : '',
       'Notes':            s.notes ?? '',
     }));
-    const ws = XLSX.utils.json_to_sheet(rows.length > 0 ? rows : [{ Note: 'No credit sales match selected filters' }]);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Credit Sales');
+    const paymentRows = allPayments.map(p => ({
+      'Branch':         p.branch,
+      'Bill No':        p.billNo,
+      'Customer Name':  p.customerName,
+      'Mode':           p.paymentMode,
+      'Amount (₹)':    p.amount,
+      'Collected By':   p.collectedBy,
+      'Reference':      p.reference ?? '',
+      'Date':           new Date(p.createdAt).toLocaleDateString('en-IN'),
+    }));
+
+    const paymentsWs = XLSX.utils.json_to_sheet(paymentRows.length > 0 ? paymentRows : [{ Note: 'No payment collections match selected filters' }]);
+    XLSX.utils.book_append_sheet(wb, paymentsWs, 'Sales Details');
+    const billsWs = XLSX.utils.json_to_sheet(salesRows.length > 0 ? salesRows : [{ Note: 'No credit sales match selected filters' }]);
+    XLSX.utils.book_append_sheet(wb, billsWs, 'Bill Details');
+
     XLSX.writeFile(wb, `CreditSales_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  };
+
+  const handlePdfDownload = async () => {
+    const { exportReportPdf, pdfMoney } = await import('@/lib/exportAdminReport');
+    const PDF_CAP = 300;
+    await exportReportPdf({
+      filename: `CreditSales_${new Date().toISOString().slice(0, 10)}`,
+      title: 'Credit Pending',
+      subtitle: `${allSales.length} total credit sales · ${filtered.length} shown`,
+      kpis: [
+        { label: 'Total Credit Given', value: formatCurrency(totalGiven) },
+        { label: 'Collected', value: formatCurrency(totalCollected) },
+        { label: 'Outstanding', value: formatCurrency(totalOutstanding) },
+        { label: 'Overdue', value: String(overdueCount) },
+      ],
+      sections: [
+        {
+          heading: sorted.length > PDF_CAP ? `Credit Sales (first ${PDF_CAP} of ${sorted.length})` : 'Credit Sales',
+          columns: [{ header: 'Branch', width: 18 }, { header: 'Bill No', width: 25 }, { header: 'Customer', width: 40 }, { header: 'Subtotal', width: 22, align: 'right' }, { header: 'Paid', width: 22, align: 'right' }, { header: 'Due', width: 22, align: 'right' }, { header: 'Status', width: 20 }, { header: 'Date', width: 22 }],
+          rows: sorted.slice(0, PDF_CAP).map(s => [s.branch, s.billNo ?? '-', s.customerName, pdfMoney(s.subtotal), pdfMoney(s.amountPaid), pdfMoney(s.creditAmount), s.status, new Date(s.createdAt).toLocaleDateString('en-IN')]),
+        },
+        {
+          heading: allPayments.length > PDF_CAP ? `Payment Collections (first ${PDF_CAP} of ${allPayments.length})` : 'Payment Collections',
+          columns: [{ header: 'Branch', width: 18 }, { header: 'Bill No', width: 25 }, { header: 'Customer', width: 35 }, { header: 'Mode', width: 20 }, { header: 'Amount', width: 22, align: 'right' }, { header: 'Collected By', width: 30 }, { header: 'Date', width: 22 }],
+          rows: allPayments.slice(0, PDF_CAP).map(p => [p.branch, p.billNo, p.customerName, p.paymentMode, pdfMoney(p.amount), p.collectedBy, new Date(p.createdAt).toLocaleDateString('en-IN')]),
+        },
+      ],
+    });
   };
 
   return (
@@ -652,12 +711,20 @@ export default function AdminCreditTab({ branches, accentColor = 'text-primary' 
       {/* ── Header row with Excel button ─────────────────────────────────────── */}
       <div className="flex items-center justify-between">
         <p className="text-xs text-muted-foreground">{allSales.length} total · {filtered.length} shown</p>
-        <button
-          onClick={handleExcelDownload}
-          className="flex items-center gap-1 text-xs px-3 py-1.5 border rounded-lg hover:bg-muted transition"
-        >
-          <Download className="size-3" />Excel
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleExcelDownload}
+            className="flex items-center gap-1 text-xs px-3 py-1.5 border rounded-lg hover:bg-muted transition"
+          >
+            <Download className="size-3" />Excel
+          </button>
+          <button
+            onClick={handlePdfDownload}
+            className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg bg-slate-950 text-white hover:bg-slate-800 transition"
+          >
+            <Download className="size-3" />PDF
+          </button>
+        </div>
       </div>
       <div className="grid grid-cols-2 gap-3">
         <KpiCard
