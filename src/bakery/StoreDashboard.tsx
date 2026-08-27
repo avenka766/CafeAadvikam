@@ -601,18 +601,29 @@ function OrderCard({ order, searchTerm = '' }: { order: BakeryOrder; searchTerm?
 
   const categorizedItems = useMemo(() => {
     const q = searchTerm.trim().toLowerCase();
+    // BUG FIX (audit 2026-08-27): "unable to send to production" — the
+    // 2026-08-20 feature below narrows an expanded order's own item rows to
+    // just what matches the search box, so searching an item name doesn't
+    // show the whole order. But this order can ALSO match the outer order
+    // list (filteredPending) by order number, branch, or createdBy — none of
+    // which are item names. Applying the same `q` as an item-name filter in
+    // that case matches zero items, silently hiding every row and its
+    // checkbox — an order found by searching its own order number rendered
+    // with no way to select anything. Only actually filter items when the
+    // search term matches at least one of THIS order's real item names;
+    // otherwise it matched for some other reason and every item still belongs here.
+    const matchesAnyItemName = !q || order.items.some(item => item.itemName.toLowerCase().includes(q));
     return STORE_ORDER_CATEGORIES.map(category => ({
       category,
-      // FEATURE (2026-08-20): "when we search the item it shouldn't show the
-      // whole order combined." The index below is captured from order.items
-      // BEFORE this search filter runs, so it always points to that item's
-      // real position — safe to filter which items are DISPLAYED without
-      // touching what selectedIndexes/confirmStockSelected/releaseToProduction
-      // actually operate on downstream.
+      // The index below is captured from order.items BEFORE this search
+      // filter runs, so it always points to that item's real position — safe
+      // to filter which items are DISPLAYED without touching what
+      // selectedIndexes/confirmStockSelected/releaseToProduction actually
+      // operate on downstream.
       items: order.items
         .map((item, index) => ({ item, index, category: storeOrderCategory(item, bakeryItems) }))
         .filter(entry => entry.category === category)
-        .filter(entry => !q || entry.item.itemName.toLowerCase().includes(q)),
+        .filter(entry => !matchesAnyItemName || !q || entry.item.itemName.toLowerCase().includes(q)),
     })).filter(group => group.items.length > 0);
   }, [order.items, bakeryItems, searchTerm]);
 
@@ -843,26 +854,6 @@ function OrderCard({ order, searchTerm = '' }: { order: BakeryOrder; searchTerm?
         {expanded ? <ChevronUp className="size-4 text-muted-foreground shrink-0" /> : <ChevronDown className="size-4 text-muted-foreground shrink-0" />}
       </button>
 
-      {/* BUG FIX: the prior fix (see comment below, near the selected-items
-          table) placed "Send to Production" right after that table — but the
-          table itself renders AFTER the full item list, so on a large order
-          (dozens of items across several categories) the button was still
-          many screens below wherever the planner had just ticked a checkbox.
-          A fixed floating bar shows the instant a selection exists, pinned to
-          the viewport regardless of scroll position, so it's visible right
-          after the tap that created it — no scrolling required either way.
-          Cleared above the mobile BottomNav; the original in-flow buttons
-          stay too (harmless duplicates, same handler/disabled state). */}
-      {expanded && accepted && !sent && selectedEntries.length > 0 && (
-        <div className="fixed inset-x-0 bottom-[88px] z-40 flex justify-center px-4 md:bottom-4">
-          <button onClick={handleConfirmStock} disabled={sending}
-            className="flex items-center gap-2 rounded-2xl cafe-gradient px-5 py-3 text-sm font-body font-bold text-primary-foreground shadow-xl active:scale-[0.98] disabled:opacity-50">
-            {sending ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
-            Send to Production ({selectedEntries.length})
-          </button>
-        </div>
-      )}
-
       {expanded && (
         <div className="border-t border-border/50 px-4 pb-4 pt-3 space-y-2.5">
           {accepted && !sent && (
@@ -902,20 +893,14 @@ function OrderCard({ order, searchTerm = '' }: { order: BakeryOrder; searchTerm?
                 return <tr key={`${item.itemId}-${index}`} className="border-t border-border"><td className="px-3 py-2 font-semibold">{item.itemName}</td><td className="px-3 py-2 text-muted-foreground">{category}</td><td className="px-3 py-2 text-right font-bold">{item.quantity} {item.dispatchUnit || 'kg'}</td><td className="px-2 py-1"><button type="button" onClick={() => toggleIndex(index)} title="Remove selection" className="rounded-lg p-1.5 text-muted-foreground hover:bg-red-50 hover:text-red-600"><X className="size-3.5" /></button></td></tr>;
               })}</tbody>
             </table></div>
-            {/* BUG FIX: "Send to Production" used to sit only at the very
-                bottom of the card, past every item and every warning below —
-                requiring a scroll past the whole order just to confirm a
-                selection made right at the top. Placed here too, right where
-                the selection itself is visible, so the action is right next
-                to what it acts on. The original bottom button also stays
-                (harmless duplicate — same handler, same disabled state) in
-                case someone scrolls past this point first. */}
-            <div className="border-t border-primary/10 p-2">
-              <button onClick={handleConfirmStock} disabled={sending}
-                className="w-full h-11 rounded-xl text-sm font-body font-bold flex items-center justify-center gap-2 transition-all active:scale-[0.98] disabled:opacity-50 cafe-gradient text-primary-foreground shadow-md">
-                {sending ? <Loader2 className="size-4 animate-spin" /> : <><CheckCircle2 className="size-4" /> Send to Production</>}
-              </button>
-            </div>
+            {/* BUG FIX (audit 2026-08-27): "I don't want three buttons, I
+                want one" — this panel already shows every selected item and
+                its quantity in the table right above; that table IS the
+                review. Sending from here now happens through the single
+                button at the bottom of the card (past the raw-material
+                warnings below), so there's exactly one "Send to Production"
+                action per order, not three redundant ones calling the same
+                handler. */}
           </div>}
 
           {sendError && <p className="text-xs font-body text-destructive text-center pt-1">{sendError}</p>}

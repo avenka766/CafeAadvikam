@@ -771,7 +771,18 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
   releaseToProduction: async (orderId, selectedIndexes) => {
     const order = get().orders.find(o => o.id === orderId);
     if (!order) throw new Error('Order was not found — please refresh.');
-    if (order.status !== 'store_confirmed') throw new Error('This order is not awaiting production release.');
+    // BUG FIX (audit 2026-08-27): "unable to send to production, multiple
+    // send to production buttons" — this only ever accepted 'store_confirmed',
+    // but the eligibility check that puts an order on this screen in the
+    // first place (needsProductionRelease, StoreDashboard.tsx) also treats
+    // 'produced'-status orders with no productionReleasedAt yet as needing
+    // release. Any such order rendered its "Send to Production" button, but
+    // clicking it always threw this exact error — no retry could ever
+    // succeed, since the order's status never changes on its own. Accept
+    // both statuses here, matching needsProductionRelease's own definition.
+    if (order.status !== 'store_confirmed' && order.status !== 'produced') {
+      throw new Error('This order is not awaiting production release.');
+    }
     const selectedSet = new Set(selectedIndexes);
     const selectedItems = order.items.filter((_, i) => selectedSet.has(i));
     const remainingItems = order.items.filter((_, i) => !selectedSet.has(i));
@@ -923,9 +934,24 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
       .from('bakery_orders')
       .select('dispatch_log, produced_items, order_number, items, notes, target_branch')
       .eq('id', orderId)
-      .single();
-    if (fetchErr || !freshOrder) {
-      throw new Error(fetchErr?.message || 'Dispatch failed because the bakery order could not be loaded.');
+      .maybeSingle();
+    // BUG FIX (audit 2026-08-27): "unable to dispatch, Cannot coerce the
+    // result to a single JSON object" (PGRST116, "0 rows") — this order id
+    // came from this browser's own cached `orders` array (see
+    // BAKERY_ORDERS_CACHE_KEY's comment above on stale IndexedDB caches
+    // outliving a bulk merge/delete elsewhere). By the time "Confirm
+    // Dispatch" ran, another session had already merged/consolidated this
+    // exact order into a different row — the id this tab still had simply
+    // doesn't exist anymore, so `.single()` threw a cryptic Postgres error
+    // instead of the real, fixable problem: this tab's local order list is
+    // stale. Force a full resync so the next attempt uses a real, current
+    // order id, and say so in plain language instead of surfacing PGRST116.
+    if (!freshOrder) {
+      void get().fetchOrders(false, true);
+      throw new Error('This order was updated elsewhere and no longer exists in its previous form — the order list has been refreshed. Please re-open it and try dispatching again.');
+    }
+    if (fetchErr) {
+      throw new Error(fetchErr.message || 'Dispatch failed because the bakery order could not be loaded.');
     }
 
     const existingLog: DispatchEntry[] = (freshOrder.dispatch_log as DispatchEntry[]) || [];

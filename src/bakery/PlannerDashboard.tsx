@@ -312,8 +312,17 @@ export function computeMergedSummaryDisplay(orders: BakeryOrder[]): MergedRow[] 
       if (item.branchSplit && Object.keys(item.branchSplit).length > 0) {
         for (const [splitBranch, splitQty] of Object.entries(item.branchSplit)) {
           if (!splitQty) continue;
+          // BUG FIX (audit 2026-08-27): "pcs items showing decimal points in
+          // Sent tab" — a piece is indivisible, but this rounded to 3
+          // DECIMAL PLACES (correct for kg) even when unit === 'pcs',
+          // producing values like "22.222 pcs" whenever a branch's kg-ratio
+          // share of the original pcs count didn't divide evenly. Round to
+          // the nearest whole piece instead — the displayed total (summed
+          // from these same per-branch values, see mergeGroup below) then
+          // always matches the sum of what's shown per branch, even if it
+          // lands a piece or two off the original pre-split count.
           const qty = unit === 'pcs' && item.originalPcs != null
-            ? Math.round((splitQty / item.quantity) * item.originalPcs * 1000) / 1000
+            ? Math.round((splitQty / item.quantity) * item.originalPcs)
             : splitQty;
           list.push({ itemId: item.itemId, itemName: item.itemName, unit, qty, grams, bucket: splitBranch as MergeBucket, orderId: order.id });
         }

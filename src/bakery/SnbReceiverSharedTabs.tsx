@@ -23,9 +23,8 @@ import { useSnbAdminReports } from "@/hooks/useSnbAdminReports";
 import { PurchaseInvoicesTab } from "@/pages/AdminSNBDashboard";
 import { AdvancePaymentsTab } from "@/branch/tabs/AdvancePaymentsTab";
 import { useNotificationStore } from "./notificationStore";
-import type { BakeryOrder } from "./types";
-import type { Branch } from "@/branch/types";
-import { displayQty, itemsForBranch } from "./OrderReceiverDashboard";
+import type { BakeryOrder, Branch } from "./types";
+import { displayQty, displayableOrderNote, itemsForBranch } from "./OrderReceiverDashboard";
 
 const panelClass = "rounded-2xl border border-border bg-white shadow-sm";
 const inputClass = "h-10 w-full rounded-xl border border-border bg-white px-3 text-sm font-bold outline-none focus:ring-2 focus:ring-amber-300";
@@ -66,7 +65,7 @@ function StatusMessage({ error, success }: { error?: string; success?: string })
   );
 }
 
-export function LiveOrderStatusPanel({ orders, loading, onRefresh }: { orders: BakeryOrder[]; loading: boolean; onRefresh: () => void }) {
+export function LiveOrderStatusPanel({ orders, branch, loading, onRefresh }: { orders: BakeryOrder[]; branch: Branch; loading: boolean; onRefresh: () => void }) {
   const stages: BakeryOrder["status"][] = ["pending", "accepted", "store_confirmed", "produced", "dispatched"];
   const active = useMemo(
     () => [...orders].sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime()),
@@ -102,8 +101,18 @@ export function LiveOrderStatusPanel({ orders, loading, onRefresh }: { orders: B
               const dispatchedNames = new Set(
                 (order.dispatchLog || []).map((d) => d.itemName.trim().toLowerCase()),
               );
-              const dispatchedItems = order.items.filter((item) => dispatchedNames.has(item.itemName.trim().toLowerCase()));
-              const pendingItems = order.items.filter((item) => !dispatchedNames.has(item.itemName.trim().toLowerCase()));
+              // BUG FIX (audit 2026-08-27): "I am seeing Hosur order here" /
+              // "I know they didn't order this many" — this panel is fed
+              // every order carrying an SNB share, including batches whose
+              // real targetBranch is Hosur (see branchOrders in
+              // OrderReceiverDashboard.tsx). It used to render `order.items`
+              // directly — the FULL merged item list at the FULL combined
+              // quantity across every contributing branch — instead of just
+              // SNB's own share. itemsForBranch/displayQty were imported but
+              // never actually called. Scope both down to this branch.
+              const ownItems = itemsForBranch(order, branch);
+              const dispatchedItems = ownItems.filter((item) => dispatchedNames.has(item.itemName.trim().toLowerCase()));
+              const pendingItems = ownItems.filter((item) => !dispatchedNames.has(item.itemName.trim().toLowerCase()));
               const hasPartialDispatch = dispatchedItems.length > 0 && order.status !== "dispatched";
               return (
                 <article key={order.id} className={cn(panelClass, "p-3")}>
@@ -132,19 +141,19 @@ export function LiveOrderStatusPanel({ orders, loading, onRefresh }: { orders: B
                     <div className="mt-3 space-y-2">
                       <div className="rounded-xl bg-emerald-50 p-2.5">
                         <p className="text-[9px] font-black uppercase tracking-wide text-emerald-700">Dispatched</p>
-                        <p className="mt-1 text-[11px] font-bold text-emerald-800">{dispatchedItems.map((item) => `${item.itemName} × ${item.originalPcs ?? item.quantity} ${item.dispatchUnit || "kg"}`).join(", ")}</p>
+                        <p className="mt-1 text-[11px] font-bold text-emerald-800">{dispatchedItems.map((item) => `${item.itemName} × ${displayQty(item, branch)} ${item.dispatchUnit || "kg"}`).join(", ")}</p>
                       </div>
                       {pendingItems.length > 0 && (
                         <div className="rounded-xl bg-slate-50 p-2.5">
                           <p className="text-[9px] font-black uppercase tracking-wide text-muted-foreground">Still waiting</p>
-                          <p className="mt-1 text-[11px] font-bold text-slate-700">{pendingItems.map((item) => `${item.itemName} × ${item.originalPcs ?? item.quantity} ${item.dispatchUnit || "kg"}`).join(", ")}</p>
+                          <p className="mt-1 text-[11px] font-bold text-slate-700">{pendingItems.map((item) => `${item.itemName} × ${displayQty(item, branch)} ${item.dispatchUnit || "kg"}`).join(", ")}</p>
                         </div>
                       )}
                     </div>
                   ) : (
                     <div className="mt-3 rounded-xl bg-slate-50 p-2.5">
-                      <p className="text-[11px] font-bold text-slate-700">{order.items.map((item) => `${item.itemName} × ${item.originalPcs ?? item.quantity} ${item.dispatchUnit || "kg"}`).join(", ")}</p>
-                      {order.notes ? <p className="mt-1 text-[10px] font-semibold text-muted-foreground">Note: {order.notes}</p> : null}
+                      <p className="text-[11px] font-bold text-slate-700">{ownItems.map((item) => `${item.itemName} × ${displayQty(item, branch)} ${item.dispatchUnit || "kg"}`).join(", ")}</p>
+                      {displayableOrderNote(order.notes) ? <p className="mt-1 text-[10px] font-semibold text-muted-foreground">Note: {displayableOrderNote(order.notes)}</p> : null}
                     </div>
                   )}
                   <div className="mt-2 flex flex-wrap gap-2 text-[10px] font-bold text-muted-foreground">

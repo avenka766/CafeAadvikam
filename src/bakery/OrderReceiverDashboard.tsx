@@ -531,7 +531,9 @@ export function displayQty(item: BakeryOrderItem, branch?: Branch): number {
   if (!branch || !item.branchSplit || item.branchSplit[branch] == null) return full;
   const splitQty = item.branchSplit[branch] as number;
   if (item.dispatchUnit === "pcs" && item.originalPcs != null && item.quantity) {
-    return Math.round((splitQty / item.quantity) * item.originalPcs * 1000) / 1000;
+    // BUG FIX (audit 2026-08-27): a piece is indivisible — round to the
+    // nearest whole pcs, not 3 decimal places (that precision belongs to kg).
+    return Math.round((splitQty / item.quantity) * item.originalPcs);
   }
   return splitQty;
 }
@@ -549,6 +551,26 @@ function displayUnit(item: BakeryOrderItem): "pcs" | "kg" {
 export function itemsForBranch(order: BakeryOrder, branch?: Branch): BakeryOrderItem[] {
   if (!branch || order.targetBranch === branch) return order.items;
   return order.items.filter((item) => (item.branchSplit?.[branch] ?? 0) > 0);
+}
+
+// BUG FIX (audit 2026-08-27): "I am seeing Hosur order here" — a branch
+// user (e.g. SNB) viewing a merged production batch saw its bakery_orders
+// row's raw `notes` rendered verbatim as "Complete Order Note", which for a
+// merged/split batch reads like "HOSUR_ORDER_IDS:4fff0235-...,f9ccc2be-...
+// |Store batch from order #644". That tag is internal bookkeeping —
+// submitDispatch()/mergeOrdersForStore() (bakeryStore.ts) and
+// hosurOrderShared.ts's buildHosurOrderTag() embed it in `notes` purely to
+// trace a batch back to the Hosur shop orders it was built from — it was
+// never meant to be shown to branch staff, who have no way to know what a
+// UUID list means and reasonably read it as "this is actually Hosur's
+// order, not ours". Strip the tag down to whatever genuine free-text note
+// (if any) was appended after it; if nothing but the tag/breadcrumb
+// remains, show no note at all rather than the internal marker.
+export function displayableOrderNote(notes: string | null | undefined): string | null {
+  if (!notes) return null;
+  const stripped = notes.replace(/^HOSUR_ORDER_IDS?:[^|]*\|?/, "").trim();
+  if (!stripped || /^Store batch from order #\d+$/.test(stripped)) return null;
+  return stripped;
 }
 
 function statusBadgeClass(status: BakeryOrder["status"]): string {
@@ -1280,10 +1302,10 @@ function PlacedOrdersPanel({
                     );
                   })}
                 </div>
-                {order.notes ? (
+                {displayableOrderNote(order.notes) ? (
                   <div className="mt-3 rounded-xl border border-blue-100 bg-blue-50 px-3 py-2">
                     <p className="text-[9px] font-black uppercase tracking-wide text-blue-500">Complete Order Note</p>
-                    <p className="mt-0.5 text-xs font-bold text-blue-900">{order.notes}</p>
+                    <p className="mt-0.5 text-xs font-bold text-blue-900">{displayableOrderNote(order.notes)}</p>
                   </div>
                 ) : null}
                 <div className="mt-3 flex flex-wrap gap-1.5">
@@ -2798,6 +2820,7 @@ export default function OrderReceiverDashboard() {
         {tab === "live" && (
           <LiveOrderStatusPanel
             orders={branchOrders}
+            branch={branch}
             loading={loading}
             onRefresh={() => fetchOrders(true, true)}
           />
