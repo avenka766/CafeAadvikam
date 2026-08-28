@@ -3787,13 +3787,379 @@ function printWalkinBill(bill: WalkinBillRow, mode: 'thermal' | 'a4' = 'thermal'
   printDispatchInvoice(walkinBillToInvoiceRecord(bill), mode);
 }
 
+// ─── Tab: GST Invoice (Sales) ───────────────────────────────────────────────
+// FEATURE (audit 2026-08-27): "Cake dispatch tab: remove the invoice sub
+// tab. In sales tab: add a new sub tab called Invoice" — the free-form
+// invoice generator that used to live under Cake Dispatch (CakeInvoiceTab,
+// removed above) is replaced by this proper GST TAX INVOICE, matching the
+// exact printed format the user supplied as a reference sample (a real
+// VRSNB FOODS LLP tax invoice — seller block, buyer block, invoice
+// no/date/reference, an itemised table with HSN Code/Qty/UOM/Rate/Amount/
+// CGST/SGST/IGST/Total, a GST Summary table, Before Tax Value/Total GST/
+// Round Off/Total Amount, Amount in Words, bank details, and an authorised
+// signatory line). The one thing the old free-form invoice never asked for
+// at all — the GST % — is now a required per-line input, split into
+// CGST+SGST (same state) or IGST (different state) depending on the supply
+// type toggle. Self-contained like CakeInvoiceTab was: no new database
+// table, just printHtml.
+const GST_INVOICE_SELLER_DEFAULT = {
+  name: 'VRSNB FOODS LLP',
+  addressLines: ['109/C, Hosur Main Road, Berigai, Shoolagiri', 'Hosur-635105, Tamil Nadu'],
+  contact: 'vrsnbfoods@yahoo.com, 9095445444',
+  gstin: '33AAZFV1266C1ZZ',
+};
+const GST_INVOICE_BANK_DEFAULT = {
+  accountNo: '120032512285',
+  accountName: 'VRSNB FOODS LLP',
+  bankName: 'Canara Bank',
+  branchName: 'HOSUR',
+  ifscCode: 'CNRB0004385',
+};
+
+// Indian numbering (lakh/crore) integer-to-words, for "Amount in Words".
+function numberToIndianWords(value: number): string {
+  const ones = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten',
+    'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen'];
+  const tens = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
+  const two = (n: number): string => (n < 20 ? ones[n] : tens[Math.floor(n / 10)] + (n % 10 ? ' ' + ones[n % 10] : ''));
+  const three = (n: number): string => (n >= 100 ? ones[Math.floor(n / 100)] + ' Hundred' + (n % 100 ? ' ' + two(n % 100) : '') : two(n));
+  let n = Math.floor(Math.max(0, value));
+  if (n === 0) return 'Zero';
+  const parts: string[] = [];
+  const crore = Math.floor(n / 10000000); n %= 10000000;
+  const lakh = Math.floor(n / 100000); n %= 100000;
+  const thousand = Math.floor(n / 1000); n %= 1000;
+  if (crore) parts.push(three(crore) + ' Crore');
+  if (lakh) parts.push(three(lakh) + ' Lakh');
+  if (thousand) parts.push(three(thousand) + ' Thousand');
+  if (n) parts.push(three(n));
+  return parts.join(' ');
+}
+
+interface GstInvoiceLine {
+  id: string; itemName: string; hsnCode: string; qty: string; uom: string; rate: string; gstPct: string;
+}
+
+function GstInvoiceTab() {
+  const { currentUser } = useAuthStore();
+  const [sellerName, setSellerName] = useState(GST_INVOICE_SELLER_DEFAULT.name);
+  const [sellerAddress, setSellerAddress] = useState(GST_INVOICE_SELLER_DEFAULT.addressLines.join('\n'));
+  const [sellerContact, setSellerContact] = useState(GST_INVOICE_SELLER_DEFAULT.contact);
+  const [sellerGstin, setSellerGstin] = useState(GST_INVOICE_SELLER_DEFAULT.gstin);
+
+  const [buyerName, setBuyerName] = useState('');
+  const [buyerAddress, setBuyerAddress] = useState('');
+  const [buyerGstin, setBuyerGstin] = useState('');
+
+  const [invoiceNo, setInvoiceNo] = useState('');
+  const [invoiceDate, setInvoiceDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [referenceNo, setReferenceNo] = useState('');
+  const [referenceDate, setReferenceDate] = useState('');
+  const [remarks, setRemarks] = useState('');
+  // "Same state" (CGST+SGST, the common case for a branch billing a local
+  // customer) vs "different state" (IGST) — matches the reference sample,
+  // which shows CGST 2.5% + SGST 2.5% and IGST 0%.
+  const [supplyType, setSupplyType] = useState<'intra' | 'inter'>('intra');
+
+  const [lines, setLines] = useState<GstInvoiceLine[]>([
+    { id: crypto.randomUUID(), itemName: '', hsnCode: '', qty: '1', uom: 'Nos', rate: '', gstPct: '5' },
+  ]);
+  const [bankAccountNo, setBankAccountNo] = useState(GST_INVOICE_BANK_DEFAULT.accountNo);
+  const [bankAccountName, setBankAccountName] = useState(GST_INVOICE_BANK_DEFAULT.accountName);
+  const [bankName, setBankName] = useState(GST_INVOICE_BANK_DEFAULT.bankName);
+  const [bankBranch, setBankBranch] = useState(GST_INVOICE_BANK_DEFAULT.branchName);
+  const [bankIfsc, setBankIfsc] = useState(GST_INVOICE_BANK_DEFAULT.ifscCode);
+  const [error, setError] = useState('');
+
+  const addLine = () => setLines(prev => [...prev, { id: crypto.randomUUID(), itemName: '', hsnCode: '', qty: '1', uom: 'Nos', rate: '', gstPct: '5' }]);
+  const removeLine = (id: string) => setLines(prev => prev.filter(l => l.id !== id));
+  const patchLine = (id: string, patch: Partial<GstInvoiceLine>) => setLines(prev => prev.map(l => l.id === id ? { ...l, ...patch } : l));
+
+  const computedLines = lines.map(l => {
+    const qty = Number(l.qty) || 0;
+    const rate = Number(l.rate) || 0;
+    const gstPct = Math.max(0, Number(l.gstPct) || 0);
+    const amount = Math.round(qty * rate * 100) / 100;
+    const cgstPct = supplyType === 'intra' ? gstPct / 2 : 0;
+    const sgstPct = supplyType === 'intra' ? gstPct / 2 : 0;
+    const igstPct = supplyType === 'inter' ? gstPct : 0;
+    const cgstAmt = Math.round(amount * (cgstPct / 100) * 100) / 100;
+    const sgstAmt = Math.round(amount * (sgstPct / 100) * 100) / 100;
+    const igstAmt = Math.round(amount * (igstPct / 100) * 100) / 100;
+    const total = Math.round((amount + cgstAmt + sgstAmt + igstAmt) * 100) / 100;
+    return { ...l, qty, rate, gstPct, amount, cgstPct, sgstPct, igstPct, cgstAmt, sgstAmt, igstAmt, total };
+  });
+
+  const beforeTaxValue = Math.round(computedLines.reduce((s, l) => s + l.amount, 0) * 100) / 100;
+  const totalCgst = Math.round(computedLines.reduce((s, l) => s + l.cgstAmt, 0) * 100) / 100;
+  const totalSgst = Math.round(computedLines.reduce((s, l) => s + l.sgstAmt, 0) * 100) / 100;
+  const totalIgst = Math.round(computedLines.reduce((s, l) => s + l.igstAmt, 0) * 100) / 100;
+  const totalGst = Math.round((totalCgst + totalSgst + totalIgst) * 100) / 100;
+  const rawTotal = beforeTaxValue + totalGst;
+  const totalAmount = Math.round(rawTotal);
+  const roundOff = Math.round((totalAmount - rawTotal) * 100) / 100;
+
+  // GST Summary — one row per distinct GST% actually used, so a multi-rate
+  // invoice (e.g. some items at 5%, others at 18%) shows a correct
+  // per-rate taxable-value breakdown, same as any real GST return needs.
+  const gstSummaryRows = useMemo(() => {
+    const byRate = new Map<number, { taxableValue: number; cgstAmt: number; sgstAmt: number; igstAmt: number }>();
+    for (const l of computedLines) {
+      if (!l.itemName.trim() || l.qty <= 0) continue;
+      const key = l.gstPct;
+      const row = byRate.get(key) ?? { taxableValue: 0, cgstAmt: 0, sgstAmt: 0, igstAmt: 0 };
+      row.taxableValue += l.amount; row.cgstAmt += l.cgstAmt; row.sgstAmt += l.sgstAmt; row.igstAmt += l.igstAmt;
+      byRate.set(key, row);
+    }
+    return Array.from(byRate.entries()).sort(([a], [b]) => a - b).map(([gstPct, row]) => ({ gstPct, ...row }));
+  }, [computedLines]);
+
+  const generateInvoice = () => {
+    setError('');
+    const validLines = computedLines.filter(l => l.itemName.trim() && l.qty > 0);
+    if (!buyerName.trim()) { setError('Enter the buyer / customer name.'); return; }
+    if (validLines.length === 0) { setError('Add at least one item with a name and quantity.'); return; }
+
+    const finalInvoiceNo = invoiceNo.trim() || `INV-${Date.now().toString().slice(-8)}`;
+    const dateStr = new Date(invoiceDate).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' }).replace(/\//g, '-');
+    const refDateStr = referenceDate ? new Date(referenceDate).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' }).replace(/\//g, '-') : '';
+
+    const rowsHtml = validLines.map((l, i) => `
+      <tr>
+        <td class="c">${i + 1}</td>
+        <td>${l.itemName}</td>
+        <td class="c">${l.hsnCode || '-'}</td>
+        <td class="r">${l.qty}</td>
+        <td class="c">${l.uom}</td>
+        <td class="r">${l.rate.toFixed(2)}</td>
+        <td class="r">${l.amount.toFixed(2)}</td>
+        <td class="c">${l.cgstPct}%</td>
+        <td class="r">${l.cgstAmt.toFixed(2)}</td>
+        <td class="c">${l.sgstPct}%</td>
+        <td class="r">${l.sgstAmt.toFixed(2)}</td>
+        <td class="c">${l.igstPct}%</td>
+        <td class="r">${l.igstAmt.toFixed(2)}</td>
+        <td class="r b">${l.total.toFixed(2)}</td>
+      </tr>`).join('');
+
+    const gstSummaryHtml = gstSummaryRows.map(r => `
+      <tr>
+        <td class="c">${r.gstPct}%</td>
+        <td class="r">${r.taxableValue.toFixed(2)}</td>
+        <td class="r">${r.cgstAmt.toFixed(2)}</td>
+        <td class="r">${r.sgstAmt.toFixed(2)}</td>
+        <td class="r">${r.igstAmt.toFixed(2)}</td>
+      </tr>`).join('');
+
+    printHtml(finalInvoiceNo, `
+      <div style="font-family: Arial, Helvetica, sans-serif; color:#111; font-size:12px;">
+        <style>
+          .gst-inv table { width:100%; border-collapse: collapse; }
+          .gst-inv th, .gst-inv td { border: 1px solid #333; padding: 5px 6px; font-size: 11px; }
+          .gst-inv .c { text-align: center; } .gst-inv .r { text-align: right; } .gst-inv .b { font-weight: bold; }
+          .gst-inv th { background: #f0f0f0; font-weight: bold; }
+        </style>
+        <div class="gst-inv">
+          <div style="text-align:center; border-bottom: 2px solid #111; padding-bottom: 10px; margin-bottom: 10px;">
+            <h1 style="margin:0; font-size: 24px;">${sellerName}</h1>
+            ${sellerAddress.split('\n').filter(Boolean).map(l => `<p style="margin:2px 0; font-size:11px;">${l}</p>`).join('')}
+            ${sellerContact.trim() ? `<p style="margin:2px 0; font-size:11px;">${sellerContact}</p>` : ''}
+            <p style="margin:2px 0; font-size:11px; font-weight:bold;">GSTIN: ${sellerGstin}</p>
+            <h2 style="margin:8px 0 0; font-size:16px; letter-spacing:2px;">TAX INVOICE</h2>
+          </div>
+
+          <table style="margin-bottom:10px;">
+            <tr>
+              <td style="width:55%; border:none; vertical-align:top; padding:0 8px 0 0;">
+                <p style="margin:2px 0; font-weight:bold;">${buyerName}</p>
+                ${buyerAddress.split('\n').filter(Boolean).map(l => `<p style="margin:2px 0;">${l}</p>`).join('')}
+                ${buyerGstin.trim() ? `<p style="margin:2px 0;">GSTIN: ${buyerGstin}</p>` : ''}
+              </td>
+              <td style="border:none; vertical-align:top; padding:0;">
+                <p style="margin:2px 0;"><strong>Invoice No:</strong> ${finalInvoiceNo}</p>
+                <p style="margin:2px 0;"><strong>Invoice Date:</strong> ${dateStr}</p>
+                <p style="margin:2px 0;"><strong>Reference No:</strong> ${referenceNo || '-'}</p>
+                <p style="margin:2px 0;"><strong>Reference Date:</strong> ${refDateStr || '-'}</p>
+                ${remarks.trim() ? `<p style="margin:2px 0;"><strong>Remarks:</strong> ${remarks}</p>` : ''}
+              </td>
+            </tr>
+          </table>
+
+          <table>
+            <thead>
+              <tr>
+                <th rowspan="2">Srl</th><th rowspan="2">Item Name</th><th rowspan="2">HSN Code</th>
+                <th rowspan="2">Qty</th><th rowspan="2">UOM</th><th rowspan="2">Rate</th><th rowspan="2">Amount</th>
+                <th colspan="2">CGST</th><th colspan="2">SGST</th><th colspan="2">IGST</th><th rowspan="2">Total</th>
+              </tr>
+              <tr><th>%</th><th>Amt</th><th>%</th><th>Amt</th><th>%</th><th>Amt</th></tr>
+            </thead>
+            <tbody>${rowsHtml}</tbody>
+            <tfoot>
+              <tr class="b">
+                <td colspan="3" class="c">TOTAL</td>
+                <td class="r">${validLines.reduce((s, l) => s + l.qty, 0)}</td>
+                <td></td><td></td>
+                <td class="r">${beforeTaxValue.toFixed(2)}</td>
+                <td></td><td class="r">${totalCgst.toFixed(2)}</td>
+                <td></td><td class="r">${totalSgst.toFixed(2)}</td>
+                <td></td><td class="r">${totalIgst.toFixed(2)}</td>
+                <td class="r">${(beforeTaxValue + totalGst).toFixed(2)}</td>
+              </tr>
+            </tfoot>
+          </table>
+
+          <p style="margin:10px 0; font-weight:bold;">Amount in Words: Rs. ${numberToIndianWords(totalAmount)} Only.</p>
+
+          <table style="margin-top:8px;">
+            <tr>
+              <td style="width:60%; border:none; vertical-align:top; padding:0 8px 0 0;">
+                <table>
+                  <thead><tr><th>GST %</th><th>Taxable Value</th><th>CGST Amt</th><th>SGST Amt</th><th>IGST Amt</th></tr></thead>
+                  <tbody>${gstSummaryHtml || '<tr><td colspan="5" class="c">—</td></tr>'}</tbody>
+                </table>
+              </td>
+              <td style="border:none; vertical-align:top; padding:0;">
+                <table>
+                  <tr><td class="b">Before Tax Value</td><td class="r">${beforeTaxValue.toFixed(2)}</td></tr>
+                  <tr><td class="b">Total GST</td><td class="r">${totalGst.toFixed(2)}</td></tr>
+                  <tr><td class="b">Round Off</td><td class="r">${roundOff.toFixed(2)}</td></tr>
+                  <tr><td class="b">Total Amount</td><td class="r b">Rs. ${totalAmount.toFixed(2)}</td></tr>
+                </table>
+              </td>
+            </tr>
+          </table>
+
+          <table style="margin-top:14px;">
+            <tr>
+              <td style="width:55%; border:none; vertical-align:top; padding:0 8px 0 0;">
+                <p style="margin:2px 0; font-weight:bold;">Bank Details</p>
+                <p style="margin:2px 0;">Account No: ${bankAccountNo}</p>
+                <p style="margin:2px 0;">Account Name: ${bankAccountName}</p>
+                <p style="margin:2px 0;">Bank Name: ${bankName}</p>
+                <p style="margin:2px 0;">Branch Name: ${bankBranch}</p>
+                <p style="margin:2px 0;">IFSC Code: ${bankIfsc}</p>
+              </td>
+              <td style="border:none; vertical-align:top; padding:0; text-align:right;">
+                <p style="margin:2px 0; font-weight:bold;">For ${sellerName}</p>
+                <p style="margin:70px 0 2px;">Authorised Signatory</p>
+              </td>
+            </tr>
+          </table>
+
+          <p style="margin-top:24px; font-size:10px; text-align:center; color:#666;">Prepared by ${currentUser?.displayName || currentUser?.username || 'Planner'} · This is a computer-generated invoice.</p>
+        </div>
+      </div>
+    `);
+  };
+
+  return (
+    <div className="space-y-4">
+      {error && <p className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700">{error}</p>}
+
+      <div className="rounded-2xl border border-border bg-card p-4">
+        <p className="mb-2 text-xs font-black uppercase tracking-wide text-muted-foreground">Seller (letterhead)</p>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <label className="space-y-1"><span className="text-xs font-black text-muted-foreground">Business Name</span>
+            <input value={sellerName} onChange={e => setSellerName(e.target.value)} className="h-11 w-full rounded-xl border border-border px-3 text-sm font-bold" /></label>
+          <label className="space-y-1"><span className="text-xs font-black text-muted-foreground">GSTIN</span>
+            <input value={sellerGstin} onChange={e => setSellerGstin(e.target.value.toUpperCase())} className="h-11 w-full rounded-xl border border-border px-3 text-sm font-bold" /></label>
+          <label className="space-y-1 sm:col-span-2"><span className="text-xs font-black text-muted-foreground">Address (one line per row)</span>
+            <textarea value={sellerAddress} onChange={e => setSellerAddress(e.target.value)} rows={2} className="w-full rounded-xl border border-border px-3 py-2 text-sm font-bold" /></label>
+          <label className="space-y-1 sm:col-span-2"><span className="text-xs font-black text-muted-foreground">Contact (email, phone)</span>
+            <input value={sellerContact} onChange={e => setSellerContact(e.target.value)} className="h-11 w-full rounded-xl border border-border px-3 text-sm font-bold" /></label>
+        </div>
+      </div>
+
+      <div className="rounded-2xl border border-border bg-card p-4">
+        <p className="mb-2 text-xs font-black uppercase tracking-wide text-muted-foreground">Buyer</p>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <label className="space-y-1"><span className="text-xs font-black text-muted-foreground">Buyer / Company Name *</span>
+            <input value={buyerName} onChange={e => setBuyerName(e.target.value)} className="h-11 w-full rounded-xl border border-border px-3 text-sm font-bold" /></label>
+          <label className="space-y-1"><span className="text-xs font-black text-muted-foreground">Buyer GSTIN (optional)</span>
+            <input value={buyerGstin} onChange={e => setBuyerGstin(e.target.value.toUpperCase())} className="h-11 w-full rounded-xl border border-border px-3 text-sm font-bold" /></label>
+          <label className="space-y-1 sm:col-span-2"><span className="text-xs font-black text-muted-foreground">Buyer Address</span>
+            <textarea value={buyerAddress} onChange={e => setBuyerAddress(e.target.value)} rows={2} className="w-full rounded-xl border border-border px-3 py-2 text-sm font-bold" /></label>
+        </div>
+      </div>
+
+      <div className="rounded-2xl border border-border bg-card p-4">
+        <p className="mb-2 text-xs font-black uppercase tracking-wide text-muted-foreground">Invoice Details</p>
+        <div className="grid gap-3 sm:grid-cols-3">
+          <label className="space-y-1"><span className="text-xs font-black text-muted-foreground">Invoice No (blank = auto)</span>
+            <input value={invoiceNo} onChange={e => setInvoiceNo(e.target.value)} placeholder="e.g. S/26-27/68" className="h-11 w-full rounded-xl border border-border px-3 text-sm font-bold" /></label>
+          <label className="space-y-1"><span className="text-xs font-black text-muted-foreground">Invoice Date</span>
+            <input type="date" value={invoiceDate} onChange={e => setInvoiceDate(e.target.value)} className="h-11 w-full rounded-xl border border-border px-3 text-sm font-bold" /></label>
+          <label className="space-y-1"><span className="text-xs font-black text-muted-foreground">Supply Type</span>
+            <select value={supplyType} onChange={e => setSupplyType(e.target.value as 'intra' | 'inter')} className="h-11 w-full rounded-xl border border-border px-3 text-sm font-bold">
+              <option value="intra">Same State (CGST + SGST)</option>
+              <option value="inter">Different State (IGST)</option>
+            </select></label>
+          <label className="space-y-1"><span className="text-xs font-black text-muted-foreground">Reference No</span>
+            <input value={referenceNo} onChange={e => setReferenceNo(e.target.value)} className="h-11 w-full rounded-xl border border-border px-3 text-sm font-bold" /></label>
+          <label className="space-y-1"><span className="text-xs font-black text-muted-foreground">Reference Date</span>
+            <input type="date" value={referenceDate} onChange={e => setReferenceDate(e.target.value)} className="h-11 w-full rounded-xl border border-border px-3 text-sm font-bold" /></label>
+          <label className="space-y-1"><span className="text-xs font-black text-muted-foreground">Remarks</span>
+            <input value={remarks} onChange={e => setRemarks(e.target.value)} className="h-11 w-full rounded-xl border border-border px-3 text-sm font-bold" /></label>
+        </div>
+      </div>
+
+      <div className="rounded-2xl border border-border bg-card p-4">
+        <p className="mb-2 text-xs font-black uppercase tracking-wide text-muted-foreground">Items — GST % is per item</p>
+        <div className="space-y-2">
+          {computedLines.map(l => (
+            <div key={l.id} className="grid grid-cols-12 gap-2 rounded-xl border border-border bg-muted/20 p-2">
+              <input value={l.itemName} onChange={e => patchLine(l.id, { itemName: e.target.value })} placeholder="Item name" className="col-span-3 h-10 rounded-lg border border-border px-2 text-xs font-bold" />
+              <input value={l.hsnCode} onChange={e => patchLine(l.id, { hsnCode: e.target.value })} placeholder="HSN code" className="col-span-2 h-10 rounded-lg border border-border px-2 text-xs font-bold" />
+              <input type="number" min="0" value={l.qty} onChange={e => patchLine(l.id, { qty: e.target.value })} placeholder="Qty" className="col-span-1 h-10 rounded-lg border border-border px-2 text-xs font-bold" />
+              <input value={l.uom} onChange={e => patchLine(l.id, { uom: e.target.value })} placeholder="UOM" className="col-span-1 h-10 rounded-lg border border-border px-2 text-xs font-bold" />
+              <input type="number" min="0" value={l.rate} onChange={e => patchLine(l.id, { rate: e.target.value })} placeholder="Rate" className="col-span-2 h-10 rounded-lg border border-border px-2 text-xs font-bold" />
+              <input type="number" min="0" max="100" value={l.gstPct} onChange={e => patchLine(l.id, { gstPct: e.target.value })} placeholder="GST %" title="GST %" className="col-span-2 h-10 rounded-lg border border-primary/40 bg-primary/5 px-2 text-xs font-bold" />
+              <button type="button" onClick={() => removeLine(l.id)} className="col-span-1 flex items-center justify-center rounded-lg text-muted-foreground hover:bg-red-50 hover:text-red-600"><X className="size-4" /></button>
+              <p className="col-span-12 text-right text-[11px] font-bold text-muted-foreground">Amount ₹{l.amount.toFixed(2)} + GST ₹{(l.cgstAmt + l.sgstAmt + l.igstAmt).toFixed(2)} = ₹{l.total.toFixed(2)}</p>
+            </div>
+          ))}
+          <button type="button" onClick={addLine} className="rounded-xl border border-dashed border-border px-3 py-2 text-xs font-bold text-muted-foreground hover:bg-muted">+ Add item</button>
+        </div>
+      </div>
+
+      <div className="rounded-2xl border border-border bg-card p-4">
+        <p className="mb-2 text-xs font-black uppercase tracking-wide text-muted-foreground">Bank Details (printed on invoice)</p>
+        <div className="grid gap-3 sm:grid-cols-3">
+          <label className="space-y-1"><span className="text-xs font-black text-muted-foreground">Account No</span>
+            <input value={bankAccountNo} onChange={e => setBankAccountNo(e.target.value)} className="h-11 w-full rounded-xl border border-border px-3 text-sm font-bold" /></label>
+          <label className="space-y-1"><span className="text-xs font-black text-muted-foreground">Account Name</span>
+            <input value={bankAccountName} onChange={e => setBankAccountName(e.target.value)} className="h-11 w-full rounded-xl border border-border px-3 text-sm font-bold" /></label>
+          <label className="space-y-1"><span className="text-xs font-black text-muted-foreground">Bank Name</span>
+            <input value={bankName} onChange={e => setBankName(e.target.value)} className="h-11 w-full rounded-xl border border-border px-3 text-sm font-bold" /></label>
+          <label className="space-y-1"><span className="text-xs font-black text-muted-foreground">Branch Name</span>
+            <input value={bankBranch} onChange={e => setBankBranch(e.target.value)} className="h-11 w-full rounded-xl border border-border px-3 text-sm font-bold" /></label>
+          <label className="space-y-1"><span className="text-xs font-black text-muted-foreground">IFSC Code</span>
+            <input value={bankIfsc} onChange={e => setBankIfsc(e.target.value.toUpperCase())} className="h-11 w-full rounded-xl border border-border px-3 text-sm font-bold" /></label>
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-border bg-muted/30 p-3 text-right text-sm font-bold space-y-0.5">
+        <p>Before Tax Value: ₹{beforeTaxValue.toFixed(2)}</p>
+        <p>Total GST: ₹{totalGst.toFixed(2)}</p>
+        <p>Round Off: ₹{roundOff.toFixed(2)}</p>
+        <p className="text-lg">Total Amount: ₹{totalAmount.toFixed(2)}</p>
+      </div>
+
+      <button onClick={generateInvoice} className="flex w-full items-center justify-center gap-2 rounded-xl bg-purple-600 py-3 text-sm font-black text-white hover:bg-purple-700">
+        <Printer className="size-4" /> Generate & Print Tax Invoice (A4)
+      </button>
+    </div>
+  );
+}
+
 // FEATURE (2026-08-09): "In Billing (Walk-in) tab: create a new 'Sample
 // Bill' sub-tab where a bill is created for a customer before they pay" —
 // wraps the existing walk-in billing UI (now "New Bill") and the new Sample
 // Bill flow under one set of sub-tabs, same pattern as the Dispatch tab's
 // To Dispatch/Dispatched/Planned/Custom switcher.
 function BillingWalkinTab() {
-  const [sub, setSub] = useState<'new' | 'sample'>('new');
+  const [sub, setSub] = useState<'new' | 'sample' | 'invoice'>('new');
   const [showPrinterSetup, setShowPrinterSetup] = useState(false);
   return (
     <div className="space-y-4">
@@ -3802,6 +4168,10 @@ function BillingWalkinTab() {
         <div className="flex gap-2">
           <button onClick={() => setSub('new')} className={cn('rounded-xl px-3 py-1.5 text-xs font-bold', sub === 'new' ? 'bg-foreground text-white' : 'bg-muted text-muted-foreground')}>New Bill</button>
           <button onClick={() => setSub('sample')} className={cn('rounded-xl px-3 py-1.5 text-xs font-bold', sub === 'sample' ? 'cafe-gradient text-white shadow-teal' : 'bg-primary/10 text-primary')}>Sample Bill</button>
+          {/* FEATURE (audit 2026-08-27): "in sales tab add a new sub tab
+              called Invoice" — replaces the removed Cake Dispatch Invoice
+              sub-tab with a proper GST tax invoice generator. */}
+          <button onClick={() => setSub('invoice')} className={cn('rounded-xl px-3 py-1.5 text-xs font-bold', sub === 'invoice' ? 'bg-purple-600 text-white shadow-sm' : 'bg-purple-100 text-purple-700')}>Invoice</button>
         </div>
         <button
           type="button"
@@ -3813,7 +4183,7 @@ function BillingWalkinTab() {
           <Printer className="size-3.5" />
         </button>
       </div>
-      {sub === 'new' ? <BillingTab /> : <SampleBillTab />}
+      {sub === 'new' ? <BillingTab /> : sub === 'sample' ? <SampleBillTab /> : <GstInvoiceTab />}
     </div>
   );
 }

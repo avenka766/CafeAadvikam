@@ -1898,6 +1898,43 @@ function OrdersTab() {
   );
 }
 
+// BUG FIX (audit 2026-08-27): "the orders are going to History tab... it's
+// converting every item into a different order number and showing the
+// branch." Root cause: ProductionReadyPanel's "Send to Production" calls
+// releaseToProduction once per real contributing order behind an
+// aggregated item — and releaseToProduction (bakeryStore.ts) legitimately
+// splits off a brand-new single-item order whenever that source order had
+// other items still pending, inheriting that source's target_branch. That
+// splitting is correct and necessary — Dispatch downstream needs each
+// branch's real share traceable — but it means one "send this item"
+// click can fan out into several tiny single-item orders, each with its
+// own order number and branch tag. History rendered those raw via
+// OrderCard, so the exact order-id/branch info the Orders tab was fixed to
+// hide was leaking right back in here. Same fix as ProductionReadyPanel:
+// aggregate by item name (and day) instead of rendering one card per
+// underlying order — Store never needs to know how many split rows a
+// release produced, only what and how much was sent, and when.
+interface HistoryAggregateRow { key: string; itemName: string; unit: string; quantity: number; dateLabel: string; latestAt: string }
+
+function aggregateHistoryItems(orders: BakeryOrder[]): HistoryAggregateRow[] {
+  const byKey = new Map<string, HistoryAggregateRow>();
+  for (const order of orders) {
+    const at = order.storeConfirmedAt || order.createdAt;
+    const dateLabel = kolkataDateLabel(at);
+    for (const item of order.items) {
+      const key = `${item.itemName.trim().toLowerCase()}|${dateLabel}`;
+      let row = byKey.get(key);
+      if (!row) {
+        row = { key, itemName: item.itemName, unit: item.dispatchUnit || 'kg', quantity: 0, dateLabel, latestAt: at };
+        byKey.set(key, row);
+      }
+      row.quantity += item.dispatchUnit === 'pcs' && item.originalPcs != null ? item.originalPcs : item.quantity;
+      if (new Date(at) > new Date(row.latestAt)) row.latestAt = at;
+    }
+  }
+  return Array.from(byKey.values()).sort((a, b) => new Date(b.latestAt).getTime() - new Date(a.latestAt).getTime());
+}
+
 function StoreHistoryTab() {
   const { orders, fetchOrders, subscribe: subscribeOrders } = useBakeryStore();
   const [initialLoading, setInitialLoading] = useState(true);
@@ -1916,20 +1953,13 @@ function StoreHistoryTab() {
     o.status === 'dispatched' ||
     ((o.status === 'produced' || o.status === 'store_confirmed') && !needsProductionRelease(o)));
 
-  // FEATURE (2026-08-19): "need search bar in history tab as well" — same
-  // filter fields as OrdersTab's search, applied to this tab's own list.
-  const filteredHistoryOrders = useMemo(() => {
+  const aggregated = useMemo(() => aggregateHistoryItems(historyOrders), [historyOrders]);
+
+  const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return historyOrders;
-    return historyOrders.filter(o =>
-      String(o.orderNumber).includes(q) ||
-      (o.targetBranch ?? '').toLowerCase().includes(q) ||
-      // Same fix as OrdersTab's own search filter above.
-      o.items.some(item => item.branchSplit && Object.keys(item.branchSplit).some(b => b.toLowerCase().includes(q))) ||
-      (o.createdBy ?? '').toLowerCase().includes(q) ||
-      o.items.some(item => item.itemName.toLowerCase().includes(q))
-    );
-  }, [historyOrders, search]);
+    if (!q) return aggregated;
+    return aggregated.filter(r => r.itemName.toLowerCase().includes(q));
+  }, [aggregated, search]);
 
   if (initialLoading) return <div className="flex justify-center py-16"><Loader2 className="size-6 animate-spin text-muted-foreground" /></div>;
 
@@ -1938,14 +1968,14 @@ function StoreHistoryTab() {
       <div className="rounded-3xl border border-border bg-card p-4 shadow-soft">
         <div className="flex items-center gap-2">
           <History className="size-4 text-primary" />
-          <h3 className="font-display text-lg font-bold text-foreground">Orders Sent To Baker</h3>
+          <h3 className="font-display text-lg font-bold text-foreground">Sent To Baker</h3>
         </div>
-        <p className="text-xs font-body text-muted-foreground mt-1">In progress, packed and dispatched orders stay here for store follow-up.</p>
+        <p className="text-xs font-body text-muted-foreground mt-1">Everything already sent to production, grouped by item — no order or branch detail here.</p>
       </div>
 
       <div className="flex items-center gap-2">
         <p className="text-xs font-body font-bold text-muted-foreground uppercase flex-1 min-w-fit">
-          {search.trim() ? `${filteredHistoryOrders.length} of ${historyOrders.length} Order${historyOrders.length !== 1 ? 's' : ''}` : `${historyOrders.length} Order${historyOrders.length !== 1 ? 's' : ''}`}
+          {search.trim() ? `${filtered.length} of ${aggregated.length} Item${aggregated.length !== 1 ? 's' : ''}` : `${aggregated.length} Item${aggregated.length !== 1 ? 's' : ''}`}
         </p>
         <div className="relative w-full sm:w-56">
           <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
@@ -1953,7 +1983,7 @@ function StoreHistoryTab() {
             type="text"
             value={search}
             onChange={e => setSearch(e.target.value)}
-            placeholder="Search order #, branch, item…"
+            placeholder="Search item name…"
             className="h-8 w-full rounded-xl border border-border bg-card pl-8 pr-7 text-xs font-body outline-none focus:ring-2 focus:ring-primary/30"
           />
           {search && (
@@ -1964,19 +1994,30 @@ function StoreHistoryTab() {
         </div>
       </div>
 
-      {historyOrders.length === 0 ? (
+      {aggregated.length === 0 ? (
         <div className="flex flex-col items-center py-24 gap-4 rounded-3xl border border-border bg-card">
           <div className="size-20 rounded-3xl bg-muted flex items-center justify-center"><History className="size-10 text-muted-foreground opacity-30" /></div>
           <div className="text-center"><p className="text-sm font-body font-semibold text-foreground">No sent orders yet</p><p className="text-xs font-body text-muted-foreground mt-1">Once a new order is sent to baker, it moves here.</p></div>
         </div>
-      ) : filteredHistoryOrders.length === 0 ? (
+      ) : filtered.length === 0 ? (
         <div className="flex flex-col items-center py-24 gap-4 rounded-3xl border border-border bg-card">
           <div className="size-20 rounded-3xl bg-muted flex items-center justify-center"><Search className="size-10 text-muted-foreground opacity-30" /></div>
-          <div className="text-center"><p className="text-sm font-body font-semibold text-foreground">No orders match "{search}"</p><p className="text-xs font-body text-muted-foreground mt-1">Try a different order number, branch, or item name.</p></div>
+          <div className="text-center"><p className="text-sm font-body font-semibold text-foreground">No items match "{search}"</p><p className="text-xs font-body text-muted-foreground mt-1">Try a different item name.</p></div>
         </div>
       ) : (
         <div className="space-y-2">
-          {filteredHistoryOrders.map(o => <OrderCard key={o.id} order={o} />)}
+          {filtered.map(row => (
+            <div key={row.key} className="flex items-center justify-between gap-3 rounded-2xl border border-border bg-card px-4 py-3">
+              <div className="min-w-0">
+                <p className="text-sm font-body font-bold text-foreground truncate">{row.itemName}</p>
+                <p className="text-[11px] font-body text-muted-foreground">{row.dateLabel}</p>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <span className="text-sm font-body font-bold tabular-nums text-foreground">{row.quantity} {row.unit}</span>
+                <span className="text-[9px] font-body font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 border border-emerald-200">Sent to Production</span>
+              </div>
+            </div>
+          ))}
         </div>
       )}
     </div>
