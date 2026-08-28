@@ -88,6 +88,29 @@ window.addEventListener('error', (event) => {
   } }));
 });
 
+// BUG FIX (audit 2026-08-27): "if we use the mouse to scroll the number
+// fields are also changing — this is causing issue in quantity and price."
+// Real, well-known browser behaviour: a focused <input type="number">
+// intercepts the mouse wheel and increments/decrements its own value
+// instead of letting the page scroll — so simply scrolling past a qty or
+// price field (never intending to touch it) silently corrupts it. This
+// bites every dashboard in the app (Store inventory/PO/GRN, Planner's
+// dispatch/GST invoice qty+rate+GST%, branch billing, stock counts, order
+// quantities — anywhere a number input exists), so fixing it per-input
+// across dozens of files would be enormous and easy to miss one. One
+// global, always-on listener covers every number input everywhere,
+// present and future, with no per-form changes needed: on any wheel event,
+// if the currently focused element is a number input, blur it first —
+// blurring before the browser's native wheel-driven increment logic runs
+// is what stops the value from changing, and the page/container underneath
+// then scrolls completely normally since focus has already moved away.
+document.addEventListener('wheel', () => {
+  const active = document.activeElement;
+  if (active instanceof HTMLInputElement && active.type === 'number') {
+    active.blur();
+  }
+}, { passive: true });
+
 try {
   ReactDOM.createRoot(document.getElementById('root')!).render(
     <React.StrictMode>
