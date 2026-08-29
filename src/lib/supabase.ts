@@ -43,7 +43,22 @@ const sessionAwareFetch: typeof fetch = async (input, init: RequestInit = {}) =>
         let responseHint: string | undefined;
         try {
           const bodyText = await response.clone().text();
-          sessionExpired = /SESSION_REQUIRED/i.test(bodyText);
+          // BUG FIX (2026-08-29): a stale/expired x-cafe-session token doesn't
+          // always surface as the RPC-specific "SESSION_REQUIRED" text — a
+          // direct table insert/update (e.g. submitOrder's bakery_orders
+          // insert) is gated purely by an RLS policy checking
+          // current_app_session_context(), so an expired token there just
+          // produces Postgres's own generic "new row violates row-level
+          // security policy for table ..." message. Every RLS policy in this
+          // schema is written as "allow if the resolved session's role is in
+          // this list" - a legitimate, currently-permitted role hitting this
+          // almost always means the session itself failed to resolve (stale/
+          // expired/revoked token), not a real permission gap. Treat it the
+          // same as SESSION_REQUIRED: a clear "please log in again" prompt
+          // instead of the scary generic red banner (which is what a VRSNB
+          // Receiver device was stuck showing - "row-level security policy"
+          // with no indication a re-login would fix it).
+          sessionExpired = /SESSION_REQUIRED/i.test(bodyText) || /row-level security policy/i.test(bodyText);
           try {
             const body = JSON.parse(bodyText) as { message?: unknown; code?: unknown; details?: unknown; hint?: unknown };
             if (typeof body.message === 'string') responseMessage = body.message;
