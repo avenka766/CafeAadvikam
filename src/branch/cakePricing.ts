@@ -113,7 +113,10 @@ export function calculateCakePrice(input: {
   const designCharge = baseAmount * (designPercent / 100);
   const drawingCharge = input.drawingWork ? CAKE_DRAWING_CHARGE : 0;
   const photoCharge = input.photoWork ? CAKE_PHOTO_CHARGE : 0;
-  const total = Math.round((baseAmount + designCharge + drawingCharge + photoCharge + Number.EPSILON) * 100) / 100;
+  // Rounded to the nearest whole rupee (not paise) - matches the final-billing
+  // rounding convention (ClosingConfirmModal's finalTotal) so the amount shown
+  // when the order is created never disagrees with what billing later shows.
+  const total = Math.round(baseAmount + designCharge + drawingCharge + photoCharge);
   return {
     cakeType,
     baseRate: cakeType?.perKg ?? 0,

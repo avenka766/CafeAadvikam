@@ -181,7 +181,20 @@ export interface CakeAdvanceOrder {
   advanceAmount: number;
   balanceAmount: number;
   salesperson: string;
-  paymentMode: "cash" | "upi" | "card";
+  paymentMode: "cash" | "upi" | "card" | "split" | "credit";
+  // Per-mode breakdown of the initial advance collection, only set when
+  // paymentMode === 'split' (e.g. customer pays part cash, part UPI for the
+  // advance). Each underlying DB payment row still carries a real mode
+  // (cash/upi/card) - see record_branch_advance_payment/
+  // create_branch_advance_order_reserved's p_payment_splits - so KPI/reporting
+  // queries that read straight from branch_advance_payments need no change;
+  // this field exists purely for client-side display and re-allocation at
+  // final-billing time (see finalInvoice's allocationTotals).
+  advancePaymentSplits?: Array<{ mode: "cash" | "upi" | "card"; amount: number }>;
+  // Due date for the advance itself when paymentMode === 'credit' (the
+  // advance is not actually collected as cash/upi/card - it's recorded as a
+  // branch_credit_sales receivable instead, same as a normal credit sale).
+  advanceCreditDueDate?: string;
   status:
     | "Pending Store Confirmation"
     | "Store Confirmed"
