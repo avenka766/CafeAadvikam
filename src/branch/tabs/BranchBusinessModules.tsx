@@ -1481,6 +1481,22 @@ function AdvanceManageModal({ order, action, onCancel, onConfirm }: {
     } finally { setSaving(false); }
   };
   return <div className="fixed inset-0 z-[210] flex items-center justify-center bg-slate-950/60 p-3"><div className="max-h-[calc(100dvh-1.5rem)] w-full max-w-lg overflow-y-auto rounded-2xl bg-white p-4 shadow-2xl sm:p-5"><div className="flex items-start justify-between gap-3"><div><h3 className="text-lg font-black text-slate-950">{action === 'edit' ? 'Edit Advance Cake Order' : 'Cancel Advance Cake Order'}</h3><p className="text-sm font-bold text-slate-500">{order.orderNo} - {order.customerName}</p></div><button type="button" onClick={onCancel} className="grid size-9 place-items-center rounded-xl bg-slate-100"><X className="size-4" /></button></div>
+    {/* BUG FIX (audit 2026-08-29): "placed 2 advance orders, only got one
+        amount" — traced to editing an order AFTER "Send to Store" was
+        clicked: this modal only ever updates the advance order's own
+        record (see submit()'s `details` below), with no code path back to
+        the bakery_orders production request that "Send to Store" already
+        created — so a post-send edit silently desyncs from what Planner/
+        Store are actually working from, no error shown anywhere. Fixing
+        that gap safely would mean reaching back into a production order
+        Planner/Store may have already split or started processing, which
+        risks a different kind of corruption — so per explicit product
+        decision, editing here stays allowed, but now says so plainly. */}
+    {action === 'edit' && order.sentToStoreAt && (
+      <div className="mt-4 rounded-xl border border-amber-300 bg-amber-50 p-3 text-xs font-bold text-amber-900">
+        This order was already sent to store ({new Date(order.sentToStoreAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}). Changes you save here will NOT update the production request already sent — Planner/Store will still work from the original amount. Contact Planner directly to correct the quantity there too.
+      </div>
+    )}
     {action === 'edit' && <div className="mt-4 grid gap-3 sm:grid-cols-2"><Field label="Customer"><Input value={form.customerName} onChange={(e) => setForm({ ...form, customerName: e.target.value })} /></Field><Field label="Mobile"><Input value={form.mobile} onChange={(e) => setForm({ ...form, mobile: e.target.value })} /></Field><Field label="Delivery Date"><Input type="date" value={form.deliveryDate} onChange={(e) => setForm({ ...form, deliveryDate: e.target.value })} /></Field><Field label="Delivery Time"><Input type="time" value={form.deliveryTime} onChange={(e) => setForm({ ...form, deliveryTime: e.target.value })} /></Field><Field label="Cake Quantity"><Input type="number" min="0.01" step="0.01" value={form.cakeKg} onChange={(e) => setForm({ ...form, cakeKg: e.target.value })} /></Field><Field label="Flavour"><Input value={form.flavor} onChange={(e) => setForm({ ...form, flavor: e.target.value })} /></Field><Field label="Shape"><Input value={form.shape} onChange={(e) => setForm({ ...form, shape: e.target.value })} /></Field><Field label="Cream"><Select value={form.creamType} onChange={(e) => setForm({ ...form, creamType: e.target.value as typeof form.creamType })}><option>Butter Cream</option><option>Fresh Cream</option></Select></Field><div className="sm:col-span-2"><Field label="Message on Cake"><Input value={form.messageOnCake} onChange={(e) => setForm({ ...form, messageOnCake: e.target.value })} /></Field></div><div className="sm:col-span-2"><Field label="Design Notes"><Textarea value={form.designNotes} onChange={(e) => setForm({ ...form, designNotes: e.target.value })} /></Field></div><Field label="Advance Amount"><Input type="number" min="0" step="0.01" value={form.advanceAmount} onChange={(e) => setForm({ ...form, advanceAmount: e.target.value })} /></Field>{advanceChanged && <Field label={newAdvanceAmount > order.advanceAmount ? 'Collect Extra Advance Via' : 'Refund Difference Via'}><Select value={form.advancePaymentMode} onChange={(e) => setForm({ ...form, advancePaymentMode: e.target.value as typeof form.advancePaymentMode })}><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option></Select></Field>}<div className="sm:col-span-2 rounded-xl bg-slate-50 p-3 text-sm font-bold"><div className="flex justify-between"><span>Recalculated value</span><span>{money(orderValue)}</span></div><div className="mt-1 flex justify-between text-slate-500"><span>Advance</span><span>{money(order.advanceAmount)}{advanceChanged ? ` -> ${money(newAdvanceAmount)}` : ''}</span></div>{advanceChanged && <div className="mt-1 flex justify-between text-slate-500"><span>{newAdvanceAmount > order.advanceAmount ? 'Additional advance to collect' : 'Refund to customer'}</span><span>{money(Math.abs(newAdvanceAmount - order.advanceAmount))}</span></div>}</div></div>}
     {action === 'cancel' && order.advanceAmount > 0 && <div className="mt-4"><Field label={`Refund Method (${money(order.advanceAmount)})`}><Select value={form.refundMode} onChange={(e) => setForm({ ...form, refundMode: e.target.value as typeof form.refundMode })}><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option></Select></Field></div>}
     <div className="mt-4 space-y-3"><Field label={`${action === 'edit' ? 'Edit' : 'Cancellation'} Reason`}><Textarea value={form.reason} onChange={(e) => setForm({ ...form, reason: e.target.value })} /></Field><Field label="Login Password"><Input type="password" autoComplete="off" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} /></Field>{modalError && <p className="rounded-xl bg-red-50 p-3 text-xs font-bold text-red-700">{modalError}</p>}<div className="grid grid-cols-2 gap-2"><SoftButton onClick={onCancel} disabled={saving}>Back</SoftButton><PrimaryButton onClick={() => void submit()} disabled={saving} className={action === 'cancel' ? 'bg-red-600' : ''}>{saving ? <Loader2 className="size-4 animate-spin" /> : action === 'edit' ? <Pencil className="size-4" /> : <XCircle className="size-4" />}{saving ? 'Saving...' : action === 'edit' ? 'Save Changes' : 'Cancel & Refund'}</PrimaryButton></div></div>
@@ -1808,6 +1824,23 @@ export function PurchaseOrderTab({ branch }: ModuleProps) {
 }
 
 export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
+  // FEATURE (audit 2026-08-28): "in SNB and VRSNB branch dashboard, cashier
+  // closure tab — they should not see total sales, total collection, Cash/
+  // UPI/Card/Credit Collection, or Cash Difference. Only Start Cashier
+  // Counter, Cash and UPI closure check (Counter Audit), UPI audit. Only
+  // SNB Admin should see all this detail." A cashier being audited
+  // shouldn't be able to see the expected/target figures their own count
+  // gets compared against (standard cash-handling control, not just a
+  // display preference) — so this hides every collection total AND every
+  // expected/difference figure, keeping only the actual data-entry
+  // mechanics (opening cash, denomination counts, physical closing cash,
+  // verified UPI amount). source==='branch' is the actual branch-login
+  // cashier; source==='snb-order' (a different screen, not asked about
+  // here) is left unchanged. Admin's own Cashier Closure view is a
+  // completely separate component (AdminSNBDashboard.tsx /
+  // AdminVRSNBDashboard.tsx each have their own local CashierClosureTab),
+  // so it's structurally untouched by this and keeps showing everything.
+  const isCashierView = source === 'branch';
   const { currentUser } = useAuthStore();
   const { bills, returns, cashierClosures, purchasePayments, cashMovements, counterOpenings, expenses, bankDeposits, addCashierClosure, openCounter, closeCounter, addNotification } = useBranchOpsStore();
   const { creditSales, creditPayments, fetchCreditSales, fetchCreditPayments } = useBranchStore();
@@ -2429,10 +2462,16 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
     { key: 'card', label: 'Card collected', value: card, icon: <CreditCard className="size-5" /> },
   ];
 
+  // BUG FIX (audit 2026-08-28): "remove this line" — the PERF FIX note below
+  // used bare `//` comment syntax directly inside JSX children, which JSX
+  // only recognises as a comment via {/* */}; a bare `//` there is just
+  // ordinary text, so the comment itself was rendering on screen verbatim
+  // above the Cashier Closure header. Moved above the JSX return so it's a
+  // real comment again, not visible text.
+  // PERF FIX: sticky bar, always on screen during billing — backdrop-blur
+  // removed (expensive on the Windows-7 touch terminals), background was
+  // already 95% opaque so the visual difference is negligible.
   return <div className="daily-closure-page flex h-full min-h-0 flex-col overflow-hidden bg-background">
-    // PERF FIX: sticky bar, always on screen during billing — backdrop-blur
-    // removed (expensive on the Windows-7 touch terminals), background was
-    // already 95% opaque so the visual difference is negligible.
     <div className="border-b border-border bg-background/95 px-4 py-3">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
@@ -2479,7 +2518,7 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
             </div>
             <WalletCards className="size-6 text-blue-700" />
           </div>
-          <p className="mt-2 text-sm font-bold text-muted-foreground">Cash {money(cash)} - UPI {money(upi)} - Card {money(card)}</p>
+          <p className="mt-2 text-sm font-bold text-muted-foreground">{isCashierView ? 'Count physical cash and note verified UPI below.' : `Cash ${money(cash)} - UPI ${money(upi)} - Card ${money(card)}`}</p>
         </div>
         <div className={cn('rounded-3xl border p-4 shadow-soft', closureAuditComplete ? (closureMatches ? 'border-emerald-200 bg-emerald-50' : 'border-red-200 bg-red-50') : 'border-slate-200 bg-slate-50')}>
           <div className="flex items-center justify-between gap-3">
@@ -2490,7 +2529,9 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
             {closureMatches ? <CheckCircle2 className="size-6 text-emerald-600" /> : <WalletCards className="size-6 text-slate-600" />}
           </div>
           <p className="mt-2 text-sm font-bold text-muted-foreground">
-            {!branchCounterOpenRecord && branchClosureRecord
+            {isCashierView
+              ? (!branchCounterOpenRecord && branchClosureRecord ? `Closed by ${branchClosureRecord.cashier}.` : 'Enter your counted cash and verified UPI, then save.')
+              : !branchCounterOpenRecord && branchClosureRecord
               ? `Closed by ${branchClosureRecord.cashier}. Cash difference ${money(branchClosureRecord.difference)} - UPI difference ${money(branchClosureRecord.upiDifference || 0)}`
               : `Cash difference ${money(diff)} - UPI difference ${upiAuditEntered ? money(upiDifference) : 'enter verified UPI'}`}
           </p>
@@ -2534,14 +2575,16 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
         {savedMessage && <p className={cn('mt-3 rounded-xl px-3 py-2 text-sm font-black', savedMessage.includes('closure saved') || savedMessage.includes('Cashier closure saved') ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700')}>{savedMessage}</p>}
       </div>
 
-      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
-        <Kpi label="Total Sales" value={money(totalSales)} icon={<IndianRupee/>} tone="green"/>
-        <Kpi label="Total Collection" value={money(totalCollection)} icon={<WalletCards/>} tone="blue"/>
-        <Kpi label="Advance Collected" value={money(advanceCollectedToday)} icon={<WalletCards/>} tone="amber"/>
-        <Kpi label="Credit Collected" value={money(creditCollectionTotal)} icon={<UserRound/>} tone="blue"/>
-        <Kpi label="Bills Closed" value={counterTodayBills.length} icon={<Receipt/>} tone="slate"/>
-        <Kpi label="Cancelled" value={todayReturns.length} icon={<XCircle/>} tone="red"/>
-      </div>
+      {!isCashierView && (
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
+          <Kpi label="Total Sales" value={money(totalSales)} icon={<IndianRupee/>} tone="green"/>
+          <Kpi label="Total Collection" value={money(totalCollection)} icon={<WalletCards/>} tone="blue"/>
+          <Kpi label="Advance Collected" value={money(advanceCollectedToday)} icon={<WalletCards/>} tone="amber"/>
+          <Kpi label="Credit Collected" value={money(creditCollectionTotal)} icon={<UserRound/>} tone="blue"/>
+          <Kpi label="Bills Closed" value={counterTodayBills.length} icon={<Receipt/>} tone="slate"/>
+          <Kpi label="Cancelled" value={todayReturns.length} icon={<XCircle/>} tone="red"/>
+        </div>
+      )}
       {isSnbOrder && <div className="rounded-2xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm font-bold text-blue-900">This closure contains only collections linked to this SNB Order counter session. Advance transactions: <span className="font-black">{counterSnapshot.paymentCount}</span> - Cash <span className="font-black">{money(counterSnapshot.advanceCash)}</span> - UPI <span className="font-black">{money(counterSnapshot.advanceUpi)}</span> - Card <span className="font-black">{money(counterSnapshot.advanceCard)}</span>. The finalized session is visible in SNB Admin under Cashier Closure and Daily Closure Report.</div>}
 
       {todayReturns.length > 0 && (
@@ -2555,31 +2598,33 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
         </Section>
       )}
 
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_420px]">
-        <div className="rounded-3xl border border-border bg-card p-4 shadow-soft space-y-3">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <p className="text-[10px] font-black uppercase tracking-[0.18em] text-muted-foreground">Payment details</p>
-              <h2 className="font-display text-xl font-black text-foreground">Cash / UPI / Card / Credit Collection</h2>
+      <div className={cn('grid gap-4', !isCashierView && 'xl:grid-cols-[minmax(0,1.2fr)_420px]')}>
+        {!isCashierView && (
+          <div className="rounded-3xl border border-border bg-card p-4 shadow-soft space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-[10px] font-black uppercase tracking-[0.18em] text-muted-foreground">Payment details</p>
+                <h2 className="font-display text-xl font-black text-foreground">Cash / UPI / Card / Credit Collection</h2>
+              </div>
+              <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-black text-emerald-700 border border-emerald-200">{money(totalCollection)} collected</span>
             </div>
-            <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-black text-emerald-700 border border-emerald-200">{money(totalCollection)} collected</span>
-          </div>
-          <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-1 2xl:grid-cols-3">
-            {paymentRows.map((row) => {
-              const percent = totalCollection > 0 ? (row.value / totalCollection) * 100 : 0;
-              return <div key={row.key} className="rounded-2xl border border-border bg-background p-3">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-3">
-                    <div className="size-10 rounded-xl bg-muted flex items-center justify-center text-muted-foreground">{row.icon}</div>
-                    <div><p className="text-sm font-black text-foreground">{row.label}</p><p className="text-xs text-muted-foreground">{percent.toFixed(1)}% of collection</p></div>
+            <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-1 2xl:grid-cols-3">
+              {paymentRows.map((row) => {
+                const percent = totalCollection > 0 ? (row.value / totalCollection) * 100 : 0;
+                return <div key={row.key} className="rounded-2xl border border-border bg-background p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-3">
+                      <div className="size-10 rounded-xl bg-muted flex items-center justify-center text-muted-foreground">{row.icon}</div>
+                      <div><p className="text-sm font-black text-foreground">{row.label}</p><p className="text-xs text-muted-foreground">{percent.toFixed(1)}% of collection</p></div>
+                    </div>
+                    <p className="font-display text-xl font-black tabular-nums text-foreground">{money(row.value)}</p>
                   </div>
-                  <p className="font-display text-xl font-black tabular-nums text-foreground">{money(row.value)}</p>
-                </div>
-                <div className="mt-3 h-2 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-primary" style={{ width: `${Math.min(100, Math.max(0, percent))}%` }} /></div>
-              </div>;
-            })}
+                  <div className="mt-3 h-2 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-primary" style={{ width: `${Math.min(100, Math.max(0, percent))}%` }} /></div>
+                </div>;
+              })}
+            </div>
           </div>
-        </div>
+        )}
 
         <div className="rounded-3xl border border-border bg-card p-4 shadow-soft space-y-3">
           <div>
@@ -2588,10 +2633,19 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
           </div>
           <div className="rounded-2xl bg-muted/40 p-3 space-y-2">
             <Field label="Opening Cash"><Input type="number" value={opening} onChange={(e)=>setOpening(e.target.value)} disabled={Boolean(branchCounterOpenRecord)} /></Field>
-            <div className="flex justify-between text-sm"><span>Bill cash collection</span><span className="font-black tabular-nums">{money(cash - creditCollectionCash - advanceCash)}</span></div>
-            <div className="flex justify-between text-sm"><span>Credit collected in cash</span><span className="font-black tabular-nums">{money(creditCollectionCash)}</span></div>
-            <div className="flex justify-between text-sm"><span>Advance collected in cash</span><span className="font-black tabular-nums">{money(advanceCash)}</span></div>
-            <div className="flex justify-between rounded-xl bg-card px-3 py-2 text-sm"><span>Expected cash</span><span className="font-black tabular-nums">{money(expected)}</span></div>
+            {/* BUG FIX (audit 2026-08-28): the four rows below (bill/credit/
+                advance cash breakdown, expected cash) and the Cash Difference
+                row further down are exactly the "expected" figures a cashier
+                being audited shouldn't see — same reasoning as the Admin-only
+                gate on the sections above. Only the actual count-entry
+                mechanics (opening cash, denomination grid, physical closing
+                cash) stay visible to the cashier. */}
+            {!isCashierView && <>
+              <div className="flex justify-between text-sm"><span>Bill cash collection</span><span className="font-black tabular-nums">{money(cash - creditCollectionCash - advanceCash)}</span></div>
+              <div className="flex justify-between text-sm"><span>Credit collected in cash</span><span className="font-black tabular-nums">{money(creditCollectionCash)}</span></div>
+              <div className="flex justify-between text-sm"><span>Advance collected in cash</span><span className="font-black tabular-nums">{money(advanceCash)}</span></div>
+              <div className="flex justify-between rounded-xl bg-card px-3 py-2 text-sm"><span>Expected cash</span><span className="font-black tabular-nums">{money(expected)}</span></div>
+            </>}
             <div className="rounded-2xl border border-border bg-card p-3">
               <div className="mb-2 flex items-center justify-between gap-3">
                 <div><p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Closing denomination count</p><p className="text-xs font-bold text-muted-foreground">Enter note/coin count. Total fills physical closing cash.</p></div>
@@ -2607,10 +2661,12 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
               </div>
             </div>
             <Field label="Physical Closing Cash"><Input type="number" value={closing} onChange={(e)=>setClosing(e.target.value)} placeholder="Enter counted cash" /></Field>
-            <div className={cn('rounded-2xl px-3 py-3 flex items-center justify-between border', cashMatches ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-amber-50 border-amber-200 text-amber-700')}>
-              <span className="text-sm font-black">Cash Difference</span>
-              <span className="font-display text-xl font-black tabular-nums">{money(diff)}</span>
-            </div>
+            {!isCashierView && (
+              <div className={cn('rounded-2xl px-3 py-3 flex items-center justify-between border', cashMatches ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-amber-50 border-amber-200 text-amber-700')}>
+                <span className="text-sm font-black">Cash Difference</span>
+                <span className="font-display text-xl font-black tabular-nums">{money(diff)}</span>
+              </div>
+            )}
           </div>
 
           <div className="rounded-2xl border border-blue-200 bg-blue-50/70 p-3 space-y-3">
@@ -2621,10 +2677,12 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
               </div>
               <Smartphone className="size-5 text-blue-700" />
             </div>
-            <div className="flex justify-between rounded-xl bg-card px-3 py-2 text-sm">
-              <span>System UPI total</span>
-              <span className="font-black tabular-nums">{money(upi)}</span>
-            </div>
+            {!isCashierView && (
+              <div className="flex justify-between rounded-xl bg-card px-3 py-2 text-sm">
+                <span>System UPI total</span>
+                <span className="font-black tabular-nums">{money(upi)}</span>
+              </div>
+            )}
             <Field label="Verified / Entered UPI Amount">
               <Input
                 type="number"
@@ -2654,12 +2712,19 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
         </div>
       </div>
 
-      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-        <Kpi label="UPI Collected" value={money(upi)} icon={<Smartphone/>} tone="blue"/>
-        <Kpi label="Card Collected" value={money(card)} icon={<CreditCard/>} tone="amber"/>
-        <Kpi label="Credit Sales" value={money(creditSalesTotal)} icon={<History/>} tone="red"/>
-        <Kpi label="Expected Cash" value={money(expected)} icon={<Banknote/>} tone="slate"/>
-      </div>
+      {/* BUG FIX (audit 2026-08-27): "remove this in the bottom of the
+          screen" — a second, duplicate KPI row (same UPI/Card/Credit/
+          Expected-cash figures already gated above) that I missed on the
+          first pass. Same isCashierView gate as everything else on this
+          screen. */}
+      {!isCashierView && (
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          <Kpi label="UPI Collected" value={money(upi)} icon={<Smartphone/>} tone="blue"/>
+          <Kpi label="Card Collected" value={money(card)} icon={<CreditCard/>} tone="amber"/>
+          <Kpi label="Credit Sales" value={money(creditSalesTotal)} icon={<History/>} tone="red"/>
+          <Kpi label="Expected Cash" value={money(expected)} icon={<Banknote/>} tone="slate"/>
+        </div>
+      )}
 
 
     {counterTodayBills.length > 0 && (
