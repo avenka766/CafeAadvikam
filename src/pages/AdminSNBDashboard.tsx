@@ -32,6 +32,13 @@ import { useBranchCatalogStore } from "@/stores/branchCatalogStore";
 import { printAccountingVoucher, printCounterBill, printHtml } from "@/branch/printUtils";
 import { downloadExcel, downloadExcelWorkbook } from "@/lib/excelDownload";
 import { useNotificationStore } from "@/bakery/notificationStore";
+import {
+  fetchStockCountClaims,
+  releaseStockCountClaim,
+  subscribeStockCountClaims,
+  stockCountBusinessDate,
+  type StockCountGroupClaim,
+} from "@/bakery/stockCountClaims";
 import type { Branch } from "@/branch/types";
 import {
   Area,
@@ -7418,6 +7425,86 @@ function ReportsTab(props: any) {
   );
 }
 
+// FEATURE (audit 2026-08-28): SNB Stock Count 2-person split — "SNB Admin
+// can release" a stuck claim (someone claimed a stock but went home /
+// crashed before clicking Done, blocking the other person for the rest of
+// the day). Auto-release after inactivity is the primary safety net (see
+// claim_stock_count_group's idle-timeout logic); this is the deliberate
+// manual override for when they don't want to wait it out.
+function StockCountClaimsPanel({ userName }: { userName: string }) {
+  const [claims, setClaims] = useState<StockCountGroupClaim[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [releasingGroup, setReleasingGroup] = useState<string | null>(null);
+  const [error, setError] = useState("");
+  const businessDate = useMemo(() => stockCountBusinessDate(), []);
+
+  const load = async () => {
+    try {
+      const rows = await fetchStockCountClaims(BRANCH, businessDate);
+      setClaims(rows);
+      setError("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not load stock count status.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void load();
+    const unsubscribe = subscribeStockCountClaims();
+    const onChange = () => void load();
+    window.addEventListener("stock-count-claims-changed", onChange);
+    return () => {
+      unsubscribe();
+      window.removeEventListener("stock-count-claims-changed", onChange);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [businessDate]);
+
+  if (loading || claims.length === 0) return null;
+
+  const release = async (group: "stock_1" | "stock_2") => {
+    setReleasingGroup(group);
+    setError("");
+    try {
+      await releaseStockCountClaim(BRANCH, businessDate, group as "stock_1" | "stock_2", userName, "Released by SNB Admin");
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not release this stock group.");
+    } finally {
+      setReleasingGroup(null);
+    }
+  };
+
+  return (
+    <Panel title="Today's Stock Count — In Progress" icon={<ClipboardCheck className="size-4" />}>
+      {error && <p className="mb-2 text-xs font-bold text-red-600">{error}</p>}
+      <div className="space-y-2">
+        {claims.map((claim) => (
+          <div key={claim.id} className="flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-slate-50 px-4 py-3">
+            <div>
+              <p className="text-sm font-black text-slate-900">{claim.stock_group === "stock_1" ? "Stock 1" : "Stock 2"} — {claim.claimed_by}</p>
+              <p className="text-xs font-semibold text-slate-500">
+                {claim.status === "done" ? "Done, waiting on the other stock" : "Still counting"} · claimed {new Date(claim.claimed_at).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => void release(claim.stock_group)}
+              disabled={releasingGroup === claim.stock_group}
+              className="flex items-center gap-1.5 rounded-xl border border-red-200 bg-white px-3 py-2 text-xs font-black text-red-600 hover:bg-red-50 disabled:opacity-50"
+              title="Release this claim so someone else can take it"
+            >
+              <RotateCcw className="size-3.5" /> {releasingGroup === claim.stock_group ? "Releasing..." : "Release"}
+            </button>
+          </div>
+        ))}
+      </div>
+    </Panel>
+  );
+}
+
 function StockAuditTab({
   userName,
   branchStock,
@@ -7683,6 +7770,8 @@ function StockAuditTab({
           <FileSpreadsheet className="size-4" /> Download Excel
         </button>
       </div>
+
+      <StockCountClaimsPanel userName={userName} />
 
       {reports.length === 0 ? (
         <Panel title="Incoming Stock Count Reports" icon={<ClipboardCheck className="size-4" />}>
