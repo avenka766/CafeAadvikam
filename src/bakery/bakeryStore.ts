@@ -53,6 +53,14 @@ export function buildSplitOrderNotes(order: { notes?: string | null; targetBranc
   return `${tagPrefix}Store batch from order #${order.orderNumber}`;
 }
 
+// Same leading-tag convention as buildSplitOrderNotes above ("SNB-ADV-248|...")
+// — a real, waiting customer order, as opposed to a generic stock-replenishment
+// bakery_orders row. Used by Planner's dispatch split (autoSplitForItemByBranch)
+// to fill these first when there isn't enough produced quantity to go around.
+export function isAdvanceOrderTagged(notes?: string | null): boolean {
+  return /^[A-Za-z]+-ADV-\d+\s*\|/.test(String(notes ?? ''));
+}
+
 // FEATURE (2026-08-10): "for pcs item never mark the quantity in decimal /
 // for kgs the decimal should not be more than 3 numbers." Applied at every
 // write path below (order submission, production entry, dispatch) rather
@@ -951,7 +959,7 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     // BUG #3 FIX: fetching from DB avoids stale React state in the dispatch log.
     const { data: freshOrder, error: fetchErr } = await supabase
       .from('bakery_orders')
-      .select('dispatch_log, produced_items, order_number, items, notes, target_branch')
+      .select('dispatch_log, produced_items, order_number, items, notes, target_branch, status')
       .eq('id', orderId)
       .maybeSingle();
     // BUG FIX (audit 2026-08-27): "unable to dispatch, Cannot coerce the
@@ -1435,6 +1443,23 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
         detail:    `Order #${dispatchedOrder.orderNumber} → ${entry.branch}: ${entry.quantity} ${entry.unit ?? 'kg'} of ${entry.itemName}`,
         branch:    entry.branch,
       });
+    }
+    // FEATURE (2026-08-29): the branch-side advance order stepper (Store →
+    // Baking → Packing → Dispatched) previously only ever moved on two
+    // triggers — an initial 'store' stamp from a Store-dashboard action that
+    // was later removed elsewhere, and this file's own 'dispatched' sync
+    // below — so in practice it was permanently stuck between those two for
+    // an order's entire production lifetime, telling staff nothing about
+    // whether their order was actually being baked. Sync 'baking' the first
+    // time this order reaches WorkflowStatus 'produced' (baked/prepared,
+    // not yet fully dispatched) — freshOrder.status is the value BEFORE this
+    // dispatch, so this only fires once per order, not on every partial
+    // dispatch appended while it stays 'produced'.
+    if (newStatus === 'produced' && fullOrderData?.status !== 'produced' && fullOrderData?.notes) {
+      const { useBranchOpsStore } = await import('@/branch/branchOpsStore');
+      const by = user?.displayName || user?.username || 'Packing';
+      const orderNo = (fullOrderData.notes as string).split('|')[0]?.trim();
+      if (orderNo) useBranchOpsStore.getState().updateAdvanceStoreStatusByOrderNo(orderNo, 'baking', by);
     }
     if (newStatus === 'dispatched' && fullOrderData?.notes) {
       const { useBranchOpsStore } = await import('@/branch/branchOpsStore');

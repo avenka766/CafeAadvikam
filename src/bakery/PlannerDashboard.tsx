@@ -18,7 +18,7 @@ import {
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import * as XLSX from 'xlsx';
 import jsPDF from 'jspdf';
-import { useBakeryStore, isPlannedOrder, clampQtyForUnit } from './bakeryStore';
+import { useBakeryStore, isPlannedOrder, clampQtyForUnit, isAdvanceOrderTagged } from './bakeryStore';
 import { useAuthStore } from '@/stores/authStore';
 import { cn } from '@/lib/utils';
 import type { BakeryOrder, BakeryOrderItem, PreparedItem, Branch } from './types';
@@ -482,49 +482,88 @@ export function autoSplitForItem(orders: BakeryOrder[], itemName: string, totalP
 // the order into every branch's dispatch pool instead of just its own
 // real share.
 function autoSplitForItemByBranch(orders: BakeryOrder[], itemName: string, branch: Branch, totalToDispatch: number): Record<string, number> {
-  const shares: { orderId: string; requested: number; isPcs: boolean }[] = [];
+  type Share = { orderId: string; requested: number; isPcs: boolean; remaining: number; isAdvance: boolean; createdAt: string };
+  const shares: Share[] = [];
   for (const o of orders) {
     const item = o.items.find(i => sameItem(i.itemName, itemName));
     if (!item) continue;
     const isPcs = item.dispatchUnit === 'pcs';
+    let requested: number | undefined;
     if (item.branchSplit && Object.keys(item.branchSplit).length > 0) {
       const share = item.branchSplit[branch];
-      if (share) shares.push({ orderId: o.id, requested: share, isPcs });
+      if (share) requested = share;
     } else if (o.targetBranch === branch) {
-      shares.push({ orderId: o.id, requested: isPcs && item.originalPcs != null ? item.originalPcs : item.quantity, isPcs });
+      requested = isPcs && item.originalPcs != null ? item.originalPcs : item.quantity;
     }
+    if (requested == null) continue;
+    // BUG FIX (audit 2026-08-29): "130 pcs dispatched, advance orders still
+    // short" — this used to split every dispatch proportional to each
+    // order's FULL original requested amount, with no memory of what that
+    // order had already received in earlier dispatch rounds. A repeat
+    // dispatch just re-smeared the new batch across every order's full size
+    // again, so an order could take many small rounds to ever finish (or
+    // never converge, since orders receiving disproportionately more in one
+    // round kept getting counted at full size in the next). Now weight by
+    // what's actually still outstanding (requested minus already dispatched
+    // to this branch for this item, from the order's own dispatch_log).
+    const alreadyDispatched = (o.dispatchLog || [])
+      .filter(e => e.branch === branch && sameItem(e.itemName, itemName))
+      .reduce((s, e) => s + e.quantity, 0);
+    const rawRemaining = Math.max(0, requested - alreadyDispatched);
+    const remaining = isPcs ? Math.round(rawRemaining) : Math.round(rawRemaining * 100) / 100;
+    if (remaining <= 0) continue;
+    shares.push({ orderId: o.id, requested, isPcs, remaining, isAdvance: isAdvanceOrderTagged(o.notes), createdAt: o.createdAt });
   }
-  const totalRequested = shares.reduce((s, x) => s + x.requested, 0) || 1;
+
   const split: Record<string, number> = {};
-  // BUG FIX (audit 2026-08-28): "dispatch 60 pcs shows as 61" — when an item
-  // like OPPAT is split across several contributing orders (confirmed live:
-  // 4 separate orders for OPPAT/SNB), each order's proportional share used
-  // to be rounded independently (Math.round to 2 decimals). Two shares that
-  // land on e.g. 30.5/29.5 both round UP under JS's Math.round (never down
-  // on .5), so the total actually dispatched can exceed what the planner
-  // typed. For pcs items — which can't take fractional pieces anyway — use
-  // the largest-remainder method: floor every share first (guaranteed sum
-  // <= total), then hand out the leftover whole pieces one at a time to the
-  // shares with the biggest rounded-down remainder, so the shares always
-  // sum to EXACTLY totalToDispatch, never more.
-  if (shares.some(s => s.isPcs)) {
-    const withExact = shares.map(s => ({ ...s, exact: totalToDispatch * (s.requested / totalRequested) }));
-    const withFloor = withExact.map(s => ({ ...s, floor: Math.floor(s.exact) }));
-    const allocated = withFloor.reduce((sum, s) => sum + s.floor, 0);
-    let remainder = Math.round(totalToDispatch) - allocated;
-    const byRemainderDesc = [...withFloor].sort((a, b) => (b.exact - b.floor) - (a.exact - a.floor));
-    const bonusOrderIds = new Set<string>();
-    for (let i = 0; i < byRemainderDesc.length && remainder > 0; i++, remainder--) {
-      bonusOrderIds.add(byRemainderDesc[i].orderId);
-    }
-    for (const s of withFloor) {
-      split[s.orderId] = s.floor + (bonusOrderIds.has(s.orderId) ? 1 : 0);
-    }
-  } else {
-    for (const s of shares) {
-      split[s.orderId] = Math.round((totalToDispatch * (s.requested / totalRequested)) * 100) / 100;
+  let pool = Math.max(0, totalToDispatch);
+
+  // FEATURE (2026-08-29, per explicit product decision): a real, waiting
+  // customer's advance order is filled first and IN FULL — oldest advance
+  // order first — before anything is spread across generic stock-
+  // replenishment orders. Previously a small produced batch got thinned out
+  // proportionally across every open order regardless of type, so an
+  // advance order could sit stuck at a fraction of what it needed even when
+  // enough had been produced to finish it, purely because other unrelated
+  // orders were also outstanding for the same item.
+  const advanceShares = [...shares].filter(s => s.isAdvance).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  for (const s of advanceShares) {
+    if (pool <= 0) break;
+    const take = s.isPcs ? Math.min(Math.floor(pool + 1e-9), s.remaining) : Math.round(Math.min(pool, s.remaining) * 100) / 100;
+    if (take <= 0) continue;
+    split[s.orderId] = take;
+    pool = Math.round((pool - take) * 100) / 100;
+  }
+
+  // Whatever's left over (advance orders fully covered, or none exist) is
+  // spread across the remaining orders proportional to what THEY still
+  // need — same largest-remainder-safe method as before, just weighted by
+  // remaining need instead of original full size.
+  const otherShares = shares.filter(s => !s.isAdvance);
+  const totalOtherRemaining = otherShares.reduce((s, x) => s + x.remaining, 0) || 1;
+  if (pool > 0 && otherShares.length > 0) {
+    if (otherShares.some(s => s.isPcs)) {
+      const withExact = otherShares.map(s => ({ ...s, exact: pool * (s.remaining / totalOtherRemaining) }));
+      const withFloor = withExact.map(s => ({ ...s, floor: Math.floor(s.exact) }));
+      const allocated = withFloor.reduce((sum, s) => sum + s.floor, 0);
+      let remainder = Math.round(pool) - allocated;
+      const byRemainderDesc = [...withFloor].sort((a, b) => (b.exact - b.floor) - (a.exact - a.floor));
+      const bonusOrderIds = new Set<string>();
+      for (let i = 0; i < byRemainderDesc.length && remainder > 0; i++, remainder--) {
+        bonusOrderIds.add(byRemainderDesc[i].orderId);
+      }
+      for (const s of withFloor) {
+        const amt = s.floor + (bonusOrderIds.has(s.orderId) ? 1 : 0);
+        if (amt > 0) split[s.orderId] = (split[s.orderId] || 0) + amt;
+      }
+    } else {
+      for (const s of otherShares) {
+        const amt = Math.round((pool * (s.remaining / totalOtherRemaining)) * 100) / 100;
+        if (amt > 0) split[s.orderId] = (split[s.orderId] || 0) + amt;
+      }
     }
   }
+
   return split;
 }
 
