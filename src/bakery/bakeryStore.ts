@@ -32,6 +32,27 @@ export function isPlannedOrder(order: { notes?: string | null; targetBranch?: st
   return !order.targetBranch && String(order.notes ?? '').includes(PLANNED_STOCK_TAG);
 }
 
+// BUG FIX (audit 2026-08-29): "advance order dispatch never syncs — Final
+// Bill stays locked forever." A partial release-to-production split used to
+// always overwrite `notes` with a plain "Store batch from order #N" string —
+// fine for a Hosur/Planned-tagged order (those tags are explicitly carried
+// forward below) but for an order that started life via an advance order's
+// "Send to Store" (branchOpsStore.ts's sendToStoreDashboard/
+// sendCakeToStoreDashboard; notes format "SNB-ADV-248 | customer | mobile |
+// ...") the advance order number itself got silently dropped. submitDispatch
+// (below, see updateAdvanceStoreStatusByOrderNo) parses exactly that leading
+// segment to know which advance order to mark 'dispatched' — losing it here
+// meant a split advance-order batch could dispatch in full and NEVER unlock
+// the customer's Final Bill button, with no error anywhere to say so.
+export function buildSplitOrderNotes(order: { notes?: string | null; targetBranch?: string | null; orderNumber?: number | null }): string {
+  const notes = String(order.notes ?? '');
+  const advanceTagMatch = notes.match(/^([A-Za-z]+-ADV-\d+)\s*\|/);
+  if (advanceTagMatch) return `${advanceTagMatch[1]}|Store batch from order #${order.orderNumber}`;
+  const hosurTagMatch = notes.match(/HOSUR_ORDER_IDS?:[^|]+/);
+  const tagPrefix = hosurTagMatch ? `${hosurTagMatch[0]}|` : isPlannedOrder(order) ? `${PLANNED_STOCK_TAG}|` : '';
+  return `${tagPrefix}Store batch from order #${order.orderNumber}`;
+}
+
 // FEATURE (2026-08-10): "for pcs item never mark the quantity in decimal /
 // for kgs the decimal should not be more than 3 numbers." Applied at every
 // write path below (order submission, production entry, dispatch) rather
@@ -717,9 +738,9 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     // any Hosur shop order that Store only partially confirmed (a very
     // common case — Store rarely has every ingredient for every item at
     // once). Carry the tag forward so submitDispatch can still find it.
-    const hosurTagMatch = String(order.notes ?? '').match(/HOSUR_ORDER_IDS?:[^|]+/);
-    const tagPrefix = hosurTagMatch ? `${hosurTagMatch[0]}|` : isPlannedOrder(order) ? `${PLANNED_STOCK_TAG}|` : '';
-    const carriedNotes = `${tagPrefix}Store batch from order #${order.orderNumber}`;
+    // Also now carries an advance-order tag forward the same way — see
+    // buildSplitOrderNotes's own comment above.
+    const carriedNotes = buildSplitOrderNotes(order);
     const { data, error: insertError } = await supabase
       .from('bakery_orders')
       .insert({
@@ -807,9 +828,7 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
       if (error) throw new Error('Failed to send selected items — please try again.');
       set(s => ({ orders: s.orders.map(o => o.id === orderId ? { ...o, productionReleasedAt: now } : o) }));
     } else {
-      const hosurTagMatch = String(order.notes ?? '').match(/HOSUR_ORDER_IDS?:[^|]+/);
-      const tagPrefix = hosurTagMatch ? `${hosurTagMatch[0]}|` : isPlannedOrder(order) ? `${PLANNED_STOCK_TAG}|` : '';
-      const carriedNotes = `${tagPrefix}Store batch from order #${order.orderNumber}`;
+      const carriedNotes = buildSplitOrderNotes(order);
       const { data, error: insertError } = await supabase
         .from('bakery_orders')
         .insert({

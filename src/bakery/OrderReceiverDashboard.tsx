@@ -48,6 +48,20 @@ import type { UserRole } from "@/types";
 import { supabase } from "@/lib/supabase";
 import { useOperationalBranchCatalog } from "@/hooks/useOperationalBranchCatalog";
 import {
+  claimStockCountGroup,
+  upsertStockCountLine,
+  resetStockCountLine,
+  markStockCountGroupDone,
+  clearStockCountSession,
+  fetchStockCountClaims,
+  fetchStockCountDraftLines,
+  fetchStockCountGroupAssignment,
+  subscribeStockCountClaims,
+  stockCountBusinessDate,
+  type StockGroup,
+  type StockCountGroupClaim,
+} from "./stockCountClaims";
+import {
   LiveOrderStatusPanel,
   SnbPurchaseInvoicePanel,
   SnbPurchaseReturnPanel,
@@ -2166,6 +2180,410 @@ function PhysicalStockCalculator({
   );
 }
 
+// FEATURE (audit 2026-08-28): "split Stock Count into 2 people, 2 devices"
+// — SNB only (VRSNB explicitly keeps the single-person flow below,
+// unchanged). Each person claims Stock 1 or Stock 2 (locked by a DB unique
+// constraint — see stockCountClaims.ts / claim_stock_count_group), sees
+// only their own items, and every count is persisted immediately via
+// upsert_stock_count_line so a refresh or dropped connection never loses
+// progress. "Send to SNB Admin" only enables once both claims are done,
+// and reuses submitStockCountReport (branchOpsStore.ts) completely
+// unchanged for the actual report — this component only adds the
+// claim/split/persist layer in front of it.
+function SnbSplitStockCountPanel({
+  branchStock,
+  userName,
+  itemMaster,
+}: {
+  branchStock: StockItem[];
+  userName: string;
+  itemMaster: { name: string; uom: string }[];
+}) {
+  const branch = "SNB" as const;
+  const { submitStockCountReport } = useBranchOpsStore();
+  const businessDate = useMemo(() => stockCountBusinessDate(), []);
+  const [groupMap, setGroupMap] = useState<Map<string, StockGroup> | null>(null);
+  const [claims, setClaims] = useState<StockCountGroupClaim[]>([]);
+  const [claimsLoading, setClaimsLoading] = useState(true);
+  const [claimBusy, setClaimBusy] = useState<StockGroup | null>(null);
+  const [claimError, setClaimError] = useState("");
+  const [linesLoading, setLinesLoading] = useState(false);
+
+  const [counts, setCounts] = useState<Record<string, string>>({});
+  const [countedItems, setCountedItems] = useState<Record<string, boolean>>({});
+  const [calculatorRow, setCalculatorRow] = useState<{ itemName: string; unit: string } | null>(null);
+  const [notice, setNotice] = useState("");
+  const [noticeTone, setNoticeTone] = useState<"success" | "error">("success");
+  const [markingDone, setMarkingDone] = useState(false);
+  const [sending, setSending] = useState(false);
+
+  const loadClaims = useCallback(async () => {
+    try {
+      const rows = await fetchStockCountClaims(branch, businessDate);
+      setClaims(rows);
+      setClaimError("");
+    } catch (err) {
+      setClaimError(err instanceof Error ? err.message : "Could not load stock count status.");
+    } finally {
+      setClaimsLoading(false);
+    }
+  }, [businessDate]);
+
+  useEffect(() => {
+    void loadClaims();
+    fetchStockCountGroupAssignment(branch)
+      .then(setGroupMap)
+      .catch((err) => setClaimError(err instanceof Error ? err.message : "Could not load item groups."));
+    const unsubscribe = subscribeStockCountClaims();
+    const onChange = () => void loadClaims();
+    window.addEventListener("stock-count-claims-changed", onChange);
+    return () => {
+      unsubscribe();
+      window.removeEventListener("stock-count-claims-changed", onChange);
+    };
+  }, [loadClaims]);
+
+  const myClaim = claims.find((c) => c.claimed_by === userName) ?? null;
+  const otherClaim = claims.find((c) => c.claimed_by !== userName) ?? null;
+
+  const rows = useMemo(() => {
+    if (!myClaim || !groupMap) return [];
+    const stockMap = new Map(branchStock.map((item) => [item.itemName, item]));
+    return itemMaster
+      .filter((item) => groupMap.get(item.name) === myClaim.stock_group)
+      .map((item) => {
+        const stockItem = stockMap.get(item.name);
+        const unit = stockItem?.unit ?? (item.uom === "Kgs" ? "kg" : "pcs");
+        return { itemName: item.name, unit, systemQty: Number(stockItem?.quantity ?? 0) };
+      });
+  }, [myClaim, groupMap, branchStock, itemMaster]);
+
+  useEffect(() => {
+    if (!myClaim) return;
+    let cancelled = false;
+    setLinesLoading(true);
+    fetchStockCountDraftLines(branch, businessDate, myClaim.stock_group)
+      .then((lines) => {
+        if (cancelled) return;
+        const nextCounts: Record<string, string> = {};
+        const nextCounted: Record<string, boolean> = {};
+        for (const line of lines) {
+          nextCounts[line.item_name] = formatStockQuantity(Number(line.physical_qty ?? 0));
+          nextCounted[line.item_name] = line.counted;
+        }
+        setCounts(nextCounts);
+        setCountedItems(nextCounted);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setNoticeTone("error");
+        setNotice(err instanceof Error ? err.message : "Could not load your saved counts.");
+      })
+      .finally(() => { if (!cancelled) setLinesLoading(false); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [myClaim?.id, myClaim?.stock_group, businessDate]);
+
+  const groupLabel = (g: StockGroup) => (g === "stock_1" ? "Stock 1" : "Stock 2");
+
+  const handleClaim = async (group: StockGroup) => {
+    setClaimBusy(group);
+    setClaimError("");
+    try {
+      const result = await claimStockCountGroup(branch, businessDate, group, userName);
+      if (!result.ok) {
+        setClaimError(
+          result.reason === "done"
+            ? `${result.claimedBy} already finished ${groupLabel(group)}.`
+            : `${result.claimedBy} has already taken ${groupLabel(group)} — please take ${groupLabel(group === "stock_1" ? "stock_2" : "stock_1")} instead.`,
+        );
+      }
+      await loadClaims();
+    } catch (err) {
+      setClaimError(err instanceof Error ? err.message : "Could not claim this stock group.");
+    } finally {
+      setClaimBusy(null);
+    }
+  };
+
+  const differenceCount = rows.filter((row) => {
+    if (!countedItems[row.itemName]) return false;
+    const physical = Number(counts[row.itemName] || 0);
+    return Math.abs(physical - row.systemQty) > 0.0001;
+  }).length;
+
+  const markMyGroupDone = async () => {
+    if (!myClaim) return;
+    const uncountedRows = rows.filter((row) => !countedItems[row.itemName]);
+    if (uncountedRows.length > 0) {
+      setNoticeTone("error");
+      setNotice(`${uncountedRows.length} item${uncountedRows.length === 1 ? " is" : "s are"} still uncounted. Count each item before marking done.`);
+      return;
+    }
+    setMarkingDone(true);
+    setNotice("");
+    try {
+      const result = await markStockCountGroupDone(branch, businessDate, myClaim.stock_group, rows.length, userName);
+      if (!result.ok) {
+        setNoticeTone("error");
+        setNotice(`${(result.total ?? 0) - (result.counted ?? 0)} item(s) still need a saved count.`);
+        return;
+      }
+      await loadClaims();
+      setNoticeTone("success");
+      setNotice(`${groupLabel(myClaim.stock_group)} is marked done. Waiting for the other stock to finish too.`);
+    } catch (err) {
+      setNoticeTone("error");
+      setNotice(err instanceof Error ? err.message : "Could not mark this stock done.");
+    } finally {
+      setMarkingDone(false);
+    }
+  };
+
+  const bothDone = myClaim?.status === "done" && otherClaim?.status === "done";
+
+  const sendToAdmin = async () => {
+    if (!myClaim || !otherClaim || !bothDone) return;
+    setSending(true);
+    setNotice("");
+    try {
+      const otherGroup: StockGroup = myClaim.stock_group === "stock_1" ? "stock_2" : "stock_1";
+      const [mine, theirs] = await Promise.all([
+        fetchStockCountDraftLines(branch, businessDate, myClaim.stock_group),
+        fetchStockCountDraftLines(branch, businessDate, otherGroup),
+      ]);
+      const combined = [...mine, ...theirs];
+      const report = await submitStockCountReport({
+        branch,
+        reportedBy: `${myClaim.claimed_by} & ${otherClaim.claimed_by}`,
+        lines: combined.map((line) => {
+          const physicalQty = Math.max(0, Number(line.physical_qty ?? 0));
+          const systemQty = Number(line.system_qty);
+          return {
+            itemName: line.item_name,
+            unit: line.unit,
+            systemQty,
+            physicalQty,
+            difference: Math.round((physicalQty - systemQty) * 1000) / 1000,
+          };
+        }),
+      });
+      await clearStockCountSession(branch, businessDate);
+      setNoticeTone("success");
+      setNotice(`${report.reportNo} sent to SNB Admin for confirmation.`);
+      setClaims([]);
+      setCounts({});
+      setCountedItems({});
+    } catch (err) {
+      setNoticeTone("error");
+      setNotice(err instanceof Error ? err.message : "Could not send to SNB Admin — please try again.");
+    } finally {
+      setSending(false);
+    }
+  };
+
+  if (claimsLoading || !groupMap) {
+    return <div className="flex justify-center py-16"><Loader2 className="size-6 animate-spin text-muted-foreground" /></div>;
+  }
+
+  if (!myClaim) {
+    const stock1 = claims.find((c) => c.stock_group === "stock_1") ?? null;
+    const stock2 = claims.find((c) => c.stock_group === "stock_2") ?? null;
+    const renderOption = (group: StockGroup, claim: StockCountGroupClaim | null) => {
+      const taken = Boolean(claim);
+      return (
+        <button
+          key={group}
+          type="button"
+          disabled={taken || claimBusy !== null}
+          onClick={() => void handleClaim(group)}
+          className={cn(
+            "flex flex-col items-start gap-2 rounded-3xl border p-6 text-left transition",
+            taken ? "border-border bg-slate-50 opacity-70 cursor-not-allowed" : "border-amber-200 bg-white hover:border-amber-400 hover:bg-amber-50",
+          )}
+        >
+          <span className="font-display text-2xl font-black text-foreground">{groupLabel(group)}</span>
+          {claim ? (
+            <span className={cn("rounded-full px-3 py-1 text-xs font-black", claim.status === "done" ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-800")}>
+              {claim.status === "done" ? `Done by ${claim.claimed_by}` : `${claim.claimed_by} is counting`}
+            </span>
+          ) : (
+            <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-black text-emerald-700">Open — tap to take this stock</span>
+          )}
+          {claimBusy === group && <Loader2 className="size-4 animate-spin text-amber-600" />}
+        </button>
+      );
+    };
+    return (
+      <div className="space-y-4">
+        <div className="rounded-3xl border border-border bg-white p-4 shadow-soft">
+          <p className="text-[11px] font-body font-black uppercase tracking-[0.18em] text-muted-foreground">End-of-day physical count</p>
+          <h2 className="font-display text-2xl font-black text-foreground">Which stock are you counting?</h2>
+          <p className="text-sm font-body font-bold text-muted-foreground">Two people count today's stock together — pick the one that hasn't been taken yet.</p>
+        </div>
+        {claimError && <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-2 text-sm font-body font-black text-red-700">{claimError}</div>}
+        <div className="grid gap-3 sm:grid-cols-2">
+          {renderOption("stock_1", stock1)}
+          {renderOption("stock_2", stock2)}
+        </div>
+      </div>
+    );
+  }
+
+  const otherGroupLabel = groupLabel(myClaim.stock_group === "stock_1" ? "stock_2" : "stock_1");
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-3xl border border-border bg-white p-4 shadow-soft">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <p className="text-[11px] font-body font-black uppercase tracking-[0.18em] text-muted-foreground">You're counting</p>
+            <h2 className="font-display text-2xl font-black text-foreground">{groupLabel(myClaim.stock_group)}</h2>
+            <p className="text-sm font-body font-bold text-muted-foreground">Tap Physical to add stock counted from each location. Every count is saved automatically.</p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {myClaim.status !== "done" ? (
+              <button type="button" onClick={() => void markMyGroupDone()} disabled={markingDone || linesLoading} className="rounded-2xl bg-emerald-600 px-5 py-3 text-sm font-body font-black text-white shadow-lg shadow-emerald-200 disabled:cursor-not-allowed disabled:opacity-60">
+                {markingDone ? "Saving..." : `Mark ${groupLabel(myClaim.stock_group)} Done`}
+              </button>
+            ) : (
+              <span className="rounded-2xl bg-emerald-100 px-5 py-3 text-sm font-body font-black text-emerald-700">{groupLabel(myClaim.stock_group)} Done ✓</span>
+            )}
+            <button
+              type="button"
+              onClick={() => void sendToAdmin()}
+              disabled={!bothDone || sending}
+              title={!bothDone ? `Waiting for ${otherGroupLabel} to finish` : undefined}
+              className="rounded-2xl bg-orange-500 px-5 py-3 text-sm font-body font-black text-white shadow-lg shadow-orange-200 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {sending ? "Sending..." : "Send to SNB Admin"}
+            </button>
+          </div>
+        </div>
+        <div className="mt-3 rounded-2xl bg-slate-50 px-4 py-2 text-sm font-body font-bold text-slate-600">
+          {otherClaim
+            ? otherClaim.status === "done"
+              ? `${otherGroupLabel}: Done by ${otherClaim.claimed_by} ✓`
+              : `${otherGroupLabel}: ${otherClaim.claimed_by} is still counting`
+            : `${otherGroupLabel}: not started yet`}
+        </div>
+        {notice && (
+          <div className={cn("mt-3 rounded-2xl px-4 py-2 text-sm font-body font-black", noticeTone === "success" ? "bg-emerald-50 text-emerald-700" : "border border-red-200 bg-red-50 text-red-700")}>
+            {notice}
+          </div>
+        )}
+        <div className="mt-4 grid gap-3 sm:grid-cols-3">
+          <div className="rounded-2xl bg-slate-50 p-3">
+            <p className="text-2xl font-black tabular-nums">{rows.length}</p>
+            <p className="text-[10px] font-black uppercase text-slate-500">Items ({groupLabel(myClaim.stock_group)})</p>
+          </div>
+          <div className="rounded-2xl bg-amber-50 p-3">
+            <p className="text-2xl font-black tabular-nums text-amber-700">{differenceCount}</p>
+            <p className="text-[10px] font-black uppercase text-amber-700">Differences</p>
+          </div>
+          <div className="rounded-2xl bg-blue-50 p-3">
+            <p className="text-2xl font-black tabular-nums text-blue-700">{new Date().toLocaleDateString("en-IN")}</p>
+            <p className="text-[10px] font-black uppercase text-blue-700">Count Date</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="overflow-hidden rounded-3xl border border-border bg-white shadow-soft">
+        <div className="overflow-x-auto">
+          <div className="min-w-[520px]">
+            <div className="grid grid-cols-[minmax(180px,1fr)_90px_120px_100px] gap-3 border-b bg-slate-50 px-4 py-3 text-[11px] font-black uppercase text-slate-500">
+              <span>Item</span><span>System</span><span>Physical</span><span>Diff</span>
+            </div>
+            <div className="max-h-[65vh] overflow-y-auto divide-y divide-border/60">
+              {rows.map((row) => {
+                const hasConfirmedCount = Boolean(countedItems[row.itemName]);
+                const physical = Number(counts[row.itemName] || 0);
+                const diff = hasConfirmedCount ? Math.round((physical - row.systemQty) * 1000) / 1000 : null;
+                return (
+                  <div key={row.itemName} className="grid grid-cols-[minmax(180px,1fr)_90px_120px_100px] items-center gap-3 px-4 py-2.5 text-sm">
+                    <div>
+                      <p className="font-body font-black text-foreground">{row.itemName}</p>
+                      <p className="text-[11px] font-bold text-slate-500">{row.unit}</p>
+                    </div>
+                    <span className="font-black tabular-nums">{row.systemQty}</span>
+                    <button
+                      type="button"
+                      onClick={() => setCalculatorRow({ itemName: row.itemName, unit: row.unit })}
+                      disabled={myClaim.status === "done"}
+                      className={cn(
+                        "flex h-10 items-center justify-between rounded-2xl border px-3 text-sm font-black tabular-nums transition focus:outline-none focus:ring-2 focus:ring-amber-200 disabled:cursor-not-allowed disabled:opacity-60",
+                        hasConfirmedCount
+                          ? "border-amber-200 bg-amber-50 text-amber-900 hover:border-amber-300 hover:bg-amber-100"
+                          : "border-dashed border-slate-300 bg-slate-50 text-slate-600 hover:border-amber-300 hover:bg-amber-50",
+                      )}
+                      aria-label={`Enter physical stock for ${row.itemName}`}
+                    >
+                      <span className="leading-tight">
+                        <span className="block">{formatStockQuantity(physical)}</span>
+                        {!hasConfirmedCount && <span className="block text-[9px] font-black uppercase tracking-wide text-slate-400">Uncounted</span>}
+                      </span>
+                      <span className="text-base leading-none text-amber-600">＋</span>
+                    </button>
+                    <span
+                      className={cn(
+                        "rounded-full px-2 py-1 text-center text-xs font-black tabular-nums",
+                        diff === null ? "bg-slate-100 text-[10px] text-slate-500" : diff === 0 ? "bg-emerald-100 text-emerald-700" : diff < 0 ? "bg-red-100 text-red-700" : "bg-blue-100 text-blue-700",
+                      )}
+                    >
+                      {diff === null ? "Not counted" : diff}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {calculatorRow && myClaim && (
+        <PhysicalStockCalculator
+          key={calculatorRow.itemName}
+          itemName={calculatorRow.itemName}
+          unit={calculatorRow.unit}
+          baseQuantity={countedItems[calculatorRow.itemName] ? Math.max(0, Number(counts[calculatorRow.itemName] || 0)) : 0}
+          hasConfirmedCount={Boolean(countedItems[calculatorRow.itemName])}
+          onCancel={() => setCalculatorRow(null)}
+          onDone={(quantity) => {
+            const row = rows.find((r) => r.itemName === calculatorRow.itemName);
+            const itemName = calculatorRow.itemName;
+            const unit = calculatorRow.unit;
+            setCalculatorRow(null);
+            void upsertStockCountLine(branch, businessDate, myClaim.stock_group, itemName, unit, row?.systemQty ?? 0, quantity, userName)
+              .then(() => {
+                setCountedItems((prev) => ({ ...prev, [itemName]: true }));
+                setCounts((prev) => ({ ...prev, [itemName]: formatStockQuantity(quantity) }));
+                setNotice("");
+              })
+              .catch((err) => {
+                setNoticeTone("error");
+                setNotice(err instanceof Error ? err.message : "Could not save this count — please try again.");
+              });
+          }}
+          onReset={() => {
+            const itemName = calculatorRow.itemName;
+            setCalculatorRow(null);
+            void resetStockCountLine(branch, businessDate, myClaim.stock_group, itemName, userName)
+              .then(() => {
+                setCountedItems((prev) => ({ ...prev, [itemName]: false }));
+                setCounts((prev) => ({ ...prev, [itemName]: "0" }));
+                setNotice("");
+              })
+              .catch((err) => {
+                setNoticeTone("error");
+                setNotice(err instanceof Error ? err.message : "Could not reset this item — please try again.");
+              });
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
 function StockCountPanel({
   branch,
   branchStock,
@@ -2177,10 +2595,14 @@ function StockCountPanel({
 }) {
   const { submitStockCountReport } = useBranchOpsStore();
   const { items: itemMaster } = useOperationalBranchCatalog(branch);
+  // FEATURE (audit 2026-08-28): SNB now uses the 2-person split panel above;
+  // VRSNB keeps everything below completely unchanged, per explicit request
+  // scope ("this is only for SNB Order dashboard").
+  if (branch === "SNB") {
+    return <SnbSplitStockCountPanel branchStock={branchStock} userName={userName} itemMaster={itemMaster} />;
+  }
   const [counts, setCounts] = useState<Record<string, string>>({});
-  const [countedItems, setCountedItems] = useState<Record<string, boolean>>({});
   const touchedCounts = useRef<Record<string, boolean>>({});
-  const [calculatorRow, setCalculatorRow] = useState<{ itemName: string; unit: string } | null>(null);
   const [notice, setNotice] = useState("");
   const [noticeTone, setNoticeTone] = useState<"success" | "error">("success");
   const [submitting, setSubmitting] = useState(false);
@@ -2203,7 +2625,7 @@ function StockCountPanel({
       const next = { ...prev };
       rows.forEach((row) => {
         if (!touchedCounts.current[row.itemName]) {
-          next[row.itemName] = branch === "SNB" ? "0" : String(row.systemQty);
+          next[row.itemName] = String(row.systemQty);
         }
       });
       return next;
@@ -2211,7 +2633,6 @@ function StockCountPanel({
   }, [branch, rows]);
 
   const differenceCount = rows.filter((row) => {
-    if (branch === "SNB" && !countedItems[row.itemName]) return false;
     const physical = Number(counts[row.itemName] || 0);
     // BUG FIX (2026-08-12): "VRSNB stock increase shown as negative" — this
     // used to check systemQty - physical, the opposite of the Physical -
@@ -2223,17 +2644,6 @@ function StockCountPanel({
   }).length;
 
   const submit = async () => {
-    if (branch === "SNB") {
-      const uncountedRows = rows.filter((row) => !countedItems[row.itemName]);
-      if (uncountedRows.length > 0) {
-        setNoticeTone("error");
-        setNotice(
-          `${uncountedRows.length} item${uncountedRows.length === 1 ? " is" : "s are"} still uncounted. Count each item or explicitly confirm zero before sending to SNB Admin.`,
-        );
-        return;
-      }
-    }
-
     setSubmitting(true);
     setNotice("");
     try {
@@ -2277,9 +2687,7 @@ function StockCountPanel({
               Daily Stock Take
             </h2>
             <p className="text-sm font-body font-bold text-muted-foreground">
-              {branch === "SNB"
-                ? "Tap Physical to add stock counted from each location. Difference is Physical Qty minus System Qty — negative means short, positive means excess."
-                : "Enter counted stock. Difference is Physical Qty minus System Qty — negative means short, positive means excess."}
+              Enter counted stock. Difference is Physical Qty minus System Qty — negative means short, positive means excess.
             </p>
           </div>
           <button
@@ -2330,7 +2738,6 @@ function StockCountPanel({
             </div>
             <div className="max-h-[65vh] overflow-y-auto divide-y divide-border/60">
               {rows.map((row) => {
-                const hasConfirmedCount = branch !== "SNB" || Boolean(countedItems[row.itemName]);
                 const physical = Number(counts[row.itemName] || 0);
                 // BUG FIX (2026-08-12): "physical stock increase showing as
                 // negative" — this preview showed System - Physical, so a
@@ -2338,9 +2745,7 @@ function StockCountPanel({
                 // number to the person doing the count. Physical - System
                 // matches the rest of the app: negative = short, positive =
                 // excess.
-                const diff = hasConfirmedCount
-                  ? Math.round((physical - row.systemQty) * 1000) / 1000
-                  : null;
+                const diff = Math.round((physical - row.systemQty) * 1000) / 1000;
                 return (
                   <div
                     key={row.itemName}
@@ -2351,43 +2756,21 @@ function StockCountPanel({
                       <p className="text-[11px] font-bold text-slate-500">{row.unit}</p>
                     </div>
                     <span className="font-black tabular-nums">{row.systemQty}</span>
-                    {branch === "SNB" ? (
-                      <button
-                        type="button"
-                        onClick={() => setCalculatorRow({ itemName: row.itemName, unit: row.unit })}
-                        className={cn(
-                          "flex h-10 items-center justify-between rounded-2xl border px-3 text-sm font-black tabular-nums transition focus:outline-none focus:ring-2 focus:ring-amber-200",
-                          hasConfirmedCount
-                            ? "border-amber-200 bg-amber-50 text-amber-900 hover:border-amber-300 hover:bg-amber-100"
-                            : "border-dashed border-slate-300 bg-slate-50 text-slate-600 hover:border-amber-300 hover:bg-amber-50",
-                        )}
-                        aria-label={`Enter physical stock for ${row.itemName}`}
-                      >
-                        <span className="leading-tight">
-                          <span className="block">{formatStockQuantity(physical)}</span>
-                          {!hasConfirmedCount && <span className="block text-[9px] font-black uppercase tracking-wide text-slate-400">Uncounted</span>}
-                        </span>
-                        <span className="text-base leading-none text-amber-600">＋</span>
-                      </button>
-                    ) : (
-                      <input
-                        type="number"
-                        min="0"
-                        step={row.unit === "kg" ? "0.001" : "1"}
-                        value={counts[row.itemName] ?? ""}
-                        onChange={(e) => {
-                          touchedCounts.current[row.itemName] = true;
-                          setCounts((prev) => ({ ...prev, [row.itemName]: e.target.value }));
-                        }}
-                        className="h-10 rounded-2xl border border-slate-200 px-3 text-sm font-black tabular-nums focus:outline-none focus:ring-2 focus:ring-amber-200"
-                      />
-                    )}
+                    <input
+                      type="number"
+                      min="0"
+                      step={row.unit === "kg" ? "0.001" : "1"}
+                      value={counts[row.itemName] ?? ""}
+                      onChange={(e) => {
+                        touchedCounts.current[row.itemName] = true;
+                        setCounts((prev) => ({ ...prev, [row.itemName]: e.target.value }));
+                      }}
+                      className="h-10 rounded-2xl border border-slate-200 px-3 text-sm font-black tabular-nums focus:outline-none focus:ring-2 focus:ring-amber-200"
+                    />
                     <span
                       className={cn(
                         "rounded-full px-2 py-1 text-center text-xs font-black tabular-nums",
-                        diff === null
-                          ? "bg-slate-100 text-[10px] text-slate-500"
-                          : diff === 0
+                        diff === 0
                           ? "bg-emerald-100 text-emerald-700"
                           // BUG FIX (2026-08-12): diff is now Physical - System
                           // (see above), so negative = short (red) and
@@ -2399,7 +2782,7 @@ function StockCountPanel({
                             : "bg-blue-100 text-blue-700",
                       )}
                     >
-                      {diff === null ? "Not counted" : diff}
+                      {diff}
                     </span>
                   </div>
                 );
@@ -2409,44 +2792,6 @@ function StockCountPanel({
         </div>
       </div>
 
-      {branch === "SNB" && calculatorRow && (
-        <PhysicalStockCalculator
-          key={calculatorRow.itemName}
-          itemName={calculatorRow.itemName}
-          unit={calculatorRow.unit}
-          baseQuantity={countedItems[calculatorRow.itemName]
-            ? Math.max(0, Number(counts[calculatorRow.itemName] || 0))
-            : 0}
-          hasConfirmedCount={Boolean(countedItems[calculatorRow.itemName])}
-          onCancel={() => setCalculatorRow(null)}
-          onDone={(quantity) => {
-            touchedCounts.current[calculatorRow.itemName] = true;
-            setCountedItems((previous) => ({
-              ...previous,
-              [calculatorRow.itemName]: true,
-            }));
-            setCounts((previous) => ({
-              ...previous,
-              [calculatorRow.itemName]: formatStockQuantity(quantity),
-            }));
-            setNotice("");
-            setCalculatorRow(null);
-          }}
-          onReset={() => {
-            touchedCounts.current[calculatorRow.itemName] = false;
-            setCountedItems((previous) => ({
-              ...previous,
-              [calculatorRow.itemName]: false,
-            }));
-            setCounts((previous) => ({
-              ...previous,
-              [calculatorRow.itemName]: "0",
-            }));
-            setNotice("");
-            setCalculatorRow(null);
-          }}
-        />
-      )}
     </div>
   );
 }

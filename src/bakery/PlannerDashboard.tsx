@@ -482,22 +482,48 @@ export function autoSplitForItem(orders: BakeryOrder[], itemName: string, totalP
 // the order into every branch's dispatch pool instead of just its own
 // real share.
 function autoSplitForItemByBranch(orders: BakeryOrder[], itemName: string, branch: Branch, totalToDispatch: number): Record<string, number> {
-  const shares: { orderId: string; requested: number }[] = [];
+  const shares: { orderId: string; requested: number; isPcs: boolean }[] = [];
   for (const o of orders) {
     const item = o.items.find(i => sameItem(i.itemName, itemName));
     if (!item) continue;
+    const isPcs = item.dispatchUnit === 'pcs';
     if (item.branchSplit && Object.keys(item.branchSplit).length > 0) {
       const share = item.branchSplit[branch];
-      if (share) shares.push({ orderId: o.id, requested: share });
+      if (share) shares.push({ orderId: o.id, requested: share, isPcs });
     } else if (o.targetBranch === branch) {
-      const isPcs = item.dispatchUnit === 'pcs';
-      shares.push({ orderId: o.id, requested: isPcs && item.originalPcs != null ? item.originalPcs : item.quantity });
+      shares.push({ orderId: o.id, requested: isPcs && item.originalPcs != null ? item.originalPcs : item.quantity, isPcs });
     }
   }
   const totalRequested = shares.reduce((s, x) => s + x.requested, 0) || 1;
   const split: Record<string, number> = {};
-  for (const s of shares) {
-    split[s.orderId] = Math.round((totalToDispatch * (s.requested / totalRequested)) * 100) / 100;
+  // BUG FIX (audit 2026-08-28): "dispatch 60 pcs shows as 61" — when an item
+  // like OPPAT is split across several contributing orders (confirmed live:
+  // 4 separate orders for OPPAT/SNB), each order's proportional share used
+  // to be rounded independently (Math.round to 2 decimals). Two shares that
+  // land on e.g. 30.5/29.5 both round UP under JS's Math.round (never down
+  // on .5), so the total actually dispatched can exceed what the planner
+  // typed. For pcs items — which can't take fractional pieces anyway — use
+  // the largest-remainder method: floor every share first (guaranteed sum
+  // <= total), then hand out the leftover whole pieces one at a time to the
+  // shares with the biggest rounded-down remainder, so the shares always
+  // sum to EXACTLY totalToDispatch, never more.
+  if (shares.some(s => s.isPcs)) {
+    const withExact = shares.map(s => ({ ...s, exact: totalToDispatch * (s.requested / totalRequested) }));
+    const withFloor = withExact.map(s => ({ ...s, floor: Math.floor(s.exact) }));
+    const allocated = withFloor.reduce((sum, s) => sum + s.floor, 0);
+    let remainder = Math.round(totalToDispatch) - allocated;
+    const byRemainderDesc = [...withFloor].sort((a, b) => (b.exact - b.floor) - (a.exact - a.floor));
+    const bonusOrderIds = new Set<string>();
+    for (let i = 0; i < byRemainderDesc.length && remainder > 0; i++, remainder--) {
+      bonusOrderIds.add(byRemainderDesc[i].orderId);
+    }
+    for (const s of withFloor) {
+      split[s.orderId] = s.floor + (bonusOrderIds.has(s.orderId) ? 1 : 0);
+    }
+  } else {
+    for (const s of shares) {
+      split[s.orderId] = Math.round((totalToDispatch * (s.requested / totalRequested)) * 100) / 100;
+    }
   }
   return split;
 }
