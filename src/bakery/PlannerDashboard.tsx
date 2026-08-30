@@ -5999,11 +5999,30 @@ function BranchFlatDispatchPanel({ branch, rows, orders, leftoverBalances, onDis
   // and opens DispatchReviewModal, which is the sole place submitDispatch
   // actually gets called (on explicit confirm there).
   const [reviewActions, setReviewActions] = useState<PendingDispatchAction[] | null>(null);
+  // BUG FIX (audit 2026-08-30): the `result` banner set inside openReview()
+  // below renders on THIS page, but the review modal opens over it in the
+  // same click and covers it completely — a skipped-items note set there
+  // was never actually visible. Carried alongside reviewActions instead and
+  // rendered inside DispatchReviewModal itself, where it's guaranteed seen.
+  const [skippedInReview, setSkippedInReview] = useState<{ itemName: string; reason: string }[]>([]);
 
   const openReview = () => {
     setResult(null);
     const actions: PendingDispatchAction[] = [];
     let clampedAny = false;
+    // BUG FIX (audit 2026-08-30): "select 35 items, dispatch, final bill
+    // only shows 32 — no explanation." This function has always had 3
+    // separate silent-drop points (an item checked here just never made it
+    // into `actions`, no error, no notice) — a selected item that dropped
+    // out of `lines` between checking it and clicking Dispatch (e.g. it got
+    // fully satisfied by a dispatch a moment earlier), a typed quantity that
+    // rounds to ~0, or no contributing order actually found for this
+    // branch. All three are legitimate reasons on their own, but a planner
+    // who checked 35 boxes and got a 32-item bill with zero indication why
+    // has no way to know whether that's correct or a bug — exactly the
+    // trust problem reported. Track what got skipped and why, and surface
+    // it instead of staying silent.
+    const skipped: { itemName: string; reason: string }[] = [];
     // FEATURE (2026-08-25): "selection order, not alphabetical" — iterate
     // `selected` directly (Set preserves insertion/click order in JS)
     // instead of filtering `lines` (which has its own sort), so the review
@@ -6011,7 +6030,7 @@ function BranchFlatDispatchPanel({ branch, rows, orders, leftoverBalances, onDis
     const lineByName = new Map(lines.map(l => [l.row.itemName, l]));
     for (const itemName of selected) {
       const line = lineByName.get(itemName);
-      if (!line) continue;
+      if (!line) { skipped.push({ itemName, reason: 'no longer needs dispatch (already fully sent)' }); continue; }
       const { row, remaining } = line;
       const typed = qtyFor(row.itemName);
       // BUG FIX (2026-08-19): "dispatching more than requested silently
@@ -6023,7 +6042,7 @@ function BranchFlatDispatchPanel({ branch, rows, orders, leftoverBalances, onDis
       const isManualQty = touchedRef.current.has(row.itemName);
       const q = isManualQty ? typed : Math.min(typed, remaining);
       if (!isManualQty && typed > remaining + 0.01) clampedAny = true;
-      if (q <= 0.001) continue;
+      if (q <= 0.001) { skipped.push({ itemName, reason: 'quantity is 0' }); continue; }
       // BUG FIX (audit 2026-08-26): "orders correctly displayed / actually
       // dispatchable" — this used to filter entries by o.targetBranch ===
       // branch, which completely excludes a cross-branch merged order when
@@ -6039,7 +6058,7 @@ function BranchFlatDispatchPanel({ branch, rows, orders, leftoverBalances, onDis
         if (item?.branchSplit && Object.keys(item.branchSplit).length > 0) return !!item.branchSplit[branch];
         return o.targetBranch === branch;
       });
-      if (entries.length === 0) continue;
+      if (entries.length === 0) { skipped.push({ itemName, reason: `no linked ${branch} order found — refresh and try again` }); continue; }
       const split = autoSplitForItemByBranch(entries, row.itemName, branch, q);
       for (const order of entries) {
         const item = order.items.find(i => sameItem(i.itemName, row.itemName));
@@ -6096,10 +6115,16 @@ function BranchFlatDispatchPanel({ branch, rows, orders, leftoverBalances, onDis
       }
     }
     if (actions.length === 0) {
-      setResult({ ok: false, message: 'Nothing to send — check the items you want and make sure their quantity is above 0.' });
+      setResult({
+        ok: false,
+        message: skipped.length > 0
+          ? `None of the ${skipped.length} checked item${skipped.length > 1 ? 's' : ''} could be sent: ${skipped.map(s => `${s.itemName} (${s.reason})`).join('; ')}.`
+          : 'Nothing to send — check the items you want and make sure their quantity is above 0.',
+      });
       return;
     }
     setResult(clampedAny ? { ok: true, message: "One or more items were capped at what's still owed (some had already been sent)." } : null);
+    setSkippedInReview(skipped);
     setReviewActions(actions);
   };
 
@@ -6118,9 +6143,10 @@ function BranchFlatDispatchPanel({ branch, rows, orders, leftoverBalances, onDis
     <DispatchReviewModal
       scope={branch}
       actions={reviewActions}
+      skippedItems={skippedInReview}
       dispatchedBy={dispatchedBy}
       onDispatch={onDispatch}
-      onClose={() => setReviewActions(null)}
+      onClose={() => { setReviewActions(null); setSkippedInReview([]); }}
       onDone={() => {
         // Modal stays open (its own success screen has reprint buttons —
         // planner may want to print the invoice up to 3x before closing);
@@ -6128,6 +6154,7 @@ function BranchFlatDispatchPanel({ branch, rows, orders, leftoverBalances, onDis
         resetDispatchIds();
         setExtraItems([]);
         setResult({ ok: true, message: `Sent to ${branch}.` });
+        setSkippedInReview([]);
         onDone();
       }}
     />
@@ -8001,7 +8028,7 @@ export interface PendingDispatchAction {
   isExtra?: boolean;
 }
 
-function DispatchReviewModal({ scope, hosurShop, customer, actions, dispatchedBy, onDispatch, onClose, onDone }: {
+function DispatchReviewModal({ scope, hosurShop, customer, actions, skippedItems, dispatchedBy, onDispatch, onClose, onDone }: {
   scope: Branch;
   hosurShop?: { id: string; name: string; phone: string } | null;
   // FEATURE (2026-08-09): Custom dispatch — when set, this review is for a
@@ -8011,6 +8038,12 @@ function DispatchReviewModal({ scope, hosurShop, customer, actions, dispatchedBy
   // UI, pricing lookup, and printed invoice all key off `customer` instead.
   customer?: { name: string; phone: string; address: string } | null;
   actions: PendingDispatchAction[];
+  // BUG FIX (audit 2026-08-30): "35 checked, 32 in the final bill" — items
+  // the planner checked that didn't make it into `actions` at all (already
+  // fulfilled, quantity 0, or no linked order found). Optional since only
+  // BranchFlatDispatchPanel currently tracks this; other callers just don't
+  // pass it and nothing renders.
+  skippedItems?: { itemName: string; reason: string }[];
   dispatchedBy: string;
   onDispatch: ReturnType<typeof useBakeryStore.getState>['submitDispatch'];
   onClose: () => void;
@@ -8236,10 +8269,24 @@ function DispatchReviewModal({ scope, hosurShop, customer, actions, dispatchedBy
               </p>
             )}
 
+            {skippedItems && skippedItems.length > 0 && (
+              <div className="mt-3 rounded-xl border border-amber-300 bg-amber-50 p-3">
+                <p className="text-[11px] font-black text-amber-900">
+                  {skippedItems.length} of the checked item{skippedItems.length > 1 ? 's are' : ' is'} NOT in this batch below — the item count you see here won't match how many you checked:
+                </p>
+                <ul className="mt-1 space-y-0.5">
+                  {skippedItems.map(s => (
+                    <li key={s.itemName} className="text-[11px] font-bold text-amber-800">{s.itemName} — {s.reason}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
             <div className="mt-3 overflow-x-auto rounded-xl border border-border">
               <table className="w-full text-xs">
                 <thead className="bg-muted/40 text-left font-black uppercase text-muted-foreground">
                   <tr>
+                    <th className="px-3 py-2 text-right">#</th>
                     <th className="px-3 py-2">Item</th>
                     <th className="px-3 py-2 text-right">Qty</th>
                     <th className="px-3 py-2 text-right">Price</th>
@@ -8247,11 +8294,12 @@ function DispatchReviewModal({ scope, hosurShop, customer, actions, dispatchedBy
                   </tr>
                 </thead>
                 <tbody>
-                  {displayItems.map(d => {
+                  {displayItems.map((d, idx) => {
                     const price = priceFor(d.itemName);
                     const missing = price === null;
                     return (
                       <tr key={d.itemName} className={cn('border-t border-border', missing && 'bg-red-50')}>
+                        <td className="px-3 py-2 text-right text-muted-foreground">{idx + 1}</td>
                         <td className="px-3 py-2 font-bold text-foreground">
                           {d.itemName}
                           {missing && <span className="ml-1.5 rounded-full bg-red-100 px-1.5 py-0.5 text-[9px] font-black text-red-700">NO PRICE — enter below</span>}
