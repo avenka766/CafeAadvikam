@@ -579,11 +579,21 @@ function receiptTotals(order: Order, payable: number, extraRows = ''): string {
   const itemsTotal = order.items.reduce((sum, ci) => sum + ci.menuItem.price * ci.quantity, 0);
   const totalQty = order.items.reduce((sum, ci) => sum + ci.quantity, 0);
   const parcelCharges = order.parcelCharges ?? 0;
+  // FEATURE (2026-08-30 / Cafe Biller discount + round-off): order.discount
+  // now holds the COMBINED discount (manual biller discount + promotion),
+  // not just the promotion portion — "Promotion" as a label would misname a
+  // purely-manual discount, so this is generic now. Round off is whatever's
+  // left after subtracting that combined discount from items+parcel doesn't
+  // exactly equal the final whole-rupee `payable` — surface it explicitly
+  // rather than let the printed subtotal/discount silently not add up.
+  const preRoundOff = itemsTotal + parcelCharges - Number(order.discount || 0);
+  const roundOff = Math.round((payable - preRoundOff) * 100) / 100;
   return `
     <div class="solid"></div>
     ${kvRow([`Total Qty: ${totalQty}`, 'Sub Total', itemsTotal.toFixed(2)])}
     ${parcelCharges > 0 ? kvRow(['', 'Parcel', parcelCharges.toFixed(2)]) : ''}
-    ${Number(order.discount || 0) > 0 ? kvRow(['', 'Promotion', `-${Number(order.discount).toFixed(2)}`]) : ''}
+    ${Number(order.discount || 0) > 0 ? kvRow(['', 'Discount', `-${Number(order.discount).toFixed(2)}`]) : ''}
+    ${Math.abs(roundOff) >= 0.005 ? kvRow(['', 'Round off', `${roundOff >= 0 ? '+' : ''}${roundOff.toFixed(2)}`]) : ''}
     ${extraRows}
     <div class="solid"></div>
     ${kvRow(['Grand Total', moneyHtml(payable)], { big: true })}
@@ -1771,6 +1781,14 @@ function NewBillPanel() {
   // all (SNB/VRSNB branch billing already has this; cafe didn't). Only
   // meaningful for a straight cash payment.
   const [cashTendered, setCashTendered] = useState('');
+  // FEATURE (2026-08-30): "no option for providing the discount" — Cafe
+  // Biller had promotion-based auto discounts but no manual biller-entered
+  // discount, unlike Branch Billing Pro (SNB/VRSNB/Hosur) which already has
+  // a % / flat discount picker. Mirrors that same shape (type + raw value);
+  // the ₹ amount is derived below and re-derived server-side by every
+  // checkout RPC — never trusted as a client-computed number for money.
+  const [manualDiscountType, setManualDiscountType] = useState<'percentage' | 'flat'>('percentage');
+  const [manualDiscountValue, setManualDiscountValue] = useState('');
 
   // Credit sale state
   const [paymentMode, setPaymentMode] = useState<'regular' | 'credit' | 'wallet'>('regular');
@@ -2519,9 +2537,28 @@ function NewBillPanel() {
   const totalItemQty  = cart.reduce((s, c) => s + c.quantity, 0)
                       + customItems.reduce((s, c) => s + c.qty, 0);
   const parcelCharges = orderType === 'takeaway' ? parcelCount * PARCEL_CHARGE_PER_PARCEL : 0;
-  const promotionDiscount = paymentMode === 'credit' ? 0 : Math.min(itemsSubtotal, Number(promotionEvaluation.discount || 0));
+  // FEATURE (2026-08-30): manual biller discount, % or flat ₹. Applied
+  // before the promotion discount, which is then capped to whatever's left
+  // — same order and formula every checkout RPC now recomputes server-side
+  // (see complete_cafe_promotional_checkout_v1), so this preview can never
+  // disagree with what actually gets billed/collected.
+  const manualDiscountInput = Math.max(0, Number(manualDiscountValue || 0));
+  const manualDiscountAmount = Math.min(
+    itemsSubtotal,
+    manualDiscountType === 'percentage'
+      ? Math.round(itemsSubtotal * Math.min(100, manualDiscountInput)) / 100
+      : Math.round(manualDiscountInput * 100) / 100,
+  );
+  const promotionDiscount = paymentMode === 'credit'
+    ? 0
+    : Math.min(Math.max(0, itemsSubtotal - manualDiscountAmount), Number(promotionEvaluation.discount || 0));
+  const combinedDiscount = Math.min(itemsSubtotal, manualDiscountAmount + promotionDiscount);
   const grossTotal = itemsSubtotal + parcelCharges;
-  const total = Math.max(0, grossTotal - promotionDiscount);
+  const amountBeforeRoundOff = Math.max(0, grossTotal - combinedDiscount);
+  // FEATURE: round the final payable amount to the nearest whole rupee once
+  // the discount is applied.
+  const total = Math.round(amountBeforeRoundOff);
+  const roundOff = Math.round((total - amountBeforeRoundOff) * 100) / 100;
   const walletRemainder = Math.max(0, total - walletAmount);
   const cartCount     = getCartCount();
   const allEmpty      = cartCount === 0 && customItems.length === 0;
@@ -2698,6 +2735,8 @@ function NewBillPanel() {
             p_selected_campaign_ids: promotionEvaluation.applied.map((item) => item.campaignId),
             p_wallet_authorization_secret: walletAuthorizationSecret || null,
             p_idempotency_key: idempotencyKey,
+            p_discount_type: manualDiscountAmount > 0 ? manualDiscountType : null,
+            p_discount_value: manualDiscountAmount > 0 ? manualDiscountInput : 0,
           });
           if (error) throw new Error(error.message);
           const result = data as { orderNumber: number; total: number; walletBalanceRemaining?: number | string; cashback?: number; items: Order['items'] };
@@ -2745,7 +2784,7 @@ function NewBillPanel() {
           setShowSuccess(true);
           setNotes(''); setCustomerName(''); setTableNumber(null);
           setCustomItems([]); setCustomName(''); setCustomPrice(''); setCustomQty('1');
-          setBillMethod('cash'); setSplitPayment({ cash: '', upi: '', card: '' }); setCashTendered('');
+          setBillMethod('cash'); setSplitPayment({ cash: '', upi: '', card: '' }); setCashTendered(''); setManualDiscountValue('');
           setCreditCustomerPhone(''); setCreditDueDate(''); setPaymentMode('regular');
           setTimeout(() => setShowSuccess(false), 2200);
           setSubmitting(false);
@@ -2760,6 +2799,8 @@ function NewBillPanel() {
           p_payment_breakdown: finalBreakdown,
           p_billed_by: billedBy,
           p_customer_name: customerName.trim() || null,
+          p_discount_type: manualDiscountAmount > 0 ? manualDiscountType : null,
+          p_discount_value: manualDiscountAmount > 0 ? manualDiscountInput : 0,
         });
         if (error) throw new Error(error.message);
         const finalized = dbRowToOrder(data as Record<string, unknown>);
@@ -2808,7 +2849,7 @@ function NewBillPanel() {
         setShowSuccess(true);
         setNotes(''); setCustomerName(''); setTableNumber(null);
         setCustomItems([]); setCustomName(''); setCustomPrice(''); setCustomQty('1');
-        setBillMethod('cash'); setSplitPayment({ cash: '', upi: '', card: '' }); setCashTendered('');
+        setBillMethod('cash'); setSplitPayment({ cash: '', upi: '', card: '' }); setCashTendered(''); setManualDiscountValue('');
         setCreditCustomerPhone(''); setCreditDueDate(''); setPaymentMode('regular');
         setTimeout(() => setShowSuccess(false), 2200);
       } catch (err) {
@@ -2855,6 +2896,9 @@ function NewBillPanel() {
           paymentType: 'credit',
           billedBy: currentUser.displayName || currentUser.username,
           status: 'served',
+          discount: manualDiscountAmount,
+          discountType: manualDiscountType,
+          discountValue: manualDiscountInput,
         });
         const savedOrder = useOrderStore.getState().orders.find(o => o.id === orderId);
         const allCartItems = savedOrder?.items ?? [];
@@ -2937,7 +2981,7 @@ function NewBillPanel() {
         // running-order path was the one place that got missed, so a "Cash
         // Tendered 500" left over from an earlier cash bill could silently
         // carry into the very next cash bill after a credit sale in between.
-        setCashTendered(''); setBillMethod('cash'); setSplitPayment({ cash: '', upi: '', card: '' });
+        setCashTendered(''); setBillMethod('cash'); setSplitPayment({ cash: '', upi: '', card: '' }); setManualDiscountValue('');
         setTimeout(() => setShowSuccess(false), 2200);
       } catch (err) {
         // BUG FIX (audit): unlike this, the wallet and regular/promotion
@@ -2995,10 +3039,12 @@ function NewBillPanel() {
           p_coupon_code: couponCode || null,
           p_selected_campaign_ids: promotionEvaluation.applied.map((item) => item.campaignId),
           p_wallet_authorization_secret: walletAuthorizationSecret || null,
+          p_discount_type: manualDiscountAmount > 0 ? manualDiscountType : null,
+          p_discount_value: manualDiscountAmount > 0 ? manualDiscountInput : 0,
         });
         if (error) throw new Error(error.message);
         const result = data as {
-          orderId: string; orderNumber: number; subtotal: number; discount: number; total: number;
+          orderId: string; orderNumber: number; subtotal: number; discount: number; promotionDiscount?: number; total: number;
           walletTransactionId?: string; walletBalanceRemaining?: number | string; cashback?: number;
           promotionIds?: string[]; items: Order['items']; otherAmount?: number;
         };
@@ -3048,8 +3094,8 @@ function NewBillPanel() {
           items: result.items,
           subtotal: Number(result.subtotal),
           discount: Number(result.discount || 0),
-          discountType: 'flat',
-          discountValue: Number(result.discount || 0),
+          discountType: manualDiscountAmount > 0 ? manualDiscountType : 'flat',
+          discountValue: manualDiscountAmount > 0 ? manualDiscountInput : 0,
           total: Number(result.total),
           status: 'served',
           createdBy: currentUser.username,
@@ -3066,7 +3112,7 @@ function NewBillPanel() {
           walletAmount,
           walletTransactionId: result.walletTransactionId,
           walletBalanceRemaining: Number(result.walletBalanceRemaining || 0),
-          promotionDiscount: Number(result.discount || 0),
+          promotionDiscount: Number(result.promotionDiscount ?? 0),
           promotionIds: result.promotionIds || [],
           walletCashback: Number(result.cashback || 0),
         };
@@ -3085,7 +3131,7 @@ function NewBillPanel() {
         setNotes(''); setCustomerName(''); setTableNumber(null);
         setCustomItems([]); setCustomName(''); setCustomPrice(''); setCustomQty('1');
         setSelectedWallet(null); setWalletAmount(0); setWalletOtherMode(null); setWalletAuthorizationSecret(''); setCouponCode('');
-        setBillMethod('cash'); setSplitPayment({ cash: '', upi: '', card: '' }); setCashTendered('');
+        setBillMethod('cash'); setSplitPayment({ cash: '', upi: '', card: '' }); setCashTendered(''); setManualDiscountValue('');
         setCreditDueDate(''); setPaymentMode('regular');
         setTimeout(() => setShowSuccess(false), 2200);
       } catch (err) {
@@ -3132,9 +3178,11 @@ function NewBillPanel() {
         p_coupon_code: couponCode || null,
         p_idempotency_key: idempotencyKey,
         p_selected_campaign_ids: promotionEvaluation.applied.map((item) => item.campaignId),
+        p_discount_type: manualDiscountAmount > 0 ? manualDiscountType : null,
+        p_discount_value: manualDiscountAmount > 0 ? manualDiscountInput : 0,
       });
       if (error) throw new Error(error.message);
-      const result = data as { orderId: string; orderNumber: number; subtotal: number; discount: number; total: number; cashback?: number; promotionIds?: string[]; items: Order['items'] };
+      const result = data as { orderId: string; orderNumber: number; subtotal: number; discount: number; promotionDiscount?: number; total: number; cashback?: number; promotionIds?: string[]; items: Order['items'] };
       if (!result?.orderId || !result.orderNumber) throw new Error('Checkout completed without an order number.');
       await loadOrders(60);
       const loaded = useOrderStore.getState().orders.find((order) => order.id === result.orderId);
@@ -3146,8 +3194,8 @@ function NewBillPanel() {
         items: result.items,
         subtotal: Number(result.subtotal),
         discount: Number(result.discount || 0),
-        discountType: 'flat',
-        discountValue: Number(result.discount || 0),
+        discountType: manualDiscountAmount > 0 ? manualDiscountType : 'flat',
+        discountValue: manualDiscountAmount > 0 ? manualDiscountInput : 0,
         total: Number(result.total),
         status: 'served',
         createdBy: currentUser.username,
@@ -3160,7 +3208,7 @@ function NewBillPanel() {
         billedBy,
         orderSource: 'staff',
         parcelCharges: parcelCharges || undefined,
-        promotionDiscount: Number(result.discount || 0),
+        promotionDiscount: Number(result.promotionDiscount ?? 0),
         promotionIds: result.promotionIds || [],
         walletCashback: Number(result.cashback || 0),
       };
@@ -3180,7 +3228,7 @@ function NewBillPanel() {
       setShowSuccess(true);
       setNotes(''); setCustomerName(''); setTableNumber(null);
       setCustomItems([]); setCustomName(''); setCustomPrice(''); setCustomQty('1');
-      setBillMethod('cash'); setSplitPayment({ cash: '', upi: '', card: '' }); setCouponCode(''); setCashTendered('');
+      setBillMethod('cash'); setSplitPayment({ cash: '', upi: '', card: '' }); setCouponCode(''); setCashTendered(''); setManualDiscountValue('');
       setTimeout(() => setShowSuccess(false), 2200);
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : 'Failed to submit order - please try again.');
@@ -3246,8 +3294,34 @@ function NewBillPanel() {
             <div className="rounded-2xl border border-border bg-muted/30 p-4 space-y-2">
               <div className="flex justify-between text-sm text-muted-foreground"><span>Items ({totalItemQty})</span><span className="tabular-nums">{formatCurrency(itemsSubtotal)}</span></div>
               {parcelCharges > 0 && <div className="flex justify-between text-sm text-amber-700"><span>Parcel charges</span><span className="font-black tabular-nums">+{formatCurrency(parcelCharges)}</span></div>}
+              {manualDiscountAmount > 0 && <div className="flex justify-between text-sm text-rose-700"><span>Discount</span><span className="font-black tabular-nums">-{formatCurrency(manualDiscountAmount)}</span></div>}
               {promotionDiscount > 0 && <div className="flex justify-between text-sm text-emerald-700"><span>Promotion</span><span className="font-black tabular-nums">-{formatCurrency(promotionDiscount)}</span></div>}
+              {roundOff !== 0 && <div className="flex justify-between text-sm text-muted-foreground"><span>Round off</span><span className="font-black tabular-nums">{roundOff > 0 ? '+' : ''}{formatCurrency(roundOff)}</span></div>}
               <div className="flex justify-between items-center pt-2 border-t border-border"><span className="font-bold">Payable</span><span className="font-display text-3xl font-black tabular-nums">{formatCurrency(total)}</span></div>
+            </div>
+            <div>
+              <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground mb-2 block">Discount</label>
+              <div className="flex gap-2">
+                <div className="flex gap-1 p-0.5 rounded-xl bg-muted shrink-0">
+                  {([{ key: 'percentage' as const, label: '%' }, { key: 'flat' as const, label: '₹' }]).map(opt => (
+                    <button key={opt.key} type="button"
+                      onClick={() => setManualDiscountType(opt.key)}
+                      className={cn('w-10 py-2.5 rounded-lg text-sm font-black transition-all',
+                        manualDiscountType === opt.key ? 'bg-card shadow text-foreground' : 'text-muted-foreground')}>
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+                <input
+                  type="number"
+                  min="0"
+                  max={manualDiscountType === 'percentage' ? 100 : undefined}
+                  value={manualDiscountValue}
+                  onChange={e => setManualDiscountValue(e.target.value)}
+                  placeholder={manualDiscountType === 'percentage' ? 'e.g. 10' : 'e.g. 50'}
+                  className="flex-1 min-w-0 rounded-xl border border-border bg-card px-3 py-2.5 text-sm font-black tabular-nums focus:outline-none focus:ring-2 focus:ring-emerald-400/40"
+                />
+              </div>
             </div>
             <div>
               <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground mb-2 block">Payment mode</label>
