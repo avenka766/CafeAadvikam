@@ -4258,6 +4258,31 @@ function BillingTab() {
   const currentUser = useAuthStore(s => s.currentUser);
   const [search, setSearch] = useState('');
   const [cart, setCart] = useState<Record<string, { itemName: string; unit: 'pcs' | 'kg'; price: number; quantity: number }>>({});
+  // FEATURE (2026-08-29): "no option to sell custom items not in the list,
+  // and unable to change the price of items" — Sales/New Bill previously
+  // only let you pick from the merged SNB+VRSNB catalog at its fixed price.
+  // A custom-item form (name/unit/price/qty, added straight into the same
+  // cart) covers items that aren't in the price list at all; making each
+  // cart line's price an editable input (below, in the Cart section) covers
+  // overriding the price of anything already in the cart, catalog item or
+  // custom.
+  const [customItem, setCustomItem] = useState({ name: '', unit: 'pcs' as 'pcs' | 'kg', price: '', quantity: '1' });
+  const [customItemError, setCustomItemError] = useState('');
+  const addCustomItem = () => {
+    const name = customItem.name.trim();
+    const price = Number(customItem.price);
+    const quantity = clampQtyForUnit(Number(customItem.quantity), customItem.unit);
+    if (!name) { setCustomItemError('Enter an item name.'); return; }
+    if (!(price > 0)) { setCustomItemError('Enter a price greater than zero.'); return; }
+    if (!(quantity > 0)) { setCustomItemError('Enter a quantity greater than zero.'); return; }
+    setCustomItemError('');
+    setCart(prev => ({ ...prev, [name]: { itemName: name, unit: customItem.unit, price, quantity } }));
+    setCustomItem({ name: '', unit: customItem.unit, price: '', quantity: '1' });
+  };
+  const setCartLinePrice = (itemName: string, value: string) => {
+    const price = Math.max(0, Number(value) || 0);
+    setCart(prev => (prev[itemName] ? { ...prev, [itemName]: { ...prev[itemName], price } } : prev));
+  };
   const [discountType, setDiscountType] = useState<'none' | 'percent' | 'amount'>('none');
   // FEATURE (2026-08-24): "Billing (Walk-in): no customer name/mobile
   // fields" — optional, defaults preserve existing behavior when skipped.
@@ -4339,7 +4364,7 @@ function BillingTab() {
     : Math.round(Math.min(subtotal, Math.max(0, Number(discountValue) || 0)) * 100) / 100;
   const total = Math.max(0, Math.round((subtotal - discountAmount) * 100) / 100);
 
-  const resetCart = () => { setCart({}); setDiscountType('none'); setDiscountValue(''); setCustomerName(''); setCustomerMobile(''); };
+  const resetCart = () => { setCart({}); setDiscountType('none'); setDiscountValue(''); setCustomerName(''); setCustomerMobile(''); setCustomItem({ name: '', unit: 'pcs', price: '', quantity: '1' }); setCustomItemError(''); };
 
   const saveBill = async () => {
     if (cartLines.length === 0) { setError('Add at least one item.'); return; }
@@ -4471,6 +4496,23 @@ function BillingTab() {
             </div>
           </label>
 
+          <div className="space-y-2 rounded-xl border border-dashed border-primary/40 bg-primary/5 p-3">
+            <p className="text-[11px] font-black uppercase tracking-wide text-primary">Custom item (not in the price list)</p>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+              <input value={customItem.name} onChange={e => setCustomItem(c => ({ ...c, name: e.target.value }))} placeholder="Item name" className="col-span-2 h-9 rounded-lg border border-border bg-background px-2 text-xs font-bold sm:col-span-2" />
+              <select value={customItem.unit} onChange={e => setCustomItem(c => ({ ...c, unit: e.target.value as 'pcs' | 'kg' }))} className="h-9 rounded-lg border border-border bg-background px-2 text-xs font-bold">
+                <option value="pcs">pcs</option>
+                <option value="kg">kg</option>
+              </select>
+              <input type="number" min="0" step="0.01" value={customItem.price} onChange={e => setCustomItem(c => ({ ...c, price: e.target.value }))} placeholder="Price" className="h-9 rounded-lg border border-border bg-background px-2 text-xs font-bold" />
+              <input type="number" min="0" step={customItem.unit === 'pcs' ? 1 : 0.001} value={customItem.quantity} onChange={e => setCustomItem(c => ({ ...c, quantity: e.target.value }))} placeholder="Qty" className="h-9 rounded-lg border border-border bg-background px-2 text-xs font-bold" />
+            </div>
+            <div className="flex items-center gap-2">
+              <button onClick={addCustomItem} className="flex h-8 items-center gap-1 rounded-lg bg-primary px-3 text-[11px] font-black text-primary-foreground hover:opacity-90"><Plus className="size-3.5" /> Add to cart</button>
+              {customItemError && <span className="text-[11px] font-bold text-destructive">{customItemError}</span>}
+            </div>
+          </div>
+
           {filtered.length === 0 ? (
             <div className="rounded-2xl border border-dashed border-border p-8 text-center text-xs font-bold text-muted-foreground">No items match.</div>
           ) : (
@@ -4501,10 +4543,23 @@ function BillingTab() {
           ) : (
             <div className="max-h-64 space-y-2 overflow-auto">
               {cartLines.map(line => (
-                <div key={line.itemName} className="flex items-center justify-between rounded-xl bg-muted/40 p-2.5">
-                  <div className="min-w-0">
+                <div key={line.itemName} className="flex items-center justify-between gap-2 rounded-xl bg-muted/40 p-2.5">
+                  <div className="min-w-0 flex-1">
                     <p className="truncate text-xs font-black text-foreground">{line.itemName}</p>
-                    <p className="text-[11px] font-bold text-muted-foreground">{line.quantity} {line.unit} × {invoiceMoney(line.price)} = {invoiceMoney(line.price * line.quantity)}</p>
+                    <div className="flex items-center gap-1 text-[11px] font-bold text-muted-foreground">
+                      <span>{line.quantity} {line.unit} ×</span>
+                      {/* FEATURE (2026-08-29): editable per-line price - see
+                          setCartLinePrice above. Covers "unable to change the
+                          price of items in the sales tab" for both catalog
+                          items (overriding the fixed list price) and custom
+                          items added via the form above. */}
+                      <input
+                        type="number" min="0" step="0.01" value={line.price}
+                        onChange={e => setCartLinePrice(line.itemName, e.target.value)}
+                        className="h-6 w-16 rounded border border-border bg-background px-1 text-right text-[11px] font-black text-foreground"
+                      />
+                      <span>= {invoiceMoney(line.price * line.quantity)}</span>
+                    </div>
                   </div>
                   <button onClick={() => setQty({ name: line.itemName, unit: line.unit, price: line.price }, 0)}><X className="size-3.5 text-destructive" /></button>
                 </div>
@@ -4629,6 +4684,25 @@ function SampleBillTab() {
   const currentUser = useAuthStore(s => s.currentUser);
   const [search, setSearch] = useState('');
   const [cart, setCart] = useState<Record<string, { itemName: string; unit: 'pcs' | 'kg'; price: number; quantity: number }>>({});
+  // FEATURE (2026-08-29): same "custom item + editable price" gap as
+  // BillingTab (New Bill) above — see its comment for the full reasoning.
+  const [customItem, setCustomItem] = useState({ name: '', unit: 'pcs' as 'pcs' | 'kg', price: '', quantity: '1' });
+  const [customItemError, setCustomItemError] = useState('');
+  const addCustomItem = () => {
+    const name = customItem.name.trim();
+    const price = Number(customItem.price);
+    const quantity = clampQtyForUnit(Number(customItem.quantity), customItem.unit);
+    if (!name) { setCustomItemError('Enter an item name.'); return; }
+    if (!(price > 0)) { setCustomItemError('Enter a price greater than zero.'); return; }
+    if (!(quantity > 0)) { setCustomItemError('Enter a quantity greater than zero.'); return; }
+    setCustomItemError('');
+    setCart(prev => ({ ...prev, [name]: { itemName: name, unit: customItem.unit, price, quantity } }));
+    setCustomItem({ name: '', unit: customItem.unit, price: '', quantity: '1' });
+  };
+  const setCartLinePrice = (itemName: string, value: string) => {
+    const price = Math.max(0, Number(value) || 0);
+    setCart(prev => (prev[itemName] ? { ...prev, [itemName]: { ...prev[itemName], price } } : prev));
+  };
   const [discountPct, setDiscountPct] = useState('0');
   const [customerName, setCustomerName] = useState('');
   const [customerPhone, setCustomerPhone] = useState('');
@@ -4703,7 +4777,7 @@ function SampleBillTab() {
   const discountAmount = Math.round(subtotal * (pct / 100) * 100) / 100;
   const total = Math.max(0, Math.round((subtotal - discountAmount) * 100) / 100);
 
-  const resetForm = () => { setCart({}); setDiscountPct('0'); setCustomerName(''); setCustomerPhone(''); setCustomerAddress(''); };
+  const resetForm = () => { setCart({}); setDiscountPct('0'); setCustomerName(''); setCustomerPhone(''); setCustomerAddress(''); setCustomItem({ name: '', unit: 'pcs', price: '', quantity: '1' }); setCustomItemError(''); };
 
   const createSampleBill = async () => {
     if (cartLines.length === 0) { setError('Add at least one item.'); return; }
@@ -4789,6 +4863,24 @@ function SampleBillTab() {
               <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search item..." className="h-11 w-full rounded-xl border border-border bg-background pl-9 pr-3 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-primary/30" />
             </div>
           </label>
+
+          <div className="space-y-2 rounded-xl border border-dashed border-amber-400 bg-amber-50 p-3">
+            <p className="text-[11px] font-black uppercase tracking-wide text-amber-800">Custom item (not in the price list)</p>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+              <input value={customItem.name} onChange={e => setCustomItem(c => ({ ...c, name: e.target.value }))} placeholder="Item name" className="col-span-2 h-9 rounded-lg border border-amber-300 bg-white px-2 text-xs font-bold sm:col-span-2" />
+              <select value={customItem.unit} onChange={e => setCustomItem(c => ({ ...c, unit: e.target.value as 'pcs' | 'kg' }))} className="h-9 rounded-lg border border-amber-300 bg-white px-2 text-xs font-bold">
+                <option value="pcs">pcs</option>
+                <option value="kg">kg</option>
+              </select>
+              <input type="number" min="0" step="0.01" value={customItem.price} onChange={e => setCustomItem(c => ({ ...c, price: e.target.value }))} placeholder="Price" className="h-9 rounded-lg border border-amber-300 bg-white px-2 text-xs font-bold" />
+              <input type="number" min="0" step={customItem.unit === 'pcs' ? 1 : 0.001} value={customItem.quantity} onChange={e => setCustomItem(c => ({ ...c, quantity: e.target.value }))} placeholder="Qty" className="h-9 rounded-lg border border-amber-300 bg-white px-2 text-xs font-bold" />
+            </div>
+            <div className="flex items-center gap-2">
+              <button onClick={addCustomItem} className="flex h-8 items-center gap-1 rounded-lg bg-amber-500 px-3 text-[11px] font-black text-white hover:opacity-90"><Plus className="size-3.5" /> Add to cart</button>
+              {customItemError && <span className="text-[11px] font-bold text-destructive">{customItemError}</span>}
+            </div>
+          </div>
+
           {filtered.length === 0 ? (
             <div className="rounded-2xl border border-dashed border-border p-8 text-center text-xs font-bold text-muted-foreground">No items match.</div>
           ) : (
@@ -4819,10 +4911,18 @@ function SampleBillTab() {
           ) : (
             <div className="max-h-56 space-y-2 overflow-auto">
               {cartLines.map(line => (
-                <div key={line.itemName} className="flex items-center justify-between rounded-xl bg-muted/40 p-2.5">
-                  <div className="min-w-0">
+                <div key={line.itemName} className="flex items-center justify-between gap-2 rounded-xl bg-muted/40 p-2.5">
+                  <div className="min-w-0 flex-1">
                     <p className="truncate text-xs font-black text-foreground">{line.itemName}</p>
-                    <p className="text-[11px] font-bold text-muted-foreground">{line.quantity} {line.unit} × {invoiceMoney(line.price)} = {invoiceMoney(line.price * line.quantity)}</p>
+                    <div className="flex items-center gap-1 text-[11px] font-bold text-muted-foreground">
+                      <span>{line.quantity} {line.unit} ×</span>
+                      <input
+                        type="number" min="0" step="0.01" value={line.price}
+                        onChange={e => setCartLinePrice(line.itemName, e.target.value)}
+                        className="h-6 w-16 rounded border border-border bg-background px-1 text-right text-[11px] font-black text-foreground"
+                      />
+                      <span>= {invoiceMoney(line.price * line.quantity)}</span>
+                    </div>
                   </div>
                   <button onClick={() => setQty({ name: line.itemName, unit: line.unit, price: line.price }, 0)}><X className="size-3.5 text-destructive" /></button>
                 </div>
