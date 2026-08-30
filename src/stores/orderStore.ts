@@ -135,7 +135,7 @@ interface OrderState {
   // refresh used for the recurring background poll instead of loadOrders,
   // which always re-fetches and replaces the entire requested window.
   refreshRecentOrders: (days: number) => Promise<void>;
-  submitOrder: (params: { tableNumber?: number; orderType: OrderType; notes?: string; customerName?: string; createdBy: string; orderSource?: OrderSource; parcelCharges?: number; paymentType?: PaymentType; paymentBreakdown?: PaymentBreakdown; billedBy?: string; status?: OrderStatus; }) => Promise<string>;
+  submitOrder: (params: { tableNumber?: number; orderType: OrderType; notes?: string; customerName?: string; createdBy: string; orderSource?: OrderSource; parcelCharges?: number; paymentType?: PaymentType; paymentBreakdown?: PaymentBreakdown; billedBy?: string; status?: OrderStatus; discount?: number; discountType?: 'flat' | 'percentage'; discountValue?: number; }) => Promise<string>;
   submitAdvanceOrder: (params: { tableNumber?: number; orderType: OrderType; notes?: string; customerName?: string; createdBy: string; advanceAmount: number; advancePaidBy: string; deliveryDate: string; isFullPayment?: boolean; }) => Promise<string>;
   updateOrderStatus: (orderId: string, status: OrderStatus, cancelReason?: string) => Promise<void>;
   refundAndCancel: (orderId: string, cancelReason: string, refundedBy: string, password: string) => Promise<void>;
@@ -371,7 +371,14 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     if (!Number.isFinite(parcelCharges) || parcelCharges < 0) {
       throw new Error('Parcel charges must be a valid non-negative amount.');
     }
-    const total = subtotal + parcelCharges;
+    // FEATURE (2026-08-30): optional caller-supplied discount (Cafe Biller's
+    // credit-sale-with-no-running-order path is the only caller that passes
+    // this today — every other caller keeps the old discount:0 behaviour by
+    // simply not passing it). Caller is responsible for having already
+    // capped/rounded `discount` sensibly; this just folds it into the order
+    // record so it isn't silently dropped from the bill total.
+    const discount = Math.max(0, Math.min(subtotal, Number(params.discount ?? 0)));
+    const total = Math.round(Math.max(0, subtotal + parcelCharges - discount));
     const orderId = generateId();
     const now = new Date().toISOString();
     const orderSource = params.orderSource || 'staff';
@@ -387,7 +394,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
 
     const order: Order = {
       id: orderId, orderNumber, tableNumber: params.tableNumber, orderType: params.orderType,
-      items: [...cart], subtotal, discount: 0, discountType: 'flat', discountValue: 0, total,
+      items: [...cart], subtotal, discount, discountType: params.discountType || 'flat', discountValue: Number(params.discountValue ?? 0), total,
       status: orderStatus, createdBy: params.createdBy, createdAt: now, updatedAt: now,
       notes: params.notes, customerName: params.customerName, paymentType, orderSource,
       ...(params.billedBy ? { billedBy: params.billedBy } : {}),
@@ -400,8 +407,8 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
 
     const payload = {
       id: orderId, order_number: orderNumber, table_number: params.tableNumber || null,
-      order_type: params.orderType, items: cartSnapshot, subtotal, discount: 0, discount_type: 'flat',
-      discount_value: 0, total, status: orderStatus, created_by: params.createdBy,
+      order_type: params.orderType, items: cartSnapshot, subtotal, discount, discount_type: params.discountType || 'flat',
+      discount_value: Number(params.discountValue ?? 0), total, status: orderStatus, created_by: params.createdBy,
       notes: params.notes || null, customer_name: params.customerName || null,
       payment_type: paymentType, payment_breakdown: params.paymentBreakdown || null, billed_by: params.billedBy || null, order_source: orderSource, created_at: now, updated_at: now,
       parcel_charges: parcelCharges,
