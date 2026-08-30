@@ -135,7 +135,23 @@ function useStableDispatchIds() {
 // groups by a normalized key, but several call sites below used to compare
 // with exact `===`, silently dropping branches/dispatches whose casing
 // differed. sameItem() is the one place that comparison happens now.
-const sameItem = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
+//
+// BUG FIX (audit 2026-08-30): "select 15 items, dispatch, only 12 show up —
+// always the ones ending in '(kg)'". computeMergedSummary() (above) appends
+// a " (kg)"/" (pcs)" disambiguation suffix to row.itemName whenever the same
+// item name is genuinely used in two different units (see its BUG FIX
+// comment) — that suffix only ever exists on the derived row.itemName, NEVER
+// on the real bakery_orders.items[].itemName it gets compared against here.
+// Every one of this function's 30+ call sites (order lookup, dispatch-log
+// "already sent" totals, openReview()'s entries filter) compares a
+// (possibly-suffixed) row.itemName against a (never-suffixed) raw item name,
+// so for any item that ever collided across units, the match silently failed
+// — the item looked like it had "no linked order" and vanished from the
+// dispatch batch with zero indication why. Strip the suffix before comparing
+// so identity (used for disambiguating *rows*) never leaks into matching
+// (used for finding the real order data a row represents).
+const stripUnitDisambiguation = (name: string) => name.replace(/\s*\((?:kg|pcs)\)\s*$/i, '').trim();
+const sameItem = (a: string, b: string) => stripUnitDisambiguation(a).trim().toLowerCase() === stripUnitDisambiguation(b).trim().toLowerCase();
 
 export function computeMergedSummary(orders: BakeryOrder[]): MergedRow[] {
   const rows = new Map<string, MergedRow>();
