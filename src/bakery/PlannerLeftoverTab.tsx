@@ -1280,7 +1280,12 @@ export function PlannerTransferOutTab() {
     downloadTransferOutInvoice({
       itemName: name, qty: transferConverted?.qty ?? amount, unit: transferConverted?.unit ?? transferUnit, destination: transferDestination,
       unitPrice: transferCatalogEntry?.price ?? null, reason: reasonText, staffName, createdAt: new Date(),
-      transferNo: `TO-${kolkataToday()}-${Date.now().toString().slice(-6)}`,
+      // BUG FIX (audit 2026-08-30): `Date.now().toString().slice(-6)` repeats
+      // every ~16.7 minutes (10^6 ms) — two transfers on the same day that
+      // far apart (easily possible on a busy day) could print with the
+      // identical reference number. Same root cause as the GST invoice and
+      // walk-in bill numbering bugs fixed elsewhere today; same fix.
+      transferNo: `TO-${kolkataToday()}-${crypto.randomUUID().slice(0, 6).toUpperCase()}`,
     });
     resetTransferForm();
     void refresh();
@@ -1350,7 +1355,13 @@ export function PlannerTransferOutTab() {
           <div className="grid grid-cols-2 gap-3">
             <label className="space-y-1">
               <span className="text-xs font-black text-orange-900">Quantity</span>
-              <input type="number" min="0" step="0.001" value={transferQty} onChange={(e) => setTransferQty(e.target.value)} className="h-11 w-full rounded-xl border border-orange-200 bg-white px-3 text-sm font-bold" placeholder="0" />
+              {/* BUG FIX (audit 2026-08-30): hardcoded step="0.001" and no
+                  sanitization regardless of unit — unlike every other qty
+                  input in this file, this one let a pcs transfer-out record
+                  a fractional pcs delta against the shared Closing Stock
+                  ledger (a likely contributor to "pcs items showing decimal
+                  available stock", see PlannerDashboard.tsx's audit notes). */}
+              <input type="number" min="0" step={transferUnit === 'pcs' ? 1 : 0.001} value={transferQty} onChange={(e) => setTransferQty(sanitizeQtyForUnit(e.target.value, transferUnit))} className="h-11 w-full rounded-xl border border-orange-200 bg-white px-3 text-sm font-bold" placeholder="0" />
             </label>
             <div className="flex items-end gap-2">
               <button onClick={() => setTransferUnit('kg')} className={cn('flex-1 rounded-xl border py-2.5 text-sm font-black', transferUnit === 'kg' ? 'border-orange-600 bg-orange-600 text-white' : 'border-orange-200 bg-white text-orange-900')}>Kg</button>

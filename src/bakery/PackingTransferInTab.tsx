@@ -3,6 +3,7 @@ import { AlertTriangle, ArrowDownToLine, CheckCircle2, Loader2, Package, Printer
 import { useAuthStore } from '@/stores/authStore';
 import { supabase } from '@/lib/supabase';
 import { printViaIframe } from '@/lib/printViaIframe';
+import { sanitizeQtyForUnit } from './PlannerLeftoverTab';
 
 type SourceBranch = 'SNB' | 'VRSNB';
 type Unit = 'kg' | 'pcs';
@@ -142,11 +143,16 @@ export default function PackingTransferInTab() {
           <label className="block text-xs font-bold">Source branch<select value={form.source} onChange={(e) => setForm((v) => ({ ...v, source: e.target.value as SourceBranch }))} className="mt-1 h-11 w-full rounded-xl border bg-background px-3"><option value="SNB">SNB</option><option value="VRSNB">VRSNB</option></select></label>
           <label className="block text-xs font-bold">Transfer reference *<input value={form.reference} onChange={(e) => setForm((v) => ({ ...v, reference: e.target.value }))} placeholder="Example: TRF-2026-001" className="mt-1 h-11 w-full rounded-xl border bg-background px-3" /></label>
           <label className="block text-xs font-bold">Item name *<input value={form.itemName} onChange={(e) => setForm((v) => ({ ...v, itemName: e.target.value }))} placeholder="Enter item name" className="mt-1 h-11 w-full rounded-xl border bg-background px-3" /></label>
+          {/* BUG FIX (audit 2026-08-30): hardcoded step="0.001" and no
+              sanitization regardless of unit — same "pcs never allow decimal
+              points" gap found across several Planner qty inputs today. A
+              pcs transfer could be posted (and printed on the register) with
+              a fractional expected/received count. */}
           <div className="grid grid-cols-2 gap-2">
-            <label className="block text-xs font-bold">Expected<input type="number" min="0" step="0.001" value={form.expected} onChange={(e) => setForm((v) => ({ ...v, expected: e.target.value }))} className="mt-1 h-11 w-full rounded-xl border bg-background px-3" /></label>
-            <label className="block text-xs font-bold">Received *<input type="number" min="0.001" step="0.001" value={form.received} onChange={(e) => setForm((v) => ({ ...v, received: e.target.value }))} className="mt-1 h-11 w-full rounded-xl border bg-background px-3" /></label>
+            <label className="block text-xs font-bold">Expected<input type="number" min="0" step={form.unit === 'pcs' ? 1 : 0.001} value={form.expected} onChange={(e) => setForm((v) => ({ ...v, expected: sanitizeQtyForUnit(e.target.value, v.unit) }))} className="mt-1 h-11 w-full rounded-xl border bg-background px-3" /></label>
+            <label className="block text-xs font-bold">Received *<input type="number" min="0.001" step={form.unit === 'pcs' ? 1 : 0.001} value={form.received} onChange={(e) => setForm((v) => ({ ...v, received: sanitizeQtyForUnit(e.target.value, v.unit) }))} className="mt-1 h-11 w-full rounded-xl border bg-background px-3" /></label>
           </div>
-          <label className="block text-xs font-bold">Unit<select value={form.unit} onChange={(e) => setForm((v) => ({ ...v, unit: e.target.value as Unit }))} className="mt-1 h-11 w-full rounded-xl border bg-background px-3"><option value="kg">KG</option><option value="pcs">Pcs</option></select></label>
+          <label className="block text-xs font-bold">Unit<select value={form.unit} onChange={(e) => { const nextUnit = e.target.value as Unit; setForm((v) => ({ ...v, unit: nextUnit, expected: sanitizeQtyForUnit(v.expected, nextUnit), received: sanitizeQtyForUnit(v.received, nextUnit) })); }} className="mt-1 h-11 w-full rounded-xl border bg-background px-3"><option value="kg">KG</option><option value="pcs">Pcs</option></select></label>
           <label className="block text-xs font-bold">Remarks<textarea value={form.remarks} onChange={(e) => setForm((v) => ({ ...v, remarks: e.target.value }))} placeholder="Shortage, excess, return or leftover reason" className="mt-1 min-h-24 w-full rounded-xl border bg-background p-3" /></label>
           <button type="submit" disabled={saving} className="h-11 w-full rounded-xl bg-teal-600 text-white font-black flex items-center justify-center gap-2 disabled:opacity-60">{saving ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}{saving ? 'Posting…' : 'Confirm Transfer In'}</button>
         </form>

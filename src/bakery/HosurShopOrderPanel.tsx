@@ -36,6 +36,7 @@ import { notifyAdmin } from '@/pages/HosurDashboard';
 import { buildHosurOrderTag, buildHosurItemId, checkRecentDuplicateHosurOrder } from './hosurOrderShared';
 import { closestRecipeMatch } from './recipeNameMatch';
 import KgPackAdder from './KgPackAdder';
+import { sanitizeQtyForUnit } from './PlannerLeftoverTab';
 
 const money = (v: number | null | undefined) => 'Rs.' + (v ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
 const num = (v: number | null | undefined) => (v ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
@@ -234,7 +235,11 @@ function PlaceOrderSection({ shops, prices, userName, onSaved }: { shops: HosurS
 
   const setQty = (item: { itemName: string; itemUnit: 'pcs' | 'kg'; unitPrice: number }, qty: number) => {
     if (!selectedShop) return;
-    const safeQty = Math.max(0, Math.round(qty * 1000) / 1000);
+    // BUG FIX (audit 2026-08-30): rounded to 3 decimals unconditionally,
+    // regardless of unit — a pcs item's cart quantity could end up
+    // fractional (e.g. 5.5 pcs), same "pcs never allow decimal points" gap
+    // fixed across many other Planner qty inputs today.
+    const safeQty = item.itemUnit === 'pcs' ? Math.max(0, Math.round(qty)) : Math.max(0, Math.round(qty * 1000) / 1000);
     setCartByShop(prev => {
       const shopCart = { ...(prev[selectedShop.id] ?? {}) };
       if (safeQty <= 0) delete shopCart[item.itemName];
@@ -467,8 +472,11 @@ function PlaceOrderSection({ shops, prices, userName, onSaved }: { shops: HosurS
                 </p>
               )}
             </div>
-            <input value={customQty} onChange={e => setCustomQty(e.target.value)} type="number" placeholder="Qty" className="rounded-lg border border-border bg-background px-2 py-1.5 text-xs font-bold" />
-            <select value={customUnit} onChange={e => setCustomUnit(e.target.value as 'pcs' | 'kg')} className="rounded-lg border border-border bg-background px-2 py-1.5 text-xs font-bold">
+            {/* BUG FIX (audit 2026-08-30): no step, no sanitization at all
+                (addCustomItem below doesn't clamp it either) — same gap
+                fixed across other Planner qty inputs today. */}
+            <input value={customQty} onChange={e => setCustomQty(sanitizeQtyForUnit(e.target.value, customUnit))} type="number" step={customUnit === 'pcs' ? 1 : 0.001} placeholder="Qty" className="rounded-lg border border-border bg-background px-2 py-1.5 text-xs font-bold" />
+            <select value={customUnit} onChange={e => { const nextUnit = e.target.value as 'pcs' | 'kg'; setCustomUnit(nextUnit); setCustomQty(q => sanitizeQtyForUnit(q, nextUnit)); }} className="rounded-lg border border-border bg-background px-2 py-1.5 text-xs font-bold">
               <option value="kg">kg</option><option value="pcs">pcs</option>
             </select>
             <input value={customPrice} onChange={e => setCustomPrice(e.target.value)} type="number" placeholder="Price/unit" className="rounded-lg border border-border bg-background px-2 py-1.5 text-xs font-bold" />
@@ -1401,7 +1409,11 @@ function HosurLeftoverAndCancelPanel({ pendingOrders, pendingItems, appliedLefto
                 {showAddForm && (
                   <div className="mb-3 grid gap-2 rounded-xl border border-teal bg-primary/5 p-3 sm:grid-cols-6">
                     <input value={addItemName} onChange={e => setAddItemName(e.target.value)} placeholder="Item name" className="rounded-lg border border-border bg-background px-2 py-1.5 text-xs font-bold sm:col-span-2" />
-                    <input value={addQty} onChange={e => setAddQty(e.target.value)} type="number" placeholder="Qty" className="rounded-lg border border-border bg-background px-2 py-1.5 text-xs font-bold" />
+                    {/* BUG FIX (audit 2026-08-30): no step, no sanitization —
+                        same "pcs never allow decimal points" gap found and
+                        fixed across many other Planner qty inputs today.
+                        This writes straight into the shared leftover pool. */}
+                    <input value={addQty} onChange={e => setAddQty(sanitizeQtyForUnit(e.target.value, addUnit))} type="number" step={addUnit === 'pcs' ? 1 : 0.001} placeholder="Qty" className="rounded-lg border border-border bg-background px-2 py-1.5 text-xs font-bold" />
                     <select value={addUnit} onChange={e => setAddUnit(e.target.value as 'kg' | 'pcs')} className="rounded-lg border border-border bg-background px-2 py-1.5 text-xs font-bold">
                       <option value="kg">kg</option><option value="pcs">pcs</option>
                     </select>
@@ -1469,7 +1481,10 @@ function HosurLeftoverAndCancelPanel({ pendingOrders, pendingItems, appliedLefto
                                   <option value="">Select shop…</option>
                                   {activeShops.map(s => <option key={s.id} value={s.id}>{s.shopName}</option>)}
                                 </select>
-                                <input type="number" value={dispatchQty} onChange={e => setDispatchQty(e.target.value)} placeholder="Qty" className="rounded-lg border border-border px-2 py-1.5 text-xs font-bold" />
+                                {/* BUG FIX (audit 2026-08-30): no step, no
+                                    sanitization — same gap fixed across other
+                                    Planner qty inputs today. */}
+                                <input type="number" step={row.unit === 'pcs' ? 1 : 0.001} value={dispatchQty} onChange={e => setDispatchQty(sanitizeQtyForUnit(e.target.value, row.unit === 'pcs' ? 'pcs' : 'kg'))} placeholder="Qty" className="rounded-lg border border-border px-2 py-1.5 text-xs font-bold" />
                                 <input type="number" value={dispatchPrice} onChange={e => setDispatchPrice(e.target.value)} placeholder="Price/unit" className="rounded-lg border border-border px-2 py-1.5 text-xs font-bold" />
                               </div>
                               <div className="flex flex-wrap items-center gap-1.5">
@@ -1549,7 +1564,10 @@ function HosurLeftoverAndCancelPanel({ pendingOrders, pendingItems, appliedLefto
                             <p className="text-[11px] font-bold text-muted-foreground">Dispatched {num(item.dispatchedQuantity)} {item.unit}{item.cancelledQuantity > 0 ? ` · already cancelled ${num(item.cancelledQuantity)} ${item.unit}` : ''}</p>
                           </div>
                           <div className="flex items-center gap-1.5">
-                            <input type="number" placeholder="Qty" value={cancelQty[item.id] ?? ''} onChange={e => setCancelQty(v => ({ ...v, [item.id]: e.target.value }))} className="w-20 rounded-lg border border-border px-2 py-1 text-right text-xs font-bold" />
+                            {/* BUG FIX (audit 2026-08-30): no step, no
+                                sanitization — same gap fixed across other
+                                Planner qty inputs today. */}
+                            <input type="number" step={item.unit === 'pcs' ? 1 : 0.001} placeholder="Qty" value={cancelQty[item.id] ?? ''} onChange={e => setCancelQty(v => ({ ...v, [item.id]: sanitizeQtyForUnit(e.target.value, item.unit === 'pcs' ? 'pcs' : 'kg') }))} className="w-20 rounded-lg border border-border px-2 py-1 text-right text-xs font-bold" />
                             <button onClick={() => cancelItem(item)} disabled={busyItemId === item.id || !cancelQty[item.id]} className="flex items-center gap-1 rounded-lg bg-destructive px-2.5 py-1.5 text-[11px] font-bold text-white hover:opacity-90 disabled:opacity-40">
                               {busyItemId === item.id ? <Loader2 className="size-3 animate-spin" /> : <PackageX className="size-3" />} Cancel
                             </button>

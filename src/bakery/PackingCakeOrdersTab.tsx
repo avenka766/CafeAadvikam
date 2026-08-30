@@ -471,8 +471,15 @@ function CustomCakeOrderPanel({ dispatchedBy }: { dispatchedBy: string }) {
     cakeTypeId, weightKg: Number(weightKg) || 0, design, drawingWork, photoWork,
   }), [cakeTypeId, weightKg, design, drawingWork, photoWork]);
   const pct = Math.max(0, Math.min(100, Number(discountPct) || 0));
-  const discountAmount = Math.round(priceCalc.total * (pct / 100) * 100) / 100;
-  const netTotal = Math.max(0, Math.round((priceCalc.total - discountAmount) * 100) / 100);
+  // BUG FIX (audit 2026-08-30): 2-decimal (paise) rounding here — same root
+  // cause as the branch-side cake order round-off bug fixed earlier this
+  // session (see calculateCakePrice/cakeGrandTotal in cakePricing.ts /
+  // BranchBusinessModules.tsx). priceCalc.total is already whole-rupee, but
+  // a percentage discount of it can still land on paise (e.g. 1103 * 15% =
+  // 165.45), which used to carry straight through into the final total.
+  // Round both to whole rupees, matching ClosingConfirmModal's convention.
+  const discountAmount = Math.round(priceCalc.total * (pct / 100));
+  const netTotal = Math.max(0, Math.round(priceCalc.total - discountAmount));
 
   const itemLabel = () => {
     const parts = [creamType, flavour, selectedCakeType?.name].filter(Boolean).join(' / ');
@@ -702,7 +709,11 @@ function CakeDispatchReviewModal({ orders, dispatchedBy, onClose, onDone }: {
 
   const missingPriceOrders = orders.filter(o => !(Number(o.order_value) > 0));
   const subtotal = orders.reduce((s, o) => s + Number(o.order_value || 0), 0);
-  const discountAmount = Math.round(subtotal * (discountPct / 100) * 100) / 100;
+  // BUG FIX (audit 2026-08-30): discountAmount stayed paise-rounded while
+  // `total` below already correctly rounds to whole rupees — cosmetic
+  // inconsistency (e.g. "Discount Rs. 165.45" above a whole-rupee Total),
+  // same root cause as the cake round-off bug fixed elsewhere today.
+  const discountAmount = Math.round(subtotal * (discountPct / 100));
   const total = Math.round(subtotal - discountAmount);
 
   const confirm = async () => {

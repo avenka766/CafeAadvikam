@@ -27,7 +27,7 @@ import { useBakeryStore } from './bakeryStore';
 import { useBranchStore } from '@/branch/branchStore';
 import { BRANCHES } from './types';
 import type { Branch } from './types';
-import { recordLeftoverMovement } from './PlannerLeftoverTab';
+import { recordLeftoverMovement, sanitizeQtyForUnit } from './PlannerLeftoverTab';
 import { printViaIframe } from '@/lib/printViaIframe';
 
 import { PACKING_CLOSURE_KEY_PREFIX, packingBusinessDateToday } from './packingCounter';
@@ -154,7 +154,12 @@ function ConfirmReturnRow({ row, staffName, onDone }: { row: PendingReturnRow; s
         <span className="shrink-0 rounded-full bg-blue-100 px-2 py-1 text-[10px] font-black text-blue-700">Pending</span>
       </div>
       <div className="grid gap-2 sm:grid-cols-[140px_minmax(0,1fr)_auto]">
-        <label className="space-y-1"><span className="text-[10px] font-black text-muted-foreground">Received Qty</span><input type="number" min="0.001" step="0.001" value={qty} onChange={(e) => setQty(e.target.value)} className="h-9 w-full rounded-lg border bg-background px-2 text-sm font-bold" /></label>
+        {/* BUG FIX (audit 2026-08-30): hardcoded step="0.001" and no
+            sanitization regardless of unit — this writes straight into the
+            shared Closing Stock ledger below (recordLeftoverMovement), same
+            "pcs never allow decimal points" gap found across several other
+            Planner qty inputs today. */}
+        <label className="space-y-1"><span className="text-[10px] font-black text-muted-foreground">Received Qty</span><input type="number" min="0.001" step={row.unit === 'pcs' ? 1 : 0.001} value={qty} onChange={(e) => setQty(sanitizeQtyForUnit(e.target.value, row.unit === 'pcs' ? 'pcs' : 'kg'))} className="h-9 w-full rounded-lg border bg-background px-2 text-sm font-bold" /></label>
         <label className="space-y-1"><span className="text-[10px] font-black text-muted-foreground">Remarks (optional)</span><input value={remarks} onChange={(e) => setRemarks(e.target.value)} className="h-9 w-full rounded-lg border bg-background px-2 text-sm" /></label>
         <div className="flex items-end"><button onClick={() => void confirm()} disabled={saving} className="h-9 w-full rounded-lg bg-teal-700 px-4 text-xs font-black text-white disabled:opacity-50 sm:w-auto">{saving ? <Loader2 className="mx-auto size-4 animate-spin" /> : 'Confirm'}</button></div>
       </div>

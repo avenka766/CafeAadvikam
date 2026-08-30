@@ -454,6 +454,42 @@ export function computeProductionRows(orders: BakeryOrder[]): ProductionRow[] {
   });
 }
 
+// Largest-remainder proportional split: the shares always sum to EXACTLY
+// `pool` (never more, never less), in integer atomic units — whole pieces
+// for pcs, hundredths of a kg for kg (0.01 kg is as fine-grained as this
+// app's kg quantities ever get, matching Line Total's own 2-decimal
+// rounding). Independently rounding each share to 2 decimals (the old
+// approach, everywhere this is now used) can't guarantee that — two shares
+// landing on e.g. 20.115/25.085 both round the "wrong" way often enough
+// that the total silently drifts from what was actually typed/produced.
+// Shared by every "split a quantity across N weighted shares" site in this
+// file — see the 2026-08-28/2026-08-30 bug fixes (dispatch split, then
+// production-entry split, then this checklist's suggested-quantity split —
+// three independent copies of the exact same bug found across three audit
+// passes, which is itself the reason this got pulled into one shared,
+// single-tested helper instead of a fourth hand-rolled copy).
+function largestRemainderSplit(pool: number, shares: { key: string; weight: number; isPcs: boolean }[]): Record<string, number> {
+  const split: Record<string, number> = {};
+  if (shares.length === 0 || pool <= 0) return split;
+  const totalWeight = shares.reduce((s, x) => s + x.weight, 0) || 1;
+  const unitScale = shares.some(s => s.isPcs) ? 1 : 100;
+  const poolUnits = Math.round(pool * unitScale);
+  const withExact = shares.map(s => ({ ...s, exact: poolUnits * (s.weight / totalWeight) }));
+  const withFloor = withExact.map(s => ({ ...s, floor: Math.floor(s.exact) }));
+  const allocated = withFloor.reduce((sum, s) => sum + s.floor, 0);
+  let remainder = poolUnits - allocated;
+  const byRemainderDesc = [...withFloor].sort((a, b) => (b.exact - b.floor) - (a.exact - a.floor));
+  const bonusKeys = new Set<string>();
+  for (let i = 0; i < byRemainderDesc.length && remainder > 0; i++, remainder--) {
+    bonusKeys.add(byRemainderDesc[i].key);
+  }
+  for (const s of withFloor) {
+    const units = s.floor + (bonusKeys.has(s.key) ? 1 : 0);
+    if (units > 0) split[s.key] = units / unitScale;
+  }
+  return split;
+}
+
 // Proportional auto-split of a produced total across the contributing orders,
 // weighted by each order's original requested share for that item.
 export function autoSplitForItem(orders: BakeryOrder[], itemName: string, totalProduced: number): Record<string, number> {
@@ -462,14 +498,16 @@ export function autoSplitForItem(orders: BakeryOrder[], itemName: string, totalP
     const item = o.items.find(i => sameItem(i.itemName, itemName))!;
     const isPcs = item.dispatchUnit === 'pcs';
     const requested = isPcs && item.originalPcs != null ? item.originalPcs : item.quantity;
-    return { orderId: o.id, requested };
+    return { key: o.id, weight: requested, isPcs };
   });
-  const totalRequested = shares.reduce((s, x) => s + x.requested, 0) || 1;
-  const split: Record<string, number> = {};
-  for (const s of shares) {
-    split[s.orderId] = Math.round((totalProduced * (s.requested / totalRequested)) * 100) / 100;
-  }
-  return split;
+  // BUG FIX (audit 2026-08-30): this had the exact same drift bug
+  // largestRemainderSplit (above) now fixes for every caller — each share
+  // used to round independently to 2 decimals, so the shares didn't
+  // reliably sum back to `totalProduced` (production entry could silently
+  // under-record a fraction of what was actually produced), and for pcs
+  // items never even guaranteed a WHOLE number per order (e.g. 33.33 pcs
+  // "produced" for one order — physically meaningless).
+  return largestRemainderSplit(totalProduced, shares);
 }
 
 // FEATURE (2026-08-26): "orders correctly displayed / dispatchable across
@@ -537,31 +575,16 @@ function autoSplitForItemByBranch(orders: BakeryOrder[], itemName: string, branc
 
   // Whatever's left over (advance orders fully covered, or none exist) is
   // spread across the remaining orders proportional to what THEY still
-  // need — same largest-remainder-safe method as before, just weighted by
-  // remaining need instead of original full size.
+  // need, via the shared largest-remainder helper above — this is the
+  // value actually submitted to bakery_orders.dispatch_log
+  // (DispatchReviewModal's confirm() sends kg quantities through
+  // untouched), not just a display rounding — the old per-share-independent
+  // rounding drift under-dispatched real inventory, it wasn't cosmetic. See
+  // "45.2 kg dispatched shows as 45.19 kg", audit 2026-08-30.
   const otherShares = shares.filter(s => !s.isAdvance);
-  const totalOtherRemaining = otherShares.reduce((s, x) => s + x.remaining, 0) || 1;
-  if (pool > 0 && otherShares.length > 0) {
-    if (otherShares.some(s => s.isPcs)) {
-      const withExact = otherShares.map(s => ({ ...s, exact: pool * (s.remaining / totalOtherRemaining) }));
-      const withFloor = withExact.map(s => ({ ...s, floor: Math.floor(s.exact) }));
-      const allocated = withFloor.reduce((sum, s) => sum + s.floor, 0);
-      let remainder = Math.round(pool) - allocated;
-      const byRemainderDesc = [...withFloor].sort((a, b) => (b.exact - b.floor) - (a.exact - a.floor));
-      const bonusOrderIds = new Set<string>();
-      for (let i = 0; i < byRemainderDesc.length && remainder > 0; i++, remainder--) {
-        bonusOrderIds.add(byRemainderDesc[i].orderId);
-      }
-      for (const s of withFloor) {
-        const amt = s.floor + (bonusOrderIds.has(s.orderId) ? 1 : 0);
-        if (amt > 0) split[s.orderId] = (split[s.orderId] || 0) + amt;
-      }
-    } else {
-      for (const s of otherShares) {
-        const amt = Math.round((pool * (s.remaining / totalOtherRemaining)) * 100) / 100;
-        if (amt > 0) split[s.orderId] = (split[s.orderId] || 0) + amt;
-      }
-    }
+  const otherSplit = largestRemainderSplit(pool, otherShares.map(s => ({ key: s.orderId, weight: s.remaining, isPcs: s.isPcs })));
+  for (const [orderId, amt] of Object.entries(otherSplit)) {
+    split[orderId] = (split[orderId] || 0) + amt;
   }
 
   return split;
@@ -1232,12 +1255,20 @@ function EditableIncomingOrderCard({ order, bucket, label, tone, hosurShopName }
                 items={branchCatalog}
                 placeholder="Item name"
               />
+              {/* BUG FIX (audit 2026-08-30): "pcs items never allow decimal
+                  points" — enforced everywhere else a qty is typed in this
+                  file (IncomingOrdersTab's own "Add Order" entry just above
+                  this component, every dispatch panel, etc.) but missing
+                  here: this input had no step and no sanitization at all, so
+                  editing an existing incoming order let you save e.g. 5.7
+                  pcs, which then propagates as a fractional originalPcs/
+                  quantity into every downstream split/dispatch calculation. */}
               <input
-                value={d.qty} onChange={e => updateDraft(idx, { qty: e.target.value })} type="number" min={0}
+                value={d.qty} onChange={e => updateDraft(idx, { qty: sanitizeQtyForUnit(e.target.value, d.unit) })} type="number" min={0} step={d.unit === 'pcs' ? 1 : 0.001}
                 placeholder="Qty" className="w-24 rounded-lg border border-border px-2.5 py-1.5 text-xs font-bold"
               />
               <select
-                value={d.unit} onChange={e => updateDraft(idx, { unit: e.target.value as 'pcs' | 'kg' })}
+                value={d.unit} onChange={e => { const nextUnit = e.target.value as 'pcs' | 'kg'; updateDraft(idx, { unit: nextUnit, qty: sanitizeQtyForUnit(d.qty, nextUnit) }); }}
                 className="rounded-lg border border-border px-2 py-1.5 text-xs font-bold"
               >
                 <option value="kg">kg</option>
@@ -1596,9 +1627,14 @@ function MergedSummaryTab({ orders }: { orders: BakeryOrder[] }) {
                     <td className="px-4 py-3 text-right font-black text-foreground">
                       {editingKey === key ? (
                         <span className="inline-flex items-center gap-1">
+                          {/* BUG FIX (audit 2026-08-30): hardcoded step="0.001"
+                              regardless of unit let a pcs row's edit here save a
+                              fractional pcs quantity (e.g. 5.5 pcs) — same "pcs
+                              never allow decimal points" rule enforced everywhere
+                              else a qty gets typed in this file. */}
                           <input
-                            type="number" min={0} step="0.001" value={editValue} autoFocus
-                            onChange={e => setEditValue(e.target.value)}
+                            type="number" min={0} step={row.unit === 'pcs' ? 1 : 0.001} value={editValue} autoFocus
+                            onChange={e => setEditValue(sanitizeQtyForUnit(e.target.value, row.unit))}
                             className="w-20 rounded-lg border border-teal-300 px-2 py-1 text-right text-xs font-bold"
                           />
                           <span className="text-xs font-bold text-muted-foreground">{row.unit}</span>
@@ -2041,7 +2077,14 @@ function ExtraProducedItemForm() {
         </div>
         <label className="space-y-1">
           <span className="text-xs font-black text-muted-foreground">Quantity</span>
-          <input type="number" min="0" step="0.001" value={qty} onChange={e => setQty(e.target.value)} className="h-11 w-full rounded-xl border border-border bg-background px-3 text-sm font-bold" placeholder="0" />
+          {/* BUG FIX (audit 2026-08-30): hardcoded step="0.001" and no
+              sanitization regardless of unit — recording a "pcs" extra item
+              here (e.g. typing 5.5) wrote a fractional pcs delta straight
+              into the shared Closing Stock leftover ledger, the most likely
+              root cause of "pcs items showing decimal available stock"
+              (see project_planner_dispatch_panel_ux_bugs) — that fix rounds
+              the DISPLAY, this fixes the actual write. */}
+          <input type="number" min="0" step={unit === 'pcs' ? 1 : 0.001} value={qty} onChange={e => setQty(sanitizeQtyForUnit(e.target.value, unit))} className="h-11 w-full rounded-xl border border-border bg-background px-3 text-sm font-bold" placeholder="0" />
         </label>
         <label className="space-y-1">
           <span className="text-xs font-black text-muted-foreground">Date</span>
@@ -3985,7 +4028,15 @@ function GstInvoiceTab() {
     if (!buyerName.trim()) { setError('Enter the buyer / customer name.'); return; }
     if (validLines.length === 0) { setError('Add at least one item with a name and quantity.'); return; }
 
-    const finalInvoiceNo = invoiceNo.trim() || `INV-${Date.now().toString().slice(-8)}`;
+    // BUG FIX (audit 2026-08-30): `Date.now().toString().slice(-8)` looks
+    // unique but is just the last 8 digits of a monotonically increasing
+    // millisecond counter — it repeats exactly every ~27.8 hours (10^8 ms).
+    // Two GST tax invoices auto-generated (no invoice number typed in) that
+    // far apart could print with the IDENTICAL invoice number — a real GST
+    // compliance problem (invoice numbers must be unique), not just
+    // cosmetic. Same root cause, and same date-prefix + random-suffix fix,
+    // as BillingTab's walk-in bill number below.
+    const finalInvoiceNo = invoiceNo.trim() || `INV-${new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: '2-digit', month: '2-digit', day: '2-digit' }).format(new Date()).replace(/-/g, '')}-${crypto.randomUUID().slice(0, 6).toUpperCase()}`;
     const dateStr = new Date(invoiceDate).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' }).replace(/\//g, '-');
     const refDateStr = referenceDate ? new Date(referenceDate).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' }).replace(/\//g, '-') : '';
 
@@ -5045,6 +5096,27 @@ function branchDispatchedForRow(row: ProductionRow, branch: Branch, orders: Bake
     .reduce((s, o) => s + (o.dispatchLog || []).filter(d => sameItem(d.itemName, row.itemName) && !d.isExtra && d.branch === branch).reduce((s2, d) => s2 + d.quantity, 0), 0);
 }
 
+// Available stock for a row = whichever is larger of today's own recorded
+// production (row.preparedTotal) or the shared Closing Stock leftover
+// ledger balance (the ledger already reflects preparedTotal's own
+// contribution — production-complete credits it, dispatch debits it — so
+// taking whichever is larger is a safety margin against a momentarily
+// stale balance read, not double-counting).
+// BUG FIX (audit 2026-08-30): "pcs items showing decimal available stock"
+// (e.g. "465.99 pcs available") — the leftover ledger is a running sum of
+// many small deltas recorded over time (production, dispatch, sales,
+// waste, adjustments) and isn't itself unit-aware, so fractional drift can
+// accumulate even for a physically discrete pcs item. This was computed
+// inline, unrounded, in 3 separate dispatch panels — consolidated into one
+// shared helper that rounds to whole pieces for pcs (matching the
+// pcs-integer convention this file already applies everywhere else — the
+// qty input's own step=1 for pcs, clampQtyForUnit, etc.) so the same drift
+// can't quietly reappear in a 4th copy later.
+function computeAvailableForRow(row: ProductionRow, leftoverBalance: number): number {
+  const raw = Math.max(row.preparedTotal, Math.max(0, leftoverBalance));
+  return row.unit === 'pcs' ? Math.round(raw) : Math.round(raw * 1000) / 1000;
+}
+
 // Same idea as branchDispatchedForRow, but for the "Planned" bucket (Planning
 // tab batches) — these orders have no fixed branch, so we track their
 // dispatch progress by order id instead of by targetBranch.
@@ -5833,7 +5905,7 @@ function BranchFlatDispatchPanel({ branch, rows, orders, leftoverBalances, onDis
     const alreadySent = branchDispatchedForRow(row, branch, orders);
     const remaining = Math.max(0, Math.round((requested - alreadySent) * 100) / 100);
     const leftoverBalance = Math.max(0, leftoverBalances.get(closingStockItemSlug(row.itemName))?.balance ?? 0);
-    const available = Math.max(row.preparedTotal, leftoverBalance);
+    const available = computeAvailableForRow(row, leftoverBalance);
     const defaultQty = Math.round(Math.min(remaining, available) * 100) / 100;
     return { row, requested, alreadySent, remaining, available, defaultQty };
   }), [rows, branch, orders, leftoverBalances]);
@@ -5844,6 +5916,34 @@ function BranchFlatDispatchPanel({ branch, rows, orders, leftoverBalances, onDis
   // to send, so a moment's inattention can't blast out items you never
   // meant to dispatch.
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  // BUG FIX (audit 2026-08-30): "select 35 items, dispatch a few times, 2-3
+  // items disappear" — `rows` (and therefore `lines`) is fed pre-filtered
+  // to exclude anything already fully dispatched (see flatPanelRows in
+  // DispatchDateGroup). That's correct — a fully-dispatched item genuinely
+  // has nothing left to send — but when one of YOUR selected items crosses
+  // that line mid-session (e.g. an earlier dispatch round in the same
+  // batch just finished it off), it silently vanishes from this list with
+  // no explanation, reading exactly like data loss rather than success.
+  // Track the transition explicitly and surface it as a clear confirmation
+  // instead of a silent disappearance, and keep `selected` in sync so the
+  // selected-count badge doesn't keep counting an item that's no longer
+  // even in the list.
+  const [justCompleted, setJustCompleted] = useState<string[]>([]);
+  useEffect(() => {
+    const currentNames = new Set(lines.map(l => l.row.itemName));
+    setSelected(prevSelected => {
+      const stillPresent = new Set<string>();
+      const removed: string[] = [];
+      for (const name of prevSelected) {
+        if (currentNames.has(name)) stillPresent.add(name);
+        else removed.push(name);
+      }
+      if (removed.length === 0) return prevSelected;
+      setJustCompleted(prev => Array.from(new Set([...prev, ...removed])));
+      return stillPresent;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lines]);
   // Tracks which quantity fields the planner has hand-edited, so the reseed
   // effect below only ever fills in a *fresh* default for an item it's
   // never touched — it will never overwrite a value you typed, no matter
@@ -6063,9 +6163,16 @@ function BranchFlatDispatchPanel({ branch, rows, orders, leftoverBalances, onDis
           {allVisibleSelected ? 'Deselect all' : 'Select all'}
         </button>
       </div>
+      {justCompleted.length > 0 && (
+        <div className="flex flex-wrap items-start gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-[11px] font-bold text-emerald-800">
+          <CheckCircle2 className="mt-0.5 size-3.5 shrink-0" />
+          <span className="flex-1">Fully dispatched and removed from this list: {justCompleted.join(', ')}</span>
+          <button type="button" onClick={() => setJustCompleted([])} className="shrink-0 rounded-lg border border-emerald-300 bg-white px-2 py-0.5 text-[10px] font-black text-emerald-800 hover:bg-emerald-100">Clear</button>
+        </div>
+      )}
       {visibleLines.length === 0 && <EmptyState text="No items match your search." />}
       <div className="space-y-2">
-        {visibleLines.map(({ row, requested, alreadySent, available, remaining }) => {
+        {visibleLines.map(({ row, requested, alreadySent, available, remaining }, idx) => {
           const val = qty[row.itemName] ?? '0';
           const over = Number(val) > available + 0.01;
           const overRemaining = Number(val) > remaining + 0.01;
@@ -6079,6 +6186,7 @@ function BranchFlatDispatchPanel({ branch, rows, orders, leftoverBalances, onDis
                     className="size-4 shrink-0 accent-teal-600"
                   />
                   <p className="text-sm font-black text-foreground">
+                    <span className="mr-1.5 text-muted-foreground">{idx + 1}.</span>
                     {row.itemName} <span className="font-bold text-muted-foreground">(ordered {qtyFmt(requested)} {row.unit} · sent {qtyFmt(alreadySent)} {row.unit})</span>
                   </p>
                 </label>
@@ -6092,6 +6200,26 @@ function BranchFlatDispatchPanel({ branch, rows, orders, leftoverBalances, onDis
                 {qtyFmt(available)} {row.unit} available now (produced + leftover) · {qtyFmt(remaining)} {row.unit} still owed
                 {overRemaining ? ' — this will be capped at what\'s still owed when you send.' : over ? " — you're sending more than what's currently available, double-check before sending." : ''}
               </p>
+              {/* BUG FIX (audit 2026-08-30): "Hosur: dispatch 9 of 10, the
+                  1 stays stuck in To Dispatch forever" — regression report.
+                  "By Shop" view (HosurShopDispatchPanel) already has a real
+                  confirm-and-cancel-the-shortfall feature (2026-08-24), but
+                  this "By Item" view is shared with SNB/VRSNB and has no
+                  such thing — it just quietly dispatches whatever's typed
+                  with no confirmation and no way to close out the shortfall,
+                  so the item sits "still owed" indefinitely. Building the
+                  same auto-cancel here safely needs per-shop attribution
+                  (one item-view row can span many Hosur shop orders merged
+                  together, exactly what "By Shop" is built to handle) —
+                  retrofitting that without it risks cancelling the wrong
+                  shop's order. Safer fix for now: make the gap visible
+                  instead of silent, and point at the view that already
+                  handles it correctly. */}
+              {branch === 'Hosur' && isChecked && Number(val) > 0.001 && Number(val) < remaining - 0.01 && (
+                <p className="mt-1 pl-[26px] text-[11px] font-bold text-amber-700">
+                  Sending less than what's owed here won't close this out — the remainder will sit "still owed" indefinitely. To confirm a shortfall and cancel the rest for a specific shop, switch to "By Shop" view instead.
+                </p>
+              )}
             </div>
           );
         })}
@@ -7214,7 +7342,7 @@ function CustomDispatchPanel({ rows, orders, onDispatch, dispatchedBy, leftoverB
     const alreadySent = plannedDispatchedForRow(row, orders);
     const remainingPlanned = Math.max(0, plannedRequested - alreadySent);
     const leftoverBalance = Math.max(0, leftoverBalances.get(closingStockItemSlug(row.itemName))?.balance ?? 0);
-    const available = Math.max(row.preparedTotal, leftoverBalance);
+    const available = computeAvailableForRow(row, leftoverBalance);
     const defaultQty = Math.round(Math.min(remainingPlanned, available) * 100) / 100;
     return { row, plannedRequested, remainingPlanned, available, defaultQty };
   }), [rows, orders, leftoverBalances]);
@@ -7401,7 +7529,7 @@ function BulkDispatchModal({ branch, rows, orders, onClose, onDispatch, dispatch
     const alreadySent = branchDispatchedForRow(row, branch, orders);
     const remainingRequested = Math.max(requested - alreadySent, 0);
     const leftoverBalance = Math.max(0, leftoverBalances.get(closingStockItemSlug(row.itemName))?.balance ?? 0);
-    const available = Math.max(row.preparedTotal, leftoverBalance);
+    const available = computeAvailableForRow(row, leftoverBalance);
     const defaultQty = Math.round(Math.min(remainingRequested, available) * 100) / 100;
     return { row, requested, alreadySent, remaining: remainingRequested, available, defaultQty };
   }), [rows, branch, orders, leftoverBalances]);
@@ -7617,15 +7745,17 @@ function DispatchChecklistModal({ row, orders, branchFilter, onClose, onDispatch
   // branch bucket combined, keyed by orderId::branch so the same order's
   // two branch portions get independent suggested amounts.
   const entryKey = (orderId: string, branch: string) => `${orderId}::${branch}`;
+  // BUG FIX (audit 2026-08-30): same independent-per-share-rounding drift
+  // as autoSplitForItem/autoSplitForItemByBranch (see largestRemainderSplit
+  // above) — the suggested amounts here could fail to sum to
+  // availableToDispatch, and for pcs items were never guaranteed whole
+  // pieces. Same shared fix.
   const autoSplit = useMemo(() => {
-    const allEntries: { key: string; requestedQty: number }[] = [];
+    const allEntries: { key: string; weight: number; isPcs: boolean }[] = [];
     for (const [branch, entries] of branchOrders) {
-      for (const { order, requestedQty } of entries) allEntries.push({ key: entryKey(order.id, branch), requestedQty });
+      for (const { order, item, requestedQty } of entries) allEntries.push({ key: entryKey(order.id, branch), weight: requestedQty, isPcs: item.dispatchUnit === 'pcs' });
     }
-    const totalRequested = allEntries.reduce((s, e) => s + e.requestedQty, 0) || 1;
-    const split: Record<string, number> = {};
-    for (const e of allEntries) split[e.key] = Math.round((availableToDispatch * (e.requestedQty / totalRequested)) * 100) / 100;
-    return split;
+    return largestRemainderSplit(availableToDispatch, allEntries);
   }, [branchOrders, availableToDispatch]);
   const [qty, setQty] = useState<Record<string, string>>({});
   const branchKeys = useMemo(() => Array.from(branchOrders.keys()), [branchOrders]);
@@ -8457,7 +8587,12 @@ function PlannerWasteLogsTab() {
           <div className="grid grid-cols-2 gap-3">
             <label className="space-y-1">
               <span className="text-xs font-black text-muted-foreground">Quantity</span>
-              <input type="number" min="0" step="0.001" value={lineDraft.quantity} onChange={e => setLineDraft(prev => ({ ...prev, quantity: e.target.value }))} className="h-10 w-full rounded-xl border border-border px-3 text-sm font-bold" />
+              {/* BUG FIX (audit 2026-08-30): hardcoded step="0.001" and no
+                  sanitization regardless of unit — same "pcs never allow
+                  decimal points" gap found and fixed in several other qty
+                  inputs across this file (see audit note in
+                  ExtraProducedItemForm above). */}
+              <input type="number" min="0" step={lineDraft.unit === 'pcs' ? 1 : 0.001} value={lineDraft.quantity} onChange={e => setLineDraft(prev => ({ ...prev, quantity: sanitizeQtyForUnit(e.target.value, prev.unit === 'pcs' ? 'pcs' : 'kg') }))} className="h-10 w-full rounded-xl border border-border px-3 text-sm font-bold" />
             </label>
             <label className="space-y-1">
               <span className="text-xs font-black text-muted-foreground">Unit</span>
