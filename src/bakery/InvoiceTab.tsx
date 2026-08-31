@@ -354,17 +354,19 @@ function createLineDraft(line?: InvoiceLineItem): InvoiceLineDraft {
   };
 }
 
-// Used when seeding an Invoice/GRN draft from a Purchase Order line (which
-// has no price, item code, or accept/reject concept yet — those are filled
-// in for the first time at conversion).
-function createLineDraftFromPO(item: { itemName: string; quantity: number; unit: string }): InvoiceLineDraft {
+// Used when seeding an Invoice/GRN draft from a Purchase Order line. The PO
+// now carries its own price/item code (2026-08-30) so those pre-fill here as
+// a starting point — Store can still correct them against what actually
+// arrived. Accept/reject-qty and remarks stay GRN-only concepts (nothing's
+// been delivered yet at PO time), so those always start fresh here.
+function createLineDraftFromPO(item: { itemName: string; quantity: number; unit: string; pricePerUnit?: number; itemCode?: string }): InvoiceLineDraft {
   return {
     rowId: crypto.randomUUID(),
     itemName: item.itemName,
     quantity: String(item.quantity),
     unit: invoiceUnit(item.unit),
-    pricePerUnit: '',
-    itemCode: '',
+    pricePerUnit: item.pricePerUnit ? String(item.pricePerUnit) : '',
+    itemCode: item.itemCode ?? '',
     acceptedQty: String(item.quantity),
     rejectedQty: '0',
     remarks: '',
@@ -793,7 +795,7 @@ export interface SourcePurchaseOrder {
   poNumber: string;
   supplierId: string;
   supplierName: string;
-  lineItems: { itemName: string; quantity: number; unit: string }[];
+  lineItems: { itemName: string; quantity: number; unit: string; pricePerUnit?: number; itemCode?: string }[];
 }
 
 export function CreateInvoiceModal({

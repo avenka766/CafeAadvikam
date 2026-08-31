@@ -10,6 +10,8 @@ import { useRecipeStore } from './recipeStore';
 
 export type StockUnit = 'kg' | 'L' | 'pcs' | 'g' | 'nos' | 'bunch' | 'ltr';
 
+export type StockCategory = 'raw' | 'packing';
+
 export interface StockItem {
   id: string;
   name: string;
@@ -18,6 +20,13 @@ export interface StockItem {
   minThreshold: number;
   archivedAt?: string;
   suppliers?: string[];
+  // FEATURE (2026-08-30): "packing materials mixed in with raw material is
+  // causing disturbance for the client when checking for raw material" —
+  // Store's Inventory tab had 819 items (boxes, covers, pouches, tape...
+  // alongside actual food ingredients) in one flat list. Defaults to 'raw'
+  // for anything not explicitly set, so nothing that existed before this
+  // silently vanishes from the Raw Materials view.
+  category: StockCategory;
 }
 
 export interface MaterialDeductionLog {
@@ -44,11 +53,15 @@ interface StoreStockState {
   loaded: boolean;
   loading: boolean;
   load: () => Promise<void>;
-  addItem: (name: string, unit: StockUnit, quantity: number, minThreshold: number, suppliers?: string[]) => Promise<string | null>;
+  addItem: (name: string, unit: StockUnit, quantity: number, minThreshold: number, suppliers?: string[], category?: StockCategory) => Promise<string | null>;
   updateQuantity: (id: string, quantity: number) => Promise<string | null>;
-  updateItem: (id: string, updates: Partial<Pick<StockItem, 'name' | 'unit' | 'quantity' | 'minThreshold'>>) => Promise<string | null>;
+  updateItem: (id: string, updates: Partial<Pick<StockItem, 'name' | 'unit' | 'quantity' | 'minThreshold' | 'category'>>) => Promise<string | null>;
   deleteItem: (id: string) => Promise<void>;
   bulkImportFromRecipes: () => Promise<{ added: number; skipped: number; error?: string }>;
+  // Bulk-reclassify — used by the Inventory tab's "Move to Packing/Raw"
+  // multi-select so a client doesn't have to open the edit form per item
+  // for a one-time cleanup pass.
+  bulkSetCategory: (ids: string[], category: StockCategory) => Promise<string | null>;
   subscribe: () => () => void;
   deductMaterials: (
     deductions: { name: string; qty: number; unit?: string }[],
@@ -109,7 +122,7 @@ export const useStoreStockStore = create<StoreStockState>()((set, get) => ({
     try {
       const { data, error } = await supabase
         .from('store_raw_stock')
-        .select('id, name, unit, quantity, min_threshold, archived_at, suppliers')
+        .select('id, name, unit, quantity, min_threshold, archived_at, suppliers, item_category')
         .order('name', { ascending: true });
       if (!error && data) {
         set({
@@ -121,6 +134,7 @@ export const useStoreStockStore = create<StoreStockState>()((set, get) => ({
             minThreshold: Number(r.min_threshold),
             archivedAt: (r.archived_at as string | null) ?? undefined,
             suppliers: Array.isArray(r.suppliers) ? r.suppliers as string[] : [],
+            category: (r.item_category as StockCategory) || 'raw',
           })),
           loaded: true,
         });
@@ -130,12 +144,12 @@ export const useStoreStockStore = create<StoreStockState>()((set, get) => ({
     }
   },
 
-  addItem: async (name, unit, quantity, minThreshold, suppliers = []) => {
+  addItem: async (name, unit, quantity, minThreshold, suppliers = [], category = 'raw') => {
     const existing = get().items.find(i => normaliseName(i.name) === normaliseName(name));
     if (existing) return 'Item already exists in stock list';
     const { data, error } = await supabase
       .from('store_raw_stock')
-      .insert({ name: name.trim(), unit, quantity, min_threshold: minThreshold, suppliers })
+      .insert({ name: name.trim(), unit, quantity, min_threshold: minThreshold, suppliers, item_category: category })
       .select()
       .single();
     if (error) return error.message;
@@ -147,6 +161,7 @@ export const useStoreStockStore = create<StoreStockState>()((set, get) => ({
         quantity: Number(data.quantity),
         minThreshold: Number(data.min_threshold),
         suppliers: Array.isArray(data.suppliers) ? data.suppliers as string[] : suppliers,
+        category: (data.item_category as StockCategory) || category,
       };
       set(s => ({ items: [...s.items, item].sort((a, b) => a.name.localeCompare(b.name)) }));
     }
@@ -169,6 +184,7 @@ export const useStoreStockStore = create<StoreStockState>()((set, get) => ({
     if (updates.unit !== undefined)         payload.unit = updates.unit;
     if (updates.quantity !== undefined)     payload.quantity = updates.quantity;
     if (updates.minThreshold !== undefined) payload.min_threshold = updates.minThreshold;
+    if (updates.category !== undefined)     payload.item_category = updates.category;
     const { error } = await supabase.from('store_raw_stock').update(payload).eq('id', id);
     if (error) return error.message;
     set(s => ({
@@ -184,6 +200,14 @@ export const useStoreStockStore = create<StoreStockState>()((set, get) => ({
     const { error } = await supabase.from('store_raw_stock').update({ archived_at: archivedAt }).eq('id', id);
     if (error) return;
     set(s => ({ items: s.items.filter(i => i.id !== id) }));
+  },
+
+  bulkSetCategory: async (ids, category) => {
+    if (ids.length === 0) return null;
+    const { error } = await supabase.from('store_raw_stock').update({ item_category: category }).in('id', ids);
+    if (error) return error.message;
+    set(s => ({ items: s.items.map(i => ids.includes(i.id) ? { ...i, category } : i) }));
+    return null;
   },
 
   bulkImportFromRecipes: async () => {
@@ -202,6 +226,7 @@ export const useStoreStockStore = create<StoreStockState>()((set, get) => ({
     const newItems: StockItem[] = (data ?? []).map(r => ({
       id: r.id as string, name: r.name as string, unit: r.unit as StockUnit,
       quantity: Number(r.quantity), minThreshold: Number(r.min_threshold),
+      category: (r.item_category as StockCategory) || 'raw',
     }));
     set(s => ({ items: [...s.items, ...newItems].sort((a, b) => a.name.localeCompare(b.name)) }));
     return { added: newItems.length, skipped: existing.length };

@@ -76,9 +76,19 @@ export function defaultDiscountPct(scope: DispatchInvoiceScope): number {
 export async function nextDispatchInvoiceNo(scope: DispatchInvoiceScope): Promise<string> {
   const { data, error } = await supabase.rpc('get_next_dispatch_invoice_number', { p_scope: scope });
   if (error || !data) {
+    // FEATURE (2026-09-01): "the dispatch items should follow the new
+    // billing format ... snb/26-27/.. continues starting from 1 and same
+    // for VRSNB and same for hosur" — the RPC (get_next_dispatch_invoice_number)
+    // is the real per-branch/per-FY counter; this only fires if that call
+    // itself failed, so it can't reproduce a real sequence number — it just
+    // keeps the SAME prefix/FY shape (millisecond suffix instead of a real
+    // count) so a rare fallback invoice still reads consistently with the
+    // rest, rather than reverting to an unrelated date-stamp format.
     const now = new Date();
-    const prefix = scope === 'Hosur' ? 'HSR' : scope;
-    return `${prefix}/${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}/${String(now.getTime()).slice(-4)}`;
+    const prefix = scope === 'Hosur' ? 'HOSUR' : scope;
+    const fyStartYear = now.getMonth() + 1 >= 4 ? now.getFullYear() : now.getFullYear() - 1;
+    const fy = `${String(fyStartYear % 100).padStart(2, '0')}-${String((fyStartYear + 1) % 100).padStart(2, '0')}`;
+    return `${prefix}/${fy}/${String(now.getTime()).slice(-4)}`;
   }
   return String(data);
 }
@@ -136,13 +146,22 @@ export async function saveDispatchInvoice(input: {
   dispatchEntryIds?: { orderId: string; dispatchEntryId: string }[];
   status?: 'paid' | 'unpaid';
   notes?: string | null;
+  // FEATURE (2026-09-01): "New Bill and Sample Bill should both use the
+  // same [SALES/26-27/N] numbering" — Sample Bill reuses this function
+  // purely for its ready-made invoice-record/reprint infrastructure, but
+  // its invoice number needs to come from the shared Sales sequence
+  // (next_sales_bill_number), not this branch's own dispatch sequence
+  // (nextDispatchInvoiceNo(scope)). Optional so every other caller (the
+  // real Dispatch tab flow) keeps generating its own branch-scoped number
+  // exactly as before.
+  invoiceNo?: string;
 }): Promise<DispatchInvoiceRecord> {
   const subtotal = Math.round(input.items.reduce((s, i) => s + i.lineTotal, 0) * 100) / 100;
   const discountAmount = Math.round(subtotal * (input.discountPct / 100) * 100) / 100;
   const preRound = subtotal - discountAmount;
   const total = Math.round(preRound);
   const roundOff = Math.round((total - preRound) * 100) / 100;
-  const invoiceNo = await nextDispatchInvoiceNo(input.scope);
+  const invoiceNo = input.invoiceNo || await nextDispatchInvoiceNo(input.scope);
   const status = input.status ?? 'paid';
 
   const { data, error } = await supabase.from('dispatch_invoices').insert({

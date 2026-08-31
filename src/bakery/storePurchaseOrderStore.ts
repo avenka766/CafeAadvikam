@@ -16,6 +16,13 @@ export interface StorePOLineItem {
   itemName: string;
   quantity: number;
   unit: string;
+  // FEATURE (2026-08-30): "should also have all the fields like GRN" — PO
+  // used to deliberately carry no price at all; now matches the GRN's
+  // priced-line shape (minus receiving-only fields like accepted/rejected
+  // qty, which stay GRN-only since nothing has been delivered yet).
+  pricePerUnit: number;
+  totalPrice: number;
+  itemCode?: string;
 }
 
 export type StorePOStatus = 'pending_approval' | 'approved' | 'rejected' | 'converted';
@@ -25,8 +32,10 @@ export interface StorePurchaseOrder {
   poNumber: string;
   supplierId: string;
   supplierName: string;
+  supplierAddress?: string;
   expectedDeliveryDate: string | null;
   lineItems: StorePOLineItem[];
+  grandTotal: number;
   status: StorePOStatus;
   notes: string;
   createdByName: string | null;
@@ -69,10 +78,16 @@ function mapLineItems(value: unknown): StorePOLineItem[] {
   if (!Array.isArray(value)) return [];
   return value.map((raw) => {
     const row = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
+    const quantity = toFiniteNumber(row.quantity);
+    const pricePerUnit = toFiniteNumber(row.pricePerUnit ?? row.price_per_unit);
+    const itemCode = row.itemCode ?? row.item_code;
     return {
       itemName: String(row.itemName ?? row.item_name ?? ''),
-      quantity: toFiniteNumber(row.quantity),
+      quantity,
       unit: String(row.unit ?? ''),
+      pricePerUnit,
+      totalPrice: toFiniteNumber(row.totalPrice ?? row.total_price) || Number((quantity * pricePerUnit).toFixed(2)),
+      itemCode: itemCode ? String(itemCode) : undefined,
     };
   });
 }
@@ -107,8 +122,10 @@ function mapPORow(r: Record<string, unknown>): StorePurchaseOrder {
     poNumber: String(r.po_number ?? ''),
     supplierId: String(r.supplier_id ?? ''),
     supplierName: String(r.supplier_name ?? ''),
+    supplierAddress: r.supplier_address ? String(r.supplier_address) : undefined,
     expectedDeliveryDate: r.expected_delivery_date ? String(r.expected_delivery_date) : null,
     lineItems: mapLineItems(r.line_items),
+    grandTotal: toFiniteNumber(r.grand_total),
     status: mapStatus(r.status),
     notes: String(r.notes ?? ''),
     createdByName: r.created_by_name ? String(r.created_by_name) : null,
@@ -121,7 +138,7 @@ function mapPORow(r: Record<string, unknown>): StorePurchaseOrder {
   };
 }
 
-const PO_SELECT = 'id, po_number, supplier_id, supplier_name, expected_delivery_date, line_items, status, notes, created_by_name, created_at, reviewed_at, reviewed_by_name, review_note, converted_invoice_id, converted_at';
+const PO_SELECT = 'id, po_number, supplier_id, supplier_name, supplier_address, expected_delivery_date, line_items, grand_total, status, notes, created_by_name, created_at, reviewed_at, reviewed_by_name, review_note, converted_invoice_id, converted_at';
 
 export const useStorePurchaseOrderStore = create<StorePOState>((set, get) => ({
   orders: [],

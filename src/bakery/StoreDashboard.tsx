@@ -27,7 +27,7 @@ import type { BakeryOrder } from './types';
 import { cn } from '@/lib/utils';
 import {
   useStoreStockStore, getAllRecipeMaterials, normaliseName, convertToStockUnit,
-  type StockUnit, type StockItem,
+  type StockUnit, type StockItem, type StockCategory,
 } from './storeStockStore';
 import { useSupplierStore, type Supplier } from './supplierStore';
 import StoreAnalyticsTab from './StoreAnalyticsTab';
@@ -936,19 +936,37 @@ function OrderCard({ order, searchTerm = '' }: { order: BakeryOrder; searchTerm?
 }
 
 // ─── Stock Row ────────────────────────────────────────────────────────────────
-function StockRow({ item, onEdit, onDelete }: { item: StockItem; onEdit: (i: StockItem) => void; onDelete: (id: string) => void }) {
+function StockRow({ item, onEdit, onDelete, selectMode = false, selected = false, onToggleSelect }: {
+  item: StockItem; onEdit: (i: StockItem) => void; onDelete: (id: string) => void;
+  selectMode?: boolean; selected?: boolean; onToggleSelect?: (id: string) => void;
+}) {
   const isNegative = item.quantity < 0;
   const isLow = !isNegative && item.quantity <= item.minThreshold;
   const suppliers = useMemo(() => getSuppliersForItem(item.name), [item.name]);
   return (
-    <div className={cn(
-      'flex items-center gap-2.5 px-3.5 py-3 rounded-xl border transition-all',
-      isNegative ? 'bg-red-100 border-red-400' : isLow ? 'bg-red-50 border-red-200' : 'bg-card border-border'
-    )}>
+    <div
+      onClick={selectMode ? () => onToggleSelect?.(item.id) : undefined}
+      className={cn(
+        'flex items-center gap-2.5 px-3.5 py-3 rounded-xl border transition-all',
+        selectMode && 'cursor-pointer',
+        selected ? 'bg-primary/10 border-primary' : isNegative ? 'bg-red-100 border-red-400' : isLow ? 'bg-red-50 border-red-200' : 'bg-card border-border'
+      )}>
+      {selectMode && (
+        <div className={cn('size-5 shrink-0 rounded-md border-2 flex items-center justify-center',
+          selected ? 'bg-primary border-primary' : 'border-border')}>
+          {selected && <Check className="size-3 text-primary-foreground" />}
+        </div>
+      )}
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-1.5">
           {(isNegative || isLow) && <AlertTriangle className={cn('size-3 shrink-0', isNegative ? 'text-red-700' : 'text-red-500')} />}
           <span className="text-sm font-body font-semibold text-foreground truncate">{item.name}</span>
+          {/* FEATURE (2026-08-30): category badge so it's obvious at a glance
+              which list an item is in, without opening Edit. */}
+          <span className={cn('shrink-0 text-[8px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded-full',
+            item.category === 'packing' ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700')}>
+            {item.category === 'packing' ? 'Packing' : 'Raw'}
+          </span>
         </div>
         <p className="text-[10px] font-body text-muted-foreground">
           Min: {item.minThreshold} {item.unit}
@@ -963,18 +981,22 @@ function StockRow({ item, onEdit, onDelete }: { item: StockItem; onEdit: (i: Sto
       )}>
         {item.quantity % 1 === 0 ? item.quantity : item.quantity.toFixed(2)} {item.unit}
       </span>
-      <button onClick={() => onEdit(item)} className="size-8 flex items-center justify-center rounded-lg hover:bg-muted active:scale-90">
-        <Pencil className="size-3.5 text-muted-foreground" />
-      </button>
-      <button onClick={() => onDelete(item.id)} className="size-8 flex items-center justify-center rounded-lg hover:bg-red-50 active:scale-90">
-        <Trash2 className="size-3.5 text-red-400" />
-      </button>
+      {!selectMode && (
+        <>
+          <button onClick={() => onEdit(item)} className="size-8 flex items-center justify-center rounded-lg hover:bg-muted active:scale-90">
+            <Pencil className="size-3.5 text-muted-foreground" />
+          </button>
+          <button onClick={() => onDelete(item.id)} className="size-8 flex items-center justify-center rounded-lg hover:bg-red-50 active:scale-90">
+            <Trash2 className="size-3.5 text-red-400" />
+          </button>
+        </>
+      )}
     </div>
   );
 }
 
 // ─── Add Stock modal ──────────────────────────────────────────────────────────
-function AddItemModal({ onClose, onSave }: { onClose: () => void; onSave: (name: string, unit: StockUnit, qty: number, min: number, suppliers: string[]) => Promise<void> }) {
+function AddItemModal({ onClose, onSave, defaultCategory = 'raw' }: { onClose: () => void; onSave: (name: string, unit: StockUnit, qty: number, min: number, suppliers: string[], category: StockCategory) => Promise<void>; defaultCategory?: StockCategory }) {
   const recipeMats = useMemo(() => getAllRecipeMaterials(), []);
   const { items: existingItems } = useStoreStockStore();
   const [search, setSearch] = useState('');
@@ -982,6 +1004,7 @@ function AddItemModal({ onClose, onSave }: { onClose: () => void; onSave: (name:
   const [unit, setUnit]     = useState<StockUnit>('kg');
   const [qty, setQty]       = useState('0');
   const [min, setMin]       = useState('1');
+  const [category, setCategory] = useState<StockCategory>(defaultCategory);
   const [saving, setSaving] = useState(false);
   const [error, setError]   = useState('');
   const [showSug, setShowSug] = useState(false);
@@ -1014,7 +1037,7 @@ function AddItemModal({ onClose, onSave }: { onClose: () => void; onSave: (name:
     if (isNaN(q) || q < 0 || isNaN(m) || m < 0) { setError('Invalid quantity or minimum'); return; }
     setSaving(true); setError('');
     try {
-      await onSave(name, unit, q, m, selectedSuppliers);
+      await onSave(name, unit, q, m, selectedSuppliers, category);
       onClose();
     } catch (err) {
       // BUG FIX (audit 2026-08-24): this bare catch discarded the actual
@@ -1082,6 +1105,18 @@ function AddItemModal({ onClose, onSave }: { onClose: () => void; onSave: (name:
               className="w-full h-11 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30" />
           </div>
         </div>
+        <div>
+          <label className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-1.5 block">Category</label>
+          <div className="flex gap-2">
+            {([{ value: 'raw' as const, label: 'Raw Material' }, { value: 'packing' as const, label: 'Packing Material' }]).map(opt => (
+              <button key={opt.value} onClick={() => setCategory(opt.value)}
+                className={cn('flex-1 h-11 rounded-xl border text-xs font-body font-bold transition-all',
+                  category === opt.value ? 'bg-primary text-primary-foreground border-primary' : 'border-border text-foreground hover:border-primary/40')}>
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        </div>
         {selectedSuppliers.length > 0 && (
           <div className="flex items-start gap-2 px-3 py-2.5 bg-primary/5 border border-primary/15 rounded-xl">
             <Truck className="size-3.5 text-primary shrink-0 mt-0.5" />
@@ -1107,10 +1142,11 @@ function AddItemModal({ onClose, onSave }: { onClose: () => void; onSave: (name:
 }
 
 // ─── Edit Stock modal ─────────────────────────────────────────────────────────
-function EditItemModal({ item, onClose, onSave }: { item: StockItem; onClose: () => void; onSave: (u: Partial<Pick<StockItem,'name'|'unit'|'quantity'|'minThreshold'>>) => Promise<void> }) {
+function EditItemModal({ item, onClose, onSave }: { item: StockItem; onClose: () => void; onSave: (u: Partial<Pick<StockItem,'name'|'unit'|'quantity'|'minThreshold'|'category'>>) => Promise<void> }) {
   const [qty, setQty]   = useState(String(item.quantity));
   const [min, setMin]   = useState(String(item.minThreshold));
   const [unit, setUnit] = useState<StockUnit>(item.unit);
+  const [category, setCategory] = useState<StockCategory>(item.category);
   const [saving, setSaving] = useState(false);
   // BUG FIX (audit 2026-08-24): this used to have no error state at all —
   // its catch block's own comment claimed "parent shows errors via its own
@@ -1126,7 +1162,7 @@ function EditItemModal({ item, onClose, onSave }: { item: StockItem; onClose: ()
     if (isNaN(q) || isNaN(m)) return;
     setSaving(true); setError('');
     try {
-      await onSave({ quantity: q, minThreshold: m, unit });
+      await onSave({ quantity: q, minThreshold: m, unit, category });
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Save failed — please try again.');
@@ -1157,6 +1193,18 @@ function EditItemModal({ item, onClose, onSave }: { item: StockItem; onClose: ()
           <div className="flex-1">
             <label className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-1.5 block">Low Alert ({stockUnitLabel(unit)})</label>
             <input type="number" min={0} step={0.1} value={min} onChange={e => setMin(e.target.value)} className="w-full h-11 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30" />
+          </div>
+        </div>
+        <div>
+          <label className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-1.5 block">Category</label>
+          <div className="flex gap-2">
+            {([{ value: 'raw' as const, label: 'Raw Material' }, { value: 'packing' as const, label: 'Packing Material' }]).map(opt => (
+              <button key={opt.value} onClick={() => setCategory(opt.value)}
+                className={cn('flex-1 h-11 rounded-xl border text-xs font-body font-bold transition-all',
+                  category === opt.value ? 'bg-primary text-primary-foreground border-primary' : 'border-border text-foreground hover:border-primary/40')}>
+                {opt.label}
+              </button>
+            ))}
           </div>
         </div>
         <button onClick={handleSave} disabled={saving} className="w-full h-12 rounded-xl cafe-gradient text-primary-foreground text-sm font-body font-bold flex items-center justify-center gap-2 disabled:opacity-50 active:scale-[0.98]">
@@ -1295,7 +1343,7 @@ function InlineDeductionsView() {
 
 // ─── Inventory Tab ────────────────────────────────────────────────────────────
 function StoreInventoryTab() {
-  const { items, loaded, loading, load, addItem, updateItem, deleteItem, bulkImportFromRecipes } = useStoreStockStore();
+  const { items, loaded, loading, load, addItem, updateItem, deleteItem, bulkImportFromRecipes, bulkSetCategory } = useStoreStockStore();
   const { pushStoreItemChange } = useNotificationStore();
   const currentUser = useAuthStore(s => s.currentUser);
   const [search, setSearch]         = useState('');
@@ -1305,8 +1353,20 @@ function StoreInventoryTab() {
   const [importToast, setImportToast] = useState<{ added: number; skipped: number } | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
   const [stockView, setStockView]   = useState<'all' | 'low'>('all');
+  // FEATURE (2026-08-30): "place all the packing materials in a different
+  // sub tab — this is causing disturbance for the client when checking for
+  // the raw material" — 819 items in one flat list, ~140 of them packing
+  // consumables (boxes, covers, pouches, tape...) mixed into food raw
+  // materials. Split into two top-level sub-tabs; everything below (search,
+  // All/Low-Neg, stats, Excel export) now operates within whichever one is
+  // active instead of across the whole combined list.
+  const [categoryTab, setCategoryTab] = useState<StockCategory>('raw');
+  const [selectMode, setSelectMode]   = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [moving, setMoving]           = useState(false);
 
   useEffect(() => { if (!loaded) load(); }, [loaded, load]);
+  useEffect(() => { setSelectMode(false); setSelectedIds(new Set()); }, [categoryTab]);
 
   const handleImport = async () => {
     setImporting(true);
@@ -1326,8 +1386,9 @@ function StoreInventoryTab() {
     }
   };
 
-  const negativeItems = items.filter(i => i.quantity < 0);
-  const lowItems = items.filter(i => i.quantity >= 0 && i.quantity <= i.minThreshold);
+  const categoryItems = useMemo(() => items.filter(i => i.category === categoryTab), [items, categoryTab]);
+  const negativeItems = categoryItems.filter(i => i.quantity < 0);
+  const lowItems = categoryItems.filter(i => i.quantity >= 0 && i.quantity <= i.minThreshold);
   const filtered = useMemo(() => {
     const q = search.toLowerCase();
     // BUG FIX: the "Low/Neg" tab's own badge counts lowItems.length +
@@ -1335,9 +1396,25 @@ function StoreInventoryTab() {
     // lowItems explicitly requires quantity >= 0, so a negative-stock item
     // (the most critical case to actually see) never appeared here at all,
     // despite being counted in the badge that led someone to click in.
-    const base = stockView === 'low' ? [...negativeItems, ...lowItems] : items;
+    const base = stockView === 'low' ? [...negativeItems, ...lowItems] : categoryItems;
     return base.filter(i => !q || i.name.toLowerCase().includes(q));
-  }, [items, lowItems, negativeItems, search, stockView]);
+  }, [categoryItems, lowItems, negativeItems, search, stockView]);
+
+  const toggleSelect = (id: string) => setSelectedIds(prev => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+  const handleBulkMove = async (target: StockCategory) => {
+    if (selectedIds.size === 0 || moving) return;
+    setMoving(true);
+    try {
+      const err = await bulkSetCategory(Array.from(selectedIds), target);
+      if (!err) { setSelectMode(false); setSelectedIds(new Set()); }
+    } finally {
+      setMoving(false);
+    }
+  };
 
   const actor = currentUser?.displayName || currentUser?.username || 'Store user';
   const notifyStockChange = async (action: 'created' | 'updated', itemId: string, itemName: string, summary: string) => {
@@ -1366,14 +1443,42 @@ function StoreInventoryTab() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `inventory-${stockView}-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.download = `inventory-${categoryTab}-${stockView}-${new Date().toISOString().slice(0, 10)}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   };
 
+  const rawCount = items.filter(i => i.category === 'raw').length;
+  const packingCount = items.filter(i => i.category === 'packing').length;
+
   return (
     <div className="space-y-3">
-      {/* Sub-tab switcher: All / Low Stock */}
+      {/* Category sub-tabs: Raw Material / Packing Material — the actual
+          fix for "packing materials mixed in with raw material" */}
+      <div className="flex gap-1 bg-muted/60 p-1 rounded-xl">
+        <button
+          onClick={() => setCategoryTab('raw')}
+          className={cn(
+            'flex-1 py-2 rounded-lg text-[11px] font-body font-semibold transition-all',
+            categoryTab === 'raw' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground'
+          )}
+        >
+          Raw Material
+          <span className="ml-1 text-[9px] font-bold bg-muted px-1.5 py-0.5 rounded-full">{rawCount}</span>
+        </button>
+        <button
+          onClick={() => setCategoryTab('packing')}
+          className={cn(
+            'flex-1 py-2 rounded-lg text-[11px] font-body font-semibold transition-all',
+            categoryTab === 'packing' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground'
+          )}
+        >
+          Packing Material
+          <span className="ml-1 text-[9px] font-bold bg-muted px-1.5 py-0.5 rounded-full">{packingCount}</span>
+        </button>
+      </div>
+
+      {/* Sub-tab switcher: All / Low Stock (scoped to the category tab above) */}
       <div className="flex gap-1 bg-muted/60 p-1 rounded-xl">
         <button
           onClick={() => setStockView('all')}
@@ -1383,7 +1488,7 @@ function StoreInventoryTab() {
           )}
         >
           All Stock
-          <span className="ml-1 text-[9px] font-bold bg-muted px-1.5 py-0.5 rounded-full">{items.length}</span>
+          <span className="ml-1 text-[9px] font-bold bg-muted px-1.5 py-0.5 rounded-full">{categoryItems.length}</span>
         </button>
         <button
           onClick={() => setStockView('low')}
@@ -1422,16 +1527,36 @@ function StoreInventoryTab() {
               className="h-10 px-3 rounded-xl border border-border bg-card text-xs font-body font-semibold flex items-center gap-1.5 hover:bg-muted disabled:opacity-40 active:scale-95">
               <Download className="size-3.5 text-emerald-600" /> Excel
             </button>
+            {/* One-time cleanup helper: move a batch of misfiled items into
+                the other category without opening Edit on each one. */}
+            <button onClick={() => { setSelectMode(v => !v); setSelectedIds(new Set()); }} disabled={filtered.length === 0}
+              className={cn('h-10 px-3 rounded-xl border text-xs font-body font-semibold flex items-center gap-1.5 active:scale-95 disabled:opacity-40',
+                selectMode ? 'bg-primary text-primary-foreground border-primary' : 'border-border bg-card hover:bg-muted')}>
+              {selectMode ? 'Cancel' : 'Select'}
+            </button>
             <button onClick={() => setShowAdd(true)}
               className="h-10 px-3 rounded-xl cafe-gradient text-primary-foreground text-xs font-body font-bold flex items-center gap-1.5 active:scale-95">
               <Plus className="size-3.5" /> Add
             </button>
           </div>
 
+          {selectMode && (
+            <div className="flex items-center justify-between gap-2 px-3 py-2.5 rounded-xl border border-primary/30 bg-primary/5">
+              <span className="text-xs font-body font-bold text-foreground">{selectedIds.size} selected</span>
+              <button
+                onClick={() => handleBulkMove(categoryTab === 'raw' ? 'packing' : 'raw')}
+                disabled={selectedIds.size === 0 || moving}
+                className="h-9 px-3 rounded-lg cafe-gradient text-primary-foreground text-xs font-body font-bold flex items-center gap-1.5 active:scale-95 disabled:opacity-40">
+                {moving ? <Loader2 className="size-3.5 animate-spin" /> : null}
+                Move to {categoryTab === 'raw' ? 'Packing Material' : 'Raw Material'}
+              </button>
+            </div>
+          )}
+
           {stockView === 'all' && (
             <div className="grid grid-cols-3 gap-2">
               {[
-                { label: 'Total', value: items.length, color: 'text-foreground' },
+                { label: 'Total', value: categoryItems.length, color: 'text-foreground' },
                 { label: 'Negative', value: negativeItems.length, color: negativeItems.length > 0 ? 'text-red-700' : 'text-muted-foreground', bg: negativeItems.length > 0 ? 'bg-red-100 border-red-300' : '' },
                 { label: 'Low Stock', value: lowItems.length, color: lowItems.length > 0 ? 'text-red-600' : 'text-muted-foreground', bg: lowItems.length > 0 ? 'bg-red-50 border-red-200' : '' },
               ].map(s => (
@@ -1465,7 +1590,7 @@ function StoreInventoryTab() {
                 return displayList.length === 0 && !(stockView === 'low' && (lowItems.length + negativeItems.length) === 0)
                   ? <div className="flex flex-col items-center py-16 gap-3 text-muted-foreground">
                       <Warehouse className="size-10 opacity-20" />
-                      <p className="text-sm font-body">{items.length === 0 ? 'No ingredients yet — tap Add' : 'No matches'}</p>
+                      <p className="text-sm font-body">{categoryItems.length === 0 ? `No ${categoryTab === 'packing' ? 'packing' : 'raw'} material items yet — tap Add` : 'No matches'}</p>
                     </div>
                   : <div className="space-y-2">
                       {displayList.map(i => (
@@ -1473,14 +1598,15 @@ function StoreInventoryTab() {
                           const item = items.find(row => row.id === id);
                           await deleteItem(id);
                           if (item) await notifyStockChange('updated', item.id, item.name, `archived from store stock by ${actor}`);
-                        }} />
+                        }}
+                        selectMode={selectMode} selected={selectedIds.has(i.id)} onToggleSelect={toggleSelect} />
                       ))}
                     </div>;
               })()
           }
         </>
 
-      {showAdd && <AddItemModal onClose={() => setShowAdd(false)} onSave={async (n, u, q, m, suppliers) => {
+      {showAdd && <AddItemModal defaultCategory={categoryTab} onClose={() => setShowAdd(false)} onSave={async (n, u, q, m, suppliers, category) => {
         // BUG FIX (audit 2026-08-24): addItem/updateItem return an error
         // string rather than throwing, but AddItemModal/EditItemModal's own
         // handleSave only calls onClose() inside their try block — meaning
@@ -1491,7 +1617,7 @@ function StoreInventoryTab() {
         // had no way to know the item was never actually added. Throwing
         // here lets the modal's own catch block do its job.
         const before = items.length;
-        const err = await addItem(n, u, q, m, suppliers);
+        const err = await addItem(n, u, q, m, suppliers, category);
         if (err || useStoreStockStore.getState().items.length === before) {
           throw new Error(err || 'Item could not be added — please try again.');
         }

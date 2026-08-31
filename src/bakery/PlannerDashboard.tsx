@@ -3970,16 +3970,49 @@ function GstInvoiceTab() {
   const [sellerAddress, setSellerAddress] = useState(GST_INVOICE_SELLER_DEFAULT.addressLines.join('\n'));
   const [sellerContact, setSellerContact] = useState(GST_INVOICE_SELLER_DEFAULT.contact);
   const [sellerGstin, setSellerGstin] = useState(GST_INVOICE_SELLER_DEFAULT.gstin);
+  // FEATURE (2026-09-01): "change the format to the attached format" — the
+  // reference sample (a real Tally-style GST tax invoice) prints State Name
+  // + Code as its own line under GSTIN, for both seller and buyer/consignee
+  // — a real GST-invoice requirement, not decorative. Defaults match the
+  // seller's existing GSTIN (33 = Tamil Nadu).
+  const [sellerStateName, setSellerStateName] = useState('Tamil Nadu');
+  const [sellerStateCode, setSellerStateCode] = useState('33');
 
   const [buyerName, setBuyerName] = useState('');
   const [buyerAddress, setBuyerAddress] = useState('');
   const [buyerGstin, setBuyerGstin] = useState('');
+  const [buyerStateName, setBuyerStateName] = useState('Tamil Nadu');
+  const [buyerStateCode, setBuyerStateCode] = useState('33');
+
+  // Consignee (Ship to) — the reference sample prints this as its own block,
+  // separate from Buyer (Bill to), even though in practice they're identical
+  // almost every time (as in the sample itself). Defaults to mirroring the
+  // buyer; "Different from buyer" unlocks separate fields for the rare case
+  // goods ship somewhere other than the billed party.
+  const [consigneeSameAsBuyer, setConsigneeSameAsBuyer] = useState(true);
+  const [consigneeName, setConsigneeName] = useState('');
+  const [consigneeAddress, setConsigneeAddress] = useState('');
+  const [consigneeGstin, setConsigneeGstin] = useState('');
+  const [consigneeStateName, setConsigneeStateName] = useState('Tamil Nadu');
+  const [consigneeStateCode, setConsigneeStateCode] = useState('33');
 
   const [invoiceNo, setInvoiceNo] = useState('');
   const [invoiceDate, setInvoiceDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [referenceNo, setReferenceNo] = useState('');
   const [referenceDate, setReferenceDate] = useState('');
   const [remarks, setRemarks] = useState('');
+  // Transport/reference fields from the reference sample's header grid —
+  // left blank there in practice (as in the sample itself), kept optional
+  // here for the same reason; only printed when actually filled in.
+  const [deliveryNote, setDeliveryNote] = useState('');
+  const [modeOfPayment, setModeOfPayment] = useState('');
+  const [otherReferences, setOtherReferences] = useState('');
+  const [buyersOrderNo, setBuyersOrderNo] = useState('');
+  const [buyersOrderDate, setBuyersOrderDate] = useState('');
+  const [dispatchDocNo, setDispatchDocNo] = useState('');
+  const [dispatchedThrough, setDispatchedThrough] = useState('');
+  const [destination, setDestination] = useState('');
+  const [termsOfDelivery, setTermsOfDelivery] = useState('');
   // "Same state" (CGST+SGST, the common case for a branch billing a local
   // customer) vs "different state" (IGST) — matches the reference sample,
   // which shows CGST 2.5% + SGST 2.5% and IGST 0%.
@@ -3994,6 +4027,7 @@ function GstInvoiceTab() {
   const [bankBranch, setBankBranch] = useState(GST_INVOICE_BANK_DEFAULT.branchName);
   const [bankIfsc, setBankIfsc] = useState(GST_INVOICE_BANK_DEFAULT.ifscCode);
   const [error, setError] = useState('');
+  const [generating, setGenerating] = useState(false);
 
   const addLine = () => setLines(prev => [...prev, { id: crypto.randomUUID(), itemName: '', hsnCode: '', qty: '1', uom: 'Nos', rate: '', gstPct: '5' }]);
   const removeLine = (id: string) => setLines(prev => prev.filter(l => l.id !== id));
@@ -4026,163 +4060,250 @@ function GstInvoiceTab() {
   // GST Summary — one row per distinct GST% actually used, so a multi-rate
   // invoice (e.g. some items at 5%, others at 18%) shows a correct
   // per-rate taxable-value breakdown, same as any real GST return needs.
+  // hsnCode is included (shown only when every line at that rate shares the
+  // same HSN/SAC, matching the reference sample's HSN/SAC summary table —
+  // real invoices almost always have one HSN per rate anyway).
   const gstSummaryRows = useMemo(() => {
-    const byRate = new Map<number, { taxableValue: number; cgstAmt: number; sgstAmt: number; igstAmt: number }>();
+    const byRate = new Map<number, { taxableValue: number; cgstAmt: number; sgstAmt: number; igstAmt: number; hsnCodes: Set<string> }>();
     for (const l of computedLines) {
       if (!l.itemName.trim() || l.qty <= 0) continue;
       const key = l.gstPct;
-      const row = byRate.get(key) ?? { taxableValue: 0, cgstAmt: 0, sgstAmt: 0, igstAmt: 0 };
+      const row = byRate.get(key) ?? { taxableValue: 0, cgstAmt: 0, sgstAmt: 0, igstAmt: 0, hsnCodes: new Set<string>() };
       row.taxableValue += l.amount; row.cgstAmt += l.cgstAmt; row.sgstAmt += l.sgstAmt; row.igstAmt += l.igstAmt;
+      if (l.hsnCode.trim()) row.hsnCodes.add(l.hsnCode.trim());
       byRate.set(key, row);
     }
-    return Array.from(byRate.entries()).sort(([a], [b]) => a - b).map(([gstPct, row]) => ({ gstPct, ...row }));
+    return Array.from(byRate.entries()).sort(([a], [b]) => a - b).map(([gstPct, row]) => ({
+      gstPct, taxableValue: row.taxableValue, cgstAmt: row.cgstAmt, sgstAmt: row.sgstAmt, igstAmt: row.igstAmt,
+      hsnCode: row.hsnCodes.size === 1 ? Array.from(row.hsnCodes)[0] : row.hsnCodes.size > 1 ? 'Multiple' : '-',
+    }));
   }, [computedLines]);
 
-  const generateInvoice = () => {
+  // Indian financial year (Apr-Mar), same rule the DB's
+  // next_gst_invoice_number() uses — computed client-side too so the
+  // signature block's "for {seller}({FY})" always matches whatever FY the
+  // invoice number itself actually landed in.
+  const financialYearFor = (isoDate: string): string => {
+    const d = new Date(isoDate);
+    const startYear = d.getMonth() + 1 >= 4 ? d.getFullYear() : d.getFullYear() - 1;
+    return `${String(startYear % 100).padStart(2, '0')}-${String((startYear + 1) % 100).padStart(2, '0')}`;
+  };
+
+  const generateInvoice = async () => {
     setError('');
     const validLines = computedLines.filter(l => l.itemName.trim() && l.qty > 0);
     if (!buyerName.trim()) { setError('Enter the buyer / customer name.'); return; }
     if (validLines.length === 0) { setError('Add at least one item with a name and quantity.'); return; }
 
-    // BUG FIX (audit 2026-08-30): `Date.now().toString().slice(-8)` looks
-    // unique but is just the last 8 digits of a monotonically increasing
-    // millisecond counter — it repeats exactly every ~27.8 hours (10^8 ms).
-    // Two GST tax invoices auto-generated (no invoice number typed in) that
-    // far apart could print with the IDENTICAL invoice number — a real GST
-    // compliance problem (invoice numbers must be unique), not just
-    // cosmetic. Same root cause, and same date-prefix + random-suffix fix,
-    // as BillingTab's walk-in bill number below.
-    const finalInvoiceNo = invoiceNo.trim() || `INV-${new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: '2-digit', month: '2-digit', day: '2-digit' }).format(new Date()).replace(/-/g, '')}-${crypto.randomUUID().slice(0, 6).toUpperCase()}`;
-    const dateStr = new Date(invoiceDate).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' }).replace(/\//g, '-');
-    const refDateStr = referenceDate ? new Date(referenceDate).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' }).replace(/\//g, '-') : '';
+    setGenerating(true);
+    try {
+      // FEATURE (2026-09-01): "invoice number should start like date, month
+      // [superseded by user's own follow-up] ... follow the same format in
+      // the invoice attached — starting year and next year eg 26-27/
+      // continue from 1 then keep on increasing that whole year then from
+      // next year 27-28/ continue" — matches the reference sample's own
+      // "GST/S/26-27/55" style exactly. next_gst_invoice_number() is an
+      // atomic DB counter (one row per financial year, mirrors the existing
+      // order_number_sequence pattern) so numbers are gap-free and never
+      // repeat even with multiple staff generating invoices at once — a
+      // real GST-compliance requirement, not just cosmetic uniqueness.
+      // Manual override (typing a value into Invoice No) still wins.
+      let finalInvoiceNo = invoiceNo.trim();
+      if (!finalInvoiceNo) {
+        const { data, error: rpcError } = await supabase.rpc('next_gst_invoice_number', { p_invoice_date: invoiceDate });
+        if (rpcError || !data) {
+          setError(rpcError?.message || 'Could not generate the next invoice number. Please try again.');
+          return;
+        }
+        finalInvoiceNo = String(data);
+      }
 
-    const rowsHtml = validLines.map((l, i) => `
-      <tr>
-        <td class="c">${i + 1}</td>
-        <td>${l.itemName}</td>
-        <td class="c">${l.hsnCode || '-'}</td>
-        <td class="r">${l.qty}</td>
-        <td class="c">${l.uom}</td>
-        <td class="r">${l.rate.toFixed(2)}</td>
-        <td class="r">${l.amount.toFixed(2)}</td>
-        <td class="c">${l.cgstPct}%</td>
-        <td class="r">${l.cgstAmt.toFixed(2)}</td>
-        <td class="c">${l.sgstPct}%</td>
-        <td class="r">${l.sgstAmt.toFixed(2)}</td>
-        <td class="c">${l.igstPct}%</td>
-        <td class="r">${l.igstAmt.toFixed(2)}</td>
-        <td class="r b">${l.total.toFixed(2)}</td>
-      </tr>`).join('');
+      const dateStr = new Date(invoiceDate).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' }).replace(/\//g, '-');
+      const refDateStr = referenceDate ? new Date(referenceDate).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' }).replace(/\//g, '-') : '';
+      const orderDateStr = buyersOrderDate ? new Date(buyersOrderDate).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' }).replace(/\//g, '-') : '';
+      const fy = financialYearFor(invoiceDate);
+      const consignee = consigneeSameAsBuyer
+        ? { name: buyerName, address: buyerAddress, gstin: buyerGstin, stateName: buyerStateName, stateCode: buyerStateCode }
+        : { name: consigneeName, address: consigneeAddress, gstin: consigneeGstin, stateName: consigneeStateName, stateCode: consigneeStateCode };
 
-    const gstSummaryHtml = gstSummaryRows.map(r => `
-      <tr>
-        <td class="c">${r.gstPct}%</td>
-        <td class="r">${r.taxableValue.toFixed(2)}</td>
-        <td class="r">${r.cgstAmt.toFixed(2)}</td>
-        <td class="r">${r.sgstAmt.toFixed(2)}</td>
-        <td class="r">${r.igstAmt.toFixed(2)}</td>
-      </tr>`).join('');
+      const rowsHtml = validLines.map((l, i) => `
+        <tr>
+          <td class="c">${i + 1}</td>
+          <td>${l.itemName}</td>
+          <td class="c">${l.hsnCode || ''}</td>
+          <td class="r">${l.qty} ${l.uom}</td>
+          <td class="r">${l.rate.toFixed(2)}</td>
+          <td class="c">${l.uom}</td>
+          <td class="r">${l.amount.toFixed(2)}</td>
+        </tr>`).join('');
 
-    printHtml(finalInvoiceNo, `
-      <div style="font-family: Arial, Helvetica, sans-serif; color:#111; font-size:12px;">
-        <style>
-          .gst-inv table { width:100%; border-collapse: collapse; }
-          .gst-inv th, .gst-inv td { border: 1px solid #333; padding: 5px 6px; font-size: 11px; }
-          .gst-inv .c { text-align: center; } .gst-inv .r { text-align: right; } .gst-inv .b { font-weight: bold; }
-          .gst-inv th { background: #f0f0f0; font-weight: bold; }
-        </style>
-        <div class="gst-inv">
-          <div style="text-align:center; border-bottom: 2px solid #111; padding-bottom: 10px; margin-bottom: 10px;">
-            <h1 style="margin:0; font-size: 24px;">${sellerName}</h1>
-            ${sellerAddress.split('\n').filter(Boolean).map(l => `<p style="margin:2px 0; font-size:11px;">${l}</p>`).join('')}
-            ${sellerContact.trim() ? `<p style="margin:2px 0; font-size:11px;">${sellerContact}</p>` : ''}
-            <p style="margin:2px 0; font-size:11px; font-weight:bold;">GSTIN: ${sellerGstin}</p>
-            <h2 style="margin:8px 0 0; font-size:16px; letter-spacing:2px;">TAX INVOICE</h2>
-          </div>
+      // Reference sample prints GST as its own rows inside the same items
+      // table ("Output CGST 2.5%" / "Output SGST 2.5%"), not as per-line
+      // columns — one row per distinct rate actually used, so a mixed-rate
+      // invoice still shows a correct breakdown instead of one blended row.
+      const taxRowsHtml = gstSummaryRows.map(r => supplyType === 'intra'
+        ? `
+        <tr><td></td><td class="r b">Output CGST ${r.gstPct / 2}%</td><td></td><td></td><td class="r">${(r.gstPct / 2).toFixed(2)}</td><td class="c">%</td><td class="r">${r.cgstAmt.toFixed(2)}</td></tr>
+        <tr><td></td><td class="r b">Output SGST ${r.gstPct / 2}%</td><td></td><td></td><td class="r">${(r.gstPct / 2).toFixed(2)}</td><td class="c">%</td><td class="r">${r.sgstAmt.toFixed(2)}</td></tr>`
+        : `
+        <tr><td></td><td class="r b">Output IGST ${r.gstPct}%</td><td></td><td></td><td class="r">${r.gstPct.toFixed(2)}</td><td class="c">%</td><td class="r">${r.igstAmt.toFixed(2)}</td></tr>`
+      ).join('');
 
-          <table style="margin-bottom:10px;">
-            <tr>
-              <td style="width:55%; border:none; vertical-align:top; padding:0 8px 0 0;">
+      const gstSummaryHtml = gstSummaryRows.map(r => `
+        <tr>
+          <td class="c">${r.hsnCode}</td>
+          <td class="r">${r.taxableValue.toFixed(2)}</td>
+          <td class="c">${supplyType === 'intra' ? (r.gstPct / 2).toFixed(2) + '%' : '-'}</td>
+          <td class="r">${r.cgstAmt.toFixed(2)}</td>
+          <td class="c">${supplyType === 'intra' ? (r.gstPct / 2).toFixed(2) + '%' : '-'}</td>
+          <td class="r">${r.sgstAmt.toFixed(2)}</td>
+          <td class="r">${(r.cgstAmt + r.sgstAmt + r.igstAmt).toFixed(2)}</td>
+        </tr>`).join('');
+      const gstSummaryTotalTax = gstSummaryRows.reduce((s, r) => s + r.cgstAmt + r.sgstAmt + r.igstAmt, 0);
+
+      const optionalHeaderRow = (label: string, value: string) => value.trim() ? `<tr><td class="b" style="border:none; padding:1px 4px;">${label}</td><td style="border:none; padding:1px 4px;">${value}</td></tr>` : '';
+
+      printHtml(finalInvoiceNo, `
+        <div style="font-family: Arial, Helvetica, sans-serif; color:#111; font-size:12px;">
+          <style>
+            .gst-inv table { width:100%; border-collapse: collapse; }
+            .gst-inv th, .gst-inv td { border: 1px solid #333; padding: 4px 6px; font-size: 11px; }
+            .gst-inv .c { text-align: center; } .gst-inv .r { text-align: right; } .gst-inv .b { font-weight: bold; }
+            .gst-inv th { background: #f0f0f0; font-weight: bold; }
+            .gst-inv .noborder, .gst-inv .noborder td { border: none; }
+          </style>
+          <div class="gst-inv">
+            <h2 style="text-align:center; margin:0 0 8px; font-size:16px; letter-spacing:1px;">Tax Invoice</h2>
+
+            <table style="margin-bottom:0;">
+              <tr>
+                <td style="width:55%; vertical-align:top;">
+                  <p style="margin:2px 0; font-weight:bold; font-size:13px;">${sellerName}</p>
+                  ${sellerAddress.split('\n').filter(Boolean).map(l => `<p style="margin:2px 0;">${l}</p>`).join('')}
+                  <p style="margin:4px 0 2px;">GSTIN/UIN: ${sellerGstin}</p>
+                  <p style="margin:2px 0;">State Name: ${sellerStateName}, Code: ${sellerStateCode}</p>
+                  ${sellerContact.trim() ? `<p style="margin:2px 0;">E-Mail: ${sellerContact}</p>` : ''}
+                </td>
+                <td style="vertical-align:top; padding:0;">
+                  <table class="noborder">
+                    <tr><td class="b" style="border:none; padding:1px 4px; width:45%;">Invoice No.</td><td style="border:none; padding:1px 4px;">${finalInvoiceNo}</td>
+                        <td class="b" style="border:none; padding:1px 4px; width:20%;">Dated</td><td style="border:none; padding:1px 4px;">${dateStr}</td></tr>
+                    ${optionalHeaderRow('Delivery Note', deliveryNote)}
+                    ${optionalHeaderRow('Mode/Terms of Payment', modeOfPayment)}
+                    ${optionalHeaderRow('Reference No. &amp; Date.', [referenceNo, refDateStr].filter(Boolean).join(' / '))}
+                    ${optionalHeaderRow('Other References', otherReferences)}
+                    ${optionalHeaderRow("Buyer's Order No.", buyersOrderNo)}
+                    ${optionalHeaderRow('Dated', orderDateStr)}
+                    ${optionalHeaderRow('Dispatch Doc No.', dispatchDocNo)}
+                    ${optionalHeaderRow('Dispatched through', dispatchedThrough)}
+                    ${optionalHeaderRow('Destination', destination)}
+                    ${optionalHeaderRow('Terms of Delivery', termsOfDelivery)}
+                  </table>
+                </td>
+              </tr>
+            </table>
+
+            <table style="margin-top:-1px;">
+              <tr><td style="vertical-align:top;">
+                <p style="margin:2px 0; font-weight:bold;">Consignee (Ship to)</p>
+                <p style="margin:2px 0; font-weight:bold;">${consignee.name}</p>
+                ${consignee.address.split('\n').filter(Boolean).map(l => `<p style="margin:2px 0;">${l}</p>`).join('')}
+                ${consignee.gstin.trim() ? `<p style="margin:2px 0;">GSTIN/UIN: ${consignee.gstin}</p>` : ''}
+                <p style="margin:2px 0;">State Name: ${consignee.stateName}, Code: ${consignee.stateCode}</p>
+              </td></tr>
+            </table>
+            <table style="margin-top:-1px;">
+              <tr><td style="vertical-align:top;">
+                <p style="margin:2px 0; font-weight:bold;">Buyer (Bill to)</p>
                 <p style="margin:2px 0; font-weight:bold;">${buyerName}</p>
                 ${buyerAddress.split('\n').filter(Boolean).map(l => `<p style="margin:2px 0;">${l}</p>`).join('')}
-                ${buyerGstin.trim() ? `<p style="margin:2px 0;">GSTIN: ${buyerGstin}</p>` : ''}
-              </td>
-              <td style="border:none; vertical-align:top; padding:0;">
-                <p style="margin:2px 0;"><strong>Invoice No:</strong> ${finalInvoiceNo}</p>
-                <p style="margin:2px 0;"><strong>Invoice Date:</strong> ${dateStr}</p>
-                <p style="margin:2px 0;"><strong>Reference No:</strong> ${referenceNo || '-'}</p>
-                <p style="margin:2px 0;"><strong>Reference Date:</strong> ${refDateStr || '-'}</p>
-                ${remarks.trim() ? `<p style="margin:2px 0;"><strong>Remarks:</strong> ${remarks}</p>` : ''}
-              </td>
-            </tr>
-          </table>
+                ${buyerGstin.trim() ? `<p style="margin:2px 0;">GSTIN/UIN: ${buyerGstin}</p>` : ''}
+                <p style="margin:2px 0;">State Name: ${buyerStateName}, Code: ${buyerStateCode}</p>
+              </td></tr>
+            </table>
 
-          <table>
-            <thead>
+            <table style="margin-top:8px;">
+              <thead>
+                <tr>
+                  <th style="width:5%;">SI No.</th><th>Description of Goods</th><th style="width:10%;">HSN/SAC</th>
+                  <th style="width:12%;">Quantity</th><th style="width:10%;">Rate</th><th style="width:6%;">per</th><th style="width:12%;">Amount</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${rowsHtml}
+                <tr><td></td><td></td><td></td><td></td><td></td><td></td><td class="r">${beforeTaxValue.toFixed(2)}</td></tr>
+                ${taxRowsHtml}
+              </tbody>
+              <tfoot>
+                <tr class="b">
+                  <td colspan="3" class="c">Total</td>
+                  <td class="r">${validLines.reduce((s, l) => s + l.qty, 0)}</td>
+                  <td></td><td></td>
+                  <td class="r">Rs. ${totalAmount.toFixed(2)}</td>
+                </tr>
+              </tfoot>
+            </table>
+
+            <table style="margin-top:-1px;">
               <tr>
-                <th rowspan="2">Srl</th><th rowspan="2">Item Name</th><th rowspan="2">HSN Code</th>
-                <th rowspan="2">Qty</th><th rowspan="2">UOM</th><th rowspan="2">Rate</th><th rowspan="2">Amount</th>
-                <th colspan="2">CGST</th><th colspan="2">SGST</th><th colspan="2">IGST</th><th rowspan="2">Total</th>
+                <td class="b" style="width:20%;">Amount Chargeable (in words)</td>
+                <td style="width:65%;">INR ${numberToIndianWords(totalAmount)} Only</td>
+                <td class="c b" style="width:15%;">E. &amp; O.E</td>
               </tr>
-              <tr><th>%</th><th>Amt</th><th>%</th><th>Amt</th><th>%</th><th>Amt</th></tr>
-            </thead>
-            <tbody>${rowsHtml}</tbody>
-            <tfoot>
-              <tr class="b">
-                <td colspan="3" class="c">TOTAL</td>
-                <td class="r">${validLines.reduce((s, l) => s + l.qty, 0)}</td>
-                <td></td><td></td>
-                <td class="r">${beforeTaxValue.toFixed(2)}</td>
-                <td></td><td class="r">${totalCgst.toFixed(2)}</td>
-                <td></td><td class="r">${totalSgst.toFixed(2)}</td>
-                <td></td><td class="r">${totalIgst.toFixed(2)}</td>
-                <td class="r">${(beforeTaxValue + totalGst).toFixed(2)}</td>
+            </table>
+
+            <table style="margin-top:-1px;">
+              <thead>
+                <tr>
+                  <th rowspan="2" style="vertical-align:middle;">HSN/SAC</th>
+                  <th rowspan="2" style="vertical-align:middle;">Taxable Value</th>
+                  <th colspan="2">CGST</th><th colspan="2">SGST/UTGST</th>
+                  <th rowspan="2" style="vertical-align:middle;">Total Tax Amount</th>
+                </tr>
+                <tr><th>Rate</th><th>Amount</th><th>Rate</th><th>Amount</th></tr>
+              </thead>
+              <tbody>${gstSummaryHtml || '<tr><td colspan="7" class="c">—</td></tr>'}</tbody>
+              <tfoot>
+                <tr class="b">
+                  <td class="c">Total</td>
+                  <td class="r">${beforeTaxValue.toFixed(2)}</td>
+                  <td></td><td class="r">${totalCgst.toFixed(2)}</td>
+                  <td></td><td class="r">${totalSgst.toFixed(2)}</td>
+                  <td class="r">${gstSummaryTotalTax.toFixed(2)}</td>
+                </tr>
+              </tfoot>
+            </table>
+
+            <p style="margin:8px 0; font-weight:bold;">Tax Amount (in words) : INR ${numberToIndianWords(gstSummaryTotalTax)} Only</p>
+
+            <table style="margin-top:8px;">
+              <tr>
+                <td style="width:52%; vertical-align:top;">
+                  <p style="margin:2px 0; font-weight:bold;">Bank Details</p>
+                  <p style="margin:2px 0;">A/c Holder's Name: ${bankAccountName}</p>
+                  <p style="margin:2px 0;">Bank Name: ${bankName}</p>
+                  <p style="margin:2px 0;">A/c No.: ${bankAccountNo}</p>
+                  <p style="margin:2px 0;">Branch &amp; IFS Code: ${bankBranch} &amp; ${bankIfsc}</p>
+                  ${remarks.trim() ? `<p style="margin:8px 0 2px; font-weight:bold;">Remarks:</p><p style="margin:2px 0;">${remarks}</p>` : ''}
+                </td>
+                <td style="vertical-align:top;">
+                  <p style="margin:2px 0;">Declaration</p>
+                  <p style="margin:2px 0; font-size:10px;">We declare that this invoice shows the actual price of the goods described and that all particulars are true and correct.</p>
+                </td>
+                <td style="vertical-align:top; text-align:right; width:26%;">
+                  <p style="margin:2px 0;">for ${sellerName}(${fy})</p>
+                  <p style="margin:60px 0 2px;">Authorised Signatory</p>
+                </td>
               </tr>
-            </tfoot>
-          </table>
+            </table>
 
-          <p style="margin:10px 0; font-weight:bold;">Amount in Words: Rs. ${numberToIndianWords(totalAmount)} Only.</p>
-
-          <table style="margin-top:8px;">
-            <tr>
-              <td style="width:60%; border:none; vertical-align:top; padding:0 8px 0 0;">
-                <table>
-                  <thead><tr><th>GST %</th><th>Taxable Value</th><th>CGST Amt</th><th>SGST Amt</th><th>IGST Amt</th></tr></thead>
-                  <tbody>${gstSummaryHtml || '<tr><td colspan="5" class="c">—</td></tr>'}</tbody>
-                </table>
-              </td>
-              <td style="border:none; vertical-align:top; padding:0;">
-                <table>
-                  <tr><td class="b">Before Tax Value</td><td class="r">${beforeTaxValue.toFixed(2)}</td></tr>
-                  <tr><td class="b">Total GST</td><td class="r">${totalGst.toFixed(2)}</td></tr>
-                  <tr><td class="b">Round Off</td><td class="r">${roundOff.toFixed(2)}</td></tr>
-                  <tr><td class="b">Total Amount</td><td class="r b">Rs. ${totalAmount.toFixed(2)}</td></tr>
-                </table>
-              </td>
-            </tr>
-          </table>
-
-          <table style="margin-top:14px;">
-            <tr>
-              <td style="width:55%; border:none; vertical-align:top; padding:0 8px 0 0;">
-                <p style="margin:2px 0; font-weight:bold;">Bank Details</p>
-                <p style="margin:2px 0;">Account No: ${bankAccountNo}</p>
-                <p style="margin:2px 0;">Account Name: ${bankAccountName}</p>
-                <p style="margin:2px 0;">Bank Name: ${bankName}</p>
-                <p style="margin:2px 0;">Branch Name: ${bankBranch}</p>
-                <p style="margin:2px 0;">IFSC Code: ${bankIfsc}</p>
-              </td>
-              <td style="border:none; vertical-align:top; padding:0; text-align:right;">
-                <p style="margin:2px 0; font-weight:bold;">For ${sellerName}</p>
-                <p style="margin:70px 0 2px;">Authorised Signatory</p>
-              </td>
-            </tr>
-          </table>
-
-          <p style="margin-top:24px; font-size:10px; text-align:center; color:#666;">Prepared by ${currentUser?.displayName || currentUser?.username || 'Planner'} · This is a computer-generated invoice.</p>
+            <p style="margin-top:10px; font-size:10px; text-align:center; color:#666;">This is a Computer Generated Invoice · Prepared by ${currentUser?.displayName || currentUser?.username || 'Planner'}</p>
+          </div>
         </div>
-      </div>
-    `);
+      `);
+    } finally {
+      setGenerating(false);
+    }
   };
 
   return (
@@ -4198,13 +4319,17 @@ function GstInvoiceTab() {
             <input value={sellerGstin} onChange={e => setSellerGstin(e.target.value.toUpperCase())} className="h-11 w-full rounded-xl border border-border px-3 text-sm font-bold" /></label>
           <label className="space-y-1 sm:col-span-2"><span className="text-xs font-black text-muted-foreground">Address (one line per row)</span>
             <textarea value={sellerAddress} onChange={e => setSellerAddress(e.target.value)} rows={2} className="w-full rounded-xl border border-border px-3 py-2 text-sm font-bold" /></label>
+          <label className="space-y-1"><span className="text-xs font-black text-muted-foreground">State Name</span>
+            <input value={sellerStateName} onChange={e => setSellerStateName(e.target.value)} className="h-11 w-full rounded-xl border border-border px-3 text-sm font-bold" /></label>
+          <label className="space-y-1"><span className="text-xs font-black text-muted-foreground">State Code</span>
+            <input value={sellerStateCode} onChange={e => setSellerStateCode(e.target.value)} className="h-11 w-full rounded-xl border border-border px-3 text-sm font-bold" /></label>
           <label className="space-y-1 sm:col-span-2"><span className="text-xs font-black text-muted-foreground">Contact (email, phone)</span>
             <input value={sellerContact} onChange={e => setSellerContact(e.target.value)} className="h-11 w-full rounded-xl border border-border px-3 text-sm font-bold" /></label>
         </div>
       </div>
 
       <div className="rounded-2xl border border-border bg-card p-4">
-        <p className="mb-2 text-xs font-black uppercase tracking-wide text-muted-foreground">Buyer</p>
+        <p className="mb-2 text-xs font-black uppercase tracking-wide text-muted-foreground">Buyer (Bill to)</p>
         <div className="grid gap-3 sm:grid-cols-2">
           <label className="space-y-1"><span className="text-xs font-black text-muted-foreground">Buyer / Company Name *</span>
             <input value={buyerName} onChange={e => setBuyerName(e.target.value)} className="h-11 w-full rounded-xl border border-border px-3 text-sm font-bold" /></label>
@@ -4212,14 +4337,42 @@ function GstInvoiceTab() {
             <input value={buyerGstin} onChange={e => setBuyerGstin(e.target.value.toUpperCase())} className="h-11 w-full rounded-xl border border-border px-3 text-sm font-bold" /></label>
           <label className="space-y-1 sm:col-span-2"><span className="text-xs font-black text-muted-foreground">Buyer Address</span>
             <textarea value={buyerAddress} onChange={e => setBuyerAddress(e.target.value)} rows={2} className="w-full rounded-xl border border-border px-3 py-2 text-sm font-bold" /></label>
+          <label className="space-y-1"><span className="text-xs font-black text-muted-foreground">State Name</span>
+            <input value={buyerStateName} onChange={e => setBuyerStateName(e.target.value)} className="h-11 w-full rounded-xl border border-border px-3 text-sm font-bold" /></label>
+          <label className="space-y-1"><span className="text-xs font-black text-muted-foreground">State Code</span>
+            <input value={buyerStateCode} onChange={e => setBuyerStateCode(e.target.value)} className="h-11 w-full rounded-xl border border-border px-3 text-sm font-bold" /></label>
         </div>
+      </div>
+
+      <div className="rounded-2xl border border-border bg-card p-4">
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <p className="text-xs font-black uppercase tracking-wide text-muted-foreground">Consignee (Ship to)</p>
+          <label className="flex items-center gap-1.5 text-xs font-bold text-muted-foreground">
+            <input type="checkbox" checked={consigneeSameAsBuyer} onChange={e => setConsigneeSameAsBuyer(e.target.checked)} className="size-4" />
+            Same as Buyer
+          </label>
+        </div>
+        {!consigneeSameAsBuyer && (
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="space-y-1"><span className="text-xs font-black text-muted-foreground">Consignee Name *</span>
+              <input value={consigneeName} onChange={e => setConsigneeName(e.target.value)} className="h-11 w-full rounded-xl border border-border px-3 text-sm font-bold" /></label>
+            <label className="space-y-1"><span className="text-xs font-black text-muted-foreground">Consignee GSTIN (optional)</span>
+              <input value={consigneeGstin} onChange={e => setConsigneeGstin(e.target.value.toUpperCase())} className="h-11 w-full rounded-xl border border-border px-3 text-sm font-bold" /></label>
+            <label className="space-y-1 sm:col-span-2"><span className="text-xs font-black text-muted-foreground">Consignee Address</span>
+              <textarea value={consigneeAddress} onChange={e => setConsigneeAddress(e.target.value)} rows={2} className="w-full rounded-xl border border-border px-3 py-2 text-sm font-bold" /></label>
+            <label className="space-y-1"><span className="text-xs font-black text-muted-foreground">State Name</span>
+              <input value={consigneeStateName} onChange={e => setConsigneeStateName(e.target.value)} className="h-11 w-full rounded-xl border border-border px-3 text-sm font-bold" /></label>
+            <label className="space-y-1"><span className="text-xs font-black text-muted-foreground">State Code</span>
+              <input value={consigneeStateCode} onChange={e => setConsigneeStateCode(e.target.value)} className="h-11 w-full rounded-xl border border-border px-3 text-sm font-bold" /></label>
+          </div>
+        )}
       </div>
 
       <div className="rounded-2xl border border-border bg-card p-4">
         <p className="mb-2 text-xs font-black uppercase tracking-wide text-muted-foreground">Invoice Details</p>
         <div className="grid gap-3 sm:grid-cols-3">
-          <label className="space-y-1"><span className="text-xs font-black text-muted-foreground">Invoice No (blank = auto)</span>
-            <input value={invoiceNo} onChange={e => setInvoiceNo(e.target.value)} placeholder="e.g. S/26-27/68" className="h-11 w-full rounded-xl border border-border px-3 text-sm font-bold" /></label>
+          <label className="space-y-1"><span className="text-xs font-black text-muted-foreground">Invoice No (blank = auto, {financialYearFor(invoiceDate)} sequence)</span>
+            <input value={invoiceNo} onChange={e => setInvoiceNo(e.target.value)} placeholder="e.g. GST/S/26-27/68" className="h-11 w-full rounded-xl border border-border px-3 text-sm font-bold" /></label>
           <label className="space-y-1"><span className="text-xs font-black text-muted-foreground">Invoice Date</span>
             <input type="date" value={invoiceDate} onChange={e => setInvoiceDate(e.target.value)} className="h-11 w-full rounded-xl border border-border px-3 text-sm font-bold" /></label>
           <label className="space-y-1"><span className="text-xs font-black text-muted-foreground">Supply Type</span>
@@ -4227,11 +4380,35 @@ function GstInvoiceTab() {
               <option value="intra">Same State (CGST + SGST)</option>
               <option value="inter">Different State (IGST)</option>
             </select></label>
+        </div>
+      </div>
+
+      <div className="rounded-2xl border border-border bg-card p-4">
+        <p className="mb-2 text-xs font-black uppercase tracking-wide text-muted-foreground">Transport &amp; Other References (optional — printed only when filled in)</p>
+        <div className="grid gap-3 sm:grid-cols-3">
+          <label className="space-y-1"><span className="text-xs font-black text-muted-foreground">Delivery Note</span>
+            <input value={deliveryNote} onChange={e => setDeliveryNote(e.target.value)} className="h-11 w-full rounded-xl border border-border px-3 text-sm font-bold" /></label>
+          <label className="space-y-1"><span className="text-xs font-black text-muted-foreground">Mode/Terms of Payment</span>
+            <input value={modeOfPayment} onChange={e => setModeOfPayment(e.target.value)} className="h-11 w-full rounded-xl border border-border px-3 text-sm font-bold" /></label>
+          <label className="space-y-1"><span className="text-xs font-black text-muted-foreground">Other References</span>
+            <input value={otherReferences} onChange={e => setOtherReferences(e.target.value)} className="h-11 w-full rounded-xl border border-border px-3 text-sm font-bold" /></label>
           <label className="space-y-1"><span className="text-xs font-black text-muted-foreground">Reference No</span>
             <input value={referenceNo} onChange={e => setReferenceNo(e.target.value)} className="h-11 w-full rounded-xl border border-border px-3 text-sm font-bold" /></label>
           <label className="space-y-1"><span className="text-xs font-black text-muted-foreground">Reference Date</span>
             <input type="date" value={referenceDate} onChange={e => setReferenceDate(e.target.value)} className="h-11 w-full rounded-xl border border-border px-3 text-sm font-bold" /></label>
-          <label className="space-y-1"><span className="text-xs font-black text-muted-foreground">Remarks</span>
+          <label className="space-y-1"><span className="text-xs font-black text-muted-foreground">Buyer's Order No</span>
+            <input value={buyersOrderNo} onChange={e => setBuyersOrderNo(e.target.value)} className="h-11 w-full rounded-xl border border-border px-3 text-sm font-bold" /></label>
+          <label className="space-y-1"><span className="text-xs font-black text-muted-foreground">Buyer's Order Date</span>
+            <input type="date" value={buyersOrderDate} onChange={e => setBuyersOrderDate(e.target.value)} className="h-11 w-full rounded-xl border border-border px-3 text-sm font-bold" /></label>
+          <label className="space-y-1"><span className="text-xs font-black text-muted-foreground">Dispatch Doc No</span>
+            <input value={dispatchDocNo} onChange={e => setDispatchDocNo(e.target.value)} className="h-11 w-full rounded-xl border border-border px-3 text-sm font-bold" /></label>
+          <label className="space-y-1"><span className="text-xs font-black text-muted-foreground">Dispatched Through</span>
+            <input value={dispatchedThrough} onChange={e => setDispatchedThrough(e.target.value)} className="h-11 w-full rounded-xl border border-border px-3 text-sm font-bold" /></label>
+          <label className="space-y-1"><span className="text-xs font-black text-muted-foreground">Destination</span>
+            <input value={destination} onChange={e => setDestination(e.target.value)} className="h-11 w-full rounded-xl border border-border px-3 text-sm font-bold" /></label>
+          <label className="space-y-1 sm:col-span-2"><span className="text-xs font-black text-muted-foreground">Terms of Delivery</span>
+            <input value={termsOfDelivery} onChange={e => setTermsOfDelivery(e.target.value)} className="h-11 w-full rounded-xl border border-border px-3 text-sm font-bold" /></label>
+          <label className="space-y-1 sm:col-span-3"><span className="text-xs font-black text-muted-foreground">Remarks</span>
             <input value={remarks} onChange={e => setRemarks(e.target.value)} className="h-11 w-full rounded-xl border border-border px-3 text-sm font-bold" /></label>
         </div>
       </div>
@@ -4278,8 +4455,8 @@ function GstInvoiceTab() {
         <p className="text-lg">Total Amount: ₹{totalAmount.toFixed(2)}</p>
       </div>
 
-      <button onClick={generateInvoice} className="flex w-full items-center justify-center gap-2 rounded-xl bg-purple-600 py-3 text-sm font-black text-white hover:bg-purple-700">
-        <Printer className="size-4" /> Generate & Print Tax Invoice (A4)
+      <button onClick={() => void generateInvoice()} disabled={generating} className="flex w-full items-center justify-center gap-2 rounded-xl bg-purple-600 py-3 text-sm font-black text-white hover:bg-purple-700 disabled:opacity-60">
+        {generating ? <Loader2 className="size-4 animate-spin" /> : <Printer className="size-4" />} {generating ? 'Generating…' : 'Generate & Print Tax Invoice (A4)'}
       </button>
     </div>
   );
@@ -4445,13 +4622,15 @@ function BillingTab() {
     }
     setSaving(true); setError('');
     try {
-      // BUG FIX: `Date.now().toString().slice(-8)` looked unique but is just
-      // the last 8 digits of a monotonically increasing counter — it repeats
-      // exactly every ~27.8 hours (10^8 ms), so a bakery billing daily would
-      // eventually hit the bill_no UNIQUE constraint and fail to save. Use a
-      // date prefix (for readability) + a random suffix (for uniqueness),
-      // same convention as the Hosur order-number generator elsewhere in this file.
-      const billNo = `WB-${new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: '2-digit', month: '2-digit', day: '2-digit' }).format(new Date()).replace(/-/g, '')}-${crypto.randomUUID().slice(0, 6).toUpperCase()}`;
+      // FEATURE (2026-09-01): "for the items we sale in both new bill and
+      // sample bill for both use the same [SALES/26-27/N]" — replaces the
+      // old random WB-{date}-{random} number with the same shared, atomic,
+      // FY-based Sales sequence SampleBillTab now also draws from (see
+      // next_sales_bill_number), so New Bill and Sample Bill together form
+      // one continuous, gap-free numbering series.
+      const { data: salesNo, error: salesNoError } = await supabase.rpc('next_sales_bill_number');
+      if (salesNoError || !salesNo) throw new Error(salesNoError?.message || 'Could not generate the next bill number. Please try again.');
+      const billNo = String(salesNo);
       const items: WalkinBillItem[] = cartLines.map(l => ({ itemName: l.itemName, unit: l.unit, price: l.price, quantity: l.quantity, lineTotal: Math.round(l.price * l.quantity * 100) / 100 }));
       const { data, error: insertError } = await supabase.from('bakery_walkin_bills').insert({
         bill_no: billNo, items, subtotal, discount_type: discountType, discount_value: Number(discountValue) || 0,
@@ -4858,9 +5037,18 @@ function SampleBillTab() {
     }
     setSaving(true); setError('');
     try {
+      // FEATURE (2026-09-01): "for the items we sale in both new bill and
+      // sample bill for both use the same [SALES/26-27/N]" — fetch from the
+      // shared Sales sequence instead of letting saveDispatchInvoice fall
+      // back to SNB's own dispatch-invoice numbering (scope stays 'SNB'
+      // below purely to pick the right business letterhead — unrelated to
+      // the invoice number itself now).
+      const { data: salesNo, error: salesNoError } = await supabase.rpc('next_sales_bill_number');
+      if (salesNoError || !salesNo) throw new Error(salesNoError?.message || 'Could not generate the next bill number. Please try again.');
       const items: DispatchInvoiceItem[] = cartLines.map(l => ({ itemName: l.itemName, unit: l.unit, quantity: l.quantity, unitPrice: l.price, lineTotal: Math.round(l.price * l.quantity * 100) / 100 }));
       const record = await saveDispatchInvoice({
         scope: 'SNB',
+        invoiceNo: String(salesNo),
         customerName: customerName.trim(),
         customerPhone: customerPhone.trim(),
         customerAddress: customerAddress.trim() || null,
@@ -5250,6 +5438,14 @@ interface HosurShopOrderCard {
   // diverged. `rawItemName` carries the untouched hosur_order_items value
   // specifically so cancel calls always match a real row.
   items: { itemName: string; rawItemName: string; unit: string; requested: number; dispatched: number; cancelled: number; cancellationReason: string | null }[];
+  // FEATURE (2026-08-30): "Only for Hosur sub tab keep the date wise
+  // orders" — the shop-first view (this card's own dispatch panel) is the
+  // one Planner actually sees by default (hosurView defaults to 'shop'),
+  // but only the item-first view had date-grouping (see rowDateGroups in
+  // DispatchTab) — invisible in normal use. Each card is exactly one Hosur
+  // order, so its own created_at is the real date to group by, no proxying
+  // through a contributing BakeryOrder needed.
+  createdAt: string;
 }
 
 // Shop-centric Hosur dispatch view: one card per shop ORDER (not just shop
@@ -5278,7 +5474,7 @@ function useHosurShopOrders(rows: ProductionRow[], orders: BakeryOrder[]) {
     if (hosurOrderIds.length === 0) { setShopOrders([]); return; }
     (async () => {
       const [{ data: ordersData }, { data: itemsData }] = await Promise.all([
-        supabase.from('hosur_orders').select('id, order_number, shop_name, shop_id').in('id', hosurOrderIds),
+        supabase.from('hosur_orders').select('id, order_number, shop_name, shop_id, created_at').in('id', hosurOrderIds),
         supabase.from('hosur_order_items').select('order_id, item_name, unit, quantity, dispatched_quantity, cancelled_quantity, cancellation_reason').in('order_id', hosurOrderIds),
       ]);
       if (cancelled) return;
@@ -5294,12 +5490,13 @@ function useHosurShopOrders(rows: ProductionRow[], orders: BakeryOrder[]) {
         }
       }
       if (cancelled) return;
-      const metaById = new Map<string, { orderNumber: string; shopName: string; shopId: string | null; shopPhone: string | null }>(
+      const metaById = new Map<string, { orderNumber: string; shopName: string; shopId: string | null; shopPhone: string | null; createdAt: string }>(
         ((ordersData ?? []) as Record<string, unknown>[]).map((o) => {
           const shopId = (o.shop_id as string | null) ?? null;
           return [o.id as string, {
             orderNumber: String(o.order_number ?? ''), shopName: String(o.shop_name ?? ''),
             shopId, shopPhone: shopId ? (phoneByShopId.get(shopId) || null) : null,
+            createdAt: String(o.created_at ?? ''),
           }];
         }),
       );
@@ -5331,7 +5528,7 @@ function useHosurShopOrders(rows: ProductionRow[], orders: BakeryOrder[]) {
         if (!meta || items.length === 0) continue;
         cards.push({
           orderId, orderNumber: meta.orderNumber, shopName: meta.shopName,
-          shopId: meta.shopId, shopPhone: meta.shopPhone,
+          shopId: meta.shopId, shopPhone: meta.shopPhone, createdAt: meta.createdAt,
           items: items.sort((a, b) => a.itemName.localeCompare(b.itemName)),
         });
       }
@@ -5693,6 +5890,30 @@ function HosurShopDispatchPanel({ rows, mode, orders, leftoverBalances, onDispat
     : bucketed;
   if (bucketed.length === 0) return <EmptyState text={mode === 'active' ? 'Nothing waiting on dispatch.' : 'Nothing dispatched yet.'} />;
 
+  // FEATURE (2026-08-30): "Only for Hosur sub tab keep the date wise
+  // orders" — group shop-order cards by the order's own date, newest first,
+  // same date-key/label convention as DispatchDateGroup's item-view grouping
+  // (Today / "12 Aug" / Date unknown), so a planner scrolling this list sees
+  // today's shop orders separated from anything still pending from earlier.
+  // Plain computation, not useMemo — this sits after an early `return` above
+  // (bucketed.length === 0), so a hook here would violate the rules of hooks.
+  const cardDateGroups = (() => {
+    const groups = new Map<string, HosurShopOrderCard[]>();
+    for (const card of filtered) {
+      const dateKey = card.createdAt ? kolkataDateKey(card.createdAt) : 'unknown-date';
+      const list = groups.get(dateKey) ?? [];
+      list.push(card);
+      groups.set(dateKey, list);
+    }
+    const todayKey = kolkataDateKey(new Date().toISOString());
+    return Array.from(groups.entries())
+      .sort((a, b) => b[0].localeCompare(a[0]))
+      .map(([dateKey, cards]) => ({
+        dateKey, cards,
+        label: dateKey === 'unknown-date' ? 'Date unknown' : dateKey === todayKey ? 'Today' : new Date(dateKey).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }),
+      }));
+  })();
+
   return (
     <div className="space-y-2.5">
       <div className="relative max-w-sm">
@@ -5700,7 +5921,10 @@ function HosurShopDispatchPanel({ rows, mode, orders, leftoverBalances, onDispat
         <input value={shopSearch} onChange={e => setShopSearch(e.target.value)} placeholder="Select / search a shop..." className="w-full rounded-xl border border-border bg-background py-2 pl-8 pr-3 text-xs font-bold" />
       </div>
       {filtered.length === 0 && <EmptyState text={`No shop orders match "${shopSearch}".`} />}
-      {filtered.map(card => {
+      {cardDateGroups.map(group => (
+      <div key={group.dateKey} className="space-y-2.5">
+      {group.label && <p className="pt-1 text-[11px] font-black uppercase tracking-wide text-muted-foreground">{group.label}</p>}
+      {group.cards.map(card => {
         const isOpen = selectedOrderId === card.orderId;
         const doneCount = card.items.filter(i => i.dispatched + i.cancelled >= i.requested - 0.01).length;
         return (
@@ -5851,6 +6075,8 @@ function HosurShopDispatchPanel({ rows, mode, orders, leftoverBalances, onDispat
           </div>
         );
       })}
+      </div>
+      ))}
       {review && (
         <DispatchReviewModal
           scope="Hosur"

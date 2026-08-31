@@ -1,11 +1,12 @@
 // src/bakery/StorePurchaseOrderTab.tsx
-// Store Dashboard "Purchase Order" tab — Store raises a PO (item + qty, no
-// price), it goes to the Owner for approval, Store can see whether it's
-// still pending / approved / rejected, and once approved can convert it
-// into a GRN (opening the same CreateInvoiceModal used by the GRN tab,
-// pre-filled from the PO) where price and receiving detail get added for
-// the first time and stock finally syncs on submit — identical to how a
-// GRN created directly has always worked.
+// Store Dashboard "Purchase Order" tab — Store raises a PO (item, quantity,
+// AND price/item code, matching the GRN's line-item shape — 2026-08-30), it
+// goes to the Owner for approval, Store can see whether it's still pending /
+// approved / rejected, and once approved can convert it into a GRN (opening
+// the same CreateInvoiceModal used by the GRN tab, pre-filled from the PO's
+// price where receiving detail — accepted/rejected qty, remarks, vehicle
+// number — gets added for the first time) and stock finally syncs on submit
+// — identical to how a GRN created directly has always worked.
 import { useState, useEffect, useMemo } from 'react';
 import {
   ClipboardList, Plus, Trash2, ChevronDown, ChevronUp, CheckCircle2,
@@ -47,6 +48,8 @@ interface POLineDraft {
   itemName: string;
   quantity: string;
   unit: StockUnit;
+  pricePerUnit: string;
+  itemCode: string;
 }
 
 function createPOLineDraft(line?: StorePOLineItem): POLineDraft {
@@ -55,7 +58,16 @@ function createPOLineDraft(line?: StorePOLineItem): POLineDraft {
     itemName: line?.itemName ?? '',
     quantity: line ? String(line.quantity) : '1',
     unit: invoiceUnit(line?.unit),
+    pricePerUnit: line?.pricePerUnit ? String(line.pricePerUnit) : '',
+    itemCode: line?.itemCode ?? '',
   };
+}
+
+function poLineTotal(line: POLineDraft): number {
+  const qty = Number(line.quantity);
+  const rate = Number(line.pricePerUnit);
+  if (!Number.isFinite(qty) || !Number.isFinite(rate)) return 0;
+  return Math.round(qty * rate * 100) / 100;
 }
 
 // ─── PO Card (list view) ───────────────────────────────────────────────────
@@ -87,7 +99,7 @@ function POCard({ po, onConvert }: { po: StorePurchaseOrder; onConvert: (po: Sto
             </span>
           </div>
           <p className="text-[11px] font-body text-muted-foreground mt-0.5 truncate">
-            {po.supplierName} · {po.lineItems.length} item{po.lineItems.length === 1 ? '' : 's'}
+            {po.supplierName} · {po.lineItems.length} item{po.lineItems.length === 1 ? '' : 's'} · ₹{po.grandTotal.toFixed(2)}
           </p>
         </div>
         {expanded ? <ChevronUp className="size-4 text-muted-foreground shrink-0" /> : <ChevronDown className="size-4 text-muted-foreground shrink-0" />}
@@ -99,18 +111,29 @@ function POCard({ po, onConvert }: { po: StorePurchaseOrder; onConvert: (po: Sto
             <span>Expected: {po.expectedDeliveryDate ? new Date(`${po.expectedDeliveryDate}T12:00:00`).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : 'Not set'}</span>
             <span>Raised: {new Date(po.createdAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}</span>
           </div>
+          {po.supplierAddress && (
+            <p className="text-[11px] font-body text-muted-foreground bg-muted/30 rounded-xl px-3 py-2">{po.supplierAddress}</p>
+          )}
 
           <div className="rounded-xl border border-border overflow-hidden">
             <div className="grid grid-cols-12 gap-1 px-3 py-2 bg-muted/50 text-[9px] font-body font-bold text-muted-foreground uppercase">
-              <span className="col-span-8">Item</span>
-              <span className="col-span-4 text-right">Quantity</span>
+              <span className="col-span-5">Item</span>
+              <span className="col-span-3 text-right">Quantity</span>
+              <span className="col-span-2 text-right">Rate</span>
+              <span className="col-span-2 text-right">Amt</span>
             </div>
             {po.lineItems.map((li, i) => (
               <div key={i} className="grid grid-cols-12 gap-1 px-3 py-2 border-t border-border/50 text-xs font-body">
-                <span className="col-span-8 font-semibold text-foreground truncate">{li.itemName}</span>
-                <span className="col-span-4 text-right text-muted-foreground">{num(li.quantity)} {li.unit}</span>
+                <span className="col-span-5 font-semibold text-foreground truncate">{li.itemName}{li.itemCode ? ` (${li.itemCode})` : ''}</span>
+                <span className="col-span-3 text-right text-muted-foreground">{num(li.quantity)} {li.unit}</span>
+                <span className="col-span-2 text-right text-muted-foreground">₹{li.pricePerUnit}</span>
+                <span className="col-span-2 text-right font-bold text-foreground">₹{li.totalPrice.toFixed(2)}</span>
               </div>
             ))}
+            <div className="flex justify-between px-3 py-2.5 bg-primary/5 border-t border-primary/20">
+              <span className="text-xs font-body font-bold">Grand Total</span>
+              <span className="text-sm font-display font-bold text-primary">₹{po.grandTotal.toFixed(2)}</span>
+            </div>
           </div>
 
           {po.notes && (
@@ -325,13 +348,21 @@ function CreatePOModal({ onClose, onCreated }: { onClose: () => void; onCreated:
       const errors: string[] = [];
       const itemName = line.itemName.trim();
       const quantity = Number(line.quantity);
+      const pricePerUnit = line.pricePerUnit.trim() === '' ? 0 : Number(line.pricePerUnit);
       const key = normalizeItemName(itemName);
       if (!itemName) errors.push('Select or enter an item name.');
       if (!Number.isFinite(quantity) || quantity <= 0) errors.push('Quantity must be greater than zero.');
+      if (!Number.isFinite(pricePerUnit) || pricePerUnit < 0) errors.push('Rate cannot be negative.');
       if (itemName && seen.has(key)) errors.push('This item is already present in another row.');
       if (itemName) seen.add(key);
       if (errors.length > 0) nextLineErrors[line.rowId] = errors;
-      normalized.push({ itemName, quantity: Number.isFinite(quantity) ? quantity : 0, unit: line.unit });
+      const safeQty = Number.isFinite(quantity) ? quantity : 0;
+      const safeRate = Number.isFinite(pricePerUnit) ? pricePerUnit : 0;
+      normalized.push({
+        itemName, quantity: safeQty, unit: line.unit,
+        pricePerUnit: safeRate, totalPrice: Math.round(safeQty * safeRate * 100) / 100,
+        itemCode: line.itemCode.trim() || undefined,
+      });
     }
     setLineErrors(nextLineErrors);
     if (!supplierId) { setError('Select a supplier before saving the purchase order.'); return null; }
@@ -365,7 +396,7 @@ function CreatePOModal({ onClose, onCreated }: { onClose: () => void; onCreated:
           <div className="flex items-start justify-between gap-3">
             <div>
               <h3 className="font-display text-lg font-bold text-foreground md:text-xl">New Purchase Order</h3>
-              <p className="text-[11px] font-body text-muted-foreground">Item and quantity only — pricing is added when this PO is converted to a GRN after Owner approval. Stock is not affected until then.</p>
+              <p className="text-[11px] font-body text-muted-foreground">Item, quantity and price — receiving detail (accepted/rejected qty, remarks) is added when this PO is converted to a GRN after Owner approval. Stock is not affected until then.</p>
             </div>
             <button type="button" onClick={onClose} disabled={saving} className="flex size-9 shrink-0 items-center justify-center rounded-xl hover:bg-muted disabled:opacity-50"><X className="size-4" /></button>
           </div>
@@ -405,36 +436,64 @@ function CreatePOModal({ onClose, onCreated }: { onClose: () => void; onCreated:
             </div>
             <div className="space-y-3 p-3">
               {lines.map((line, index) => (
-                <div key={line.rowId} className={cn('rounded-2xl border bg-card p-3 grid grid-cols-[minmax(0,1fr)_110px_100px_40px] items-start gap-2', lineErrors[line.rowId]?.length ? 'border-red-300 bg-red-50/30' : 'border-border')}>
-                  <POItemPicker
-                    value={line.itemName}
-                    rowId={line.rowId}
-                    stockItems={stockItems}
-                    selectedItemNames={selectedItemNames.filter(n => normalizeItemName(n) !== normalizeItemName(line.itemName))}
-                    onChange={itemName => updateLine(line.rowId, { itemName })}
-                    onSelect={suggestion => selectItem(line.rowId, suggestion)}
-                  />
-                  <input
-                    id={`po-qty-${line.rowId}`}
-                    type="number" min="0" step="any" inputMode="decimal"
-                    value={line.quantity}
-                    onChange={e => updateLine(line.rowId, { quantity: e.target.value })}
-                    placeholder="Qty"
-                    className="h-10 w-full rounded-xl border border-border bg-background px-2 text-right text-sm font-body tabular-nums focus:outline-none focus:ring-2 focus:ring-primary/30"
-                  />
-                  <select value={line.unit} onChange={e => updateLine(line.rowId, { unit: e.target.value as StockUnit })} className="h-10 w-full rounded-xl border border-border bg-background px-2 text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30">
-                    {PO_UNIT_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-                  </select>
-                  <button type="button" onClick={() => removeLine(line.rowId)} disabled={lines.length === 1} className="flex size-9 items-center justify-center rounded-xl text-red-500 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-25" aria-label={`Remove item ${index + 1}`}>
-                    <Trash2 className="size-4" />
-                  </button>
+                <div key={line.rowId} className={cn('rounded-2xl border bg-card p-3', lineErrors[line.rowId]?.length ? 'border-red-300 bg-red-50/30' : 'border-border')}>
+                  <div className="grid grid-cols-[minmax(0,1fr)_90px_80px_100px_100px_40px] items-start gap-2">
+                    <POItemPicker
+                      value={line.itemName}
+                      rowId={line.rowId}
+                      stockItems={stockItems}
+                      selectedItemNames={selectedItemNames.filter(n => normalizeItemName(n) !== normalizeItemName(line.itemName))}
+                      onChange={itemName => updateLine(line.rowId, { itemName })}
+                      onSelect={suggestion => selectItem(line.rowId, suggestion)}
+                    />
+                    <input
+                      id={`po-qty-${line.rowId}`}
+                      type="number" min="0" step="any" inputMode="decimal"
+                      value={line.quantity}
+                      onChange={e => updateLine(line.rowId, { quantity: e.target.value })}
+                      placeholder="Qty"
+                      className="h-10 w-full rounded-xl border border-border bg-background px-2 text-right text-sm font-body tabular-nums focus:outline-none focus:ring-2 focus:ring-primary/30"
+                    />
+                    <select value={line.unit} onChange={e => updateLine(line.rowId, { unit: e.target.value as StockUnit })} className="h-10 w-full rounded-xl border border-border bg-background px-2 text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30">
+                      {PO_UNIT_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                    </select>
+                    <div className="relative">
+                      <span className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-xs font-body text-muted-foreground">₹</span>
+                      <input
+                        type="number" min="0" step="any" inputMode="decimal"
+                        value={line.pricePerUnit}
+                        onChange={e => updateLine(line.rowId, { pricePerUnit: e.target.value })}
+                        placeholder="Rate"
+                        className="h-10 w-full rounded-xl border border-border bg-background pl-6 pr-2 text-right text-sm font-body tabular-nums focus:outline-none focus:ring-2 focus:ring-primary/30"
+                      />
+                    </div>
+                    <div className="flex h-10 items-center justify-end rounded-xl bg-primary/5 px-2.5">
+                      <span className="text-sm font-body font-bold tabular-nums text-primary">₹{poLineTotal(line).toFixed(2)}</span>
+                    </div>
+                    <button type="button" onClick={() => removeLine(line.rowId)} disabled={lines.length === 1} className="flex size-9 items-center justify-center rounded-xl text-red-500 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-25" aria-label={`Remove item ${index + 1}`}>
+                      <Trash2 className="size-4" />
+                    </button>
+                  </div>
+                  <div className="mt-2 border-t border-dashed border-border/70 pt-2">
+                    <label className="mb-1 block text-[9px] font-body font-bold uppercase text-muted-foreground">Item Code (optional)</label>
+                    <input
+                      value={line.itemCode}
+                      onChange={e => updateLine(line.rowId, { itemCode: e.target.value })}
+                      placeholder="Optional"
+                      className="h-9 w-full max-w-xs rounded-lg border border-border bg-background px-2 text-xs font-body focus:outline-none focus:ring-2 focus:ring-primary/30"
+                    />
+                  </div>
                   {lineErrors[line.rowId]?.length > 0 && (
-                    <div className="col-span-4 flex items-start gap-1.5 text-[11px] font-body text-red-700">
+                    <div className="mt-2 flex items-start gap-1.5 text-[11px] font-body text-red-700">
                       <AlertTriangle className="mt-0.5 size-3 shrink-0" /><span>{lineErrors[line.rowId].join(' ')}</span>
                     </div>
                   )}
                 </div>
               ))}
+            </div>
+            <div className="flex justify-between px-4 py-3 bg-primary/5 border-t border-primary/20">
+              <span className="text-xs font-body font-bold">Grand Total</span>
+              <span className="text-base font-display font-bold text-primary">₹{lines.reduce((sum, l) => sum + poLineTotal(l), 0).toFixed(2)}</span>
             </div>
           </section>
 
