@@ -1846,6 +1846,13 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
   const [form, setForm] = useState({ shopName: '', whatsappNumber: '', address: '', discountPercent: '' });
   const [editingShopId, setEditingShopId] = useState<string | null>(null);
   const [selectedShopId, setSelectedShopId] = useState('');
+  // FEATURE (2026-08-30): "Need the ability to delete the shop as well" —
+  // Shop Master previously only had Edit, no way to remove a shop at all.
+  // deletingShopId gates a one-tap "Delete" into an explicit "Confirm
+  // delete?" step (shop deletion hides the whole shop from ordering/pricing,
+  // more consequential than the price-list row Delete right below, which
+  // has no confirm step).
+  const [deletingShopId, setDeletingShopId] = useState<string | null>(null);
   const [priceSearch, setPriceSearch] = useState('');
   const [priceEdits, setPriceEdits] = useState<Record<string, string>>({});
   const [customItem, setCustomItem] = useState({ itemName: '', unit: 'pcs' as 'pcs' | 'kg', unitPrice: '' });
@@ -1901,6 +1908,21 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
     if (result.error) throw result.error;
     setEditingShopId(null);
     setForm({ shopName: '', whatsappNumber: '', address: '', discountPercent: '' });
+  };
+
+  // Soft-delete only, same convention as every other master-data "delete" in
+  // this app (Store's stock archive, etc.) — a hard DELETE would either fail
+  // on the FK from this shop's past orders/credit history or, worse, cascade
+  // and erase that history. Setting is_active=false makes the shop disappear
+  // from ordering/pricing (the load query already filters .eq('is_active',
+  // true)) while every past order, invoice and credit record stays intact
+  // and attributable.
+  const deleteShop = async (shop: HosurShop) => {
+    const { error } = await supabase.from('hosur_shops').update({ is_active: false, updated_at: new Date().toISOString() }).eq('id', shop.id);
+    if (error) throw error;
+    setDeletingShopId(null);
+    if (editingShopId === shop.id) { setEditingShopId(null); setForm({ shopName: '', whatsappNumber: '', address: '', discountPercent: '' }); }
+    if (selectedShopId === shop.id) setSelectedShopId('');
   };
 
   const importVrsnbPriceList = async () => {
@@ -2055,7 +2077,22 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
                 {shop.discountPercent > 0 && (
                   <p className="mt-1 text-xs font-semibold text-emerald-700">{shop.discountPercent}% discount applied to non-custom items</p>
                 )}
-                <span onClick={(e) => { e.stopPropagation(); setEditingShopId(shop.id); setSelectedShopId(shop.id); setForm({ shopName: shop.shopName, whatsappNumber: shop.whatsappNumber, address: shop.address, discountPercent: String(shop.discountPercent || '') }); }} className="mt-2 inline-flex rounded-lg bg-white px-2 py-1 text-[10px] font-black text-emerald-700 ring-1 ring-emerald-200">Edit details</span>
+                <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                  <span onClick={(e) => { e.stopPropagation(); setEditingShopId(shop.id); setSelectedShopId(shop.id); setForm({ shopName: shop.shopName, whatsappNumber: shop.whatsappNumber, address: shop.address, discountPercent: String(shop.discountPercent || '') }); }} className="inline-flex rounded-lg bg-white px-2 py-1 text-[10px] font-black text-emerald-700 ring-1 ring-emerald-200">Edit details</span>
+                  {deletingShopId === shop.id ? (
+                    <>
+                      <span
+                        onClick={(e) => { e.stopPropagation(); void withBusy(() => deleteShop(shop), `${shop.shopName} deleted.`); }}
+                        className={cn('inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-black text-white ring-1 ring-red-700', busy ? 'bg-red-300' : 'bg-red-600')}
+                      >
+                        {busy && <Loader2 className="size-3 animate-spin" />} Confirm delete?
+                      </span>
+                      <span onClick={(e) => { e.stopPropagation(); setDeletingShopId(null); }} className="inline-flex rounded-lg bg-white px-2 py-1 text-[10px] font-black text-muted-foreground ring-1 ring-border">Cancel</span>
+                    </>
+                  ) : (
+                    <span onClick={(e) => { e.stopPropagation(); setDeletingShopId(shop.id); }} className="inline-flex rounded-lg bg-white px-2 py-1 text-[10px] font-black text-red-700 ring-1 ring-red-200">Delete</span>
+                  )}
+                </div>
               </button>
             ))}
             </div>

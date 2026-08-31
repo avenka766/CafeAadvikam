@@ -3146,23 +3146,31 @@ function OwnerPOCard({ po, onReview }: { po: StorePurchaseOrder; onReview: (id: 
             <span className="font-bold text-sm">{po.poNumber}</span>
             <span className={cn('text-[10px] font-bold px-2 py-0.5 rounded-full border', statusMeta.color)}>{statusMeta.label}</span>
           </div>
-          <p className="text-xs text-muted-foreground mt-0.5 truncate">{po.supplierName} · {po.lineItems.length} item{po.lineItems.length === 1 ? '' : 's'} · raised {new Date(po.createdAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}{po.createdByName ? ` by ${po.createdByName}` : ''}</p>
+          <p className="text-xs text-muted-foreground mt-0.5 truncate">{po.supplierName} · {po.lineItems.length} item{po.lineItems.length === 1 ? '' : 's'} · ₹{po.grandTotal.toFixed(2)} · raised {new Date(po.createdAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}{po.createdByName ? ` by ${po.createdByName}` : ''}</p>
         </div>
         {expanded ? <ChevronUp className="size-4 text-muted-foreground shrink-0" /> : <ChevronDown className="size-4 text-muted-foreground shrink-0" />}
       </button>
 
       {expanded && (
         <div className="border-t border-border/60 px-4 pb-4 pt-3 space-y-3">
+          {po.supplierAddress && <p className="text-xs text-muted-foreground bg-muted/30 rounded-xl px-3 py-2">{po.supplierAddress}</p>}
           <div className="rounded-xl border border-border overflow-hidden">
             <div className="grid grid-cols-12 gap-1 px-3 py-2 bg-muted/40 text-[9px] font-bold text-muted-foreground uppercase">
-              <span className="col-span-8">Item</span><span className="col-span-4 text-right">Quantity</span>
+              <span className="col-span-5">Item</span><span className="col-span-3 text-right">Quantity</span>
+              <span className="col-span-2 text-right">Rate</span><span className="col-span-2 text-right">Amt</span>
             </div>
             {po.lineItems.map((li, i) => (
               <div key={i} className="grid grid-cols-12 gap-1 px-3 py-2 border-t border-border/40 text-xs">
-                <span className="col-span-8 font-semibold truncate">{li.itemName}</span>
-                <span className="col-span-4 text-right text-muted-foreground">{li.quantity} {li.unit}</span>
+                <span className="col-span-5 font-semibold truncate">{li.itemName}{li.itemCode ? ` (${li.itemCode})` : ''}</span>
+                <span className="col-span-3 text-right text-muted-foreground">{li.quantity} {li.unit}</span>
+                <span className="col-span-2 text-right text-muted-foreground">₹{li.pricePerUnit}</span>
+                <span className="col-span-2 text-right font-bold">₹{li.totalPrice.toFixed(2)}</span>
               </div>
             ))}
+            <div className="flex justify-between px-3 py-2.5 bg-primary/5 border-t border-primary/20">
+              <span className="text-xs font-bold">Grand Total</span>
+              <span className="text-sm font-bold text-primary">₹{po.grandTotal.toFixed(2)}</span>
+            </div>
           </div>
           {po.notes && <p className="text-xs bg-muted/40 rounded-xl px-3 py-2"><b>Store notes: </b>{po.notes}</p>}
           {po.reviewNote && <p className="text-xs bg-muted/40 rounded-xl px-3 py-2"><b>Your note: </b>{po.reviewNote}</p>}
