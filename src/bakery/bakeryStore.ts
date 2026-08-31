@@ -218,27 +218,28 @@ let bakeryLastFetchedAt = 0;
 // orders.length === 0, since a genuinely empty result (no pending bakery
 // orders at all right now) shouldn't be mistaken for "never loaded" and
 // trigger a full re-populate it doesn't need.
-let bakeryHasEverLoaded = false;
+// BUG FIX (2026-09-01): "cleared bakery_orders (again) but still seeing old
+// orders" — this recurred even after the 2026-08-26 fix below, because that
+// fix only bumped the cache KEY once (a one-time "every browser's cache is
+// now a miss" reset) — it never touched the actual mechanism that causes
+// the staleness, so it was always going to come back on the next bulk
+// clear too. Root cause: hydrateBakeryOrdersFromCache flipped this flag to
+// true purely from a LOCAL cache hit, before any real network fetch had
+// happened — so a browser sitting on stale cached data had its very first
+// REAL fetch of the session mistaken for a "subsequent" fetch and routed
+// into the narrow merge path below (which, by design, can only add/update,
+// never remove a row). Renamed bakeryHasEverLoaded -> bakeryRealFetchDone
+// and now only ever set true once an actual network fetch has completed —
+// cache hydration still gives a fast initial paint, but the first REAL
+// fetch of every session now always does a full, wide-window replace
+// regardless of what the cache contained, so this self-corrects after any
+// future bulk clear without needing another manual cache-key bump.
+let bakeryRealFetchDone = false;
 // EGRESS FIX (2026-08-21): persists orders to IndexedDB after every
 // successful fetch, and hydrates from it before the very first network
-// fetch of a session — same mechanism, same reasoning, as the analogous
-// change in orderStore.ts. A cache hit here also sets bakeryHasEverLoaded
-// = true, so the very first fetch of the session goes through the narrow,
-// merge-based path below instead of the full 60-day populate.
-// BUG FIX (2026-08-26): "cleared bakery_orders but still seeing old orders
-// everywhere" — the merge logic below (`[...fresh, ...get().orders.filter(
-// o => !freshIds.has(o.id))]`) only ever ADDS/updates from the recent
-// window; it never removes an order that's no longer in the database,
-// since anything outside that window gets unconditionally preserved from
-// local state. After a bulk delete of old orders (anything past the
-// narrow refresh window), those deleted rows stayed in every browser's
-// local state and IndexedDB cache indefinitely — not just this once, this
-// would recur after any future bulk clear too. Bumped the cache key so
-// every existing browser's stale cache is ignored on next load, and
-// force=true (an explicit, deliberate refresh) now does a genuine full
-// replace instead of a merge, so it can actually correct this if it
-// happens again.
-const BAKERY_ORDERS_CACHE_KEY = 'bakery_orders_v2';
+// fetch of a session for a fast initial paint — same mechanism, same
+// reasoning, as the analogous change in orderStore.ts.
+const BAKERY_ORDERS_CACHE_KEY = 'bakery_orders_v3';
 let bakeryCacheHydration: Promise<boolean> | null = null;
 
 function hydrateBakeryOrdersFromCache(set: (partial: { orders: BakeryOrder[] }) => void): Promise<boolean> {
@@ -247,7 +248,6 @@ function hydrateBakeryOrdersFromCache(set: (partial: { orders: BakeryOrder[] }) 
       const cached = await getCached<BakeryOrder[]>(BAKERY_ORDERS_CACHE_KEY);
       if (cached && cached.length > 0) {
         set({ orders: cached });
-        bakeryHasEverLoaded = true;
         return true;
       }
       return false;
@@ -310,15 +310,11 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     const request = (async () => {
       if (!silent) set({ loading: true });
       try {
-        // EGRESS FIX (2026-08-21): try the local cache before falling back
-        // to a network fetch to decide the window. If a previous session
-        // already persisted a full copy of `orders` here, this sets
-        // bakeryHasEverLoaded = true as a side effect, so the check just
-        // below correctly treats this as a narrow catch-up fetch rather
-        // than a full 60-day populate — even though, from this specific
-        // call's point of view, it's technically the first fetch this
-        // page load has made.
-        if (!bakeryHasEverLoaded) await hydrateBakeryOrdersFromCache(set);
+        // EGRESS FIX (2026-08-21): try the local cache before the first real
+        // network fetch of a session, purely for a fast initial paint —
+        // deliberately does NOT influence the full-replace-vs-merge
+        // decision below (see bakeryRealFetchDone's comment above for why).
+        if (!bakeryRealFetchDone) await hydrateBakeryOrdersFromCache(set);
         // EGRESS FIX (2026-08-21): this used to re-fetch and fully replace
         // the entire 60-day window (uncapped row count, several JSONB
         // columns per row — items, prepared_items, produced_items,
@@ -334,7 +330,7 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
         // wide time window except the very first populate of an empty
         // store — every fetch after that only needs to catch what's
         // changed recently and merge it in, never replace everything.
-        const cutoffDays = (bakeryHasEverLoaded && !force) ? BAKERY_REFRESH_WINDOW_DAYS : 60;
+        const cutoffDays = (bakeryRealFetchDone && !force) ? BAKERY_REFRESH_WINDOW_DAYS : 60;
         const cutoff = new Date();
         cutoff.setDate(cutoff.getDate() - cutoffDays);
         const query = supabase
@@ -345,14 +341,17 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
         const { data, error } = await query;
         if (!error && data) {
           const fresh = data.map(d => rowToOrder(d as Record<string, unknown>));
-          if (!bakeryHasEverLoaded || force) {
-            // True first load this session, OR an explicit, deliberate
-            // refresh — a full, wide-window REPLACE rather than a merge.
-            // This is the only path that can ever reflect a deletion —
-            // the merge path below, by design, only adds/updates and
-            // never removes, so it can't correct a bulk clear on its own.
+          if (!bakeryRealFetchDone || force) {
+            // True first REAL fetch this session, OR an explicit,
+            // deliberate refresh — a full, wide-window REPLACE rather than
+            // a merge. This is the only path that can ever reflect a
+            // deletion — the merge path below, by design, only
+            // adds/updates and never removes, so it can't correct a bulk
+            // clear on its own. Runs regardless of whether cache hydration
+            // above found something, so a stale cache always gets
+            // corrected by this very first real fetch.
             set({ orders: fresh });
-            bakeryHasEverLoaded = true;
+            bakeryRealFetchDone = true;
             void setCached(BAKERY_ORDERS_CACHE_KEY, fresh);
           } else {
             // Every subsequent fetch: merge the fresh, recent-window
