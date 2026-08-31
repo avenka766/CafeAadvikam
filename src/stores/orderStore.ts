@@ -874,13 +874,26 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     // the page was reloaded. Falls back to exactly today's wide fetch if
     // there's nothing cached yet (first-ever visit) or the cache is
     // unavailable for any reason.
+    // BUG FIX (2026-09-01): "cleared orders in the DB, a browser that had
+    // this cached still shows the old ones" — the branch this replaced used
+    // the narrow, merge-only refreshRecentOrders as the very first real
+    // fetch of a session whenever cache hydration hit, and a merge (by
+    // design, see refreshRecentOrders above) can never reflect a row being
+    // deleted — so a browser sitting on stale cached data from before a
+    // bulk delete would never self-correct, even after reopening the tab,
+    // for as long as the cache stayed populated. Same root cause and same
+    // fix as bakeryStore.ts's bakeryRealFetchDone: cache hydration is now
+    // ONLY a fast initial paint (set() above) — the actual first real fetch
+    // of every session always goes through the full, wide-window
+    // loadOrders(days), so any staleness from a bulk delete self-corrects
+    // on the next page load / tab reopen, without needing a manual cache-
+    // key bump each time. Bounded cost: startPolling's own `if
+    // (state.pollTimer) return` guard a few lines up means this whole block
+    // — and so this one wide fetch — only ever runs once per tab session,
+    // not once per mounted component or per poll tick.
     void (async () => {
-      const hydrated = await hydrateOrdersFromCache(set);
-      if (hydrated) {
-        await get().refreshRecentOrders(POLL_REFRESH_DAYS);
-      } else {
-        await get().loadOrders(days);
-      }
+      await hydrateOrdersFromCache(set);
+      await get().loadOrders(days);
     })();
   },
 
