@@ -10,6 +10,12 @@ import { startOfBusinessDayISO } from '@/lib/businessDate';
 
 const normalizeStockName = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
+// EGRESS FIX (2026-09-01): see fetchBranchData's own comment below for the
+// full reasoning — this is the set of independently-refreshable pieces
+// bundled inside it today.
+export type BranchDataScope = 'stock' | 'sales' | 'incoming' | 'thresholds' | 'advance' | 'credit';
+const ALL_BRANCH_DATA_SCOPES: BranchDataScope[] = ['stock', 'sales', 'incoming', 'thresholds', 'advance', 'credit'];
+
 type BranchRealtimeSubscription = {
   channel: ReturnType<typeof supabase.channel>;
   subscribers: number;
@@ -19,6 +25,14 @@ const branchRealtimeSubscriptions = new Map<string, BranchRealtimeSubscription>(
 const branchFetchesInFlight = new Set<Branch>();
 const branchLastFetchedAt = new Map<Branch, number>();
 const BRANCH_FETCH_FRESH_MS = 60_000;
+// EGRESS FIX (2026-09-01): fetchBranchData fires 10 parallel queries and is
+// called with force=true from 30+ mutation call sites across the app — a
+// quick burst of actions (e.g. confirming several incoming items in a row)
+// used to trigger one full 10-query refetch PER call, since force bypassed
+// BRANCH_FETCH_FRESH_MS entirely. This hard floor applies even to
+// force=true, collapsing a rapid burst into far fewer real fetches, while
+// staying short enough that a single deliberate action still feels prompt.
+const BRANCH_FETCH_HARD_MIN_MS = 5_000;
 
 const isMissingRpcError = (message: string) =>
   /could not find the function|function .* does not exist|schema cache/i.test(message);
@@ -234,7 +248,14 @@ interface BranchState {
   lastCleanedAt:   number | null;
   // B5-FIX: per-branch sync timestamps so one branch's sync doesn't block another.
   lastSyncedAt:    Record<Branch, number | null>;
-  fetchBranchData: (branch: Branch, force?: boolean) => Promise<void>;
+  // EGRESS FIX (2026-09-01): `scopes` narrows which of the 10 underlying
+  // queries actually run — omitted (the default) means "everything", so
+  // every one of this function's 60+ existing call sites keeps behaving
+  // exactly as before with zero code changes on their end. A caller that
+  // knows exactly what its own mutation touched (e.g. a sale only ever
+  // changes stock+sales, never incoming/advance/credit) can pass a narrow
+  // scope to skip the other 7 queries entirely. See BRANCH_DATA_SCOPES.
+  fetchBranchData: (branch: Branch, force?: boolean, scopes?: BranchDataScope[]) => Promise<void>;
   // EGRESS FIX: explicit, on-demand fetch for a historical date range — used
   // only by Owner/Admin Reports screens when they pick a range beyond today.
   // Returns data directly rather than writing into the always-on `sales`
@@ -326,12 +347,16 @@ function changedRow(event: RealtimeRowEvent) {
   return event.new && Object.keys(event.new).length > 0 ? event.new : event.old ?? {};
 }
 
-function applyBranchRealtimeChange(branch: Branch, table: string, payload: unknown) {
+// REALTIME FIX (2026-09-01): pure reducer — computes the partial state
+// update for one realtime event without calling setState itself, so the
+// batched flush below (applyBranchRealtimeChange) can fold several buffered
+// events into a single setState call.
+function computeBranchRealtimeChange(state: BranchState, branch: Branch, table: string, payload: unknown): Partial<BranchState> {
   const event = payload as RealtimeRowEvent;
   const row = changedRow(event);
   const id = String(row.id ?? '');
 
-  useBranchStore.setState((state) => {
+  {
     if (table === 'branch_stock') {
       const barcode = row.item_barcode == null ? undefined : Number(row.item_barcode);
       const name = String(row.item_name ?? '');
@@ -477,8 +502,48 @@ function applyBranchRealtimeChange(branch: Branch, table: string, payload: unkno
       return { creditPayments: { ...state.creditPayments, [branch]: [next, ...current.filter((payment) => payment.id !== id)].slice(0, 3000) } };
     }
 
-    return state;
-  });
+    return {};
+  }
+}
+
+// EGRESS FIX (2026-09-01): buffers realtime events per (branch, table, row)
+// for a short window before applying — same coalescing pattern already
+// proven in orderStore.ts's ORDER_EVENT_FLUSH_MS, so a burst of many rapid
+// changes (e.g. a bulk dispatch touching dozens of stock rows at once)
+// collapses into one setState call instead of one per row.
+const BRANCH_REALTIME_FLUSH_MS = 200;
+let pendingBranchRealtimeEvents = new Map<string, { branch: Branch; table: string; payload: unknown }>();
+let branchRealtimeFlushTimer: ReturnType<typeof setTimeout> | null = null;
+
+function applyBranchRealtimeChange(branch: Branch, table: string, payload: unknown) {
+  const event = payload as RealtimeRowEvent;
+  const row = changedRow(event);
+  // branch_stock rows have no `id` column — key on barcode/name instead
+  // (matching computeBranchRealtimeChange's own match logic for that table)
+  // so rapid updates to different items don't collapse into just the last one.
+  const rowKey = table === 'branch_stock'
+    ? (row.item_barcode != null ? `bc:${Number(row.item_barcode)}` : `nm:${normalizeStockName(String(row.item_name ?? ''))}`)
+    : String(row.id ?? '');
+  const key = `${branch}|${table}|${rowKey}`;
+  pendingBranchRealtimeEvents.set(key, { branch, table, payload });
+  if (branchRealtimeFlushTimer) return;
+  branchRealtimeFlushTimer = setTimeout(() => {
+    const events = pendingBranchRealtimeEvents;
+    pendingBranchRealtimeEvents = new Map();
+    branchRealtimeFlushTimer = null;
+    useBranchStore.setState((state) => {
+      let working = state;
+      let merged: Partial<BranchState> = {};
+      for (const { branch: b, table: t, payload: p } of events.values()) {
+        const partial = computeBranchRealtimeChange(working, b, t, p);
+        if (Object.keys(partial).length > 0) {
+          working = { ...working, ...partial };
+          merged = { ...merged, ...partial };
+        }
+      }
+      return merged;
+    });
+  }, BRANCH_REALTIME_FLUSH_MS);
 }
 
 export const useBranchStore = create<BranchState>((set, get) => ({
@@ -494,10 +559,20 @@ export const useBranchStore = create<BranchState>((set, get) => ({
   lastCleanedAt:   null,
   lastSyncedAt:    { Cafe: null, VRSNB: null, SNB: null, Hosur: null } as Record<Branch, number | null>,
 
-  fetchBranchData: async (branch, force = false) => {
+  fetchBranchData: async (branch, force = false, scopesArg) => {
     if (branchFetchesInFlight.has(branch)) return;
     const lastFetchedAt = branchLastFetchedAt.get(branch) ?? 0;
-    if (!force && Date.now() - lastFetchedAt < BRANCH_FETCH_FRESH_MS) return;
+    const elapsedSinceLastFetch = Date.now() - lastFetchedAt;
+    if (elapsedSinceLastFetch < BRANCH_FETCH_HARD_MIN_MS) return;
+    if (!force && elapsedSinceLastFetch < BRANCH_FETCH_FRESH_MS) return;
+
+    const scopes = new Set(scopesArg ?? ALL_BRANCH_DATA_SCOPES);
+    const wantStock = scopes.has('stock');
+    const wantSales = scopes.has('sales');
+    const wantIncoming = scopes.has('incoming');
+    const wantThresholds = scopes.has('thresholds');
+    const wantAdvance = scopes.has('advance');
+    const wantCredit = scopes.has('credit');
 
     branchFetchesInFlight.add(branch);
     set({ loading: true });
@@ -515,10 +590,20 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       // always-on cache.
       const startOfToday = startOfBusinessDayISO();
 
+      // Only stock rows need a price lookup — skip the catalog load entirely
+      // for a scope that never touches stock.
       const catalogBranch = branch === 'VRSNB' ? 'VRSNB' : branch === 'SNB' || branch === 'Hosur' ? 'SNB' : null;
-      if (catalogBranch) await useBranchCatalogStore.getState().loadCatalog(catalogBranch);
-      const catalogItems = catalogBranch ? useBranchCatalogStore.getState().items[catalogBranch] : [];
+      if (wantStock && catalogBranch) await useBranchCatalogStore.getState().loadCatalog(catalogBranch);
+      const catalogItems = (wantStock && catalogBranch) ? useBranchCatalogStore.getState().items[catalogBranch] : [];
 
+      // EGRESS FIX (2026-09-01): each entry below now only fires its real
+      // query when its scope was actually requested — skipped ones resolve
+      // to `{ data: null }` immediately (no network call). null vs [] is
+      // meaningful downstream: the merge in set() below only touches a
+      // state slice when its scope was requested, so a skipped query's
+      // null can never be mistaken for "fetched, genuinely empty" and wipe
+      // out already-correct state for that branch.
+      const SKIP = Promise.resolve({ data: null } as { data: null });
       const [
         { data: stockData },
         { data: salesData },
@@ -531,71 +616,87 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         { data: openCreditData },
         { data: openIncomingData },
       ] = await Promise.all([
-        supabase.from('branch_stock')
+        // EGRESS FIX (2026-09-01): real observed counts checked directly
+        // against live data before shrinking these — branch_stock's actual
+        // max across all 3 branches is ~450 rows, so 2000 was ~4.4x oversized
+        // headroom for no real benefit. 600 still leaves comfortable room to
+        // grow without silently truncating a real branch's stock list.
+        wantStock ? supabase.from('branch_stock')
           .select('item_barcode,item_name,quantity,reserved_quantity,updated_at,last_updated_at,unit,min_threshold')
-          .eq('branch', branch).order('updated_at', { ascending: false }).limit(2000),
+          .eq('branch', branch).order('updated_at', { ascending: false }).limit(600) : SKIP,
         // EGRESS FIX: today only (was a 30-day unbounded window).
-        supabase.from('branch_sales')
+        // EGRESS FIX (2026-09-01): shrunk 3000 -> 800, same reasoning as
+        // branch_stock above (a single branch's real daily sale count is
+        // nowhere near 3000; 800 is still generous headroom for a busy day).
+        wantSales ? supabase.from('branch_sales')
           .select('id,item_barcode,item_name,quantity_sold,sold_at,sold_by,branch,payment_method,unit_price,bill_no')
           .eq('branch', branch)
           .gte('sold_at', startOfToday)
           .order('sold_at', { ascending: false })
-          .limit(3000),
+          .limit(800) : SKIP,
         // EGRESS FIX: today's supplies-in only. Anything still unconfirmed from
         // an earlier day still needs to surface for action, so that's merged in
         // separately below with its own small cap.
-        supabase.from('branch_incoming')
+        // EGRESS FIX (2026-09-01): shrunk 1000 -> 300 — real observed max for
+        // "today's incoming" across all 3 branches is ~67 rows.
+        wantIncoming ? supabase.from('branch_incoming')
           .select('id,item_barcode,item_name,quantity,unit,received_at,dispatched_by,confirmed,disputed,dispute_reason,disputed_by,disputed_at,disputed_received_quantity,return_requested,return_requested_at,return_requested_by,transfer_in_return_id')
           .eq('branch', branch)
           .gte('received_at', startOfToday)
-          .order('received_at', { ascending: false }).limit(1000),
-        supabase.from('branch_thresholds').select('item_name,threshold').eq('branch', branch),
+          .order('received_at', { ascending: false }).limit(300) : SKIP,
+        wantThresholds ? supabase.from('branch_thresholds').select('item_name,threshold').eq('branch', branch) : SKIP,
         // SNB/VRSNB/Hosur prices already come from the cached live branch
         // catalogue. Only Cafe still needs the legacy bakery price fallback.
-        catalogBranch
+        !wantStock ? SKIP : catalogBranch
           ? Promise.resolve({ data: [] as Array<{ name: string; price: number | null }> })
           : supabase.from('bakery_items').select('name, price'),
         // EGRESS FIX: "recent" advance orders now means *today's* advance
         // orders (was: last 1000 rows regardless of age).
-        supabase.from('branch_advance_orders')
+        // EGRESS FIX (2026-09-01): shrunk 1000 -> 300 — this is a same-day-
+        // only window, not a backlog; the still-open backlog below (which
+        // genuinely can grow large and must NOT be truncated) is untouched.
+        wantAdvance ? supabase.from('branch_advance_orders')
           .select('id,branch,customer_name,items,subtotal,advance_amount,advance_method,balance_due,sold_by,created_at,fully_paid_at,balance_method,status,delivery_date,notes,reservation_status')
           .eq('branch', branch)
           .gte('created_at', startOfToday)
           .order('created_at', { ascending: false })
-          .limit(1000),
+          .limit(300) : SKIP,
         // EGRESS FIX: "recent" credit sales now means *today's* credit sales
         // (was: last 1000 rows regardless of age).
-        supabase.from('branch_credit_sales')
+        // EGRESS FIX (2026-09-01): shrunk 1000 -> 300, same reasoning as
+        // advance orders above — same-day-only, the unsettled backlog below
+        // is untouched.
+        wantCredit ? supabase.from('branch_credit_sales')
           .select('id,branch,source,source_id,customer_ref,customer_name,customer_phone,items,subtotal,amount_paid,credit_amount,sold_by,created_at,due_date,settled_at,status,notes,bill_no,discount_amount')
           .eq('branch', branch)
           .gte('created_at', startOfToday)
           .order('created_at', { ascending: false })
-          .limit(1000),
+          .limit(300) : SKIP,
         // An old advance order that's still unsettled represents money owed /
         // a delivery still due, and must not disappear just because it wasn't
         // created today. Fetch open ones separately, unbounded by recency
         // (still capped defensively), and merge below.
-        supabase.from('branch_advance_orders')
+        wantAdvance ? supabase.from('branch_advance_orders')
           .select('id,branch,customer_name,items,subtotal,advance_amount,advance_method,balance_due,sold_by,created_at,fully_paid_at,balance_method,status,delivery_date,notes,reservation_status')
           .eq('branch', branch)
           .eq('status', 'pending')
           .order('created_at', { ascending: false })
-          .limit(1000),
-        supabase.from('branch_credit_sales')
+          .limit(1000) : SKIP,
+        wantCredit ? supabase.from('branch_credit_sales')
           .select('id,branch,source,source_id,customer_ref,customer_name,customer_phone,items,subtotal,amount_paid,credit_amount,sold_by,created_at,due_date,settled_at,status,notes,bill_no,discount_amount')
           .eq('branch', branch)
           .neq('status', 'settled')
           .order('created_at', { ascending: false })
-          .limit(1000),
+          .limit(1000) : SKIP,
         // An unconfirmed delivery from an earlier day still needs action, so
         // pull those regardless of date too (small cap — this should normally
         // be empty or tiny).
-        supabase.from('branch_incoming')
+        wantIncoming ? supabase.from('branch_incoming')
           .select('id,item_barcode,item_name,quantity,unit,received_at,dispatched_by,confirmed,disputed,dispute_reason,disputed_by,disputed_at,disputed_received_quantity,return_requested,return_requested_at,return_requested_by,transfer_in_return_id')
           .eq('branch', branch)
           .eq('confirmed', false)
           .order('received_at', { ascending: false })
-          .limit(300),
+          .limit(300) : SKIP,
       ]);
 
       // Build a name → price lookup from bakery_items
@@ -607,123 +708,139 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       const priceByBarcode = new Map(catalogItems.map((item) => [item.barcode, item.price]));
 
       set((s) => {
-        const stock         = { ...s.stock };
-        const sales         = { ...s.sales };
-        const incoming      = { ...s.incoming };
-        const thresholds    = { ...s.thresholds };
-        const advanceOrders = { ...s.advanceOrders };
-        const creditSales   = { ...s.creditSales };
+        // EGRESS FIX (2026-09-01): only the slices actually fetched this
+        // call get rebuilt below — everything else is passed through from
+        // existing state untouched, so a narrow-scope call can never wipe
+        // out data for a slice it didn't request.
+        const stock         = wantStock ? { ...s.stock } : s.stock;
+        const sales         = wantSales ? { ...s.sales } : s.sales;
+        const incoming      = wantIncoming ? { ...s.incoming } : s.incoming;
+        const thresholds    = wantThresholds ? { ...s.thresholds } : s.thresholds;
+        const advanceOrders = wantAdvance ? { ...s.advanceOrders } : s.advanceOrders;
+        const creditSales   = wantCredit ? { ...s.creditSales } : s.creditSales;
 
-        const latestStockRows = new Map<string, (typeof stockData extends (infer R)[] | null ? R : never)>();
-        for (const row of stockData || []) {
-          const key = row.item_barcode != null
-            ? `barcode:${Number(row.item_barcode)}`
-            : `name:${normalizeStockName(String(row.item_name || ''))}`;
-          if (!latestStockRows.has(key)) latestStockRows.set(key, row);
+        if (wantStock) {
+          const latestStockRows = new Map<string, (typeof stockData extends (infer R)[] | null ? R : never)>();
+          for (const row of stockData || []) {
+            const key = row.item_barcode != null
+              ? `barcode:${Number(row.item_barcode)}`
+              : `name:${normalizeStockName(String(row.item_name || ''))}`;
+            if (!latestStockRows.has(key)) latestStockRows.set(key, row);
+          }
+          stock[branch] = Array.from(latestStockRows.values()).map((d) => ({
+            itemBarcode:  d.item_barcode != null ? Number(d.item_barcode) : undefined,
+            itemName:     d.item_name,
+            quantity:     Number(d.quantity ?? 0),
+            reservedQuantity: Number(d.reserved_quantity ?? 0),
+            availableQuantity: Math.max(0, Number(d.quantity ?? 0) - Number(d.reserved_quantity ?? 0)),
+            updatedAt: d.updated_at ? String(d.updated_at) : undefined,
+            lastUpdatedAt: d.last_updated_at ? String(d.last_updated_at) : undefined,
+            unit:         (d.unit === 'pcs' ? 'pcs' : d.unit === 'kg' ? 'kg' : undefined) as 'pcs' | 'kg' | undefined,
+            minThreshold: d.min_threshold ?? 10,
+            price:        d.item_barcode != null ? (priceByBarcode.get(Number(d.item_barcode)) ?? priceMap[d.item_name] ?? null) : (priceMap[d.item_name] ?? null),
+          })).sort((a, b) => a.itemName.localeCompare(b.itemName));
         }
-        stock[branch] = Array.from(latestStockRows.values()).map((d) => ({
-          itemBarcode:  d.item_barcode != null ? Number(d.item_barcode) : undefined,
-          itemName:     d.item_name,
-          quantity:     Number(d.quantity ?? 0),
-          reservedQuantity: Number(d.reserved_quantity ?? 0),
-          availableQuantity: Math.max(0, Number(d.quantity ?? 0) - Number(d.reserved_quantity ?? 0)),
-          updatedAt: d.updated_at ? String(d.updated_at) : undefined,
-          lastUpdatedAt: d.last_updated_at ? String(d.last_updated_at) : undefined,
-          unit:         (d.unit === 'pcs' ? 'pcs' : d.unit === 'kg' ? 'kg' : undefined) as 'pcs' | 'kg' | undefined,
-          minThreshold: d.min_threshold ?? 10,
-          price:        d.item_barcode != null ? (priceByBarcode.get(Number(d.item_barcode)) ?? priceMap[d.item_name] ?? null) : (priceMap[d.item_name] ?? null),
-        })).sort((a, b) => a.itemName.localeCompare(b.itemName));
 
-        sales[branch] = (salesData || []).map((d) => ({
-          id:            d.id,
-          itemBarcode:   d.item_barcode != null ? Number(d.item_barcode) : undefined,
-          itemName:      d.item_name,
-          quantitySold:  Number(d.quantity_sold ?? 0),
-          soldAt:        d.sold_at,
-          soldBy:        d.sold_by,
-          branch:        d.branch as Branch,
-          paymentMethod: d.payment_method ?? null,
-          unitPrice:     d.unit_price != null ? Number(d.unit_price) : 0,
-          billNo:        d.bill_no ?? null,
-        }));
-
-        incoming[branch] = [
-          ...(incomingData || []),
-          ...((openIncomingData || []).filter((o) => !(incomingData || []).some((i) => i.id === o.id))),
-        ].map((d) => ({
-          id:            d.id,
-          itemBarcode:   d.item_barcode != null ? Number(d.item_barcode) : undefined,
-          itemName:      d.item_name,
-          quantity:      Number(d.quantity),
-          reservedQuantity: 0,
-          availableQuantity: Number(d.quantity),
-          unit:          (d.unit === 'pcs' ? 'pcs' : 'kg') as 'pcs' | 'kg',
-          receivedAt:    d.received_at,
-          dispatchedBy:  d.dispatched_by,
-          confirmed:     d.confirmed ?? false,
-          disputed:      d.disputed ?? false,
-          disputeReason: d.dispute_reason ?? null,
-          disputedBy:    d.disputed_by ?? null,
-          disputedAt:    d.disputed_at ?? null,
-          disputedReceivedQuantity: d.disputed_received_quantity != null ? Number(d.disputed_received_quantity) : null,
-          returnRequested: d.return_requested ?? false,
-          returnRequestedAt: d.return_requested_at ?? null,
-          returnRequestedBy: d.return_requested_by ?? null,
-          transferInReturnId: d.transfer_in_return_id ?? null,
-        }));
-
-        advanceOrders[branch] = [
-          ...(advanceData || []),
-          ...((openAdvanceData || []).filter((o) => !(advanceData || []).some((a) => a.id === o.id))),
-        ].map((d) => ({
-          id:             d.id,
-          branch:         d.branch as Branch,
-          customerName:   d.customer_name ?? null,
-          items:          (d.items || []) as BranchAdvanceItem[],
-          subtotal:       Number(d.subtotal),
-          advanceAmount:  Number(d.advance_amount),
-          advanceMethod:  d.advance_method,
-          balanceDue:     Number(d.balance_due),
-          soldBy:         d.sold_by,
-          createdAt:      d.created_at,
-          fullyPaidAt:    d.fully_paid_at ?? null,
-          balanceMethod:  d.balance_method ?? null,
-          status:         d.status as 'pending' | 'completed' | 'cancelled',
-          deliveryDate:   d.delivery_date ?? null,
-          notes:          d.notes ?? null,
-          reservationStatus: (d.reservation_status ?? 'none') as BranchAdvanceOrder['reservationStatus'],
-        }));
-
-        const tMap: Record<string, number> = {};
-        (thresholdData || []).forEach((d) => { tMap[d.item_name] = d.threshold; });
-        thresholds[branch] = tMap;
-
-        creditSales[branch] = [
-          ...(creditData || []),
-          ...((openCreditData || []).filter((o) => !(creditData || []).some((c) => c && c.id === o.id))),
-        ]
-          .filter((d): d is NonNullable<typeof d> => d != null && d.id != null)
-          .map((d) => ({
+        if (wantSales) {
+          sales[branch] = (salesData || []).map((d) => ({
             id:            d.id,
+            itemBarcode:   d.item_barcode != null ? Number(d.item_barcode) : undefined,
+            itemName:      d.item_name,
+            quantitySold:  Number(d.quantity_sold ?? 0),
+            soldAt:        d.sold_at,
+            soldBy:        d.sold_by,
             branch:        d.branch as Branch,
-            source:        d.source ?? null,
-            sourceId:      d.source_id ?? null,
-            customerRef:   d.customer_ref ?? null,
-            customerName:  d.customer_name ?? 'Unknown',
-            customerPhone: d.customer_phone ?? null,
-            items:         ((d.items as CreditSaleItem[] | null) || []).filter((i): i is CreditSaleItem => i != null),
-            subtotal:      Number(d.subtotal ?? 0),
-            amountPaid:    Number(d.amount_paid ?? 0),
-            creditAmount:  Number(d.credit_amount ?? 0),
-            soldBy:        d.sold_by ?? 'Staff',
-            createdAt:     d.created_at ?? new Date().toISOString(),
-            dueDate:       d.due_date ?? null,
-            settledAt:     d.settled_at ?? null,
-            status:        (d.status ?? 'pending') as 'pending' | 'partial' | 'settled',
-            notes:         d.notes ?? null,
-            billNo:        d.bill_no ?? '',
-            discountAmount: Number(d.discount_amount ?? 0),
+            paymentMethod: d.payment_method ?? null,
+            unitPrice:     d.unit_price != null ? Number(d.unit_price) : 0,
+            billNo:        d.bill_no ?? null,
           }));
+        }
+
+        if (wantIncoming) {
+          incoming[branch] = [
+            ...(incomingData || []),
+            ...((openIncomingData || []).filter((o) => !(incomingData || []).some((i) => i.id === o.id))),
+          ].map((d) => ({
+            id:            d.id,
+            itemBarcode:   d.item_barcode != null ? Number(d.item_barcode) : undefined,
+            itemName:      d.item_name,
+            quantity:      Number(d.quantity),
+            reservedQuantity: 0,
+            availableQuantity: Number(d.quantity),
+            unit:          (d.unit === 'pcs' ? 'pcs' : 'kg') as 'pcs' | 'kg',
+            receivedAt:    d.received_at,
+            dispatchedBy:  d.dispatched_by,
+            confirmed:     d.confirmed ?? false,
+            disputed:      d.disputed ?? false,
+            disputeReason: d.dispute_reason ?? null,
+            disputedBy:    d.disputed_by ?? null,
+            disputedAt:    d.disputed_at ?? null,
+            disputedReceivedQuantity: d.disputed_received_quantity != null ? Number(d.disputed_received_quantity) : null,
+            returnRequested: d.return_requested ?? false,
+            returnRequestedAt: d.return_requested_at ?? null,
+            returnRequestedBy: d.return_requested_by ?? null,
+            transferInReturnId: d.transfer_in_return_id ?? null,
+          }));
+        }
+
+        if (wantAdvance) {
+          advanceOrders[branch] = [
+            ...(advanceData || []),
+            ...((openAdvanceData || []).filter((o) => !(advanceData || []).some((a) => a.id === o.id))),
+          ].map((d) => ({
+            id:             d.id,
+            branch:         d.branch as Branch,
+            customerName:   d.customer_name ?? null,
+            items:          (d.items || []) as BranchAdvanceItem[],
+            subtotal:       Number(d.subtotal),
+            advanceAmount:  Number(d.advance_amount),
+            advanceMethod:  d.advance_method,
+            balanceDue:     Number(d.balance_due),
+            soldBy:         d.sold_by,
+            createdAt:      d.created_at,
+            fullyPaidAt:    d.fully_paid_at ?? null,
+            balanceMethod:  d.balance_method ?? null,
+            status:         d.status as 'pending' | 'completed' | 'cancelled',
+            deliveryDate:   d.delivery_date ?? null,
+            notes:          d.notes ?? null,
+            reservationStatus: (d.reservation_status ?? 'none') as BranchAdvanceOrder['reservationStatus'],
+          }));
+        }
+
+        if (wantThresholds) {
+          const tMap: Record<string, number> = {};
+          (thresholdData || []).forEach((d) => { tMap[d.item_name] = d.threshold; });
+          thresholds[branch] = tMap;
+        }
+
+        if (wantCredit) {
+          creditSales[branch] = [
+            ...(creditData || []),
+            ...((openCreditData || []).filter((o) => !(creditData || []).some((c) => c && c.id === o.id))),
+          ]
+            .filter((d): d is NonNullable<typeof d> => d != null && d.id != null)
+            .map((d) => ({
+              id:            d.id,
+              branch:        d.branch as Branch,
+              source:        d.source ?? null,
+              sourceId:      d.source_id ?? null,
+              customerRef:   d.customer_ref ?? null,
+              customerName:  d.customer_name ?? 'Unknown',
+              customerPhone: d.customer_phone ?? null,
+              items:         ((d.items as CreditSaleItem[] | null) || []).filter((i): i is CreditSaleItem => i != null),
+              subtotal:      Number(d.subtotal ?? 0),
+              amountPaid:    Number(d.amount_paid ?? 0),
+              creditAmount:  Number(d.credit_amount ?? 0),
+              soldBy:        d.sold_by ?? 'Staff',
+              createdAt:     d.created_at ?? new Date().toISOString(),
+              dueDate:       d.due_date ?? null,
+              settledAt:     d.settled_at ?? null,
+              status:        (d.status ?? 'pending') as 'pending' | 'partial' | 'settled',
+              notes:         d.notes ?? null,
+              billNo:        d.bill_no ?? '',
+              discountAmount: Number(d.discount_amount ?? 0),
+            }));
+        }
         return { stock, sales, incoming, thresholds, advanceOrders, creditSales };
       });
       branchLastFetchedAt.set(branch, Date.now());
@@ -949,7 +1066,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       advanceOrders[branch] = [newOrder, ...advanceOrders[branch]];
       return { advanceOrders };
     });
-    await get().fetchBranchData(branch);
+    await get().fetchBranchData(branch, false, ['stock', 'advance']); // EGRESS FIX: reservation touches reserved_quantity on stock + the new advance order
     return null;
   },
 
@@ -971,7 +1088,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       return `Advance order could not be completed: ${error.message}`;
     }
     const row = data as Record<string, unknown>;
-    await get().fetchBranchData(branch);
+    await get().fetchBranchData(branch, false, ['stock', 'sales', 'advance']); // EGRESS FIX: completing an advance order deducts stock, records a sale, and closes the order
     set((state) => {
       const advanceOrders = { ...state.advanceOrders };
       advanceOrders[branch] = advanceOrders[branch].map((entry) => entry.id === orderId ? {
@@ -1126,7 +1243,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     // background poll re-downloaded the full branch dashboard payload (stock,
     // today's sales, advance/credit orders) even when nothing had changed.
     // Realtime + the manual refresh button cover the rest.
-    if (newEntries.length > 0) await get().fetchBranchData(branch, true);
+    if (newEntries.length > 0) await get().fetchBranchData(branch, true, ['incoming']); // EGRESS FIX: syncing incoming deliveries only touches incoming
   },
 
   // B4 FIX: confirmIncoming — stock update comes BEFORE marking confirmed.
@@ -1151,7 +1268,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     }
     const { error: rpcErr } = canonicalConfirm;
     if (!rpcErr) {
-      await get().fetchBranchData(branch);
+      await get().fetchBranchData(branch, false, ['stock', 'incoming']); // EGRESS FIX: confirming incoming adds stock and marks the row confirmed
       return null;
     }
 
@@ -1326,7 +1443,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       return { stock, sales };
     });
     // Sync from DB after SNB sale to pick up any concurrent changes
-    void get().fetchBranchData(branch);
+    void get().fetchBranchData(branch, false, ['stock', 'sales']); // EGRESS FIX: a sale only touches stock + sales
 
     return { error: null, mismatch };
   },
@@ -1398,7 +1515,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     }
 
     // Re-fetch from DB to ensure local state matches exactly what was saved
-    await get().fetchBranchData(branch);
+    await get().fetchBranchData(branch, false, ['stock']); // EGRESS FIX: manual stock update only touches stock
     return null;
   },
 
@@ -1466,7 +1583,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         });
       if (error) break;
     }
-    if (missingRows.length > 0) await get().fetchBranchData(branch);
+    if (missingRows.length > 0) await get().fetchBranchData(branch, false, ['stock']); // EGRESS FIX: seeding missing catalog rows only touches stock
   },
 
   // ── Credit sales ────────────────────────────────────────────────────────────
@@ -1768,9 +1885,14 @@ export const useBranchStore = create<BranchState>((set, get) => ({
   },
 
   // ── Live stock subscription via Supabase Realtime ─────────────────────────
-  // Subscribes to branch_stock + branch_incoming for the given branch.
-  // Any INSERT/UPDATE/DELETE fires a full fetchBranchData() to keep state fresh.
-  // Also subscribes to branch_sales so the sales log updates instantly.
+  // Subscribes to branch_stock, branch_incoming, branch_sales,
+  // branch_advance_orders, branch_credit_sales, and branch_credit_payments
+  // for the given branch. REALTIME FIX (2026-09-01): this comment used to
+  // claim "any change fires a full fetchBranchData()" — that hasn't been
+  // true for a while. Every change is instead patched directly into local
+  // state (see applyBranchRealtimeChange/computeBranchRealtimeChange above),
+  // buffered for BRANCH_REALTIME_FLUSH_MS and applied in one batched
+  // setState — no network refetch at all on the realtime path.
   // Returns an unsubscribe function — call it in the component's cleanup.
   subscribeToStock: (branch) => {
     const channelName = `branch-live-${branch}`;
