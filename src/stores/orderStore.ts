@@ -113,6 +113,12 @@ interface OrderState {
   _pollBackoffTimer: ReturnType<typeof setTimeout> | null;
   _pollRefCount: number;
   _pollFailCount: number;
+  // BUG FIX (2026-09-01): see the comment on startPolling below — tracks the
+  // widest `days` window actually loaded into `orders` this session, so a
+  // later caller asking for more history than what's currently loaded isn't
+  // silently ignored just because an earlier caller's narrower request
+  // already won the shared timer/channel setup.
+  _loadedDays: number;
 
   addToCart: (item: MenuItem) => void;
   removeFromCart: (itemId: string) => void;
@@ -200,6 +206,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
   _pollBackoffTimer: null,
   _pollRefCount: 0,
   _pollFailCount: 0,
+  _loadedDays: 0,
 
   addToCart: (item: MenuItem) =>
     set((state) => {
@@ -266,7 +273,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       if (error) throw error;
       if (data) {
         const mapped = data.map(dbRowToOrder);
-        set({ orders: mapped, _pollFailCount: 0 });
+        set({ orders: mapped, _pollFailCount: 0, _loadedDays: days });
         void setCached(ORDERS_CACHE_KEY, mapped);
       }
     } catch (e) {
@@ -820,7 +827,23 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     const state = get();
     const newCount = (state._pollRefCount || 0) + 1;
     set({ _pollRefCount: newCount });
-    if (state.pollTimer) return;
+    if (state.pollTimer) {
+      // BUG FIX (2026-09-01): "Admin Dashboard's Cafe Control tab shows
+      // sales from day X only, real sales go back further" — root cause:
+      // this shared timer/channel is set up once per browser tab by
+      // whichever page's startPolling() call happens to run FIRST (e.g.
+      // KitchenDashboard/DailyClosure call startPolling(1), OrderHistory
+      // calls startPolling(1) for non-admins) — every later caller on the
+      // same tab, including Admin Dashboard's startPolling(90), used to hit
+      // this same early `return` and be silently ignored, permanently
+      // capping `orders` to whatever narrow window won the race for the
+      // rest of that tab's session. Now a later caller asking for more
+      // history than what's actually loaded (_loadedDays) still triggers a
+      // real wide fetch — it just skips re-creating the already-running
+      // timer/channel.
+      if (days > (state._loadedDays || 0)) void get().loadOrders(days);
+      return;
+    }
     if (!orderRealtimeChannel) {
       orderRealtimeChannel = supabase
         .channel('cafe-orders-live')
