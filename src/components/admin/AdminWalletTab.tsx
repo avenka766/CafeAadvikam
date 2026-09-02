@@ -36,10 +36,22 @@ const suggestedTier = (wallet: WalletCustomer): WalletCustomerType | null => {
 };
 const escapeHtml = (value: unknown) => String(value ?? '').replace(/[&<>'"]/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[character] || character));
 
+// AUDIT FIX (2026-09-02): CSV cells built with only double-quote escaping,
+// no protection against formula/CSV injection — a customer-name, notes, or
+// reference field starting with =/+/-/@ (e.g. "=HYPERLINK(...)" or an old-
+// Excel DDE payload) would be interpreted as a live formula by Excel/Sheets
+// when the exported file is opened. Standard mitigation: prefix such a cell
+// with a leading apostrophe so spreadsheet apps treat it as literal text.
+function csvCell(value: unknown): string {
+  let s = String(value ?? '');
+  if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
+  return `"${s.replace(/"/g, '""')}"`;
+}
+
 function downloadCsv(filename: string, rows: Array<Record<string, string | number>>) {
   const safe = rows.length ? rows : [{ Status: 'No data' }];
   const headings = Object.keys(safe[0]);
-  const csv = [headings.join(','), ...safe.map((row) => headings.map((key) => `"${String(row[key] ?? '').replace(/"/g, '""')}"`).join(','))].join('\n');
+  const csv = [headings.join(','), ...safe.map((row) => headings.map((key) => csvCell(row[key])).join(','))].join('\n');
   const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
   const anchor = document.createElement('a');
   anchor.href = url; anchor.download = filename; anchor.click();

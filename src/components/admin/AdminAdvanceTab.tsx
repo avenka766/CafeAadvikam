@@ -45,7 +45,7 @@ export default function AdminAdvanceTab({ branches }: Props) {
   const [expanded, setExpanded]         = useState<string | null>(null);
 
   useEffect(() => {
-    branches.forEach(b => fetchBranchData(b));
+    branches.forEach(b => fetchBranchData(b, false, ['advance'])); // EGRESS FIX: this tab only reads advance orders
   }, [branches, fetchBranchData]);
 
   // Merge all advance orders across branches

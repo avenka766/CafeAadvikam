@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ClipboardList, Minus, PackagePlus, Plus, RefreshCw, Search, Send, Trash2 } from 'lucide-react';
 import { useBranchCatalogStore, type BranchCatalogItem } from '@/stores/branchCatalogStore';
 import { useBakeryStore } from '@/bakery/bakeryStore';
@@ -34,6 +34,10 @@ export default function AdminPlanningTab() {
   const [sending, setSending] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  // BUG FIX (audit 2026-09-02): sendPlan's `sending` state check is async — a double-tap
+  // could fire two identical production-plan orders before React commits the disabled
+  // state. Synchronous ref guard, matching the established pattern elsewhere.
+  const sendingRef = useRef(false);
 
   useEffect(() => { void loadCatalog('SNB'); }, [loadCatalog]);
 
@@ -64,15 +68,27 @@ export default function AdminPlanningTab() {
   };
 
   const setQuantity = (key: string, quantity: number) => {
+    // BUG FIX (audit 2026-09-02): the `step` attribute on the quantity input only affects
+    // the native spinner, not what a directly-typed value produces — this let a pcs line
+    // (dispatchUnit === 'pcs') take a fractional quantity like 1.5 despite the UI showing
+    // whole-number +/- steps. Round to a whole number for pcs lines, same as every other
+    // pcs-quantity fix in this codebase.
     setLines(current => quantity <= 0
       ? current.filter(line => line.key !== key)
-      : current.map(line => line.key === key ? { ...line, quantity: Number(quantity.toFixed(2)) } : line)
+      : current.map(line => {
+          if (line.key !== key) return line;
+          const safeQty = line.dispatchUnit === 'kg' ? Number(quantity.toFixed(2)) : Math.round(quantity);
+          return { ...line, quantity: safeQty };
+        })
     );
   };
 
   const addCustom = () => {
     const name = custom.name.trim();
-    const quantity = Number(custom.quantity);
+    const rawQuantity = Number(custom.quantity);
+    // BUG FIX (audit 2026-09-02): same pcs-decimal gap as setQuantity above — round a pcs
+    // custom item's quantity to a whole number instead of accepting whatever was typed.
+    const quantity = custom.unit === 'kg' ? rawQuantity : Math.round(rawQuantity);
     if (!name || !Number.isFinite(quantity) || quantity <= 0) {
       setError('Enter a custom item name and valid quantity.');
       return;
@@ -92,7 +108,8 @@ export default function AdminPlanningTab() {
   };
 
   const sendPlan = async () => {
-    if (lines.length === 0 || sending) return;
+    if (lines.length === 0 || sending || sendingRef.current) return;
+    sendingRef.current = true;
     setSending(true);
     setError('');
     setMessage('');
@@ -113,6 +130,7 @@ export default function AdminPlanningTab() {
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : 'Production plan could not be sent.');
     } finally {
+      sendingRef.current = false;
       setSending(false);
     }
   };

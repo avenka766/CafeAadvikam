@@ -180,8 +180,18 @@ function KpiCard({
 // ── Expandable credit sale card ───────────────────────────────────────────────
 function CreditCard({ sale }: { sale: CreditSale & { branch: Branch } }) {
   const { settleCreditSale, applyCreditDiscount, creditPayments } = useBranchStore();
+  const { currentUser } = useAuthStore();
   const [open, setOpen] = useState(false);
   const [settleAmt, setSettleAmt] = useState('');
+  // AUDIT FIX (2026-09-02): this cross-branch owner-level Credit tab used to
+  // call settleCreditSale/applyCreditDiscount with no payment-mode or actor
+  // identity — the store's defaults then silently recorded every collection
+  // as CASH by 'Staff', and every discount as approved by generic 'Admin',
+  // regardless of the real method or who actually acted. Every other caller
+  // in the app (BillingDashboard.tsx, AdminSNBDashboard.tsx,
+  // AdminVRSNBDashboard.tsx, BranchBusinessModules.tsx) already requires an
+  // explicit mode pick and passes the real logged-in user — matched here.
+  const [settleMode, setSettleMode] = useState<CreditPayment['paymentMode'] | ''>('');
   const [settling, setSettling] = useState(false);
   const [settleError, setSettleError] = useState('');
   const [editingPayment, setEditingPayment] = useState<CreditPayment | null>(null);
@@ -203,7 +213,7 @@ function CreditCard({ sale }: { sale: CreditSale & { branch: Branch } }) {
     if (isNaN(amt) || amt <= 0) { setDiscountError('Enter a valid amount'); return; }
     if (amt > sale.creditAmount) { setDiscountError('Discount exceeds balance due'); return; }
     setApplyingDiscount(true); setDiscountError('');
-    const err = await applyCreditDiscount(sale.branch, sale.id, amt, discountReason || undefined);
+    const err = await applyCreditDiscount(sale.branch, sale.id, amt, discountReason || undefined, currentUser?.displayName || currentUser?.username || undefined);
     setApplyingDiscount(false);
     if (err) setDiscountError(err);
     else { setDiscountAmt(''); setDiscountReason(''); setShowDiscount(false); }
@@ -218,11 +228,16 @@ function CreditCard({ sale }: { sale: CreditSale & { branch: Branch } }) {
     const amt = parseFloat(settleAmt);
     if (isNaN(amt) || amt <= 0) { setSettleError('Enter a valid amount'); return; }
     if (amt > sale.creditAmount) { setSettleError('Amount exceeds balance due'); return; }
+    if (!settleMode) { setSettleError('Select Cash, UPI, Card or Bank'); return; }
     setSettling(true); setSettleError('');
-    const err = await settleCreditSale(sale.branch, sale.id, amt);
+    const err = await settleCreditSale(sale.branch, sale.id, amt, {
+      mode: settleMode,
+      collectedBy: currentUser?.username || currentUser?.displayName || 'Admin',
+      collectedRole: currentUser?.role,
+    });
     setSettling(false);
     if (err) setSettleError(err);
-    else setSettleAmt('');
+    else { setSettleAmt(''); setSettleMode(''); }
   };
 
   return (
@@ -370,6 +385,21 @@ function CreditCard({ sale }: { sale: CreditSale & { branch: Branch } }) {
               <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">
                 Collect Payment
               </p>
+              <div className="flex gap-1.5">
+                {PAYMENT_MODES.map(m => (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() => setSettleMode(m)}
+                    className={cn(
+                      'flex-1 px-2 py-1.5 rounded-lg text-[11px] font-bold uppercase border transition',
+                      settleMode === m ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-background border-border text-muted-foreground',
+                    )}
+                  >
+                    {m}
+                  </button>
+                ))}
+              </div>
               <div className="flex gap-2">
                 <div className="relative flex-1">
                   <IndianRupee className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3 text-muted-foreground" />
@@ -383,7 +413,7 @@ function CreditCard({ sale }: { sale: CreditSale & { branch: Branch } }) {
                 </div>
                 <button
                   onClick={handleSettle}
-                  disabled={settling || !settleAmt}
+                  disabled={settling || !settleAmt || !settleMode}
                   className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-emerald-600 text-white text-sm font-bold active:scale-95 disabled:opacity-50 transition"
                 >
                   {settling

@@ -128,7 +128,7 @@ export default function BranchItemsAdminTab({ branch }: { branch: CatalogBranch 
 
   useEffect(() => {
     void loadCatalog(branch);
-    void fetchBranchData(branch);
+    void fetchBranchData(branch, false, ['stock']); // EGRESS FIX: this tab only reads stock
     void loadCategories(branch);
     return subscribe(branch);
   }, [branch, fetchBranchData, loadCatalog, loadCategories, subscribe]);

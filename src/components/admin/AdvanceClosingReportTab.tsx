@@ -48,7 +48,7 @@ export default function AdvanceClosingReportTab(_props: Props) {
   const { advanceCakeOrders } = useBranchOpsStore();
 
   useEffect(() => {
-    fetchBranchData(BRANCH);
+    fetchBranchData(BRANCH, false, ['advance']); // EGRESS FIX: this report only reads advance orders
   }, [fetchBranchData]);
 
   // "Pending" = every advance order that hasn't been fully invoiced or
