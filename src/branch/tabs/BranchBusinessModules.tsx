@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type React from 'react';
 import {
   AlertTriangle, Banknote, Bell, Building2, CalendarClock, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ClipboardCheck,
@@ -434,24 +434,37 @@ export function CreditSalesTab({ branch }: ModuleProps) {
     setMessage('');
   };
 
+  // BUG FIX (audit 2026-09-02): no in-flight guard at all — only `disabled={!selected}`
+  // on the button, which stays true throughout the async call. The server RPC's own row
+  // lock prevents a double-tap from ever collecting MORE than the outstanding balance,
+  // but it does NOT stop two genuine, valid partial payments from both going through (e.g.
+  // a ₹400 tap fired twice against a ₹1000 balance — both succeed, ₹800 gets recorded for
+  // one intended ₹400 collection). Same savingInFlightRef pattern used elsewhere in this file.
+  const collectionInFlightRef = useRef(false);
   const saveCollection = async () => {
     if (!selected) { setMessage('Select a credit bill first.'); return; }
+    if (collectionInFlightRef.current) return;
     const amount = Number(form.amount || 0);
     if (!amount || amount <= 0) { setMessage('Enter a valid collection amount.'); return; }
     if (amount > selected.creditAmount) { setMessage('Collection amount cannot be more than pending balance.'); return; }
-    const err = await settleCreditSale(branch, selected.id, amount, {
-      mode: form.mode as 'cash' | 'upi' | 'card' | 'bank',
-      reference: form.reference,
-      remarks: form.remarks,
-      collectedBy: user,
-      collectedRole: currentUser?.role,
-    });
-    if (err) { setMessage(err); return; }
-    await fetchCreditSales(branch);
-    await fetchCreditPayments(branch);
-    setMessage(`Collected ${money(amount)} for ${selected.billNo}.`);
-    setSelectedId('');
-    setForm({ amount: '', mode: 'cash', reference: '', remarks: '' });
+    collectionInFlightRef.current = true;
+    try {
+      const err = await settleCreditSale(branch, selected.id, amount, {
+        mode: form.mode as 'cash' | 'upi' | 'card' | 'bank',
+        reference: form.reference,
+        remarks: form.remarks,
+        collectedBy: user,
+        collectedRole: currentUser?.role,
+      });
+      if (err) { setMessage(err); return; }
+      await fetchCreditSales(branch);
+      await fetchCreditPayments(branch);
+      setMessage(`Collected ${money(amount)} for ${selected.billNo}.`);
+      setSelectedId('');
+      setForm({ amount: '', mode: 'cash', reference: '', remarks: '' });
+    } finally {
+      collectionInFlightRef.current = false;
+    }
   };
 
   const printReport = () => printHtml(`${branch} Credit Sales`, `<div class="stamp">CREDIT SALES REPORT</div><h2>${BRANCH_LABELS[branch]}</h2><div class="row"><span>Outstanding</span><b>Rs ${outstanding.toFixed(2)}</b></div><table><thead><tr><th>Bill</th><th>Customer</th><th>Total</th><th>Paid</th><th>Balance</th><th>Status</th></tr></thead><tbody>${rows.map((r)=>`<tr><td>${r.billNo}</td><td>${r.customerName}<br/>${r.customerPhone || ''}</td><td>Rs ${r.subtotal.toFixed(2)}</td><td>Rs ${r.amountPaid.toFixed(2)}</td><td>Rs ${r.creditAmount.toFixed(2)}</td><td>${r.status}</td></tr>`).join('')}</tbody></table>`);
@@ -557,6 +570,14 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch', c
     attachmentName:'', attachmentDataUrl:'', topperCharge:'', toyCharges:'',
   });
   const [error, setError] = useState('');
+  // AUDIT FIX (2026-09-02): saveAdvance has no in-flight/double-submit
+  // guard, unlike BranchBillingProTab's checkout() (checkoutInFlightRef) —
+  // a double-tap on "Generate Sales Order Slip" (e.g. a touchscreen POS
+  // waiting on the network) fires two concurrent saveAdvance() calls,
+  // allocating two order numbers, potentially reserving stock twice, and
+  // recording the customer's single advance payment twice.
+  const saveAdvanceInFlightRef = useRef(false);
+  const [savingAdvance, setSavingAdvance] = useState(false);
   const [dateFilterMode, setDateFilterMode] = useState<'ordered' | 'delivery'>('ordered');
   const [dateFilter, setDateFilter] = useState('');
   const [receiverCounterOpen, setReceiverCounterOpen] = useState(false);
@@ -639,9 +660,12 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch', c
   // several MB and making the branch page hang on "Loading saved branch records".
   const addStoreLine = () => {
     const item = items.find((i)=>i.name===storePick.itemName);
-    const qty = Number(storePick.quantity || 0);
-    if (!item || qty <= 0) { setError('Select item and quantity.'); return; }
+    const rawQty = Number(storePick.quantity || 0);
+    if (!item || rawQty <= 0) { setError('Select item and quantity.'); return; }
     const unit: 'pcs' | 'kg' = item.uom === 'Kgs' ? 'kg' : 'pcs';
+    // AUDIT FIX (2026-09-02): pcs items must stay whole numbers — this had
+    // no unit-aware rounding, the same recurring gap fixed elsewhere.
+    const qty = unit === 'pcs' ? Math.round(rawQty) : rawQty;
     const line: BranchBillItem = { barcode:item.barcode, itemName:item.name, quantity:qty, unit, price:item.price, tax:0, discount:0, lineTotal:qty * item.price };
     setStoreLines((lines)=>[...lines, line]);
     setStorePick((f)=>({...f, quantity:'1'}));
@@ -652,9 +676,11 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch', c
   const customDraftTotal = Number(custom.quantity || 0) * Number(custom.price || 0);
   const customValue = customLines.reduce((sum, line) => sum + line.lineTotal, 0);
   const addCustomLine = () => {
-    const quantity = Number(custom.quantity || 0);
+    const rawQuantity = Number(custom.quantity || 0);
     const price = Number(custom.price || 0);
-    if (!custom.itemName.trim() || quantity <= 0 || price < 0) { setError('Enter a valid custom item, quantity and rate.'); return; }
+    if (!custom.itemName.trim() || rawQuantity <= 0 || price < 0) { setError('Enter a valid custom item, quantity and rate.'); return; }
+    // AUDIT FIX (2026-09-02): same fix as addStoreLine above.
+    const quantity = custom.unit === 'pcs' ? Math.round(rawQuantity) : rawQuantity;
     const line: BranchBillItem = { itemName: custom.itemName.trim(), quantity, unit: custom.unit, price, tax: 0, discount: 0, lineTotal: quantity * price };
     setCustomLines((lines) => [...lines, line]);
     setCustom((current) => ({ ...current, itemName: '', quantity: '1', price: '' }));
@@ -707,7 +733,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch', c
       p_created_by: staff,
     });
     if (reservationError) return reservationError.message || 'Unable to reserve stock.';
-    await fetchBranchData(branch);
+    await fetchBranchData(branch, false, ['stock']); // EGRESS FIX: reservation only touches reserved_quantity on stock
     return '';
   };
   const releaseStoreReservation = async (orderNo: string) => {
@@ -717,7 +743,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch', c
       p_source_id: orderNo,
       p_released_by: staff,
     });
-    await fetchBranchData(branch);
+    await fetchBranchData(branch, false, ['stock']); // EGRESS FIX: release only touches reserved_quantity on stock
   };
   const sendToStoreDashboard = async (order: CakeAdvanceOrder, lines: BranchBillItem[]) => {
     if (branch === 'Cafe') throw new Error('Cafe advance orders cannot be sent to the bakery branch workflow.');
@@ -785,6 +811,18 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch', c
     }
   };
   const saveAdvance = async (orderType: 'store' | 'custom' | 'cake') => {
+    if (saveAdvanceInFlightRef.current) return;
+    saveAdvanceInFlightRef.current = true;
+    setSavingAdvance(true);
+    try {
+      await saveAdvanceImpl(orderType);
+    } finally {
+      saveAdvanceInFlightRef.current = false;
+      setSavingAdvance(false);
+    }
+  };
+
+  const saveAdvanceImpl = async (orderType: 'store' | 'custom' | 'cake') => {
     if (!counterOpenToday) { setError('Open the cashier counter before collecting advance payments.'); return; }
     const fullyPaid = orderType === 'store' ? storeFullyPaid : orderType === 'custom' ? customFullyPaid : false;
     const cakeWeight = Number(cake.cakeKg || 0);
@@ -865,7 +903,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch', c
         return;
       }
       stockReserved = orderType === 'store';
-      await fetchBranchData(branch);
+      await fetchBranchData(branch, false, ['stock', 'advance']); // EGRESS FIX: new advance order + (for store type) a stock reservation
     } else {
       if (orderType === 'store') {
         const stockError = await reserveStoreLines(orderNo, sourceLines);
@@ -963,7 +1001,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch', c
           ? 'The advance amount edit feature is not installed yet. Please redeploy.'
           : advanceError.message;
       }
-      await fetchBranchData(branch);
+      await fetchBranchData(branch, false, ['advance']); // EGRESS FIX: advance-amount edit only touches the advance order
     }
     const { data, error: manageError } = await supabase.rpc('manage_branch_advance_cake_order_secure', {
       p_branch: branch,
@@ -1123,7 +1161,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch', c
         newValue: `Discount ${money(discountAmount)} - Reason: ${closingOverrides.discountReason.trim()}`,
       });
     }
-    if (orderKind !== 'custom') await fetchBranchData(branch);
+    if (orderKind !== 'custom') await fetchBranchData(branch, false, ['stock', 'sales', 'advance', 'credit']); // EGRESS FIX: finalizing can deduct stock, record a sale, close the advance order, and (credit mode) touch credit sales
     if (balanceAmount > 0 && !isSnbOrder && rpcPaymentMode !== 'credit') {
       const movementLines = paymentSplits.length > 0 ? paymentSplits : [{ mode: rpcPaymentMode, amount: balanceAmount }];
       movementLines.forEach((line) => addCashMovement({ branch, amount: line.amount, paymentMode: line.mode, direction: 'in', purpose: 'Advance balance collection', enteredBy: auditActor, referenceNumber: billNo, remarks: `${o.orderNo} ${o.customerName}` }));
@@ -1389,7 +1427,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch', c
           </div>
         )}
         {error && <p className="rounded-xl bg-red-50 p-3 text-sm font-black text-red-700">{error}</p>}
-        <PrimaryButton onClick={()=>void saveAdvance(mode)} disabled={!advanceSplitValid || !advanceCreditValid}><Printer className="size-4"/>Generate Sales Order Slip</PrimaryButton>
+        <PrimaryButton onClick={()=>void saveAdvance(mode)} disabled={!advanceSplitValid || !advanceCreditValid || savingAdvance}><Printer className="size-4"/>{savingAdvance ? 'Saving...' : 'Generate Sales Order Slip'}</PrimaryButton>
       </div>
     </Section>
     <Section title="Advance Order Pipeline" icon={<CalendarClock className="size-5"/>} action={
@@ -1813,7 +1851,7 @@ export function ReturnsTab({ branch, branchStock }: ModuleProps) {
         reason: reason.trim(),
         returnPayMode,
       });
-      await fetchBranchData(branch);
+      await fetchBranchData(branch, false, ['stock', 'sales', 'credit']); // EGRESS FIX: a return can touch stock, sales, and (credit-mode bill) credit sales
       const printableMode = ret.returnPayMode === 'credit_adjustment' ? 'credit' : (ret.returnPayMode || 'cash');
       void printCounterBill({
         id: ret.id,
@@ -1878,7 +1916,7 @@ export function ReturnsTab({ branch, branchStock }: ModuleProps) {
 export function PurchaseTab({ branch, branchStock }: ModuleProps) {
   const { currentUser } = useAuthStore(); const { addPurchase } = useBranchOpsStore(); const { manualUpdateStock, fetchBranchData } = useBranchStore();
   const items = useOperationalCatalog(branch); const [f,setF] = useState({supplier:'',invoiceNo:'',itemName:items[0]?.name||'',quantity:'',cost:'',tax:'0'});
-  const save = async () => { const qty=Number(f.quantity), cost=Number(f.cost), tax=Number(f.tax||0), total=qty*cost+tax; if(!f.supplier||!f.invoiceNo||!qty||!cost) return; addPurchase({branch,supplier:f.supplier,invoiceNo:f.invoiceNo,itemName:f.itemName,quantity:qty,cost,tax,total,enteredBy:currentUser?.username||currentUser?.displayName||'Staff'}); const selectedItem = items.find((item) => item.name === f.itemName); await manualUpdateStock(branch,f.itemName,stockQty(branchStock,f.itemName,selectedItem?.barcode)+qty,currentUser?.username||currentUser?.displayName||'Staff',selectedItem?.barcode); await fetchBranchData(branch); setF({...f,quantity:'',cost:'',tax:'0'}); };
+  const save = async () => { const qty=Number(f.quantity), cost=Number(f.cost), tax=Number(f.tax||0), total=qty*cost+tax; if(!f.supplier||!f.invoiceNo||!qty||!cost) return; addPurchase({branch,supplier:f.supplier,invoiceNo:f.invoiceNo,itemName:f.itemName,quantity:qty,cost,tax,total,enteredBy:currentUser?.username||currentUser?.displayName||'Staff'}); const selectedItem = items.find((item) => item.name === f.itemName); await manualUpdateStock(branch,f.itemName,stockQty(branchStock,f.itemName,selectedItem?.barcode)+qty,currentUser?.username||currentUser?.displayName||'Staff',selectedItem?.barcode); await fetchBranchData(branch, false, ['stock']); /* EGRESS FIX: purchase entry only touches stock */ setF({...f,quantity:'',cost:'',tax:'0'}); };
   return <Section title="Purchase Entry" icon={<Truck className="size-5"/>}><div className="grid gap-4 lg:grid-cols-3"><Field label="Supplier"><Input value={f.supplier} onChange={(e)=>setF({...f,supplier:e.target.value})}/></Field><Field label="Supplier Invoice"><Input value={f.invoiceNo} onChange={(e)=>setF({...f,invoiceNo:e.target.value})}/></Field><Field label="Item"><Select value={f.itemName} onChange={(e)=>setF({...f,itemName:e.target.value})}>{items.map(i=><option key={i.name}>{i.name}</option>)}</Select></Field><Field label="Quantity"><Input type="number" value={f.quantity} onChange={(e)=>setF({...f,quantity:e.target.value})}/></Field><Field label="Cost"><Input type="number" value={f.cost} onChange={(e)=>setF({...f,cost:e.target.value})}/></Field><Field label="Tax"><Input type="number" value={f.tax} onChange={(e)=>setF({...f,tax:e.target.value})}/></Field></div><div className="mt-4 flex items-center justify-between rounded-3xl bg-slate-50 p-4"><p className="text-lg font-black">Total: {money(Number(f.quantity||0)*Number(f.cost||0)+Number(f.tax||0))}</p><PrimaryButton onClick={save}><Package className="size-4"/>Save Purchase & Update Stock</PrimaryButton></div></Section>;
 }
 

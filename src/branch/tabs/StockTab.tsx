@@ -15,6 +15,7 @@ import { supabase } from '@/lib/supabase';
 import type { Branch } from '../types';
 import type { StockItem, IncomingStock, StockMismatch } from '../branchStore';
 import { useOperationalBranchCatalog } from '@/hooks/useOperationalBranchCatalog';
+import { sanitizeQtyForUnit } from '@/bakery/PlannerLeftoverTab';
 
 interface Props {
   branch: Branch;
@@ -163,9 +164,16 @@ function ManualStockUpdate({ branch, branchStock }: { branch: Branch; branchStoc
   const handleSave = async (itemName: string, uom: string) => {
     const qty = parseFloat(editQty);
     if (isNaN(qty) || qty < 0) { setError('Enter a valid quantity.'); return; }
+    // AUDIT FIX (2026-09-02): the step={isKg?0.1:1} hint on the input below
+    // is only a spinner nudge and doesn't block a typed/pasted decimal —
+    // this had no actual rounding/integer enforcement for pcs items, the
+    // same "pcs decimal ledger drift" bug class fixed multiple times
+    // elsewhere in this codebase.
+    const isKg = uom === 'Kgs';
+    const safeQty = isKg ? qty : Math.round(qty);
     setSaving(true); setError('');
     const err = await manualUpdateStock(
-      branch, itemName, qty, updatedBy,
+      branch, itemName, safeQty, updatedBy,
       catalogue.find((item) => item.name === itemName)?.barcode,
       undefined,
       editBaseline ?? undefined,
@@ -440,7 +448,11 @@ function IncomingActionForm({ mode, defaultQty, unit, onCancel, onSubmit }: {
       {mode === 'dispute' && (
         <label className="block text-xs font-semibold text-muted-foreground">
           Quantity actually received ({unit})
-          <input type="number" min="0" step="0.001" value={quantity} onChange={(e) => setQuantity(e.target.value)}
+          {/* BUG FIX (audit 2026-09-02): pcs items never allow decimal points — same gap
+              already fixed across the Planner/SNB dashboards' equivalent quantity fields
+              (ManualStockUpdate.handleSave a bit above this in the same file included). */}
+          <input type="number" min="0" step={unit === 'kg' ? 0.001 : 1} value={quantity}
+            onChange={(e) => setQuantity(sanitizeQtyForUnit(e.target.value, unit === 'kg' ? 'kg' : 'pcs'))}
             className="mt-1 h-9 w-full rounded-lg border border-slate-200 bg-white px-2 text-sm font-bold outline-none focus:ring-2 focus:ring-amber-300" />
         </label>
       )}
@@ -548,7 +560,7 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
     await syncIncomingFromDispatches(branch, true);
     // fetchBranchData is already called inside syncIncomingFromDispatches,
     // but call again to ensure UI is refreshed even if sync was a no-op
-    await fetchBranchData(branch);
+    await fetchBranchData(branch, false, ['incoming']); // EGRESS FIX: incoming sync only touches incoming
     setSyncing(false);
   };
 
@@ -576,7 +588,7 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
       details: `${inc.itemName} · Dispatched ${formatQtyLabel(inc.quantity, inc.itemName, inc.unit)} · Received ${formatQtyLabel(receivedQty, inc.itemName, inc.unit)}`,
       raisedBy,
     });
-    await fetchBranchData(branch);
+    await fetchBranchData(branch, false, ['incoming']); // EGRESS FIX: raising a dispute only touches incoming
   };
 
   // Return sends this incoming stock back to Packing: it appears as a
@@ -590,7 +602,7 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
       p_reason: reasonText.trim() || 'Returned by branch',
     });
     if (error) { setReturnError(error.message); return; }
-    await fetchBranchData(branch);
+    await fetchBranchData(branch, false, ['incoming']); // EGRESS FIX: requesting a return only touches incoming
   };
 
   // Which row (if any) has its Dispute/Return inline form open

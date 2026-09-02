@@ -6,7 +6,8 @@ import {
   Package, PauseCircle, Printer, Receipt, Search, Smartphone,
   Trash2, WalletCards, XCircle, ClipboardList, ScanBarcode, Keyboard, Loader2,
 } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { cn, generateId } from '@/lib/utils';
+import { useOfflineQueueStore, registerReplayHandler } from '@/lib/offlineQueue';
 import WalletOffersPanel, { type WalletOtherMode } from '@/components/commerce/WalletOffersPanel';
 import type { PromotionCartLine, PromotionEvaluation, WalletCustomer } from '@/features/commerce/types';
 import { useAuthStore } from '@/stores/authStore';
@@ -140,6 +141,82 @@ function isRpcUnavailableError(error: unknown, rpcName: string) {
     || text.includes('schema cache');
   return missingFunction && (text.includes(name) || text.includes('function'));
 }
+
+// OFFLINE FIX (2026-09-01): replays a branch checkout (SNB/VRSNB counter)
+// that was completed offline — see the `offlineEligible` branch inside
+// checkout() below for how this gets queued. Deliberately does NOT
+// re-canonicalize prices against the current catalogue: the offline sale is
+// already complete from the customer's perspective (money already changed
+// hands against the on-screen cart price) — re-validating against
+// whatever the catalogue looks like now would be re-pricing an already-
+// finished transaction, not verifying it. Submits the FROZEN items/discount/
+// tax/round-off exactly as computed at the offline moment, straight to the
+// checkout RPC chain (skipping the canonicalize_branch_sale_items step
+// entirely). The checkout RPC's own stock decrement is still real and
+// enforced server-side — a genuine oversell conflict (two offline tills
+// selling the last unit) still surfaces as a real rejection here, visible
+// via OfflineBanner's failure view, not silently dropped.
+type QueuedBranchCheckout = {
+  branch: Branch; items: BranchBillItem[]; paymentMode: PayMode;
+  corePaymentRows: Array<{ mode: string; amount: number; remarks?: string }>;
+  customerName: string | null; customerPhone: string | null; billingStaff: string; userName: string;
+  canonicalManualDiscount: number; canonicalTax: number; canonicalCoreRoundOff: number; discountPercent: number;
+  creditDueDate: string | null; creditNotes: string | null; idempotencyKey: string;
+  provisionalBillNo: string; provisionalBillId: string;
+};
+
+registerReplayHandler('branch_checkout', async (_kind, payload) => {
+  const p = payload as QueuedBranchCheckout;
+
+  let checkoutResponse = await supabase.rpc('complete_branch_promotional_checkout_v1', {
+    p_branch: p.branch,
+    p_items: p.items,
+    p_payments: p.corePaymentRows,
+    p_customer_name: p.customerName,
+    p_customer_phone: p.customerPhone,
+    p_salesperson: p.billingStaff,
+    p_biller: p.userName,
+    p_manual_discount: p.canonicalManualDiscount,
+    p_tax: p.canonicalTax,
+    p_round_off: p.canonicalCoreRoundOff,
+    p_payment_type: p.paymentMode === 'credit' ? 'credit' : 'counter',
+    p_due_date: p.paymentMode === 'credit' ? p.creditDueDate : null,
+    p_notes: p.paymentMode === 'credit' ? p.creditNotes : null,
+    p_discount_percent: p.discountPercent,
+    p_coupon_code: null,
+    p_idempotency_key: p.idempotencyKey,
+    p_selected_campaign_ids: [],
+  });
+  if (checkoutResponse.error?.code === 'PGRST202') {
+    const canonicalRpcVersion = p.branch === 'SNB' ? 'v4' : 'v3';
+    const fallbackArgs = {
+      p_branch: p.branch, p_items: p.items, p_payments: p.corePaymentRows, p_customer_name: p.customerName,
+      p_customer_phone: p.customerPhone, p_salesperson: p.billingStaff, p_biller: p.userName,
+      p_discount: p.canonicalManualDiscount, p_tax: p.canonicalTax, p_round_off: p.canonicalCoreRoundOff,
+      p_payment_type: p.paymentMode === 'credit' ? 'credit' : 'counter',
+      p_due_date: p.paymentMode === 'credit' ? p.creditDueDate : null, p_notes: p.paymentMode === 'credit' ? p.creditNotes : null,
+      p_discount_percent: p.discountPercent,
+    };
+    checkoutResponse = canonicalRpcVersion === 'v4'
+      ? await supabase.rpc('complete_branch_checkout_canonical_v4', fallbackArgs)
+      : await supabase.rpc('complete_branch_checkout_canonical_v3', fallbackArgs);
+    if (checkoutResponse.error?.code === 'PGRST202') {
+      const { p_discount_percent: _ignored, ...legacyArgs } = fallbackArgs;
+      checkoutResponse = await supabase.rpc('complete_branch_checkout_canonical', legacyArgs);
+    }
+  }
+  const { data, error: rpcError } = checkoutResponse;
+  if (rpcError) return { ok: false, error: rpcError.message };
+  const result = data as CheckoutRpcResult;
+  if (!result?.billNo || !result.invoiceNo) return { ok: false, error: 'Checkout committed but bill number was not returned.' };
+
+  useBranchOpsStore.setState((state) => ({
+    bills: state.bills.map((bill) => bill.id === p.provisionalBillId
+      ? { ...bill, billNo: result.billNo, invoiceNo: result.invoiceNo, pendingSync: false, needsReprint: true }
+      : bill),
+  }));
+  return { ok: true };
+});
 
 function normalizeItemName(name: string) {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
@@ -329,6 +406,20 @@ export default function BranchBillingProTab({
   const [saving, setSaving] = useState(false);
   const checkoutInFlightRef = useRef(false);
   const [lastBill, setLastBill] = useState<BranchBillRecord | null>(null);
+  // OFFLINE FIX (2026-09-01): lastBill is a local snapshot taken the moment
+  // a bill is created — for an offline bill, the replay handler patches the
+  // real record (real billNo/invoiceNo, needsReprint) into the shared
+  // `bills` store later, asynchronously, once it syncs. Keep lastBill in
+  // sync with that same store record so the "Print duplicate: {billNo}"
+  // button below reflects the real number the moment it lands, instead of
+  // silently continuing to show the stale OFFLINE-... placeholder.
+  useEffect(() => {
+    if (!lastBill?.id) return;
+    const current = bills.find((b) => b.id === lastBill.id);
+    if (current && (current.billNo !== lastBill.billNo || current.pendingSync !== lastBill.pendingSync || current.needsReprint !== lastBill.needsReprint)) {
+      setLastBill(current);
+    }
+  }, [bills, lastBill]);
   // FEATURE (2026-08-22): "I need this duplicate bill SNB-18818" — the
   // existing "Print duplicate" button only ever reprints lastBill, the
   // most recent bill made in this session. There was no way to look up and
@@ -780,6 +871,109 @@ export default function BranchBillingProTab({
     try {
       if (beforeCheckout) await beforeCheckout();
       let counterSessionId = activeCounterRecord?.counterSessionId || null;
+
+      // OFFLINE FIX (2026-09-01): per the offline-checkout decision (same
+      // policy as Cafe Biller) — a provisional receipt now, real bill number
+      // reconciled automatically on reconnect. Deliberately narrower than
+      // Cafe Biller's version: wallet payments and active promotions/coupons
+      // need live server verification (real-time wallet balance, campaign
+      // eligibility) that can't be trusted from stale local data, so those
+      // still require a real connection exactly as before — this only
+      // covers the core case (cash/UPI/card/split/credit, no wallet, no
+      // active promotion/coupon). Skips the network-dependent counter-
+      // session lookup and canonicalize_branch_sale_items price-verification
+      // RPC entirely (both would just fail offline anyway) — trusts the
+      // cart exactly as already shown on screen, which the cashier and
+      // customer already agreed the sale was for.
+      const offlineEligible = paymentMode !== 'wallet' && promotionEvaluation.applied.length === 0 && !couponCode;
+      if (!navigator.onLine && offlineEligible) {
+        const checkoutSplit = { cash: roundMoney(Number(split.cash || 0)), upi: roundMoney(Number(split.upi || 0)), card: roundMoney(Number(split.card || 0)) };
+        if (paymentMode === 'split' && roundMoney(checkoutSplit.cash + checkoutSplit.upi + checkoutSplit.card) !== roundMoney(total)) {
+          throw new Error('Split payment must exactly match the bill total.');
+        }
+        const canonicalItems = cart;
+        const canonicalSubtotal = roundMoney(canonicalItems.reduce((sum, item) => sum + item.price * item.quantity, 0));
+        const canonicalTax = roundMoney(canonicalItems.reduce((sum, item) => sum + Number(item.tax || 0), 0));
+        const canonicalManualDiscount = discountMode === 'percent'
+          ? Math.min(canonicalSubtotal, roundMoney((canonicalSubtotal * clampPercentage(discountInput)) / 100))
+          : Math.min(canonicalSubtotal, roundMoney(discountInput));
+        const canonicalCoreAmountBeforeRoundOff = roundMoney(Math.max(0, canonicalSubtotal + canonicalTax - canonicalManualDiscount));
+        const canonicalCoreTotal = roundWholeRupee(canonicalCoreAmountBeforeRoundOff);
+        const canonicalCoreRoundOff = roundMoney(canonicalCoreTotal - canonicalCoreAmountBeforeRoundOff);
+        const localAmountBeforeRoundOff = roundMoney(canonicalCoreAmountBeforeRoundOff + extraChargesValue);
+        const localTotal = roundWholeRupee(localAmountBeforeRoundOff);
+        const localRoundOff = roundMoney(localTotal - localAmountBeforeRoundOff);
+
+        const paymentRows =
+          paymentMode === 'credit'
+            ? (creditPaid > 0 ? [{ mode: creditPaidMode, amount: creditPaid, remarks: creditRemarks.trim() || 'Credit upfront collection' }] : [])
+            : paymentMode === 'split'
+              ? [
+                  { mode: 'cash', amount: checkoutSplit.cash },
+                  { mode: 'upi', amount: checkoutSplit.upi },
+                  { mode: 'card', amount: checkoutSplit.card },
+                ].filter((row) => row.amount > 0)
+              : [{ mode: paymentMode, amount: total }];
+        let chargeRemainderToTrim = extraChargesValue;
+        const corePaymentRows = paymentRows
+          .map((row) => {
+            if (chargeRemainderToTrim <= 0) return row;
+            const trim = Math.min(row.amount, chargeRemainderToTrim);
+            chargeRemainderToTrim = roundMoney(chargeRemainderToTrim - trim);
+            return { ...row, amount: roundMoney(row.amount - trim) };
+          })
+          .filter((row) => row.amount > 0);
+
+        const idempotencyKey = checkoutIdempotencyRef.current
+          ?? `branch-checkout:${branch}:${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`}`;
+        checkoutIdempotencyRef.current = idempotencyKey;
+        const customerName = paymentMode === 'credit' ? creditCustomerName.trim() : null;
+        const customerPhone = paymentMode === 'credit' ? creditCustomerMobile.trim() : null;
+
+        const provisionalBillNo = `OFFLINE-${generateId().slice(0, 8).toUpperCase()}`;
+        const chargeLineItems: BranchBillItem[] = [
+          ...(packingChargeValue > 0 ? [{ itemName: 'Packing Charge', quantity: 1, unit: 'pcs' as const, price: packingChargeValue, tax: 0, discount: 0, lineTotal: packingChargeValue }] : []),
+          ...(deliveryChargeValue > 0 ? [{ itemName: 'Delivery Charge', quantity: 1, unit: 'pcs' as const, price: deliveryChargeValue, tax: 0, discount: 0, lineTotal: deliveryChargeValue }] : []),
+        ];
+        const saved = addBill({
+          branch, billNo: provisionalBillNo, invoiceNo: 0, items: [...canonicalItems, ...chargeLineItems],
+          subtotal: canonicalSubtotal, discount: canonicalManualDiscount, discountPercent, tax: canonicalTax,
+          roundOff: localRoundOff, amountBeforeRoundOff: localAmountBeforeRoundOff, total: localTotal,
+          additionalCharges: extraChargesValue || undefined,
+          tendered: paymentMode === 'cash' || paymentMode === 'split' || paymentMode === 'credit' ? tendered : localTotal,
+          balance: paymentMode === 'cash' || paymentMode === 'split' || paymentMode === 'credit' ? balance : 0,
+          paymentMode,
+          creditCustomerName: paymentMode === 'credit' ? creditCustomerName.trim() : undefined,
+          creditCustomerMobile: paymentMode === 'credit' ? creditCustomerMobile.trim() : undefined,
+          creditDueDate: paymentMode === 'credit' ? creditDueDate : undefined,
+          creditRemarks: paymentMode === 'credit' ? [creditRemarks.trim(), creditPaid > 0 ? `Upfront ${money(creditPaid)} by ${creditPaidMode.toUpperCase()}` : 'No upfront payment'].filter(Boolean).join(' - ') : undefined,
+          split: paymentMode === 'credit' && creditPaid > 0 ? { [creditPaidMode]: creditPaid } : paymentMode === 'split' ? { cash: Number(split.cash || 0), upi: Number(split.upi || 0), card: Number(split.card || 0) } : undefined,
+          salesperson: billingStaff,
+          biller: userName,
+          cashierUserId: currentUser?.id,
+          counterSessionId: counterSessionId || undefined,
+          pendingSync: true,
+        });
+        setLastBill(saved);
+
+        await useOfflineQueueStore.getState().enqueue('branch_checkout', {
+          branch, items: canonicalItems, paymentMode, corePaymentRows, customerName, customerPhone,
+          billingStaff, userName, canonicalManualDiscount, canonicalTax, canonicalCoreRoundOff, discountPercent,
+          creditDueDate: paymentMode === 'credit' ? creditDueDate : null,
+          creditNotes: paymentMode === 'credit' ? creditRemarks.trim() || null : null,
+          idempotencyKey, provisionalBillNo, provisionalBillId: saved.id,
+        });
+
+        checkoutIdempotencyRef.current = null;
+        setCart([]); setCartQuantityDrafts({}); setSalesperson(''); setCashTendered(''); setSplit({ cash: '', upi: '', card: '' }); setCreditCustomerName(''); setCreditCustomerMobile(''); setCreditDueDate(''); setCreditAmountPaid(''); setCreditPaidMode('cash'); setCreditRemarks(''); setSelectedWallet(null); setWalletAmount(0); setWalletOtherMode(null); setWalletAuthorizationSecret(''); setCouponCode(''); setDiscount(''); setPaymentMode(null); setPackingCharge(''); setDeliveryCharge(''); setDiscountReason('');
+        focusSearch(true);
+        window.setTimeout(() => focusSearch(false), 150);
+        void printCounterBill(saved, false).catch((printError) => {
+          setError(`Bill ${saved.billNo} was saved, but direct printing failed: ${printError instanceof Error ? printError.message : 'Unknown print error'}. Print it from History.`);
+        });
+        return;
+      }
+
       if (currentUser?.id) {
         const { data: sessionRow, error: sessionError } = await supabase
           .from('branch_counter_sessions')
@@ -1147,7 +1341,10 @@ export default function BranchBillingProTab({
       void printCounterBill(saved, false).catch((printError) => {
         setError(`Bill ${saved.billNo} was saved, but direct printing failed: ${printError instanceof Error ? printError.message : 'Unknown print error'}. Print it from History.`);
       });
-      void fetchBranchData(branch);
+      // EGRESS FIX (2026-09-01): this checkout only ever touches stock,
+      // today's sales, and (for credit-mode bills) credit sales — never
+      // incoming/thresholds/advance orders, so skip those 7 queries here.
+      void fetchBranchData(branch, false, ['stock', 'sales', 'credit']);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Billing failed.');
       addNotification({ branch, type: 'Stock Dispute', title: 'Bill blocked during stock validation', details: String(e), raisedBy: userName });
@@ -1540,7 +1737,24 @@ export default function BranchBillingProTab({
               <button onClick={holdBill} className="inline-flex min-w-[70px] items-center justify-center gap-1 rounded-xl bg-amber-100 px-2 py-1.5 text-xs font-black text-amber-800"><PauseCircle className="size-3.5"/>Hold <span className="text-[8px] opacity-70">F9</span></button>
               <button onClick={checkout} disabled={checkoutDisabled} className="inline-flex min-w-[88px] items-center justify-center gap-1 rounded-xl bg-orange-500 px-2 py-1.5 text-xs font-black text-white shadow-md shadow-orange-200 disabled:opacity-50"><Printer className="size-3.5"/>{saving ? 'Saving' : 'Final Bill'} <span className="text-[8px] opacity-70">F10</span></button>
             </div>
-            {lastBill && <button onClick={() => { void printCounterBill(lastBill, true); }} className="mx-2.5 mb-1.5 w-[calc(100%-1.25rem)] rounded-xl border border-slate-200 bg-white py-1.5 text-xs font-black text-slate-700">Print duplicate: {lastBill.billNo}</button>}
+            {lastBill && (
+              <button
+                onClick={() => {
+                  if (lastBill.needsReprint) {
+                    useBranchOpsStore.setState((state) => ({
+                      bills: state.bills.map((b) => b.id === lastBill.id ? { ...b, needsReprint: false } : b),
+                    }));
+                  }
+                  void printCounterBill(lastBill, true);
+                }}
+                className={cn(
+                  'mx-2.5 mb-1.5 w-[calc(100%-1.25rem)] rounded-xl border py-1.5 text-xs font-black',
+                  lastBill.pendingSync ? 'border-amber-300 bg-amber-50 text-amber-800' : lastBill.needsReprint ? 'border-blue-300 bg-blue-50 text-blue-800' : 'border-slate-200 bg-white text-slate-700',
+                )}
+              >
+                {lastBill.pendingSync ? `Offline — syncing… (${lastBill.billNo})` : lastBill.needsReprint ? `Synced — reprint final bill: ${lastBill.billNo}` : `Print duplicate: ${lastBill.billNo}`}
+              </button>
+            )}
             <div className="mx-2.5 mb-1.5 flex items-center gap-1.5">
               <input
                 value={oldBillSearch}

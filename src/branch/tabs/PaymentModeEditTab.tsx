@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CheckCircle2, CreditCard, Lock, Search, X } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { cn } from '@/lib/utils';
@@ -61,6 +61,12 @@ export function PaymentModeEditTab({ branch }: { branch: Branch }) {
   const [query, setQuery] = useState('');
   const [drafts, setDrafts] = useState<Record<string, Allocation>>({});
   const [savingId, setSavingId] = useState<string | null>(null);
+  // BUG FIX (audit 2026-09-02): only the disabled={savingId === row.id} prop guarded
+  // against a double-tap (async state, not synchronous) — a fast double-click before React
+  // commits could fire save() twice for the same bill. The RPC itself is idempotent per
+  // call (an absolute "set allocation", not an increment), so this closes the gap for
+  // consistency with the rest of the codebase rather than a live corruption risk.
+  const savingInFlightRef = useRef<Set<string>>(new Set());
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(true);
   const [convertingRow, setConvertingRow] = useState<BillPayment | null>(null);
@@ -135,11 +141,13 @@ export function PaymentModeEditTab({ branch }: { branch: Branch }) {
   const save = async (row: BillPayment) => {
     const draft = drafts[row.id];
     if (!row.editable || !draft) return;
+    if (savingInFlightRef.current.has(row.id)) return;
     const allocations = editableModes.map((mode) => ({ mode, amount: roundMoney(Number(draft[mode] || 0)) })).filter((entry) => entry.amount > 0);
     if (!allocations.length || draftTotal(row.id) !== roundMoney(row.total)) {
       setMessage(`Split allocation for ${row.billNo} must equal ${money(row.total)} exactly.`);
       return;
     }
+    savingInFlightRef.current.add(row.id);
     setSavingId(row.id);
     setMessage('');
     const actor = currentUser?.username || currentUser?.displayName || 'Branch Staff';
@@ -163,6 +171,7 @@ export function PaymentModeEditTab({ branch }: { branch: Branch }) {
         ? 'The split-payment edit migration is not installed. Apply the latest Supabase migration before using this tab.'
         : `Payment allocation was not changed: ${error.message}`);
       setSavingId(null);
+      savingInFlightRef.current.delete(row.id);
       return;
     }
     const nextAllocation = { cash: 0, upi: 0, card: 0 };
@@ -172,6 +181,7 @@ export function PaymentModeEditTab({ branch }: { branch: Branch }) {
     setRows((current) => current.map((bill) => bill.id === row.id ? { ...bill, mode: nextMode, allocation: nextAllocation } : bill));
     setMessage(`${row.billNo} payment allocation was updated and audited.`);
     setSavingId(null);
+    savingInFlightRef.current.delete(row.id);
   };
 
   return (
@@ -225,11 +235,18 @@ function ConvertToCreditModal({ branch, row, onClose, onConverted }: {
   const [password, setPassword] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  // BUG FIX (audit 2026-09-02): no synchronous guard beyond disabled={saving} (async
+  // state). The RPC itself already rejects a bill that's already converted (row lock +
+  // `bill_type = 'credit'` check server-side), so a double-tap can't create a duplicate
+  // credit record — but it would surface a confusing "already a credit bill" error and
+  // needlessly re-check the password. Ref guard for the same consistency reason as save() above.
+  const submitInFlightRef = useRef(false);
 
   const amountPaidNum = Math.max(0, Math.min(row.total, Number(amountPaid) || 0));
   const creditAmount = roundMoney(row.total - amountPaidNum);
 
   const submit = async () => {
+    if (submitInFlightRef.current) return;
     if (!customerName.trim() || !customerMobile.trim() || !dueDate) {
       setError('Customer name, mobile and due date are required for a credit bill.');
       return;
@@ -242,6 +259,7 @@ function ConvertToCreditModal({ branch, row, onClose, onConverted }: {
       setError('Nothing left to convert - reduce the amount already collected.');
       return;
     }
+    submitInFlightRef.current = true;
     setSaving(true);
     setError('');
     const actor = currentUser?.username || currentUser?.displayName || 'Branch Staff';
@@ -258,6 +276,7 @@ function ConvertToCreditModal({ branch, row, onClose, onConverted }: {
       p_changed_by: actor,
     });
     setSaving(false);
+    submitInFlightRef.current = false;
     if (rpcError) {
       if (rpcError.message.includes('INVALID_PASSWORD')) { setError('Incorrect login password.'); return; }
       if (/convert_branch_bill_to_credit_secure|could not find the function|does not exist|schema cache/i.test(rpcError.message)) {
