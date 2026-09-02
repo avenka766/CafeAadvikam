@@ -191,6 +191,22 @@ function ownerCsvDownload(filename: string, rows: Array<Record<string, string | 
   URL.revokeObjectURL(a.href);
 }
 
+// AUDIT FIX (2026-09-02): ownerPrintSection's `html` argument is built by
+// callers via raw template-literal interpolation and written verbatim into
+// this same-origin popup via document.write — OwnerDailyClosureTab's print()
+// (the one caller that interpolates real staff free text: closure notes as
+// `remarks`, and `closedBy`) had no escaping, letting injected markup run
+// with window.opener access back into the live Owner Dashboard session.
+function ownerEscapeHtml(value: unknown): string {
+  const s = value == null ? '' : String(value);
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 function ownerPrintSection(title: string, html: string) {
   const win = window.open('', '_blank', 'width=1100,height=760');
   if (!win) return;
@@ -271,8 +287,12 @@ function useHosurSalesSummary(fromKey: string, toKey: string): HosurSalesSummary
         .select('id, shop_name, subtotal, paid_amount, credit_amount, payment_mode, confirmed_at, status')
         .not('confirmed_at', 'is', null)
         .neq('status', 'cancelled')
-        .gte('confirmed_at', `${fromKey}T00:00:00`)
-        .lte('confirmed_at', `${toKey}T23:59:59.999`);
+        // AUDIT FIX (2026-09-02): a bare (no-offset) timestamp is interpreted
+        // as UTC by Postgres, shifting the effective date window by 5.5
+        // hours versus the owner's local IST date picker — see the same
+        // fix already applied in fetchStoreInvoiceLines below (+05:30).
+        .gte('confirmed_at', `${fromKey}T00:00:00+05:30`)
+        .lte('confirmed_at', `${toKey}T23:59:59.999+05:30`);
       if (!alive) return;
       if (error) {
         console.error('Hosur sales fetch failed', error);
@@ -1381,8 +1401,10 @@ function WasteLogsTab() {
     setLoading(true); setError('');
     const { data, error: err } = await supabase
       .from('kitchen_waste_log').select('id, food_item, quantity, logged_at')
-      .gte('logged_at', `${fromDate}T00:00:00`)
-      .lte('logged_at', `${toDate}T23:59:59`)
+      // AUDIT FIX (2026-09-02): bare timestamp = UTC in Postgres, shifting
+      // the window vs this tab's own IST-computed fromDate/toDate.
+      .gte('logged_at', `${fromDate}T00:00:00+05:30`)
+      .lte('logged_at', `${toDate}T23:59:59+05:30`)
       .order('logged_at', { ascending: false });
     if (err) setError(err.message);
     else setEntries(data ?? []);
@@ -1398,8 +1420,8 @@ function WasteLogsTab() {
     const { data, error: err } = await supabase
       .from('branch_waste_logs')
       .select('id,branch,log_type,item_name,quantity,unit,reason,created_by_username,created_at')
-      .gte('created_at', `${fromDate}T00:00:00`)
-      .lte('created_at', `${toDate}T23:59:59`)
+      .gte('created_at', `${fromDate}T00:00:00+05:30`)
+      .lte('created_at', `${toDate}T23:59:59+05:30`)
       .order('created_at', { ascending: false })
       .limit(2000);
     if (requestId !== branchWasteRequestId.current) return;
@@ -1749,41 +1771,52 @@ function OwnerAuditTab() {
   const [activityLog, setActivityLog] = useState<OwnerAuditEvent[]>([]);
   const [stockAdjustmentLog, setStockAdjustmentLog] = useState<OwnerAuditEvent[]>([]);
   const [visibleCount, setVisibleCount] = useState(150);
+  // BUG FIX (audit 2026-09-02): these two Supabase reads only ever ran once on mount
+  // ([] deps) with no way to see newer log rows short of a full page reload — every
+  // other tab in this file has its own Refresh button, this one didn't. Extracted into
+  // a callback so a Refresh button can re-run the same fetch on demand.
+  const [auditLoading, setAuditLoading] = useState(false);
+
+  const loadAuditData = useCallback(async () => {
+    setAuditLoading(true);
+    await Promise.all([
+      (async () => {
+        const { data } = await supabase
+          .from('staff_activity_log')
+          .select('id, branch, action, detail, staff_name, created_at')
+          .order('created_at', { ascending: false })
+          .limit(1000);
+        setActivityLog((data || []).map((row: any): OwnerAuditEvent => ({
+          id: `activity-${row.id}`,
+          branch: row.branch || '-',
+          action: row.detail ? `${row.action} — ${row.detail}` : row.action,
+          user: row.staff_name || '-',
+          createdAt: row.created_at,
+          source: 'Staff Activity',
+        })));
+      })(),
+      (async () => {
+        const { data } = await supabase
+          .from('branch_stock_adjustments')
+          .select('id, branch, item_name, old_quantity, new_quantity, delta, reason, adjusted_by, adjusted_at')
+          .order('adjusted_at', { ascending: false })
+          .limit(1000);
+        setStockAdjustmentLog((data || []).map((row: any): OwnerAuditEvent => ({
+          id: `stockadj-${row.id}`,
+          branch: row.branch || '-',
+          action: `Manual Stock Adjustment — ${row.item_name} ${row.old_quantity} → ${row.new_quantity} (${row.delta > 0 ? '+' : ''}${row.delta})${row.reason ? ` — ${row.reason}` : ''}`,
+          user: row.adjusted_by || '-',
+          createdAt: row.adjusted_at,
+          source: 'Stock Adjustment',
+        })));
+      })(),
+    ]);
+    setAuditLoading(false);
+  }, []);
 
   useEffect(() => { OWNER_FULL_BRANCHES.forEach(b => fetchBranchData(b)); }, [fetchBranchData]);
 
-  useEffect(() => {
-    void (async () => {
-      const { data } = await supabase
-        .from('staff_activity_log')
-        .select('id, branch, action, detail, staff_name, created_at')
-        .order('created_at', { ascending: false })
-        .limit(1000);
-      setActivityLog((data || []).map((row: any): OwnerAuditEvent => ({
-        id: `activity-${row.id}`,
-        branch: row.branch || '-',
-        action: row.detail ? `${row.action} — ${row.detail}` : row.action,
-        user: row.staff_name || '-',
-        createdAt: row.created_at,
-        source: 'Staff Activity',
-      })));
-    })();
-    void (async () => {
-      const { data } = await supabase
-        .from('branch_stock_adjustments')
-        .select('id, branch, item_name, old_quantity, new_quantity, delta, reason, adjusted_by, adjusted_at')
-        .order('adjusted_at', { ascending: false })
-        .limit(1000);
-      setStockAdjustmentLog((data || []).map((row: any): OwnerAuditEvent => ({
-        id: `stockadj-${row.id}`,
-        branch: row.branch || '-',
-        action: `Manual Stock Adjustment — ${row.item_name} ${row.old_quantity} → ${row.new_quantity} (${row.delta > 0 ? '+' : ''}${row.delta})${row.reason ? ` — ${row.reason}` : ''}`,
-        user: row.adjusted_by || '-',
-        createdAt: row.adjusted_at,
-        source: 'Stock Adjustment',
-      })));
-    })();
-  }, []);
+  useEffect(() => { void loadAuditData(); }, [loadAuditData]);
 
   const combinedLogs = useMemo<OwnerAuditEvent[]>(() => [
     ...auditLogs.map((l): OwnerAuditEvent => ({ id: `bucket-${l.id}`, branch: l.branch, action: l.action, user: l.user, createdAt: l.createdAt, source: 'Discount / Order Edit' })),
@@ -1853,6 +1886,14 @@ function OwnerAuditTab() {
           className="rounded-2xl border border-dashed border-border bg-card px-3 py-2 text-xs font-black text-muted-foreground hover:bg-slate-50"
         >
           Show all time
+        </button>
+        <button
+          type="button"
+          onClick={() => void loadAuditData()}
+          disabled={auditLoading}
+          className="inline-flex items-center gap-1.5 rounded-2xl border border-border bg-card px-3 py-2 text-xs font-black text-muted-foreground hover:bg-slate-50 disabled:opacity-60"
+        >
+          <RefreshCw className={cn('size-3.5', auditLoading && 'animate-spin')} />Refresh
         </button>
       </div>
 
@@ -2090,10 +2131,34 @@ function BranchOverviewTab() {
       const served = orders.filter(o => o.status === 'served' && ownerInRange(o.createdAt, from, to));
       const cancelled = orders.filter(o => o.status === 'cancelled' && ownerInRange(o.createdAt, from, to));
       const gross = served.reduce((sum, o) => sum + moneyNumber(o.total), 0);
-      const cash = served.reduce((sum, o) => sum + (o.paymentType === 'cash' ? moneyNumber(o.total) : o.paymentType === 'part_payment' ? moneyNumber(o.paymentBreakdown?.cash) : 0), 0);
-      const upi = served.reduce((sum, o) => sum + (o.paymentType === 'upi' ? moneyNumber(o.total) : o.paymentType === 'part_payment' ? moneyNumber(o.paymentBreakdown?.upi) : 0), 0);
-      const card = served.reduce((sum, o) => sum + (o.paymentType === 'card' ? moneyNumber(o.total) : o.paymentType === 'part_payment' ? moneyNumber(o.paymentBreakdown?.card) : 0), 0);
-      const credit = served.reduce((sum, o) => sum + (o.paymentType === 'credit' || o.paymentType === 'unpaid' ? moneyNumber(o.total) : 0), 0);
+      // BUG FIX (audit 2026-09-02): same "advance orders fall through every payment-mode
+      // bucket" mismatch already fixed in buildOwnerClosureRows's Cafe branch (see that
+      // comment) — an independent code path here had the identical gap, so this tab's own
+      // headline Sales figure disagreed with the sum of its own Cash/UPI/Card/Credit
+      // columns whenever a 'served' advance order fell in range. Split the same way.
+      const cash = served.reduce((sum, o) => sum + (
+        o.paymentType === 'cash' ? moneyNumber(o.total)
+        : o.paymentType === 'part_payment' ? moneyNumber(o.paymentBreakdown?.cash)
+        : o.paymentType === 'advance' && o.advancePaidBy === 'cash' ? moneyNumber(o.advanceAmount)
+        : 0
+      ), 0);
+      const upi = served.reduce((sum, o) => sum + (
+        o.paymentType === 'upi' ? moneyNumber(o.total)
+        : o.paymentType === 'part_payment' ? moneyNumber(o.paymentBreakdown?.upi)
+        : o.paymentType === 'advance' && o.advancePaidBy === 'upi' ? moneyNumber(o.advanceAmount)
+        : 0
+      ), 0);
+      const card = served.reduce((sum, o) => sum + (
+        o.paymentType === 'card' ? moneyNumber(o.total)
+        : o.paymentType === 'part_payment' ? moneyNumber(o.paymentBreakdown?.card)
+        : o.paymentType === 'advance' && o.advancePaidBy === 'card' ? moneyNumber(o.advanceAmount)
+        : 0
+      ), 0);
+      const credit = served.reduce((sum, o) => sum + (
+        o.paymentType === 'credit' || o.paymentType === 'unpaid' ? moneyNumber(o.total)
+        : o.paymentType === 'advance' ? Math.max(0, moneyNumber(o.total) - moneyNumber(o.advanceAmount))
+        : 0
+      ), 0);
       return {
         unit, sales: gross, netSales: gross, cash, upi, card, credit,
         expenses: 0, purchases: 0, pendingPayments: credit, pendingCredit: credit,
@@ -2354,10 +2419,40 @@ function buildOwnerClosureRows(
     if (b === 'Cafe') {
       const dayOrders = orders.filter(o => ownerLocalDay(o.createdAt) === date && o.status === 'served');
       const gross = dayOrders.reduce((sum, o) => sum + moneyNumber(o.total), 0);
-      const cash = dayOrders.reduce((sum, o) => sum + (o.paymentType === 'cash' ? moneyNumber(o.total) : o.paymentType === 'part_payment' ? moneyNumber(o.paymentBreakdown?.cash) : 0), 0);
-      const upi = dayOrders.reduce((sum, o) => sum + (o.paymentType === 'upi' ? moneyNumber(o.total) : o.paymentType === 'part_payment' ? moneyNumber(o.paymentBreakdown?.upi) : 0), 0);
-      const card = dayOrders.reduce((sum, o) => sum + (o.paymentType === 'card' ? moneyNumber(o.total) : o.paymentType === 'part_payment' ? moneyNumber(o.paymentBreakdown?.card) : 0), 0);
-      const credit = dayOrders.reduce((sum, o) => sum + (o.paymentType === 'credit' || o.paymentType === 'unpaid' ? moneyNumber(o.total) : 0), 0);
+      // AUDIT FIX (2026-09-02): 'advance' orders (a pre-order where only part
+      // of the total is collected up front) were falling through every
+      // cash/upi/card/credit bucket below — their full o.total still counted
+      // toward gross/netSales, so this card's headline total silently
+      // disagreed with the sum of its own breakdown rows (the exact bug
+      // class already fixed for SNB/VRSNB per the comment above
+      // branches[b].revenue). Split the same way 'credit'/'unpaid' orders
+      // already are: the actually-collected o.advanceAmount goes to
+      // whichever mode it was paid in, and the remaining uncollected balance
+      // is money still owed — same bucket as outstanding credit — so
+      // cash+upi+card+credit always sums back to gross for every order type.
+      const cash = dayOrders.reduce((sum, o) => sum + (
+        o.paymentType === 'cash' ? moneyNumber(o.total)
+        : o.paymentType === 'part_payment' ? moneyNumber(o.paymentBreakdown?.cash)
+        : o.paymentType === 'advance' && o.advancePaidBy === 'cash' ? moneyNumber(o.advanceAmount)
+        : 0
+      ), 0);
+      const upi = dayOrders.reduce((sum, o) => sum + (
+        o.paymentType === 'upi' ? moneyNumber(o.total)
+        : o.paymentType === 'part_payment' ? moneyNumber(o.paymentBreakdown?.upi)
+        : o.paymentType === 'advance' && o.advancePaidBy === 'upi' ? moneyNumber(o.advanceAmount)
+        : 0
+      ), 0);
+      const card = dayOrders.reduce((sum, o) => sum + (
+        o.paymentType === 'card' ? moneyNumber(o.total)
+        : o.paymentType === 'part_payment' ? moneyNumber(o.paymentBreakdown?.card)
+        : o.paymentType === 'advance' && o.advancePaidBy === 'card' ? moneyNumber(o.advanceAmount)
+        : 0
+      ), 0);
+      const credit = dayOrders.reduce((sum, o) => sum + (
+        o.paymentType === 'credit' || o.paymentType === 'unpaid' ? moneyNumber(o.total)
+        : o.paymentType === 'advance' ? Math.max(0, moneyNumber(o.total) - moneyNumber(o.advanceAmount))
+        : 0
+      ), 0);
       return { branch: ownerBranchDisplay(b), opening: 0, grossSales: gross, returns: 0, netSales: gross, cash, upi, card, credit, expenses: 0, purchases: 0, bankDeposits: 0, expectedCash: cash, countedCash: 0, difference: 0, status: 'Pending' as OwnerClosureRow['status'], closedBy: 'Cafe cashier', closedAt: '', remarks: 'Cafe closure is verified in Daily Closure module.' };
     }
     const ledger = ownerLedger.closureByBranchDate.get(`${b}:${date}`);
@@ -2442,7 +2537,7 @@ function OwnerDailyClosureTab() {
 
   const totals = rows.reduce((acc, r) => ({ net: acc.net + r.netSales, cash: acc.cash + r.cash, diff: acc.diff + r.difference, pending: acc.pending + (r.status === 'Pending' ? 1 : 0) }), { net: 0, cash: 0, diff: 0, pending: 0 });
 
-  const print = () => ownerPrintSection('Owner Daily Closure Overview', `<table><thead><tr><th>Branch</th><th>Status</th><th>Net sales</th><th>Cash</th><th>Expected cash</th><th>Counted cash</th><th>Difference</th><th>Closed by</th><th>Remarks</th></tr></thead><tbody>${rows.map(r => `<tr><td>${r.branch}</td><td>${r.status}</td><td>${formatCurrency(r.netSales)}</td><td>${formatCurrency(r.cash)}</td><td>${formatCurrency(r.expectedCash)}</td><td>${formatCurrency(r.countedCash)}</td><td>${formatCurrency(r.difference)}</td><td>${r.closedBy}</td><td>${r.remarks}</td></tr>`).join('')}</tbody></table>`);
+  const print = () => ownerPrintSection('Owner Daily Closure Overview', `<table><thead><tr><th>Branch</th><th>Status</th><th>Net sales</th><th>Cash</th><th>Expected cash</th><th>Counted cash</th><th>Difference</th><th>Closed by</th><th>Remarks</th></tr></thead><tbody>${rows.map(r => `<tr><td>${r.branch}</td><td>${r.status}</td><td>${formatCurrency(r.netSales)}</td><td>${formatCurrency(r.cash)}</td><td>${formatCurrency(r.expectedCash)}</td><td>${formatCurrency(r.countedCash)}</td><td>${formatCurrency(r.difference)}</td><td>${ownerEscapeHtml(r.closedBy)}</td><td>${ownerEscapeHtml(r.remarks)}</td></tr>`).join('')}</tbody></table>`);
 
   return (
     <div className="owner-tab-stack">
@@ -3295,9 +3390,10 @@ async function fetchOwnerEverythingExtras(): Promise<{ data: OwnerEverythingExtr
       supabase.from('salary_advances').select('amount').eq('cleared', false),
       supabase.from('admin_notifications').select('id, type, title, body, created_at').order('created_at', { ascending: false }).limit(8),
       supabase.from('branch_complaint_tickets').select('id, branch, subject, priority, status, created_at').not('status', 'in', '("Resolved","Closed")').order('created_at', { ascending: false }).limit(10),
-      supabase.from('kitchen_waste_log').select('id, logged_at').gte('logged_at', `${todayStr}T00:00:00`).lte('logged_at', `${todayStr}T23:59:59`),
-      supabase.from('branch_waste_logs').select('id, created_at').gte('created_at', `${todayStr}T00:00:00`).lte('created_at', `${todayStr}T23:59:59`),
-      supabase.from('branch_stock_variance_records').select('id, difference, created_at').gte('created_at', `${todayStr}T00:00:00`).lte('created_at', `${todayStr}T23:59:59`),
+      // AUDIT FIX (2026-09-02): bare timestamp = UTC in Postgres, shifting "today" vs todayStr's IST computation.
+      supabase.from('kitchen_waste_log').select('id, logged_at').gte('logged_at', `${todayStr}T00:00:00+05:30`).lte('logged_at', `${todayStr}T23:59:59+05:30`),
+      supabase.from('branch_waste_logs').select('id, created_at').gte('created_at', `${todayStr}T00:00:00+05:30`).lte('created_at', `${todayStr}T23:59:59+05:30`),
+      supabase.from('branch_stock_variance_records').select('id, difference, created_at').gte('created_at', `${todayStr}T00:00:00+05:30`).lte('created_at', `${todayStr}T23:59:59+05:30`),
     ]);
     const firstError = hosurBillsRes.error || leftoverRes.error || bakeryOrdersRes.error || hosurOrdersRes.error || advancesRes.error || notifRes.error;
     if (firstError) return { data: EMPTY_EVERYTHING_EXTRAS, error: firstError.message };

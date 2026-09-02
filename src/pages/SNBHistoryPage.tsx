@@ -7,19 +7,39 @@ import EmptyState from '@/components/ui/EmptyState';
 const PAGE_SIZE = 50;
 
 export default function SNBHistoryPage() {
-  const { sales, fetchBranchData } = useBranchStore();
+  const { sales, fetchBranchData, fetchBranchSalesRange } = useBranchStore();
   const [filter, setFilter] = useState<'all' | 'today'>('all');
   const [page, setPage] = useState(1);
 
-  useEffect(() => { void fetchBranchData('SNB'); }, [fetchBranchData]);
+  useEffect(() => { void fetchBranchData('SNB', false, ['sales']); }, [fetchBranchData]); // EGRESS FIX: this page only reads sales
+
+  // AUDIT FIX (2026-09-02): branchStore's `sales` cache is now today-only
+  // (see its EGRESS FIX comment in branchStore.ts) — the "All Sales" toggle
+  // here used to just filter that same today-only array, so it was
+  // silently identical to "Today" for anything older. Fetch a real wide
+  // range via fetchBranchSalesRange (same mechanism BakeryReportsMerged.tsx
+  // now uses) whenever "All Sales" is actually selected.
+  const [allSales, setAllSales] = useState<import('@/branch/branchStore').SaleRecord[]>([]);
+  const [allSalesLoading, setAllSalesLoading] = useState(false);
+  useEffect(() => {
+    if (filter !== 'all') return;
+    let cancelled = false;
+    const toISO = new Date().toISOString();
+    const fromISO = new Date(0).toISOString(); // full history, capped by fetchBranchSalesRange's own 10000-row limit
+    setAllSalesLoading(true);
+    fetchBranchSalesRange('SNB', fromISO, toISO)
+      .then((rows) => { if (!cancelled) setAllSales(rows); })
+      .finally(() => { if (!cancelled) setAllSalesLoading(false); });
+    return () => { cancelled = true; };
+  }, [filter, fetchBranchSalesRange]);
+
   useEffect(() => setPage(1), [filter]);
 
   const isToday = (d: string) => new Date(d).toDateString() === new Date().toDateString();
   const snbSales = useMemo(() => {
-    let list = [...(sales.SNB || [])].sort((a, b) => new Date(b.soldAt).getTime() - new Date(a.soldAt).getTime());
-    if (filter === 'today') list = list.filter((sale) => isToday(sale.soldAt));
-    return list;
-  }, [sales, filter]);
+    const source = filter === 'today' ? (sales.SNB || []) : allSales;
+    return [...source].sort((a, b) => new Date(b.soldAt).getTime() - new Date(a.soldAt).getTime());
+  }, [sales, allSales, filter]);
   const pageCount = Math.max(1, Math.ceil(snbSales.length / PAGE_SIZE));
   const visible = snbSales.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
   const todayRows = (sales.SNB || []).filter((sale) => isToday(sale.soldAt));
@@ -35,7 +55,7 @@ export default function SNBHistoryPage() {
       <div className="mt-3 grid grid-cols-2 gap-2"><div className="rounded-xl border border-amber-200 bg-amber-50 p-2 text-center"><ShoppingBag className="mx-auto size-4 text-amber-600"/><p className="text-lg font-black text-amber-700">{todayQty}</p><p className="text-[10px] font-bold uppercase text-amber-700">Today Qty</p></div><div className="rounded-xl border bg-card p-2 text-center"><IndianRupee className="mx-auto size-4 text-emerald-600"/><p className="text-lg font-black">{formatCurrency(todayRevenue)}</p><p className="text-[10px] font-bold uppercase text-muted-foreground">Today Revenue</p></div></div>
     </div>
     <div className="min-h-0 flex-1 overflow-auto p-3 sm:p-4">
-      {snbSales.length === 0 ? <EmptyState icon="🛒" message="No SNB sales found" sub="Sales will appear here once items are billed."/> : <div className="overflow-hidden rounded-xl border bg-card"><table className="w-full min-w-[760px] text-sm"><thead className="sticky top-0 bg-muted text-left text-[10px] uppercase text-muted-foreground"><tr><th className="p-3">Date / Bill</th><th className="p-3">Item</th><th className="p-3 text-right">Qty</th><th className="p-3 text-right">Unit Price</th><th className="p-3 text-right">Line Revenue</th><th className="p-3">Cashier</th></tr></thead><tbody>{visible.map((sale) => <tr key={sale.id} className="border-t"><td className="p-3"><p className="font-bold">{new Date(sale.soldAt).toLocaleString('en-IN')}</p><p className="text-xs text-muted-foreground">{sale.billNo || 'Legacy sale'}</p></td><td className="p-3 font-bold">{sale.itemName}</td><td className="p-3 text-right font-black">{sale.quantitySold}</td><td className="p-3 text-right">{sale.unitPrice > 0 ? formatCurrency(sale.unitPrice) : 'Unavailable'}</td><td className="p-3 text-right font-black text-emerald-700">{sale.unitPrice > 0 ? formatCurrency(sale.quantitySold * sale.unitPrice) : 'Unavailable'}</td><td className="p-3">{sale.soldBy}</td></tr>)}</tbody></table></div>}
+      {allSalesLoading && filter === 'all' ? <EmptyState icon="⏳" message="Loading full sales history…" sub="This may take a moment for a busy branch." /> : snbSales.length === 0 ? <EmptyState icon="🛒" message="No SNB sales found" sub="Sales will appear here once items are billed."/> : <div className="overflow-hidden rounded-xl border bg-card"><table className="w-full min-w-[760px] text-sm"><thead className="sticky top-0 bg-muted text-left text-[10px] uppercase text-muted-foreground"><tr><th className="p-3">Date / Bill</th><th className="p-3">Item</th><th className="p-3 text-right">Qty</th><th className="p-3 text-right">Unit Price</th><th className="p-3 text-right">Line Revenue</th><th className="p-3">Cashier</th></tr></thead><tbody>{visible.map((sale) => <tr key={sale.id} className="border-t"><td className="p-3"><p className="font-bold">{new Date(sale.soldAt).toLocaleString('en-IN')}</p><p className="text-xs text-muted-foreground">{sale.billNo || 'Legacy sale'}</p></td><td className="p-3 font-bold">{sale.itemName}</td><td className="p-3 text-right font-black">{sale.quantitySold}</td><td className="p-3 text-right">{sale.unitPrice > 0 ? formatCurrency(sale.unitPrice) : 'Unavailable'}</td><td className="p-3 text-right font-black text-emerald-700">{sale.unitPrice > 0 ? formatCurrency(sale.quantitySold * sale.unitPrice) : 'Unavailable'}</td><td className="p-3">{sale.soldBy}</td></tr>)}</tbody></table></div>}
     </div>
     {snbSales.length > PAGE_SIZE && <div className="flex shrink-0 items-center justify-between border-t bg-card px-4 py-2 text-sm font-bold"><span>Showing {(page-1)*PAGE_SIZE+1}-{Math.min(page*PAGE_SIZE,snbSales.length)} of {snbSales.length}</span><div className="flex gap-2"><button disabled={page===1} onClick={() => setPage((value)=>Math.max(1,value-1))} className="rounded-lg border p-2 disabled:opacity-40"><ChevronLeft className="size-4"/></button><button disabled={page===pageCount} onClick={() => setPage((value)=>Math.min(pageCount,value+1))} className="rounded-lg border p-2 disabled:opacity-40"><ChevronRight className="size-4"/></button></div></div>}
   </div>;

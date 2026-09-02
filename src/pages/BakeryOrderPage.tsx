@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   ArrowLeft,
@@ -121,6 +121,15 @@ export default function QROrderPage() {
   const [search, setSearch] = useState('');
   const [screen, setScreen] = useState<'menu' | 'checkout'>('menu');
   const [paying, setPaying] = useState(false);
+  // BUG FIX (audit 2026-09-02): payAndPlaceOrder relied only on disabled={paying} — a
+  // useState flag updated asynchronously — with no synchronous guard inside the handler.
+  // create-razorpay-order (the edge function this calls) has no idempotency key and
+  // unconditionally creates a brand-new public_orders row + a brand-new live Razorpay
+  // order on every invocation, so a fast double-tap on this public customer checkout
+  // button could create two separate payable Razorpay orders for the same cart. Same
+  // class already fixed in QROrderPage.tsx via a ref set synchronously before the first
+  // await; mirrored here.
+  const payingRef = useRef(false);
   const [error, setError] = useState('');
   const [addedNotice, setAddedNotice] = useState('');
   const { items: catalogByBranch, loadCatalog, subscribe } = useBranchCatalogStore();
@@ -201,12 +210,14 @@ export default function QROrderPage() {
   };
 
   const payAndPlaceOrder = async () => {
+    if (payingRef.current) return;
     const validationError = validateCheckout();
     if (validationError) {
       setError(validationError);
       return;
     }
 
+    payingRef.current = true;
     setPaying(true);
     setError('');
     try {
@@ -239,7 +250,7 @@ export default function QROrderPage() {
         prefill: { name: customer.name.trim(), contact: phone },
         notes: { public_order_id: data.publicOrderId, tax_rate: '3%' },
         theme: { color: '#16120d' },
-        modal: { ondismiss: () => setPaying(false) },
+        modal: { ondismiss: () => { payingRef.current = false; setPaying(false); } },
         config: {
           display: {
             blocks: {
@@ -256,6 +267,7 @@ export default function QROrderPage() {
               body: { ...response, publicOrderId: data.publicOrderId },
             });
             if (verifyError || !verified?.success) throw new Error(verifyError?.message || verified?.error || 'Payment verification failed.');
+            payingRef.current = false;
             localStorage.setItem(PHONE_STORAGE_KEY, phone);
             localStorage.removeItem(CART_STORAGE_KEY);
             setCart([]);
@@ -263,6 +275,7 @@ export default function QROrderPage() {
             navigate(`/order/track?phone=${encodeURIComponent(phone)}&order=${encodeURIComponent(verified.orderNumber || data.orderNumber || '')}`, { replace: true });
           } catch (verificationError) {
             setError(verificationError instanceof Error ? verificationError.message : 'Payment verification failed.');
+            payingRef.current = false;
             setPaying(false);
           }
         },
@@ -270,6 +283,7 @@ export default function QROrderPage() {
       razorpay.open();
     } catch (orderError) {
       setError(orderError instanceof Error ? orderError.message : 'Unable to place the order.');
+      payingRef.current = false;
       setPaying(false);
     }
   };

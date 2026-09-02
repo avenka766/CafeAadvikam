@@ -15,6 +15,19 @@ const STATUS_STEPS: { key: OrderStatus; label: string; icon: React.ReactNode; co
   { key: 'ready', label: 'Ready for Pickup', icon: <CheckCircle2 className="size-5" />, color: 'text-emerald-600 bg-emerald-100 border-emerald-300' },
 ];
 
+// AUDIT FIX (2026-09-02): this page used to read `orders` directly via
+// supabase.from('orders').select(<full row>).eq('id', orderId) on the public
+// anon client. `orders` currently has an "Allow all" RLS policy granting
+// anon full SELECT on every row in the table — so this page's own query
+// pattern meant any holder of the public anon key could, via a direct REST
+// call, pull full order rows (customer_name/notes/discount/
+// payment_breakdown/billed_by) for ANY order, not just the one this link
+// points to. Switched to a narrow SECURITY DEFINER RPC (see migration
+// track_public_cafe_order) that returns only the fields this page actually
+// renders — no financial/payment/customer-identity fields — scoped to one
+// order id. See project_orders_table_rls_exposure_20260902 memory: the
+// underlying "Allow all" policy itself is a separate, bigger issue not
+// touched by this fix.
 function dbRowToOrder(row: Record<string, unknown>): Order {
   return {
     id: row.id as string,
@@ -22,22 +35,24 @@ function dbRowToOrder(row: Record<string, unknown>): Order {
     tableNumber: row.table_number as number | undefined,
     orderType: row.order_type as OrderType,
     items: (row.items as CartItem[]) || [],
-    subtotal: Number(row.subtotal),
-    discount: Number(row.discount),
-    discountType: row.discount_type as 'percentage' | 'flat',
-    discountValue: Number(row.discount_value),
-    total: Number(row.total),
+    // Not returned by track_public_cafe_order (this page never renders
+    // financial/payment fields) — zeroed rather than fabricated.
+    subtotal: 0,
+    discount: 0,
+    discountType: 'flat',
+    discountValue: 0,
+    total: 0,
     status: row.status as OrderStatus,
-    createdBy: row.created_by as string,
+    createdBy: '',
     createdAt: row.created_at as string,
     updatedAt: row.updated_at as string,
-    notes: row.notes as string | undefined,
-    customerName: row.customer_name as string | undefined,
-    paymentType: (row.payment_type as PaymentType) || 'unpaid',
-    paymentBreakdown: row.payment_breakdown as PaymentBreakdown | undefined,
-    billedBy: row.billed_by as string | undefined,
-    cancelReason: row.cancel_reason as string | undefined,
-    orderSource: (row.order_source as OrderSource) || 'staff',
+    notes: (row.notes as string | null) || undefined,
+    customerName: undefined,
+    paymentType: 'unpaid' as PaymentType,
+    paymentBreakdown: undefined as PaymentBreakdown | undefined,
+    billedBy: undefined,
+    cancelReason: (row.cancel_reason as string | null) || undefined,
+    orderSource: 'staff' as OrderSource,
   };
 }
 
@@ -53,18 +68,16 @@ export default function OrderTrackingPage() {
   const fetchOrder = useCallback(async () => {
     if (!orderId) return;
     const { data, error: fetchErr } = await supabase
-      .from('orders')
-      .select('id, order_number, table_number, order_type, items, subtotal, discount, discount_type, discount_value, total, status, created_by, created_at, updated_at, notes, customer_name, payment_type, payment_breakdown, billed_by, cancel_reason, order_source')
-      .eq('id', orderId)
-      .single();
+      .rpc('track_public_cafe_order', { p_order_id: orderId });
 
-    if (fetchErr || !data) {
+    const row = Array.isArray(data) ? data[0] : data;
+    if (fetchErr || !row) {
       setError('Order not found');
       setLoading(false);
       return;
     }
 
-    setOrder(dbRowToOrder(data as Record<string, unknown>));
+    setOrder(dbRowToOrder(row as Record<string, unknown>));
     setLoading(false);
   }, [orderId]);
 

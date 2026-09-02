@@ -16,7 +16,7 @@ import { useCafeOrderSales } from "@/hooks/useCafeOrderSales";
 import { useCafeOrderRows } from "@/hooks/useCafeOrderRows";
 import { supabase } from "@/lib/supabase";
 import { useAuthStore } from "@/stores/authStore";
-import { useBranchStore, type CreditSale } from "@/branch/branchStore";
+import { useBranchStore, type CreditSale, type BranchDataScope } from "@/branch/branchStore";
 import {
   money,
   useBranchOpsStore,
@@ -629,13 +629,13 @@ export default function AdminVRSNBDashboard() {
       .reduce((sum, s) => sum + (s.unitPrice ?? 0) * s.quantitySold, 0);
   const ledgerRows = adminLedger.closureRows.filter((row) => viewBranches.includes(row.branch));
   const hasLedgerRows = ledgerRows.length > 0;
+  // BUG FIX (audit 2026-09-02): same "headline vs. its own breakdown" bug as
+  // AdminSNBDashboard.tsx's identical computation (see that file's matching comment) —
+  // subtracting advance_collected/advance_balance_collected from sales_total disagreed
+  // with this same row's own cash/upi/card/credit breakdown, which are never similarly
+  // adjusted. sales_total is the real, confirmed-correct total; use it directly.
   const ledgerGrossSales = ledgerRows.reduce(
-    (sum, row) => sum + Math.max(
-      0,
-      adminLedger.toNumber(row.sales_total)
-        - adminLedger.toNumber(row.advance_collected)
-        - adminLedger.toNumber(row.advance_balance_collected),
-    ),
+    (sum, row) => sum + Math.max(0, adminLedger.toNumber(row.sales_total)),
     0,
   );
   const ledgerCashSales = ledgerRows.reduce((sum, row) => sum + adminLedger.toNumber(row.cash_total), 0);
@@ -1127,7 +1127,7 @@ function UpdateStockTab({
   userName: string;
   branchStock: any[];
   catalogItems: Array<{ name: string; barcode?: number; category?: string; uom?: string }>;
-  fetchBranchData: (branch: Branch) => Promise<void>;
+  fetchBranchData: (branch: Branch, force?: boolean, scopes?: BranchDataScope[]) => Promise<void>;
   setNotice: (message: string) => void;
 }) {
   type AdjustmentRow = {
@@ -1205,7 +1205,7 @@ function UpdateStockTab({
           : `Stock update failed: ${message}`);
       return;
     }
-    await Promise.all([fetchBranchData(BRANCH), loadHistory()]);
+    await Promise.all([fetchBranchData(BRANCH, false, ['stock']), loadHistory()]); // EGRESS FIX: manual stock correction only touches stock
     setQuantity("");
     setReason("");
     setNotice(`${selectedItem} stock updated securely by ${userName}.`);
@@ -1242,7 +1242,7 @@ function UpdateStockTab({
         </div>
       </Panel>
       <div className="space-y-4">
-        <Panel title="Current VRSNB Stock" icon={<Package className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => void fetchBranchData(BRANCH)}><RefreshCcw className="size-4" /> Refresh</button>}>
+        <Panel title="Current VRSNB Stock" icon={<Package className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => void fetchBranchData(BRANCH, false, ['stock'])}><RefreshCcw className="size-4" /> Refresh</button>}>
           <DataTable headers={["Item", "Category", "Barcode", "Quantity", "Reserved", "Available", "Unit", "Action"]} rows={branchStock.map((row) => { const item = catalogItems.find((candidate) => normal(candidate.name) === normal(row.itemName)); return [row.itemName, item?.category || "-", item?.barcode ?? row.itemBarcode ?? "-", row.quantity, row.reservedQuantity ?? 0, row.availableQuantity ?? Number(row.quantity || 0) - Number(row.reservedQuantity || 0), row.unit || item?.uom || "-", <button key="select" className={cn(btnCls, "bg-blue-50 text-blue-700")} onClick={() => { setSelectedItem(row.itemName); setQuantity(String(row.quantity)); window.scrollTo({ top: 0, behavior: "smooth" }); }}>Select</button>]; })} empty="No VRSNB stock records found." />
         </Panel>
         <Panel title="Recent Stock Adjustments" icon={<History className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => void loadHistory()}><RefreshCcw className={cn("size-4", historyLoading && "animate-spin")} /> Refresh</button>}>
@@ -2125,7 +2125,10 @@ function ExpensesTab({ userName, expenseAmount, cashBalance }: any) {
   const rows = expenses.filter((e) => e.branch === BRANCH);
   const save = () => {
     const amount = Number(form.amount);
-    if (!form.category.trim() || !form.description.trim() || !amount) return;
+    // AUDIT FIX (2026-09-02): `!amount` only rejects zero/NaN — a negative
+    // amount is truthy and sailed through, creating a negative "expense"
+    // that inflates computed cash-on-hand instead of reducing it.
+    if (!form.category.trim() || !form.description.trim() || !(amount > 0)) return;
     addExpense({ branch: BRANCH, expenseDate: form.expenseDate, category: form.category, description: form.description, amount, mode: form.mode as any, enteredBy: userName });
     setForm({ ...form, category: "", description: "", amount: "" });
   };
@@ -2401,7 +2404,7 @@ function WasteLogsTab({ userName, role }: { userName: string; role: string }) {
           });
       if (error) throw error;
       setManageRow(null);
-      await Promise.all([loadRows(), useBranchStore.getState().fetchBranchData(BRANCH)]);
+      await Promise.all([loadRows(), useBranchStore.getState().fetchBranchData(BRANCH, false, ['stock'])]); // EGRESS FIX: waste-log edit/cancel only touches stock
     } catch (error) {
       setManageError(error instanceof Error ? error.message : "Unable to update this stock movement.");
     } finally {
@@ -2962,7 +2965,7 @@ function PurchaseReturnsTab({ userName, branchStock, manualUpdateStock, fetchBra
   userName: string;
   branchStock: any[];
   manualUpdateStock: any;
-  fetchBranchData: (branch: Branch) => Promise<void>;
+  fetchBranchData: (branch: Branch, force?: boolean, scopes?: BranchDataScope[]) => Promise<void>;
   setNotice: (message: string) => void;
 }) {
   const { purchases } = useBranchOpsStore();
@@ -3002,7 +3005,7 @@ function PurchaseReturnsTab({ userName, branchStock, manualUpdateStock, fetchBra
     const updateError = await manualUpdateStock(BRANCH, stockRow?.itemName || selected.itemName, currentQty - qty, userName, catalogItem?.barcode, { reason: "Purchase Return", referenceId: returnNo, notes });
     setSaving(false);
     if (updateError) { setError(updateError); return; }
-    await fetchBranchData(BRANCH);
+    await fetchBranchData(BRANCH, false, ['stock']); // EGRESS FIX: purchase return only touches stock
     await loadHistory();
     setPurchaseId(""); setQuantity(""); setReference(""); setRemarks("");
     setNotice(`${returnNo} posted. ${qty} ${selected.unit || ""} removed from VRSNB stock.`);
@@ -3185,7 +3188,7 @@ function PurchaseInvoicesTab({
       previousValue: `${p.itemName}: ${currentQty}`,
       newValue: `${p.itemName}: ${currentQty + Number(p.quantity)} from ${p.invoiceNo}`,
     });
-    await fetchBranchData(BRANCH);
+    await fetchBranchData(BRANCH, false, ['stock']); // EGRESS FIX: purchase sync-to-stock only touches stock
     setNotice(`${p.invoiceNo} synced to VRSNB stock successfully.`);
   };
   return (
@@ -3407,7 +3410,8 @@ function SupplierPaymentsTab({ userName }: { userName: string }) {
   const save = () => {
     const amount = Number(form.amount);
     const supplier = selected?.supplier || form.supplier;
-    if (!supplier.trim() || !amount) return;
+    // AUDIT FIX (2026-09-02): `!amount` let a negative payment through.
+    if (!supplier.trim() || !(amount > 0)) return;
     const due = selected ? Math.max(0, Number(selected.total || 0) - Number(selected.paidAmount || 0)) : 0;
     if (selected && amount > due) {
       window.alert(`Payment cannot exceed pending due ${money(due)}.`);
@@ -3569,7 +3573,8 @@ function BankDepositsTab({
   });
   const save = () => {
     const amount = Number(form.amount);
-    if (!amount) return;
+    // AUDIT FIX (2026-09-02): `!amount` let a negative deposit through.
+    if (!(amount > 0)) return;
     addBankDeposit({
       branch: BRANCH,
       depositDate: form.depositDate,
@@ -4280,6 +4285,23 @@ function DailyClosureTab({ userName, ...props }: any) {
       return;
     }
     const closureDate = dateInput();
+    // BUG FIX (audit 2026-09-02): this always tagged the saved closure row
+    // with TODAY's date (closureDate above) while pulling cash/UPI/card/
+    // credit/bill-count totals from props.cashSales etc. — which are derived
+    // from the page-wide fromDate/toDate range picker (see branchBills'
+    // useMemo, filtered by inRange(..., fromDate, toDate)), not from today
+    // specifically. The existing viewScope guard above only catches the
+    // branch-mixing case; it never checked the date range. An admin with
+    // "7 Days"/"30 Days"/a custom range selected when they open this tab
+    // would have that whole range's totals silently written into
+    // branch_daily_closures under today's date, corrupting the branch's
+    // official cash-reconciliation ledger with no warning. Require the
+    // range to be exactly today before allowing a save, matching the same
+    // "only ever save while viewing the right scope" principle.
+    if (props.fromDate !== closureDate || props.toDate !== closureDate) {
+      window.alert('Set the date range to "Today" before finalizing this closure — the current view is showing a different date range, and this always saves under today\'s date.');
+      return;
+    }
     const payload = {
       branch: BRANCH,
       closure_date: closureDate,
@@ -4960,7 +4982,7 @@ function StockAuditTab({
   userName: string;
   branchStock: Array<{ itemName: string; price: number | null }>;
   manualUpdateStock: (branch: Branch, itemName: string, quantity: number, updatedBy: string, itemBarcode?: number) => Promise<string | null>;
-  fetchBranchData: (branch: Branch) => Promise<void>;
+  fetchBranchData: (branch: Branch, force?: boolean, scopes?: BranchDataScope[]) => Promise<void>;
   setNotice: (message: string) => void;
 }) {
   const catalogItems = useVRSNBCatalog();
@@ -5157,7 +5179,7 @@ function StockAuditTab({
         }
       }
       confirmStockCountReport(report.id, userName);
-      await fetchBranchData(BRANCH);
+      await fetchBranchData(BRANCH, false, ['stock']); // EGRESS FIX: stock count confirmation only touches stock
       setNotice(`${report.reportNo} confirmed. VRSNB stock updated and variance sent to Owner/Admin.`);
     } finally {
       setSavingId("");
@@ -5190,7 +5212,7 @@ function StockAuditTab({
       }
       const payload = (data || {}) as Record<string, unknown>;
       setReportReversals((current) => ({ ...current, [report.id]: { by: userName, reason, at: new Date().toISOString() } }));
-      await fetchBranchData(BRANCH);
+      await fetchBranchData(BRANCH, false, ['stock']); // EGRESS FIX: stock count reversal only touches stock
       setNotice(`${String(payload.reportNo || report.reportNo)} reversed. Pre-confirmation stock was restored.`);
     } finally {
       setReversingId("");
@@ -5367,7 +5389,7 @@ function IncomingDisputeReview({ userName }: { userName: string }) {
   const disputes = (incoming[BRANCH] || []).filter((item) => item.disputed && !item.confirmed);
 
   useEffect(() => {
-    void fetchBranchData(BRANCH);
+    void fetchBranchData(BRANCH, false, ['incoming']); // EGRESS FIX: this panel only ever reads incoming
   }, [fetchBranchData]);
 
   useEffect(() => {
@@ -5404,7 +5426,7 @@ function IncomingDisputeReview({ userName }: { userName: string }) {
       setSavingId("");
       return;
     }
-    await fetchBranchData(BRANCH);
+    await fetchBranchData(BRANCH, false, ['incoming']); // EGRESS FIX: resolving a dispute only touches incoming
     const confirmError = await confirmIncoming(BRANCH, incomingId);
     if (confirmError) {
       setMessage(confirmError);
@@ -5416,7 +5438,7 @@ function IncomingDisputeReview({ userName }: { userName: string }) {
       .forEach((n) => updateNotificationStatus(n.id, "Resolved", userName));
     setMessage(`${item.itemName} confirmed with corrected quantity ${correctedQty} ${item.unit}. Stock synced.`);
     setSavingId("");
-    await fetchBranchData(BRANCH);
+    await fetchBranchData(BRANCH, false, ['incoming']); // EGRESS FIX: resolving a dispute only touches incoming
   };
 
   if (disputes.length === 0) return null;

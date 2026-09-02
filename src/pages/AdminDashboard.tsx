@@ -12,6 +12,7 @@ import { BRANCHES, BRANCH_LABELS, BRANCH_COLORS } from '@/branch/types';
 import SnbItemsTab from '@/components/admin/SnbItemsTab';
 import VrsnbItemsTab from '@/components/admin/VrsnbItemsTab';
 import AdminCreditTab from '@/components/admin/AdminCreditTab';
+import AdminDispatchDetailsTab from '@/components/admin/AdminDispatchDetailsTab';
 import AdminAdvanceTab from '@/components/admin/AdminAdvanceTab';
 import AttendanceSalary from '@/pages/AttendanceSalary';
 import AdminWalletTab from '@/components/admin/AdminWalletTab';
@@ -39,7 +40,7 @@ const CHART_COLORS = ['#2563eb', '#d97706', '#059669', '#7c3aed', '#dc2626', '#0
 const PAYMENT_COLORS = ['#16a34a', '#2563eb', '#7c3aed', '#f97316', '#dc2626'];
 
 // CHANGE 3: Removed 'stock-alerts' from AdminTab union
-type AdminTab = 'public-orders' | 'wallet' | 'promotions' | 'overview' | 'cafe' | 'branches' | 'hosur' | 'items' | 'daily-closure' | 'credits' | 'advance' | 'stock-disputes' | 'stock-variance' | 'waste' | 'audit' | 'invoices' | 'purchase-orders' | 'alerts' | 'complaints' | 'attendance';
+type AdminTab = 'public-orders' | 'wallet' | 'promotions' | 'overview' | 'cafe' | 'branches' | 'hosur' | 'dispatch-details' | 'items' | 'daily-closure' | 'credits' | 'advance' | 'stock-disputes' | 'stock-variance' | 'waste' | 'audit' | 'invoices' | 'purchase-orders' | 'alerts' | 'complaints' | 'attendance';
 
 type SalesTxn = {
   id: string; branch: Branch; itemName: string; qty: number; revenue: number;
@@ -76,6 +77,7 @@ const NAV_ITEMS: Array<{ id: AdminTab; label: string; description: string; icon:
   { id: 'cafe', label: 'Cafe Control', description: 'Cafe sales and payment split', icon: Store },
   { id: 'branches', label: 'Branch Sales', description: 'SNB and VRSNB performance', icon: BarChart3 },
   { id: 'hosur', label: 'Hosur Sales', description: 'Hosur wholesale shop billing and dispatch', icon: Truck },
+  { id: 'dispatch-details', label: 'Dispatch Details', description: 'Every Planner dispatch invoice — TO (SNB/VRSNB), SALES (Hosur/Sales) and Cake', icon: FileSpreadsheet },
   { id: 'items', label: 'Items', description: 'SNB and VRSNB item controls', icon: PackageSearch, adminOnly: true },
   { id: 'daily-closure', label: 'Daily Closure', description: 'Cafe and branch closing verification', icon: CalendarClock, adminOnly: true },
   { id: 'credits', label: 'Credit Pending', description: 'Customer credit and due collection', icon: WalletCards, adminOnly: true },
@@ -398,7 +400,7 @@ function AdminDashboard() {
         return { data: rows, error: null };
       };
 
-      const [headersRes, itemsRes, paymentsRes, hosurRes, hosurItemsRes, unbilledRes, unbilledArchiveRes, expensesRes, purchasesRes] = await Promise.all([
+      const [headersRes, itemsRes, paymentsRes, hosurRes, unbilledRes, unbilledArchiveRes, expensesRes, purchasesRes] = await Promise.all([
         fetchAllRows(() => supabase.from('branch_bill_headers')
           .select('id, branch, bill_no, subtotal, discount, total, status, created_at, salesperson, biller')
           .in('branch', ['SNB', 'VRSNB'])
@@ -418,8 +420,6 @@ function AdminDashboard() {
           .not('confirmed_at', 'is', null)
           .neq('status', 'cancelled')
           .gte('confirmed_at', fromTs).lte('confirmed_at', toTs)),
-        fetchAllRows(() => supabase.from('hosur_bill_items')
-          .select('bill_id, item_name, quantity, unit, unit_price, line_total')),
         fetchAllRows(() => supabase.from('hosur_orders')
           .select('id, order_number, shop_name, subtotal, created_at')
           .eq('status', 'dispatched').is('bill_id', null)
@@ -442,8 +442,28 @@ function AdminDashboard() {
           .gte('created_at', fromTs).lte('created_at', toTs)),
       ]);
       if (cancelled) return;
-      const err = headersRes.error || itemsRes.error || paymentsRes.error || hosurRes.error || hosurItemsRes.error || unbilledRes.error || unbilledArchiveRes.error || expensesRes.error || purchasesRes.error;
+      const err = headersRes.error || itemsRes.error || paymentsRes.error || hosurRes.error || unbilledRes.error || unbilledArchiveRes.error || expensesRes.error || purchasesRes.error;
       if (err) { setRealSalesError(err.message); setRealSalesLoading(false); return; }
+
+      // BUG FIX (audit 2026-09-02): hosur_bill_items has no branch/date column of its own,
+      // so this used to fetch the ENTIRE table (up to fetchAllRows' 50,000-row cap) on
+      // every date-range change and filter it client-side against hosurBillIds below —
+      // real, unbounded egress. Now that hosurRes (already date-scoped via confirmed_at)
+      // has resolved, scope the items fetch server-side to just those bill ids, chunked to
+      // stay well under any URL-length limit on a wide date range with many bills.
+      const hosurBillIdList = (hosurRes.data as Array<Record<string, unknown>>).map((b) => String(b.id));
+      const hosurItemsChunks: Array<Record<string, unknown>> = [];
+      const CHUNK_SIZE = 300;
+      for (let i = 0; i < hosurBillIdList.length; i += CHUNK_SIZE) {
+        const chunk = hosurBillIdList.slice(i, i + CHUNK_SIZE);
+        const chunkRes = await fetchAllRows<Record<string, unknown>>(() => supabase.from('hosur_bill_items')
+          .select('bill_id, item_name, quantity, unit, unit_price, line_total')
+          .in('bill_id', chunk));
+        if (chunkRes.error) { setRealSalesError(chunkRes.error.message); setRealSalesLoading(false); return; }
+        hosurItemsChunks.push(...chunkRes.data);
+      }
+      if (cancelled) return;
+      const hosurItemsRes = { data: hosurItemsChunks, error: null as { message: string } | null };
       setHosurUnbilledDispatched(([...unbilledRes.data, ...unbilledArchiveRes.data] as Array<Record<string, unknown>>).map((o) => ({
         id: String(o.id), orderNumber: String(o.order_number ?? ''), shopName: String(o.shop_name ?? ''),
         subtotal: Number(o.subtotal || 0), createdAt: String(o.created_at),
@@ -772,7 +792,16 @@ function AdminDashboard() {
         const creditSalesDay = adminLedger.toNumber(ledger.credit_billed);
         const returnsDay = adminLedger.toNumber(savedLedgerClosure?.refunds || 0);
         const expensesDay = adminLedger.toNumber(savedLedgerClosure?.expenses || 0);
-        const closingBalance = savedLedgerClosure ? adminLedger.toNumber(savedLedgerClosure.actual_cash) : openingBalance + cashSales - returnsDay - expensesDay;
+        // BUG FIX (audit 2026-09-02): this projected-balance estimate (only used when no
+        // savedLedgerClosure exists yet) omitted purchase payments and bank deposits —
+        // the exact same formula in the fallback branch path just below (line ~832)
+        // correctly subtracts both. purchase_payments IS a real column on this ledger row
+        // (already read below for display); bank deposits has no column here (see the
+        // bankDeposits:0 comment below), so read it from the same raw per-date store array
+        // the fallback path uses.
+        const purchasePaymentsDay = adminLedger.toNumber(savedLedgerClosure?.purchase_payments || 0);
+        const bankDepositsDay = bankDeposits.filter(d => d.branch === branch && localDateKey(d.createdAt) === closureDate).reduce((sum, d) => sum + Number(d.amount || 0), 0);
+        const closingBalance = savedLedgerClosure ? adminLedger.toNumber(savedLedgerClosure.actual_cash) : openingBalance + cashSales - returnsDay - expensesDay - purchasePaymentsDay - bankDepositsDay;
         const differenceAmount = savedLedgerClosure ? adminLedger.toNumber(savedLedgerClosure.difference) : 0;
         const status: ClosureRow['status'] = savedLedgerClosure ? (Math.abs(differenceAmount) >= 10 ? 'Review' : 'Closed') : 'Pending';
         return {
@@ -786,13 +815,13 @@ function AdminDashboard() {
           returns: returnsDay,
           netSales: Math.max(0, totalSales - returnsDay),
           expenses: expensesDay,
-          purchasePayments: adminLedger.toNumber(savedLedgerClosure?.purchase_payments || 0),
-          // NOTE: branch_daily_closures has no bank_deposits column (see
-          // LedgerSavedClosure) — this summary has never actually had bank
-          // deposit data wired in, so it's always been 0 in practice. Real
-          // bank deposit records live in snb_bank_deposits/vrsnb_bank_deposits,
-          // keyed by date rather than by this closure row.
-          bankDeposits: 0,
+          purchasePayments: purchasePaymentsDay,
+          // BUG FIX (audit 2026-09-02): branch_daily_closures has no bank_deposits column
+          // (see LedgerSavedClosure), so this literally always showed 0 regardless of real
+          // deposits — now sourced from the same raw snb_bank_deposits/vrsnb_bank_deposits-
+          // backed store array (bankDepositsDay, computed above) the non-ledger fallback
+          // path already used correctly.
+          bankDeposits: bankDepositsDay,
           closingBalance,
           differenceAmount,
           remarks: savedLedgerClosure?.notes || (savedLedgerClosure ? 'Closed and verified from Supabase' : 'Pending branch closure'),
@@ -1115,22 +1144,45 @@ function AdminDashboard() {
     </div>
   );
 
+  // FEATURE (2026-09-02): "the Excel report should contain 3 sheets — total sales
+  // (cash/upi/card etc), item-wise sales, bill-wise sales" — requested for Cafe Control,
+  // Branch Sales and Hosur Sales alike. Previously this tab's "Bill Details" sheet mixed
+  // both concerns (one row per item, repeating the bill total on every line) with no
+  // standalone item-wise totals anywhere. Split into 3 clean sheets; item-wise is
+  // aggregated from cafeServedOrders only (cancelled orders never actually sold anything).
+  const cafeItemWiseSales = useMemo(() => {
+    const map = new Map<string, { itemName: string; qty: number; revenue: number; bills: number }>();
+    cafeServedOrders.forEach(o => o.items.forEach(i => {
+      const row = map.get(i.menuItem.id) ?? { itemName: i.menuItem.name, qty: 0, revenue: 0, bills: 0 };
+      row.qty += i.quantity;
+      row.revenue += Number(i.menuItem.price || 0) * Number(i.quantity || 0);
+      row.bills += 1;
+      map.set(i.menuItem.id, row);
+    }));
+    return Array.from(map.values()).sort((a, b) => b.revenue - a.revenue);
+  }, [cafeServedOrders]);
+
   const exportCafeExcel = () => exportWorkbook(`Admin_Cafe_${fromDate}_${toDate}`, [
     {
-      name: 'Sales Details', title: `Cafe Control — Sales (${fromDate} to ${toDate})`,
+      name: 'Total Sales', title: `Cafe Control — Total Sales (${fromDate} to ${toDate})`,
       columns: [{ header: 'Metric', key: 'metric' }, { header: 'Amount', key: 'amount' }],
       rows: [
         { metric: 'Total Sales', amount: cafeSalesTotal },
-        { metric: 'Served Orders', amount: cafeServedOrders.length },
-        { metric: 'Cancelled Orders', amount: cafeCancelledOrders.length },
         { metric: 'Cash', amount: cafePaymentSplit.cash },
         { metric: 'UPI', amount: cafePaymentSplit.upi },
         { metric: 'Card', amount: cafePaymentSplit.card },
         { metric: 'Credit', amount: cafePaymentSplit.credit },
+        { metric: 'Served Orders', amount: cafeServedOrders.length },
+        { metric: 'Cancelled Orders', amount: cafeCancelledOrders.length },
       ],
     },
     {
-      name: 'Bill Details', title: `Cafe Control — Orders (${fromDate} to ${toDate})`,
+      name: 'Item-wise Sales', title: `Cafe Control — Item-wise Sales (${fromDate} to ${toDate})`,
+      columns: [{ header: 'Item Name', key: 'itemName', width: 28 }, { header: 'Qty Sold', key: 'qty' }, { header: 'Revenue', key: 'revenue' }, { header: 'Bills', key: 'bills' }],
+      rows: cafeItemWiseSales,
+    },
+    {
+      name: 'Bill-wise Sales', title: `Cafe Control — Bill-wise Sales (${fromDate} to ${toDate})`,
       columns: [{ header: 'Order No', key: 'orderNo' }, { header: 'Customer', key: 'customer' }, { header: 'Items', key: 'items' }, { header: 'Payment', key: 'payment' }, { header: 'Total', key: 'total' }, { header: 'Status', key: 'status' }, { header: 'Time', key: 'time', width: 20 }],
       rows: cafeOrdersInRange.map(o => ({ orderNo: o.orderNumber, customer: o.customerName || '-', items: o.items.reduce((s, i) => s + i.quantity, 0), payment: o.paymentType || '-', total: o.total || 0, status: o.status, time: fmtDateTime(o.createdAt) })),
     },
@@ -1329,9 +1381,26 @@ function AdminDashboard() {
     [branchFinancialDetail, branchOnlyFilter],
   );
 
+  // FEATURE (2026-09-02): same 3-sheet restructure as Cafe Control above — Total Sales /
+  // Item-wise Sales / Bill-wise Sales. The old "Bill Details" sheet mixed items and bills
+  // into one row-per-item table; item-wise totals are now their own sheet, and bill-wise
+  // is one row per real bill (with its own cash/upi/card split via billPaidByMode) instead
+  // of repeating the bill total on every item line.
+  const branchItemWiseSales = useMemo(() => {
+    const map = new Map<string, { itemName: string; qty: number; revenue: number; bills: number }>();
+    filteredRealBills.forEach(b => (realBillItemsByBillId.get(b.id) ?? []).forEach(i => {
+      const row = map.get(i.itemName) ?? { itemName: i.itemName, qty: 0, revenue: 0, bills: 0 };
+      row.qty += i.quantity;
+      row.revenue += i.lineTotal;
+      row.bills += 1;
+      map.set(i.itemName, row);
+    }));
+    return Array.from(map.values()).sort((a, b) => b.revenue - a.revenue);
+  }, [filteredRealBills, realBillItemsByBillId]);
+
   const exportBranchSalesExcel = () => exportWorkbook(`Admin_BranchSales_${fromDate}_${toDate}`, [
     {
-      name: 'Sales Details', title: `Branch Sales — Sales Detail (${fromDate} to ${toDate})`,
+      name: 'Total Sales', title: `Branch Sales — Total Sales (${fromDate} to ${toDate})`,
       columns: [
         { header: 'Branch', key: 'branch' }, { header: 'Total Sales', key: 'totalSales' }, { header: 'Advance Collected', key: 'advanceCollected' },
         { header: 'Advance Balance Collected', key: 'advanceBalanceCollected', width: 22 }, { header: 'Cash', key: 'cash' }, { header: 'UPI', key: 'upi' },
@@ -1341,17 +1410,20 @@ function AdminDashboard() {
       rows: branchFinancialDetailScoped,
     },
     {
-      name: 'Bill Details', title: `Branch Sales — Bill Detail (${fromDate} to ${toDate})`,
+      name: 'Item-wise Sales', title: `Branch Sales — Item-wise Sales (${fromDate} to ${toDate})`,
+      columns: [{ header: 'Item Name', key: 'itemName', width: 28 }, { header: 'Qty Sold', key: 'qty' }, { header: 'Revenue', key: 'revenue' }, { header: 'Bills', key: 'bills' }],
+      rows: branchItemWiseSales,
+    },
+    {
+      name: 'Bill-wise Sales', title: `Branch Sales — Bill-wise Sales (${fromDate} to ${toDate})`,
       columns: [
-        { header: 'Branch', key: 'branch' }, { header: 'Bill No', key: 'billNo' }, { header: 'Item', key: 'item' }, { header: 'Qty', key: 'qty' },
-        { header: 'Unit Price', key: 'unitPrice' }, { header: 'Line Total', key: 'lineTotal' }, { header: 'Bill Total', key: 'billTotal' },
+        { header: 'Branch', key: 'branch' }, { header: 'Bill No', key: 'billNo' }, { header: 'Items', key: 'itemCount' }, { header: 'Total', key: 'total' },
+        { header: 'Cash', key: 'cash' }, { header: 'UPI', key: 'upi' }, { header: 'Card', key: 'card' },
         { header: 'Salesperson', key: 'salesperson' }, { header: 'Biller', key: 'biller' }, { header: 'Time', key: 'time', width: 20 },
       ],
-      rows: filteredRealBills.flatMap(b => {
-        const items = realBillItemsByBillId.get(b.id) ?? [];
-        return items.length > 0
-          ? items.map(i => ({ branch: b.branch, billNo: b.billNo, item: i.itemName, qty: i.quantity, unitPrice: i.unitPrice, lineTotal: i.lineTotal, billTotal: b.total, salesperson: b.salesperson, biller: b.biller, time: fmtDateTime(b.createdAt) }))
-          : [{ branch: b.branch, billNo: b.billNo, item: '', qty: 0, unitPrice: 0, lineTotal: 0, billTotal: b.total, salesperson: b.salesperson, biller: b.biller, time: fmtDateTime(b.createdAt) }];
+      rows: filteredRealBills.map(b => {
+        const paid = billPaidByMode.get(b.id) ?? { cash: 0, upi: 0, card: 0 };
+        return { branch: b.branch, billNo: b.billNo, itemCount: (realBillItemsByBillId.get(b.id) ?? []).length, total: b.total, cash: paid.cash, upi: paid.upi, card: paid.card, salesperson: b.salesperson, biller: b.biller, time: fmtDateTime(b.createdAt) };
       }),
     },
   ]);
@@ -1587,6 +1659,50 @@ function AdminDashboard() {
     return totals;
   }, [realPayments, hosurBillsInRange]);
 
+  // FEATURE (2026-09-02): Hosur Sales had no Excel export at all, only PDF — added the
+  // same 3-sheet Total Sales / Item-wise Sales / Bill-wise Sales structure as Cafe
+  // Control and Branch Sales above. Item-wise is aggregated from hosurBillItemsInRange,
+  // scoped to bills actually confirmed in this range (the dispatched-but-unbilled
+  // backlog has no items resolved to it yet — that stays its own KPI/section, not a
+  // sales line, since nothing has actually been billed for it).
+  const hosurItemWiseSales = useMemo(() => {
+    const map = new Map<string, { itemName: string; qty: number; revenue: number; bills: number }>();
+    hosurBillsInRange.forEach(b => hosurBillItemsInRange.filter(i => i.billId === b.id).forEach(i => {
+      const row = map.get(i.itemName) ?? { itemName: i.itemName, qty: 0, revenue: 0, bills: 0 };
+      row.qty += i.quantity;
+      row.revenue += i.lineTotal;
+      row.bills += 1;
+      map.set(i.itemName, row);
+    }));
+    return Array.from(map.values()).sort((a, b) => b.revenue - a.revenue);
+  }, [hosurBillsInRange, hosurBillItemsInRange]);
+
+  const exportHosurExcel = () => exportWorkbook(`Admin_Hosur_${fromDate}_${toDate}`, [
+    {
+      name: 'Total Sales', title: `Hosur Sales — Total Sales (${fromDate} to ${toDate})`,
+      columns: [{ header: 'Metric', key: 'metric' }, { header: 'Amount', key: 'amount' }],
+      rows: [
+        { metric: 'Billed Sales', amount: hosurTotalBilled },
+        { metric: 'Cash', amount: hosurPaidByMode.cash },
+        { metric: 'UPI', amount: hosurPaidByMode.upi },
+        { metric: 'Card', amount: hosurPaidByMode.card },
+        { metric: 'Confirmed Bills', amount: hosurBillsInRange.length },
+        { metric: 'Dispatched, Not Yet Billed (Orders)', amount: hosurUnbilledDispatched.length },
+        { metric: 'Dispatched, Not Yet Billed (Value)', amount: hosurUnbilledTotal },
+      ],
+    },
+    {
+      name: 'Item-wise Sales', title: `Hosur Sales — Item-wise Sales (${fromDate} to ${toDate})`,
+      columns: [{ header: 'Item Name', key: 'itemName', width: 28 }, { header: 'Qty Sold', key: 'qty' }, { header: 'Revenue', key: 'revenue' }, { header: 'Bills', key: 'bills' }],
+      rows: hosurItemWiseSales,
+    },
+    {
+      name: 'Bill-wise Sales', title: `Hosur Sales — Bill-wise Sales (${fromDate} to ${toDate})`,
+      columns: [{ header: 'Bill No', key: 'billNo' }, { header: 'Shop', key: 'shop' }, { header: 'Items', key: 'itemCount' }, { header: 'Total', key: 'total' }, { header: 'Biller', key: 'biller' }, { header: 'Time', key: 'time', width: 20 }],
+      rows: hosurBillsInRange.map(b => ({ billNo: b.billNo || '—', shop: b.biller || b.salesperson || '—', itemCount: hosurBillItemsInRange.filter(i => i.billId === b.id).length, total: b.total, biller: b.biller || '—', time: fmtDateTime(b.createdAt) })),
+    },
+  ]);
+
   const exportHosurPdf = () => {
     const PDF_BILL_CAP = 300;
     return exportReportPdf({
@@ -1625,6 +1741,10 @@ function AdminDashboard() {
           <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
             To<input type="date" value={toDate} onChange={e => setToDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
           </label>
+          <button onClick={exportHosurExcel}
+            className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-3 py-2 text-xs font-black text-white">
+            <FileSpreadsheet className="size-3.5" /> Excel
+          </button>
           <button onClick={exportHosurPdf}
             className="inline-flex items-center gap-2 rounded-2xl bg-slate-950 px-3 py-2 text-xs font-black text-white">
             <FileDown className="size-3.5" /> PDF
@@ -1716,6 +1836,19 @@ function AdminDashboard() {
           </div>
         )}
       </Panel>
+
+      {/* FEATURE (2026-09-02): "Admin should see the credit details and they
+          should only clear the Credit and payment collections. The payment
+          collection is totally done by the Admin." — Hosur Sales previously
+          had zero credit visibility; the collect-payment action lived only
+          in Planner's Hosur dashboard, reachable by planner/owner/branch_hosur
+          with no restriction. That action has been removed from Planner (now
+          a read-only Credit Ledger there) and moved here, admin-only —
+          reusing AdminCreditTab (already proven for Cafe/SNB/VRSNB) scoped to
+          just Hosur so this stays one component, not a second implementation. */}
+      <Panel title="Hosur Credit & Payment Collection" subtitle="Outstanding shop credit and payment collection — Admin is the only role that can clear these.">
+        <AdminCreditTab branches={['Hosur']} accentColor="text-teal-700" />
+      </Panel>
     </div>
   );
 
@@ -1770,10 +1903,17 @@ function AdminDashboard() {
     }
     setSavingDisputeId(incomingId);
     setDisputeMessage('');
+    // AUDIT FIX (2026-09-02): pcs items must stay whole numbers — this used
+    // the same kg-precision rounding (Math.round(x*1000)/1000) regardless
+    // of unit, so a typo/partial correction like "45.5" for a pcs item
+    // saved a fractional piece count into real branch stock. Same bug class
+    // fixed at 15+ other input sites (see project_pcs_decimal_fix_gaps /
+    // project_planner_audit_round2/3 memories).
+    const correctedQtySafe = item.unit === 'pcs' ? Math.round(correctedQty) : Math.round(correctedQty * 1000) / 1000;
     const { error } = await supabase
       .from('branch_incoming')
       .update({
-        quantity: Math.round(correctedQty * 1000) / 1000,
+        quantity: correctedQtySafe,
         disputed: false,
         dispute_reason: `${item.disputeReason || 'Dispute'} | Resolved by ${adminName}`,
       })
@@ -1784,7 +1924,7 @@ function AdminDashboard() {
       setSavingDisputeId('');
       return;
     }
-    await fetchBranchData(branch);
+    await fetchBranchData(branch, false, ['incoming']); // EGRESS FIX: resolving a dispute only touches incoming
     const confirmError = await confirmIncoming(branch, incomingId);
     if (confirmError) {
       setDisputeMessage(confirmError);
@@ -1794,7 +1934,7 @@ function AdminDashboard() {
     notifications
       .filter(n => n.branch === branch && n.type === 'Stock Dispute' && n.status !== 'Resolved' && n.details.includes(item.itemName))
       .forEach(n => updateNotificationStatus(n.id, 'Resolved', adminName));
-    await fetchBranchData(branch);
+    await fetchBranchData(branch, false, ['incoming']); // EGRESS FIX: resolving a dispute only touches incoming
     setDisputeMessage(`${BRANCH_LABELS[branch]} ${item.itemName} confirmed with corrected quantity ${correctedQty} ${item.unit}. Stock synced.`);
     setSavingDisputeId('');
   };
@@ -2377,6 +2517,7 @@ function AdminDashboard() {
     cafe: CafeTab,
     branches: BranchesTab,
     hosur: HosurTab,
+    'dispatch-details': <AdminDispatchDetailsTab />,
     items: ItemsTab,
     'daily-closure': DailyClosureTab,
     credits: CreditsTab,

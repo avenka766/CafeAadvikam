@@ -110,7 +110,11 @@ export default function OrderHistory() {
     }
     // U-09 FIX: filter by date if a date is typed
     if (dateSearch) {
-      list = list.filter(o => new Date(o.createdAt).toISOString().slice(0, 10) === dateSearch);
+      // AUDIT FIX (2026-09-02): toISOString().slice(0,10) gives the UTC
+      // calendar date — an order placed ~00:00-05:29 IST lands on the wrong
+      // day versus every other business-day boundary in this app (which all
+      // treat it as IST), so it was invisible to a same-day date search.
+      list = list.filter(o => businessDate(o.createdAt) === dateSearch);
     }
     return list;
   }, [orders, filter, currentUser, dateSearch]);

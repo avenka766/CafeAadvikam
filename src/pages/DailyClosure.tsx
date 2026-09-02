@@ -23,6 +23,7 @@ import { useBranchOpsStore } from '@/branch/branchOpsStore';
 import { supabase } from '@/lib/supabase';
 import type { Order } from '@/types';
 import { cn, formatCurrency } from '@/lib/utils';
+import { businessDate } from '@/lib/businessDate';
 
 type PaymentKey = 'cash' | 'upi' | 'card';
 type PaymentTotals = Record<PaymentKey, number>;
@@ -39,9 +40,17 @@ const paymentIcons: Record<PaymentKey, ReactNode> = {
   card: <CreditCard className="size-5" />,
 };
 
+// BUG FIX (audit 2026-09-02): this used the BROWSER/OS's own local timezone offset
+// (getTimezoneOffset()) to decide "today"/which business day an order belongs to, instead
+// of the app's canonical IST business-day helper — every other "today"-scoped query in the
+// app uses businessDate() specifically to avoid a misconfigured terminal clock/timezone
+// misattributing orders near midnight to the wrong day. This is the Cafe cash-reconciliation
+// screen (selectedDate, all order/payment filtering, what gets written to
+// branch_daily_closures.closure_date), so a wrong-day terminal clock here has direct
+// real-money consequences. Delegate to businessDate() so it's always IST regardless of
+// device settings.
 function toDateInput(date = new Date()) {
-  const tzOffset = date.getTimezoneOffset() * 60000;
-  return new Date(date.getTime() - tzOffset).toISOString().slice(0, 10);
+  return businessDate(date);
 }
 
 function sameBusinessDate(value: string | undefined, date: string) {

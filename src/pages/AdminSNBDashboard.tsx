@@ -16,7 +16,7 @@ import { useBranchLedger } from "@/hooks/useBranchLedger";
 import { asNumber, useSnbAdminReports, useSnbCashSummary } from "@/hooks/useSnbAdminReports";
 import { supabase } from "@/lib/supabase";
 import { useAuthStore } from "@/stores/authStore";
-import { useBranchStore } from "@/branch/branchStore";
+import { useBranchStore, type BranchDataScope } from "@/branch/branchStore";
 import AdvanceClosingReportTab from "@/components/admin/AdvanceClosingReportTab";
 import DailySalesTab from "@/components/admin/DailySalesTab";
 import { EditCreditPaymentModeModal } from "@/components/admin/AdminCreditTab";
@@ -692,13 +692,18 @@ export default function AdminSNBDashboard() {
       .reduce((sum, s) => sum + (s.unitPrice ?? 0) * s.quantitySold, 0);
   const ledgerRows = adminLedger.closureRows.filter((row) => row.branch === BRANCH);
   const hasLedgerRows = ledgerRows.length > 0;
+  // BUG FIX (audit 2026-09-02): this subtracted advance_collected +
+  // advance_balance_collected from sales_total, so it disagreed with this same row's
+  // own cash/upi/card/credit breakdown just below (finalCashSales/finalUpiSales/
+  // finalCardSales/finalCreditBillAmount, none of which are similarly adjusted) —
+  // the exact "headline total vs. its own breakdown" bug already fixed elsewhere this
+  // session in OwnerDashboard.tsx and AdminDashboard.tsx's closureRows (see the matching
+  // comment there), but this file — the one those fixes were modeled on — still had its
+  // own original copy of the bug. sales_total is the real, confirmed-correct total
+  // (matches branch_bill_headers exactly); use it directly so the headline always equals
+  // the sum of its own breakdown.
   const ledgerGrossSales = ledgerRows.reduce(
-    (sum, row) => sum + Math.max(
-      0,
-      adminLedger.toNumber(row.sales_total)
-        - adminLedger.toNumber(row.advance_collected)
-        - adminLedger.toNumber(row.advance_balance_collected),
-    ),
+    (sum, row) => sum + Math.max(0, adminLedger.toNumber(row.sales_total)),
     0,
   );
   const ledgerCashSales = ledgerRows.reduce((sum, row) => sum + adminLedger.toNumber(row.cash_total), 0);
@@ -2050,7 +2055,7 @@ function UpdateStockTab({
   userName: string;
   branchStock: any[];
   catalogItems: Array<{ name: string; barcode?: number; category?: string; uom?: string }>;
-  fetchBranchData: (branch: Branch) => Promise<void>;
+  fetchBranchData: (branch: Branch, force?: boolean, scopes?: BranchDataScope[]) => Promise<void>;
   setNotice: (message: string) => void;
 }) {
   const [selectedItem, setSelectedItem] = useState(catalogItems[0]?.name || "");
@@ -2073,13 +2078,20 @@ function UpdateStockTab({
     if (!Number.isFinite(nextQty) || nextQty < 0) return setError("Enter a valid stock quantity of zero or more.");
     if (reason.trim().length < 3) return setError("Enter a clear reason for the stock adjustment.");
     if (!password) return setError("Enter your login password to authorize this stock update.");
+    // AUDIT FIX (2026-09-02): pcs-unit items must stay whole numbers —
+    // unlike the Stock Audit tab (which already has this guard), this input
+    // had no unit-aware Number.isInteger check, so a pcs item could be set
+    // to a fractional stock quantity.
+    const unit = current?.unit || selectedCatalog?.uom || "";
+    const isPcs = /pcs|nos/i.test(unit);
+    if (isPcs && !Number.isInteger(nextQty)) return setError(`${selectedItem} is tracked in pieces — enter a whole number.`);
     if (!window.confirm(`Set ${selectedItem} stock from ${current?.quantity ?? 0} to ${nextQty}?`)) return;
 
     setSaving(true);
     const { data, error: rpcError } = await supabase.rpc("admin_update_snb_stock_secure", {
       p_item_barcode: selectedCatalog?.barcode ?? current?.itemBarcode ?? null,
       p_item_name: selectedItem,
-      p_new_quantity: Math.round(nextQty * 1000) / 1000,
+      p_new_quantity: isPcs ? Math.round(nextQty) : Math.round(nextQty * 1000) / 1000,
       p_password: password,
       p_reason: reason.trim(),
     });
@@ -2091,7 +2103,7 @@ function UpdateStockTab({
         : `Stock update failed: ${rpcError.message}`);
       return;
     }
-    await fetchBranchData(BRANCH);
+    await fetchBranchData(BRANCH, false, ['stock']); // EGRESS FIX: manual stock correction only touches stock
     setQuantity("");
     setReason("");
     setNotice(`${selectedItem} stock updated securely by ${userName}.`);
@@ -2145,7 +2157,7 @@ function UpdateStockTab({
       <Panel
         title="Current SNB Stock"
         icon={<Package className="size-4" />}
-        action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => void fetchBranchData(BRANCH)}><RefreshCcw className="size-4" /> Refresh</button>}
+        action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => void fetchBranchData(BRANCH, false, ['stock'])}><RefreshCcw className="size-4" /> Refresh</button>}
       >
         <DataTable
           headers={["Item", "Category", "Barcode", "Quantity", "Unit", "Minimum", "Action"]}
@@ -2294,7 +2306,8 @@ function ExpensesTab({ userName, expenseAmount, cashBalance }: any) {
   };
   const save = () => {
     const amount = Number(form.amount);
-    if (!form.category.trim() || !form.description.trim() || !amount) return;
+    // AUDIT FIX (2026-09-02): `!amount` let a negative expense through.
+    if (!form.category.trim() || !form.description.trim() || !(amount > 0)) return;
     addExpense({ branch: BRANCH, expenseDate: form.expenseDate, category: form.category, description: form.description, amount, mode: form.mode as any, enteredBy: userName });
     setForm({ ...form, category: "", description: "", amount: "" });
   };
@@ -2822,7 +2835,7 @@ function WasteLogsTab({ userName, role }: { userName: string; role: string }) {
           });
       if (error) throw error;
       setManageRow(null);
-      await Promise.all([loadRows(), useBranchStore.getState().fetchBranchData(BRANCH)]);
+      await Promise.all([loadRows(), useBranchStore.getState().fetchBranchData(BRANCH, false, ['stock'])]); // EGRESS FIX: waste-log edit/cancel only touches stock
     } catch (error) {
       setManageError(error instanceof Error ? error.message : "Unable to update this stock movement.");
     } finally {
@@ -3411,7 +3424,7 @@ function CreditTab({ userName, role, fromDate, toDate }: { userName: string; rol
     });
     setSaving(false);
     if (error) return setMessage(error);
-    await Promise.all([fetchBranchData(BRANCH), fetchCreditPayments(BRANCH)]);
+    await Promise.all([fetchBranchData(BRANCH, false, ['credit']), fetchCreditPayments(BRANCH)]); // EGRESS FIX: credit collection only touches credit sales
     setMessage(`Collected ${money(value)} against ${selected.billNo}.`);
     setSelectedId("");
     setAmount("");
@@ -3429,7 +3442,7 @@ function CreditTab({ userName, role, fromDate, toDate }: { userName: string; rol
     const error = await applyCreditDiscount(BRANCH, selected.id, value, discountReason.trim() || undefined, userName);
     setApplyingDiscount(false);
     if (error) return setDiscountMessage(error);
-    await Promise.all([fetchBranchData(BRANCH), fetchCreditPayments(BRANCH)]);
+    await Promise.all([fetchBranchData(BRANCH, false, ['credit']), fetchCreditPayments(BRANCH)]); // EGRESS FIX: credit discount only touches credit sales
     setDiscountMessage(`Discount of ${money(value)} applied to ${selected.billNo}.`);
     setSelectedId("");
     setDiscountAmount("");
@@ -3577,7 +3590,7 @@ function CreditTab({ userName, role, fromDate, toDate }: { userName: string; rol
           onSaved={async (message) => {
             setEditingPayment(null);
             setCorrectionMessage(message);
-            await Promise.all([fetchBranchData(BRANCH), fetchCreditPayments(BRANCH)]);
+            await Promise.all([fetchBranchData(BRANCH, false, ['credit']), fetchCreditPayments(BRANCH)]); // EGRESS FIX: correcting a payment mode only touches credit sales
           }}
         />
       )}
@@ -3654,8 +3667,14 @@ function CurrentCashTab({ userName }: { userName: string }) {
     return [...map.values()].sort((a, b) => b.amount - a.amount);
   }, [allExpenses]);
   const expensesTotal = allExpenses.reduce((sum, e) => sum + e.amount, 0);
+  // AUDIT FIX (2026-09-02): Cash In Hand must only subtract expenses that
+  // actually left the physical till — a UPI/card/bank-mode expense never
+  // touched cash, so subtracting it from cashInHand understated real
+  // physical cash (expensesTotal itself, used for the "Total Expenses Paid"
+  // KPI elsewhere on this tab, correctly stays all-mode).
+  const cashExpensesTotal = allExpenses.filter((e) => e.mode === "cash").reduce((sum, e) => sum + e.amount, 0);
 
-  const cashInHand = cashSalesTotal - expensesTotal - bankDepositsTotal;
+  const cashInHand = cashSalesTotal - cashExpensesTotal - bankDepositsTotal;
 
   // Supplier payments breakdown - prefer live database records (matches
   // the Payments/Invoices tabs), falling back to locally logged payments.
@@ -4906,7 +4925,7 @@ export function PurchaseInvoicesTab({
           ? `${purchase.invoiceNo} revision delta applied to stock`
           : `${purchaseLines(purchase).length} item(s) synced from ${purchase.invoiceNo}`,
       });
-      await Promise.all([fetchBranchData(BRANCH), dbReports.refresh()]);
+      await Promise.all([fetchBranchData(BRANCH, false, ['stock']), dbReports.refresh()]); // EGRESS FIX: purchase sync-to-stock only touches stock
       setNotice(isResync
         ? `${purchase.invoiceNo} changes were re-synced to SNB stock successfully. The audit notification was updated.`
         : `${purchase.invoiceNo} synced to SNB stock successfully.`);
@@ -5609,7 +5628,7 @@ function PurchaseReturnsTab({
 }: {
   userName: string;
   branchStock: any[];
-  fetchBranchData: (branch: Branch) => Promise<void>;
+  fetchBranchData: (branch: Branch, force?: boolean, scopes?: BranchDataScope[]) => Promise<void>;
   dbReports: ReturnType<typeof useSnbAdminReports>;
   setNotice: (message: string) => void;
 }) {
@@ -5760,6 +5779,11 @@ function PurchaseReturnsTab({
       if (qty <= 0) return setError(`Enter a valid return quantity for ${line.item_name}.`);
       if (qty > line.returnable + 0.0001) return setError(`${line.item_name} can return only ${line.returnable} ${line.unit}.`);
       if (qty > line.stockAvailable + 0.0001) return setError(`${line.item_name} has only ${line.stockAvailable} ${line.unit} in live SNB stock.`);
+      // AUDIT FIX (2026-09-02): pcs/nos items must stay whole numbers —
+      // unlike the Stock Audit save flow, this had no unit-aware check, so
+      // a fractional return quantity could deduct live stock and adjust the
+      // supplier payable off a decimal piece count.
+      if (/pcs|nos/i.test(line.unit || '') && !Number.isInteger(qty)) return setError(`${line.item_name} is tracked in pieces — return quantity must be a whole number.`);
       if (line.itemReason.trim().length < 3) return setError(`Enter damage/quality details for ${line.item_name}.`);
       if (reasonType === "Expired" && !line.expiryDate) return setError(`Expiry date is required for ${line.item_name}.`);
     }
@@ -5789,7 +5813,7 @@ function PurchaseReturnsTab({
       return;
     }
     const result = (data || {}) as Record<string, unknown>;
-    await Promise.all([fetchBranchData(BRANCH), dbReports.refresh()]);
+    await Promise.all([fetchBranchData(BRANCH, false, ['stock']), dbReports.refresh()]); // EGRESS FIX: purchase return only touches stock
     setNotice(`${String(result.returnNo || "Purchase return")} posted by ${userName}. Damaged stock was deducted${asNumber(result.financialAdjustment) > 0 ? " and supplier payable was adjusted" : " without changing supplier payable"}.`);
     clearForm();
   };
@@ -6230,6 +6254,10 @@ function BankDepositsTab({ userName }: { userName: string }) {
   // the actual logged expense entries (branch-wide, all time) instead -
   // this matches the Expenses breakdown table shown to the user.
   const expensesTotal = expenses.filter((e) => e.branch === BRANCH).reduce((sum, e) => sum + e.amount, 0);
+  // AUDIT FIX (2026-09-02): cash-balance reconciliation below must only
+  // subtract expenses actually paid from the physical till — see the
+  // matching fix + comment in CurrentCashTab above.
+  const cashExpensesTotal = expenses.filter((e) => e.branch === BRANCH && e.mode === "cash").reduce((sum, e) => sum + e.amount, 0);
   const supplierPaymentsTotal = sessions.reduce((sum: number, r: any) => sum + asNumber(r.supplier_payments), 0);
 
   const depositRows = useMemo(
@@ -6250,7 +6278,7 @@ function BankDepositsTab({ userName }: { userName: string }) {
   // till, minus supplier payments paid from the till, minus everything
   // already deposited to the owner. This is an operating estimate, not a
   // penny-perfect audit figure.
-  const cashBalance = cashSalesTotal - expensesTotal - bankBalance;
+  const cashBalance = cashSalesTotal - cashExpensesTotal - bankBalance;
 
   const expensesSorted = useMemo(
     () => expenses.filter((e) => e.branch === BRANCH).slice().sort((a, b) => a.expenseDate.localeCompare(b.expenseDate)),
@@ -6311,7 +6339,8 @@ function BankDepositsTab({ userName }: { userName: string }) {
   });
   const save = () => {
     const amount = Number(form.amount);
-    if (!amount) return;
+    // AUDIT FIX (2026-09-02): `!amount` let a negative deposit through.
+    if (!(amount > 0)) return;
     addBankDeposit({
       branch: BRANCH,
       depositDate: form.depositDate,
@@ -7515,7 +7544,7 @@ function StockAuditTab({
   userName: string;
   branchStock: Array<{ itemName: string; price: number | null }>;
   manualUpdateStock: (branch: Branch, itemName: string, quantity: number, updatedBy: string, itemBarcode?: number) => Promise<string | null>;
-  fetchBranchData: (branch: Branch) => Promise<void>;
+  fetchBranchData: (branch: Branch, force?: boolean, scopes?: BranchDataScope[]) => Promise<void>;
   setNotice: (message: string) => void;
 }) {
   const catalogItems = useSNBCatalog();
@@ -7712,7 +7741,7 @@ function StockAuditTab({
         }
       }
       confirmStockCountReport(report.id, userName);
-      await fetchBranchData(BRANCH);
+      await fetchBranchData(BRANCH, false, ['stock']); // EGRESS FIX: stock count confirmation only touches stock
       setNotice(`${report.reportNo} confirmed. SNB stock updated and variance sent to Owner/Admin.`);
     } finally {
       setSavingId("");
@@ -7745,7 +7774,7 @@ function StockAuditTab({
       }
       const payload = (data || {}) as Record<string, unknown>;
       setReportReversals((current) => ({ ...current, [report.id]: { by: userName, reason, at: new Date().toISOString() } }));
-      await fetchBranchData(BRANCH);
+      await fetchBranchData(BRANCH, false, ['stock']); // EGRESS FIX: stock count reversal only touches stock
       setNotice(`${String(payload.reportNo || report.reportNo)} reversed. Pre-confirmation stock was restored.`);
     } finally {
       setReversingId("");
@@ -7924,7 +7953,7 @@ function IncomingDisputeReview({ userName }: { userName: string }) {
   const disputes = (incoming[BRANCH] || []).filter((item) => item.disputed && !item.confirmed);
 
   useEffect(() => {
-    void fetchBranchData(BRANCH);
+    void fetchBranchData(BRANCH, false, ['incoming']); // EGRESS FIX: this panel only ever reads incoming
   }, [fetchBranchData]);
 
   useEffect(() => {
@@ -7961,7 +7990,7 @@ function IncomingDisputeReview({ userName }: { userName: string }) {
       setSavingId("");
       return;
     }
-    await fetchBranchData(BRANCH);
+    await fetchBranchData(BRANCH, false, ['incoming']); // EGRESS FIX: resolving a dispute only touches incoming
     const confirmError = await confirmIncoming(BRANCH, incomingId);
     if (confirmError) {
       setMessage(confirmError);

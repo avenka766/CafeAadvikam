@@ -101,7 +101,6 @@ type HosurTab =
   | 'receiving'
   | 'billing'
   | 'credit'
-  | 'collection'
   | 'whatsapp'
   | 'reminders'
   | 'closure'
@@ -307,7 +306,7 @@ export interface PaymentDraft {
 }
 
 const EMPTY_PAYMENT: PaymentDraft = { paidAmount: '', dueDate: '', paymentMode: 'cash', remarks: '' };
-const HOSUR_TABS: HosurTab[] = ['shops', 'newOrder', 'receiving', 'billing', 'credit', 'collection', 'whatsapp', 'reminders', 'closure', 'reports', 'notifications'];
+const HOSUR_TABS: HosurTab[] = ['shops', 'newOrder', 'receiving', 'billing', 'credit', 'whatsapp', 'reminders', 'closure', 'reports', 'notifications'];
 const KG_ITEM_HINTS = ['biscuit', 'cake', 'chips', 'mixture', 'murk', 'nippat', 'boondhi'];
 
 function parseHosurTab(value: string | null): HosurTab {
@@ -562,20 +561,6 @@ export async function notifyAdmin(title: string, body: string, refId?: string, r
     is_read: false,
   });
   if (error) console.error('Hosur admin notification failed:', error.message);
-}
-
-async function notifyBranch(title: string, body: string, refId?: string, refLabel?: string, meta: Record<string, unknown> = {}) {
-  const { error } = await supabase.from('admin_notifications').insert({
-    type: 'store_item_change',
-    title,
-    body,
-    ref_id: refId ?? null,
-    ref_label: refLabel ?? null,
-    meta,
-    recipient_role: 'branch_hosur',
-    is_read: false,
-  });
-  if (error) console.error('Hosur branch notification failed:', error.message);
 }
 
 export function safeMediaFileName(value: string) {
@@ -1030,6 +1015,15 @@ export default function HosurDashboard({ hideNav = false }: { hideNav?: boolean 
   }, [searchParams]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  // AUDIT FIX (2026-09-02): `busy` alone is a React state guard, which
+  // updates asynchronously — a fast double-click/double-tap can fire two
+  // withBusy() calls before the first setBusy(true) actually re-renders the
+  // triggering button as disabled. withBusy is the single shared guard for
+  // every action across this whole dashboard (credit collection, WhatsApp
+  // retries, reminders, dispute resolution, etc.), so this one fix protects
+  // all of them — same pattern already used elsewhere in this codebase
+  // (checkoutInFlightRef, sendingRef, saveAdvanceInFlightRef).
+  const busyInFlightRef = useRef(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   useEffect(() => {
@@ -1226,11 +1220,11 @@ export default function HosurDashboard({ hideNav = false }: { hideNav?: boolean 
   }, [tab, hideNav]);
 
   useEffect(() => {
-    if (tab === 'billing' || tab === 'collection' || tab === 'closure') void refreshHosurCounter();
+    if (tab === 'billing' || tab === 'closure') void refreshHosurCounter();
   }, [tab, refreshHosurCounter]);
 
   useEffect(() => {
-    const onFocus = () => { if (tab === 'billing' || tab === 'collection') void refreshHosurCounter(); };
+    const onFocus = () => { if (tab === 'billing') void refreshHosurCounter(); };
     window.addEventListener('focus', onFocus);
     return () => window.removeEventListener('focus', onFocus);
   }, [tab, refreshHosurCounter]);
@@ -1268,8 +1262,11 @@ export default function HosurDashboard({ hideNav = false }: { hideNav?: boolean 
 
   const tabs: { id: HosurTab; label: string; icon: React.ElementType; badge?: number; adminOnly?: boolean }[] = [
     { id: 'shops', label: 'Shop Master', icon: Store },
+    // FEATURE (2026-09-02): "payment collection is totally done by the Admin" —
+    // the Payment Collection tab (and its collectCredit action) moved to Admin
+    // Dashboard's Hosur Sales tab. Planner keeps this Credit Ledger tab as a
+    // read-only view of the same live balances, so it still sees every update.
     { id: 'credit', label: 'Credit Ledger', icon: CreditCard, badge: openCredits.length },
-    { id: 'collection', label: 'Payment Collection', icon: WalletCards },
     { id: 'whatsapp', label: 'WhatsApp Logs', icon: MessageCircle, badge: failedWhatsapp.length },
     { id: 'reminders', label: 'Reminder History', icon: Bell, badge: overdueCredits.length },
     { id: 'reports', label: 'Reports', icon: FileSpreadsheet },
@@ -1279,6 +1276,8 @@ export default function HosurDashboard({ hideNav = false }: { hideNav?: boolean 
   const filteredTabs = tabs.filter((t) => !t.adminOnly || isAdmin);
 
   const withBusy = async (fn: () => Promise<void>, successMessage?: string) => {
+    if (busyInFlightRef.current) return;
+    busyInFlightRef.current = true;
     setBusy(true);
     setError('');
     setSuccess('');
@@ -1296,6 +1295,7 @@ export default function HosurDashboard({ hideNav = false }: { hideNav?: boolean 
     } catch (err: any) {
       setError(err?.message ?? 'Action failed. Please try again.');
     } finally {
+      busyInFlightRef.current = false;
       setBusy(false);
     }
   };
@@ -1683,36 +1683,10 @@ export default function HosurDashboard({ hideNav = false }: { hideNav?: boolean 
     }
   };
 
-  const collectCredit = async (ledger: HosurCreditLedger, draft: PaymentDraft) => {
-    const amount = Math.max(0, Number(draft.paidAmount || 0));
-    if (amount <= 0) throw new Error('Enter amount collected.');
-    if (amount > ledger.balanceAmount) throw new Error('Collected amount cannot be greater than pending balance.');
-
-    // BUG FIX: this used to compute newPaid/newBalance from the `ledger`
-    // object held in local React state, then write them with a plain
-    // (non-conditional) update — two near-simultaneous collections against
-    // the same ledger (two staff, or one staff double-tapping) could both
-    // read the same stale balance, and the second write would silently
-    // overwrite the first's effect on the running balance. Moved to a single
-    // atomic RPC that locks the row and recomputes from the current DB
-    // values, not whatever this client had in memory.
-    const { data, error: rpcError } = await supabase.rpc('collect_hosur_credit_payment_secure', {
-      p_ledger_id: ledger.id,
-      p_bill_id: ledger.billId,
-      p_amount: amount,
-      p_payment_mode: draft.paymentMode,
-      p_remarks: draft.remarks || null,
-      p_collected_by: userName,
-      p_collected_role: userRole,
-    });
-    if (rpcError) throw rpcError;
-    const result = (data ?? {}) as { newBalance?: number };
-    const newBalance = Number(result.newBalance ?? Math.max(0, ledger.balanceAmount - amount));
-
-    const notificationBody = `${ledger.shopName} credit payment ${money(amount)} collected by ${userName}. Balance: ${money(newBalance)}.`;
-    if (isAdmin) await notifyBranch('Hosur credit cleared by Admin', notificationBody, ledger.billId, ledger.billNo, { ledgerId: ledger.id, amount });
-    else await notifyAdmin('Hosur credit payment collected', notificationBody, ledger.billId, ledger.billNo, { ledgerId: ledger.id, amount });
-  };
+  // FEATURE (2026-09-02): collectCredit (and the Payment Collection tab that
+  // called it) removed from here — "payment collection is totally done by the
+  // Admin" now. See AdminDashboard.tsx's Hosur Sales tab (AdminCreditTab
+  // scoped to Hosur), which writes through settle_branch_credit_sale instead.
 
   const runDueReminders = async () => {
     const due = openCredits.filter((ledger) => {
@@ -1808,7 +1782,6 @@ export default function HosurDashboard({ hideNav = false }: { hideNav?: boolean 
               {tab === 'receiving' && <ReceivingTab orders={orders} orderItems={orderItems} busy={busy} withBusy={withBusy} createDraftBill={createDraftBill} userName={userName} />}
               {tab === 'billing' && <BillingTab bills={bills} billItems={billItems} busy={busy} withBusy={withBusy} confirmBill={confirmBill} resendBillWhatsapp={resendBillWhatsapp} counterOpen={hosurCounterOpen} counterLoading={hosurCounterLoading} counterError={hosurCounterError} openCounter={goToPlannerDailyClosure} />}
               {tab === 'credit' && <CreditLedgerTab credits={credits} payments={payments} shops={shops} />}
-              {tab === 'collection' && <PaymentCollectionTab credits={openCredits} busy={busy} withBusy={withBusy} collectCredit={collectCredit} counterOpen={hosurCounterOpen} counterLoading={hosurCounterLoading} counterError={hosurCounterError} openCounter={goToPlannerDailyClosure} />}
               {tab === 'whatsapp' && <WhatsappLogsTab logs={whatsappLogs} busy={busy} withBusy={withBusy} sendWhatsapp={sendWhatsapp} />}
               {tab === 'reminders' && <ReminderHistoryTab reminders={reminders} credits={openCredits} busy={busy} withBusy={withBusy} runDueReminders={runDueReminders} />}
               {tab === 'closure' && <DailyClosureTab actorId={currentUser?.id ?? ''} actorName={currentUser?.displayName || currentUser?.username || 'Hosur Staff'} orders={orders} bills={bills} credits={credits} payments={payments} disputes={disputes} logs={whatsappLogs} onCounterStatusChange={handleHosurCounterChange} />}
@@ -2226,7 +2199,7 @@ function NewOrderTab({ shops, prices, busy, withBusy, priceFor, userName }: {
     // the last 90s — block instead of silently creating a second identical
     // order. Shared with HosurShopOrderPanel.tsx's PlaceOrderSection so both
     // order-creation screens apply the exact same guard.
-    const dupeCheck = await checkRecentDuplicateHosurOrder(shop.id, subtotal);
+    const dupeCheck = await checkRecentDuplicateHosurOrder(shop.id, subtotal, cartItems.map(i => i.itemName));
     if (dupeCheck.isDuplicate) {
       throw new Error(`${shop.shopName} already has a matching order (${dupeCheck.orderNumber}) placed moments ago — check order history before resending.`);
     }
@@ -2694,34 +2667,9 @@ function CreditLedgerTab({ credits, payments, shops }: { credits: HosurCreditLed
   ]);
   return (
     <div className="space-y-4">
-      <SectionTitle icon={<CreditCard className="size-5" />} title="Credit Ledger" subtitle="Track shop-wise credit, due dates, overdue amounts, and payment history." action={<button className={softButton} onClick={exportExcel}><FileSpreadsheet className="size-4" /> Excel Report</button>} />
+      <SectionTitle icon={<CreditCard className="size-5" />} title="Credit Ledger" subtitle="Read-only — payment collection is now handled in Admin Dashboard's Hosur Sales tab. Balances here update live the moment Admin collects." action={<button className={softButton} onClick={exportExcel}><FileSpreadsheet className="size-4" /> Excel Report</button>} />
       <div className="grid gap-3 md:grid-cols-3"><Metric label="Open Credits" value={open.length} icon={<CreditCard className="size-4" />} tone="amber" /><Metric label="Pending Amount" value={money(total)} icon={<IndianRupee className="size-4" />} tone="red" /><Metric label="Payments Recorded" value={payments.length} icon={<WalletCards className="size-4" />} tone="emerald" /></div>
       <Card className="space-y-2">{credits.length === 0 ? <EmptyState icon={<CreditCard className="size-6" />} title="No credit records" /> : credits.map((credit) => <div key={credit.id} className="rounded-2xl border p-3"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="font-black">{credit.shopName}</p><p className="text-xs text-muted-foreground">Bill {credit.billNo} · Due {toDateLabel(credit.dueDate)} · WhatsApp {shops.find((s) => s.id === credit.shopId)?.whatsappNumber ?? '—'}</p></div><Badge tone={statusTone(credit.status)}>{credit.status}</Badge></div><div className="mt-3 grid gap-2 text-sm md:grid-cols-3"><div className="rounded-xl bg-muted p-2">Opening <b>{money(credit.openingAmount)}</b></div><div className="rounded-xl bg-muted p-2">Paid <b>{money(credit.paidAmount)}</b></div><div className="rounded-xl bg-red-50 p-2 text-red-700">Balance <b>{money(credit.balanceAmount)}</b></div></div></div>)}</Card>
-    </div>
-  );
-}
-
-function PaymentCollectionTab({ credits, busy, withBusy, collectCredit, counterOpen, counterLoading, counterError, openCounter }: {
-  credits: HosurCreditLedger[];
-  busy: boolean;
-  withBusy: (fn: () => Promise<void>, success?: string) => Promise<void>;
-  collectCredit: (ledger: HosurCreditLedger, draft: PaymentDraft) => Promise<void>;
-  counterOpen: boolean;
-  counterLoading: boolean;
-  counterError: string;
-  openCounter: () => void;
-}) {
-  const [draft, setDraft] = useState<Record<string, PaymentDraft>>({});
-  const getDraft = (id: string) => draft[id] ?? EMPTY_PAYMENT;
-  const exportExcel = () => downloadWorkbook(`hosur-payment-collection-${TODAY_ISO()}.xls`, [{ name: 'Pending Collection', rows: credits.map((c) => ({ Shop: c.shopName, Bill: c.billNo, 'Opening Amount': c.openingAmount, 'Paid Amount': c.paidAmount, 'Balance Amount': c.balanceAmount, 'Due Date': c.dueDate ?? '', Status: c.status })) }]);
-  return (
-    <div className="space-y-4">
-      <SectionTitle icon={<WalletCards className="size-5" />} title="Payment Collection" subtitle="Open Planner's Daily Closure counter before recording any cash, UPI, card, or bank collection." action={<button className={softButton} onClick={exportExcel}><FileSpreadsheet className="size-4" /> Excel Report</button>} />
-      {!counterOpen && <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-amber-900"><div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div><p className="font-black">Collection Locked</p><p className="mt-1 text-sm font-semibold">{counterLoading ? 'Checking today’s counter status…' : counterError || "Planner's top-level Daily Closure counter is closed — open it before recording a collection."}</p></div><button type="button" className={primaryButton} onClick={openCounter} disabled={counterLoading}><ShieldCheck className="size-4" /> Open Planner's Daily Closure</button></div></div>}
-      {credits.length === 0 ? <EmptyState icon={<WalletCards className="size-6" />} title="No pending credit to collect" /> : credits.map((credit) => {
-        const d = getDraft(credit.id);
-        return <Card key={credit.id} className="space-y-3"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="font-black">{credit.shopName}</p><p className="text-xs text-muted-foreground">Bill {credit.billNo} · Balance {money(credit.balanceAmount)} · Due {toDateLabel(credit.dueDate)}</p></div><Badge tone={credit.dueDate && daysBetween(credit.dueDate) > 0 ? 'red' : 'amber'}>{credit.dueDate && daysBetween(credit.dueDate) > 0 ? 'overdue' : 'pending'}</Badge></div><div className="grid gap-3 md:grid-cols-4"><Field label="Amount collected"><input className={inputClass} type="number" value={d.paidAmount} disabled={!counterOpen || counterLoading} onChange={(e) => setDraft((p) => ({ ...p, [credit.id]: { ...getDraft(credit.id), paidAmount: e.target.value } }))} placeholder="Amount" /></Field><Field label="Payment mode"><select className={inputClass} value={d.paymentMode} disabled={!counterOpen || counterLoading} onChange={(e) => setDraft((p) => ({ ...p, [credit.id]: { ...getDraft(credit.id), paymentMode: e.target.value as PaymentMode } }))}><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option><option value="bank">Bank</option><option value="mixed">Mixed</option></select></Field><Field label="Remarks"><input className={inputClass} value={d.remarks} disabled={!counterOpen || counterLoading} onChange={(e) => setDraft((p) => ({ ...p, [credit.id]: { ...getDraft(credit.id), remarks: e.target.value } }))} placeholder="Optional" /></Field><div className="flex items-end"><button className={primaryButton} disabled={busy || !counterOpen || counterLoading} onClick={() => withBusy(() => collectCredit(credit, d), 'Credit payment recorded.')}>{busy ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />} Collect</button></div></div></Card>;
-      })}
     </div>
   );
 }
@@ -3035,6 +2983,56 @@ function ReportsTab({ shops, bills, billItems, credits, logs, reminders, dispute
   const [reportTab, setReportTab] = useState<ReportTab>('sales');
   const [search, setSearch] = useState('');
 
+  // BUG FIX (audit 2026-09-02): this date-range picker lets the user pick any range, but
+  // the `bills` prop is the parent dashboard's own `.limit(250)`, no-date-filter fetch of
+  // the most recent bills — a busy shop can exhaust 250 bills within a couple of weeks, so
+  // picking an older range silently showed undercounted totals with no indication anything
+  // was missing. Fetch bills (and their items) fresh, scoped to the actual selected range,
+  // rather than trusting the capped prop list once a real range is chosen.
+  const [rangeFetchedBills, setRangeFetchedBills] = useState<HosurBill[] | null>(null);
+  const [rangeFetchedItems, setRangeFetchedItems] = useState<Record<string, HosurBillItem[]> | null>(null);
+  const [rangeFetchLoading, setRangeFetchLoading] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    if (!(from <= to)) { setRangeFetchedBills(null); setRangeFetchedItems(null); return; }
+    setRangeFetchLoading(true);
+    void (async () => {
+      const fromTs = `${from}T00:00:00+05:30`;
+      const toTs = `${to}T23:59:59.999+05:30`;
+      const { data: billRows, error: billErr } = await supabase.from('hosur_bills')
+        .select('id, bill_no, order_id, shop_id, shop_name, shop_whatsapp, subtotal, paid_amount, credit_amount, payment_type, payment_mode, due_date, status, confirmed_by, confirmed_at, created_at, whatsapp_status')
+        .or(`and(confirmed_at.gte.${fromTs},confirmed_at.lte.${toTs}),and(confirmed_at.is.null,created_at.gte.${fromTs},created_at.lte.${toTs})`)
+        .order('created_at', { ascending: false })
+        .limit(5000);
+      if (cancelled) return;
+      if (billErr || !billRows) { setRangeFetchLoading(false); return; }
+      const mappedBills = billRows.map(mapBill);
+      const ids = mappedBills.map((b) => b.id);
+      const itemsByBill: Record<string, HosurBillItem[]> = {};
+      const CHUNK = 300;
+      for (let i = 0; i < ids.length; i += CHUNK) {
+        const chunk = ids.slice(i, i + CHUNK);
+        const { data: itemRows, error: itemErr } = await supabase.from('hosur_bill_items')
+          .select('id, bill_id, item_name, unit, quantity, unit_price, line_total')
+          .in('bill_id', chunk);
+        if (cancelled) return;
+        if (itemErr || !itemRows) continue;
+        itemRows.map(mapBillItem).forEach((item) => {
+          (itemsByBill[item.billId] ??= []).push(item);
+        });
+      }
+      if (cancelled) return;
+      setRangeFetchedBills(mappedBills);
+      setRangeFetchedItems(itemsByBill);
+      setRangeFetchLoading(false);
+    })();
+    return () => { cancelled = true; };
+  }, [from, to]);
+  // Fall back to the capped prop data only while the fresh range fetch hasn't landed yet
+  // (first render) — once it lands, it's the source of truth for every total below.
+  const effectiveBills = rangeFetchedBills ?? bills;
+  const effectiveBillItems = rangeFetchedItems ?? billItems;
+
   const setPreset = (preset: 'today' | '7d' | 'month' | '30d') => {
     const end = TODAY_ISO();
     const date = new Date(`${end}T00:00:00+05:30`);
@@ -3052,7 +3050,7 @@ function ReportsTab({ shops, bills, billItems, credits, logs, reminders, dispute
     const date = businessDate(value);
     return validRange && date >= from && date <= to;
   };
-  const rangeBills = bills.filter((b) => !['draft', 'cancelled'].includes(b.status) && inRange(b.confirmedAt ?? b.createdAt));
+  const rangeBills = effectiveBills.filter((b) => !['draft', 'cancelled'].includes(b.status) && inRange(b.confirmedAt ?? b.createdAt));
   const rangeLogs = logs.filter((l) => inRange(l.createdAt));
   const rangeReminders = reminders.filter((r) => inRange(r.createdAt));
   const rangeDisputes = disputes.filter((d) => inRange(d.createdAt));
@@ -3073,7 +3071,7 @@ function ReportsTab({ shops, bills, billItems, credits, logs, reminders, dispute
   }).filter((row) => row.bills > 0 || row.openCredit > 0).sort((a, b) => b.billed - a.billed);
 
   const itemMap = new Map<string, { qty: number; total: number; bills: Set<string> }>();
-  rangeBills.forEach((bill) => (billItems[bill.id] ?? []).forEach((item) => {
+  rangeBills.forEach((bill) => (effectiveBillItems[bill.id] ?? []).forEach((item) => {
     const row = itemMap.get(item.itemName) ?? { qty: 0, total: 0, bills: new Set<string>() };
     row.qty += item.quantity;
     row.total += item.lineTotal;

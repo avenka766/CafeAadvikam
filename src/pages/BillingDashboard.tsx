@@ -522,7 +522,15 @@ function moneyHtml(value: number): string {
   return `&#8377;${Number(value || 0).toFixed(2)}`;
 }
 
+// OFFLINE FIX (2026-09-01): an order completed while offline (see
+// orderStore.ts's submitOrder) doesn't have a real, sequential bill number
+// yet — `orderNumber` is just a 0 placeholder until it syncs. Printing that
+// as if it were a real GST-relevant number would be actively misleading, so
+// every caller of billNo() (KOT, bill, sales-order, advance-closure, credit
+// slip) gets a clearly-marked provisional label instead — never the
+// placeholder number formatted to look real.
 function billNo(order: Order, prefix = ''): string {
+  if (order.pendingSync) return `OFFLINE-${order.id.slice(0, 8).toUpperCase()}`;
   return `${prefix}${String(order.orderNumber).padStart(4, '0')}`;
 }
 
@@ -664,8 +672,16 @@ function billBody(order: Order, copyType: 'original' | 'duplicate' = 'original',
     ? `${kvRow(['Cash Tendered', moneyHtml(cashTendered)], { bold: true })}${kvRow(['Change Returned', moneyHtml(cashTendered - order.total)], { bold: true })}`
     : '';
   const dt = receiptDate(order.createdAt);
+  // OFFLINE FIX (2026-09-01): make an offline-completed bill unmistakable on
+  // the printed slip itself, not just in the bill-number field — this is
+  // the customer's actual paper copy, so it needs to be obvious at a glance
+  // that this isn't the final GST-relevant bill.
+  const offlineBanner = order.pendingSync
+    ? `<div class="c b" style="border:1px dashed #000;padding:2px 0;margin:2px 0">PROVISIONAL - OFFLINE<br/>Not a final GST bill</div>`
+    : '';
   return `
     ${cafeHeader('', copyType === 'duplicate' ? 'DUPLICATE BILL' : '')}
+    ${offlineBanner}
     ${kvRow(['Name:', safeHtml(order.customerName || '')])}
     <div class="solid"></div>
     ${kvRow([`Date: ${safeHtml(dt.date)}`, order.orderType === 'dine_in' ? `Dine In: ${safeHtml(order.tableNumber ? tableLabel(order.tableNumber) : '-')}` : 'Pick Up'])}
@@ -1094,6 +1110,15 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
   const [customPrice, setCustomPrice] = useState('');
   const [customQty, setCustomQty]     = useState('1');
   const [customError, setCustomError] = useState('');
+  // AUDIT FIX (2026-09-02): handleSubmit re-adds every customItem into the
+  // shared cart on EVERY call, including a retry after a failed submit — the
+  // cart is only reset on a submit that actually fails at the RPC/insert
+  // level (deliberately preserved, see the comment in handleSubmit's catch),
+  // so a retry re-added the same items a second time, doubling their qty.
+  // Tracks how many units of each custom-item id have already been pushed
+  // into the cart so a retry only pushes the (zero) delta, not the full qty
+  // again; a genuinely new/increased custom item still syncs correctly.
+  const syncedCustomItemsRef = useRef<Map<string, number>>(new Map());
 
   // Order meta
   const todayInput = businessDate();
@@ -1185,7 +1210,9 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
     try {
       for (const ci of customItems) {
         const syntheticItem = { id: ci.id, name: ci.name, price: ci.price, category: 'custom', timing: 'all', enabled: true };
-        for (let i = 0; i < ci.qty; i++) addToCart(syntheticItem);
+        const alreadySynced = syncedCustomItemsRef.current.get(ci.id) ?? 0;
+        for (let i = alreadySynced; i < ci.qty; i++) addToCart(syntheticItem);
+        syncedCustomItemsRef.current.set(ci.id, ci.qty);
       }
       await new Promise(r => setTimeout(r, 0));
       const advanceNotes = [
@@ -1210,6 +1237,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
       setNotes(''); setCustomerName(''); setMobileNumber(''); setOrderDate(todayInput); setDeliveryDate(''); setBillPerson(defaultBillPerson);
       setAdvanceAmt(''); setAdvanceMethod(null); setIsFullPayment(false);
       setCustomItems([]); setCustomName(''); setCustomPrice(''); setCustomQty('1');
+      syncedCustomItemsRef.current.clear();
       setTimeout(() => { setShowSuccess(false); onCreated(); }, 1800);
     } catch (err) {
       // BUG FIX (audit): submitAdvanceOrder's own catch already restores the
@@ -1810,6 +1838,13 @@ function NewBillPanel() {
   const [customQty, setCustomQty]     = useState('1');
   const [customError, setCustomError] = useState('');
   const [submitError, setSubmitError] = useState('');
+  // AUDIT FIX (2026-09-02): same fix as AdvanceOrderPanel above — the
+  // credit-sale submit path re-adds every customItem into the cart on every
+  // call including a retry, and this panel's own catch deliberately doesn't
+  // clear customItems on failure ("so nothing is lost") — so a retry
+  // doubled custom-item quantities. Tracks per-id synced qty so a retry only
+  // pushes the (zero) delta.
+  const syncedCustomItemsRef = useRef<Map<string, number>>(new Map());
 
   // BUG FIX: this panel reads `counterOpenedToday` (openBillModal, handleSubmit,
   // and the "counter not opened" banner below) but never actually called the
@@ -2344,13 +2379,23 @@ function NewBillPanel() {
       if (runningErr) throw new Error(runningErr.message);
       const freshRunning = runningRow ? dbRowToOrder(runningRow as Record<string, unknown>) : null;
 
-      const freshIncoming = useOrderStore.getState().orders.filter(o =>
-        o.orderType === 'dine_in' &&
-        o.tableNumber === tableNumber &&
-        (o.orderSource === 'staff' || o.orderSource === 'qr') &&
-        (o.status === 'pending' || o.status === 'preparing' || o.status === 'ready') &&
-        o.paymentType === 'unpaid'
-      );
+      // BUG FIX (audit 2026-09-02): freshRunning above is a genuine fresh DB read (per the
+      // comment above it — "don't trust closures that may be stale"), but freshIncoming was
+      // still read straight from the local orderStore cache, not the DB. If another biller
+      // edited/cancelled one of this table's other pending orders, or a QR customer just
+      // added items, and the local cache hadn't caught up yet (poll interval / missed
+      // realtime event), the combined bill could silently charge for a stale item set.
+      // Fetch these fresh too, same filter the cache-based version used.
+      const { data: incomingRows, error: incomingErr } = await supabase
+        .from('orders')
+        .select('id, order_number, table_number, order_type, items, subtotal, discount, discount_type, discount_value, total, status, created_by, created_at, updated_at, notes, customer_name, payment_type, payment_breakdown, billed_by, order_source, parcel_charges')
+        .eq('table_number', tableNumber)
+        .eq('order_type', 'dine_in')
+        .eq('payment_type', 'unpaid')
+        .in('order_source', ['staff', 'qr'])
+        .in('status', ['pending', 'preparing', 'ready']);
+      if (incomingErr) throw new Error(incomingErr.message);
+      const freshIncoming = (incomingRows || []).map(row => dbRowToOrder(row as Record<string, unknown>));
 
       const allSources = [...(freshRunning ? [freshRunning] : []), ...freshIncoming];
       if (allSources.length === 0) {
@@ -2743,10 +2788,17 @@ function NewBillPanel() {
           if (walletOtherMode === 'credit' && walletRemainder > 0) {
             const { recordCreditSale } = useBranchStore.getState();
             const creditItems = result.items.map((c) => ({ itemName: c.menuItem.name, quantity: c.quantity, sellUnit: 'pcs' as const, price: c.menuItem.price, lineTotal: c.menuItem.price * c.quantity }));
+            // BUG FIX (audit 2026-09-02): walletRemainder was computed client-side from the
+            // local `total` preview (Math.max(0, total - walletAmount)) — but `subtotal`
+            // right above it already correctly uses the server's real result.total. If the
+            // server total differed from the client preview (a stale menu price), the two
+            // fields would be internally inconsistent (amountPaid + creditAmount != subtotal)
+            // on the same credit-sale row. Derive the remainder from the server's real total.
+            const realCreditAmount = Math.max(0, Number(result.total) - walletAmount);
             const creditErr = await recordCreditSale('Cafe', {
               billNo: `WALLET-Cafe-${result.orderNumber}`, branch: 'Cafe', customerName: selectedWallet.customerName,
               customerPhone: selectedWallet.mobile, items: creditItems, subtotal: Number(result.total),
-              amountPaid: walletAmount, creditAmount: walletRemainder, dueDate: creditDueDate, soldBy: billedBy, notes: notes || undefined,
+              amountPaid: walletAmount, creditAmount: realCreditAmount, dueDate: creditDueDate, soldBy: billedBy, notes: notes || undefined,
             });
             // BUG FIX (audit 2026-08-10): finalize_table_bill_wallet_v1 above
             // already committed this order as paid — its wallet+cashback
@@ -2757,7 +2809,7 @@ function NewBillPanel() {
             // the ₹{walletRemainder} balance from — make that unmissable
             // rather than a generic dismissible error.
             if (creditErr) {
-              const msg = `Bill #${result.orderNumber} was already closed and paid, but saving the ₹${walletRemainder} credit balance failed: ${creditErr}. Add it to Credit manually right now so it isn't lost.`;
+              const msg = `Bill #${result.orderNumber} was already closed and paid, but saving the ₹${realCreditAmount} credit balance failed: ${creditErr}. Add it to Credit manually right now so it isn't lost.`;
               window.alert(msg);
               throw new Error(msg);
             }
@@ -2873,7 +2925,9 @@ function NewBillPanel() {
       try {
         for (const ci of customItems) {
           const syntheticItem = { id: ci.id, name: ci.name, price: ci.price, category: 'custom', timing: 'all', enabled: true };
-          for (let i = 0; i < ci.qty; i++) addToCart(syntheticItem);
+          const alreadySynced = syncedCustomItemsRef.current.get(ci.id) ?? 0;
+          for (let i = alreadySynced; i < ci.qty; i++) addToCart(syntheticItem);
+          syncedCustomItemsRef.current.set(ci.id, ci.qty);
         }
         await new Promise(r => setTimeout(r, 0));
         const { recordCreditSale } = useBranchStore.getState();
@@ -2910,15 +2964,24 @@ function NewBillPanel() {
           price: c.menuItem.price,
           lineTotal: c.menuItem.price * c.quantity,
         }));
+        // BUG FIX (audit 2026-09-02): this used the local `total` preview (computed from
+        // the client's own possibly-stale cart/menu snapshot) instead of what submitOrder
+        // actually committed. submitOrder re-syncs subtotal against the freshly-reloaded
+        // menu but the discount amount passed to it was clamped against the CLIENT's
+        // stale subtotal — if a live price differed from what the client held, the local
+        // `total` here could diverge from the real order.total now sitting in the DB,
+        // recording a credit debt that doesn't match the actual order. savedOrder is the
+        // real committed row (already fetched above) — use its total instead.
+        const creditTotal = savedOrder ? savedOrder.total : total;
         const err = await recordCreditSale(branch, {
           billNo,
           branch,
           customerName: customerName.trim(),
           customerPhone: creditCustomerPhone.trim(),
           items: creditItems,
-          subtotal: total,
+          subtotal: creditTotal,
           amountPaid: 0,
-          creditAmount: total,
+          creditAmount: creditTotal,
           dueDate: creditDueDate,
           soldBy: currentUser.displayName || currentUser.username,
           notes: notes || undefined,
@@ -2973,6 +3036,7 @@ function NewBillPanel() {
         setShowSuccess(true);
         setNotes(''); setCustomerName(''); setTableNumber(null);
         setCustomItems([]); setCustomName(''); setCustomPrice(''); setCustomQty('1');
+        syncedCustomItemsRef.current.clear();
         setCreditCustomerPhone(''); setCreditDueDate('');
         setPaymentMode('regular');
         // BUG FIX (audit): every other successful-checkout path resets these
@@ -3059,6 +3123,13 @@ function NewBillPanel() {
             price: line.menuItem.price,
             lineTotal: line.menuItem.price * line.quantity,
           }));
+          // BUG FIX (audit 2026-09-02): same class as the other wallet+credit-remainder
+          // branch above — walletRemainder is a client-side preview (Math.max(0, total -
+          // walletAmount) from the LOCAL total), while subtotal right below already
+          // correctly uses the server's real result.total. Derive the remainder from that
+          // same real total instead, so amountPaid + creditAmount always equals subtotal
+          // on this credit-sale row even if a live price differed from the client preview.
+          const realCreditAmount = Math.max(0, Number(result.total) - walletAmount);
           const creditErrorMessage = await recordCreditSale('Cafe', {
             billNo: `WALLET-Cafe-${result.orderNumber}`,
             branch: 'Cafe',
@@ -3067,7 +3138,7 @@ function NewBillPanel() {
             items: creditItems,
             subtotal: Number(result.total),
             amountPaid: walletAmount,
-            creditAmount: walletRemainder,
+            creditAmount: realCreditAmount,
             dueDate: creditDueDate,
             soldBy: billedBy,
             notes: notes || undefined,
@@ -3078,7 +3149,7 @@ function NewBillPanel() {
           // number/total, so this can't run before it. Name the bill and
           // amount explicitly on failure so it's never silently lost.
           if (creditErrorMessage) {
-            const msg = `Bill #${result.orderNumber} was already closed and paid, but saving the ₹${walletRemainder} credit balance failed: ${creditErrorMessage}. Add it to Credit manually right now so it isn't lost.`;
+            const msg = `Bill #${result.orderNumber} was already closed and paid, but saving the ₹${realCreditAmount} credit balance failed: ${creditErrorMessage}. Add it to Credit manually right now so it isn't lost.`;
             window.alert(msg);
             throw new Error(msg);
           }

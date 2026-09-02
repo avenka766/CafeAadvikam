@@ -242,24 +242,39 @@ function playCancelBeep() {
   } catch (e) { console.warn('playCancelBeep failed:', e); }
 }
 
+// AUDIT FIX (2026-09-02): raw template-literal HTML + document.write, same
+// stored-XSS class fixed in InvoiceTab.tsx's printInvoice — customerName/
+// notes/item names are staff- or customer-entered free text with no prior
+// sanitization, and executed with window.opener access back into the live
+// KitchenDashboard session. Escape every such field.
+function escapeHtml(value: unknown): string {
+  const s = value == null ? '' : String(value);
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 function printKot(order: Order) {
   const win = window.open('', '_blank', 'width=320,height=600');
   if (!win) return;
   const items = order.items.map(ci =>
-    `<tr><td style="font-size:16px;font-weight:900;padding:2px 0;width:36px">${ci.quantity}×</td><td style="font-size:15px;font-weight:700;padding:2px 6px">${ci.menuItem.name}</td></tr>`
+    `<tr><td style="font-size:16px;font-weight:900;padding:2px 0;width:36px">${ci.quantity}×</td><td style="font-size:15px;font-weight:700;padding:2px 6px">${escapeHtml(ci.menuItem.name)}</td></tr>`
   ).join('');
   win.document.write(`<!DOCTYPE html><html><head><title>KOT #${String(order.orderNumber).padStart(3,'0')}</title>
 <style>@page{margin:4mm;size:80mm auto}*{margin:0;padding:0;box-sizing:border-box}body{font-family:'Courier New',monospace;width:72mm;margin:0 auto;padding:2mm}.c{text-align:center}.d{border-top:1px dashed #000;margin:5px 0}</style></head>
-<body><div class="c" style="font-size:13px;font-weight:700">${CAFE_CONFIG.name}</div>
+<body><div class="c" style="font-size:13px;font-weight:700">${escapeHtml(CAFE_CONFIG.name)}</div>
 <div class="c" style="font-size:11px">KITCHEN ORDER TICKET</div><div class="d"></div>
 <div class="c" style="font-size:36px;font-weight:900;margin:8px 0">#${String(order.orderNumber).padStart(3,'0')}</div>
 <div class="d"></div>
 <div style="display:flex;justify-content:space-between;font-size:12px;margin:4px 0">
 <span>${order.orderType==='dine_in'&&order.tableNumber?'Table '+order.tableNumber:'📦 Takeaway'}</span>
 <span>${formatTime(order.createdAt)}</span></div>
-${order.customerName?`<div style="font-size:12px">Customer: ${order.customerName}</div>`:''}
+${order.customerName?`<div style="font-size:12px">Customer: ${escapeHtml(order.customerName)}</div>`:''}
 <div class="d"></div><table style="width:100%">${items}</table>
-${order.notes?`<div class="d"></div><div style="background:#f5f5f5;padding:4px 6px;font-size:12px">⚠️ ${order.notes}</div>`:''}
+${order.notes?`<div class="d"></div><div style="background:#f5f5f5;padding:4px 6px;font-size:12px">⚠️ ${escapeHtml(order.notes)}</div>`:''}
 <div class="d"></div><div class="c" style="font-size:11px">${new Date().toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})}</div>
 </body></html>`);
   win.document.close();

@@ -65,14 +65,17 @@ const ROLE_COLORS: Record<UserRole, string> = {
 };
 
 // ─── Role Picker component ────────────────────────────────────────────────────
-function RolePicker({ value, onChange }: { value: UserRole; onChange: (r: UserRole) => void }) {
+function RolePicker({ value, onChange, hideRoles }: { value: UserRole; onChange: (r: UserRole) => void; hideRoles?: UserRole[] }) {
   return (
     <div className="space-y-2">
-      {ROLE_GROUPS.map((group) => (
+      {ROLE_GROUPS.map((group) => {
+        const visibleRoles = hideRoles?.length ? group.roles.filter((r) => !hideRoles.includes(r)) : group.roles;
+        if (visibleRoles.length === 0) return null;
+        return (
         <div key={group.label}>
           <p className="text-[10px] font-bold text-muted-foreground uppercase mb-1.5">{group.label}</p>
           <div className="flex flex-wrap gap-1.5">
-            {group.roles.map((r) => (
+            {visibleRoles.map((r) => (
               <button
                 key={r}
                 type="button"
@@ -89,7 +92,8 @@ function RolePicker({ value, onChange }: { value: UserRole; onChange: (r: UserRo
             ))}
           </div>
         </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -134,10 +138,22 @@ export default function StaffManagement() {
   useEffect(() => { loadStaff(); }, [loadStaff]);
 
   // ── Handlers ────────────────────────────────────────────────────────────────
+  const isOwner = currentUser?.role === 'owner';
+  // SM-FIX: an 'admin' can already never edit/delete an existing owner/admin
+  // account (see canManage below) — but until this fix, Add Staff had no such
+  // gate at all, so an admin could create a brand-new 'owner' account outright
+  // and log in as it to bypass that very restriction. Mirrors the server-side
+  // check added in add_staff_hashed (2026-09-02).
+  const restrictedNewRoles: UserRole[] = isOwner ? [] : ['owner', 'admin'];
+
   const handleAddStaff = async () => {
     setAddError('');
     if (!newUsername.trim() || !newPassword.trim() || !newDisplayName.trim()) {
       setAddError('All fields are required');
+      return;
+    }
+    if (!isOwner && (newRole === 'owner' || newRole === 'admin')) {
+      setAddError('Only an Owner account can create Owner or Administrator accounts.');
       return;
     }
     const err = await addStaff({
@@ -257,7 +273,12 @@ export default function StaffManagement() {
             {/* Role picker — all roles grouped */}
             <div className="border border-border rounded-lg p-3 bg-muted/30">
               <p className="text-xs font-semibold text-foreground mb-2">Select Role</p>
-              <RolePicker value={newRole} onChange={setNewRole} />
+              <RolePicker value={newRole} onChange={setNewRole} hideRoles={restrictedNewRoles} />
+              {!isOwner && (
+                <p className="text-[10px] text-muted-foreground mt-2">
+                  Only an Owner account can create Owner or Administrator accounts.
+                </p>
+              )}
             </div>
 
             <div className="flex gap-2">

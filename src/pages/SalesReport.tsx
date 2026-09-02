@@ -109,8 +109,11 @@ export default function SalesReport() {
   const totalRevenue = dayOrders.reduce((s, o) => s + o.total, 0);
   // BUG-M1 FIX: separate "gross billed" (includes credit) from "cash collected" (cash+upi+card only).
   // The headline shows totalRevenue but cashCollected is available for reconciliation.
+  // BUG FIX (audit 2026-09-02): a 'wallet' order draws down a balance that was already
+  // paid for and recognized when the wallet was topped up — counting it here again as
+  // freshly "collected" today double-counts that revenue. Excluded alongside credit/unpaid.
   const cashCollected = dayOrders.reduce((s, o) => {
-    if (o.paymentType === 'credit' || o.paymentType === 'unpaid') return s;
+    if (o.paymentType === 'credit' || o.paymentType === 'unpaid' || o.paymentType === 'wallet') return s;
     return s + o.total;
   }, 0);
   const orderCount = dayOrders.length;
@@ -183,12 +186,16 @@ export default function SalesReport() {
   }, [dayOrders]);
 
   const paymentBreakdown = useMemo(() => {
-    let cash = 0, upi = 0, card = 0, credit = 0;
+    let cash = 0, upi = 0, card = 0, credit = 0, wallet = 0;
     dayOrders.forEach((o) => {
       if (o.paymentType === 'cash') cash += o.total;
       else if (o.paymentType === 'upi') upi += o.total;
       else if (o.paymentType === 'card') card += o.total;
       else if (o.paymentType === 'credit') credit += o.total;
+      // BUG FIX (audit 2026-09-02): 'wallet' had no bucket here at all — a wallet-paid
+      // order fell through every condition and vanished from this chart entirely, even
+      // though it's counted in totalRevenue, making the chart's total silently undercount.
+      else if (o.paymentType === 'wallet') wallet += o.total;
       else if (o.paymentType === 'part_payment' && o.paymentBreakdown) {
         cash += o.paymentBreakdown.cash; upi += o.paymentBreakdown.upi; card += o.paymentBreakdown.card;
       }
@@ -198,6 +205,7 @@ export default function SalesReport() {
     if (upi > 0) result.push({ name: 'UPI', value: upi });
     if (card > 0) result.push({ name: 'Card', value: card });
     if (credit > 0) result.push({ name: 'Credit', value: credit });
+    if (wallet > 0) result.push({ name: 'Wallet', value: wallet });
     return result;
   }, [dayOrders]);
 
@@ -316,12 +324,17 @@ export default function SalesReport() {
     ];
 
     // ── Sheet 6: Payment Breakdown ────────────────────────────────────────────
-    let totalCash = 0, totalUpi = 0, totalCard = 0, totalCredit = 0;
+    // BUG FIX (audit 2026-09-02): 'wallet' had no bucket here — a wallet-paid order
+    // contributed to none of Cash/UPI/Card/Credit, so this sheet's own TOTAL row
+    // (totalRevenue) silently disagreed with the sum of the rows above it whenever a
+    // wallet order fell in range. Added a Wallet row, same as the on-screen chart.
+    let totalCash = 0, totalUpi = 0, totalCard = 0, totalCredit = 0, totalWallet = 0;
     dayOrders.forEach(o => {
       if (o.paymentType === 'cash') totalCash += o.total;
       else if (o.paymentType === 'upi') totalUpi += o.total;
       else if (o.paymentType === 'card') totalCard += o.total;
       else if (o.paymentType === 'credit') totalCredit += o.total;
+      else if (o.paymentType === 'wallet') totalWallet += o.total;
       else if (o.paymentType === 'part_payment' && o.paymentBreakdown) {
         totalCash += o.paymentBreakdown.cash; totalUpi += o.paymentBreakdown.upi; totalCard += o.paymentBreakdown.card;
       }
@@ -331,6 +344,7 @@ export default function SalesReport() {
       { 'Payment Method': 'UPI',    'Orders': dayOrders.filter(o => o.paymentType === 'upi'  || (o.paymentType === 'part_payment' && (o.paymentBreakdown?.upi  || 0) > 0)).length, 'Amount (₹)': totalUpi  },
       { 'Payment Method': 'Card',   'Orders': dayOrders.filter(o => o.paymentType === 'card' || (o.paymentType === 'part_payment' && (o.paymentBreakdown?.card || 0) > 0)).length, 'Amount (₹)': totalCard },
       { 'Payment Method': 'Credit', 'Orders': dayOrders.filter(o => o.paymentType === 'credit').length, 'Amount (₹)': totalCredit },
+      { 'Payment Method': 'Wallet', 'Orders': dayOrders.filter(o => o.paymentType === 'wallet').length, 'Amount (₹)': totalWallet },
       { 'Payment Method': 'TOTAL',  'Orders': orderCount, 'Amount (₹)': totalRevenue },
     ];
 

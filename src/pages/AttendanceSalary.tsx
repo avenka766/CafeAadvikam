@@ -205,7 +205,12 @@ async function clearAdvance(employeeId: string): Promise<void> {
   const { error } = await supabase.from('employees').update({ salary_advance: 0 }).eq('id', employeeId);
   if (error) throw error;
   // Also mark all uncleared advances for this employee as cleared
-  await supabase.from('salary_advances').update({ cleared: true }).eq('employee_id', employeeId).eq('cleared', false);
+  const { error: clearErr } = await supabase.from('salary_advances').update({ cleared: true }).eq('employee_id', employeeId).eq('cleared', false);
+  // AUDIT FIX (2026-09-02): this write's error was previously silently
+  // dropped — employees.salary_advance would be reset to 0 above even if
+  // the matching salary_advances rows failed to mark cleared, permanently
+  // diverging the two.
+  if (clearErr) throw clearErr;
 }
 
 // ─── Advance Records DB helpers ───────────────────────────────────────────────
@@ -240,10 +245,18 @@ async function insertAdvanceRecord(rec: Omit<SalaryAdvanceRecord, 'id' | 'cleare
     console.error('Insert advance failed:', msg);
     return { err: msg };
   }
-  // Also update the employee's salary_advance field to reflect total outstanding
-  const { data: emp } = await supabase.from('employees').select('salary_advance').eq('id', rec.employeeId).single();
-  const current = Number((emp as { salary_advance: number } | null)?.salary_advance ?? 0);
-  await supabase.from('employees').update({ salary_advance: current + rec.amount }).eq('id', rec.employeeId);
+  // AUDIT FIX (2026-09-02): was a non-atomic read-then-write (select
+  // current, compute in JS, update) with the write's error unchecked —
+  // concurrent advances for the same employee could silently drop one from
+  // the total. Now a single atomic DB-side increment.
+  const { error: advErr } = await supabase.rpc('apply_salary_advance_delta', {
+    p_employee_id: rec.employeeId,
+    p_delta: rec.amount,
+  });
+  if (advErr) {
+    console.error('Failed to update employee salary_advance total:', advErr.message);
+    return { err: `Advance record saved, but updating the employee's total failed: ${advErr.message}. Refresh and verify the total manually.` };
+  }
   return { ok: {
     id: data.id as string,
     employeeId: data.employee_id as string,
@@ -257,10 +270,14 @@ async function insertAdvanceRecord(rec: Omit<SalaryAdvanceRecord, 'id' | 'cleare
 async function markAdvanceRecordCleared(advanceId: string, employeeId: string, amount: number): Promise<void> {
   const { error } = await supabase.from('salary_advances').update({ cleared: true }).eq('id', advanceId);
   if (error) throw error;
-  // Deduct this amount from employee's salary_advance field
-  const { data: emp } = await supabase.from('employees').select('salary_advance').eq('id', employeeId).single();
-  const current = Number((emp as { salary_advance: number } | null)?.salary_advance ?? 0);
-  await supabase.from('employees').update({ salary_advance: Math.max(0, current - amount) }).eq('id', employeeId);
+  // AUDIT FIX (2026-09-02): atomic DB-side decrement, same as
+  // insertAdvanceRecord above — was a non-atomic read-then-write with the
+  // write's error unchecked.
+  const { error: advErr } = await supabase.rpc('apply_salary_advance_delta', {
+    p_employee_id: employeeId,
+    p_delta: -amount,
+  });
+  if (advErr) throw advErr;
 }
 
 async function deactivateEmployee(id: string): Promise<void> {
@@ -693,7 +710,10 @@ function AddEmpModal({ onAdd, onClose }: { onAdd: (e: Employee) => void; onClose
   const handleAdd = async () => {
     if (!valid) return;
     setSaving(true);
-    const result = await insertEmployee({ name: name.trim(), branch, department: dept.trim(), grossSalary: parseInt(salary) || 0, salaryAdvance: parseInt(advance) || 0, uniformDeduction: parseInt(uniform) || 0, otherDeduction: parseInt(other) || 0, bankName: bank || undefined, accountNumber: acc || undefined, ifscCode: ifsc || undefined, paymentMode: paymentMode.trim() || undefined, accountHolderName: acctHolder.trim() || undefined, bankBranchLocation: bankBranchLoc.trim() || undefined });
+    // AUDIT FIX (2026-09-02): no floor validation — a negative gross
+    // salary/advance/deduction was accepted outright, unlike the Edit
+    // Employee modal which at least sets min="0" on the same fields.
+    const result = await insertEmployee({ name: name.trim(), branch, department: dept.trim(), grossSalary: Math.max(0, parseInt(salary) || 0), salaryAdvance: Math.max(0, parseInt(advance) || 0), uniformDeduction: Math.max(0, parseInt(uniform) || 0), otherDeduction: Math.max(0, parseInt(other) || 0), bankName: bank || undefined, accountNumber: acc || undefined, ifscCode: ifsc || undefined, paymentMode: paymentMode.trim() || undefined, accountHolderName: acctHolder.trim() || undefined, bankBranchLocation: bankBranchLoc.trim() || undefined });
     setSaving(false);
     if (result) onAdd(result);
   };
@@ -722,12 +742,12 @@ function AddEmpModal({ onAdd, onClose }: { onAdd: (e: Employee) => void; onClose
             </select>
           </Field>
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Gross Salary (₹)"><input type="number" className={InputCls()} placeholder="18000" value={salary} onChange={e => setSalary(e.target.value)} /></Field>
-            <Field label="Salary Advance (₹)"><input type="number" className={InputCls()} placeholder="0" value={advance} onChange={e => setAdvance(e.target.value)} /></Field>
+            <Field label="Gross Salary (₹)"><input type="number" min="0" className={InputCls()} placeholder="18000" value={salary} onChange={e => setSalary(e.target.value)} /></Field>
+            <Field label="Salary Advance (₹)"><input type="number" min="0" className={InputCls()} placeholder="0" value={advance} onChange={e => setAdvance(e.target.value)} /></Field>
           </div>
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Uniform Ded. (₹)"><input type="number" className={InputCls()} placeholder="0" value={uniform} onChange={e => setUniform(e.target.value)} /></Field>
-            <Field label="Other Ded. (₹)"><input type="number" className={InputCls()} placeholder="0" value={other} onChange={e => setOther(e.target.value)} /></Field>
+            <Field label="Uniform Ded. (₹)"><input type="number" min="0" className={InputCls()} placeholder="0" value={uniform} onChange={e => setUniform(e.target.value)} /></Field>
+            <Field label="Other Ded. (₹)"><input type="number" min="0" className={InputCls()} placeholder="0" value={other} onChange={e => setOther(e.target.value)} /></Field>
           </div>
           <div className="pt-2 border-t border-border space-y-2">
             <p className="text-[10px] font-body font-semibold text-muted-foreground uppercase">Bank Details (optional)</p>

@@ -5,7 +5,7 @@
 import { useMemo, useState } from 'react';
 import AdminNotificationsTab from '@/bakery/AdminNotificationsTab';
 import { useNotificationStore } from '@/bakery/notificationStore';
-import { Bell, AlertTriangle, CheckCircle2, Clock } from 'lucide-react';
+import { Bell, AlertTriangle, CheckCircle2 } from 'lucide-react';
 import type { Branch } from '@/branch/types';
 import { BRANCHES, BRANCH_LABELS } from '@/branch/types';
 import { cn } from '@/lib/utils';
@@ -14,12 +14,32 @@ export default function AdminAlertsPage() {
   const { notifications } = useNotificationStore();
   const [branchFilter, setBranchFilter] = useState<Branch | 'all'>('all');
 
+  // AUDIT FIX (2026-09-02): AdminNotification has no top-level `branch`
+  // field, but several push* helpers (pushPackingDiscrepancy, pushCreditSale,
+  // pushStockMovement, ...) do store it inside `meta.branch`. The branch
+  // filter pills below were fully interactive but never actually filtered
+  // anything — this now filters by meta.branch when present; a notification
+  // type with no branch in its meta (e.g. price/recipe/store-item changes,
+  // which aren't branch-specific) always shows regardless of the filter,
+  // since it's not incorrect for any branch view to include them.
+  const filteredNotifications = useMemo(() => {
+    if (branchFilter === 'all') return notifications;
+    return notifications.filter(n => {
+      const metaBranch = (n.meta as Record<string, unknown> | undefined)?.branch;
+      return metaBranch == null || metaBranch === branchFilter;
+    });
+  }, [notifications, branchFilter]);
+
+  // AUDIT FIX (2026-09-02): "Pending" and "Unread" were computed with the
+  // exact same filter (`!n.isRead`), so they always showed the identical
+  // number under two different labels — removed the redundant "Pending"
+  // tile below rather than inventing a distinct meaning this app doesn't
+  // actually track.
   const summary = useMemo(() => ({
-    total: notifications.length,
-    unread: notifications.filter(n => !n.isRead).length,
-    resolved: notifications.filter(n => n.isRead).length,
-    pending: notifications.filter(n => !n.isRead).length,
-  }), [notifications]);
+    total: filteredNotifications.length,
+    unread: filteredNotifications.filter(n => !n.isRead).length,
+    resolved: filteredNotifications.filter(n => n.isRead).length,
+  }), [filteredNotifications]);
 
   return (
     <div className="dashboard-screen min-h-screen bg-transparent pt-0 pb-6">
@@ -40,7 +60,6 @@ export default function AdminAlertsPage() {
         {[
           { icon: <Bell className="size-4" />, label: 'Total Alerts', value: summary.total, tone: 'bg-slate-50 border-slate-200 text-slate-700' },
           { icon: <AlertTriangle className="size-4" />, label: 'Unread', value: summary.unread, tone: summary.unread > 0 ? 'bg-red-50 border-red-200 text-red-700' : 'bg-slate-50 border-slate-200 text-slate-500' },
-          { icon: <Clock className="size-4" />, label: 'Pending', value: summary.pending, tone: summary.pending > 0 ? 'bg-amber-50 border-amber-200 text-amber-700' : 'bg-slate-50 border-slate-200 text-slate-500' },
           { icon: <CheckCircle2 className="size-4" />, label: 'Resolved', value: summary.resolved, tone: 'bg-emerald-50 border-emerald-200 text-emerald-700' },
         ].map(({ icon, label, value, tone }) => (
           <div key={label} className={cn('flex items-center gap-2 rounded-2xl border px-4 py-3', tone)}>
@@ -68,7 +87,7 @@ export default function AdminAlertsPage() {
       </div>
 
       <div className="px-4 pt-4 space-y-4">
-        <AdminNotificationsTab />
+        <AdminNotificationsTab branchFilter={branchFilter} />
       </div>
     </div>
   );

@@ -5,11 +5,61 @@ import {
   Edit3, Check, Plus, ChevronDown, Loader2, Tag, Pencil,
 } from 'lucide-react';
 import { formatCurrency, cn } from '@/lib/utils';
+import { supabase } from '@/lib/supabase';
 import CategoryFilter from '@/components/features/CategoryFilter';
 import { useMenuCategories } from '@/hooks/useMenuCategories';
 import { useMenuCategoryStore, type MenuCategory } from '@/stores/menuCategoryStore';
 import { useAuthStore } from '@/stores/authStore';
 import EmptyState from '@/components/ui/EmptyState';
+
+// EGRESS FIX (2026-09-03): menu item photos used to go straight from
+// FileReader.readAsDataURL() into menu_items.image_url as raw, full-
+// resolution base64 — every menu_items row with a photo then re-transmitted
+// that full file on EVERY loadMenu() call (every customer's QR menu, every
+// staff dashboard, every realtime patch), forever. Two independent fixes:
+// (1) resize/compress here before upload so the file itself is small,
+// (2) upload to Supabase Storage (see uploadMenuItemImage) so image_url is a
+// short CDN URL instead of the image data itself, only fetched by an actual
+// <img> render, never inline with unrelated menu queries.
+async function resizeImageToJpegBlob(file: File, maxDim = 800, quality = 0.82): Promise<Blob> {
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(reader.error ?? new Error('Could not read the selected file.'));
+    reader.readAsDataURL(file);
+  });
+  const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+    const el = new Image();
+    el.onload = () => resolve(el);
+    el.onerror = () => reject(new Error('That file could not be read as an image.'));
+    el.src = dataUrl;
+  });
+  const scale = Math.min(1, maxDim / Math.max(img.naturalWidth, img.naturalHeight));
+  const w = Math.max(1, Math.round(img.naturalWidth * scale));
+  const h = Math.max(1, Math.round(img.naturalHeight * scale));
+  const canvas = document.createElement('canvas');
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Image resizing is not supported in this browser.');
+  ctx.drawImage(img, 0, 0, w, h);
+  const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/jpeg', quality));
+  if (!blob) throw new Error('Could not process that image.');
+  return blob;
+}
+
+async function uploadMenuItemImage(itemId: string, file: File): Promise<string> {
+  const blob = await resizeImageToJpegBlob(file);
+  const path = `${itemId}-${Date.now()}.jpg`;
+  const { error: uploadErr } = await supabase.storage.from('menu-item-images').upload(path, blob, {
+    cacheControl: '31536000', // 1 year — the path is unique per upload, so a stale cache is never served
+    contentType: 'image/jpeg',
+    upsert: false,
+  });
+  if (uploadErr) throw new Error(`Upload failed: ${uploadErr.message}`);
+  const { data } = supabase.storage.from('menu-item-images').getPublicUrl(path);
+  if (!data.publicUrl) throw new Error('Could not get a URL for the uploaded image.');
+  return data.publicUrl;
+}
 
 // ─── Manage Categories Sheet ─────────────────────────────────────────────────
 // FEATURE (2026-08-10): "allow the VRSNB Admin and Admin to add a new
@@ -167,7 +217,9 @@ function AddItemSheet({ open, onClose }: { open: boolean; onClose: () => void })
 
   const handleSave = async () => {
     const trimmedName = name.trim();
-    const parsedPrice = parseInt(price);
+    // AUDIT FIX (2026-09-02): parseInt() silently truncated any paise/decimal
+    // amount (e.g. "45.50" -> 45) instead of rejecting or rounding it.
+    const parsedPrice = Math.round(parseFloat(price) * 100) / 100;
 
     if (!trimmedName)          return setError('Item name is required.');
     if (!parsedPrice || parsedPrice <= 0) return setError('Enter a valid price.');
@@ -312,6 +364,8 @@ export default function MenuManagement({ embedded = false }: { embedded?: boolea
   const [showCategorySheet, setShowCategorySheet] = useState(false);
   const fileInputRef  = useRef<HTMLInputElement>(null);
   const [uploadTarget, setUploadTarget] = useState<string | null>(null);
+  const [uploadingImageFor, setUploadingImageFor] = useState<string | null>(null);
+  const [imageUploadError, setImageUploadError] = useState<string | null>(null);
   const menuCategories = useMenuCategories();
 
   useEffect(() => { loadMenu(); }, [loadMenu]);
@@ -329,14 +383,22 @@ export default function MenuManagement({ embedded = false }: { embedded?: boolea
   const categoryName = (catId: string) =>
     menuCategories.find(c => c.id === catId)?.name || catId;
 
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file && uploadTarget) {
-      const reader = new FileReader();
-      reader.onloadend = () => { setItemImage(uploadTarget, reader.result as string); setUploadTarget(null); };
-      reader.readAsDataURL(file);
-    }
+    const target = uploadTarget;
     if (fileInputRef.current) fileInputRef.current.value = '';
+    setUploadTarget(null);
+    if (!file || !target) return;
+    setUploadingImageFor(target);
+    setImageUploadError(null);
+    try {
+      const url = await uploadMenuItemImage(target, file);
+      await setItemImage(target, url);
+    } catch (err) {
+      setImageUploadError(err instanceof Error ? err.message : 'Failed to upload image.');
+    } finally {
+      setUploadingImageFor(null);
+    }
   };
 
   const startEditPrice = (id: string, currentPrice: number) => {
@@ -344,7 +406,9 @@ export default function MenuManagement({ embedded = false }: { embedded?: boolea
   };
 
   const savePrice = async (id: string) => {
-    const val = parseInt(editPrice);
+    // AUDIT FIX (2026-09-02): same fix as handleSave above — parseInt()
+    // silently truncated paise.
+    const val = Math.round(parseFloat(editPrice) * 100) / 100;
     if (isNaN(val) || val <= 0) { setPriceError('Enter a valid price.'); return; }
     setSavingPrice(true);
     setPriceError(null);
@@ -426,6 +490,12 @@ export default function MenuManagement({ embedded = false }: { embedded?: boolea
 
       {/* Item list */}
       <div className="px-4 py-4 space-y-2">
+        {imageUploadError && (
+          <div className="flex items-center justify-between gap-2 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-xs font-bold text-red-700">
+            <span>{imageUploadError}</span>
+            <button onClick={() => setImageUploadError(null)} className="shrink-0"><X className="size-3.5" /></button>
+          </div>
+        )}
         {filtered.length === 0 && (
           <EmptyState
             icon="🍽️"
@@ -450,16 +520,23 @@ export default function MenuManagement({ embedded = false }: { embedded?: boolea
             {/* Image */}
             <button
               onClick={() => { setUploadTarget(item.id); fileInputRef.current?.click(); }}
-              className="relative size-14 rounded-lg bg-muted shrink-0 overflow-hidden group"
+              disabled={uploadingImageFor === item.id}
+              className="relative size-14 rounded-lg bg-muted shrink-0 overflow-hidden group disabled:opacity-70"
               aria-label="Upload image"
             >
               {item.imageUrl
                 ? <img src={item.imageUrl} alt="" className="size-full object-cover" />
                 : <div className="size-full flex items-center justify-center text-muted-foreground/40"><ImageOff className="size-5" /></div>
               }
-              <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-active:opacity-100 transition-opacity">
-                <Camera className="size-5 text-white" />
-              </div>
+              {uploadingImageFor === item.id ? (
+                <div className="absolute inset-0 bg-black/50 flex items-center justify-center">
+                  <Loader2 className="size-5 animate-spin text-white" />
+                </div>
+              ) : (
+                <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-active:opacity-100 transition-opacity">
+                  <Camera className="size-5 text-white" />
+                </div>
+              )}
             </button>
 
             {/* Info */}
