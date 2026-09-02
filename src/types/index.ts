@@ -93,6 +93,18 @@ export interface Order {
   promotionDiscount?: number;
   promotionIds?: string[];
   walletCashback?: number;
+  // OFFLINE FIX (2026-09-01): set when this order was completed while the
+  // browser had no network connection. `orderNumber` is NOT a real,
+  // sequential bill number yet in this state (the real one only exists once
+  // this syncs — see orderStore.ts's submitOrder/registerReplayHandler) —
+  // any receipt/print/display surface showing the bill number MUST check
+  // this flag first and show a clearly-marked provisional label instead.
+  pendingSync?: boolean;
+  // Set once the real order number has been assigned (this order synced
+  // after being offline) but the customer's copy still shows the old
+  // provisional one — surfaces a "reprint the final bill" prompt until
+  // cleared by actually reprinting.
+  needsReprint?: boolean;
 }
 
 export interface MenuCategory {
