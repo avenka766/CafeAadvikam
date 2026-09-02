@@ -12,6 +12,7 @@ import WorkspaceChrome from '@/components/layout/WorkspaceChrome';
 import { getRoleDefaultPath } from '@/lib/routing';
 import { isNativeApp } from '@/lib/platform';
 import { useMenuStore } from '@/stores/menuStore';
+import { useOfflineQueueStore } from '@/lib/offlineQueue';
 import Landing from '@/pages/Landing';
 import Login from '@/pages/Login';
 const MenuPage = lazy(() => import('@/pages/MenuPage'));
@@ -93,6 +94,22 @@ function LiveMenuSync() {
   return null;
 }
 
+// OFFLINE FIX (2026-09-01): loads whatever was queued from a previous
+// session (e.g. the app was closed mid-outage) and immediately attempts a
+// flush — covers the case where the browser is already back online by the
+// time this app reopens, so a queued write doesn't just sit there until the
+// next `online` event or the 30s safety-retry fires.
+function OfflineQueueBootstrap() {
+  const { hydrate, flush } = useOfflineQueueStore();
+  useEffect(() => {
+    void (async () => {
+      await hydrate();
+      await flush();
+    })();
+  }, [hydrate, flush]);
+  return null;
+}
+
 function AppRoutes() {
   const location = useLocation();
   const isLandingRoute = location.pathname === '/';
@@ -143,10 +160,21 @@ function AppRoutes() {
   const getDefaultRoute = () =>
     currentUser ? getRoleDefaultPath(currentUser.role) : '/';
 
+  // NATIVE APP FIX (2026-09-03): a native build (Owner's, or the new branch
+  // staff app) has no reason to ever show the public marketing Landing page
+  // — it's a focused, single-purpose staff tool, not a storefront a customer
+  // might land on. Owner's app never reaches this in practice (its silent
+  // auto-login above resolves before this renders), but any OTHER native
+  // app without that auto-login — e.g. the SNB/VRSNB staff app, which is
+  // deliberately built to show a real login screen instead — would otherwise
+  // open on the customer-facing Landing page on a fresh install. Scoped to
+  // `native` only, so the real web deployment's `/` behavior is untouched.
+  const rootElement = native && !currentUser ? <Navigate to="/login" replace /> : <Landing />;
+
   const routes = (
     <Suspense fallback={<div className="flex min-h-[40vh] items-center justify-center text-sm text-muted-foreground">Loading workspace…</div>}>
       <Routes>
-        <Route path="/"             element={<Landing />} />
+        <Route path="/"             element={rootElement} />
         <Route path="/login"        element={<Login />} />
         <Route path="/menu"         element={<MenuPage />} />
         <Route path="/digital-menu" element={<DigitalMenu />} />
@@ -172,7 +200,8 @@ function AppRoutes() {
         <Route path="/bakery/receive/snb"   element={<ProtectedRoute allowedRoles={['receiver_snb']}><OrderReceiverDashboard /></ProtectedRoute>} />
         <Route path="/bakery/store"   element={<ProtectedRoute allowedRoles={['store']}><StoreDashboard /></ProtectedRoute>} />
         <Route path="/bakery/cake-master" element={<ProtectedRoute allowedRoles={['cake_master']}><CakeMasterDashboard /></ProtectedRoute>} />
-        <Route path="/bakery/planner" element={<ProtectedRoute allowedRoles={['planner', 'owner']}><PlannerDashboard /></ProtectedRoute>} />
+        {/* AUDIT FIX (2026-09-02): 'branch_hosur' added — see routing.ts's getRoleDefaultPath comment. */}
+        <Route path="/bakery/planner" element={<ProtectedRoute allowedRoles={['planner', 'owner', 'branch_hosur']}><PlannerDashboard /></ProtectedRoute>} />
         <Route path="/bakery/items"   element={<ProtectedRoute allowedRoles={['admin']}><BakeryItemManagement /></ProtectedRoute>} />
         <Route path="/bakery/recipes" element={<ProtectedRoute allowedRoles={['admin']}><RecipeManagement /></ProtectedRoute>} />
 
@@ -225,6 +254,7 @@ export default function App() {
       <OfflineBanner />
       <DataHealthBanner />
       <BrowserRouter>
+        <OfflineQueueBootstrap />
         <LiveMenuSync />
         <AppRoutes />
       </BrowserRouter>
