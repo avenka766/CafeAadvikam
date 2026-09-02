@@ -4,6 +4,7 @@ import type { CartItem, MenuItem, Order, OrderType, OrderStatus, PaymentType, Pa
 import { generateId } from '@/lib/utils';
 import { useMenuStore } from '@/stores/menuStore';
 import { getCached, setCached } from '@/lib/localCache';
+import { useOfflineQueueStore, registerReplayHandler } from '@/lib/offlineQueue';
 
 // EGRESS FIX: originally raised from 5 s → 30 s here, then raised again to
 // 15 minutes once Supabase Realtime (postgres_changes) became the primary
@@ -90,6 +91,15 @@ function validateCart(cart: CartItem[]) {
   }
   if (cart.some((item) => !Number.isFinite(item.menuItem.price) || item.menuItem.price < 0)) {
     throw new Error('An item has an invalid price. Refresh the menu and try again.');
+  }
+  // BUG FIX (audit 2026-09-02): submitOrder() re-syncs each cart line against the freshly
+  // reloaded menu (see `latestMenu` above) so a stale price never ships, but never checked
+  // whether the item is still `enabled` — a cart restored from an old QR session/localStorage,
+  // or one built before staff disabled an item mid-shift, could still submit an order for
+  // something no longer sold. Every caller of submitOrder shares this same validation.
+  const disabledItems = cart.filter((item) => item.menuItem.enabled === false);
+  if (disabledItems.length > 0) {
+    throw new Error(`${disabledItems.map((i) => i.menuItem.name).join(', ')} ${disabledItems.length === 1 ? 'is' : 'are'} no longer available. Remove from cart and try again.`);
   }
 }
 
@@ -394,10 +404,22 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     if (paymentType === 'part_payment') validatePaymentBreakdown(params.paymentBreakdown, total);
 
     const { data: numData, error: numError } = await supabase.rpc('get_next_order_number');
-    if (numError || !numData) {
+    // OFFLINE FIX (2026-09-01): per the offline-checkout decision — when the
+    // number RPC fails specifically because the browser has no network, this
+    // no longer throws and refuses the sale. Instead it completes locally
+    // with a provisional (non-final) order number, queues the real
+    // submission for replay on reconnect, and the actual GST-relevant bill
+    // number only gets assigned once that replay runs. Any genuine
+    // server-side failure (not a connectivity problem) still throws exactly
+    // as before — this is deliberately narrow, not "always allow offline."
+    const offline = (numError || !numData) && !navigator.onLine;
+    if ((numError || !numData) && !offline) {
       throw new Error('Failed to get order number. Please try again.');
     }
-    const orderNumber = numData as number;
+    // Provisional placeholder — never treat this as a real bill number.
+    // Every print/display surface for this order MUST check `pendingSync`
+    // first (see the Order type's own comment) rather than trust this value.
+    const orderNumber = offline ? 0 : (numData as number);
 
     const order: Order = {
       id: orderId, orderNumber, tableNumber: params.tableNumber, orderType: params.orderType,
@@ -407,10 +429,26 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       ...(params.billedBy ? { billedBy: params.billedBy } : {}),
       ...(params.paymentBreakdown ? { paymentBreakdown: params.paymentBreakdown } : {}),
       ...(parcelCharges > 0 ? { parcelCharges } : {}),
+      ...(offline ? { pendingSync: true } : {}),
     };
 
     const cartSnapshot = [...cart];
     set((state) => ({ orders: [order, ...state.orders], cart: [] }));
+
+    if (offline) {
+      // Queue the ORIGINAL submission (not the provisional id/number) — the
+      // replay handler allocates a real order number and inserts under this
+      // same client-generated orderId once back online. See
+      // registerReplayHandler('cafe_order_submit', ...) below.
+      await useOfflineQueueStore.getState().enqueue('cafe_order_submit', {
+        orderId, tableNumber: params.tableNumber || null, orderType: params.orderType, items: cartSnapshot,
+        subtotal, discount, discountType: params.discountType || 'flat', discountValue: Number(params.discountValue ?? 0),
+        total, status: orderStatus, createdBy: params.createdBy, notes: params.notes || null,
+        customerName: params.customerName || null, paymentType, paymentBreakdown: params.paymentBreakdown || null,
+        billedBy: params.billedBy || null, orderSource, createdAt: now, parcelCharges,
+      });
+      return orderId;
+    }
 
     const payload = {
       id: orderId, order_number: orderNumber, table_number: params.tableNumber || null,
@@ -475,8 +513,16 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     }
 
     const { data: numData, error: numError } = await supabase.rpc('get_next_order_number');
-    if (numError || !numData) throw new Error('Failed to get order number. Please try again.');
-    const orderNumber = numData as number;
+    // OFFLINE FIX (2026-09-03): submitOrder (just above) got the offline
+    // provisional-number/enqueue treatment on 2026-09-01 — this sibling
+    // function (Cafe's advance/pre-order path, same screen, same counter)
+    // was missed and still just threw "Failed to get order number" with no
+    // way to complete offline. Same narrow policy as submitOrder: only a
+    // genuine connectivity failure degrades to offline, any real server
+    // error still throws exactly as before.
+    const offline = (numError || !numData) && !navigator.onLine;
+    if ((numError || !numData) && !offline) throw new Error('Failed to get order number. Please try again.');
+    const orderNumber = offline ? 0 : (numData as number);
 
     const cartSnapshot = [...cart];
     set({ advanceCart: [] });
@@ -497,9 +543,25 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       balanceDue,
       deliveryDate: params.deliveryDate,
       ...(isFullPayment ? { fullyPaidAt: now, balancePaymentType: params.advancePaidBy, balancePaidBy: params.createdBy } : {}),
+      ...(offline ? { pendingSync: true } : {}),
     };
 
     set((state) => ({ orders: [order, ...state.orders] }));
+
+    if (offline) {
+      // Queue the ORIGINAL submission (not the provisional id/number) — the
+      // replay handler allocates a real order number and inserts under this
+      // same client-generated orderId once back online. See
+      // registerReplayHandler('cafe_advance_order_submit', ...) below.
+      await useOfflineQueueStore.getState().enqueue('cafe_advance_order_submit', {
+        orderId, tableNumber: params.tableNumber || null, orderType: params.orderType, items: cartSnapshot,
+        subtotal, total, fullAmount: subtotal, createdBy: params.createdBy, notes: params.notes || null,
+        customerName: params.customerName || null, advanceAmount: isFullPayment ? subtotal : params.advanceAmount,
+        advancePaidBy: params.advancePaidBy, balanceDue, deliveryDate: params.deliveryDate, createdAt: now,
+        isFullPayment,
+      });
+      return orderId;
+    }
 
     const payload = {
       id: orderId, order_number: orderNumber, table_number: params.tableNumber || null,
@@ -613,6 +675,16 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     const order = get().orders.find((o) => o.id === orderId);
     if (!order) return;
 
+    // LOGIC FIX: block changing the discount on an order that's already been billed
+    // (paymentType left 'unpaid') or cancelled — the amount actually charged to the
+    // customer is already fixed at that point. Mirrors collectBalance's already-settled
+    // guard; the UI already hides this button in that state (OrderCard.tsx), this closes
+    // the same gap server/store-side (stale card, race, or a direct call).
+    if (order.status === 'cancelled' || order.paymentType !== 'unpaid') {
+      console.warn('[applyDiscount] order already billed or cancelled; aborting', orderId);
+      return;
+    }
+
     if (discountValue < 0) return;
     if (discountType === 'percentage' && discountValue > 100) return;
     if (discountType === 'flat' && discountValue > order.subtotal) return;
@@ -645,6 +717,15 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
   setPaymentType: async (orderId, paymentType, billedBy, breakdown) => {
     const order = get().orders.find((o) => o.id === orderId);
     if (!order) return;
+    // LOGIC FIX: block re-billing an order that's already been given a payment type
+    // (paymentType left 'unpaid') or is cancelled — prevents a stale card / race / retry
+    // from double-charging or overwriting how an order was actually paid. Mirrors
+    // collectBalance's already-settled guard; matches the UI's own gating (OrderCard.tsx
+    // only shows Collect Payment while paymentType === 'unpaid').
+    if (order.status === 'cancelled' || order.paymentType !== 'unpaid') {
+      console.warn('[setPaymentType] order already billed or cancelled; aborting', orderId);
+      return;
+    }
     if (paymentType === 'part_payment') validatePaymentBreakdown(breakdown, order.total);
     const prev = get().orders;
     const now = new Date().toISOString();
@@ -940,3 +1021,74 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     }
   },
 }));
+
+// STAGE C (2026-09-01): replays a cafe order that was completed offline
+// (see submitOrder's `offline` branch above) — allocates the real atomic
+// order number that couldn't be gotten while disconnected, inserts the real
+// row under the SAME client-generated orderId (so nothing elsewhere needs to
+// know the id ever changed), then reconciles local state: clears
+// `pendingSync`, sets `needsReprint` so the biller gets a clear "print the
+// final bill" prompt (the customer's copy so far only ever showed the
+// provisional placeholder, never a real GST-relevant number).
+type QueuedCafeOrder = {
+  orderId: string; tableNumber: number | null; orderType: OrderType; items: CartItem[];
+  subtotal: number; discount: number; discountType: 'percentage' | 'flat'; discountValue: number;
+  total: number; status: OrderStatus; createdBy: string; notes: string | null; customerName: string | null;
+  paymentType: PaymentType; paymentBreakdown: PaymentBreakdown | null; billedBy: string | null;
+  orderSource: OrderSource; createdAt: string; parcelCharges: number;
+};
+
+registerReplayHandler('cafe_order_submit', async (_kind, payload) => {
+  const p = payload as QueuedCafeOrder;
+  const { data: numData, error: numError } = await supabase.rpc('get_next_order_number');
+  if (numError || !numData) return { ok: false, error: numError?.message ?? 'Failed to get a real order number.' };
+  const orderNumber = numData as number;
+  const row = {
+    id: p.orderId, order_number: orderNumber, table_number: p.tableNumber, order_type: p.orderType,
+    items: p.items, subtotal: p.subtotal, discount: p.discount, discount_type: p.discountType,
+    discount_value: p.discountValue, total: p.total, status: p.status, created_by: p.createdBy,
+    notes: p.notes, customer_name: p.customerName, payment_type: p.paymentType, payment_breakdown: p.paymentBreakdown,
+    billed_by: p.billedBy, order_source: p.orderSource, created_at: p.createdAt, updated_at: new Date().toISOString(),
+    parcel_charges: p.parcelCharges,
+  };
+  const { error } = await supabase.from('orders').insert(row);
+  if (error) return { ok: false, error: error.message };
+  useOrderStore.setState((state) => ({
+    orders: state.orders.map((o) => o.id === p.orderId ? { ...o, orderNumber, pendingSync: false, needsReprint: true } : o),
+  }));
+  return { ok: true };
+});
+
+// OFFLINE FIX (2026-09-03): submitAdvanceOrder's sibling to the
+// cafe_order_submit replay above — allocates the real order number and
+// inserts the advance/pre-order row under the same client-generated orderId,
+// then reconciles pendingSync/needsReprint the same way.
+type QueuedCafeAdvanceOrder = {
+  orderId: string; tableNumber: number | null; orderType: OrderType; items: CartItem[];
+  subtotal: number; total: number; fullAmount: number; createdBy: string; notes: string | null;
+  customerName: string | null; advanceAmount: number; advancePaidBy: string; balanceDue: number;
+  deliveryDate: string; createdAt: string; isFullPayment: boolean;
+};
+
+registerReplayHandler('cafe_advance_order_submit', async (_kind, payload) => {
+  const p = payload as QueuedCafeAdvanceOrder;
+  const { data: numData, error: numError } = await supabase.rpc('get_next_order_number');
+  if (numError || !numData) return { ok: false, error: numError?.message ?? 'Failed to get a real order number.' };
+  const orderNumber = numData as number;
+  const nowIso = new Date().toISOString();
+  const row = {
+    id: p.orderId, order_number: orderNumber, table_number: p.tableNumber, order_type: p.orderType,
+    items: p.items, subtotal: p.subtotal, discount: 0, discount_type: 'flat', discount_value: 0,
+    total: p.total, full_amount: p.fullAmount, status: 'served', created_by: p.createdBy, billed_by: p.createdBy,
+    notes: p.notes, customer_name: p.customerName, payment_type: 'advance', order_source: 'staff',
+    advance_amount: p.advanceAmount, advance_paid_by: p.advancePaidBy, balance_due: p.balanceDue,
+    delivery_date: p.deliveryDate, created_at: p.createdAt, updated_at: nowIso,
+    ...(p.isFullPayment ? { fully_paid_at: nowIso, balance_payment_type: p.advancePaidBy, balance_paid_by: p.createdBy } : {}),
+  };
+  const { error } = await supabase.from('orders').insert(row);
+  if (error) return { ok: false, error: error.message };
+  useOrderStore.setState((state) => ({
+    orders: state.orders.map((o) => o.id === p.orderId ? { ...o, orderNumber, pendingSync: false, needsReprint: true } : o),
+  }));
+  return { ok: true };
+});

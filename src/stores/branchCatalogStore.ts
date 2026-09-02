@@ -223,7 +223,14 @@ export const useBranchCatalogStore = create<BranchCatalogState>((set, get) => ({
     if (!row) return { item: null, error: errorMessage ?? 'Failed to add item.' };
     const created = mapDbRow(row);
     const stockLinkError = await ensureStockLink(created);
-    if (stockLinkError) return { item: null, error: `Item was created but its stock row could not be linked: ${stockLinkError}` };
+    // AUDIT FIX (2026-09-02): the catalog row (`created`) is already
+    // committed in the DB at this point regardless of whether the stock
+    // link succeeded — returning {item:null} here, without ever updating
+    // local state, made the caller believe nothing was created. A retry
+    // then created a second row (different barcode) for the same item, and
+    // the UI kept showing the item as missing until an unrelated refresh.
+    // Always commit `created` to state; surface the stock-link failure as a
+    // non-fatal warning instead of a hard error.
     set((state) => ({
       items: {
         ...state.items,
@@ -231,6 +238,7 @@ export const useBranchCatalogStore = create<BranchCatalogState>((set, get) => ({
           .sort((a, b) => a.barcode - b.barcode),
       },
     }));
+    if (stockLinkError) return { item: created, error: `Item was created, but its stock row could not be linked: ${stockLinkError}. It may not show up in stock counts until this is resolved.` };
     return { item: created, error: null };
   },
 
@@ -274,19 +282,24 @@ export const useBranchCatalogStore = create<BranchCatalogState>((set, get) => ({
     }
 
     const stockLinkError = await ensureStockLink(saved);
-    if (stockLinkError) return `Item was updated but its stock row could not be linked: ${stockLinkError}`;
 
     // The database trigger mirrors the canonical branch_items row into the
     // legacy compatibility table in the same transaction. Never write the
     // legacy table from the browser, because a failed/fire-and-forget write can
     // make an old price reappear after refresh.
 
+    // AUDIT FIX (2026-09-02): the DB write (price/name/etc) already
+    // committed successfully by this point regardless of ensureStockLink's
+    // result — returning early here without ever calling set() left the
+    // cashier's screen showing the OLD price until an unrelated
+    // refresh/realtime event. Always commit `saved` to local state.
     set((state) => ({
       items: {
         ...state.items,
         [branch]: state.items[branch].map((entry) => entry.barcode === barcode ? saved! : entry),
       },
     }));
+    if (stockLinkError) return `Item was updated, but its stock row could not be linked: ${stockLinkError}. It may not show up in stock counts until this is resolved.`;
     return null;
   },
 
@@ -355,7 +368,33 @@ export const useBranchCatalogStore = create<BranchCatalogState>((set, get) => ({
           .on(
             'postgres_changes',
             { event: '*', schema: 'public', table: 'branch_items', filter: `branch=eq.${branch}` },
-            () => { void get().loadCatalog(branch, true); },
+            // REALTIME FIX (2026-09-01): this used to call loadCatalog(branch,
+            // true) — a full table refetch — on every single change with no
+            // debounce at all. Replaced with a direct row-level patch keyed by
+            // barcode (matches branchStore.ts's applyBranchRealtimeChange
+            // pattern), so one price/item edit no longer re-downloads the
+            // whole catalogue. Only patches the normal "database" case —
+            // loadCatalog's legacy/seed fallback paths are unaffected since
+            // this only fires once branch_items itself is receiving writes.
+            (payload) => {
+              const event = payload as { eventType?: string; new?: Record<string, unknown>; old?: { barcode?: number } };
+              const barcode = event.new?.barcode != null ? Number(event.new.barcode) : (event.old?.barcode != null ? Number(event.old.barcode) : null);
+              if (barcode == null) return;
+              if (event.eventType === 'DELETE') {
+                set((state) => ({
+                  items: { ...state.items, [branch]: state.items[branch].filter((entry) => entry.barcode !== barcode) },
+                }));
+                return;
+              }
+              const changed = mapDbRow(event.new ?? {});
+              set((state) => ({
+                items: {
+                  ...state.items,
+                  [branch]: [...state.items[branch].filter((entry) => entry.barcode !== barcode), changed]
+                    .sort((a, b) => a.barcode - b.barcode),
+                },
+              }));
+            },
           )
           .subscribe();
         channels.set(branch, ch);

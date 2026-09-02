@@ -221,7 +221,13 @@ type WalletPromotionState = {
   loadingWallets: boolean;
   loadingPromotions: boolean;
   error: string;
-  lastLoadedAt: number | null;
+  // AUDIT FIX (2026-09-02): was a single shared `lastLoadedAt` for both
+  // loadWallets and loadPromotions — loading promotions first stamped a
+  // fresh timestamp that made a subsequent loadWallets() within 30s wrongly
+  // think ITS data was fresh too and skip loading, leaving `wallets: []`.
+  // Split into two independent timestamps.
+  walletsLoadedAt: number | null;
+  promotionsLoadedAt: number | null;
   loadWallets: (force?: boolean) => Promise<void>;
   loadPromotions: (force?: boolean) => Promise<void>;
   findWallets: (query: string) => WalletCustomer[];
@@ -248,11 +254,12 @@ export const useWalletPromotionStore = create<WalletPromotionState>((set, get) =
   loadingWallets: false,
   loadingPromotions: false,
   error: '',
-  lastLoadedAt: null,
+  walletsLoadedAt: null,
+  promotionsLoadedAt: null,
 
   loadWallets: async (force = false) => {
     if (get().loadingWallets) return;
-    if (!force && get().lastLoadedAt && Date.now() - get().lastLoadedAt! < 30_000) return;
+    if (!force && get().walletsLoadedAt && Date.now() - get().walletsLoadedAt! < 30_000) return;
     set({ loadingWallets: true, error: '' });
     const [{ data: walletRows, error: walletError }, { data: transactionRows, error: transactionError }] = await Promise.all([
       supabase.from('wallet_customer_summary').select('*').order('updated_at', { ascending: false }).limit(2000),
@@ -266,20 +273,20 @@ export const useWalletPromotionStore = create<WalletPromotionState>((set, get) =
       wallets: (walletRows || []).map((row) => walletFromRow(row as Record<string, unknown>)),
       walletTransactions: transactionError ? get().walletTransactions : (transactionRows || []).map((row) => transactionFromRow(row as Record<string, unknown>)),
       loadingWallets: false,
-      lastLoadedAt: Date.now(),
+      walletsLoadedAt: Date.now(),
     });
   },
 
   loadPromotions: async (force = false) => {
     if (get().loadingPromotions) return;
-    if (!force && get().lastLoadedAt && Date.now() - get().lastLoadedAt! < 30_000 && get().promotions.length) return;
+    if (!force && get().promotionsLoadedAt && Date.now() - get().promotionsLoadedAt! < 30_000 && get().promotions.length) return;
     set({ loadingPromotions: true, error: '' });
     const { data, error } = await supabase.from('promotion_campaign_summary').select('*').order('priority', { ascending: false }).order('updated_at', { ascending: false }).limit(1000);
     if (error) {
       set({ loadingPromotions: false, error: /promotion_campaign_summary|schema cache|does not exist/i.test(error.message) ? 'Promotions database migration is not installed yet.' : error.message });
       return;
     }
-    set({ promotions: (data || []).map((row) => campaignFromRow(row as Record<string, unknown>)), loadingPromotions: false, lastLoadedAt: Date.now() });
+    set({ promotions: (data || []).map((row) => campaignFromRow(row as Record<string, unknown>)), loadingPromotions: false, promotionsLoadedAt: Date.now() });
   },
 
   findWallets: (query) => {

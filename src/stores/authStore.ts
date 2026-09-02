@@ -158,7 +158,16 @@ export const useAuthStore = create<AuthState>()(
             p_display_name: user.displayName,
             p_role:         user.role,
           });
-        if (error) return error.code === '23505' ? 'Username already taken' : error.message;
+        if (error) {
+          if (error.code === '23505') return 'Username already taken';
+          if (/ROLE_NOT_ALLOWED/i.test(error.message ?? '')) {
+            return 'Only an Owner account can create Owner or Administrator accounts.';
+          }
+          if (/SESSION_REQUIRED/i.test(error.message ?? '')) {
+            return 'Your session has expired — please log in again.';
+          }
+          return error.message;
+        }
         if (!data) return 'Failed to add staff member';
         set((s) => ({ staffList: [...s.staffList, rowToUser(data as Record<string, unknown>)] }));
         return null;

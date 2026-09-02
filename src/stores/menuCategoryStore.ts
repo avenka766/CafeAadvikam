@@ -125,26 +125,34 @@ export const useMenuCategoryStore = create<MenuCategoryState>((set, get) => ({
   subscribe: (() => {
     let channel: ReturnType<typeof supabase.channel> | null = null;
     let refCount = 0;
-    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
     return () => {
       refCount += 1;
       if (!channel) {
-        // EGRESS FIX (2026-08-15): debounce collapses a burst of changes
-        // into one reload instead of one per event — same fix already
-        // proven on cake_master_orders.
-        const scheduleReload = () => {
-          if (debounceTimer) clearTimeout(debounceTimer);
-          debounceTimer = setTimeout(() => { void get().loadCategories(true); }, 2000);
-        };
+        // REALTIME FIX (2026-09-01): this used to debounce-then-refetch the
+        // whole categories table on every change — replaced with a direct
+        // row-level patch (matches branchStore.ts's applyBranchRealtimeChange
+        // pattern), so one category edit no longer re-downloads all of them.
         channel = supabase
           .channel('menu-categories-live')
-          .on('postgres_changes', { event: '*', schema: 'public', table: 'menu_categories' }, scheduleReload)
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'menu_categories' }, (payload) => {
+            const event = payload as { eventType?: string; new?: Record<string, unknown>; old?: { id?: string } };
+            const id = String(event.new?.id ?? event.old?.id ?? '');
+            if (!id) return;
+            if (event.eventType === 'DELETE') {
+              set((state) => ({ categories: state.categories.filter((c) => c.id !== id) }));
+              return;
+            }
+            const changed = mapDbRow(event.new ?? {});
+            set((state) => ({
+              categories: [...state.categories.filter((c) => c.id !== id), changed]
+                .sort((a, b) => a.sortOrder - b.sortOrder),
+            }));
+          })
           .subscribe();
       }
       return () => {
         refCount -= 1;
         if (refCount <= 0 && channel) {
-          if (debounceTimer) clearTimeout(debounceTimer);
           void supabase.removeChannel(channel);
           channel = null;
           refCount = 0;

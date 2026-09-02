@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { supabase } from '@/lib/supabase';
+import { makeSingletonSubscriber } from '@/lib/realtimeChannel';
 import type { MenuItem } from '@/types';
 import { useAuthStore } from '@/stores/authStore';
 
@@ -166,19 +167,46 @@ export const useMenuStore = create<MenuState>()((set, get) => ({
     return null;
   },
 
-  subscribe: () => {
-    // EGRESS FIX (2026-08-15): every single insert/update/delete on
-    // menu_items used to fire an immediate full reload — a bulk edit across
-    // many items fired that many back-to-back reloads. Debounce collapses a
-    // burst into one, same fix already proven on cake_master_orders.
-    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
-    const scheduleReload = () => {
-      if (debounceTimer) clearTimeout(debounceTimer);
-      debounceTimer = setTimeout(() => { void get().loadMenu(true); }, 2000);
-    };
-    const channel = supabase.channel('menu-items-live').on('postgres_changes', { event: '*', schema: 'public', table: 'menu_items' }, scheduleReload).subscribe();
-    return () => { if (debounceTimer) clearTimeout(debounceTimer); void supabase.removeChannel(channel); };
-  },
+  // REALTIME FIX (2026-09-01): opening a fresh `supabase.channel(...)` on
+  // every `subscribe()` call with no ref-count/dedupe guard was fixed here —
+  // wrapped in makeSingletonSubscriber, same safety every other store's
+  // realtime subscription already has.
+  // EGRESS FIX (2026-09-03): the debounce above only ever collapsed BURSTS
+  // of edits into one call — every one of those calls still re-downloaded
+  // the ENTIRE menu_items table (loadMenu(true)), and this is the one store
+  // that subscription applies to the PUBLIC storefront, not just staff —
+  // every customer with the QR menu open re-fetches the whole menu 2s after
+  // any admin edit, not just the row that changed. Replaced with the same
+  // direct row-level patch every other store's realtime handler already
+  // uses (see bakeryItemsStore.ts's identical fix) — no refetch at all now,
+  // on either the admin or the public-menu side.
+  subscribe: makeSingletonSubscriber('menu-items-live', (ch) =>
+    ch.on('postgres_changes', { event: '*', schema: 'public', table: 'menu_items' },
+      (payload) => {
+        const event = payload as { eventType?: string; new?: Record<string, unknown>; old?: { id?: string } };
+        const id = String(event.new?.id ?? event.old?.id ?? '');
+        if (!id) return;
+        if (event.eventType === 'DELETE') {
+          set((state) => ({ items: state.items.filter((item) => item.id !== id) }));
+          return;
+        }
+        const d = event.new ?? {};
+        const changed: MenuItem = {
+          id: String(d.id ?? id),
+          name: String(d.name ?? ''),
+          price: Number(d.price ?? 0),
+          category: String(d.category ?? ''),
+          timing: d.timing as MenuItem['timing'],
+          enabled: Boolean(d.enabled),
+          imageUrl: (d.image_url as string | null) || undefined,
+        };
+        set((state) => ({
+          items: state.items.some((item) => item.id === id)
+            ? state.items.map((item) => (item.id === id ? changed : item))
+            : [...state.items, changed].sort((a, b) => a.id.localeCompare(b.id)),
+        }));
+      }),
+  ),
 
   setItemImage: async (id: string, imageUrl: string) => {
     const prevItem = get().items.find((i) => i.id === id);
