@@ -407,10 +407,18 @@ export default function ChatBot() {
   const handleContactSubmit = (form: ContactForm) => {
     const waText = `Hi Cafe Aadvikam! 🙏\n\n*${form.type}*\nName: ${form.name}\nPhone: ${form.phone}${form.details ? '\nDetails: ' + form.details : ''}`;
     openWA(waText);
+    // BUG FIX (audit 2026-09-02): validatePhone only checked the DIGIT COUNT after
+    // stripping non-digits, but the ORIGINAL unstripped form.phone (any markup intact)
+    // is what gets interpolated below into a bot message rendered via
+    // dangerouslySetInnerHTML — a phone field like "9876543210<img onerror=...>" passes
+    // validation and executes as raw HTML in this browser session. Self-XSS only (purely
+    // local chat state, never sent to a backend or shown to any other user), but a real
+    // defect — escape it before it reaches the HTML string.
+    const safePhone = form.phone.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
     const confirmMsg: Message = {
       id: crypto.randomUUID(),
       role: 'bot',
-      text: `Your <strong>${form.type}</strong> details have been sent via WhatsApp! We'll get back to you on <strong>${form.phone}</strong> shortly. 🙏`,
+      text: `Your <strong>${form.type}</strong> details have been sent via WhatsApp! We'll get back to you on <strong>${safePhone}</strong> shortly. 🙏`,
       time: nowStr(),
     };
     setMessages(prev => [...prev, confirmMsg]);

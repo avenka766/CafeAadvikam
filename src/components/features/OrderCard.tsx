@@ -293,7 +293,7 @@ export default function OrderCard({ order, showActions = false, counterOpenedTod
         <div className="px-4 py-3 flex items-center justify-between">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="font-display text-xl font-bold text-foreground">
-              #{String(order.orderNumber).padStart(3, '0')}
+              {order.pendingSync ? `#OFFLINE-${order.id.slice(0, 6).toUpperCase()}` : `#${String(order.orderNumber).padStart(3, '0')}`}
             </span>
             <span className={`text-[10px] font-body font-bold px-2.5 py-0.5 rounded-full border ${ORDER_STATUS_COLORS[order.status]}`}>
               {ORDER_STATUS_LABELS[order.status]}
@@ -311,6 +311,35 @@ export default function OrderCard({ order, showActions = false, counterOpenedTod
             {expanded ? <ChevronUp className="size-4" /> : <ChevronDown className="size-4" />}
           </button>
         </div>
+
+        {/* OFFLINE FIX (2026-09-01): this order was completed while offline
+            and hasn't synced yet — the number shown above is a provisional
+            placeholder, never a real GST-relevant bill number. */}
+        {order.pendingSync && (
+          <div className="mx-3.5 mb-2 flex items-center gap-1.5 rounded-lg border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-[11px] font-body font-bold text-amber-800">
+            <AlertCircle className="size-3.5 shrink-0" />
+            Offline — syncing to get the real bill number
+          </div>
+        )}
+        {/* Synced back with a real bill number since the receipt was first
+            printed — the customer's copy still shows the old provisional
+            one, so this stays visible until someone actually reprints. */}
+        {order.needsReprint && (
+          <div className="mx-3.5 mb-2 flex items-center justify-between gap-2 rounded-lg border border-blue-300 bg-blue-50 px-2.5 py-1.5">
+            <span className="text-[11px] font-body font-bold text-blue-800">Synced — real bill #{String(order.orderNumber).padStart(3, '0')} ready</span>
+            <button
+              onClick={() => {
+                useOrderStore.setState((state) => ({
+                  orders: state.orders.map((o) => o.id === order.id ? { ...o, needsReprint: false } : o),
+                }));
+                setShowReceipt(true);
+              }}
+              className="shrink-0 rounded-md bg-blue-600 px-2 py-1 text-[10px] font-body font-bold text-white active:scale-95"
+            >
+              Reprint Final Bill
+            </button>
+          </div>
+        )}
 
         {/* Meta */}
         <div className="px-3.5 pb-2 flex flex-wrap gap-3 text-xs text-muted-foreground font-body">

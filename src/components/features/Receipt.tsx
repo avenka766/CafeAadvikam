@@ -95,7 +95,11 @@ table{width:100%;border-collapse:collapse}td{padding:1px 2px;vertical-align:top}
   const yy = String(dateObj.getFullYear()).slice(2);
   const dateStr = `${dd}/${mm}/${yy}`;
   const timeStr = formatTime(order.createdAt);
-  const billNo  = String(order.orderNumber).padStart(4, '0');
+  // OFFLINE FIX (2026-09-01): an order completed while offline doesn't have
+  // a real, sequential bill number yet — orderNumber is a 0 placeholder
+  // until it syncs (see orderStore.ts's submitOrder / Order.pendingSync).
+  // Never print the placeholder as if it were a real number.
+  const billNo  = order.pendingSync ? `OFFLINE-${order.id.slice(0, 8).toUpperCase()}` : String(order.orderNumber).padStart(4, '0');
   const kotNo   = String(order.orderNumber).padStart(2, '0');
   const orderLabel = order.orderType === 'dine_in' && order.tableNumber
     ? `Table ${order.tableNumber}` : 'Pick Up';
@@ -159,6 +163,12 @@ table{width:100%;border-collapse:collapse}td{padding:1px 2px;vertical-align:top}
           <div className="border-t-2 border-dashed border-gray-500 my-3" />
 
           {/* PAID BILL */}
+          {order.pendingSync && (
+            <div className="text-center mb-2 border border-dashed border-black py-1">
+              <p className="text-[11px] font-black">PROVISIONAL - OFFLINE</p>
+              <p className="text-[10px] font-bold">Not a final GST bill</p>
+            </div>
+          )}
           <div className="text-center mb-2">
             <p className="text-sm font-black tracking-widest">PAID</p>
             <p className="text-sm font-black">{CAFE.name}</p>
