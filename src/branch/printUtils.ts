@@ -120,7 +120,14 @@ function printVrsnbReceiptBill(bill: BranchBillRecord, duplicate = false, target
     <div class="brand">SNB</div>
     <div class="c sub">SWEETS &amp; BAKES</div>
     <div class="c sub">VRSNB FOODS LLP</div>
-    ${returnBill._isReturn ? '<div class="stamp">RETURN BILL</div>' : duplicate ? '<div class="stamp">DUPLICATE BILL</div>' : '<div class="c bold" style="font-size:14px;margin:5px 0">PAID</div>'}
+    ${
+      // OFFLINE FIX (2026-09-01): make an offline-completed bill unmistakable
+      // on the printed slip itself — billNo already carries an OFFLINE-...
+      // marker instead of a real sequential number, but that alone is easy
+      // to miss at a glance on a busy counter.
+      bill.pendingSync ? '<div class="stamp">PROVISIONAL - OFFLINE<br/>Not a final GST bill</div>' :
+      returnBill._isReturn ? '<div class="stamp">RETURN BILL</div>' : duplicate ? '<div class="stamp">DUPLICATE BILL</div>' : '<div class="c bold" style="font-size:14px;margin:5px 0">PAID</div>'
+    }
     <div class="dash"></div>
     <div class="c bold" style="font-size:13px">VRSNB FOODS LLP</div>
     <div class="c sub">#109/1C, Hosur main Road, Berigai,</div>
@@ -181,7 +188,7 @@ function printSnbCounterBill(bill: BranchBillRecord, duplicate = false, target?:
   const html = `<!doctype html><html><head><title>${title} ${bill.billNo}</title><style>
     @page{size:80mm auto;margin:3mm}body{font-family:Arial,sans-serif;font-size:11px;color:#111}.c{text-align:center}.brand{font-size:20px;font-weight:900;line-height:1.05}.small{font-size:10px}.doc{font-size:14px;font-weight:900;letter-spacing:.03em;margin:8px 0}.row,.pay{display:flex;justify-content:space-between;gap:8px}.dash{border-top:1px solid #111;margin:6px 0}table{width:100%;border-collapse:collapse}th{border-top:1px solid #111;border-bottom:1px solid #111;font-size:11px;text-align:left;padding:3px 2px}td{padding:3px 2px;vertical-align:top}.num{text-align:right}.total-row td{border-top:1px solid #111;font-weight:900}.summary{margin-left:auto;width:72%;font-size:12px}.summary .row{padding:2px 0}.net{border-top:1px solid #111;border-bottom:1px solid #111;font-size:16px;font-weight:900;margin-top:4px;padding:4px 0}.paybox{margin-top:8px;text-align:center}.paytitle{border-top:1px solid #111;border-bottom:1px solid #111;display:inline-block;min-width:64%;padding:2px 0}.gst{font-size:9px;margin-top:8px}.gst th,.gst td{border:1px solid #111;padding:2px;text-align:right}.gst th:first-child,.gst td:first-child{text-align:left}.footer{margin-top:10px;text-align:center;font-size:13px;font-weight:800}.copy{border:1px solid #111;font-weight:900;margin-bottom:5px;padding:3px;text-align:center}
   </style></head><body>
-    ${(duplicate || returnBill._isReturn) ? `<div class="copy">${title}</div>` : ''}
+    ${bill.pendingSync ? '<div class="copy">PROVISIONAL - OFFLINE<br/>Not a final GST bill</div>' : (duplicate || returnBill._isReturn) ? `<div class="copy">${title}</div>` : ''}
     <div class="c brand">${business.name}</div>
     <div class="c small">${business.lines.join('<br/>')}</div>
     <div class="c">GSTIN : ${business.gstin}</div>

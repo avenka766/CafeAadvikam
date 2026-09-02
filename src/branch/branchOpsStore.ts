@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { PersistStorage, StorageValue } from "zustand/middleware";
 import { supabase } from "@/lib/supabase";
+import { useOfflineQueueStore, registerReplayHandler } from "@/lib/offlineQueue";
 import type { Branch } from "./types";
 
 type PayMode = "cash" | "upi" | "card" | "split" | "bank" | "credit" | "wallet";
@@ -80,6 +81,16 @@ export interface BranchBillRecord {
   additionalCharges?: number;
   refundAmount?: number;
   refundMode?: "cash" | "upi" | "card";
+  // OFFLINE FIX (2026-09-01): set when this bill was completed while the
+  // browser had no network connection. `billNo`/`invoiceNo` are NOT real,
+  // sequential values yet in this state (see BranchBillingProTab.tsx's
+  // checkout) — any receipt/print/display surface showing the bill number
+  // MUST check this flag first and show a clearly-marked provisional label.
+  pendingSync?: boolean;
+  // Set once the real bill number has been assigned (this bill synced after
+  // being offline) but the customer's copy still shows the old provisional
+  // one — surfaces a "reprint the final bill" prompt until cleared.
+  needsReprint?: boolean;
 }
 
 export interface BranchCreditPayment {
@@ -800,6 +811,37 @@ interface BranchOpsState {
 
 const BRANCH_OPS_STATE_KEY = "cafe-aadvikam-branch-ops-v1";
 
+// OFFLINE FIX (2026-09-01): the row shape this upserts, pulled out so the
+// same object can be built once and reused for both the live attempt below
+// and a queued retry (see offlineMirrorRow/queueMirrorRow below).
+type MirrorRow = {
+  branch: Branch;
+  record_type: string;
+  record_id: string;
+  record_no: string | null;
+  amount: number | null;
+  status: string | null;
+  actor: string | null;
+  payload: unknown;
+  updated_at: string;
+};
+
+async function writeMirrorRow(row: MirrorRow): Promise<{ ok: boolean; error?: string }> {
+  const { error } = await supabase
+    .from("branch_operation_records")
+    .upsert(row, { onConflict: "branch,record_type,record_id" });
+  if (error && !/branch_operation_records|does not exist|schema cache/i.test(error.message)) {
+    return { ok: false, error: error.message };
+  }
+  return { ok: true };
+}
+
+// STAGE B (2026-09-01): registered once at module load — lets the shared
+// offline queue (src/lib/offlineQueue.ts) replay a queued mirror write once
+// the connection returns, without offlineQueue.ts needing to know anything
+// about branch_operation_records itself.
+registerReplayHandler("branch_operation_record", async (_kind, payload) => writeMirrorRow(payload as MirrorRow));
+
 const mirrorOperationRecord = (
   branch: Branch,
   recordType: string,
@@ -807,27 +849,34 @@ const mirrorOperationRecord = (
   payload: unknown,
   details: { recordNo?: string; amount?: number; status?: string; actor?: string } = {},
 ) => {
-  void supabase
-    .from("branch_operation_records")
-    .upsert(
-      {
-        branch,
-        record_type: recordType,
-        record_id: recordId,
-        record_no: details.recordNo ?? null,
-        amount: details.amount ?? null,
-        status: details.status ?? null,
-        actor: details.actor ?? null,
-        payload,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: "branch,record_type,record_id" },
-    )
-    .then(({ error }) => {
-      if (error && !/branch_operation_records|does not exist|schema cache/i.test(error.message)) {
-        console.error(`[branchOpsStore] Failed to mirror ${recordType}:`, error.message);
-      }
-    });
+  const row: MirrorRow = {
+    branch,
+    record_type: recordType,
+    record_id: recordId,
+    record_no: details.recordNo ?? null,
+    amount: details.amount ?? null,
+    status: details.status ?? null,
+    actor: details.actor ?? null,
+    payload,
+    updated_at: new Date().toISOString(),
+  };
+  void writeMirrorRow(row).then((result) => {
+    if (result.ok) return;
+    // OFFLINE FIX (2026-09-01): this used to just console.error and drop the
+    // write entirely — a mutation made while genuinely offline (fetch itself
+    // fails, not a real server-side error) would silently never reach the
+    // server even after reconnecting, with no trace it had ever happened.
+    // The optimistic in-memory state each caller already applied via set()
+    // before calling this stands either way; queueing only guarantees the
+    // write itself isn't lost. A real (online) server-side error still just
+    // logs, same as before — enqueueing that would only ever fail the same
+    // way again on replay.
+    if (!navigator.onLine) {
+      void useOfflineQueueStore.getState().enqueue("branch_operation_record", row);
+      return;
+    }
+    console.error(`[branchOpsStore] Failed to mirror ${recordType}:`, result.error);
+  });
 };
 
 type BranchOperationRecordRow = {
@@ -1245,7 +1294,14 @@ const seq = (key: string, max = 99999) => {
     const branch = key.replace("stock-count-", "") as Branch;
     current = Math.max(0, ...state.stockCountReports.filter((r) => r.branch === branch).map((r) => suffix(r.reportNo)));
   }
-  return current >= max ? 1 : current + 1;
+  // AUDIT FIX (2026-09-02): this used to wrap back to 1 once `current`
+  // reached `max` (`return current >= max ? 1 : current + 1`) — deterministic,
+  // not a race: any branch that accumulates `max` lifetime records of a kind
+  // (500 for advance orders) got its next order number colliding with #1,
+  // corrupting lookups/dispatch-sync/reporting for both orders sharing that
+  // number. `max` was never a real width constraint on these purely-display
+  // reference suffixes — just always increment, unbounded.
+  return current + 1;
 };
 const audit = (
   branch: Branch,

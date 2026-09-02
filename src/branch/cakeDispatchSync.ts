@@ -59,7 +59,7 @@ export async function ensureCakeDispatchIncoming(order: CakeDispatchSource, acto
 
   const { data: operationRow, error: operationError } = await supabase
     .from('branch_operation_records')
-    .select('record_id,payload')
+    .select('record_id,payload,status')
     .eq('branch', order.branch)
     .eq('record_type', 'advance_order')
     .eq('record_id', order.source_order_id)
@@ -99,6 +99,30 @@ export async function ensureCakeDispatchIncoming(order: CakeDispatchSource, acto
     if (incomingError && incomingError.code !== '23505') {
       throw new Error(`Incoming stock could not be created: ${incomingError.message}`);
     }
+  }
+
+  // BUG FIX (audit 2026-09-02): this function reads a snapshot of the advance order's
+  // payload and unconditionally writes the WHOLE object back, including `status:
+  // 'dispatched'` on the row itself — with no check for whether the order has since moved
+  // to a terminal state. This function is called both from the manual "Dispatch" click AND
+  // a recurring background recovery poll (branchStore.ts's syncIncomingFromDispatches), so
+  // a delayed/retried run after the order has already been billed (updateAdvanceStatus ->
+  // 'Paid In Full', same branch_operation_records row) would silently revert it back to
+  // "dispatched" with a recomputed balanceAmount, discarding the real finalized state.
+  // Skip the payload/status overwrite entirely once the order is in a terminal business
+  // state — the branch_incoming row (this function's actual recovery purpose) is already
+  // handled above regardless.
+  if (operationRow.status === 'Paid In Full' || operationRow.status === 'Cancelled') {
+    return { dispatchedQty, dispatchId };
+  }
+
+  // Stale-resubmit guard, mirroring the same check already used by this codebase's other
+  // (unused) copy of this sync, syncAdvanceCakeDispatch in branchOpsStore.ts: if this order
+  // was already synced once (originalCakeKg snapshot exists) and the incoming dispatched
+  // quantity matches what's already recorded, this is a redundant re-run — skip the
+  // recompute/rewrite instead of unconditionally overwriting a settled value.
+  if (advance.originalCakeKg !== undefined && String(dispatchedQty) === advance.cakeKg) {
+    return { dispatchedQty, dispatchId };
   }
 
   const placedQty = quantity(advance.originalCakeKg) || quantity(firstLine.quantity) || quantity(advance.cakeKg);

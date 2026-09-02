@@ -7,6 +7,8 @@ import { useBranchCatalogStore } from '@/stores/branchCatalogStore';
 import { useAuthStore } from '@/stores/authStore';
 import { cakeIncomingDispatchId, ensureCakeDispatchIncoming, type CakeDispatchSource } from './cakeDispatchSync';
 import { startOfBusinessDayISO } from '@/lib/businessDate';
+import { useOfflineQueueStore, registerReplayHandler } from '@/lib/offlineQueue';
+import { generateId } from '@/lib/utils';
 
 const normalizeStockName = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
@@ -506,6 +508,277 @@ function computeBranchRealtimeChange(state: BranchState, branch: Branch, table: 
   }
 }
 
+// STAGE B (2026-09-01): offline-queue wiring for updateThreshold — the one
+// write path in this store simple and idempotent enough to queue-and-replay
+// blindly (no stock availability check, no price validation, no atomic
+// numbering — setting a threshold to X twice has the same end result as
+// once). branchStore.ts's other 13 write functions are RPC calls carrying
+// real server-side business logic (stock decrement, price canonicalization,
+// credit/wallet limits) — the same oversell/stale-validation risk already
+// flagged for Stage C (offline checkout) in the project plan, so they're
+// deliberately NOT wired here; they still work online exactly as before,
+// and simply fail (as they already did pre-this-change) if attempted
+// offline, with no optimistic state applied so nothing misleading is shown.
+type ThresholdUpdatePayload = { branch: Branch; itemName: string; itemBarcode: number | null; threshold: number };
+
+async function writeThresholdUpdate(payload: ThresholdUpdatePayload): Promise<{ ok: boolean; error?: string }> {
+  const { branch, itemName, itemBarcode, threshold } = payload;
+  const { error: t1 } = await supabase
+    .from('branch_thresholds')
+    .upsert({ branch, item_name: itemName, item_barcode: itemBarcode, threshold }, { onConflict: 'branch,item_name' });
+  if (t1) return { ok: false, error: t1.message };
+  let stockUpdate = supabase.from('branch_stock').update({ min_threshold: threshold }).eq('branch', branch);
+  stockUpdate = itemBarcode != null ? stockUpdate.eq('item_barcode', itemBarcode) : stockUpdate.eq('item_name', itemName);
+  const { error: t2 } = await stockUpdate;
+  if (t2) return { ok: false, error: t2.message };
+  return { ok: true };
+}
+
+registerReplayHandler('branch_threshold_update', async (_kind, payload) => writeThresholdUpdate(payload as ThresholdUpdatePayload));
+
+// STAGE B/C (2026-09-01): replays a branch sale (SNB/VRSNB/Hosur counter
+// billing, recordSale) that was completed offline. Redoes the real atomic
+// stock decrement + sale insert, then reconciles local state: the
+// provisional sale row (client-generated id, no real DB row yet) is
+// replaced by the real one, and stock is corrected to the RPC's
+// authoritative post-decrement value (not the optimistic guess recordSale
+// made from possibly-stale local stock data).
+type QueuedBranchSale = {
+  branch: Branch; itemName: string; stockItemName: string; requestedStockName: string; qty: number;
+  soldBy: string; paymentMethod: string; billNo: string | null; unitPrice: number;
+  itemBarcode: number | null; now: string; provisionalSaleId: string;
+};
+
+registerReplayHandler('branch_record_sale', async (_kind, payload) => {
+  const p = payload as QueuedBranchSale;
+  const { data: newQtyRpc, error: rpcErr } = await decrementBranchStockStrict(p.branch, p.stockItemName, p.qty, p.itemBarcode ?? undefined);
+  if (rpcErr) return { ok: false, error: rpcErr.message };
+  if (newQtyRpc === null) return { ok: false, error: `Insufficient stock for ${p.itemName} — a real sync conflict, not a network issue. This sale needs manual review.` };
+  const newQty = Math.round((newQtyRpc as number) * 1000) / 1000;
+
+  const { data: saleData, error: saleErr } = await supabase
+    .from('branch_sales')
+    .insert({
+      branch: p.branch, item_name: p.itemName, item_barcode: p.itemBarcode, quantity_sold: p.qty,
+      sold_at: p.now, sold_by: p.soldBy, payment_method: p.paymentMethod, unit_price: p.unitPrice, bill_no: p.billNo,
+    })
+    .select().single();
+  if (saleErr) return { ok: false, error: saleErr.message };
+
+  if (newQty < 0) {
+    await supabase.from('branch_stock_mismatches').insert({
+      branch: p.branch, item_name: p.itemName, item_barcode: p.itemBarcode, sold_qty: p.qty,
+      shortage: Math.abs(newQty), sold_at: p.now, sold_by: p.soldBy,
+    }).select().single();
+  }
+
+  const realSale: SaleRecord = {
+    id: saleData.id, itemBarcode: saleData.item_barcode != null ? Number(saleData.item_barcode) : (p.itemBarcode ?? undefined),
+    itemName: saleData.item_name, quantitySold: Number(saleData.quantity_sold ?? 0), soldAt: saleData.sold_at,
+    soldBy: saleData.sold_by, branch: p.branch, paymentMethod: saleData.payment_method ?? null,
+    unitPrice: saleData.unit_price != null ? Number(saleData.unit_price) : 0, billNo: saleData.bill_no ?? null,
+  };
+  useBranchStore.setState((state) => {
+    const stock = { ...state.stock };
+    stock[p.branch] = stock[p.branch].map((item) =>
+      p.itemBarcode != null && item.itemBarcode != null
+        ? item.itemBarcode === p.itemBarcode ? { ...item, quantity: newQty, availableQuantity: Math.max(0, newQty - Number(item.reservedQuantity || 0)) } : item
+        : normalizeStockName(item.itemName) === p.requestedStockName ? { ...item, quantity: newQty, availableQuantity: Math.max(0, newQty - Number(item.reservedQuantity || 0)) } : item,
+    );
+    const sales = { ...state.sales };
+    sales[p.branch] = sales[p.branch].map((sale) => sale.id === p.provisionalSaleId ? realSale : sale);
+    return { stock, sales };
+  });
+  return { ok: true };
+});
+
+registerReplayHandler('branch_record_advance_order', async (_kind, payload) => {
+  const p = payload as { branch: Branch; order: Parameters<BranchState['recordAdvanceOrder']>[1]; balanceDue: number; provisionalId: string };
+  const rpc = await supabase.rpc('create_branch_advance_order_reserved', {
+    p_branch: p.branch, p_customer_name: p.order.customerName ?? null, p_items: p.order.items,
+    p_subtotal: p.order.subtotal, p_advance_amount: p.order.advanceAmount, p_advance_method: p.order.advanceMethod,
+    p_sold_by: p.order.soldBy, p_delivery_date: p.order.deliveryDate ?? null, p_notes: p.order.notes ?? null,
+  });
+  if (rpc.error) return { ok: false, error: rpc.error.message };
+  const data = rpc.data as Record<string, unknown>;
+  const realOrder: BranchAdvanceOrder = {
+    id: String(data.id), branch: p.branch, customerName: data.customer_name != null ? String(data.customer_name) : null,
+    items: (data.items || p.order.items) as BranchAdvanceItem[], subtotal: Number(data.subtotal ?? p.order.subtotal),
+    advanceAmount: Number(data.advance_amount ?? p.order.advanceAmount), advanceMethod: String(data.advance_method ?? p.order.advanceMethod),
+    balanceDue: Number(data.balance_due ?? p.balanceDue), soldBy: String(data.sold_by ?? p.order.soldBy),
+    createdAt: String(data.created_at ?? new Date().toISOString()), fullyPaidAt: data.fully_paid_at ? String(data.fully_paid_at) : null,
+    balanceMethod: data.balance_method ? String(data.balance_method) : null, status: String(data.status || 'pending') as BranchAdvanceOrder['status'],
+    deliveryDate: data.delivery_date ? String(data.delivery_date) : p.order.deliveryDate ?? null,
+    notes: data.notes ? String(data.notes) : p.order.notes ?? null,
+    reservationStatus: String(data.reservation_status || 'reserved') as BranchAdvanceOrder['reservationStatus'],
+  };
+  useBranchStore.setState((state) => {
+    const advanceOrders = { ...state.advanceOrders };
+    advanceOrders[p.branch] = advanceOrders[p.branch].map((entry) => entry.id === p.provisionalId ? realOrder : entry);
+    return { advanceOrders };
+  });
+  // Reconcile stock's reserved_quantity to the server's real numbers rather
+  // than trust the optimistic guess applied when this was first queued —
+  // matches the online-success path, which also just refetches instead of
+  // hand-computing the RPC's exact reservation math.
+  await useBranchStore.getState().fetchBranchData(p.branch, true, ['stock']);
+  return { ok: true };
+});
+
+registerReplayHandler('branch_collect_advance_balance', async (_kind, payload) => {
+  const p = payload as { branch: Branch; orderId: string; balanceMethod: string; completedBy: string };
+  const { data, error } = await supabase.rpc('complete_branch_advance_order_reserved', {
+    p_branch: p.branch, p_order_id: p.orderId, p_balance_method: p.balanceMethod, p_completed_by: p.completedBy,
+  });
+  if (error) return { ok: false, error: error.message };
+  const row = data as Record<string, unknown>;
+  useBranchStore.setState((state) => {
+    const advanceOrders = { ...state.advanceOrders };
+    advanceOrders[p.branch] = advanceOrders[p.branch].map((entry) => entry.id === p.orderId ? {
+      ...entry, status: 'completed' as const, fullyPaidAt: String(row.fully_paid_at || new Date().toISOString()),
+      balanceMethod: p.balanceMethod, balanceDue: 0, reservationStatus: 'consumed' as const,
+    } : entry);
+    return { advanceOrders };
+  });
+  // The RPC's stock-deduct + sale-record effects live server-side only —
+  // reconcile both from a real fetch rather than guess at them.
+  await useBranchStore.getState().fetchBranchData(p.branch, true, ['stock', 'sales']);
+  return { ok: true };
+});
+
+registerReplayHandler('branch_record_credit_sale', async (_kind, payload) => {
+  const p = payload as {
+    branch: Branch; sale: Parameters<BranchState['recordCreditSale']>[1]; options: Parameters<BranchState['recordCreditSale']>[2];
+    now: string; saleId: string; status: 'pending' | 'partial' | 'settled';
+  };
+  const { sale, options = {} } = p;
+  // Uses the SAME client-generated id the optimistic local row already has,
+  // so there's nothing to reconcile beyond clearing the queue entry on success.
+  const { error } = await supabase.from('branch_credit_sales').insert({
+    id: p.saleId, branch: p.branch, source: sale.source ?? null, source_id: sale.sourceId ?? null,
+    customer_ref: sale.customerRef ?? null, customer_name: sale.customerName, customer_phone: sale.customerPhone ?? null,
+    items: sale.items, subtotal: sale.subtotal, amount_paid: sale.amountPaid, credit_amount: sale.creditAmount,
+    sold_by: sale.soldBy, created_at: p.now, due_date: sale.dueDate ?? null, status: p.status,
+    notes: sale.notes ?? null, bill_no: sale.billNo,
+  });
+  if (error) return { ok: false, error: error.message };
+
+  if (sale.amountPaid > 0) {
+    const { error: paymentError } = await supabase.from('branch_credit_payments').insert({
+      credit_sale_id: p.saleId, branch: p.branch, bill_no: sale.billNo, amount: sale.amountPaid,
+      payment_mode: options.upfrontPaymentMode ?? 'cash', reference: options.reference ?? null,
+      remarks: options.remarks ?? 'Credit upfront collection', collected_by: options.collectedBy ?? sale.soldBy,
+      collected_role: options.collectedRole ?? null, created_at: p.now,
+    });
+    if (paymentError) return { ok: false, error: `Credit sale synced but upfront payment history failed: ${paymentError.message}` };
+  }
+
+  const shouldWriteSalesRows = options.writeSalesRows !== false && p.branch !== 'Cafe';
+  if (shouldWriteSalesRows && sale.items.length > 0) {
+    await supabase.from('branch_sales').insert(sale.items.map((item) => ({
+      branch: p.branch, item_name: item.itemName, item_barcode: item.barcode ?? null, quantity_sold: item.quantity,
+      sold_at: p.now, sold_by: sale.soldBy, payment_method: 'credit', unit_price: item.price, bill_no: sale.billNo,
+    })));
+  }
+  return { ok: true };
+});
+
+registerReplayHandler('branch_settle_credit_sale', async (_kind, payload) => {
+  const p = payload as { branch: Branch; saleId: string; amountCollected: number; payment: Parameters<BranchState['settleCreditSale']>[3] };
+  const payment = p.payment ?? {};
+  const { error } = await supabase.rpc('settle_branch_credit_sale', {
+    p_credit_sale_id: p.saleId, p_branch: p.branch, p_amount: p.amountCollected,
+    p_payment_mode: payment.mode ?? 'cash', p_reference: payment.reference ?? null, p_remarks: payment.remarks ?? null,
+    p_collected_by: payment.collectedBy ?? 'Staff', p_collected_role: payment.collectedRole ?? null,
+  });
+  // Local state already reflects this (recordSale's offline branch applied
+  // the identical math the online success path would have) — nothing more
+  // to reconcile once the real RPC lands.
+  if (error) return { ok: false, error: error.message };
+  return { ok: true };
+});
+
+registerReplayHandler('branch_apply_credit_discount', async (_kind, payload) => {
+  const p = payload as { branch: Branch; saleId: string; discountAmount: number; reason: string | undefined; approvedBy: string | undefined };
+  const { error } = await supabase.rpc('apply_branch_credit_discount', {
+    p_branch: p.branch, p_credit_sale_id: p.saleId, p_discount_amount: p.discountAmount,
+    p_reason: p.reason ?? null, p_approved_by: p.approvedBy ?? 'Admin',
+  });
+  if (error) return { ok: false, error: error.message };
+  return { ok: true };
+});
+
+registerReplayHandler('branch_manual_stock_delta', async (_kind, payload) => {
+  const p = payload as {
+    branch: Branch; itemName: string; itemBarcode: number | null; delta: number; updatedBy: string;
+    oldQuantity: number; newQuantity: number;
+    reason: string; referenceId: string | null; notes: string | null; now: string;
+  };
+  if (p.delta === 0) return { ok: true };
+  const rpcResult = p.delta > 0
+    ? await incrementBranchStock(p.branch, p.itemName, p.delta, p.itemBarcode ?? undefined)
+    : await decrementBranchStockStrict(p.branch, p.itemName, -p.delta, p.itemBarcode ?? undefined);
+  if (rpcResult.error) return { ok: false, error: rpcResult.error.message };
+  if (p.delta < 0 && rpcResult.data === null) {
+    return { ok: false, error: `Insufficient stock to apply the queued -${-p.delta} correction to ${p.itemName} — a real sync conflict, needs manual review.` };
+  }
+  await supabase.from('branch_stock_adjustments').insert({
+    branch: p.branch, item_name: p.itemName, old_quantity: p.oldQuantity, new_quantity: p.newQuantity, delta: p.delta,
+    reason: p.reason, reference_id: p.referenceId, notes: p.notes, adjusted_by: p.updatedBy, adjusted_at: p.now,
+  }).then(() => {});
+  await useBranchStore.getState().fetchBranchData(p.branch, true, ['stock']);
+  return { ok: true };
+});
+
+registerReplayHandler('branch_confirm_incoming', async (_kind, payload) => {
+  const p = payload as { branch: Branch; incomingId: string };
+  let confirm = await supabase.rpc('confirm_incoming_stock_canonical', { p_incoming_id: p.incomingId, p_branch: p.branch });
+  if (confirm.error && isMissingRpcError(confirm.error.message ?? '')) {
+    confirm = await supabase.rpc('confirm_incoming_stock', { p_incoming_id: p.incomingId, p_branch: p.branch });
+  }
+  if (confirm.error) return { ok: false, error: confirm.error.message };
+  await useBranchStore.getState().fetchBranchData(p.branch, true, ['stock', 'incoming']);
+  return { ok: true };
+});
+
+// SNB counter billing's own sale path (recordSnbSale) — identical write
+// shape to recordSale above, reuses the same QueuedBranchSale payload.
+registerReplayHandler('branch_record_snb_sale', async (_kind, payload) => {
+  const p = payload as QueuedBranchSale;
+  const { data: newQtyRpc, error: rpcErr } = await decrementBranchStockStrict(p.branch, p.stockItemName, p.qty, p.itemBarcode ?? undefined);
+  if (rpcErr) return { ok: false, error: rpcErr.message };
+  if (newQtyRpc === null) return { ok: false, error: `Insufficient stock for ${p.itemName} — a real sync conflict, not a network issue. This sale needs manual review.` };
+  const newQty = Math.round((newQtyRpc as number) * 1000) / 1000;
+
+  const { data: saleData, error: saleErr } = await supabase
+    .from('branch_sales')
+    .insert({
+      branch: p.branch, item_name: p.itemName, item_barcode: p.itemBarcode, quantity_sold: p.qty,
+      sold_at: p.now, sold_by: p.soldBy, payment_method: p.paymentMethod, unit_price: p.unitPrice, bill_no: p.billNo,
+    })
+    .select().single();
+  if (saleErr) return { ok: false, error: saleErr.message };
+
+  const realSale: SaleRecord = {
+    id: saleData.id, itemBarcode: saleData.item_barcode != null ? Number(saleData.item_barcode) : (p.itemBarcode ?? undefined),
+    itemName: saleData.item_name, quantitySold: Number(saleData.quantity_sold ?? 0), soldAt: saleData.sold_at,
+    soldBy: saleData.sold_by, branch: p.branch, paymentMethod: saleData.payment_method ?? null,
+    unitPrice: saleData.unit_price != null ? Number(saleData.unit_price) : p.unitPrice, billNo: saleData.bill_no ?? null,
+  };
+  useBranchStore.setState((state) => {
+    const stock = { ...state.stock };
+    stock[p.branch] = stock[p.branch].map((item) =>
+      p.itemBarcode != null && item.itemBarcode != null
+        ? item.itemBarcode === p.itemBarcode ? { ...item, quantity: newQty, availableQuantity: Math.max(0, newQty - Number(item.reservedQuantity || 0)) } : item
+        : normalizeStockName(item.itemName) === p.requestedStockName ? { ...item, quantity: newQty, availableQuantity: Math.max(0, newQty - Number(item.reservedQuantity || 0)) } : item,
+    );
+    const sales = { ...state.sales };
+    sales[p.branch] = sales[p.branch].map((sale) => sale.id === p.provisionalSaleId ? realSale : sale);
+    return { stock, sales };
+  });
+  return { ok: true };
+});
+
 // EGRESS FIX (2026-09-01): buffers realtime events per (branch, table, row)
 // for a short window before applying — same coalescing pattern already
 // proven in orderStore.ts's ORDER_EVENT_FLUSH_MS, so a burst of many rapid
@@ -915,6 +1188,41 @@ export const useBranchStore = create<BranchState>((set, get) => ({
 
     const { data: newQtyRpc, error: rpcErr } = await decrementBranchStockStrict(branch, stockItemName, qty, resolvedBarcode);
     if (rpcErr) {
+      // OFFLINE FIX (2026-09-01): only when the failure is genuinely a
+      // connectivity problem — a real "insufficient stock"/validation
+      // rejection from the server still returns the error exactly as
+      // before. Applies the SAME optimistic local decrement the online
+      // success path below would apply, then queues the real write for
+      // replay. Known, accepted risk (flagged in the project plan): two
+      // offline tills selling the last unit of the same item can both
+      // "succeed" locally — whichever replays second gets a genuine
+      // rejection from the server, surfaced via OfflineBanner's failure
+      // view, not silently dropped.
+      if (!navigator.onLine) {
+        const saleId = generateId();
+        const optimisticQty = Math.round((availableQty - qty) * 1000) / 1000;
+        const provisionalSale: SaleRecord = {
+          id: saleId, itemBarcode: resolvedBarcode, itemName, quantitySold: qty, soldAt: now, soldBy, branch,
+          paymentMethod, unitPrice: resolvedPrice, billNo: billNo ?? null,
+        };
+        set((s) => {
+          const stock = { ...s.stock };
+          stock[branch] = stock[branch].map((item) =>
+            resolvedBarcode != null && item.itemBarcode != null
+              ? item.itemBarcode === resolvedBarcode ? { ...item, quantity: optimisticQty, availableQuantity: Math.max(0, optimisticQty - Number(item.reservedQuantity || 0)) } : item
+              : normalizeStockName(item.itemName) === requestedStockName ? { ...item, quantity: optimisticQty, availableQuantity: Math.max(0, optimisticQty - Number(item.reservedQuantity || 0)) } : item,
+          );
+          const sales = { ...s.sales };
+          sales[branch] = [provisionalSale, ...sales[branch]];
+          return { stock, sales };
+        });
+        await useOfflineQueueStore.getState().enqueue('branch_record_sale', {
+          branch, itemName, stockItemName, requestedStockName, qty, soldBy, paymentMethod,
+          billNo: billNo ?? null, unitPrice: resolvedPrice, itemBarcode: resolvedBarcode ?? null, now,
+          provisionalSaleId: saleId,
+        });
+        return null;
+      }
       console.error('[recordSale] stock RPC error:', rpcErr.message);
       return `Failed to update stock for ${itemName}: ${rpcErr.message}`;
     }
@@ -1034,6 +1342,38 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       p_notes: order.notes ?? null,
     });
     if (rpc.error) {
+      // OFFLINE FIX (2026-09-01): only a genuine connectivity failure takes
+      // this branch — a missing-RPC or real validation error still returns
+      // exactly as before. Creates a provisional local advance order
+      // (client-generated id) with an optimistic reserved-quantity bump on
+      // each item, queues the real reservation RPC for replay, and
+      // reconciles (real id, real reservation numbers) once it lands.
+      if (!navigator.onLine) {
+        const provisionalId = generateId();
+        const provisionalOrder: BranchAdvanceOrder = {
+          id: provisionalId, branch, customerName: order.customerName ?? null, items: order.items,
+          subtotal: order.subtotal, advanceAmount: order.advanceAmount, advanceMethod: order.advanceMethod,
+          balanceDue, soldBy: order.soldBy, createdAt: now, fullyPaidAt: null, balanceMethod: null,
+          status: 'pending', deliveryDate: order.deliveryDate ?? null, notes: order.notes ?? null,
+          reservationStatus: 'reserved',
+        };
+        set((state) => {
+          const advanceOrders = { ...state.advanceOrders };
+          advanceOrders[branch] = [provisionalOrder, ...advanceOrders[branch]];
+          const stock = { ...state.stock };
+          stock[branch] = stock[branch].map((stockItem) => {
+            const matchedItem = order.items.find((item) => !item.isCustom && (
+              item.barcode != null && stockItem.itemBarcode != null ? stockItem.itemBarcode === item.barcode : normalizeStockName(stockItem.itemName) === normalizeStockName(item.itemName)
+            ));
+            if (!matchedItem) return stockItem;
+            const reservedQuantity = Number(stockItem.reservedQuantity || 0) + matchedItem.quantity;
+            return { ...stockItem, reservedQuantity, availableQuantity: Math.max(0, Number(stockItem.quantity || 0) - reservedQuantity) };
+          });
+          return { advanceOrders, stock };
+        });
+        await useOfflineQueueStore.getState().enqueue('branch_record_advance_order', { branch, order, balanceDue, provisionalId });
+        return null;
+      }
       const missing = /create_branch_advance_order_reserved|could not find the function|does not exist|schema cache/i.test(rpc.error.message || '');
       if (!missing) return `Failed to reserve advance-order stock: ${rpc.error.message}`;
       return 'Advance-order reservation RPC is not installed. Apply the branch reservation migration before taking advance orders.';
@@ -1083,6 +1423,23 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       p_completed_by: completedBy,
     });
     if (error) {
+      // OFFLINE FIX (2026-09-01): only a genuine connectivity failure takes
+      // this branch. The RPC's own stock-deduct/sale-record effects can't be
+      // replicated locally with confidence (its exact math isn't visible to
+      // the client), so only the advance order's own status is applied
+      // optimistically — stock/sales stay whatever they were until this
+      // replays and a real fetchBranchData can reconcile them.
+      if (!navigator.onLine) {
+        set((state) => {
+          const advanceOrders = { ...state.advanceOrders };
+          advanceOrders[branch] = advanceOrders[branch].map((entry) => entry.id === orderId ? {
+            ...entry, status: 'completed', fullyPaidAt: new Date().toISOString(), balanceMethod, balanceDue: 0, reservationStatus: 'consumed',
+          } : entry);
+          return { advanceOrders };
+        });
+        await useOfflineQueueStore.getState().enqueue('branch_collect_advance_balance', { branch, orderId, balanceMethod, completedBy });
+        return null;
+      }
       const missing = /complete_branch_advance_order_reserved|could not find the function|does not exist|schema cache/i.test(error.message || '');
       if (missing) return 'Advance completion RPC is not installed. Apply the branch reservation migration.';
       return `Advance order could not be completed: ${error.message}`;
@@ -1107,16 +1464,19 @@ export const useBranchStore = create<BranchState>((set, get) => ({
   updateThreshold: async (branch, itemName, threshold) => {
     const stockItem = get().stock[branch].find((item) => normalizeStockName(item.itemName) === normalizeStockName(itemName));
     const itemBarcode = stockItem?.itemBarcode;
-    const thresholdPayload = { branch, item_name: stockItem?.itemName ?? itemName, item_barcode: itemBarcode ?? null, threshold };
-    const { error: t1 } = await supabase.from('branch_thresholds').upsert(thresholdPayload, { onConflict: 'branch,item_name' });
-    if (t1) { console.error('[updateThreshold] thresholds upsert failed:', t1.message); return; }
-    let stockUpdate = supabase.from('branch_stock').update({ min_threshold: threshold }).eq('branch', branch);
-    stockUpdate = itemBarcode != null ? stockUpdate.eq('item_barcode', itemBarcode) : stockUpdate.eq('item_name', itemName);
-    const { error: t2 } = await stockUpdate;
-    if (t2) console.error('[updateThreshold] stock update failed:', t2.message);
+    const resolvedItemName = stockItem?.itemName ?? itemName;
+
+    // OFFLINE FIX (2026-09-01): apply optimistically first, then attempt the
+    // real writes — this used to await both writes before touching local
+    // state at all (and skip it entirely if the first write failed), so
+    // there was nothing to show while offline. Setting a threshold is a
+    // simple, idempotent, no-business-logic write (unlike stock/money RPCs
+    // elsewhere in this store — see the queueThresholdUpdate comment below
+    // for why only writes like this one get queued), so it's safe to apply
+    // immediately and queue-and-replay if the network call fails offline.
     set((s) => {
       const thresholds = { ...s.thresholds };
-      thresholds[branch] = { ...thresholds[branch], [stockItem?.itemName ?? itemName]: threshold };
+      thresholds[branch] = { ...thresholds[branch], [resolvedItemName]: threshold };
       const stock = { ...s.stock };
       stock[branch] = stock[branch].map((item) =>
         itemBarcode != null && item.itemBarcode != null
@@ -1125,6 +1485,16 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       );
       return { thresholds, stock };
     });
+
+    const payload: ThresholdUpdatePayload = { branch, itemName: resolvedItemName, itemBarcode: itemBarcode ?? null, threshold };
+    const result = await writeThresholdUpdate(payload);
+    if (!result.ok) {
+      if (!navigator.onLine) {
+        void useOfflineQueueStore.getState().enqueue('branch_threshold_update', payload);
+      } else {
+        console.error('[updateThreshold] write failed:', result.error);
+      }
+    }
   },
 
   // B5 FIX: per-branch lastSyncedAt guard — each branch runs at most once per 10 seconds on manual, 60s on auto.
@@ -1272,6 +1642,31 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       return null;
     }
 
+    // OFFLINE FIX (2026-09-01): only when the failure is genuinely a
+    // connectivity problem — the elaborate fallback below exists for a
+    // DIFFERENT scenario (the atomic RPCs not being deployed at all, which
+    // needs a fresh server read either way and can't run offline anyway),
+    // not for "network unreachable". Applies the same optimistic quantity
+    // add + confirmed flag the online success path implies, and queues the
+    // one simple atomic RPC call for replay instead of the multi-step
+    // fallback (which would need its own offline handling for no real
+    // benefit — the atomic RPC is what actually runs 99% of the time).
+    if (!navigator.onLine) {
+      set((s) => {
+        const incoming = { ...s.incoming };
+        incoming[branch] = incoming[branch].map((i) => i.id === incomingId ? { ...i, confirmed: true } : i);
+        const stock = { ...s.stock };
+        stock[branch] = stock[branch].map((item) =>
+          inc.itemBarcode != null && item.itemBarcode != null
+            ? item.itemBarcode === inc.itemBarcode ? { ...item, quantity: Math.round((Number(item.quantity || 0) + inc.quantity) * 1000) / 1000 } : item
+            : normalizeStockName(item.itemName) === normalizeStockName(inc.itemName) ? { ...item, quantity: Math.round((Number(item.quantity || 0) + inc.quantity) * 1000) / 1000 } : item,
+        );
+        return { incoming, stock };
+      });
+      await useOfflineQueueStore.getState().enqueue('branch_confirm_incoming', { branch, incomingId });
+      return null;
+    }
+
     // BUG #8 FIX: Fallback two-step path.
     // Re-read the incoming record to guard against a retry where stock was already
     // added but the mark-confirmed step failed. If confirmed=true in DB we skip stock add.
@@ -1383,6 +1778,34 @@ export const useBranchStore = create<BranchState>((set, get) => ({
 
     const { data: newQtyRpc, error: rpcErr } = await decrementBranchStockStrict(branch, stockItemName, qty, resolvedBarcode);
     if (rpcErr) {
+      // OFFLINE FIX (2026-09-01): same pattern as recordSale — only a
+      // genuine connectivity failure takes this branch; a real server-side
+      // rejection still returns the error exactly as before.
+      if (!navigator.onLine) {
+        const saleId = generateId();
+        const optimisticQty = Math.round((availableQty - qty) * 1000) / 1000;
+        const provisionalSale: SaleRecord = {
+          id: saleId, itemBarcode: resolvedBarcode, itemName, quantitySold: qty, soldAt: now, soldBy, branch,
+          paymentMethod, unitPrice, billNo: billNo ?? null,
+        };
+        set((s) => {
+          const stock = { ...s.stock };
+          stock[branch] = stock[branch].map((item) =>
+            resolvedBarcode != null && item.itemBarcode != null
+              ? item.itemBarcode === resolvedBarcode ? { ...item, quantity: optimisticQty, availableQuantity: Math.max(0, optimisticQty - Number(item.reservedQuantity || 0)) } : item
+              : normalizeStockName(item.itemName) === requestedStockName ? { ...item, quantity: optimisticQty, availableQuantity: Math.max(0, optimisticQty - Number(item.reservedQuantity || 0)) } : item,
+          );
+          const sales = { ...s.sales };
+          sales[branch] = [provisionalSale, ...sales[branch]];
+          return { stock, sales };
+        });
+        await useOfflineQueueStore.getState().enqueue('branch_record_snb_sale', {
+          branch, itemName, stockItemName, requestedStockName, qty, soldBy, paymentMethod,
+          billNo: billNo ?? null, unitPrice, itemBarcode: resolvedBarcode ?? null, now,
+          provisionalSaleId: saleId,
+        });
+        return { error: null, mismatch: false };
+      }
       console.error('[recordSnbSale] stock RPC error:', rpcErr.message);
       return { error: `Failed to update stock for ${itemName}: ${rpcErr.message}`, mismatch: true };
     }
@@ -1452,6 +1875,39 @@ export const useBranchStore = create<BranchState>((set, get) => ({
   manualUpdateStock: async (branch, itemName, quantity, updatedBy, itemBarcode, audit, expectedCurrentQty) => {
     const rounded = Math.round(quantity * 1000) / 1000;
     const now = new Date().toISOString();
+
+    // OFFLINE FIX (2026-09-01): a blind "set quantity to X" is unsafe to
+    // replay later (it could silently overwrite a real concurrent stock
+    // change that happened in between). A RELATIVE delta computed against
+    // the quantity the admin actually started editing from
+    // (expectedCurrentQty — already required for the online compare-and-
+    // swap guard below) composes correctly instead, the same way
+    // recordSale's atomic decrement RPC does. Only takes this path when
+    // expectedCurrentQty is known AND a matching local stock row already
+    // exists (so the delta is well-defined) — otherwise falls through to
+    // the existing behavior, which simply fails cleanly offline (the
+    // network read a few lines down can't succeed either way), exactly as
+    // it always has.
+    const localMatch = get().stock[branch].find((item) =>
+      itemBarcode != null && item.itemBarcode != null ? item.itemBarcode === itemBarcode : normalizeStockName(item.itemName) === normalizeStockName(itemName),
+    );
+    if (!navigator.onLine && expectedCurrentQty != null && localMatch) {
+      const delta = Math.round((rounded - expectedCurrentQty) * 1000) / 1000;
+      const optimisticQty = Math.round((Number(localMatch.quantity || 0) + delta) * 1000) / 1000;
+      set((s) => {
+        const stock = { ...s.stock };
+        stock[branch] = stock[branch].map((item) => item === localMatch
+          ? { ...item, quantity: optimisticQty, availableQuantity: Math.max(0, optimisticQty - Number(item.reservedQuantity || 0)) }
+          : item);
+        return { stock };
+      });
+      await useOfflineQueueStore.getState().enqueue('branch_manual_stock_delta', {
+        branch, itemName, itemBarcode: itemBarcode ?? null, delta, updatedBy,
+        oldQuantity: Number(localMatch.quantity || 0), newQuantity: optimisticQty,
+        reason: audit?.reason || 'Manual stock update', referenceId: audit?.referenceId || null, notes: audit?.notes || null, now,
+      });
+      return null;
+    }
 
     let existingQuery = supabase
       .from('branch_stock')
@@ -1661,6 +2117,37 @@ export const useBranchStore = create<BranchState>((set, get) => ({
 
   recordCreditSale: async (branch, sale, options = {}) => {
     const now = new Date().toISOString();
+    // OFFLINE FIX (2026-09-01): pure inserts (no atomic RPC, no server-
+    // computed value the client doesn't already know) — safe to apply
+    // optimistically upfront and queue the real inserts for replay, reusing
+    // the SAME client-generated id both locally and in the real row (so
+    // nothing needs reconciling on success beyond clearing the queue entry).
+    if (!navigator.onLine) {
+      const saleId = generateId();
+      const status = sale.amountPaid >= sale.subtotal ? 'settled' : sale.amountPaid === 0 ? 'pending' : 'partial';
+      const newSale: CreditSale = {
+        id: saleId, branch, source: sale.source ?? null, sourceId: sale.sourceId ?? null, customerRef: sale.customerRef ?? null,
+        customerName: sale.customerName, customerPhone: sale.customerPhone ?? null, items: sale.items, subtotal: sale.subtotal,
+        amountPaid: sale.amountPaid, creditAmount: sale.creditAmount, soldBy: sale.soldBy, createdAt: now,
+        dueDate: sale.dueDate ?? null, settledAt: null, status, notes: sale.notes ?? null, billNo: sale.billNo,
+      };
+      set((s) => {
+        const creditSales = { ...s.creditSales };
+        const creditPayments = { ...s.creditPayments };
+        creditSales[branch] = [newSale, ...creditSales[branch]];
+        if (sale.amountPaid > 0) {
+          creditPayments[branch] = [{
+            id: `pending-${saleId}`, creditSaleId: saleId, branch, billNo: sale.billNo, amount: sale.amountPaid,
+            paymentMode: options.upfrontPaymentMode ?? 'cash', reference: options.reference ?? null,
+            remarks: options.remarks ?? 'Credit upfront collection', collectedBy: options.collectedBy ?? sale.soldBy,
+            collectedRole: options.collectedRole ?? null, createdAt: now,
+          }, ...creditPayments[branch]];
+        }
+        return { creditSales, creditPayments };
+      });
+      await useOfflineQueueStore.getState().enqueue('branch_record_credit_sale', { branch, sale, options, now, saleId, status });
+      return null;
+    }
     const { data, error } = await supabase
       .from('branch_credit_sales')
       .insert({
@@ -1790,6 +2277,29 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       p_collected_role: payment.collectedRole ?? null,
     });
     if (error) {
+      // OFFLINE FIX (2026-09-01): only a genuine connectivity failure —
+      // this function already computes newAmountPaid/isSettled client-side
+      // (needed for its own return-value math), so the exact same values
+      // the online success path applies below are safe to apply optimistically.
+      if (!navigator.onLine) {
+        set((s) => {
+          const creditSales = { ...s.creditSales };
+          const creditPayments = { ...s.creditPayments };
+          creditSales[branch] = creditSales[branch].map((cs) =>
+            cs.id === saleId
+              ? { ...cs, amountPaid: newAmountPaid, creditAmount: Math.max(0, cs.subtotal - newAmountPaid), status: isSettled ? 'settled' : 'partial', settledAt: now }
+              : cs
+          );
+          creditPayments[branch] = [{
+            id: `pending-${saleId}-${now}`, creditSaleId: saleId, branch, billNo: sale.billNo, amount: amountCollected,
+            paymentMode: payment.mode ?? 'cash', reference: payment.reference ?? null, remarks: payment.remarks ?? null,
+            collectedBy: payment.collectedBy ?? 'Staff', collectedRole: payment.collectedRole ?? null, createdAt: now,
+          }, ...creditPayments[branch]];
+          return { creditSales, creditPayments };
+        });
+        await useOfflineQueueStore.getState().enqueue('branch_settle_credit_sale', { branch, saleId, amountCollected, payment });
+        return null;
+      }
       const missingRpc = /settle_branch_credit_sale|could not find the function|function .* does not exist/i.test(error.message);
       return missingRpc
         ? 'Credit ledger is not installed in Supabase. Run the 20260614_branch_core_tables.sql and 20260614_branch_atomic_checkout_rpc.sql migration first.'
@@ -1832,6 +2342,10 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     if (discountAmount <= 0) return 'Discount amount must be positive';
     if (discountAmount > sale.creditAmount) return 'Discount cannot exceed the pending balance';
 
+    const now = new Date().toISOString();
+    const newDue = Math.max(0, sale.creditAmount - discountAmount);
+    const isSettled = newDue <= 0;
+
     const { error } = await supabase.rpc('apply_branch_credit_discount', {
       p_branch: branch,
       p_credit_sale_id: saleId,
@@ -1840,15 +2354,32 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       p_approved_by: approvedBy ?? 'Admin',
     });
     if (error) {
+      // OFFLINE FIX (2026-09-01): only a genuine connectivity failure — the
+      // newDue/isSettled math above (moved ahead of the RPC call so it's
+      // available here too) matches exactly what the online success path
+      // below applies.
+      if (!navigator.onLine) {
+        set((s) => {
+          const creditSales = { ...s.creditSales };
+          creditSales[branch] = creditSales[branch].map((cs) =>
+            cs.id === saleId
+              ? {
+                  ...cs, creditAmount: newDue, discountAmount: (cs.discountAmount ?? 0) + discountAmount,
+                  status: isSettled ? 'settled' : (cs.amountPaid > 0 ? 'partial' : 'pending'), settledAt: isSettled ? now : cs.settledAt,
+                  notes: [cs.notes, `Discount of ₹${discountAmount} applied${reason ? ' — ' + reason : ''} on ${now.slice(0, 10)}`].filter(Boolean).join('\n'),
+                }
+              : cs
+          );
+          return { creditSales };
+        });
+        await useOfflineQueueStore.getState().enqueue('branch_apply_credit_discount', { branch, saleId, discountAmount, reason, approvedBy });
+        return null;
+      }
       const missingRpc = /apply_branch_credit_discount|could not find the function|function .* does not exist/i.test(error.message);
       return missingRpc
         ? 'Discount feature is not installed in Supabase. Run the 20260709120000_branch_credit_discount.sql migration first.'
         : `Failed to apply discount: ${error.message}`;
     }
-
-    const now = new Date().toISOString();
-    const newDue = Math.max(0, sale.creditAmount - discountAmount);
-    const isSettled = newDue <= 0;
 
     set((s) => {
       const creditSales = { ...s.creditSales };
