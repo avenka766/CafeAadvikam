@@ -17,7 +17,16 @@ export function getRoleDefaultPath(role: UserRole): string {
     case 'planner':        return '/bakery/planner';
     case 'branch_vrsnb':   return '/branch/vrsnb';
     case 'branch_snb':     return '/branch/snb';
-    case 'branch_hosur':   return '/branch/hosur';
+    // AUDIT FIX (2026-09-02): '/branch/hosur' was retired (see App.tsx —
+    // "Hosur billing/shops now embedded in Planner") but this mapping was
+    // never updated. Since the catch-all route redirects any unmatched path
+    // back to getRoleDefaultPath(role), this sent every 'branch_hosur' login
+    // into an infinite redirect loop — confirmed 3 real active staff accounts
+    // (Bargavi, hosur, Shilpa) carry this role today and were completely
+    // locked out. WorkspaceChrome.tsx's own 'branch_hosur' sidebar nav
+    // already assumes this exact destination (?tab=hosur&hosurTab=place) —
+    // this mapping was just never updated to match it.
+    case 'branch_hosur':   return '/bakery/planner?tab=hosur&hosurTab=place';
     case 'admin_vrsnb':    return '/admin-vrsnb';
     case 'admin_snb':      return '/admin-snb';
     case 'owner':          return '/owner';

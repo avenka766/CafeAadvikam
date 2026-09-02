@@ -26,7 +26,16 @@ const reportedFingerprints = new Map<string, number>();
 
 function safeText(value: unknown, limit = MAX_TEXT) {
   return String(value ?? '')
-    .replace(/(authorization|apikey|password|secret|session[_-]?token|x-cafe-session)\s*[:=]\s*[^\s,;}]+/gi, '$1=[redacted]')
+    // AUDIT FIX (2026-09-02): the old value pattern `[^\s,;}]+` stopped at the
+    // FIRST whitespace — so "Authorization: Bearer eyJhbGc...<real token>"
+    // only ever redacted the literal word "Bearer" (the scheme name), and the
+    // actual secret token right after the space sailed through untouched,
+    // now sitting right next to a "[redacted]" tag that falsely signals it's
+    // safe — worse than no redaction, a false sense of security. Fixed to
+    // stop only at real structural delimiters (newline/comma/semicolon/brace/
+    // quote), so the value run — including an internal "Bearer " prefix and
+    // its actual token — gets swallowed as one redacted unit.
+    .replace(/(authorization|apikey|password|secret|session[_-]?token|x-cafe-session)\s*[:=]\s*[^\n,;}"']+/gi, '$1=[redacted]')
     .slice(0, limit);
 }
 

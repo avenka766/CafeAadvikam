@@ -22,6 +22,10 @@ export async function exportWorkbook(filename: string, sheets: ReportSheet[]) {
     });
     const ws = XLSX.utils.aoa_to_sheet(aoa as never);
     ws['!cols'] = sheet.columns.map((c) => ({ wch: c.width ?? Math.max(12, c.header.length + 2) }));
+    // FEATURE (2026-09-02): row 0 is the sheet title (bold, larger), row 3 is the column
+    // header row (bold, bordered, light fill) — matches the aoa layout built above
+    // (title, exported-at, blank, headers, ...rows).
+    ws['!bold'] = [0, 3];
     XLSX.utils.book_append_sheet(wb, ws, sheet.name);
   });
   XLSX.writeFile(wb, `${filename}.xlsx`);
