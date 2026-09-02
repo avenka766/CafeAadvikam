@@ -262,14 +262,16 @@ export default function BottomNav() {
     // mobile (where this bottom nav is the primary navigation) tapped a
     // 404/blank page. Mapped to the unified sub-tabs PlannerDashboard's own
     // tab bar actually exposes today: "Receive" → dispatch (packing/receipt
-    // now lives under the Dispatch sub-tab) and "Billing" → collection
-    // (billing was folded into Payment Collection; there is no longer a
-    // standalone "billing" sub-tab in the unified nav).
+    // now lives under the Dispatch sub-tab). "Billing" was previously
+    // repointed at the "collection" sub-tab — that sub-tab was removed
+    // 2026-09-02 ("payment collection is totally done by the Admin" now, see
+    // AdminDashboard.tsx's Hosur Sales tab), so this now goes to the real
+    // Dispatch & Billing sub-tab that actually confirms/sends bills.
     navItems.push(
       { label: "Shops", icon: <Store className="size-5" />, path: "/bakery/planner?tab=hosur&hosurTab=shops" },
       { label: "Order", icon: <ShoppingCart className="size-5" />, path: "/bakery/planner?tab=hosur&hosurTab=place" },
       { label: "Receive", icon: <Package className="size-5" />, path: "/bakery/planner?tab=hosur&hosurTab=dispatch" },
-      { label: "Billing", icon: <FileText className="size-5" />, path: "/bakery/planner?tab=hosur&hosurTab=collection" },
+      { label: "Billing", icon: <FileText className="size-5" />, path: "/bakery/planner?tab=hosur&hosurTab=dispatch" },
       { label: "Reports", icon: <History className="size-5" />, path: "/bakery/planner?tab=hosur&hosurTab=reports" },
     );
   } else if (currentUser.role === "admin_vrsnb") {

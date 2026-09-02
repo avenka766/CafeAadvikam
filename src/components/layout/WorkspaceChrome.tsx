@@ -27,6 +27,7 @@ import {
   PackageCheck,
   QrCode,
   Receipt,
+  FileSpreadsheet,
   RotateCcw,
   CreditCard,
   Send,
@@ -117,6 +118,7 @@ function navForRole(role?: string): NavItem[] {
         { label: 'Cafe Control', path: '/admin-dashboard?tab=cafe', icon: <Store className="size-4" />, group: 'Main' },
         { label: 'Branch Sales', path: '/admin-dashboard?tab=branches', icon: <BarChart3 className="size-4" />, group: 'Main' },
         { label: 'Hosur Sales', path: '/admin-dashboard?tab=hosur', icon: <Truck className="size-4" />, group: 'Main' },
+        { label: 'Dispatch Details', path: '/admin-dashboard?tab=dispatch-details', icon: <FileSpreadsheet className="size-4" />, group: 'Main' },
         { label: 'Items', path: '/bakery/items', icon: <Package className="size-4" />, group: 'Operations' },
         { label: 'Daily Closure', path: '/admin-dashboard?tab=daily-closure', icon: <WalletCards className="size-4" />, group: 'Operations' },
         { label: 'Credit Pending', path: '/admin-dashboard?tab=credits', icon: <CreditCard className="size-4" />, group: 'Operations' },
@@ -295,8 +297,10 @@ function navForRole(role?: string): NavItem[] {
         { label: 'Place Order', path: '/bakery/planner?tab=hosur&hosurTab=place', icon: <ShoppingCart className="size-4" />, group: 'Main' },
         { label: 'Dispatch', path: '/bakery/planner?tab=hosur&hosurTab=dispatch', icon: <Truck className="size-4" />, group: 'Main' },
         { label: 'Shop Master', path: '/bakery/planner?tab=hosur&hosurTab=shops', icon: <Store className="size-4" />, group: 'Main' },
+        // FEATURE (2026-09-02): "payment collection is totally done by the
+        // Admin" — the Payment Collection link removed; Credit Ledger above
+        // is read-only now and still reflects every collection Admin makes.
         { label: 'Credit Ledger', path: '/bakery/planner?tab=hosur&hosurTab=credit', icon: <CreditCard className="size-4" />, group: 'Operations' },
-        { label: 'Payment Collection', path: '/bakery/planner?tab=hosur&hosurTab=collection', icon: <WalletCards className="size-4" />, group: 'Operations' },
         { label: 'WhatsApp Logs', path: '/bakery/planner?tab=hosur&hosurTab=whatsapp', icon: <QrCode className="size-4" />, group: 'Operations' },
         { label: 'Reminder History', path: '/bakery/planner?tab=hosur&hosurTab=reminders', icon: <History className="size-4" />, group: 'Operations' },
         { label: 'Reports', path: '/bakery/planner?tab=hosur&hosurTab=reports', icon: <BarChart3 className="size-4" />, group: 'Reports' },
