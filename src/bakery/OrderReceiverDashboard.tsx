@@ -1464,6 +1464,7 @@ function HosurOrderPanel({
   const [cart, setCart] = useState<Record<string, HosurDraftItem>>({});
   const [notes, setNotes] = useState("");
   const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
   const [error, setError] = useState("");
   const activeShops = shops.filter((shop) => shop.isActive);
   const selectedShop = activeShops.find((shop) => shop.id === shopId) ?? activeShops[0];
@@ -1524,6 +1525,12 @@ function HosurOrderPanel({
   const saveOrder = async () => {
     if (!selectedShop) { setError("Select a shop before sending the order."); return; }
     if (cartItems.length === 0) { setError("Add at least one item requirement."); return; }
+    // BUG FIX (audit 2026-09-02): unlike its sibling save handlers elsewhere in this
+    // codebase, this had no re-entrancy guard of its own — relied solely on the button's
+    // `disabled={saving || ...}`, which only takes effect after React re-renders. A fast
+    // double-tap could insert two duplicate hosur_orders for the same cart.
+    if (savingRef.current) return;
+    savingRef.current = true;
     setSaving(true);
     setError("");
     try {
@@ -1564,6 +1571,7 @@ function HosurOrderPanel({
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to send Hosur order.");
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };
@@ -2595,12 +2603,6 @@ function StockCountPanel({
 }) {
   const { submitStockCountReport } = useBranchOpsStore();
   const { items: itemMaster } = useOperationalBranchCatalog(branch);
-  // FEATURE (audit 2026-08-28): SNB now uses the 2-person split panel above;
-  // VRSNB keeps everything below completely unchanged, per explicit request
-  // scope ("this is only for SNB Order dashboard").
-  if (branch === "SNB") {
-    return <SnbSplitStockCountPanel branchStock={branchStock} userName={userName} itemMaster={itemMaster} />;
-  }
   const [counts, setCounts] = useState<Record<string, string>>({});
   const touchedCounts = useRef<Record<string, boolean>>({});
   const [notice, setNotice] = useState("");
@@ -2631,6 +2633,22 @@ function StockCountPanel({
       return next;
     });
   }, [branch, rows]);
+
+  // BUG FIX (audit 2026-09-02): this early return used to sit BEFORE the hooks above
+  // (useState x4/useRef/useMemo/useEffect) — a real Rules-of-Hooks violation (confirmed
+  // by eslint react-hooks/rules-of-hooks as 7 errors, not warnings): whenever
+  // branch === 'SNB' this component called zero hooks, but for VRSNB it called all of
+  // them, so a re-render of the SAME component instance with a different `branch` prop
+  // (no `key` forcing a remount at the call site) would hit React's "Rendered fewer/more
+  // hooks than during the previous render" crash. Moved below every hook — behavior is
+  // identical when `branch` is stable across a mount (the common case), but no longer
+  // relies on it being stable to avoid crashing.
+  // FEATURE (audit 2026-08-28): SNB now uses the 2-person split panel above;
+  // VRSNB keeps everything below completely unchanged, per explicit request
+  // scope ("this is only for SNB Order dashboard").
+  if (branch === "SNB") {
+    return <SnbSplitStockCountPanel branchStock={branchStock} userName={userName} itemMaster={itemMaster} />;
+  }
 
   const differenceCount = rows.filter((row) => {
     const physical = Number(counts[row.itemName] || 0);

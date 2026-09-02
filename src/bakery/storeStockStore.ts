@@ -321,15 +321,39 @@ export const useStoreStockStore = create<StoreStockState>()((set, get) => ({
     return warnings.length > 0 ? `Note: ${warnings.join(', ')}` : null;
   },
 
-  // EGRESS FIX (2026-08-15): debounce collapses a burst of changes into one
-  // reload instead of one per event — same fix already proven on
-  // cake_master_orders.
-  subscribe: makeSingletonSubscriber('store-raw-stock-live', (ch) => {
-    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
-    return ch.on('postgres_changes', { event: '*', schema: 'public', table: 'store_raw_stock' },
-      () => {
-        if (debounceTimer) clearTimeout(debounceTimer);
-        debounceTimer = setTimeout(() => { get().load(); }, 2000);
-      });
-  }),
+  // REALTIME FIX (2026-09-01): this used to debounce-then-refetch the whole
+  // table on every change — replaced with a direct row-level patch (matches
+  // branchStore.ts's applyBranchRealtimeChange pattern), so one item's
+  // quantity/threshold edit no longer re-downloads all of store_raw_stock.
+  // Mirrors load()'s own filtering: an archived row (archived_at set) is
+  // removed from local state exactly like load()'s `.filter(!archived_at)`.
+  subscribe: makeSingletonSubscriber('store-raw-stock-live', (ch) =>
+    ch.on('postgres_changes', { event: '*', schema: 'public', table: 'store_raw_stock' },
+      (payload) => {
+        const event = payload as { eventType?: string; new?: Record<string, unknown>; old?: { id?: string } };
+        const id = String(event.new?.id ?? event.old?.id ?? '');
+        if (!id) return;
+        if (event.eventType === 'DELETE' || event.new?.archived_at) {
+          set((state) => ({ items: state.items.filter((item) => item.id !== id) }));
+          return;
+        }
+        const d = event.new ?? {};
+        const changed: StockItem = {
+          id,
+          name: d.name as string,
+          unit: d.unit as StockUnit,
+          quantity: Number(d.quantity),
+          minThreshold: Number(d.min_threshold),
+          archivedAt: (d.archived_at as string | null) ?? undefined,
+          suppliers: Array.isArray(d.suppliers) ? d.suppliers as string[] : [],
+          category: (d.item_category as StockCategory) || 'raw',
+        };
+        set((state) => ({
+          items: (state.items.some((item) => item.id === id)
+            ? state.items.map((item) => (item.id === id ? changed : item))
+            : [...state.items, changed]
+          ).sort((a, b) => a.name.localeCompare(b.name)),
+        }));
+      }),
+  ),
 }));

@@ -35,21 +35,50 @@ export function buildHosurItemId(orderId: string, itemName: string): string {
 
 // Guards against the same shop's order being submitted twice in quick
 // succession (double-click, slow network causing a retried submit, etc).
-// Looks for a hosur_orders row for the same shop, same subtotal, still in
-// 'draft' status, created within the last 90 seconds. This is deliberately
-// a soft/advisory check (not a DB constraint) so a genuinely-intended
-// same-shop repeat order a few minutes later is never blocked.
-export async function checkRecentDuplicateHosurOrder(shopId: string, subtotal: number): Promise<{ isDuplicate: boolean; orderNumber?: string }> {
+// Looks for a hosur_orders row for the same shop, still in 'draft' status,
+// created within the last 90 seconds. This is deliberately a soft/advisory
+// check (not a DB constraint) so a genuinely-intended same-shop repeat order
+// a few minutes later is never blocked.
+//
+// AUDIT FIX (2026-09-02): the exact-subtotal-only version of this check
+// missed a real, live duplicate — confirmed via two actual hosur_orders rows
+// for "Grand Homes Housing Board" 13 seconds apart, one with 8 items
+// (subtotal 1570), the other a 2-item SUBSET of those same 8 items
+// (Egg Puff + samosa, subtotal 380) — different subtotals, so the old check
+// never flagged it, and both got dispatched and billed separately, double-
+// charging the shop for the overlapping items. Now also checks for ANY
+// shared item name with a recent draft order for the same shop, which
+// catches a partial-resubmission duplicate a subtotal comparison can't see.
+// `itemNames` is optional so existing callers that haven't been updated yet
+// still get the original subtotal-only protection rather than a type error.
+export async function checkRecentDuplicateHosurOrder(shopId: string, subtotal: number, itemNames?: string[]): Promise<{ isDuplicate: boolean; orderNumber?: string }> {
   const cutoff = new Date(Date.now() - 90_000).toISOString();
   const { data, error } = await supabase
     .from('hosur_orders')
-    .select('order_number, subtotal, created_at')
+    .select('id, order_number, subtotal, created_at')
     .eq('shop_id', shopId)
     .eq('status', 'draft')
     .gte('created_at', cutoff)
     .order('created_at', { ascending: false })
     .limit(5);
-  if (error || !data) return { isDuplicate: false };
-  const match = data.find(row => Math.abs(Number(row.subtotal ?? 0) - subtotal) < 0.01);
-  return match ? { isDuplicate: true, orderNumber: String(match.order_number ?? '') } : { isDuplicate: false };
+  if (error || !data || data.length === 0) return { isDuplicate: false };
+
+  const exactMatch = data.find(row => Math.abs(Number(row.subtotal ?? 0) - subtotal) < 0.01);
+  if (exactMatch) return { isDuplicate: true, orderNumber: String(exactMatch.order_number ?? '') };
+
+  if (itemNames && itemNames.length > 0) {
+    const normalizedNew = new Set(itemNames.map((n) => n.trim().toLowerCase()));
+    const candidateIds = data.map((row) => row.id);
+    const { data: itemRows } = await supabase
+      .from('hosur_order_items')
+      .select('order_id, item_name')
+      .in('order_id', candidateIds);
+    if (itemRows) {
+      for (const row of data) {
+        const overlaps = itemRows.some((i) => i.order_id === row.id && normalizedNew.has(String(i.item_name ?? '').trim().toLowerCase()));
+        if (overlaps) return { isDuplicate: true, orderNumber: String(row.order_number ?? '') };
+      }
+    }
+  }
+  return { isDuplicate: false };
 }

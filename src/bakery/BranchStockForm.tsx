@@ -79,7 +79,7 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
     return subscribeRecipes();
   }, [loadRecipes, subscribeRecipes]);
   useEffect(() => {
-    void fetchBranchData(branch);
+    void fetchBranchData(branch, false, ['stock']); // EGRESS FIX: this form only reads stock
     return subscribeToStock(branch);
   }, [branch, fetchBranchData, subscribeToStock]);
   const defaultItem = branchItems[0];
@@ -147,7 +147,14 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
     );
   };
 
-  const updateQty = (idx: number, val: string) => {
+  const updateQty = (idx: number, rawVal: string) => {
+    // AUDIT FIX (2026-09-02): pcs (uom "Nos") items must stay whole numbers
+    // — this had no unit-aware sanitization, letting a piece-counted item
+    // be ordered with a fractional piece count, unlike ~15 other qty inputs
+    // already fixed across Planner for this exact bug class. This is the
+    // actual origin point of every SNB/VRSNB branch order, so the drift
+    // starts here if left unfixed.
+    const val = lines[idx]?.uom === "Nos" ? rawVal.replace(/[^0-9]/g, "") : rawVal;
     if (val === "" || Number(val) >= 0)
       setLines((prev) =>
         prev.map((l, i) => (i === idx ? { ...l, qty: val } : l)),
@@ -189,7 +196,10 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
     setCustomLines((prev) =>
       prev.map((l, i) => (i === idx ? { ...l, name: val } : l)),
     );
-  const updateCustomQty = (idx: number, val: string) => {
+  const updateCustomQty = (idx: number, rawVal: string) => {
+    // AUDIT FIX (2026-09-02): same fix as updateQty above — a custom pcs
+    // line had no unit-aware sanitization either.
+    const val = customLines[idx]?.unit === "pcs" ? rawVal.replace(/[^0-9]/g, "") : rawVal;
     if (val === "" || Number(val) >= 0)
       setCustomLines((prev) =>
         prev.map((l, i) => (i === idx ? { ...l, qty: val } : l)),

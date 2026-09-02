@@ -587,6 +587,13 @@ function OrderCard({ order, searchTerm = '' }: { order: BakeryOrder; searchTerm?
   const [sendNotice, setSendNotice] = useState<string | null>(null);
   const [selectedIndexes, setSelectedIndexes] = useState<number[]>([]);
   const sendRequest = useRef<{ signature: string; id: string } | null>(null);
+  // BUG FIX (audit 2026-09-02): the `sending` useState flag below is checked/set
+  // asynchronously, so a fast double-tap on "Send to Baker/Planner" can fire this
+  // handler twice before React commits the disabled state — double-deducting real
+  // material stock and creating a duplicate downstream production order for the same
+  // items. Same double-submit class fixed elsewhere this session (checkoutInFlightRef,
+  // sendingRef, savingInFlightRef) — a synchronous ref checked/set before any await.
+  const sendingRef = useRef(false);
 
   useEffect(() => {
     setAccepted(order.status !== 'pending');
@@ -692,7 +699,8 @@ function OrderCard({ order, searchTerm = '' }: { order: BakeryOrder; searchTerm?
     // its own in-flight flag instead of relying solely on the button's
     // `disabled` prop, which has a narrow but real window on rapid/double
     // taps before React flushes state.
-    if (sent || selectedIndexes.length === 0 || sending) return;
+    if (sent || selectedIndexes.length === 0 || sending || sendingRef.current) return;
+    sendingRef.current = true;
     setSending(true); setSendError(null); setSendNotice(null);
 
     // Planner-merged orders sit here until Store picks which items go to
@@ -715,6 +723,7 @@ function OrderCard({ order, searchTerm = '' }: { order: BakeryOrder; searchTerm?
       } catch (sendFailure) {
         setSendError(`${sendFailure instanceof Error ? sendFailure.message : 'Failed to release to production.'} Please try again.`);
       } finally {
+        sendingRef.current = false;
         setSending(false);
       }
       return;
@@ -767,6 +776,7 @@ function OrderCard({ order, searchTerm = '' }: { order: BakeryOrder; searchTerm?
         setSendError(`${baseMsg} Please try again.`);
       }
     } finally {
+      sendingRef.current = false;
       setSending(false);
     }
   };
@@ -1677,7 +1687,7 @@ function aggregateReleasableItems(orders: BakeryOrder[]): AggregatedProductionIt
           key,
           itemName: item.itemName,
           quantity: 0,
-          originalPcs: item.originalPcs != null ? 0 : undefined,
+          originalPcs: undefined,
           representativeOrder: order,
           representativeItem: item,
           contributions: [],
@@ -1685,7 +1695,14 @@ function aggregateReleasableItems(orders: BakeryOrder[]): AggregatedProductionIt
         byKey.set(key, agg);
       }
       agg.quantity += item.quantity;
-      if (agg.originalPcs != null && item.originalPcs != null) agg.originalPcs += item.originalPcs;
+      // BUG FIX (audit 2026-09-02): this only accumulated originalPcs if the FIRST order
+      // processed for this item happened to have it set — whichever order the outer loop
+      // hit first for a given key permanently decided whether the total tracked pcs at
+      // all, since `agg.originalPcs != null` (starting false whenever the first order
+      // lacked it) gated every later addition too. A later order's real originalPcs value
+      // was then silently dropped, understating the "X pcs → Y kg" display for a merged
+      // item. Accumulate whenever ANY contributing order has a value, regardless of order.
+      if (item.originalPcs != null) agg.originalPcs = (agg.originalPcs ?? 0) + item.originalPcs;
       agg.contributions.push({ orderId: order.id, index });
     });
   }
@@ -1700,6 +1717,10 @@ function ProductionReadyPanel({ orders }: { orders: BakeryOrder[] }) {
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const [sendNotice, setSendNotice] = useState<string | null>(null);
+  // BUG FIX (audit 2026-09-02): same double-submit class as OrderCard's
+  // handleConfirmStock in this same file — `sending` is a useState flag, so a fast
+  // double-tap can fire handleSend twice before it commits, double-deducting stock.
+  const sendingRef = useRef(false);
 
   const aggregated = useMemo(() => aggregateReleasableItems(orders), [orders]);
 
@@ -1732,7 +1753,8 @@ function ProductionReadyPanel({ orders }: { orders: BakeryOrder[] }) {
   const selectedItems = useMemo(() => aggregated.filter(a => selected.has(a.key)), [aggregated, selected]);
 
   const handleSend = async () => {
-    if (selectedItems.length === 0 || sending) return;
+    if (selectedItems.length === 0 || sending || sendingRef.current) return;
+    sendingRef.current = true;
     setSending(true); setSendError(null); setSendNotice(null);
     try {
       const warnings: string[] = [];
@@ -1762,6 +1784,7 @@ function ProductionReadyPanel({ orders }: { orders: BakeryOrder[] }) {
     } catch (err) {
       setSendError(`${err instanceof Error ? err.message : 'Failed to send selected items.'} Please try again.`);
     } finally {
+      sendingRef.current = false;
       setSending(false);
     }
   };

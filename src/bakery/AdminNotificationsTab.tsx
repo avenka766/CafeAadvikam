@@ -649,8 +649,20 @@ function NotifCard({
 
 // ─── Main AdminNotificationsTab ───────────────────────────────────────────────
 
-export default function AdminNotificationsTab() {
-  const { notifications, loaded, loading, load, markAllRead, unreadCount } = useNotificationStore();
+// AUDIT FIX (2026-09-02): AdminAlertsPage.tsx's branch-filter pills were
+// fully interactive but never actually filtered anything, since this
+// component always read the full unfiltered `notifications` list. Accept an
+// optional branch scope and apply the same meta.branch check used there —
+// a notification type with no branch in its meta (price/recipe/store-item
+// changes, not branch-specific) always shows regardless of the filter.
+export default function AdminNotificationsTab({ branchFilter = 'all' }: { branchFilter?: string } = {}) {
+  const { notifications: allNotifications, loaded, loading, load, markAllRead, unreadCount } = useNotificationStore();
+  const notifications = branchFilter === 'all'
+    ? allNotifications
+    : allNotifications.filter((n) => {
+        const metaBranch = (n.meta as Record<string, unknown> | undefined)?.branch;
+        return metaBranch == null || metaBranch === branchFilter;
+      });
   const [selected, setSelected] = useState<AdminNotification | null>(null);
   const [filterType, setFilterType] = useState<'all' | NotificationType>('all');
 

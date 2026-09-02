@@ -100,6 +100,20 @@ export const useSupplierStore = create<SupplierState>((set, get) => ({
         'Delete or reassign the invoices first.'
       );
     }
+    // BUG FIX (audit 2026-09-02): only store_invoices was checked — store_purchase_orders
+    // also carries a supplier_id FK, so a supplier with only POs raised (no invoice yet)
+    // could still be archived here, leaving those POs pointing at an archived supplier.
+    const { count: poCount, error: poCountErr } = await supabase
+      .from('store_purchase_orders')
+      .select('id', { count: 'exact', head: true })
+      .eq('supplier_id', id);
+    if (poCountErr) throw new Error('Failed to check supplier purchase orders. Please try again.');
+    if ((poCount ?? 0) > 0) {
+      throw new Error(
+        `Cannot delete — ${poCount} purchase order${poCount === 1 ? '' : 's'} exist for this supplier. ` +
+        'Delete or reassign the purchase orders first.'
+      );
+    }
     const archivedAt = new Date().toISOString();
     const { error } = await supabase.from('store_suppliers').update({ archived_at: archivedAt }).eq('id', id);
     if (error) throw new Error(error.message);

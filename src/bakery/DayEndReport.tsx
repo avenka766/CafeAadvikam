@@ -12,7 +12,7 @@ interface OrderRow {
   orderNumber: number;
   targetBranch: string;
   status: string;
-  items: { itemName: string; quantity: number; dispatchUnit: string }[];
+  items: { itemName: string; quantity: number; dispatchUnit: string; branchSplit?: Record<string, number> }[];
   dispatchLog: { itemName: string; quantity: number; unit: string; branch: string }[];
   createdAt: string;
 }
@@ -88,14 +88,39 @@ export default function DayEndReport() {
   }, [fetchForDate]);
 
   const branchSummaries: BranchSummary[] = useMemo(() => {
-    const branches = [...new Set(orders.map(o => o.targetBranch))].sort();
+    // AUDIT FIX (2026-09-02): a Store-merged order keeps one targetBranch
+    // (the primary/first order's branch) while each item's real per-branch
+    // split lives in item.branchSplit — same bug class already fixed in
+    // Order screens/Live Status tabs elsewhere (see
+    // project_branch_order_merge_display_bug /
+    // project_snb_live_tab_unscoped_merge_leak memories). Without this, a
+    // merged order's full combined quantity showed under only its
+    // targetBranch (double-counting that branch) and vanished entirely from
+    // every other branch it actually serves — exactly the tool used to
+    // catch dispatch discrepancies, so it was masking real shortages and
+    // fabricating false ones. Derive the branch list from targetBranch UNION
+    // every branchSplit key, and use each item's real per-branch share.
+    const branchSet = new Set<string>();
+    for (const o of orders) {
+      branchSet.add(o.targetBranch);
+      for (const item of o.items) {
+        if (item.branchSplit) for (const b of Object.keys(item.branchSplit)) branchSet.add(b);
+      }
+    }
+    const branches = [...branchSet].sort();
     return branches.map(branch => {
-      const branchOrders = orders.filter(o => o.targetBranch === branch);
+      const branchOrders = orders.filter(o =>
+        o.targetBranch === branch || o.items.some(item => item.branchSplit && (item.branchSplit[branch] ?? 0) > 0),
+      );
       const itemMap = new Map<string, { requested: number; dispatched: number; unit: string }>();
       for (const order of branchOrders) {
         for (const item of order.items) {
+          const share = item.branchSplit
+            ? (item.branchSplit[branch] ?? 0)
+            : (order.targetBranch === branch ? item.quantity : 0);
+          if (share <= 0) continue;
           const ex = itemMap.get(item.itemName) ?? { requested: 0, dispatched: 0, unit: item.dispatchUnit ?? 'kg' };
-          ex.requested += item.quantity;
+          ex.requested += share;
           itemMap.set(item.itemName, ex);
         }
         for (const d of order.dispatchLog) {

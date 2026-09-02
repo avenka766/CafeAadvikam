@@ -621,8 +621,16 @@ export default function StoreCustomTab() {
     for (const r of validRows) {
       const qty = Number(r.quantity);
 
-      // Deduct from inventory (allow negative)
-      const deductErr = await deductMaterials([{ name: r.item!.name, qty }]);
+      // BUG FIX (audit 2026-09-02): omitting `unit` here made deductMaterials
+      // fall into its recipe-vs-stock-unit heuristic guess ("if the stock is
+      // kg-tracked and qty>100, assume the caller meant grams and divide by
+      // 1000") — but a Custom Deduction is entered directly against this
+      // item's own already-known unit, not a recipe in a possibly-different
+      // unit, so that heuristic has no business running here at all. A
+      // legitimate 150 kg deduction was silently becoming 0.15 kg. Passing
+      // the item's real unit routes through convertToStockUnit's identity
+      // case (same unit in and out) instead, deducting exactly what was typed.
+      const deductErr = await deductMaterials([{ name: r.item!.name, qty, unit: r.item!.unit }]);
       if (deductErr && !deductErr.startsWith('Note:')) {
         results.push(`${r.item!.name}: deduction failed — ${deductErr}`);
         continue;

@@ -137,17 +137,32 @@ export const useRecipeStore = create<RecipeState>((set, get) => ({
     return null;
   },
 
-  // EGRESS FIX (2026-08-15): debounce collapses a burst of changes into one
-  // reload instead of one per event — same fix already proven on
-  // cake_master_orders.
-  subscribe: makeSingletonSubscriber('bakery-recipes-live', (ch) => {
-    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
-    return ch.on('postgres_changes', { event: '*', schema: 'public', table: 'bakery_recipes' },
-      () => {
-        if (debounceTimer) clearTimeout(debounceTimer);
-        debounceTimer = setTimeout(() => { void get().loadRecipes(true); }, 2000);
-      });
-  }),
+  // REALTIME FIX (2026-09-01): this used to debounce-then-refetch the whole
+  // bakery_recipes table on every change — replaced with a direct row-level
+  // patch (matches branchStore.ts's applyBranchRealtimeChange pattern), so
+  // one recipe edit no longer re-downloads every recipe. On DELETE, reverts
+  // that item back to its built-in seed recipe if one exists — same fallback
+  // loadRecipes() itself relies on (a DB row always overrides the seed when
+  // present; the seed remains when it's absent).
+  subscribe: makeSingletonSubscriber('bakery-recipes-live', (ch) =>
+    ch.on('postgres_changes', { event: '*', schema: 'public', table: 'bakery_recipes' },
+      (payload) => {
+        const event = payload as { eventType?: string; new?: Record<string, unknown>; old?: { item_id?: string } };
+        const itemId = String(event.new?.item_id ?? event.old?.item_id ?? '');
+        if (!itemId) return;
+        if (event.eventType === 'DELETE') {
+          set((state) => {
+            const recipes = { ...state.recipes };
+            const seed = seedRecipes()[itemId];
+            if (seed) recipes[itemId] = seed; else delete recipes[itemId];
+            return { recipes };
+          });
+          return;
+        }
+        const changed = mapRow(event.new ?? {});
+        set((state) => ({ recipes: { ...state.recipes, [changed.itemId]: changed } }));
+      }),
+  ),
 
   getRecipe: (itemId, itemName) => {
     const key = resolveRecipeKey(get().recipes, itemId, itemName);

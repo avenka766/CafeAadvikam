@@ -192,8 +192,17 @@ export function findRecipeId(itemName: string): string | null {
   if (canonicalMatch) return canonicalMatch;
 
   // 2. Recipe key is a prefix of slug  (e.g. "banana-chips" is a prefix of "banana-chips-200g")
-  const prefixMatch = keys.find(k => slug.startsWith(k) || k.startsWith(slug));
-  if (prefixMatch) return prefixMatch;
+  // BUG FIX (audit 2026-09-02): this used to take the FIRST prefix match in
+  // Object.keys() iteration order, not the best one — RECIPE_DEFINITIONS has real
+  // keys that are prefixes of each other (e.g. "jangiri" / "jangiri-muruk",
+  // "kambu-muruk" / "kambu-millet-muruk" / "kambu-onion-muruk"), so whichever
+  // shorter/unrelated key happened to be declared earlier could silently win over
+  // the correct, more specific recipe once this fallback was reached. Pick the
+  // LONGEST matching key instead, since a longer prefix match is always more specific.
+  const prefixMatches = keys.filter(k => slug.startsWith(k) || k.startsWith(slug));
+  if (prefixMatches.length > 0) {
+    return prefixMatches.reduce((best, key) => key.length > best.length ? key : best);
+  }
 
   return null;
 }

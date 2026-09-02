@@ -49,6 +49,12 @@ function rowToItem(d: Record<string, unknown>): BakeryItem {
   };
 }
 
+// BUG FIX (audit 2026-09-02): loadItems() only checked `get().loaded` before its first
+// await — two components mounting at nearly the same time (both seeing `loaded: false`)
+// each fired their own full fetch. Not corrupting, but a real duplicate-egress race; track
+// the in-flight promise at module scope so a concurrent caller awaits the same fetch.
+let loadItemsPromise: Promise<void> | null = null;
+
 export const useBakeryItemsStore = create<BakeryItemsState>((set, get) => ({
   items:   [],
   loaded:  false,
@@ -57,16 +63,24 @@ export const useBakeryItemsStore = create<BakeryItemsState>((set, get) => ({
   // ── Order Receiver: only enabled items ────────────────────────────────────
   loadItems: async () => {
     if (get().loaded) return;
-    set({ loading: true });
-    const { data, error } = await supabase
-      .from('bakery_items')
-      .select('id, name, icon, category, enabled, sort_order, price')
-      .eq('enabled', true)
-      .order('sort_order', { ascending: true });
-    if (!error && data) {
-      set({ items: data.map(d => rowToItem(d as Record<string, unknown>)), loaded: true });
+    if (loadItemsPromise) return loadItemsPromise;
+    loadItemsPromise = (async () => {
+      set({ loading: true });
+      const { data, error } = await supabase
+        .from('bakery_items')
+        .select('id, name, icon, category, enabled, sort_order, price')
+        .eq('enabled', true)
+        .order('sort_order', { ascending: true });
+      if (!error && data) {
+        set({ items: data.map(d => rowToItem(d as Record<string, unknown>)), loaded: true });
+      }
+      set({ loading: false });
+    })();
+    try {
+      await loadItemsPromise;
+    } finally {
+      loadItemsPromise = null;
     }
-    set({ loading: false });
   },
 
   // ── Admin: all items including disabled ───────────────────────────────────
@@ -174,39 +188,73 @@ export const useBakeryItemsStore = create<BakeryItemsState>((set, get) => ({
     return null;
   },
 
-  // EGRESS FIX (2026-08-15): debounce collapses a burst of changes into one
-  // reload instead of one per event — same fix already proven on
-  // cake_master_orders.
-  subscribe: makeSingletonSubscriber('bakery-items-live', (ch) => {
-    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
-    return ch.on('postgres_changes', { event: '*', schema: 'public', table: 'bakery_items' },
-      () => {
-        if (debounceTimer) clearTimeout(debounceTimer);
-        debounceTimer = setTimeout(() => { void get().loadAllItems(); }, 2000);
-      });
-  }),
+  // REALTIME FIX (2026-09-01): this used to debounce-then-refetch the whole
+  // table on every change (same shape as the fix already proven on
+  // cake_master_orders/bakery_orders) — replaced with a direct row-level
+  // patch, matching branchStore.ts's applyBranchRealtimeChange pattern, so a
+  // single item edit no longer re-downloads the entire bakery_items table.
+  // Mirrors loadAllItems' semantics (all items, enabled or not) since that's
+  // what this store's shared `items` array has always reflected after any
+  // realtime change, regardless of which loader populated it first.
+  subscribe: makeSingletonSubscriber('bakery-items-live', (ch) =>
+    ch.on('postgres_changes', { event: '*', schema: 'public', table: 'bakery_items' },
+      (payload) => {
+        const event = payload as { eventType?: string; new?: Record<string, unknown>; old?: { id?: string } };
+        const id = String(event.new?.id ?? event.old?.id ?? '');
+        if (!id) return;
+        if (event.eventType === 'DELETE') {
+          set((state) => ({ items: state.items.filter((item) => item.id !== id) }));
+          return;
+        }
+        const changed = rowToItem(event.new ?? {});
+        set((state) => ({
+          items: state.items.some((item) => item.id === id)
+            ? state.items.map((item) => (item.id === id ? changed : item))
+            : [...state.items, changed].sort((a, b) => a.sortOrder - b.sortOrder),
+        }));
+      }),
+  ),
 
   // ── Hard delete ───────────────────────────────────────────────────────────
   deleteItem: async (id) => {
     // H-07 FIX: check for active orders and recipes referencing this item before deletion.
     // Hard-deleting a referenced item silently breaks orders and recipes.
-    const { data: activeOrders } = await supabase
+    // BUG FIX (2026-09-03, found via a live request-URL check before
+    // deploy): .contains() on a jsonb column needs the value as a JSON
+    // STRING — passed as a raw JS array, supabase-js's default toString()
+    // coercion turned it into the literal text "[object Object]" (the real
+    // request became `items=cs.{[object Object]}`), which can never match
+    // any real row. This safety check has never actually blocked a delete —
+    // "Cannot delete: item is used in active orders" simply never fired,
+    // regardless of whether it genuinely was. JSON.stringify(...) produces
+    // the correct `cs.[{"itemId":"..."}]`.
+    const { data: activeOrders, error: activeOrdersError } = await supabase
       .from('bakery_orders')
       .select('id')
       .not('status', 'in', '("dispatched","cancelled")')
-      .contains('items', [{ itemId: id }])
+      .contains('items', JSON.stringify([{ itemId: id }]))
       .limit(1);
 
+    // BUG FIX (audit 2026-09-02): destructuring only `data` and ignoring `error` meant a
+    // failed safety check (RLS denial, network error) silently looked identical to "no
+    // active orders found" — the delete would proceed even though referential integrity
+    // was never actually verified. Fail closed instead.
+    if (activeOrdersError) {
+      throw new Error(`Could not verify active orders before delete: ${activeOrdersError.message}. Item was NOT deleted.`);
+    }
     if (activeOrders && activeOrders.length > 0) {
       throw new Error('Cannot delete: this item is used in active orders. Complete or cancel those orders first.');
     }
 
-    const { data: recipes } = await supabase
+    const { data: recipes, error: recipesError } = await supabase
       .from('bakery_recipes')
       .select('item_id')
       .eq('item_id', id)
       .limit(1);
 
+    if (recipesError) {
+      throw new Error(`Could not verify recipes before delete: ${recipesError.message}. Item was NOT deleted.`);
+    }
     if (recipes && recipes.length > 0) {
       throw new Error('Cannot delete: this item has recipes attached. Remove the recipes first.');
     }

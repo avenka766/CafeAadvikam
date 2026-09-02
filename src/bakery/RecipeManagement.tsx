@@ -27,7 +27,17 @@ interface RecipeRow {
   source: 'db' | 'excel' | 'none';
 }
 
-const OUTPUT_UNITS = ['kg', 'L', 'pcs', 'loaf'] as const;
+// AUDIT FIX (2026-09-02): 'L' was selectable here but calculateMaterials()
+// (recipeStore.ts) — and every real caller of it — only ever compares
+// against 'kg'/'pcs' (orders/dispatch have no liter concept at all, even
+// for liquid items; they're placed/dispatched in kg or pcs terms same as
+// everything else). Picking 'L' silently made materials calculate to []
+// forever for that item, with the recipe's own health-check below showing
+// green because it only checked outputUnit was non-null, not that it was a
+// usable value. Removed from the picker so a NEW recipe can't select it;
+// 'L' stays in the type below only so an existing recipe still saved with
+// it continues to load/display (now correctly flagged as broken).
+const OUTPUT_UNITS = ['kg', 'pcs', 'loaf'] as const;
 const UNIT_ICONS: Record<string, ReactNode> = {
   kg:   <Scale   className="size-3.5" />,
   L:    <Scale   className="size-3.5" />,
@@ -71,7 +81,14 @@ function MatRow({
   // *out* to the parent's numeric state on every change but never synced
   // back *in* from it, breaks that round trip.
   const [qtyDraft, setQtyDraft] = useState(mat.qty === 0 ? '' : String(mat.qty));
-  useEffect(() => { setQtyDraft(mat.qty === 0 ? '' : String(mat.qty)); }, [idx]);
+  // BUG FIX (audit 2026-09-02): this only resynced when `idx` changed, but rows are keyed
+  // by that same `idx` (see the `key={idx}` at the call site) — removing a middle row
+  // shifts every later row's DATA down by one while its key/idx stays the same slot, so
+  // React reuses the same component instance and this effect never re-fires. The result:
+  // a row kept showing the PREVIOUS material's qtyDraft string after the row above it was
+  // removed, even though `mat` now points at a different material entirely. Also resync
+  // when the material name changes, which is exactly what happens when rows shift down.
+  useEffect(() => { setQtyDraft(mat.qty === 0 ? '' : String(mat.qty)); }, [idx, mat.material]);
 
   const suggestions = useMemo(() => {
     const q = mat.material.trim().toLowerCase();
@@ -313,7 +330,13 @@ function ItemRecipeRow({
       ? 'Batch output quantity is missing'
       : !recipe.outputUnit
         ? 'Batch output unit is missing'
-        : invalidMaterialCount > 0
+        // AUDIT FIX (2026-09-02): 'L' is not a usable output unit — see the
+        // OUTPUT_UNITS comment above. Without this check an 'L' recipe
+        // showed a healthy green checkmark while silently never deducting
+        // any raw material stock, for any order, ever.
+        : recipe.outputUnit === 'L'
+          ? "Batch output unit 'L' isn't usable — orders are placed in kg or pcs, so materials never calculate for this item. Change it to kg."
+          : invalidMaterialCount > 0
           ? `${invalidMaterialCount} ingredient ${invalidMaterialCount === 1 ? 'line needs' : 'lines need'} quantity or unit`
           : null;
 

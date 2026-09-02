@@ -1163,14 +1163,41 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
           .eq('item_name', entry.itemName)
           .maybeSingle();
         if (existingErr) throw new Error(`Hosur dispatch sync failed: ${existingErr.message}`);
-        const already = Number(existingRow?.dispatched_quantity ?? 0);
-        const newDispatched = Math.round((already + entry.quantity) * 100) / 100;
-        const { error: hosurItemError } = await supabase
-          .from('hosur_order_items')
-          .update({ dispatched_quantity: newDispatched })
-          .eq('order_id', entry.targetHosurOrderId)
-          .eq('item_name', entry.itemName);
-        if (hosurItemError) throw new Error(`Hosur dispatch sync failed: ${hosurItemError.message}`);
+        if (existingRow) {
+          const already = Number(existingRow.dispatched_quantity ?? 0);
+          const newDispatched = Math.round((already + entry.quantity) * 100) / 100;
+          const { error: hosurItemError } = await supabase
+            .from('hosur_order_items')
+            .update({ dispatched_quantity: newDispatched })
+            .eq('order_id', entry.targetHosurOrderId)
+            .eq('item_name', entry.itemName);
+          if (hosurItemError) throw new Error(`Hosur dispatch sync failed: ${hosurItemError.message}`);
+        } else {
+          // BUG FIX (2026-09-02): an EXTRA/unplanned item (isExtra=true, not
+          // on the shop's original order) had no existing hosur_order_items
+          // row to UPDATE — this silently updated zero rows, so the item
+          // never appeared in hosur_order_items at all despite being
+          // genuinely dispatched (only HosurShopOrderPanel.tsx's own,
+          // separate extra-item flow inserted a row; this one, used by
+          // Planner's main Dispatch tab, never did). That's what fed the
+          // "extra items don't show up in the bill" gap — the new
+          // auto-bill-on-dispatch flow (DispatchReviewModal.confirm(), see
+          // hosurBillingBridge.ts) reads straight from hosur_order_items, so
+          // a missing row here meant a missing line on the bill/WhatsApp
+          // message too. quantity == dispatched_quantity here since an extra
+          // item was never "ordered" — whatever was sent IS the whole of it.
+          // unit_price/line_total are placeholders (0) — real pricing for
+          // the bill comes from the dispatch review screen, not this table.
+          const roundedQty = Math.round(entry.quantity * 100) / 100;
+          const { error: insertErr } = await supabase
+            .from('hosur_order_items')
+            .insert({
+              order_id: entry.targetHosurOrderId, item_name: entry.itemName, unit: entry.unit,
+              quantity: roundedQty, dispatched_quantity: roundedQty, received_quantity: 0,
+              unit_price: 0, line_total: 0,
+            });
+          if (insertErr) throw new Error(`Hosur dispatch sync failed: ${insertErr.message}`);
+        }
 
         const { data: allItems, error: allItemsError } = await supabase
           .from('hosur_order_items')
@@ -1702,9 +1729,17 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     }));
   },
 
-  // Realtime subscription — any INSERT/UPDATE to bakery_orders triggers immediate re-fetch.
+  // Realtime subscription — patches the changed row directly into local state
+  // (no refetch). REALTIME FIX (2026-09-01): this used to be
+  // `subscribe: () => makeSingletonSubscriber(...)()` — calling the singleton
+  // factory INSIDE the arrow function meant every `subscribe()` call built a
+  // brand-new channel instead of sharing one, defeating the ref-counting
+  // makeSingletonSubscriber exists for (two simultaneous mounts, e.g. Planner
+  // + Store dashboards, would each open their own 'bakery-orders-live-all'
+  // channel). Hoisted to module scope so the singleton is built once, like
+  // every other store's subscribe.
   // Returns an unsubscribe fn — call on unmount to avoid duplicate channels.
-  subscribe: () => makeSingletonSubscriber('bakery-orders-live-all', (ch) =>
+  subscribe: makeSingletonSubscriber('bakery-orders-live-all', (ch) =>
     ch.on('postgres_changes', {
       event: '*',
       schema: 'public',
@@ -1724,5 +1759,5 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
             .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
         }));
       }),
-  )(),
+  ),
 }));

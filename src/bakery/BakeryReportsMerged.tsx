@@ -5,7 +5,7 @@
 
 import { useMemo, useEffect, useState } from 'react';
 import { useBranchStore } from '@/branch/branchStore';
-import type { CreditSale } from '@/branch/branchStore';
+import type { CreditSale, SaleRecord } from '@/branch/branchStore';
 import { formatCurrency } from '@/lib/utils';
 import { cn } from '@/lib/utils';
 import type { Branch } from '@/branch/types';
@@ -198,7 +198,7 @@ function KPICard({ label, value, sub, color }: { label: string; value: string; s
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export default function BakeryReportsMerged({ branch }: Props) {
-  const { sales, creditSales, fetchBranchData, fetchCreditSales } = useBranchStore();
+  const { creditSales, fetchBranchData, fetchCreditSales, fetchBranchSalesRange } = useBranchStore();
 
   const [quickRange, setQuickRange] = useState<QuickRange>('today');
   const [dateFrom, setDateFrom] = useState(() => new Date().toISOString().split('T')[0]);
@@ -206,15 +206,43 @@ export default function BakeryReportsMerged({ branch }: Props) {
   const [filterItem, setFilterItem]     = useState('');
   const [filterBranch, setFilterBranch] = useState<Branch | 'all'>('all');
 
-  // Fetch branch data on mount
+  // RM-FIX: fetchBranchData's `sales` scope is hardcoded to today-only (see its
+  // EGRESS FIX comment in branchStore.ts) — it was never meant to serve this
+  // report's Yesterday/7d/30d/custom ranges, which silently rendered near-zero
+  // revenue for anything but "Today" while credit-sale KPIs on the same page
+  // (sourced from the unbounded fetchCreditSales) looked correct. The store
+  // already has a purpose-built `fetchBranchSalesRange` for exactly this case
+  // (deliberately not written into the always-on `sales` cache) — use it here,
+  // refetching whenever the selected range actually changes.
+  const [rangeSales, setRangeSales] = useState<SaleRecord[]>([]);
+  const [rangeSalesLoading, setRangeSalesLoading] = useState(false);
+
+  // Fetch branch data (stock/incoming/etc, today-only) on mount
   useEffect(() => {
     if (branch === 'all') {
-      BRANCHES.forEach(b => { fetchBranchData(b); fetchCreditSales(b); });
+      BRANCHES.forEach(b => { fetchBranchData(b, false, ['sales']); fetchCreditSales(b); }); // EGRESS FIX: this report reads sales (credit handled separately via fetchCreditSales)
     } else {
-      fetchBranchData(branch as Branch);
+      fetchBranchData(branch as Branch, false, ['sales']);
       fetchCreditSales(branch as Branch);
     }
   }, [fetchBranchData, fetchCreditSales, branch]);
+
+  // Fetch the actual sales rows for the selected date range — re-runs on every
+  // range/branch change, so "Yesterday"/"7d"/"30d"/custom always reflect real data.
+  useEffect(() => {
+    let cancelled = false;
+    const fromISO = new Date(new Date(dateFrom).setHours(0, 0, 0, 0)).toISOString();
+    const toISO   = new Date(new Date(dateTo).setHours(23, 59, 59, 999)).toISOString();
+    const branches: Branch[] = branch === 'all' ? BRANCHES : [branch as Branch];
+    setRangeSalesLoading(true);
+    Promise.all(branches.map((b) => fetchBranchSalesRange(b, fromISO, toISO)))
+      .then((results) => {
+        if (cancelled) return;
+        setRangeSales(results.flat());
+      })
+      .finally(() => { if (!cancelled) setRangeSalesLoading(false); });
+    return () => { cancelled = true; };
+  }, [fetchBranchSalesRange, branch, dateFrom, dateTo]);
 
   // BUG #23 FIX: reset filterBranch when branch prop changes to avoid stale filter state.
   // If user viewed 'all' branches (with filterBranch=VRSNB set), then switched to a
@@ -235,21 +263,17 @@ export default function BakeryReportsMerged({ branch }: Props) {
 
   // ── All sales for this branch scope ───────────────────────────────────────
   const allSales = useMemo(() => {
-    const branches: Branch[] = branch === 'all' ? BRANCHES : [branch as Branch];
-    const result: Array<{
-      id: string; branch: Branch; itemName: string;
-      quantitySold: number; soldAt: string; soldBy: string; unitPrice: number;
-      paymentMethod?: string;
-    }> = [];
-    branches.forEach(b => {
-      (sales[b] || []).forEach(s => result.push({
-        ...s, branch: b,
-        unitPrice: (s as typeof s & { unitPrice?: number }).unitPrice ?? 0,
-        paymentMethod: (s as typeof s & { paymentMethod?: string }).paymentMethod ?? '',
-      }));
-    });
-    return result.sort((a, b) => new Date(b.soldAt).getTime() - new Date(a.soldAt).getTime());
-  }, [sales, branch]);
+    // RM-FIX: sourced from the range-scoped fetch above, not the today-only
+    // `sales[b]` store cache — see the useEffect comment for why.
+    return rangeSales
+      .map((s) => ({
+        id: s.id, branch: s.branch, itemName: s.itemName,
+        quantitySold: s.quantitySold, soldAt: s.soldAt, soldBy: s.soldBy,
+        unitPrice: s.unitPrice ?? 0,
+        paymentMethod: s.paymentMethod ?? '',
+      }))
+      .sort((a, b) => new Date(b.soldAt).getTime() - new Date(a.soldAt).getTime());
+  }, [rangeSales]);
 
   // ── All credit sales for this branch scope ──────────────────────────────
   const allCreditSales = useMemo(() => {
@@ -804,7 +828,9 @@ export default function BakeryReportsMerged({ branch }: Props) {
           </div>
           <span className="text-xs text-muted-foreground">{itemReport.length} items</span>
         </div>
-        {itemReport.length === 0 ? (
+        {rangeSalesLoading ? (
+          <p className="text-center text-sm text-muted-foreground py-8">Loading sales for this range…</p>
+        ) : itemReport.length === 0 ? (
           <p className="text-center text-sm text-muted-foreground py-8">No sales in this range.</p>
         ) : (
           <div className="table-scroll-container"><div className="table-inner-scroll"><table className="w-full text-sm">

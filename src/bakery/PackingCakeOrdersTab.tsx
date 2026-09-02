@@ -7,7 +7,7 @@ import { supabase } from '@/lib/supabase';
 import { ensureCakeDispatchIncoming } from '@/branch/cakeDispatchSync';
 import { printHtml } from '@/branch/printUtils';
 import { printViaIframe } from '@/lib/printViaIframe';
-import { saveDispatchInvoice, printDispatchInvoice, type DispatchInvoiceRecord, type DispatchInvoiceItem, type DispatchInvoiceScope } from './dispatchInvoice';
+import { saveDispatchInvoice, printDispatchInvoice, recordFromRow as recordFromDispatchInvoiceRow, type DispatchInvoiceRecord, type DispatchInvoiceItem, type DispatchInvoiceScope } from './dispatchInvoice';
 import { CAKE_DESIGNS, cakeTypesFor, calculateCakePrice, type CakeCreamType, type CakeDesignType } from '@/branch/cakePricing';
 // FEATURE (2026-08-10): "the custom cake order sub tab... should be same
 // like SNB branch Advance cake orders" -- reuses the exact same component
@@ -164,6 +164,42 @@ export default function PackingCakeOrdersTab({ mode = 'packing' }: { mode?: 'pac
   const [view, setView] = useState<'ready' | 'in_progress' | 'corrections' | 'custom' | 'history'>('ready');
   const [returnId, setReturnId] = useState<string | null>(null);
   const [returnReason, setReturnReason] = useState('');
+  // FEATURE (2026-09-03): "the cake invoice should be next to that cake" —
+  // looked up on demand rather than pre-fetched for every dispatched order
+  // (History can hold a lot of rows). Cake invoices carry no direct FK back
+  // to cake_master_orders — same jsonb-containment link on dispatch_entry_ids
+  // already used for reset-time archival joins (see [[project_planner_dashboard_reset_20260901]]).
+  const [invoiceLookupId, setInvoiceLookupId] = useState<string | null>(null);
+  const [invoiceLookupError, setInvoiceLookupError] = useState<{ orderId: string; message: string } | null>(null);
+
+  const viewCakeInvoice = async (order: CakeOrderRow, mode: 'thermal' | 'a4') => {
+    setInvoiceLookupId(order.id);
+    setInvoiceLookupError(null);
+    try {
+      // BUG FIX (2026-09-03, found via a live request-URL check before
+      // deploy): supabase-js's .contains() on a jsonb column needs the value
+      // as a JSON STRING, not a raw JS array — passed as an array, it got
+      // coerced via JS's default toString() into the literal text
+      // "[object Object]" (request became `cs.{[object Object]}`), so this
+      // lookup would have silently matched nothing, ever, ship-wide.
+      // JSON.stringify(...) produces the correct `cs.[{"orderId":"..."}]`.
+      const { data, error: lookupErr } = await supabase
+        .from('dispatch_invoices')
+        .select('*')
+        .eq('scope', 'Cake')
+        .contains('dispatch_entry_ids', JSON.stringify([{ orderId: order.id }]))
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (lookupErr) throw lookupErr;
+      if (!data) { setInvoiceLookupError({ orderId: order.id, message: `No invoice found for ${order.order_no} yet.` }); return; }
+      await printDispatchInvoice(recordFromDispatchInvoiceRow(data), mode);
+    } catch (err) {
+      setInvoiceLookupError({ orderId: order.id, message: err instanceof Error ? err.message : 'Failed to load the invoice.' });
+    } finally {
+      setInvoiceLookupId(null);
+    }
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -189,25 +225,37 @@ export default function PackingCakeOrdersTab({ mode = 'packing' }: { mode?: 'pac
   useEffect(() => { void load(); }, [load]);
 
   useEffect(() => {
-    // EGRESS FIX (2026-08-15): this had no debounce at all — every single
-    // insert/update/delete on cake_master_orders, from any branch, fired an
-    // immediate full reload. CakeMasterDashboard.tsx's identical channel was
-    // already fixed with exactly this debounce for exactly this reason; this
-    // tab was missed at the time.
-    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
-    const scheduleReload = () => {
-      if (debounceTimer) clearTimeout(debounceTimer);
-      debounceTimer = setTimeout(() => { void load(); }, 2000);
-    };
+    // REALTIME FIX (2026-09-01): this used to debounce-then-refetch the
+    // whole (up to 2000-row) query on every change — replaced with a direct
+    // row-level patch (matches branchStore.ts's applyBranchRealtimeChange
+    // pattern). CakeOrderRow already matches the raw snake_case DB row
+    // shape 1:1 (see `as CakeOrderRow[]` in load() above), so the payload
+    // can be used directly with no mapping step. Packing's own dashboard
+    // (mode !== 'planner') only ever shows a status subset — a row whose
+    // status just moved outside that subset is dropped, same as load()'s
+    // own `.in('status', [...])` filter would produce.
+    const packingStatuses = new Set(['Ready for Packing', 'Packed', 'Correction Required']);
     const channel = supabase
       .channel('packing_cake_orders_live')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'cake_master_orders' }, scheduleReload)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'cake_master_orders' }, (payload) => {
+        const event = payload as unknown as { eventType?: string; new?: CakeOrderRow; old?: { id?: string } };
+        const id = String(event.new?.id ?? event.old?.id ?? '');
+        if (!id) return;
+        const inScope = event.eventType !== 'DELETE' && event.new
+          && (mode === 'planner' || packingStatuses.has(event.new.status));
+        if (!inScope) {
+          setOrders((current) => current.filter((o) => o.id !== id));
+          return;
+        }
+        const changed = event.new as CakeOrderRow;
+        setOrders((current) => [...current.filter((o) => o.id !== id), changed]
+          .sort((a, b) => (a.delivery_date || '').localeCompare(b.delivery_date || '')));
+      })
       .subscribe();
     return () => {
-      if (debounceTimer) clearTimeout(debounceTimer);
       void supabase.removeChannel(channel);
     };
-  }, [load]);
+  }, [mode]);
 
   // FEATURE (2026-08-08): "I need the ability to select multiple items and
   // dispatch at once and I need the checklist and the invoice." Selection is
@@ -370,9 +418,27 @@ export default function PackingCakeOrdersTab({ mode = 'packing' }: { mode?: 'pac
                   </p>
                 </div>
               </div>
-              <div className="text-right text-[11px] font-bold text-muted-foreground">
+              <div className="flex shrink-0 flex-col items-end gap-1.5 text-right text-[11px] font-bold text-muted-foreground">
                 {Number(order.order_value) > 0 && <p className="text-sm font-black text-foreground">Rs. {Number(order.order_value).toFixed(2)}</p>}
                 {order.dispatched_at && <p>{order.dispatched_by ? `${order.dispatched_by} · ` : ''}{new Date(order.dispatched_at).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</p>}
+                {/* FEATURE (2026-09-03): "the cake invoice should be next to that cake" */}
+                <div className="flex gap-1.5">
+                  <button
+                    type="button" disabled={invoiceLookupId === order.id}
+                    onClick={() => void viewCakeInvoice(order, 'thermal')}
+                    className="flex items-center gap-1 rounded-lg border border-border bg-white px-2 py-1 text-[10px] font-black text-foreground disabled:opacity-50"
+                  >
+                    {invoiceLookupId === order.id ? <Loader2 className="size-3 animate-spin" /> : <Receipt className="size-3" />} Invoice (Thermal)
+                  </button>
+                  <button
+                    type="button" disabled={invoiceLookupId === order.id}
+                    onClick={() => void viewCakeInvoice(order, 'a4')}
+                    className="flex items-center gap-1 rounded-lg border border-border bg-white px-2 py-1 text-[10px] font-black text-foreground disabled:opacity-50"
+                  >
+                    {invoiceLookupId === order.id ? <Loader2 className="size-3 animate-spin" /> : <Receipt className="size-3" />} Invoice (A4)
+                  </button>
+                </div>
+                {invoiceLookupError?.orderId === order.id && <p className="max-w-[14rem] text-red-600">{invoiceLookupError.message}</p>}
               </div>
             </div>
           ))}
@@ -501,7 +567,11 @@ function CustomCakeOrderPanel({ dispatchedBy }: { dispatchedBy: string }) {
     try {
       const item: DispatchInvoiceItem = { itemName: itemLabel(), unit: 'pcs', quantity: 1, unitPrice: priceCalc.total, lineTotal: priceCalc.total };
       const record = await saveDispatchInvoice({
-        scope: 'SNB',
+        // FEATURE (2026-09-03): cake invoices get their own scope/sequence
+        // (Cake/26-27/N) so they never show up mixed into SNB's own invoice
+        // list — was 'SNB' unconditionally, wrong for both a VRSNB cake and
+        // for the "should be its own separate invoice" ask either way.
+        scope: 'Cake',
         customerName: customerName.trim(),
         customerPhone: customerPhone.trim() || null,
         dispatchedBy,
@@ -709,12 +779,21 @@ function CakeDispatchReviewModal({ orders, dispatchedBy, onClose, onDone }: {
 
   const missingPriceOrders = orders.filter(o => !(Number(o.order_value) > 0));
   const subtotal = orders.reduce((s, o) => s + Number(o.order_value || 0), 0);
+  // BUG FIX (2026-09-03, found before deploy): discountPct here had no
+  // floor/ceiling at all — saveDispatchInvoice below already clamps it to
+  // [0,100] before it's ever persisted (see its own AUDIT FIX comment), so
+  // the SAVED invoice was always safe, but this PREVIEW total (shown before
+  // that call even runs) could show a confusing negative total for a >100%
+  // typo, or a bigger-than-real discount for a negative one — a mismatch
+  // between what's confirmed and what actually gets saved. Clamped here too
+  // so the preview always matches reality.
+  const clampedDiscountPct = Math.max(0, Math.min(100, Number(discountPct) || 0));
   // BUG FIX (audit 2026-08-30): discountAmount stayed paise-rounded while
   // `total` below already correctly rounds to whole rupees — cosmetic
   // inconsistency (e.g. "Discount Rs. 165.45" above a whole-rupee Total),
   // same root cause as the cake round-off bug fixed elsewhere today.
-  const discountAmount = Math.round(subtotal * (discountPct / 100));
-  const total = Math.round(subtotal - discountAmount);
+  const discountAmount = Math.round(subtotal * (clampedDiscountPct / 100));
+  const total = Math.max(0, Math.round(subtotal - discountAmount));
 
   const confirm = async () => {
     if (missingPriceOrders.length > 0) {
@@ -737,7 +816,12 @@ function CakeDispatchReviewModal({ orders, dispatchedBy, onClose, onDone }: {
           unitPrice: Number(o.order_value), lineTotal: Number(o.order_value),
         }));
         const record = await saveDispatchInvoice({
-          scope: branch, dispatchedBy, items, discountPct,
+          // FEATURE (2026-09-03): was `scope: branch` (SNB/VRSNB) — cake
+          // invoices now always use scope 'Cake' (own sequence, excluded
+          // from the SNB/VRSNB invoice lists). `branch` is still the group
+          // key here (kept for the per-branch batching itself), just no
+          // longer what gets persisted as the invoice's scope.
+          scope: 'Cake', dispatchedBy, items, discountPct: clampedDiscountPct,
           dispatchEntryIds: group.map(o => ({ orderId: o.id, dispatchEntryId: o.id })),
         });
         createdInvoicesRef.current.set(branch, record);
@@ -804,6 +888,22 @@ function CakeDispatchReviewModal({ orders, dispatchedBy, onClose, onDone }: {
                 <span className="text-sm font-black text-foreground"> Total Rs. {total.toFixed(2)}</span>
               </div>
             </div>
+            {/* AUDIT FIX (2026-09-02): the Total above sums every cake in this
+                batch regardless of branch, but the confirm() loop below
+                explicitly skips creating a dispatch invoice for Planner-scope
+                cakes (their price/payment is already tracked on their own
+                advance order, not billed here) — so this Total can overstate
+                what actually appears in the invoice(s) this dispatch
+                produces whenever a batch mixes Planner cakes with SNB/VRSNB
+                ones. Not a revenue loss (nothing about a Planner cake's own
+                advance-order payment changes), but worth being explicit
+                about so a planner isn't confused later reprinting an
+                invoice and finding a cake missing from it. */}
+            {(byBranch.get('Planner')?.length ?? 0) > 0 && (
+              <p className="mt-1.5 text-right text-[10px] font-bold text-amber-700">
+                Includes {byBranch.get('Planner')!.length} Planner-branch cake{byBranch.get('Planner')!.length === 1 ? '' : 's'} (Rs. {byBranch.get('Planner')!.reduce((s, o) => s + Number(o.order_value || 0), 0).toFixed(2)}) — billed on its own advance order, not on the invoice this creates.
+              </p>
+            )}
 
             {error && <p className="mt-2 text-[11px] font-bold text-red-700">{error}</p>}
 

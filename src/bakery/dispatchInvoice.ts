@@ -35,7 +35,15 @@ export interface DispatchInvoiceItem {
   isExtra?: boolean;
 }
 
-export type DispatchInvoiceScope = Branch; // 'VRSNB' | 'SNB' | 'Hosur'
+// FEATURE (2026-09-03): 'Cake' added as a genuinely separate scope — cake
+// dispatches used to be saved under scope 'SNB' (or whichever branch the
+// order belonged to), mixing them into that branch's own invoice list/
+// sequence. Now cakes get their own scope, their own invoice sequence
+// (Cake/26-27/N — see nextDispatchInvoiceNo below), and are excluded from
+// the SNB/VRSNB tabs entirely just by virtue of not being scope 'SNB'/'VRSNB'
+// any more — no separate filtering needed anywhere that already filters by
+// scope.
+export type DispatchInvoiceScope = Branch | 'Cake'; // 'VRSNB' | 'SNB' | 'Hosur' | 'Cake'
 
 export interface DispatchInvoiceBusiness {
   name: string;
@@ -61,14 +69,21 @@ const VRSNB_FOODS_BUSINESS: DispatchInvoiceBusiness = {
 };
 
 export function businessFor(scope: DispatchInvoiceScope): DispatchInvoiceBusiness {
-  return scope === 'SNB' ? SNB_BUSINESS : VRSNB_FOODS_BUSINESS;
+  // SIMPLIFICATION (2026-09-03): a cake dispatch can, in principle, belong to
+  // either SNB or VRSNB (see PackingCakeOrdersTab.tsx's per-branch grouping),
+  // but the letterhead choice isn't worth threading a second "real source
+  // branch" field through the invoice record for — in practice virtually
+  // every cake order is SNB-attributed, so 'Cake' prints SNB's letterhead.
+  // Revisit if VRSNB-branded cake invoices turn out to matter.
+  return scope === 'SNB' || scope === 'Cake' ? SNB_BUSINESS : VRSNB_FOODS_BUSINESS;
 }
 
 // Default discount policy (2026-08-08): only SNB's catalog prices are
 // pre-discount, so only SNB gets a real default discount. VRSNB's catalog
 // prices are already the sell price and Hosur's shop price lists are already
-// discounted — both default to 0% so nothing gets double-discounted. All
-// three remain editable per invoice.
+// discounted — both default to 0% so nothing gets double-discounted. Cake
+// pricing (2026-09-03) is a fixed per-order value, not a catalog price, so
+// it defaults to 0% too. All remain editable per invoice.
 export function defaultDiscountPct(scope: DispatchInvoiceScope): number {
   return scope === 'SNB' ? 15 : 0;
 }
@@ -76,16 +91,16 @@ export function defaultDiscountPct(scope: DispatchInvoiceScope): number {
 export async function nextDispatchInvoiceNo(scope: DispatchInvoiceScope): Promise<string> {
   const { data, error } = await supabase.rpc('get_next_dispatch_invoice_number', { p_scope: scope });
   if (error || !data) {
-    // FEATURE (2026-09-01): "the dispatch items should follow the new
-    // billing format ... snb/26-27/.. continues starting from 1 and same
-    // for VRSNB and same for hosur" — the RPC (get_next_dispatch_invoice_number)
-    // is the real per-branch/per-FY counter; this only fires if that call
-    // itself failed, so it can't reproduce a real sequence number — it just
-    // keeps the SAME prefix/FY shape (millisecond suffix instead of a real
-    // count) so a rare fallback invoice still reads consistently with the
-    // rest, rather than reverting to an unrelated date-stamp format.
+    // FEATURE (2026-09-03): "SNB/VRSNB -> TO/26-27/N (shared), Hosur -> same
+    // SALES/26-27/N sequence as the Sales tab, Cake -> its own Cake/26-27/N"
+    // — the RPC (get_next_dispatch_invoice_number) is the real counter; this
+    // only fires if that call itself failed, so it can't reproduce a real
+    // sequence number — it just keeps the SAME prefix/FY shape (millisecond
+    // suffix instead of a real count) so a rare fallback invoice still reads
+    // consistently with the rest, rather than reverting to an unrelated
+    // date-stamp format. Mirrors the RPC's own prefix mapping exactly.
     const now = new Date();
-    const prefix = scope === 'Hosur' ? 'HOSUR' : scope;
+    const prefix = scope === 'SNB' || scope === 'VRSNB' ? 'TO' : scope === 'Hosur' ? 'SALES' : scope;
     const fyStartYear = now.getMonth() + 1 >= 4 ? now.getFullYear() : now.getFullYear() - 1;
     const fy = `${String(fyStartYear % 100).padStart(2, '0')}-${String((fyStartYear + 1) % 100).padStart(2, '0')}`;
     return `${prefix}/${fy}/${String(now.getTime()).slice(-4)}`;
@@ -156,8 +171,16 @@ export async function saveDispatchInvoice(input: {
   // exactly as before.
   invoiceNo?: string;
 }): Promise<DispatchInvoiceRecord> {
+  // AUDIT FIX (2026-09-02): discountPct is planner-entered and, until now, was
+  // trusted verbatim with no bound in either direction — a stray value (typo,
+  // bad state, or a compromised session) could zero out or invert a real
+  // dispatch invoice. Clamped here so this single choke point protects every
+  // caller; the DB now also enforces the same 0-100 range as a hard backstop
+  // (dispatch_invoices_discount_pct_range constraint) in case a future write
+  // path bypasses this function entirely.
+  const safeDiscountPct = Math.min(100, Math.max(0, input.discountPct || 0));
   const subtotal = Math.round(input.items.reduce((s, i) => s + i.lineTotal, 0) * 100) / 100;
-  const discountAmount = Math.round(subtotal * (input.discountPct / 100) * 100) / 100;
+  const discountAmount = Math.round(subtotal * (safeDiscountPct / 100) * 100) / 100;
   const preRound = subtotal - discountAmount;
   const total = Math.round(preRound);
   const roundOff = Math.round((total - preRound) * 100) / 100;
@@ -176,7 +199,7 @@ export async function saveDispatchInvoice(input: {
     dispatched_by: input.dispatchedBy,
     items: input.items,
     subtotal,
-    discount_pct: input.discountPct,
+    discount_pct: safeDiscountPct,
     discount_amount: discountAmount,
     round_off: roundOff,
     total,
@@ -200,7 +223,7 @@ export async function saveDispatchInvoice(input: {
     dispatchedBy: input.dispatchedBy,
     items: input.items,
     subtotal,
-    discountPct: input.discountPct,
+    discountPct: safeDiscountPct,
     discountAmount,
     roundOff,
     total,
@@ -244,6 +267,66 @@ export async function markDispatchInvoicePaid(record: DispatchInvoiceRecord, rec
     }
   }
   return { ok: true };
+}
+
+// Sales (New Bill / Sample Bill, bakery_walkin_bills) shares dispatch
+// invoices' printed template but not its table — these three moved here
+// (2026-09-03, previously PlannerDashboard.tsx-local) so Admin's Dispatch
+// Details tab can render/print Sales rows through the identical invoice
+// template without importing that whole page module.
+export interface WalkinBillItem { itemName: string; unit: string; price: number; quantity: number; lineTotal: number }
+export interface WalkinBillRow {
+  id: string; billNo: string; items: WalkinBillItem[]; subtotal: number;
+  discountType: 'none' | 'percent' | 'amount'; discountValue: number; discountAmount: number; total: number;
+  paymentMode: string; cashierName: string | null; status: 'active' | 'cancelled'; createdAt: string;
+  customerName: string | null; customerMobile: string | null;
+}
+
+export function mapWalkinBill(d: Record<string, unknown>): WalkinBillRow {
+  return {
+    id: d.id as string, billNo: d.bill_no as string,
+    items: Array.isArray(d.items) ? (d.items as WalkinBillItem[]) : [],
+    subtotal: Number(d.subtotal) || 0,
+    discountType: (d.discount_type as WalkinBillRow['discountType']) || 'none',
+    discountValue: Number(d.discount_value) || 0,
+    discountAmount: Number(d.discount_amount) || 0,
+    total: Number(d.total) || 0,
+    paymentMode: (d.payment_mode as string) || 'cash',
+    cashierName: (d.cashier_name as string | null) ?? null,
+    status: (d.status as WalkinBillRow['status']) || 'active',
+    createdAt: d.created_at as string,
+    customerName: (d.customer_name as string | null) ?? null,
+    customerMobile: (d.customer_mobile as string | null) ?? null,
+  };
+}
+
+// WORKFLOW CHANGE (2026-08-09): "All bills in this dashboard should use a
+// standard format, sourced from the Dispatch tab's invoice format" — adapts
+// the saved bakery_walkin_bills row into the same DispatchInvoiceRecord
+// shape so it renders through the identical renderDispatchInvoiceHtml
+// template as every other invoice in the app.
+export function walkinBillToInvoiceRecord(bill: WalkinBillRow): DispatchInvoiceRecord {
+  return {
+    id: bill.id,
+    invoiceNo: bill.billNo,
+    scope: 'SNB',
+    hosurShopId: null, hosurShopName: null, hosurShopPhone: null,
+    customerName: bill.customerName || 'Walk-in Customer',
+    customerPhone: bill.customerMobile,
+    customerAddress: null,
+    dispatchedBy: bill.cashierName || 'Planner',
+    items: bill.items.map(i => ({ itemName: i.itemName, unit: i.unit, quantity: i.quantity, unitPrice: i.price, lineTotal: i.lineTotal })),
+    subtotal: bill.subtotal,
+    discountPct: bill.discountType === 'percent' ? bill.discountValue : 0,
+    discountAmount: bill.discountAmount,
+    roundOff: 0,
+    total: bill.total,
+    status: 'paid',
+    paidAt: bill.createdAt,
+    notes: `Walk-in Bill · Payment: ${bill.paymentMode.toUpperCase()}`,
+    createdAt: bill.createdAt,
+    dispatchEntryIds: [], // not a real dispatch — nothing to trace back to
+  };
 }
 
 function esc(v: unknown): string {
@@ -393,7 +476,10 @@ export async function printDispatchInvoice(record: DispatchInvoiceRecord, mode: 
   console.log('[printDispatchInvoice] printViaIframe call returned (does not mean printing succeeded, just that it was invoked)');
 }
 
-function recordFromRow(row: Record<string, unknown>): DispatchInvoiceRecord {
+// Exported (2026-09-03) so callers that need a one-off row lookup outside
+// listDispatchInvoices' date-range/scope query (e.g. PackingCakeOrdersTab's
+// "find this cake's own invoice" lookup) don't have to duplicate this mapping.
+export function recordFromRow(row: Record<string, unknown>): DispatchInvoiceRecord {
   return {
     id: row.id as string,
     invoiceNo: String(row.invoice_no ?? ''),
@@ -539,7 +625,13 @@ export async function updateDispatchInvoice(params: {
     return Math.abs(originalByKey.get(k)!.quantity - updatedByKey.get(k)!.quantity) > 0.001;
   });
 
-  const branch = original.scope;
+  // TYPE NOTE (2026-09-03): only used below inside `if (stockSynced)`, which
+  // is only ever true when real dispatch_log entries were found (entryDetails
+  // resolved from bakeryOrders) — a Cake invoice (see its own doc comment
+  // above) never has those, so this cast is never actually exercised for
+  // scope 'Cake'; it's just here so submitDispatch's stricter Branch param
+  // type-checks for the SNB/VRSNB/Hosur cases that do reach it.
+  const branch = original.scope as Branch;
   // Fallback anchor for a genuinely brand-new item (never had any entry to
   // anchor off) — any order already targeting this branch, same as
   // ExtraItemDispatchForm's own anchorOrderId logic elsewhere in Dispatch.
@@ -637,8 +729,10 @@ export async function updateDispatchInvoice(params: {
       isExtra: addedKeys.includes(k) ? true : (originalByKey.get(k)?.isExtra ?? i.isExtra ?? false),
     };
   });
+  // AUDIT FIX (2026-09-02): same clamp as saveDispatchInvoice — see its comment.
+  const safeUpdatedDiscountPct = Math.min(100, Math.max(0, params.updatedDiscountPct || 0));
   const subtotal = Math.round(finalItems.reduce((s, i) => s + i.lineTotal, 0) * 100) / 100;
-  const discountAmount = Math.round(subtotal * (params.updatedDiscountPct / 100) * 100) / 100;
+  const discountAmount = Math.round(subtotal * (safeUpdatedDiscountPct / 100) * 100) / 100;
   const preRound = subtotal - discountAmount;
   const total = Math.round(preRound);
   const roundOff = Math.round((total - preRound) * 100) / 100;
@@ -663,7 +757,7 @@ export async function updateDispatchInvoice(params: {
   const { error: updateErr } = await supabase.from('dispatch_invoices').update({
     items: finalItems,
     subtotal,
-    discount_pct: params.updatedDiscountPct,
+    discount_pct: safeUpdatedDiscountPct,
     discount_amount: discountAmount,
     round_off: roundOff,
     total,
@@ -690,7 +784,7 @@ export async function updateDispatchInvoice(params: {
     record: {
       ...original,
       items: finalItems,
-      subtotal, discountPct: params.updatedDiscountPct, discountAmount, roundOff, total,
+      subtotal, discountPct: safeUpdatedDiscountPct, discountAmount, roundOff, total,
       dispatchEntryIds: finalDispatchEntryIds,
       notes: finalNotes,
     },

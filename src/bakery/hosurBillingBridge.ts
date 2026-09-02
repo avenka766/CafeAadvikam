@@ -137,17 +137,42 @@ export function computePaymentSplit(total: number, payment: PaymentCapture): { p
   return { paid, credit, status };
 }
 
+// FEATURE (2026-09-02): "give the option to enter the charges field — a
+// field to enter the charge name and a field to enter the amount" — an
+// ad-hoc named charge (delivery fee, packing charge, etc.) added on top of
+// the item total. Deliberately NOT modeled as a hosur_order_items row (a
+// charge was never "ordered" or physically dispatched — there's no stock to
+// receive/reconcile), so it bypasses step 1's received_quantity update
+// entirely and only ever affects the bill total + an extra hosur_bill_items
+// row. Only applied when a brand-new bill is created (the "reuse an
+// existing draft bill" path below is a same-order retry-idempotency
+// safeguard — re-adding charges there on a retry would duplicate them).
+export interface HosurBillCharge { name: string; amount: number }
+
 export async function dispatchReceiveAndBill(params: {
   order: HosurOrderForBilling;
   items: HosurOrderItemForBilling[];
+  charges?: HosurBillCharge[];
   payment: PaymentCapture;
   userName: string;
+  // FEATURE (2026-09-02): "for hosur dispatch no need to open the counter
+  // because everything is recorded as credit — don't block the physical
+  // dispatch." The counter gate exists to reconcile cash/UPI/card actually
+  // collected at billing time; a pure-credit bill collects nothing, so
+  // there's nothing to reconcile. Defaults to true (unchanged behavior) for
+  // the existing manual Hosur tab caller, which still allows full/partial
+  // payment and does need the counter open for that cash.
+  requireCounterOpen?: boolean;
 }): Promise<{ billId: string; billNo: string; whatsappStatus: 'sent' | 'failed'; whatsappError: string | null }> {
-  const { order, items, payment, userName } = params;
+  const { order, items, payment, userName, requireCounterOpen = true } = params;
+  const charges = (params.charges ?? []).filter(c => c.name.trim() && Number.isFinite(c.amount) && c.amount > 0);
+  const chargesTotal = Math.round(charges.reduce((sum, c) => sum + c.amount, 0) * 100) / 100;
 
-  const counter = await getPackingCounterStatus();
-  if (!counter.isOpen) {
-    throw new Error("Planner's counter is closed. Open today's counter in Daily Closure before billing.");
+  if (requireCounterOpen) {
+    const counter = await getPackingCounterStatus();
+    if (!counter.isOpen) {
+      throw new Error("Planner's counter is closed. Open today's counter in Daily Closure before billing.");
+    }
   }
 
   // 1. Mark items received == what was dispatched (Planner is both sender and
@@ -163,13 +188,24 @@ export async function dispatchReceiveAndBill(params: {
   const { data: existingBillRow } = await supabase.from('hosur_bills').select('id').eq('order_id', order.id).neq('status', 'cancelled').maybeSingle();
   let billId: string;
   let billNo: string;
+  // BUG FIX (2026-09-02, alongside the charges feature): payment capture
+  // below used to recompute `total` fresh from `items` alone — correct when
+  // this is a brand-new bill, but on the "reuse an existing draft bill"
+  // retry path, that recompute would silently drop any charges that were
+  // already added to the bill on the FIRST attempt (charges only ever get
+  // (re-)inserted when creating a new bill, not on a retry). Track the
+  // bill's own authoritative subtotal in both branches and use that for
+  // payment capture instead of recomputing it.
+  let billSubtotal: number;
   if (existingBillRow?.id) {
     billId = existingBillRow.id;
-    const { data: b } = await supabase.from('hosur_bills').select('bill_no').eq('id', billId).single();
+    const { data: b } = await supabase.from('hosur_bills').select('bill_no, subtotal').eq('id', billId).single();
     billNo = b?.bill_no ?? '';
+    billSubtotal = Number(b?.subtotal ?? 0);
   } else {
     billNo = await nextBillNo();
-    const subtotal = Math.round(items.reduce((sum, i) => sum + i.receivedQuantity * i.unitPrice, 0) * 100) / 100;
+    const subtotal = Math.round((items.reduce((sum, i) => sum + i.receivedQuantity * i.unitPrice, 0) + chargesTotal) * 100) / 100;
+    billSubtotal = subtotal;
     const { data: billData, error: billError } = await supabase.from('hosur_bills').insert({
       bill_no: billNo, order_id: order.id, shop_id: order.shopId, shop_name: order.shopName,
       shop_whatsapp: order.shopWhatsapp, subtotal, paid_amount: 0, credit_amount: 0,
@@ -178,17 +214,28 @@ export async function dispatchReceiveAndBill(params: {
     if (billError) throw billError;
     billId = billData.id;
 
-    const rows = items.map(i => ({
-      bill_id: billId, item_name: i.itemName, unit: i.unit,
-      quantity: i.receivedQuantity, unit_price: i.unitPrice,
-      line_total: Math.round(i.receivedQuantity * i.unitPrice * 100) / 100,
-    }));
+    const rows = [
+      ...items.map(i => ({
+        bill_id: billId, item_name: i.itemName, unit: i.unit,
+        quantity: i.receivedQuantity, unit_price: i.unitPrice,
+        line_total: Math.round(i.receivedQuantity * i.unitPrice * 100) / 100,
+      })),
+      // Charges: quantity 1, unit_price == the charge amount == its own
+      // line_total — same shape a real 1-unit line item would have, so
+      // every downstream reader (bill print, WhatsApp message, exports)
+      // that just sums line_total needs no special-casing for these.
+      ...charges.map(c => ({
+        bill_id: billId, item_name: c.name.trim(), unit: 'charge',
+        quantity: 1, unit_price: Math.round(c.amount * 100) / 100,
+        line_total: Math.round(c.amount * 100) / 100,
+      })),
+    ];
     const { error: itemsError } = await supabase.from('hosur_bill_items').insert(rows);
     if (itemsError) { await supabase.from('hosur_bills').delete().eq('id', billId); throw itemsError; }
   }
 
   // 3. Capture payment (full / partial / credit) — mirrors confirmBill exactly.
-  const total = items.reduce((sum, i) => sum + Math.round(i.receivedQuantity * i.unitPrice * 100) / 100, 0);
+  const total = billSubtotal;
   const { paid, credit, status } = computePaymentSplit(total, payment);
 
   if ((payment.paymentType === 'credit' || payment.paymentType === 'partial') && !payment.dueDate) {
@@ -227,7 +274,10 @@ export async function dispatchReceiveAndBill(params: {
     const { data: creditSale, error: ledgerError } = await supabase.from('branch_credit_sales').insert({
       branch: BRANCH, source: 'hosur', source_id: billId, customer_ref: order.shopId, customer_name: order.shopName,
       customer_phone: order.shopWhatsapp,
-      items: items.map(i => ({ itemName: i.itemName, quantity: i.receivedQuantity, sellUnit: i.unit, price: i.unitPrice, lineTotal: i.receivedQuantity * i.unitPrice })),
+      items: [
+        ...items.map(i => ({ itemName: i.itemName, quantity: i.receivedQuantity, sellUnit: i.unit, price: i.unitPrice, lineTotal: i.receivedQuantity * i.unitPrice })),
+        ...charges.map(c => ({ itemName: c.name.trim(), quantity: 1, sellUnit: 'charge', price: c.amount, lineTotal: c.amount })),
+      ],
       subtotal: total, amount_paid: paid, credit_amount: credit, sold_by: userName, bill_no: billNo,
       due_date: payment.dueDate, status: paid > 0 ? 'partial' : 'pending', notes: 'Hosur credit bill',
     }).select('id').single();

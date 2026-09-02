@@ -118,6 +118,7 @@ function friendlyInvoiceWriteError(error: { message?: string; code?: string } | 
   if (/SESSION_REQUIRED/i.test(message) || error?.code === '28000') return 'Your session has expired. Please log in again and retry.';
   if (/ROLE_NOT_ALLOWED/i.test(message) || error?.code === '42501') return 'You do not have permission to save store invoices.';
   if (/INVOICE_ALREADY_REVIEWED/i.test(message)) return 'This invoice was already reviewed and can no longer be edited.';
+  if (/INVOICE_EDIT_WINDOW_EXPIRED/i.test(message)) return 'This GRN is more than 48 hours old and can no longer be edited. Contact an admin if a correction is genuinely needed.';
   if (/INVOICE_NOT_FOUND/i.test(message)) return 'The invoice could not be found. Refresh the invoice list and try again.';
   if (/SUPPLIER_NOT_FOUND/i.test(message)) return 'The selected supplier is no longer active. Choose another supplier.';
   if (/INVALID_DELIVERY_DATE/i.test(message)) return 'Delivery date can only be today or yesterday.';
@@ -401,6 +402,12 @@ export const useInvoiceStore = create<InvoiceState>((set, get) => ({
   },
 
   deleteInvoice: async (id) => {
+    // BUG FIX (audit 2026-09-02): unlike every sibling mutation in this store
+    // (updateStatus/updateInvoice), this had no guard against touching an invoice that's
+    // already been approved and synced to stock — it would silently flip an
+    // already-approved, stock-synced invoice to 'rejected' while the stock it already
+    // added stays in inventory, with no reversal. Currently unreachable from any UI (not
+    // called anywhere), but guard it the same way in case it's ever wired up.
     const reviewedAt = new Date().toISOString();
     const { error } = await supabase
       .from('store_invoices')
@@ -410,7 +417,8 @@ export const useInvoiceStore = create<InvoiceState>((set, get) => ({
         reviewed_at: reviewedAt,
         review_note: 'Cancelled from invoice screen. Record kept for audit.',
       })
-      .eq('id', id);
+      .eq('id', id)
+      .eq('status', 'pending_review');
     if (error) return;
     set(s => ({
       invoices: s.invoices.map(x =>

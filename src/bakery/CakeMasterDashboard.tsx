@@ -274,22 +274,34 @@ export default function CakeMasterDashboard() {
   useEffect(() => { void load(); }, [load]);
 
   useEffect(() => {
-    // EGRESS FIX: this channel has no `filter`, so ANY insert/update/delete on
-    // cake_master_orders from ANY branch re-triggers a full 500-row reload.
-    // That's intentional (the Cake Master view is cross-branch by design),
-    // but a burst of several changes in quick succession used to cause that
-    // many full reloads back-to-back. Debounce collapses a burst into one.
-    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
-    const scheduleReload = () => {
-      if (debounceTimer) clearTimeout(debounceTimer);
-      debounceTimer = setTimeout(() => { void load(); }, 2000);
-    };
+    // REALTIME FIX (2026-09-01): this channel has no `filter` (intentional —
+    // Cake Master is cross-branch by design), so it used to debounce-then-
+    // refetch the whole 500-row query on any change anywhere. Replaced with
+    // a direct row-level patch (matches branchStore.ts's
+    // applyBranchRealtimeChange pattern), keeping the same delivery_date/
+    // delivery_time sort `load()` uses, and preserving the "New" order sound
+    // alert (still fires exactly when a genuinely new, previously-unknown
+    // order arrives with status 'New').
     const channel = supabase
       .channel('cake_master_orders_live')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'cake_master_orders' }, scheduleReload)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'cake_master_orders' }, (payload) => {
+        const event = payload as { eventType?: string; new?: Record<string, unknown>; old?: { id?: string } };
+        const id = String(event.new?.id ?? event.old?.id ?? '');
+        if (!id) return;
+        if (event.eventType === 'DELETE') {
+          setOrders((current) => current.filter((o) => o.id !== id));
+          knownIds.current?.delete(id);
+          return;
+        }
+        const changed = mapRow(event.new ?? {});
+        const isNew = changed.status === 'New' && knownIds.current !== null && !knownIds.current.has(id);
+        if (isNew) playNewOrderAlert();
+        knownIds.current?.add(id);
+        setOrders((current) => [...current.filter((o) => o.id !== id), changed]
+          .sort((a, b) => (a.deliveryDate || '').localeCompare(b.deliveryDate || '') || (a.deliveryTime || '').localeCompare(b.deliveryTime || '')));
+      })
       .subscribe();
     return () => {
-      if (debounceTimer) clearTimeout(debounceTimer);
       void supabase.removeChannel(channel);
     };
   }, [load]);

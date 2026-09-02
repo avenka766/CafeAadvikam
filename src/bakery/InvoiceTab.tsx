@@ -37,6 +37,25 @@ const fmtDate = (value?: string | null) => value
   ? new Date(`${value}T12:00:00`).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
   : '—';
 
+// AUDIT FIX (2026-09-02): printInvoice below builds the print document via
+// raw template-literal HTML + win.document.write — every field interpolated
+// into it (supplier name/address, item code/name/remarks, PO/vehicle/invoice
+// numbers, notes) is staff-entered free text with no prior sanitization
+// anywhere in the write path. Without escaping, a value like
+// `<img src=x onerror=...>` in e.g. a supplier name or item remark would
+// execute as real script in this same-origin iframe the moment anyone
+// prints/reprints that invoice — a genuine stored-XSS path, not sandboxed by
+// the iframe (same document, just off-screen). Escape every such field.
+function escapeHtml(value: unknown): string {
+  const s = value == null ? '' : String(value);
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 export function printInvoice(invoice: StoreInvoice) {
   const frame = document.createElement('iframe');
   frame.setAttribute('aria-hidden', 'true');
@@ -60,15 +79,15 @@ export function printInvoice(invoice: StoreInvoice) {
   const rows = invoice.lineItems.map((li, i) => `
     <tr>
       <td class="c">${i + 1}</td>
-      <td>${li.itemCode || '—'}</td>
-      <td class="desc">${li.itemName}</td>
-      <td class="c">${li.unit}</td>
+      <td>${escapeHtml(li.itemCode) || '—'}</td>
+      <td class="desc">${escapeHtml(li.itemName)}</td>
+      <td class="c">${escapeHtml(li.unit)}</td>
       <td class="r">${li.quantity}</td>
       <td class="r">${li.acceptedQty ?? li.quantity}</td>
       <td class="r">${li.rejectedQty ?? 0}</td>
       <td class="r">₹${li.pricePerUnit.toFixed(2)}</td>
       <td class="r">₹${li.totalPrice.toFixed(2)}</td>
-      <td>${li.remarks || ''}</td>
+      <td>${escapeHtml(li.remarks)}</td>
     </tr>
   `).join('');
 
@@ -80,7 +99,7 @@ export function printInvoice(invoice: StoreInvoice) {
   win.document.open();
   win.document.write(`
     <!DOCTYPE html><html><head>
-    <title>${invoice.invoiceNumber}</title>
+    <title>${escapeHtml(invoice.invoiceNumber)}</title>
     <style>
       @page { size: auto; margin: 8mm; }
       @media print { html, body { height: auto !important; } }
@@ -128,26 +147,26 @@ export function printInvoice(invoice: StoreInvoice) {
       </div>
       <div>
         <b class="lbl">Supplier</b>
-        <div class="name">${invoice.supplierName}</div>
-        <div>${invoice.supplierAddress || ''}</div>
+        <div class="name">${escapeHtml(invoice.supplierName)}</div>
+        <div>${escapeHtml(invoice.supplierAddress)}</div>
       </div>
     </div>
 
     <div class="meta">
       <div class="meta-row">
-        <div class="meta-cell"><b>GRN No.</b> ${invoice.invoiceNumber}</div>
+        <div class="meta-cell"><b>GRN No.</b> ${escapeHtml(invoice.invoiceNumber)}</div>
         <div class="meta-cell"><b>GRN Date</b> ${fmtDate(invoice.createdAt.slice(0, 10))}</div>
       </div>
       <div class="meta-row">
-        <div class="meta-cell"><b>Supplier Inv No.</b> ${invoice.supplierInvoiceNumber || '—'}</div>
+        <div class="meta-cell"><b>Supplier Inv No.</b> ${escapeHtml(invoice.supplierInvoiceNumber) || '—'}</div>
         <div class="meta-cell"><b>Inv Date</b> ${fmtDate(invoice.supplierInvoiceDate)}</div>
       </div>
       <div class="meta-row">
-        <div class="meta-cell"><b>Purchase Order No.</b> ${invoice.poNumber || '—'}</div>
+        <div class="meta-cell"><b>Purchase Order No.</b> ${escapeHtml(invoice.poNumber) || '—'}</div>
         <div class="meta-cell"><b>PO Date</b> ${fmtDate(invoice.poDate)}</div>
       </div>
       <div class="meta-row">
-        <div class="meta-cell"><b>Vehicle No.</b> ${invoice.vehicleNumber || '—'}</div>
+        <div class="meta-cell"><b>Vehicle No.</b> ${escapeHtml(invoice.vehicleNumber) || '—'}</div>
         <div class="meta-cell"><b>Delivery Date</b> ${fmtDate(invoice.deliveryDate)}</div>
       </div>
     </div>
@@ -165,8 +184,8 @@ export function printInvoice(invoice: StoreInvoice) {
       </tfoot>
     </table>
 
-    ${invoice.notes ? `<div class="notes"><b>Notes:</b> ${invoice.notes}</div>` : ''}
-    ${invoice.reviewNote ? `<div class="notes" style="border-color:${statusColor}44;"><b>Admin Note:</b> ${invoice.reviewNote}</div>` : ''}
+    ${invoice.notes ? `<div class="notes"><b>Notes:</b> ${escapeHtml(invoice.notes)}</div>` : ''}
+    ${invoice.reviewNote ? `<div class="notes" style="border-color:${statusColor}44;"><b>Admin Note:</b> ${escapeHtml(invoice.reviewNote)}</div>` : ''}
 
     <div class="sign">
       <div>Prepared By</div>
@@ -284,14 +303,23 @@ function InvoiceCard({ invoice, onPrint, onEdit }: { invoice: StoreInvoice; onPr
             >
               <Printer className="size-4" /> Print
             </button>
-            {invoice.status === 'pending_review' && onEdit && (
-              <button
-                onClick={() => onEdit(invoice)}
-                className="flex-1 h-10 rounded-xl border border-amber-300 bg-amber-50 text-amber-700 text-sm font-body font-semibold flex items-center justify-center gap-2 active:scale-[0.98]"
-              >
-                ✎ Edit & Resubmit
-              </button>
-            )}
+            {
+              // FIX (2026-09-01): the GRN redesign made Admin's review screen
+              // pure read-only, so `status` never moves away from
+              // 'pending_review' — this button used to be gated on that
+              // alone, meaning a GRN stayed editable forever. The RPC now
+              // enforces a real 48-hour window server-side; this mirrors it
+              // client-side so the button simply isn't offered past that
+              // point instead of a cashier hitting a surprise rejection.
+              invoice.status === 'pending_review' && onEdit && (Date.now() - new Date(invoice.createdAt).getTime() < 48 * 60 * 60 * 1000) && (
+                <button
+                  onClick={() => onEdit(invoice)}
+                  className="flex-1 h-10 rounded-xl border border-amber-300 bg-amber-50 text-amber-700 text-sm font-body font-semibold flex items-center justify-center gap-2 active:scale-[0.98]"
+                >
+                  ✎ Edit & Resubmit
+                </button>
+              )
+            }
           </div>
         </div>
       )}
@@ -951,6 +979,17 @@ export function CreateInvoiceModal({
       if (!Number.isFinite(rejectedQty) || rejectedQty < 0) errors.push('Rejected quantity cannot be negative.');
       if (Number.isFinite(quantity) && Number.isFinite(acceptedQty) && Number.isFinite(rejectedQty) && acceptedQty + rejectedQty > quantity + 0.001) {
         errors.push('Accepted + Rejected quantity cannot exceed the received quantity.');
+      }
+      // AUDIT FIX (2026-09-02): Quantity/Accepted/Rejected inputs use
+      // step="any" with no unit-aware rounding — a pcs/nos item could be
+      // saved with a fractional quantity, which create_store_invoice_secure/
+      // update_store_invoice_secure then apply directly to real inventory
+      // as a fractional delta (the same "pcs decimal ledger drift" bug
+      // class fixed via sanitizeQtyForUnit elsewhere in this codebase).
+      if ((line.unit === 'pcs' || line.unit === 'nos')) {
+        if (Number.isFinite(quantity) && !Number.isInteger(quantity)) errors.push('Quantity must be a whole number for a pcs/nos item.');
+        if (Number.isFinite(acceptedQty) && !Number.isInteger(acceptedQty)) errors.push('Accepted quantity must be a whole number for a pcs/nos item.');
+        if (Number.isFinite(rejectedQty) && !Number.isInteger(rejectedQty)) errors.push('Rejected quantity must be a whole number for a pcs/nos item.');
       }
 
       if (errors.length > 0) nextLineErrors[line.rowId] = errors;

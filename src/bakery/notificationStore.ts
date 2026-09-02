@@ -58,6 +58,16 @@ interface NotificationState {
   pushStockMovement: (params: { branch: string; logType: 'Dump' | 'Damage' | 'Trans Out'; items: { itemName: string; quantity: number; unit: string }[]; totalValue: number; reason: string; postedBy: string; recipientRoles: string[] }) => Promise<void>;
 }
 
+// AUDIT FIX (2026-09-02): every push* below used to insert a single row
+// hard-coded to recipient_role: 'admin'. load() filters strictly by the
+// viewer's own literal role (.eq('recipient_role', role)), and
+// admin_vrsnb/admin_snb are explicitly allowed on /admin/alerts (App.tsx) —
+// but since a row can only carry one recipient_role, those roles never
+// received a single invoice/credit/low-stock/price/recipe/store-item alert,
+// ever. pushPackingDiscrepancy/pushStockMovement already insert one row per
+// target role — apply the same pattern everywhere else.
+const ADMIN_RECIPIENT_ROLES = ['admin', 'admin_vrsnb', 'admin_snb'] as const;
+
 // ─── Map row ──────────────────────────────────────────────────────────────────
 
 function mapRow(r: Record<string, unknown>): AdminNotification {
@@ -144,15 +154,15 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
   // ── Push helpers ─────────────────────────────────────────────────────────
 
   pushInvoicePending: async (invoiceId, invoiceNumber, supplierName, grandTotal) => {
-    const { error } = await supabase.from('admin_notifications').insert({
+    const { error } = await supabase.from('admin_notifications').insert(ADMIN_RECIPIENT_ROLES.map(role => ({
       type: 'invoice_pending',
       title: 'New Invoice Pending Review',
       body: `${invoiceNumber} from ${supplierName} · ₹${grandTotal.toFixed(2)} — awaiting your approval.`,
       ref_id: invoiceId,
       ref_label: invoiceNumber,
       meta: { supplierName, grandTotal },
-      recipient_role: 'admin',
-    });
+      recipient_role: role,
+    })));
     if (!error) await get().load();
   },
 
@@ -160,15 +170,15 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
     const lines = items
       .map(i => `${i.itemName}: prepared ${i.prepared} ${i.unit} vs requested ${i.requested} ${i.unit}`)
       .join('; ');
-    const { error } = await supabase.from('admin_notifications').insert({
+    const { error } = await supabase.from('admin_notifications').insert(ADMIN_RECIPIENT_ROLES.map(role => ({
       type: 'baker_shortage',
       title: 'Baker Shortage – Incomplete Items Sent',
       body: `Order ${orderNumber}: baker sent fewer items than packing required. ${lines}`,
       ref_id: orderId,
       ref_label: `Order ${orderNumber}`,
       meta: { orderId, orderNumber, items },
-      recipient_role: 'admin',
-    });
+      recipient_role: role,
+    })));
     if (!error) await get().load();
   },
 
@@ -183,7 +193,9 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
       : normalizedBranch === 'VRSNB'
         ? 'receiver_vrsnb'
         : null;
-    const recipientRoles = receiverRole ? ['admin', receiverRole] : ['admin'];
+    // AUDIT FIX (2026-09-02): same gap as the plain 'admin' pushers above —
+    // include admin_vrsnb/admin_snb, not just 'admin'.
+    const recipientRoles = receiverRole ? [...ADMIN_RECIPIENT_ROLES, receiverRole] : [...ADMIN_RECIPIENT_ROLES];
 
     for (const recipientRole of recipientRoles) {
       const { data: existing } = await supabase
@@ -256,28 +268,37 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
   },
 
   pushLowStock: async (items) => {
-    // L-04: deduplicate — don't fire if a low_stock alert already exists in the last 6 hours
+    // BUG FIX (audit 2026-09-02, was L-04): the old dedup skipped this ENTIRE call if ANY
+    // low_stock notification existed in the last 6 hours, regardless of which item it was
+    // for — so once material A tripped an alert, material B crossing its own threshold
+    // hours later (a real, different low-stock event) never reached admin at all. Scope
+    // the dedup to the actual item names already alerted recently, not "any alert at all."
     const sixHoursAgo = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString();
-    const { data: existing } = await supabase
+    const { data: recent } = await supabase
       .from('admin_notifications')
-      .select('id')
+      .select('meta')
       .eq('type', 'low_stock')
-      .eq('recipient_role', 'admin')
-      .gte('created_at', sixHoursAgo)
-      .limit(1);
-    if (existing && existing.length > 0) return; // already alerted recently, skip
+      .in('recipient_role', ADMIN_RECIPIENT_ROLES)
+      .gte('created_at', sixHoursAgo);
+    const alreadyAlerted = new Set<string>();
+    for (const row of recent ?? []) {
+      const meta = row.meta as { items?: { name: string }[] } | null;
+      for (const i of meta?.items ?? []) alreadyAlerted.add(i.name);
+    }
+    const newItems = items.filter(i => !alreadyAlerted.has(i.name));
+    if (newItems.length === 0) return; // every item here was already alerted recently, skip
 
-    const lines = items
+    const lines = newItems
       .map(i => `${i.name}: ${i.quantity.toFixed(2)} ${i.unit} (min ${i.minThreshold} ${i.unit})`)
       .join('; ');
-    const { error } = await supabase.from('admin_notifications').insert({
+    const { error } = await supabase.from('admin_notifications').insert(ADMIN_RECIPIENT_ROLES.map(role => ({
       type:      'low_stock',
-      title:     `Low Stock Alert — ${items.length} item${items.length > 1 ? 's' : ''} below threshold`,
+      title:     `Low Stock Alert — ${newItems.length} item${newItems.length > 1 ? 's' : ''} below threshold`,
       body:      lines,
       ref_label: 'Store Stock',
-      meta:      { items },
-      recipient_role: 'admin',
-    });
+      meta:      { items: newItems },
+      recipient_role: role,
+    })));
     if (!error) await get().load();
   },
 
@@ -287,15 +308,15 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
     const dueLine = dueDate
       ? ` · Due ${new Date(dueDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}`
       : '';
-    const { error } = await supabase.from('admin_notifications').insert({
+    const { error } = await supabase.from('admin_notifications').insert(ADMIN_RECIPIENT_ROLES.map(role => ({
       type:      'credit_sale',
       title:     `💳 Credit Sale — ${branch}`,
       body:      `${customerName} · ₹${amtFmt} · Bill #${shortBill} · by ${soldBy}${dueLine}`,
       ref_id:    billNo,
       ref_label: `Bill #${shortBill}`,
       meta:      { customerName, amount, billNo, branch, soldBy, dueDate: dueDate ?? null },
-      recipient_role: 'admin',
-    });
+      recipient_role: role,
+    })));
     if (!error) await get().load();
   },
 
@@ -304,30 +325,30 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
   pushStoreItemChange: async ({ action, itemId, itemName, category, changedBy }) => {
     const verb = action === 'created' ? 'added' : 'updated';
     const actor = changedBy || useAuthStore.getState().currentUser?.displayName || useAuthStore.getState().currentUser?.username || 'Store user';
-    const { error } = await supabase.from('admin_notifications').insert({
+    const { error } = await supabase.from('admin_notifications').insert(ADMIN_RECIPIENT_ROLES.map(role => ({
       type:      'store_item_change',
       title:     `Store Item ${action === 'created' ? 'Added' : 'Updated'}`,
       body:      `${actor} ${verb} ${itemName}${category ? ` in ${category}` : ''}.`,
       ref_id:    itemId,
       ref_label: itemName,
       meta:      { action, itemId, itemName, category: category ?? null, changedBy: actor },
-      recipient_role: 'admin',
-    });
+      recipient_role: role,
+    })));
     if (!error) await get().load();
   },
 
   pushRecipeChange: async ({ action, itemId, itemName, ingredientCount, changedBy }) => {
     const verb = action === 'created' ? 'created' : 'updated';
     const actor = changedBy || useAuthStore.getState().currentUser?.displayName || useAuthStore.getState().currentUser?.username || 'Store user';
-    const { error } = await supabase.from('admin_notifications').insert({
+    const { error } = await supabase.from('admin_notifications').insert(ADMIN_RECIPIENT_ROLES.map(role => ({
       type:      'recipe_change',
       title:     `Recipe ${action === 'created' ? 'Added' : 'Updated'}`,
       body:      `${actor} ${verb} recipe for ${itemName} with ${ingredientCount} ingredient${ingredientCount === 1 ? '' : 's'}.`,
       ref_id:    itemId,
       ref_label: itemName,
       meta:      { action, itemId, itemName, ingredientCount, changedBy: actor },
-      recipient_role: 'admin',
-    });
+      recipient_role: role,
+    })));
     if (!error) await get().load();
   },
 
@@ -337,7 +358,7 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
       .from('admin_notifications')
       .select('id')
       .eq('type', 'packing_remainder')
-      .eq('recipient_role', 'admin')
+      .in('recipient_role', ADMIN_RECIPIENT_ROLES)
       .eq('ref_id', orderId)
       .limit(1);
     if (existing && existing.length > 0) return;
@@ -347,15 +368,15 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
       return `${i.itemName}: ${i.preparedKg} kg → ${i.dispatchedPcs} pcs dispatched · ${remainderGrams}g remainder kept at bakery`;
     }).join('; ');
 
-    const { error } = await supabase.from('admin_notifications').insert({
+    const { error } = await supabase.from('admin_notifications').insert(ADMIN_RECIPIENT_ROLES.map(role => ({
       type:      'packing_remainder',
       title:     `⚖️ Packing Remainder – ${items.length} item${items.length > 1 ? 's' : ''} have leftover grams`,
       body:      `Order ${orderNumber} → ${branch}: ${lines}`,
       ref_id:    orderId,
       ref_label: `Order ${orderNumber} → ${branch}`,
       meta:      { orderId, orderNumber, branch, items },
-      recipient_role: 'admin',
-    });
+      recipient_role: role,
+    })));
     if (!error) await get().load();
   },
 

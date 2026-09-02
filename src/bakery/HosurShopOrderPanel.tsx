@@ -23,7 +23,7 @@
 // font-display headings, card-base/shadow-teal/shadow-gold conventions) in
 // place of the previous generic slate/emerald/indigo Tailwind palette. No
 // business logic, data fetching, or handler behaviour was changed below.
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { Store, Search, X, ShoppingCart, Send, Loader2, Plus, Truck, CheckCircle2, AlertTriangle, Printer, PackageX, RotateCcw, ChevronDown, RefreshCw } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/stores/authStore';
@@ -289,7 +289,7 @@ function PlaceOrderSection({ shops, prices, userName, onSaved }: { shops: HosurS
         // DUPLICATE-ORDER GUARD: same shop, same subtotal, submitted again
         // within the last 90s (double-click, slow-network retry, etc.) —
         // block it instead of silently creating a second identical order.
-        const dupeCheck = await checkRecentDuplicateHosurOrder(shop.id, shopSubtotal);
+        const dupeCheck = await checkRecentDuplicateHosurOrder(shop.id, shopSubtotal, items_.map(i => i.itemName));
         if (dupeCheck.isDuplicate) {
           throw new Error(`${shop.shopName} already has a matching order (${dupeCheck.orderNumber}) placed moments ago — check Hosur order history before resending.`);
         }
@@ -562,8 +562,120 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
   const [paymentMode, setPaymentMode] = useState<Record<string, string>>({});
   const [paidAmount, setPaidAmount] = useState<Record<string, string>>({});
   const [dueDate, setDueDate] = useState<Record<string, string>>({});
+  // FEATURE (2026-09-02): "give the option to enter the charges field — a
+  // field to enter the charge name and a field to enter the amount" — an
+  // ad-hoc named charge (delivery fee, packing charge, etc.) added on top of
+  // the item total at billing time. Keyed by orderId, same pattern as every
+  // other per-order draft state above.
+  const [charges, setCharges] = useState<Record<string, { name: string; amount: number }[]>>({});
+  const [chargeNameDraft, setChargeNameDraft] = useState<Record<string, string>>({});
+  const [chargeAmountDraft, setChargeAmountDraft] = useState<Record<string, string>>({});
+  const addCharge = (orderId: string) => {
+    const name = (chargeNameDraft[orderId] ?? '').trim();
+    const amount = Number(chargeAmountDraft[orderId] || 0);
+    if (!name || !Number.isFinite(amount) || amount <= 0) return;
+    setCharges(v => ({ ...v, [orderId]: [...(v[orderId] ?? []), { name, amount: Math.round(amount * 100) / 100 }] }));
+    setChargeNameDraft(v => ({ ...v, [orderId]: '' }));
+    setChargeAmountDraft(v => ({ ...v, [orderId]: '' }));
+  };
+  const removeCharge = (orderId: string, idx: number) =>
+    setCharges(v => ({ ...v, [orderId]: (v[orderId] ?? []).filter((_, i) => i !== idx) }));
+  const chargesTotalFor = (orderId: string) =>
+    Math.round((charges[orderId] ?? []).reduce((sum, c) => sum + c.amount, 0) * 100) / 100;
   const [busy, setBusy] = useState<string | null>(null);
+  // AUDIT FIX (2026-09-02): `busy` is a React state guard (updates
+  // asynchronously) — a fast double-click/double-tap on "Dispatch, Bill &
+  // Send WhatsApp" could fire dispatchAndBill() for the same order twice
+  // before the button's disabled={busy === order.id} actually re-renders,
+  // creating two real bills for the same order. This is very likely part of
+  // the real mechanism behind the confirmed duplicate-bill bug (see
+  // project_hosur_dispatch_bugs_20260902 memory — the item-overlap
+  // duplicate-order guard fixed there catches the ORDER-creation side; this
+  // is the matching fix for the BILLING side). Keyed per-order-id since
+  // billing two DIFFERENT orders concurrently is fine — only a same-order
+  // double-fire should be blocked.
+  const dispatchInFlightRef = useRef<Set<string>>(new Set());
   const [result, setResult] = useState<Record<string, { ok: boolean; message: string }>>({});
+  // FEATURE (2026-09-01): "review-and-bulk-bill tool" for the Hosur billing
+  // backlog — real dispatched orders were piling up unbilled (this queue
+  // already handles single-order billing correctly; the gap was visibility
+  // and the effort of doing many one at a time). Bulk selection only offers
+  // FULLY-dispatched orders (never partial — those need a human look at what
+  // actually went out before billing) and requires an explicit payment
+  // choice before the button is even clickable — never defaults to "assume
+  // paid", matching "the user needs to confirm what's already been
+  // collected in cash outside the app first". Reuses dispatchAndBill exactly
+  // as the single-order flow does (same leftover-pool/WhatsApp/shortfall
+  // handling), just looped sequentially over the selection.
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkPaymentType, setBulkPaymentType] = useState<'full' | 'credit' | ''>('');
+  const [bulkPaymentMode, setBulkPaymentMode] = useState<'cash' | 'upi' | 'card'>('cash');
+  const [bulkDueDate, setBulkDueDate] = useState('');
+  const [bulkRunning, setBulkRunning] = useState(false);
+  const [bulkProgress, setBulkProgress] = useState<{ done: number; total: number } | null>(null);
+  const fullyDispatchedOrders = useMemo(
+    () => filteredOrders.filter(o => items.filter(i => i.orderId === o.id).every(i => i.dispatchedQuantity >= i.quantity - 0.01)),
+    [filteredOrders, items],
+  );
+  const toggleSelected = (orderId: string) => setSelected(v => {
+    const next = new Set(v);
+    if (next.has(orderId)) next.delete(orderId); else next.add(orderId);
+    return next;
+  });
+  // BUG FIX (2026-09-02): moved above its first use — this was previously
+  // declared much further down (as a `const` arrow function, so it's NOT
+  // hoisted the way a `function` declaration would be) while selectedTotal/
+  // backlogTotal below already called it inside a useMemo. useMemo runs its
+  // factory synchronously on first render, so this threw "Cannot access
+  // 'orderTotal' before initialization" every time this tab rendered,
+  // crashing the whole Hosur Shops & Billing > Dispatch and Billing Queue
+  // view. Depends only on `items`/`overrides`, both already in scope here.
+  const orderTotal = (order: HosurOrder) => {
+    const orderItems = items.filter(i => i.orderId === order.id);
+    return orderItems.reduce((sum, item) => {
+      const qty = overrides[item.id] !== undefined ? Number(overrides[item.id] || 0) : item.dispatchedQuantity;
+      return sum + qty * item.unitPrice;
+    }, 0);
+  };
+
+  const selectedOrders = useMemo(() => fullyDispatchedOrders.filter(o => selected.has(o.id)), [fullyDispatchedOrders, selected]);
+  const selectedTotal = useMemo(() => selectedOrders.reduce((sum, o) => sum + orderTotal(o), 0), [selectedOrders]);
+  const backlogTotal = useMemo(() => orders.reduce((sum, o) => sum + orderTotal(o), 0), [orders]);
+  const backlogOldest = useMemo(
+    () => orders.reduce<string | null>((oldest, o) => (!oldest || o.createdAt < oldest ? o.createdAt : oldest), null),
+    [orders],
+  );
+
+  const bulkRunningRef = useRef(false);
+  const runBulkBill = async () => {
+    // AUDIT FIX (2026-09-02): `bulkRunning` alone is a state guard (same
+    // double-click race as dispatchAndBill above). The loop below is
+    // already safe against actually double-billing any one order now that
+    // dispatchAndBill itself is ref-guarded per-order, but this stops a
+    // second click from starting a whole redundant pass (duplicate progress
+    // UI, wasted requests) in the first place.
+    if (bulkRunningRef.current) return;
+    if (!bulkPaymentType || selectedOrders.length === 0 || bulkRunning) return;
+    if (bulkPaymentType === 'credit' && !bulkDueDate) return;
+    bulkRunningRef.current = true;
+    setBulkRunning(true);
+    setBulkProgress({ done: 0, total: selectedOrders.length });
+    // Sequential, not parallel — each call touches shared leftover-pool rows
+    // and the same Planner counter session; running them one at a time
+    // avoids two orders racing over the same leftover stock.
+    for (const order of selectedOrders) {
+      setPaymentType(v => ({ ...v, [order.id]: bulkPaymentType }));
+      setPaymentMode(v => ({ ...v, [order.id]: bulkPaymentMode }));
+      if (bulkPaymentType === 'credit') setDueDate(v => ({ ...v, [order.id]: bulkDueDate }));
+      // eslint-disable-next-line no-await-in-loop
+      await dispatchAndBill(order);
+      setBulkProgress(p => p ? { ...p, done: p.done + 1 } : p);
+      setSelected(v => { const next = new Set(v); next.delete(order.id); return next; });
+    }
+    setBulkRunning(false);
+    setBulkProgress(null);
+    bulkRunningRef.current = false;
+  };
   // BUG FIX: dispatchReceiveAndBill already refuses to bill when Planner's
   // counter is closed, but it only surfaced that as an error AFTER the
   // planner filled in the whole payment form and clicked Dispatch. Check
@@ -625,20 +737,14 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
     setExpanded(order.id);
   };
 
-  const orderTotal = (order: HosurOrder) => {
-    const orderItems = items.filter(i => i.orderId === order.id);
-    return orderItems.reduce((sum, item) => {
-      const qty = overrides[item.id] !== undefined ? Number(overrides[item.id] || 0) : item.dispatchedQuantity;
-      return sum + qty * item.unitPrice;
-    }, 0);
-  };
-
   // Bill snapshot kept per order purely for the "Print Physical Bill" button —
   // dispatchReceiveAndBill doesn't return line items, so this is reconstructed
   // from what was actually entered (post-override) at the moment of dispatch.
   const [lastBillSnapshot, setLastBillSnapshot] = useState<Record<string, { billNo: string; order: HosurOrder; items: { itemName: string; unit: string; quantity: number; unitPrice: number }[] }>>({});
 
   const dispatchAndBill = async (order: HosurOrder) => {
+    if (dispatchInFlightRef.current.has(order.id)) return;
+    dispatchInFlightRef.current.add(order.id);
     const orderItems = items.filter(i => i.orderId === order.id);
     const pType = paymentType[order.id] ?? 'full';
     setBusy(order.id);
@@ -648,9 +754,11 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
         id: item.id, itemName: item.itemName, unit: item.unit, quantity: item.quantity, unitPrice: item.unitPrice,
         receivedQuantity: overrides[item.id] !== undefined ? Number(overrides[item.id] || 0) : item.dispatchedQuantity,
       }));
+      const orderChargesToBill = charges[order.id] ?? [];
       const outcome = await dispatchReceiveAndBill({
         order: { id: order.id, orderNumber: order.orderNumber, shopId: order.shopId, shopName: order.shopName, shopWhatsapp: order.shopWhatsapp },
         items: billItems,
+        charges: orderChargesToBill,
         payment: {
           paymentType: pType,
           paidAmount: pType === 'partial' ? Number(paidAmount[order.id] || 0) : undefined,
@@ -667,8 +775,15 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
       }}));
       setLastBillSnapshot(v => ({ ...v, [order.id]: {
         billNo: outcome.billNo, order,
-        items: billItems.map(i => ({ itemName: i.itemName, unit: i.unit, quantity: i.receivedQuantity, unitPrice: i.unitPrice })),
+        items: [
+          ...billItems.map(i => ({ itemName: i.itemName, unit: i.unit, quantity: i.receivedQuantity, unitPrice: i.unitPrice })),
+          ...orderChargesToBill.map(c => ({ itemName: c.name, unit: 'charge', quantity: 1, unitPrice: c.amount })),
+        ],
       }}));
+      // Charges are order-specific and one-shot — clear the draft once
+      // they've actually been billed so reopening this card (or billing a
+      // different order) doesn't carry them over.
+      if (orderChargesToBill.length > 0) setCharges(v => ({ ...v, [order.id]: [] }));
       // Whatever was ordered but not actually sent (planner reduced the qty
       // below what was ordered) goes into the leftover pool — never silently
       // dropped, so it can be offered to the same shop's next matching order.
@@ -734,6 +849,7 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
       // dispatch/double bill/double WhatsApp send for B. Only clear it if
       // it's still pointing at the order whose request just finished.
       setBusy(b => (b === order.id ? null : b));
+      dispatchInFlightRef.current.delete(order.id);
     }
   };
 
@@ -779,6 +895,13 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
           className="rounded-xl border border-teal bg-primary/5 px-3 py-1.5 text-xs font-bold text-primary hover:bg-primary/10"
         >Export Excel</button>
       </div>
+      {orders.length > 0 && (
+        <div className="rounded-2xl border border-amber-300 bg-amber-50 p-4 text-sm font-bold text-amber-900">
+          <span className="font-black">{orders.length} order{orders.length === 1 ? '' : 's'} unbilled — {money(backlogTotal)}</span>
+          {backlogOldest && <span className="ml-1 text-amber-700">(oldest from {new Date(backlogOldest).toLocaleDateString('en-IN')})</span>}
+          . Every order below is real dispatched goods with no bill yet — select the ones you've confirmed payment for below to bill several at once.
+        </div>
+      )}
       {counterOpen === false && (
         <div className="flex items-center gap-2 rounded-2xl border border-destructive/30 bg-destructive/10 p-4 text-sm font-bold text-destructive">
           {/* BUG FIX (2026-08-07): "Daily Closure" on its own is ambiguous
@@ -803,10 +926,53 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
       </div>
       {orders.length === 0 && <div className="rounded-2xl border border-dashed border-border p-10 text-center text-xs font-bold text-muted-foreground">No orders waiting on dispatch.</div>}
       {orders.length > 0 && filteredOrders.length === 0 && <div className="rounded-2xl border border-dashed border-border p-10 text-center text-xs font-bold text-muted-foreground">No pending orders match "{shopSearch}".</div>}
+      {fullyDispatchedOrders.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-border bg-muted/40 p-3 text-xs font-bold">
+          <button
+            onClick={() => setSelected(v => v.size === fullyDispatchedOrders.length ? new Set() : new Set(fullyDispatchedOrders.map(o => o.id)))}
+            className="rounded-lg border border-border bg-background px-2.5 py-1.5"
+          >
+            {selected.size === fullyDispatchedOrders.length ? 'Unselect all' : `Select all ${fullyDispatchedOrders.length} fully-dispatched`}
+          </button>
+          {selected.size > 0 && (
+            <>
+              <span className="text-muted-foreground">{selected.size} selected · {money(selectedTotal)}</span>
+              <select value={bulkPaymentType} onChange={e => setBulkPaymentType(e.target.value as 'full' | 'credit' | '')} className="rounded-lg border border-border bg-background px-2 py-1.5 font-body">
+                <option value="">Payment — choose...</option>
+                <option value="full">Full payment</option>
+                <option value="credit">Credit (unpaid)</option>
+              </select>
+              {bulkPaymentType === 'full' && (
+                <select value={bulkPaymentMode} onChange={e => setBulkPaymentMode(e.target.value as 'cash' | 'upi' | 'card')} className="rounded-lg border border-border bg-background px-2 py-1.5 font-body">
+                  <option value="cash">Cash</option>
+                  <option value="upi">UPI</option>
+                  <option value="card">Card</option>
+                </select>
+              )}
+              {bulkPaymentType === 'credit' && (
+                <input type="date" value={bulkDueDate} onChange={e => setBulkDueDate(e.target.value)} className="rounded-lg border border-border bg-background px-2 py-1.5 font-body" />
+              )}
+              <button
+                onClick={() => void runBulkBill()}
+                disabled={!bulkPaymentType || (bulkPaymentType === 'credit' && !bulkDueDate) || bulkRunning || counterOpen === false}
+                className="rounded-lg cafe-gradient px-3 py-1.5 text-white disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {bulkRunning && bulkProgress ? `Billing ${bulkProgress.done}/${bulkProgress.total}…` : `Bill ${selected.size} Selected`}
+              </button>
+            </>
+          )}
+        </div>
+      )}
       {filteredOrders.map(order => {
         const orderItems = items.filter(i => i.orderId === order.id);
         const pType = paymentType[order.id] ?? 'full';
-        const total = orderTotal(order);
+        // itemsTotal stays the pure items figure (used unchanged by
+        // selectedTotal/backlogTotal above, and as the base for the leftover-
+        // pool shortfall math in dispatchAndBill); `total` below is what's
+        // actually billed/collected, adding any charges on top.
+        const itemsTotal = orderTotal(order);
+        const orderCharges = charges[order.id] ?? [];
+        const total = Math.round((itemsTotal + chargesTotalFor(order.id)) * 100) / 100;
         const res = result[order.id];
         // At-a-glance dispatch completeness for this shop's order — this is
         // the summary that used to be missing: an order can sit in this
@@ -816,11 +982,25 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
         const readyCount = orderItems.filter(i => i.dispatchedQuantity >= i.quantity - 0.01).length;
         const partialCount = orderItems.filter(i => i.dispatchedQuantity > 0.01 && i.dispatchedQuantity < i.quantity - 0.01).length;
         const notDispatchedCount = orderItems.filter(i => i.dispatchedQuantity <= 0.01).length;
+        const isFullyDispatched = notDispatchedCount === 0;
         return (
           <div key={order.id} className="card-base p-4">
-            <button onClick={() => setExpanded(v => v === order.id ? null : order.id)} className="flex w-full flex-wrap items-center justify-between gap-2 text-left">
-              <span className="text-sm font-black text-foreground">{order.shopName} - #{order.orderNumber} <span className="ml-2 text-xs font-bold text-muted-foreground">{money(total)}</span></span>
-              <span className="flex items-center gap-1.5">
+            <div className="flex w-full flex-wrap items-center justify-between gap-2">
+              <div className="flex min-w-0 items-center gap-2">
+                {isFullyDispatched && (
+                  <input
+                    type="checkbox"
+                    checked={selected.has(order.id)}
+                    onChange={() => toggleSelected(order.id)}
+                    className="size-4 shrink-0 accent-primary"
+                    aria-label={`Select ${order.shopName} order ${order.orderNumber} for bulk billing`}
+                  />
+                )}
+                <button onClick={() => setExpanded(v => v === order.id ? null : order.id)} className="text-left">
+                  <span className="text-sm font-black text-foreground">{order.shopName} - #{order.orderNumber} <span className="ml-2 text-xs font-bold text-muted-foreground">{money(total)}</span></span>
+                </button>
+              </div>
+              <button onClick={() => setExpanded(v => v === order.id ? null : order.id)} className="flex items-center gap-1.5">
                 {notDispatchedCount > 0 && (
                   <span className="rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-black text-red-700">{notDispatchedCount} not dispatched yet</span>
                 )}
@@ -831,8 +1011,8 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
                   <span className="rounded-full bg-teal-100 px-2 py-0.5 text-[10px] font-black text-teal-700">{readyCount} ready</span>
                 )}
                 <span className="rounded-full bg-muted px-2.5 py-1 text-[11px] font-bold text-muted-foreground">{expanded === order.id ? 'Hide' : 'Open'}</span>
-              </span>
-            </button>
+              </button>
+            </div>
 
             {expanded === order.id && (
               <div className="mt-3 space-y-3">
@@ -867,7 +1047,16 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
                             min={0}
                             value={overrideVal ?? item.dispatchedQuantity}
                             onChange={e => {
-                              const raw = e.target.value;
+                              let raw = e.target.value;
+                              // AUDIT FIX (2026-09-02): pcs items must stay
+                              // whole numbers — every other qty input in
+                              // this file already strips decimals for pcs
+                              // (see sanitizeQtyForUnit in
+                              // PlannerLeftoverTab.tsx), but this override
+                              // field was missed, letting a fractional pcs
+                              // count flow straight into a real bill,
+                              // credit-ledger entry, and WhatsApp invoice.
+                              if (item.unit === 'pcs') raw = raw.replace(/[^0-9]/g, '');
                               const n = Number(raw);
                               // Reject negative numbers outright; anything
                               // else (including blank, mid-typing) passes
@@ -885,6 +1074,46 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
                       </div>
                     );
                   })}
+                </div>
+
+                {/* FEATURE (2026-09-02): ad-hoc named charges (delivery fee,
+                    packing charge, etc.) — added on top of the item total,
+                    with no stock/dispatch effect (see dispatchReceiveAndBill's
+                    HosurBillCharge comment for why this stays a pure billing
+                    addition, never a hosur_order_items row). */}
+                <div className="space-y-1.5 rounded-xl border border-dashed border-amber-300 bg-amber-50 p-2.5">
+                  <p className="text-[11px] font-black uppercase tracking-wide text-amber-800">Charges (delivery fee, packing, etc.)</p>
+                  {orderCharges.map((c, idx) => (
+                    <div key={idx} className="flex items-center justify-between rounded-lg bg-card px-2.5 py-1.5 text-xs font-bold">
+                      <span>{c.name}</span>
+                      <span className="flex items-center gap-2">
+                        {money(c.amount)}
+                        <button type="button" onClick={() => removeCharge(order.id, idx)} className="text-destructive hover:underline">Remove</button>
+                      </span>
+                    </div>
+                  ))}
+                  <div className="grid grid-cols-[1fr_6rem_auto] gap-1.5">
+                    <input
+                      value={chargeNameDraft[order.id] ?? ''}
+                      onChange={e => setChargeNameDraft(v => ({ ...v, [order.id]: e.target.value }))}
+                      placeholder="Charge name (e.g. Delivery Fee)"
+                      className="rounded-lg border border-amber-300 bg-white px-2 py-1.5 text-xs font-bold"
+                    />
+                    <input
+                      value={chargeAmountDraft[order.id] ?? ''}
+                      onChange={e => setChargeAmountDraft(v => ({ ...v, [order.id]: e.target.value }))}
+                      type="number" min={0} placeholder="Amount"
+                      className="rounded-lg border border-amber-300 bg-white px-2 py-1.5 text-xs font-bold"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => addCharge(order.id)}
+                      disabled={!chargeNameDraft[order.id]?.trim() || !(Number(chargeAmountDraft[order.id] || 0) > 0)}
+                      className="rounded-lg bg-amber-700 px-3 py-1.5 text-xs font-black text-white hover:bg-amber-800 disabled:opacity-50"
+                    >
+                      Add
+                    </button>
+                  </div>
                 </div>
 
                 {(() => {
@@ -949,6 +1178,10 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
 
                         {/* Complete, at-a-glance breakdown of exactly what's owed and what's being collected. */}
                         <div className="space-y-1 rounded-lg bg-card/70 p-2.5 text-xs font-bold">
+                          <div className="flex justify-between"><span className="text-muted-foreground">Items</span><span className="text-foreground">{money(itemsTotal)}</span></div>
+                          {orderCharges.length > 0 && (
+                            <div className="flex justify-between"><span className="text-muted-foreground">Charges</span><span className="text-foreground">{money(chargesTotalFor(order.id))}</span></div>
+                          )}
                           <div className="flex justify-between"><span className="text-muted-foreground">Bill Total</span><span className="text-foreground">{money(total)}</span></div>
                           {pType === 'full' && (
                             <div className="flex justify-between text-primary"><span>Collecting Now ({modeLabel})</span><span>{money(total)}</span></div>
@@ -1101,6 +1334,7 @@ function HosurLeftoverAndCancelPanel({ pendingOrders, pendingItems, appliedLefto
   const [dispatchPaidAmount, setDispatchPaidAmount] = useState('');
   const [dispatchDueDate, setDispatchDueDate] = useState('');
   const [dispatchBusy, setDispatchBusy] = useState(false);
+  const dispatchLeftoverInFlightRef = useRef(false);
   const [dispatchResult, setDispatchResult] = useState<Record<string, { ok: boolean; message: string }>>({});
   const [dispatchBillSnapshot, setDispatchBillSnapshot] = useState<Record<string, { billNo: string; shopName: string; orderNumber: string; itemName: string; unit: string; quantity: number; unitPrice: number }>>({});
   const [counterOpen, setCounterOpen] = useState<boolean | null>(null);
@@ -1252,6 +1486,13 @@ function HosurLeftoverAndCancelPanel({ pendingOrders, pendingItems, appliedLefto
     if ((dispatchPaymentType === 'credit' || dispatchPaymentType === 'partial') && !dispatchDueDate) {
       setDispatchResult(v => ({ ...v, [row.id]: { ok: false, message: 'Due date is required for credit/partial payment.' } })); return;
     }
+    // AUDIT FIX (2026-09-02): `dispatchBusy` is a state guard — a fast
+    // double-click could fire this twice before the button's own
+    // disabled={dispatchBusy} re-renders, creating a duplicate order +
+    // duplicate bill for the same leftover stock (same class of bug fixed
+    // for dispatchAndBill above).
+    if (dispatchLeftoverInFlightRef.current) return;
+    dispatchLeftoverInFlightRef.current = true;
     setDispatchBusy(true);
     setDispatchResult(v => ({ ...v, [row.id]: undefined as any }));
     try {
@@ -1315,6 +1556,7 @@ function HosurLeftoverAndCancelPanel({ pendingOrders, pendingItems, appliedLefto
       setDispatchResult(v => ({ ...v, [row.id]: { ok: false, message: err instanceof Error ? err.message : 'Failed to dispatch this leftover.' } }));
     } finally {
       setDispatchBusy(false);
+      dispatchLeftoverInFlightRef.current = false;
     }
   };
 
@@ -1362,9 +1604,16 @@ function HosurLeftoverAndCancelPanel({ pendingOrders, pendingItems, appliedLefto
         });
         // Only reduce money not yet collected — anything already paid is left
         // untouched and flagged for the planner to settle with the shop.
+        // AUDIT FIX (2026-09-02): was a read-then-write off a possibly-stale
+        // client snapshot (selectedOrder.creditAmount) — a concurrent change
+        // to the same bill's credit (another cancel, or a payment collected
+        // in a different tab between the snapshot loading and this write)
+        // would be silently overwritten. Now a single atomic DB-side delta.
         if (selectedOrder.creditAmount > 0) {
-          const newCredit = Math.max(0, Math.round((selectedOrder.creditAmount + adjustmentAmount) * 100) / 100);
-          await supabase.from('hosur_bills').update({ credit_amount: newCredit }).eq('id', selectedOrder.billId);
+          const { error: creditDeltaError } = await supabase.rpc('apply_hosur_bill_credit_delta', {
+            p_bill_id: selectedOrder.billId, p_delta: adjustmentAmount,
+          });
+          if (creditDeltaError) console.warn('[HosurShopOrderPanel] Failed to adjust bill credit for cancelled item:', creditDeltaError.message);
         }
       }
       setNotice(`Cancelled ${num(qty)} ${item.unit} of ${item.itemName} — added to the leftover pool.${selectedOrder.billId && selectedOrder.creditAmount <= 0 ? ' This bill was already fully paid — settle the refund with the shop directly.' : ''}`);

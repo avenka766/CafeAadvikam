@@ -1,7 +1,7 @@
 // src/bakery/PurchaseOrderTab.tsx
 // Store dashboard tab - raise and manage purchase orders for raw materials.
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Plus, Loader2, ShoppingCart, CheckCircle2, Send, Truck, Trash2, ChevronDown, ChevronUp, Ban, Search, X } from 'lucide-react';
 import { usePurchaseOrderStore, type POItem, type POStatus } from './purchaseOrderStore';
 import { useStoreStockStore } from './storeStockStore';
@@ -155,6 +155,9 @@ function CreatePOForm({ onClose, branchScope }: { onClose: () => void; branchSco
   const [lines,      setLines]      = useState<POItem[]>([{ materialName: firstMaterial?.name ?? '', quantity: 1, unit: firstMaterial?.unit ?? 'kg' }]);
   const [saving,     setSaving]     = useState(false);
   const [error,      setError]      = useState<string | null>(null);
+  // BUG FIX (audit 2026-09-02): handleSubmit's only guard was disabled={saving} (async
+  // state) — a double-tap could fire two identical draft POs before it commits.
+  const savingRef = useRef(false);
 
   const addLine    = () => setLines(p => [...p, { materialName: firstMaterial?.name ?? '', quantity: 1, unit: firstMaterial?.unit ?? 'kg' }]);
   const removeLine = (i: number) => setLines(p => p.filter((_, j) => j !== i));
@@ -162,7 +165,10 @@ function CreatePOForm({ onClose, branchScope }: { onClose: () => void; branchSco
     const selected = materialOptions.find(s => s.name === name);
     setLines(p => p.map((l, j) => j === i ? { ...l, materialName: name, unit: selected?.unit ?? l.unit } : l));
   };
-  const setQty = (i: number, qty: number) => setLines(p => p.map((l, j) => j === i ? { ...l, quantity: qty } : l));
+  // BUG FIX (audit 2026-09-02): the quantity input had no `step` attribute and this setter
+  // did zero unit-based rounding, so a pcs material could be ordered as e.g. 2.5 — same
+  // "pcs never allow decimal points" gap fixed elsewhere in this codebase.
+  const setQty = (i: number, qty: number) => setLines(p => p.map((l, j) => j === i ? { ...l, quantity: l.unit === 'kg' ? qty : Math.round(qty) } : l));
 
   useEffect(() => {
     if (!supplierId && suppliers.length > 0) setSupplierId(suppliers[0].id);
@@ -183,9 +189,11 @@ function CreatePOForm({ onClose, branchScope }: { onClose: () => void; branchSco
   const supplier = suppliers.find(s => s.id === supplierId);
 
   const handleSubmit = async () => {
+    if (savingRef.current) return;
     if (!supplierId || !supplier || lines.some(l => !l.materialName || l.quantity <= 0)) {
       setError('Please fill all fields.'); return;
     }
+    savingRef.current = true;
     setSaving(true);
     const err = await createPO({
       supplierId,
@@ -196,6 +204,7 @@ function CreatePOForm({ onClose, branchScope }: { onClose: () => void; branchSco
       notes,
       createdBy: currentUser?.displayName ?? 'Store',
     });
+    savingRef.current = false;
     setSaving(false);
     if (err) { setError(err); return; }
     onClose();
@@ -268,7 +277,7 @@ function CreatePOForm({ onClose, branchScope }: { onClose: () => void; branchSco
                       className="flex-1 h-10 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none">
                       {options.map(s => <option key={s.id} value={s.name}>{s.name} ({s.category})</option>)}
                     </select>
-                    <input type="number" min={1} value={line.quantity} onChange={e => setQty(i, Number(e.target.value))}
+                    <input type="number" min={1} step={line.unit === 'kg' ? 0.001 : 1} value={line.quantity} onChange={e => setQty(i, Number(e.target.value))}
                       className="w-16 h-10 px-2 rounded-xl border border-border bg-background text-sm font-body text-center focus:outline-none" />
                     <span className="text-xs font-body text-muted-foreground w-8">{line.unit}</span>
                     <button onClick={() => removeLine(i)} disabled={lines.length === 1}

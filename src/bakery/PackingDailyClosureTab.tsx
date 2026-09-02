@@ -32,6 +32,23 @@ import { printViaIframe } from '@/lib/printViaIframe';
 
 import { PACKING_CLOSURE_KEY_PREFIX, packingBusinessDateToday } from './packingCounter';
 
+// AUDIT FIX (2026-09-02): printClosure below interpolates item names, branch
+// labels and the free-text handover Notes field into raw HTML handed to
+// printViaIframe with no escaping — item names can come from a branch's
+// free-typed Custom Items field, and Notes is staff free text. Same
+// stored-XSS class fixed via InvoiceTab.tsx's printInvoice; this codebase's
+// own printPackingChecklist/printCakeChecklist already escape for this exact
+// reason. Escape every such field here too.
+function escapeHtml(value: unknown): string {
+  const s = value == null ? '' : String(value);
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 // BUG FIX: same case-sensitivity bug found repeatedly across this audit —
 // raw itemName === itemName comparison silently misses a match whenever
 // two records for the same logical item were typed with different casing
@@ -325,7 +342,7 @@ export default function PackingDailyClosureTab({ onCounterStatusChange }: { onCo
   }, [date, onCounterStatusChange]);
 
   useEffect(() => {
-    void Promise.all([fetchOrders(true), fetchBranchData('SNB')]).finally(() => void loadClosure());
+    void Promise.all([fetchOrders(true), fetchBranchData('SNB', false, ['sales', 'credit'])]).finally(() => void loadClosure()); // EGRESS FIX: this tab only reads sales + credit sales
   }, [fetchBranchData, fetchOrders, loadClosure]);
 
   const dayDispatches = useMemo(() => orders.flatMap(order => (order.dispatchLog ?? [])
@@ -536,7 +553,7 @@ export default function PackingDailyClosureTab({ onCounterStatusChange }: { onCo
 
   const refresh = async () => {
     setLoading(true); setError('');
-    await Promise.all([fetchOrders(true), fetchBranchData('SNB')]);
+    await Promise.all([fetchOrders(true), fetchBranchData('SNB', false, ['sales', 'credit'])]); // EGRESS FIX: this tab only reads sales + credit sales
     await loadClosure();
   };
 
@@ -566,9 +583,9 @@ export default function PackingDailyClosureTab({ onCounterStatusChange }: { onCo
   // Planner print path already uses, which never opens a new window/tab so
   // it can't be blocked.
   const printClosure = () => {
-    const itemRows = itemSummary.map(row => `<tr><td>${row.itemName}</td><td class="n">${qty(row.kg)}</td><td class="n">${qty(row.pcs)}</td><td class="n">${row.entries}</td><td>${row.branches.join(', ')}</td></tr>`).join('') || '<tr><td colspan="5">No dispatches</td></tr>';
+    const itemRows = itemSummary.map(row => `<tr><td>${escapeHtml(row.itemName)}</td><td class="n">${qty(row.kg)}</td><td class="n">${qty(row.pcs)}</td><td class="n">${row.entries}</td><td>${escapeHtml(row.branches.join(', '))}</td></tr>`).join('') || '<tr><td colspan="5">No dispatches</td></tr>';
     const branchRows = BRANCHES.map(branch => `<tr><td>${branch}</td><td class="n">${qty(branchSummary[branch].kg)}</td><td class="n">${qty(branchSummary[branch].pcs)}</td><td class="n">${branchSummary[branch].orders}</td></tr>`).join('');
-    printViaIframe(`<!doctype html><html><head><title>Packing Closure ${date}</title><style>@page{size:auto;margin:8mm}@media print{html,body{height:auto !important}}*{box-sizing:border-box}body{font-family:Arial;margin:0;color:#111827}h1{margin:0}.muted{color:#6b7280;font-size:12px}.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:18px 0}.k{border:1px solid #d1d5db;border-radius:10px;padding:10px}.k span{font-size:10px;text-transform:uppercase;color:#6b7280}.k b{display:block;font-size:20px;margin-top:5px}table{width:100%;border-collapse:collapse;margin-top:10px;font-size:12px}th,td{border:1px solid #d1d5db;padding:7px;text-align:left}th{background:#f3f4f6}.n{text-align:right}.section{margin-top:20px}.sign{display:grid;grid-template-columns:repeat(3,1fr);gap:28px;margin-top:55px}.line{border-top:1px solid #111;text-align:center;padding-top:6px;font-size:11px}@media print{body{margin:12mm}.no{display:none}}</style></head><body><h1>Packing Daily / Cashier Closure</h1><p class="muted">${dateLabel(date)} · ${finalized ? 'Finalized' : 'Live preview'} · Staff: ${staffName}</p><div class="grid"><div class="k"><span>Gross Sales</span><b>${money(grossSales)}</b></div><div class="k"><span>Dispatched</span><b>${dispatchedOrderIds.size}</b></div><div class="k"><span>Expected Cash</span><b>${money(expectedCash)}</b></div><div class="k"><span>Difference</span><b>${money(difference)}</b></div></div><div class="section"><h2>Cashier Summary</h2><table><tbody><tr><td>Opening Cash</td><td class="n">${money(Number(openingCash||0))}</td><td>Cash Collection</td><td class="n">${money(cashTotal)}</td></tr><tr><td>UPI</td><td class="n">${money(paymentTotal('upi'))}</td><td>Card</td><td class="n">${money(paymentTotal('card'))}</td></tr><tr><td>Credit Billed</td><td class="n">${money(creditBilled)}</td><td>Credit Collected</td><td class="n">${money(creditCollected)}</td></tr><tr><td>Counted Cash</td><td class="n">${money(counted)}</td><td>Difference</td><td class="n">${money(difference)}</td></tr></tbody></table></div><div class="section"><h2>Item Dispatch</h2><table><thead><tr><th>Item</th><th>KG</th><th>Pcs</th><th>Entries</th><th>Branches</th></tr></thead><tbody>${itemRows}</tbody></table></div><div class="section"><h2>Branch Dispatch</h2><table><thead><tr><th>Branch</th><th>KG</th><th>Pcs</th><th>Orders</th></tr></thead><tbody>${branchRows}</tbody></table></div><div class="section"><h2>Handover Notes</h2><p>${notes || 'No notes'}</p></div><div class="sign"><div class="line">Packing Cashier</div><div class="line">Packing In-Charge</div><div class="line">Accounts</div></div></body></html>`);
+    printViaIframe(`<!doctype html><html><head><title>Packing Closure ${date}</title><style>@page{size:auto;margin:8mm}@media print{html,body{height:auto !important}}*{box-sizing:border-box}body{font-family:Arial;margin:0;color:#111827}h1{margin:0}.muted{color:#6b7280;font-size:12px}.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:18px 0}.k{border:1px solid #d1d5db;border-radius:10px;padding:10px}.k span{font-size:10px;text-transform:uppercase;color:#6b7280}.k b{display:block;font-size:20px;margin-top:5px}table{width:100%;border-collapse:collapse;margin-top:10px;font-size:12px}th,td{border:1px solid #d1d5db;padding:7px;text-align:left}th{background:#f3f4f6}.n{text-align:right}.section{margin-top:20px}.sign{display:grid;grid-template-columns:repeat(3,1fr);gap:28px;margin-top:55px}.line{border-top:1px solid #111;text-align:center;padding-top:6px;font-size:11px}@media print{body{margin:12mm}.no{display:none}}</style></head><body><h1>Packing Daily / Cashier Closure</h1><p class="muted">${dateLabel(date)} · ${finalized ? 'Finalized' : 'Live preview'} · Staff: ${escapeHtml(staffName)}</p><div class="grid"><div class="k"><span>Gross Sales</span><b>${money(grossSales)}</b></div><div class="k"><span>Dispatched</span><b>${dispatchedOrderIds.size}</b></div><div class="k"><span>Expected Cash</span><b>${money(expectedCash)}</b></div><div class="k"><span>Difference</span><b>${money(difference)}</b></div></div><div class="section"><h2>Cashier Summary</h2><table><tbody><tr><td>Opening Cash</td><td class="n">${money(Number(openingCash||0))}</td><td>Cash Collection</td><td class="n">${money(cashTotal)}</td></tr><tr><td>UPI</td><td class="n">${money(paymentTotal('upi'))}</td><td>Card</td><td class="n">${money(paymentTotal('card'))}</td></tr><tr><td>Credit Billed</td><td class="n">${money(creditBilled)}</td><td>Credit Collected</td><td class="n">${money(creditCollected)}</td></tr><tr><td>Counted Cash</td><td class="n">${money(counted)}</td><td>Difference</td><td class="n">${money(difference)}</td></tr></tbody></table></div><div class="section"><h2>Item Dispatch</h2><table><thead><tr><th>Item</th><th>KG</th><th>Pcs</th><th>Entries</th><th>Branches</th></tr></thead><tbody>${itemRows}</tbody></table></div><div class="section"><h2>Branch Dispatch</h2><table><thead><tr><th>Branch</th><th>KG</th><th>Pcs</th><th>Orders</th></tr></thead><tbody>${branchRows}</tbody></table></div><div class="section"><h2>Handover Notes</h2><p>${notes ? escapeHtml(notes) : 'No notes'}</p></div><div class="sign"><div class="line">Packing Cashier</div><div class="line">Packing In-Charge</div><div class="line">Accounts</div></div></body></html>`);
   };
 
   if (loading) return <div className="flex min-h-[55vh] items-center justify-center"><Loader2 className="size-7 animate-spin text-teal-600" /></div>;
