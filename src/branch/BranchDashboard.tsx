@@ -5,12 +5,13 @@ import { useSearchParams } from 'react-router-dom';
 import {
   AlertTriangle, Banknote, Bell, Building2, CalendarClock, ClipboardCheck, CreditCard, FileClock,
   FileText, History, Landmark, Package, Receipt, RotateCcw, Settings, ShieldCheck,
-  Smartphone, Truck, UserRound, WalletCards, RefreshCw,
+  Smartphone, Truck, UserRound, WalletCards, RefreshCw, Menu, X, UserCircle2, LogOut,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { supabase } from '@/lib/supabase';
 import { businessDate } from '@/lib/businessDate';
 import { useAuthStore } from '@/stores/authStore';
+import { isNativeApp } from '@/lib/platform';
 import { useBranchStore } from './branchStore';
 import { SettingsTab } from './tabs/SettingsTab';
 import { ReportsTab } from './tabs/ReportsTab';
@@ -93,7 +94,21 @@ export default function BranchDashboard({ branch }: Props) {
   const [opsHydrated, setOpsHydrated] = useState(() => useBranchOpsStore.persist.hasHydrated());
   const [todayLedger, setTodayLedger] = useState<TodayLedger | null>(null);
   const [refreshing, setRefreshing] = useState(false);
-  const { currentUser } = useAuthStore();
+  const { currentUser, logout } = useAuthStore();
+  // FEATURE (2026-09-03): "the SNB/VRSNB app is not at all good and there is
+  // no hamburger symbol at all" — App.tsx deliberately skips
+  // Header/WorkspaceChrome/BottomNav entirely for EVERY native build (not
+  // just Owner's), so this dashboard was rendering with literally no
+  // navigation chrome at all on the branch-staff app: the only way to
+  // switch off "New Bill" (tabStripExpanded's toggle) lives in Header.tsx,
+  // which never mounts natively — every other tab (Advance Orders, Returns,
+  // Bill History, Cashier Closure, Alerts, ...) was permanently unreachable
+  // on that app. Adds the same native header + hamburger drawer pattern
+  // already shipped for the Owner app, scoped to native only — the web
+  // dashboard (Header's own toggle button) is completely unchanged.
+  const native = isNativeApp();
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
   const {
     stock, sales, incoming, advanceOrders, thresholds, loading,
     creditSales: branchCreditSales,
@@ -330,9 +345,75 @@ export default function BranchDashboard({ branch }: Props) {
     );
   }
 
+  const activeNativeTab = tabs.find((t) => t.id === tab) ?? tabs[0];
+
   return (
-    <div className="branch-command-screen h-full min-h-0 overflow-hidden bg-transparent pt-0">
-      <div className="flex h-full min-h-0 flex-col p-1.5 sm:p-2">
+    <div className={cn('branch-command-screen h-full min-h-0 overflow-hidden bg-transparent pt-0', native && 'owner-native-shell')}>
+      {native && (
+        <>
+          <header className="owner-native-topbar">
+            <div className="owner-native-brand">
+              <button type="button" className="owner-native-hamburger" onClick={() => setDrawerOpen(true)} aria-label="Open menu">
+                <Menu className="size-5" />
+              </button>
+              <span className="owner-native-mark">{branch === 'SNB' ? 'SB' : 'VR'}</span>
+              <div>
+                <strong>{BRANCH_LABELS[branch]}</strong>
+                <span>{activeNativeTab?.label ?? 'New Bill'}</span>
+              </div>
+            </div>
+            <div className="owner-native-profile-wrap">
+              <button type="button" className="owner-native-avatar" onClick={() => setProfileOpen((v) => !v)} aria-label="Account">
+                <UserCircle2 className="size-6" />
+              </button>
+              {profileOpen && (
+                <>
+                  <button type="button" className="owner-native-profile-scrim" aria-label="Close" onClick={() => setProfileOpen(false)} />
+                  <div className="owner-native-profile-card">
+                    <p className="name">{currentUser?.displayName || currentUser?.username || 'Staff'}</p>
+                    <p className="role">{BRANCH_LABELS[branch]} staff</p>
+                    <button type="button" className="owner-native-logout" onClick={() => { setProfileOpen(false); logout(); }}>
+                      <LogOut className="size-4" /> Log out
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          </header>
+
+          {drawerOpen && (
+            <>
+              <button type="button" className="owner-native-drawer-scrim" aria-label="Close menu" onClick={() => setDrawerOpen(false)} />
+              <nav className="owner-native-drawer" aria-label="Branch sections">
+                <div className="owner-native-drawer-head">
+                  <span>Sections</span>
+                  <button type="button" onClick={() => setDrawerOpen(false)} aria-label="Close menu"><X className="size-5" /></button>
+                </div>
+                <button type="button" onClick={() => { void refreshAll(); setDrawerOpen(false); }} className="owner-native-drawer-item">
+                  <RefreshCw className={cn('size-4', refreshing && 'animate-spin')} />
+                  <span><strong>Refresh</strong><em>Reload branch data</em></span>
+                </button>
+                {tabs.map((t) => {
+                  const Icon = t.icon;
+                  const badge = t.id === 'alerts' ? notifications.filter((n) => n.branch === branch && n.status === 'Unread').length : 0;
+                  return (
+                    <button
+                      key={t.id}
+                      type="button"
+                      onClick={() => { openTab(t.id); setDrawerOpen(false); }}
+                      className={cn('owner-native-drawer-item', tab === t.id && 'is-active')}
+                    >
+                      <Icon className="size-4" />
+                      <span><strong>{t.label}{badge > 0 ? ` (${badge})` : ''}</strong></span>
+                    </button>
+                  );
+                })}
+              </nav>
+            </>
+          )}
+        </>
+      )}
+      <div className={cn('flex h-full min-h-0 flex-col p-1.5 sm:p-2', native && 'owner-native-body')}>
         {tabStripExpanded && (
           <div className="mb-1.5 flex shrink-0 items-center gap-1 overflow-x-auto rounded-xl border border-slate-200 bg-white/70 px-2 py-1.5 shadow-sm">
             <button
