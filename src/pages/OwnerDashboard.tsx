@@ -41,7 +41,7 @@ import {
   Landmark, CheckCircle2, XCircle, Receipt, Bell, Package, Truck,
   Download, Printer, FileSpreadsheet, Filter, ShieldCheck, Factory, Search, RefreshCw,
   ClipboardList, Loader2, ChevronDown, ChevronUp, LogOut, UserCircle2, Scale,
-  Inbox, Flame, ShoppingCart,
+  Inbox, Flame, ShoppingCart, Menu, X,
 } from 'lucide-react';
 import { isNativeApp } from '@/lib/platform';
 import { useOperationalBranchCatalog } from '@/hooks/useOperationalBranchCatalog';
@@ -3977,10 +3977,17 @@ type OwnerDashboardTab =
   | 'planner';
 
 export default function OwnerDashboard() {
+  // FEATURE (2026-09-03): "as soon as they open the app the default tab
+  // should be branch overview" — native-only default; the web dashboard's
+  // own default (a bare /owner URL resolving to 'everything') is unchanged,
+  // since that's still what selectTab's own special-case below produces for
+  // the "Everything" sidebar link on web.
+  const native = isNativeApp();
+  const defaultTab: OwnerDashboardTab = native ? 'branches' : 'everything';
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedTab = searchParams.get('tab') as OwnerDashboardTab | null;
   const ownerTabIds = useMemo<OwnerDashboardTab[]>(() => ['everything', 'branches', 'sales', 'credit', 'purchases', 'poApprovals', 'closure', 'variance', 'alerts', 'attendance', 'waste', 'complaints', 'audit', 'planner'], []);
-  const initialTab = requestedTab && ownerTabIds.includes(requestedTab) ? requestedTab : 'everything';
+  const initialTab = requestedTab && ownerTabIds.includes(requestedTab) ? requestedTab : defaultTab;
   const [tab, setTab] = useState<OwnerDashboardTab>(initialTab);
   const selectTab = (next: OwnerDashboardTab) => {
     setTab(next);
@@ -3997,11 +4004,11 @@ export default function OwnerDashboard() {
   // resolves the missing param to 'everything' explicitly instead of only
   // reacting to a truthy one.
   useEffect(() => {
-    const resolved: OwnerDashboardTab = requestedTab && ownerTabIds.includes(requestedTab) ? requestedTab : 'everything';
+    const resolved: OwnerDashboardTab = requestedTab && ownerTabIds.includes(requestedTab) ? requestedTab : defaultTab;
     if (resolved !== tab) {
       setTab(resolved);
     }
-  }, [requestedTab, ownerTabIds, tab]);
+  }, [requestedTab, ownerTabIds, tab, defaultTab]);
 
   // Android app: request notification permission and register the push
   // token once per session. A complete no-op on the web build — see
@@ -4018,9 +4025,16 @@ export default function OwnerDashboard() {
   // its own compact top bar + horizontal tab strip below instead. The `tabs`
   // array already existed (label/icon/hint per section) but used to be dead
   // code once WorkspaceChrome's own sidebar took over web navigation; it's
-  // now the single source of truth for both.
-  const native = isNativeApp();
+  // now the single source of truth for both. (`native` itself is computed
+  // at the top of this component now, so the default tab can use it too.)
   const [profileOpen, setProfileOpen] = useState(false);
+  // FEATURE (2026-09-03): "I need hamburger symbol in the top when I click
+  // on the tabs should display. I don't want the tab on the top" — the
+  // horizontal tab strip below the header (owner-native-tabstrip) is
+  // replaced with a hamburger button that opens the same tab list as a
+  // slide-out drawer, matching the pattern already proven on the SNB/VRSNB
+  // branch-staff app's WorkspaceChrome drawer.
+  const [drawerOpen, setDrawerOpen] = useState(false);
 
   const tabs: Array<{ id: OwnerDashboardTab; label: string; icon: React.ReactNode; hint: string }> = [
     { id: 'branches',   label: 'Branch Overview',    icon: <Store         className="size-4" />, hint: 'Cafe, SNB, VRSNB, Hosur' },
@@ -4069,6 +4083,9 @@ export default function OwnerDashboard() {
     <div className="owner-native-shell">
       <header className="owner-native-topbar">
         <div className="owner-native-brand">
+          <button type="button" className="owner-native-hamburger" onClick={() => setDrawerOpen(true)} aria-label="Open menu">
+            <Menu className="size-5" />
+          </button>
           <span className="owner-native-mark">CA</span>
           <div>
             <strong>Cafe Aadvikam</strong>
@@ -4094,19 +4111,31 @@ export default function OwnerDashboard() {
         </div>
       </header>
 
-      <nav className="owner-native-tabstrip" aria-label="Owner sections">
-        {tabs.map(t => (
-          <button
-            key={t.id}
-            type="button"
-            onClick={() => selectTab(t.id)}
-            className={cn('owner-native-tabchip', tab === t.id && 'is-active')}
-          >
-            {t.icon}
-            <span>{t.label}</span>
-          </button>
-        ))}
-      </nav>
+      {drawerOpen && (
+        <>
+          <button type="button" className="owner-native-drawer-scrim" aria-label="Close menu" onClick={() => setDrawerOpen(false)} />
+          <nav className="owner-native-drawer" aria-label="Owner sections">
+            <div className="owner-native-drawer-head">
+              <span>Sections</span>
+              <button type="button" onClick={() => setDrawerOpen(false)} aria-label="Close menu"><X className="size-5" /></button>
+            </div>
+            {tabs.map(t => (
+              <button
+                key={t.id}
+                type="button"
+                onClick={() => { selectTab(t.id); setDrawerOpen(false); }}
+                className={cn('owner-native-drawer-item', tab === t.id && 'is-active')}
+              >
+                {t.icon}
+                <span>
+                  <strong>{t.label}</strong>
+                  <em>{t.hint}</em>
+                </span>
+              </button>
+            ))}
+          </nav>
+        </>
+      )}
 
       <main className="owner-native-body workspace-redesign">{content}</main>
     </div>
