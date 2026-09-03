@@ -11,19 +11,29 @@ export default defineConfig({
   build: {
     sourcemap: false, // SEC-14: never expose source in production
     rollupOptions: {
-      // Capacitor packages (@capacitor/core, /local-notifications,
-      // /push-notifications) only exist for the native Android build —
-      // src/lib/nativeNotifications.ts reaches them via dynamic `import()`
-      // wrapped in try/catch specifically so it's a safe no-op on the web
-      // build (see that file's header comment). Marking them external stops
-      // Rollup from trying to statically resolve/bundle them for the
-      // website build; at runtime on the web the dynamic import simply
-      // rejects (module not found) and the existing try/catch treats that
-      // exactly like "not running inside the native app". Without this,
-      // Vercel's web deploy fails outright if these native-only packages
-      // aren't present in node_modules there, even though the site never
-      // needs them.
-      external: ['@capacitor/core', '@capacitor/local-notifications', '@capacitor/push-notifications'],
+      // BUG FIX (2026-09-03): @capacitor/core (and everything depending on
+      // it — /app, /local-notifications, /push-notifications) used to be
+      // marked `external` here on the theory that they're native-only
+      // packages that might not exist in a web deploy's node_modules, so
+      // Rollup shouldn't try to bundle them. That premise was wrong — all
+      // four are regular `dependencies` in package.json (always installed,
+      // on Vercel too), and marking a package `external` doesn't make it a
+      // safe no-op at runtime the way the removed comment claimed: a
+      // dynamically-imported chunk's OWN static imports are still resolved
+      // eagerly by the browser before any of its code runs, so an
+      // externalized `@capacitor/core` left as a bare, unbundled specifier
+      // crashes the ENTIRE app on load with "Uncaught TypeError: Failed to
+      // resolve module specifier '@capacitor/core'" the moment ANYTHING
+      // reaches a dynamic import() of a Capacitor plugin during boot —
+      // confirmed live on-device building the Owner Android app (its
+      // startup auto-login check does exactly that). The `dist/` output is
+      // shared between the real website AND every native app build, so
+      // this was a live, deployed crash risk sitting dormant precisely
+      // because nothing exercised these dynamic imports during initial page
+      // load on the web — bundling them normally (this codebase's default
+      // for every other dependency) is correct and safe on both targets:
+      // Capacitor.isNativePlatform() (and everything gated behind it)
+      // simply evaluates to false in a browser, no native binding needed.
       output: {
         manualChunks(id) {
           if (!id.includes("node_modules")) return undefined;
