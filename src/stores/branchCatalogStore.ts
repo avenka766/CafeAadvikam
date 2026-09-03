@@ -243,7 +243,25 @@ export const useBranchCatalogStore = create<BranchCatalogState>((set, get) => ({
   },
 
   updateItem: async (branch, barcode, updates, updatedBy) => {
-    const current = get().items[branch].find((entry) => entry.barcode === barcode);
+    // AUDIT FIX (2026-09-03): this used to build `next` from the LOCAL
+    // Zustand cache (`get().items[branch]`), which can be stale relative to
+    // the DB (realtime lag, or simply another admin's edit on a different
+    // device landing after this admin's dialog opened but before they hit
+    // Save). Both the RPC and the direct-update fallback below write ALL
+    // FIVE fields (name/price/uom/category/active) unconditionally, so any
+    // field the CALLER didn't intend to touch still gets silently
+    // overwritten back to whatever this stale snapshot held — a real
+    // concurrent edit from someone else quietly reverted with no warning.
+    // Re-reading the row fresh right before merging narrows that window
+    // from "since the dialog opened" (could be minutes) down to "between
+    // this fetch and the write" (milliseconds) — not a full fix (would need
+    // per-field partial updates or optimistic-concurrency versioning on the
+    // RPC itself), but a real, low-risk reduction of the actual race.
+    const { data: freshRow } = await supabase
+      .from('branch_items')
+      .select('branch, barcode, name, price, uom, category, active, created_at, updated_at, updated_by')
+      .eq('branch', branch).eq('barcode', barcode).maybeSingle();
+    const current = freshRow ? mapDbRow(freshRow as Record<string, unknown>) : get().items[branch].find((entry) => entry.barcode === barcode);
     if (!current) return 'Item not found.';
     const next = { ...current, ...updates };
     if (!next.name.trim()) return 'Item name is required.';

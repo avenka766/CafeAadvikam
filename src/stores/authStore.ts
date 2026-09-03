@@ -16,7 +16,19 @@ const SESSION_TIMEOUT_MS = 8 * 60 * 60 * 1000; // 8 hours — web
 // local timer is just a client-side safety net so a native session doesn't
 // silently log itself out mid-use. 30 days comfortably covers "opens the app
 // most days" without ever nagging for a password.
-const NATIVE_SESSION_TIMEOUT_MS = 30 * 24 * 60 * 60 * 1000;
+// BUG FIX (2026-09-03): was 30 * 24h (2,592,000,000ms) — setTimeout has a
+// hard platform ceiling of 2,147,483,647ms (~24.8 days, the max signed
+// 32-bit int); any delay above that fires IMMEDIATELY instead of waiting
+// (a well-known browser/V8 quirk, not a bug in this code's arithmetic).
+// Every single call to _resetSessionTimer() on the native build was
+// instant-firing its own logout callback — confirmed live: Owner's
+// auto-login would succeed, then get silently logged straight back out
+// within the same event-loop tick, landing back on the login screen before
+// any dashboard data ever rendered. This is almost certainly the real
+// cause behind "the old Owner app is not showing any details clearly."
+// 20 days stays safely under the ceiling while still comfortably covering
+// "opens the app most days."
+const NATIVE_SESSION_TIMEOUT_MS = 20 * 24 * 60 * 60 * 1000;
 const AUTH_STORAGE_KEY = 'cafe-aadvikam-auth';
 
 // Best-effort — pushes the server-side session expiry out to 30 days from
