@@ -76,31 +76,17 @@ export async function initNativeNotifications(registeredBy?: string | null): Pro
     console.warn('[nativeNotifications] local notification permission request failed:', err);
   }
 
-  try {
-    const { PushNotifications } = await import('@capacitor/push-notifications');
-    const perm = await PushNotifications.checkPermissions();
-    let status = perm.receive;
-    if (status !== 'granted') {
-      status = (await PushNotifications.requestPermissions()).receive;
-    }
-    if (status !== 'granted') return; // Owner declined — respect it, nothing else to do.
-
-    await PushNotifications.register();
-
-    PushNotifications.addListener('registration', token => {
-      void registerPushToken(token.value, registeredBy ?? null);
-    });
-    PushNotifications.addListener('registrationError', err => {
-      console.warn('[nativeNotifications] push registration error (expected until Firebase is configured):', err);
-    });
-    // App is open/foregrounded when a push arrives — mirror it as a local
-    // notification so it's still visible even though the OS already
-    // delivered the underlying push.
-    PushNotifications.addListener('pushNotificationReceived', notification => {
-      void notifyLocal(notification.title ?? 'Cafe Aadvikam', notification.body ?? '');
-    });
-  } catch (err) {
-    // Expected until google-services.json is added — see ANDROID_APP_SETUP.md.
-    console.warn('[nativeNotifications] push notifications unavailable:', err);
-  }
+  // BUG FIX (2026-09-03): PushNotifications.register() calls into Android's
+  // real FirebaseMessaging.getInstance() natively — with no Firebase project
+  // configured (no google-services.json — see ANDROID_APP_SETUP.md), that
+  // throws IllegalStateException on Capacitor's OWN native plugin thread,
+  // which crashes the entire app with a FATAL EXCEPTION. The try/catch here
+  // is JS-side and can't catch it — a Java exception on a background
+  // Android Handler thread isn't a rejected JS promise, it just kills the
+  // process outright. Confirmed live: a fresh install of the Owner app
+  // crashed immediately after answering the notification permission prompt,
+  // every time. Skip push registration entirely until a real Firebase
+  // project exists; local notifications above are unaffected (a separate
+  // plugin, no Firebase dependency) and already cover in-app alerts.
+  void registeredBy; // kept in the signature for when push is re-enabled
 }
