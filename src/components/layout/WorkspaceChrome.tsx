@@ -56,7 +56,10 @@ interface WorkspaceChromeProps {
   children: React.ReactNode;
 }
 
-interface NavItem {
+// Exported (2026-09-03) so native builds — which skip WorkspaceChrome
+// entirely (see App.tsx) — can still reuse this same per-role nav list for
+// their own lightweight hamburger drawer, instead of hand-duplicating it.
+export interface NavItem {
   label: string;
   path: string;
   icon: React.ReactNode;
@@ -107,7 +110,7 @@ const DEFAULT_META: PageMeta = {
   accent: 'Clean • Fast • Reliable',
 };
 
-function navForRole(role?: string): NavItem[] {
+export function navForRole(role?: string): NavItem[] {
   switch (role) {
     case 'admin':
       return [
