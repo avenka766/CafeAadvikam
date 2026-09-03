@@ -400,7 +400,7 @@ function AdminDashboard() {
         return { data: rows, error: null };
       };
 
-      const [headersRes, itemsRes, paymentsRes, hosurRes, unbilledRes, unbilledArchiveRes, expensesRes, purchasesRes] = await Promise.all([
+      const [headersRes, itemsRes, paymentsRes, hosurRes, unbilledRes, expensesRes, purchasesRes] = await Promise.all([
         fetchAllRows(() => supabase.from('branch_bill_headers')
           .select('id, branch, bill_no, subtotal, discount, total, status, created_at, salesperson, biller')
           .in('branch', ['SNB', 'VRSNB'])
@@ -424,14 +424,21 @@ function AdminDashboard() {
           .select('id, order_number, shop_name, subtotal, created_at')
           .eq('status', 'dispatched').is('bill_id', null)
           .gte('created_at', fromTs).lte('created_at', toTs)),
-        // hosur_orders_archive_20260827 is a one-time snapshot table from an
-        // archival pass on that date — the same "dispatched, never billed"
-        // gap exists there for older orders. If a future archive round adds
-        // a new dated table, add it here too.
-        fetchAllRows(() => supabase.from('hosur_orders_archive_20260827')
-          .select('id, order_number, shop_name, subtotal, created_at')
-          .eq('status', 'dispatched').is('bill_id', null)
-          .gte('created_at', fromTs).lte('created_at', toTs)),
+        // BUG FIX (2026-09-03): this used to also query
+        // hosur_orders_archive_20260827 (a one-time snapshot table from an
+        // 2026-08-27 archival pass) for the same "dispatched, never billed"
+        // gap among older archived orders. That table (and every other
+        // *_archive_* snapshot table in the schema) was permanently deleted
+        // this same day at the owner's explicit request — the query below
+        // started failing with "Could not find the table … in the schema
+        // cache" on every single load, and since this whole block is one
+        // Promise.all, that one failure silently broke Branch Sales' "Bills"
+        // panel AND Hosur Sales' "Billed Sales"/"Confirmed Bills" together
+        // (both ₹0, both stuck on "Loading bills…" forever) — Cafe Control
+        // was unaffected since it reads from a completely separate source
+        // (orderStore). If a future archive round adds a new dated table
+        // that should be included here, add it deliberately — don't leave a
+        // stale reference like this one behind when a table gets dropped.
         fetchAllRows(() => supabase.from('branch_operation_records')
           .select('payload, created_at')
           .eq('record_type', 'expense')
@@ -442,7 +449,7 @@ function AdminDashboard() {
           .gte('created_at', fromTs).lte('created_at', toTs)),
       ]);
       if (cancelled) return;
-      const err = headersRes.error || itemsRes.error || paymentsRes.error || hosurRes.error || unbilledRes.error || unbilledArchiveRes.error || expensesRes.error || purchasesRes.error;
+      const err = headersRes.error || itemsRes.error || paymentsRes.error || hosurRes.error || unbilledRes.error || expensesRes.error || purchasesRes.error;
       if (err) { setRealSalesError(err.message); setRealSalesLoading(false); return; }
 
       // BUG FIX (audit 2026-09-02): hosur_bill_items has no branch/date column of its own,
@@ -464,7 +471,7 @@ function AdminDashboard() {
       }
       if (cancelled) return;
       const hosurItemsRes = { data: hosurItemsChunks, error: null as { message: string } | null };
-      setHosurUnbilledDispatched(([...unbilledRes.data, ...unbilledArchiveRes.data] as Array<Record<string, unknown>>).map((o) => ({
+      setHosurUnbilledDispatched((unbilledRes.data as Array<Record<string, unknown>>).map((o) => ({
         id: String(o.id), orderNumber: String(o.order_number ?? ''), shopName: String(o.shop_name ?? ''),
         subtotal: Number(o.subtotal || 0), createdAt: String(o.created_at),
       })));

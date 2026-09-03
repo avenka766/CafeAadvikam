@@ -2589,7 +2589,17 @@ function BillingTab({ bills, billItems, busy, withBusy, confirmBill, resendBillW
       {!counterOpen && <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-amber-900"><div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div><p className="font-black">Billing Locked</p><p className="mt-1 text-sm font-semibold">{counterLoading ? 'Checking today’s counter status…' : counterError || "Planner's top-level Daily Closure counter is closed — open it before billing."}</p></div><button type="button" className={primaryButton} onClick={openCounter} disabled={counterLoading}><ShieldCheck className="size-4" /> Open Planner's Daily Closure</button></div></div>}
       {draftBills.length === 0 ? <EmptyState icon={<Receipt className="size-6" />} title="No bill drafts" subtitle="Confirm received shop orders to generate bill drafts automatically." /> : draftBills.map((bill) => {
         const items = billItems[bill.id] ?? [];
-        const pType = paymentType[bill.id] ?? 'full';
+        // BUG FIX (2026-09-03): this used to default to 'full' — Hosur's
+        // whole billing model is "everything is recorded as credit" (see
+        // dispatchReceiveAndBill's hardcoded paymentType:'credit'), but this
+        // manual retry screen silently billed a shop as fully-paid cash the
+        // moment Confirm was clicked without first clicking the Credit
+        // button. Caused 4 real shops to be wrongly billed as paid-cash
+        // instead of credit on 2026-09-03 (corrected in the DB + credit
+        // ledger). Default to 'credit' so an accidental Confirm click does
+        // the safe thing; staff still have to deliberately pick Full/Partial
+        // to record real cash actually collected.
+        const pType = paymentType[bill.id] ?? 'credit';
         const d = getDraft(bill.id);
         const paid = pType === 'full' ? bill.subtotal : pType === 'credit' ? 0 : Number(d.paidAmount || 0);
         const credit = Math.max(0, bill.subtotal - paid);
