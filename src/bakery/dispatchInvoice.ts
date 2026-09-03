@@ -573,7 +573,7 @@ export async function updateDispatchInvoice(params: {
   updatedItems: DispatchInvoiceItem[];
   updatedDiscountPct: number;
   editedBy: string;
-}): Promise<{ ok: true; record: DispatchInvoiceRecord; stockSynced: boolean } | { error: string }> {
+}): Promise<{ ok: true; record: DispatchInvoiceRecord; stockSynced: boolean; hosurWhatsapp?: { ok: boolean; billNo?: string; whatsappStatus?: 'sent' | 'failed'; whatsappError?: string | null; message?: string } } | { error: string }> {
   const { data: invRow, error: invErr } = await supabase.from('dispatch_invoices').select('*').eq('id', params.invoiceId).single();
   if (invErr || !invRow) return { error: invErr?.message || 'Invoice not found — it may have been removed.' };
   const original = recordFromRow(invRow as Record<string, unknown>);
@@ -778,9 +778,57 @@ export async function updateDispatchInvoice(params: {
     });
   }
 
+  // FEATURE (2026-09-03): "if they edit the bill the new invoice should go
+  // to the client with the update invoice in whatsapp" — Hosur is the only
+  // scope with a real client-facing WhatsApp bill (hosur_bills/hosur_bill_
+  // items, created by dispatchReceiveAndBill at dispatch time); this pushes
+  // the corrected amount there too and resends it. Best-effort: an edit to
+  // the dispatch_invoices record above has already succeeded and must stand
+  // regardless of whether the shop's bill/WhatsApp resync works.
+  let hosurWhatsapp: { ok: boolean; billNo?: string; whatsappStatus?: 'sent' | 'failed'; whatsappError?: string | null; message?: string } | undefined;
+  if (branch === 'Hosur' && anchorHosurOrderId) {
+    try {
+      // BUG FIX (2026-09-03, live incident — Shree Skanda Villas): a single
+      // Hosur order can be dispatched across multiple separate batches, each
+      // with its OWN dispatch_invoices row, but they all share ONE hosur_bills
+      // row (dispatchReceiveAndBill reuses the existing draft bill by
+      // order_id). Syncing only THIS invoice's items would silently discard
+      // whatever the order's OTHER invoice(s) already contributed to that
+      // shared bill. Pull every other non-cancelled Hosur invoice for the
+      // same shop, keep only the ones whose own dispatch entries resolve to
+      // this SAME hosur order, apply EACH one's own discount to get its real
+      // billed prices, and combine with this edit's own final items before
+      // syncing — so the shop's credit bill always reflects the full,
+      // combined total across every batch, not just the one just edited.
+      const finalPriced = (items: DispatchInvoiceItem[], discountPct: number) => {
+        const mult = 1 - Math.max(0, Math.min(100, discountPct || 0)) / 100;
+        return items.map(i => ({ itemName: i.itemName, unit: i.unit, quantity: i.quantity, unitPrice: Math.round(i.unitPrice * mult * 100) / 100 }));
+      };
+      let combinedItems = finalPriced(finalItems, safeUpdatedDiscountPct);
+      if (original.hosurShopId) {
+        const { data: siblingRows } = await supabase.from('dispatch_invoices')
+          .select('id, items, discount_pct, dispatch_entry_ids')
+          .eq('scope', 'Hosur').eq('hosur_shop_id', original.hosurShopId).neq('status', 'cancelled').neq('id', params.invoiceId);
+        for (const row of (siblingRows ?? []) as { id: string; items: DispatchInvoiceItem[]; discount_pct: number; dispatch_entry_ids: { orderId: string; dispatchEntryId: string }[] }[]) {
+          const belongsToSameOrder = (row.dispatch_entry_ids ?? []).some(ref => {
+            const order = freshOrders.find(o => o.id === ref.orderId);
+            const entry = order?.dispatchLog?.find(d => d.id === ref.dispatchEntryId);
+            return entry?.targetHosurOrderId === anchorHosurOrderId;
+          });
+          if (belongsToSameOrder) combinedItems = combinedItems.concat(finalPriced(row.items ?? [], row.discount_pct ?? 0));
+        }
+      }
+      const { syncHosurBillWithInvoiceEdit } = await import('./hosurBillingBridge');
+      hosurWhatsapp = await syncHosurBillWithInvoiceEdit({ hosurOrderId: anchorHosurOrderId, items: combinedItems });
+    } catch (err) {
+      hosurWhatsapp = { ok: false, message: err instanceof Error ? err.message : 'Failed to sync the updated invoice to the shop.' };
+    }
+  }
+
   return {
     ok: true,
     stockSynced,
+    hosurWhatsapp,
     record: {
       ...original,
       items: finalItems,

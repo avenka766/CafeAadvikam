@@ -6832,9 +6832,22 @@ function EditDispatchInvoiceModal({ invoice, onClose, onSaved }: {
         editedBy: currentUser?.displayName || currentUser?.username || 'Planner',
       });
       if ('error' in result) { setError(result.error); return; }
-      if (!result.stockSynced) {
-        setWarning('Saved. This bill has no linked dispatch record (e.g. a cake bill), so only the bill itself was updated — no stock was adjusted.');
-        setTimeout(onSaved, 1200);
+      // FEATURE (2026-09-03): surface whether the shop's WhatsApp bill was
+      // resynced with the correction (Hosur only — see syncHosurBillWithInvoiceEdit).
+      const notes: string[] = [];
+      if (!result.stockSynced) notes.push('This bill has no linked dispatch record (e.g. a cake bill), so only the bill itself was updated — no stock was adjusted.');
+      if (result.hosurWhatsapp) {
+        notes.push(
+          result.hosurWhatsapp.ok
+            ? result.hosurWhatsapp.whatsappStatus === 'sent'
+              ? `Updated invoice sent to the shop via WhatsApp.`
+              : `Bill corrected, but WhatsApp failed to send${result.hosurWhatsapp.whatsappError ? ` (${result.hosurWhatsapp.whatsappError})` : ''} — retry from the Hosur tab → WhatsApp Logs.`
+            : `Bill corrected, but the shop's WhatsApp bill could not be resynced: ${result.hosurWhatsapp.message}`
+        );
+      }
+      if (notes.length > 0) {
+        setWarning(`Saved. ${notes.join(' ')}`);
+        setTimeout(onSaved, 1600);
       } else {
         onSaved();
       }
@@ -8617,8 +8630,25 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
           ...(customer ? { isCustomSale: true, customerName: customer.name } : {}),
         });
       }
+      // FEATURE (2026-09-03): "Custom(Planned) order dispatch invoice number
+      // should also continue the SALES/26-27/N sequence" — Custom(Planned)
+      // dispatches are saved under scope='SNB' (see confirm()'s isCustomSale
+      // marker above / the comment near branchFilter==='Custom' elsewhere in
+      // this file), which would otherwise fall back to SNB/VRSNB's own
+      // shared 'TO/26-27/N' dispatch sequence inside saveDispatchInvoice.
+      // Fetch from the same shared Sales sequence New Bill/Sample Bill/Hosur
+      // already draw from instead, exactly like SampleBillTab's saveBill()
+      // does — scope stays 'SNB' purely to pick the right business
+      // letterhead, unrelated to the invoice number itself.
+      let customSaleInvoiceNo: string | undefined;
+      if (customer) {
+        const { data: salesNo, error: salesNoError } = await supabase.rpc('next_sales_bill_number');
+        if (salesNoError || !salesNo) throw new Error(salesNoError?.message || 'Could not generate the next bill number. Please try again.');
+        customSaleInvoiceNo = String(salesNo);
+      }
       const record = await saveDispatchInvoice({
         scope,
+        invoiceNo: customSaleInvoiceNo,
         hosurShopId: hosurShop?.id ?? null,
         hosurShopName: hosurShop?.name ?? null,
         hosurShopPhone: hosurShop?.phone ?? null,

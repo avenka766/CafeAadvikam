@@ -317,3 +317,85 @@ export async function dispatchReceiveAndBill(params: {
 
   return { billId, billNo, whatsappStatus: whatsapp.status, whatsappError: whatsapp.errorMessage };
 }
+
+// FEATURE (2026-09-03): "if they edit the bill the new invoice should go to
+// the client with the update invoice in whatsapp" — a Hosur dispatch is
+// auto-billed the moment it's confirmed (dispatchReceiveAndBill above), but
+// Planner can later correct that same dispatch from Dispatch tab → Recent
+// Dispatch Invoices → Edit Bill (updateDispatchInvoice in dispatchInvoice.ts).
+// That edit only ever touched the printable dispatch_invoices record — the
+// actual credit ledger (hosur_bills/hosur_bill_items/branch_credit_sales)
+// and the WhatsApp bill the shop already has in hand were left silently out
+// of sync with the corrected amount. Called from updateDispatchInvoice
+// itself right after a Hosur-scope edit saves, so the shop's copy never
+// disagrees with what Planner actually billed.
+export async function syncHosurBillWithInvoiceEdit(params: {
+  hosurOrderId: string;
+  // FINAL (already-discounted, actually-billed) line items — the caller is
+  // responsible for applying each source invoice's own discount_pct before
+  // calling this. BUG FIX (2026-09-03): a single Hosur order is very often
+  // dispatched across multiple separate batches, each getting its own
+  // dispatch_invoices row but sharing ONE hosur_bills row (dispatchReceiveAndBill
+  // reuses the existing draft bill by order_id — see its "2. Create the
+  // draft bill" comment above). The caller must pass the FULL combined item
+  // list across every dispatch_invoices row for this Hosur order, not just
+  // the one that was just edited — passing only one invoice's items here
+  // silently discards whatever the order's OTHER invoice(s) already
+  // contributed (confirmed live: Shree Skanda Villas' first ₹905.28 batch
+  // vanished from the credit ledger when its second ₹1,132.20 batch was
+  // edited, because the caller used to pass only the edited invoice's items).
+  items: { itemName: string; unit: string; quantity: number; unitPrice: number }[];
+// Single optional-field shape (not a discriminated union) — this repo's
+// strictNullChecks:false gotcha silently breaks `ok`-based narrowing on a
+// real union, see project memory / other `ok:boolean` result shapes in
+// this codebase.
+}): Promise<{ ok: boolean; billNo?: string; whatsappStatus?: 'sent' | 'failed'; whatsappError?: string | null; message?: string }> {
+  const { data: billRow, error: billErr } = await supabase.from('hosur_bills').select('*').eq('order_id', params.hosurOrderId).neq('status', 'cancelled').maybeSingle();
+  if (billErr) return { ok: false, message: billErr.message };
+  if (!billRow) return { ok: false, message: 'No linked Hosur bill found for this order — nothing to sync.' };
+  const bill = mapBill(billRow);
+  if (bill.status === 'draft') return { ok: false, message: 'This order has not been billed yet — nothing to sync.' };
+
+  const rows = params.items
+    .filter(i => i.itemName.trim() && i.quantity > 0)
+    .map(i => {
+      const unitPrice = Math.round(i.unitPrice * 100) / 100;
+      return { bill_id: bill.id, item_name: i.itemName.trim(), unit: i.unit, quantity: i.quantity, unit_price: unitPrice, line_total: Math.round(i.quantity * unitPrice * 100) / 100 };
+    });
+  if (rows.length === 0) return { ok: false, message: 'No items left to bill.' };
+  const newSubtotal = Math.round(rows.reduce((s, r) => s + r.line_total, 0) * 100) / 100;
+
+  const { error: delErr } = await supabase.from('hosur_bill_items').delete().eq('bill_id', bill.id);
+  if (delErr) return { ok: false, message: delErr.message };
+  const { error: insErr } = await supabase.from('hosur_bill_items').insert(rows);
+  if (insErr) return { ok: false, message: insErr.message };
+
+  // Hosur is always full credit (see dispatchReceiveAndBill's payment param
+  // above) — paid_amount stays whatever it already was (0 in practice).
+  const newCredit = Math.max(0, newSubtotal - bill.paidAmount);
+  const { error: updBillErr } = await supabase.from('hosur_bills').update({ subtotal: newSubtotal, credit_amount: newCredit, updated_at: new Date().toISOString() }).eq('id', bill.id);
+  if (updBillErr) return { ok: false, message: updBillErr.message };
+
+  // Keep the credit ledger of record (branch_credit_sales, linked via the
+  // same source_id used when it was first created) matching too — otherwise
+  // Owner/Admin credit reports would keep showing the pre-edit amount.
+  const { error: ledgerErr } = await supabase.from('branch_credit_sales').update({
+    items: rows.map(r => ({ itemName: r.item_name, quantity: r.quantity, sellUnit: r.unit, price: r.unit_price, lineTotal: r.line_total })),
+    subtotal: newSubtotal, credit_amount: newCredit,
+  }).eq('source', 'hosur').eq('source_id', bill.id);
+  if (ledgerErr) console.warn('[syncHosurBillWithInvoiceEdit] credit ledger sync failed:', ledgerErr.message);
+
+  const { data: freshBillRow } = await supabase.from('hosur_bills').select('*').eq('id', bill.id).single();
+  const { data: freshItemRows } = await supabase.from('hosur_bill_items').select('*').eq('bill_id', bill.id);
+  const finalBill = mapBill(freshBillRow);
+  const finalItems = (freshItemRows ?? []).map(mapBillItem);
+  const body = `*UPDATED INVOICE — please discard the earlier copy*\n\n${buildBillMessage(finalBill, finalItems)}`;
+  const whatsapp = await sendHosurWhatsapp({
+    shopId: finalBill.shopId, shopName: finalBill.shopName, phone: finalBill.shopWhatsapp,
+    billId: bill.id, billNo: bill.billNo, messageType: 'bill', body, billForMedia: finalBill, itemsForMedia: finalItems,
+  });
+  if (whatsapp.status === 'failed') {
+    await notifyAdmin('Hosur updated invoice WhatsApp failed', `${bill.billNo} for ${finalBill.shopName} was corrected but the updated invoice could not be sent. Retry from WhatsApp Logs.`, bill.id, bill.billNo, { error: whatsapp.errorMessage });
+  }
+  return { ok: true, billNo: bill.billNo, whatsappStatus: whatsapp.status, whatsappError: whatsapp.errorMessage };
+}
