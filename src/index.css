@@ -1835,7 +1835,23 @@
   /* ======================================================================
      Owner dashboard premium redesign — Business Control Room
      ====================================================================== */
-  .workspace-redesign .owner-dashboard-screen {
+  /* BUG FIX (2026-09-03): these --owner-* custom properties used to be
+     defined only on ".workspace-redesign .owner-dashboard-screen" — but
+     .owner-dashboard-screen is never actually rendered anywhere in the app
+     (grepped the whole src/ tree, zero JSX usage). Every var(--owner-green)
+     / var(--owner-ink) / var(--owner-border) / var(--owner-card) reference
+     across this entire "Owner dashboard premium redesign" block — dozens of
+     rules, .owner-toolbar's active-button state among them — has always
+     silently resolved to nothing on both web and native, confirmed live (a
+     selected date-preset chip rendered as near-invisible white-on-white
+     instead of solid green). Defining them directly on .workspace-redesign
+     instead — confirmed present as a real ancestor in both the web owner
+     dashboard (via WorkspaceChrome) and the native shell (owner-native-body)
+     — fixes every one of those dependent rules at once. Custom properties
+     only cascade downward; this adds no visible styling of its own.
+     The now-redundant re-declaration below (on the still-unused
+     .owner-dashboard-screen selector) is left as-is rather than touched. */
+  .workspace-redesign {
     --owner-ink: #1c1208;
     --owner-green: #126d52;
     --owner-green-dark: #0d493d;
@@ -1843,6 +1859,9 @@
     --owner-soft: #fff7ea;
     --owner-card: rgba(255, 255, 255, .94);
     --owner-border: rgba(116, 76, 31, .14);
+  }
+
+  .workspace-redesign .owner-dashboard-screen {
     display: flex;
     flex-direction: column;
     min-height: 0;
@@ -2949,6 +2968,23 @@
     color: #fff;
   }
 
+  /* FEATURE (2026-09-03): "improve the UI and UX" — native-app-only polish
+     for the date-preset chips (scoped to .owner-native-body specifically so
+     the desktop web toolbar, used daily by other roles, is untouched).
+     Smaller, true pill shape reads as a tighter, more scannable chip group
+     than the previous rounded-rect buttons, and the active state gets a
+     visible lift instead of just a flat color swap. */
+  .owner-native-body .owner-toolbar button,
+  .owner-native-body .owner-toolbar select {
+    min-height: 2.3rem;
+    padding: .45rem .85rem;
+    border-radius: 999px;
+    font-size: .78rem;
+  }
+  .owner-native-body .owner-toolbar button.is-active {
+    box-shadow: 0 6px 16px rgba(18,109,82,.32), inset 0 1px 0 rgba(255,255,255,.25);
+  }
+
   /* Native app home-screen hero (2026-08-07) — a personal-briefing header
      for the Everything tab: greeting, date, today's headline number in
      gradient type, and a status chip that summarizes whether anything
@@ -3353,11 +3389,19 @@
     .workspace-redesign .owner-metric-grid.wide { grid-template-columns: 1fr; }
     .workspace-redesign .owner-business-mini-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .workspace-redesign .owner-alert-card { grid-template-columns: 1fr; }
-    .workspace-redesign .owner-toolbar { align-items: stretch; }
-    .workspace-redesign .owner-toolbar button,
-    .workspace-redesign .owner-toolbar select,
+    /* BUG FIX (2026-09-03): "the date filter is not fitting the screen" —
+       this used to force EVERY toolbar control (all 6 date-preset buttons
+       plus Refresh/Export) to width:100%, stacking them one per row and
+       pushing a whole screenful of buttons above any real data before the
+       owner could see a single number. Only an actual date <input> and the
+       search box genuinely benefit from going full-width on a phone;
+       buttons/selects now keep their natural compact size and wrap via the
+       unconditional `flex-wrap: wrap` already on .owner-toolbar above, so a
+       preset row reads as 2-3 compact rows instead of 8 giant ones. */
     .workspace-redesign .owner-toolbar input[type="date"],
     .workspace-redesign .owner-search { width: 100%; }
+    .workspace-redesign .owner-toolbar button,
+    .workspace-redesign .owner-toolbar select { flex: 0 0 auto; }
   }
 }
 
@@ -3932,44 +3976,86 @@
 }
 .owner-native-logout:active { background: rgba(185,28,28,.08); }
 
-.owner-native-tabstrip {
-  position: sticky;
-  top: 0;
-  z-index: 20;
-  display: flex;
-  gap: .5rem;
-  overflow-x: auto;
-  padding: .7rem .9rem;
-  background: rgba(255,250,242,.92);
-  backdrop-filter: blur(6px);
-  border-bottom: 1px solid rgba(116,76,31,.12);
-  scrollbar-width: none;
-}
-.owner-native-tabstrip::-webkit-scrollbar { display: none; }
-
-.owner-native-tabchip {
-  flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-  gap: .4rem;
-  padding: .5rem .85rem;
-  border-radius: 999px;
-  border: 1px solid rgba(116,76,31,.16);
-  background: #fff;
-  color: rgba(28,18,8,.65);
-  font-size: .76rem;
-  font-weight: 800;
-  white-space: nowrap;
-  transition: transform .1s ease, box-shadow .1s ease;
-}
-.owner-native-tabchip:active { transform: scale(.96); }
-.owner-native-tabchip svg { width: 1rem; height: 1rem; }
-.owner-native-tabchip.is-active {
-  background: linear-gradient(135deg, var(--owner-native-green), var(--owner-native-green-dark));
-  border-color: transparent;
+/* FEATURE (2026-09-03): hamburger button (top-left of the header) + slide-out
+   drawer, replacing the old always-visible horizontal tab strip
+   (owner-native-tabstrip/tabchip, removed) per explicit owner request. */
+.owner-native-hamburger {
+  display: grid;
+  place-items: center;
+  width: 2.3rem;
+  height: 2.3rem;
+  border-radius: .75rem;
+  background: rgba(255,255,255,.14);
   color: #fff;
-  box-shadow: 0 8px 18px rgba(18,109,82,.30), inset 0 1px 0 rgba(255,255,255,.22);
+  border: 1px solid rgba(255,255,255,.22);
+  flex-shrink: 0;
+  transition: transform .1s ease, background .1s ease;
 }
+.owner-native-hamburger:active { background: rgba(255,255,255,.24); transform: scale(.93); }
+
+.owner-native-drawer-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: rgba(13,20,16,.42);
+  border: 0;
+  padding: 0;
+  animation: owner-native-fade .15s ease;
+}
+@keyframes owner-native-fade { from { opacity: 0; } to { opacity: 1; } }
+
+.owner-native-drawer {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 41;
+  width: min(20rem, 86vw);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: calc(env(safe-area-inset-bottom, 0px) + .75rem);
+  background: var(--owner-native-soft);
+  box-shadow: 20px 0 50px rgba(13,20,16,.35);
+  animation: owner-native-slide-in .18s ease;
+}
+@keyframes owner-native-slide-in { from { transform: translateX(-100%); } to { transform: translateX(0); } }
+
+.owner-native-drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.1rem .6rem;
+  color: rgba(28,18,8,.55);
+  font-size: .72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
+.owner-native-drawer-head button { color: rgba(28,18,8,.55); }
+
+.owner-native-drawer-item {
+  display: flex;
+  align-items: center;
+  gap: .75rem;
+  padding: .7rem 1.1rem;
+  text-align: left;
+  color: var(--owner-native-ink);
+  border-left: 3px solid transparent;
+  transition: background .1s ease;
+}
+.owner-native-drawer-item:active { background: rgba(18,109,82,.08); }
+.owner-native-drawer-item svg { flex-shrink: 0; width: 1.1rem; height: 1.1rem; color: rgba(28,18,8,.5); }
+.owner-native-drawer-item span { display: flex; flex-direction: column; min-width: 0; }
+.owner-native-drawer-item strong { font-size: .84rem; font-weight: 800; }
+.owner-native-drawer-item em { font-style: normal; font-size: .68rem; font-weight: 600; color: rgba(28,18,8,.5); margin-top: .05rem; }
+.owner-native-drawer-item.is-active {
+  background: linear-gradient(90deg, rgba(18,109,82,.12), transparent);
+  border-left-color: var(--owner-native-green);
+}
+.owner-native-drawer-item.is-active svg { color: var(--owner-native-green-dark); }
+.owner-native-drawer-item.is-active strong { color: var(--owner-native-green-dark); }
 
 .owner-native-body {
   flex: 1;

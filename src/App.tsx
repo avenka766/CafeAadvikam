@@ -84,6 +84,19 @@ const AdminAlertsPage = lazy(() => import('@/pages/AdminAlertsPage'));
 // still requires a real login.
 const OWNER_AUTOLOGIN_USERNAME = 'owner-app-device';
 const OWNER_AUTOLOGIN_PASSWORD = 'UaUs36zfZmL-MYxlMsYMRMYwE4zP3kKU';
+// BUG FIX (2026-09-03): this used to fire for ANY native build (`isNativeApp()`
+// alone), not just Owner's app specifically. That was safe as long as Owner's
+// app was the only native build that existed, but a second native app (the
+// SNB/VRSNB branch-staff app, built the same day) compiles from this EXACT
+// SAME dist/ bundle — Capacitor's webDir isn't per-app-configurable, so both
+// apps ship identical JS with no way to tell them apart from bundle content
+// alone. Left unscoped, rebuilding the branch-staff app would have silently
+// auto-logged every SNB/VRSNB staff member in as Owner instead of showing
+// their real login screen — the opposite of that app's whole point. Fixed by
+// checking the REAL installed app's package id via @capacitor/app's
+// App.getInfo() (a native call reading the actual Android manifest, not
+// anything baked into the shared JS bundle) instead of just isNativeApp().
+const OWNER_APP_ID = 'com.cafeaadvikam.owner';
 
 function LiveMenuSync() {
   const { loadMenu, subscribe } = useMenuStore();
@@ -144,8 +157,28 @@ function AppRoutes() {
     if (!native || currentUser) { setAutoLoginStatus('done'); return; }
     if (autoLoginStatus !== 'idle') return;
     setAutoLoginStatus('trying');
-    void useAuthStore.getState().login(OWNER_AUTOLOGIN_USERNAME, OWNER_AUTOLOGIN_PASSWORD)
-      .finally(() => setAutoLoginStatus('done'));
+    // @capacitor/core (and everything that depends on it, incl. @capacitor/app)
+    // is marked `external` in vite.config.ts so the plain web build doesn't
+    // try to bundle native-only packages — reached via a dynamic import()
+    // wrapped in try/catch here, same established pattern as
+    // src/lib/nativeNotifications.ts's isNative(). A top-level static import
+    // crashes the ENTIRE app on load with "Failed to resolve module
+    // specifier '@capacitor/core'" (confirmed live on-device) since that
+    // bare specifier isn't resolvable by the WebView outside a dynamic
+    // import boundary.
+    void (async () => {
+      try {
+        const { App: NativeApp } = await import('@capacitor/app');
+        const info = await NativeApp.getInfo();
+        if (info.id !== OWNER_APP_ID) return; // a different native app (e.g. branch-staff) — real login screen applies
+        await useAuthStore.getState().login(OWNER_AUTOLOGIN_USERNAME, OWNER_AUTOLOGIN_PASSWORD);
+      } catch {
+        // @capacitor/app unavailable, or getInfo()/login() failed — falls
+        // through to the real login screen, same safety net as before.
+      } finally {
+        setAutoLoginStatus('done');
+      }
+    })();
   }, [hydrated, native, currentUser, autoLoginStatus]);
 
   if (!hydrated || (native && autoLoginStatus !== 'done')) return (
