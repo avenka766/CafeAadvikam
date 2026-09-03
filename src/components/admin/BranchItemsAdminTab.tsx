@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, AlertTriangle, Download, FolderPlus, Hash, Pencil, Plus, Search, X } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
 import { useBranchStore } from '@/branch/branchStore';
@@ -51,20 +51,32 @@ function ItemDialog({
   } : blankDraft(''));
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
+  // AUDIT FIX (2026-09-03): `saving` state alone updates too late to block a
+  // fast double-click/Enter+click — create_branch_item always allocates a
+  // NEW barcode with no uniqueness check on name, so two near-simultaneous
+  // calls for the same typed item both succeed, silently leaving two rows
+  // in the catalog for one item.
+  const savingRef = useRef(false);
 
   const save = async () => {
+    if (savingRef.current) return;
     const price = Number(draft.price);
     if (!draft.name.trim()) return setError('Item name is required.');
     if (!Number.isFinite(price) || price <= 0) return setError('Enter a valid price.');
     if (!draft.category.trim()) return setError('Select or enter a category.');
+    savingRef.current = true;
     setSaving(true);
-    const updatedBy = currentUser?.displayName || currentUser?.username || 'Admin';
-    const message = item
-      ? await updateItem(branch, item.barcode, { ...draft, name: draft.name.trim(), price }, updatedBy)
-      : (await addItem(branch, { name: draft.name.trim(), price, uom: draft.uom, category: draft.category }, updatedBy)).error;
-    setSaving(false);
-    if (message) return setError(message);
-    onClose();
+    try {
+      const updatedBy = currentUser?.displayName || currentUser?.username || 'Admin';
+      const message = item
+        ? await updateItem(branch, item.barcode, { ...draft, name: draft.name.trim(), price }, updatedBy)
+        : (await addItem(branch, { name: draft.name.trim(), price, uom: draft.uom, category: draft.category }, updatedBy)).error;
+      if (message) return setError(message);
+      onClose();
+    } finally {
+      setSaving(false);
+      savingRef.current = false;
+    }
   };
 
   return (
