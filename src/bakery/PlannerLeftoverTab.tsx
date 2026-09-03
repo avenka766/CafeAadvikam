@@ -9,7 +9,7 @@
 // away — so the Daily Report below can reconstruct an exact opening /
 // added / dispatched / closing reconciliation for any date, and the
 // PDF/Excel exports are a full audit trail, not just a snapshot.
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   Search, Plus, Minus, PackageCheck, History, FileSpreadsheet, Printer,
   Loader2, AlertTriangle, CheckCircle2, CalendarDays, Scale, X, RefreshCw, Truck, Cake,
@@ -20,7 +20,7 @@ import { cn } from '@/lib/utils';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/stores/authStore';
 import { useBranchCatalogStore } from '@/stores/branchCatalogStore';
-import { canonicalItemSlug, closingStockItemSlug, resolveItemWeightGrams, kgToPcs } from './itemMatcher';
+import { closingStockItemSlug, resolveItemWeightGrams, kgToPcs } from './itemMatcher';
 import { BRANCHES } from './types';
 import type { Branch } from './types';
 
@@ -66,6 +66,18 @@ export function sanitizeQtyForUnit(raw: string, unit: LeftoverUnit): string {
   const negative = raw.trim().startsWith('-');
   const digits = raw.replace(/[^0-9]/g, '');
   return negative ? (digits ? `-${digits}` : '-') : digits;
+}
+
+// AUDIT FIX (2026-09-03): sanitizeQtyForUnit is a KEYSTROKE filter — it strips
+// non-digit characters, so feeding it an already-complete decimal string
+// (e.g. "12.75" when the unit is switched to pcs AFTER typing) mashes the
+// digits together into "1275" instead of a sensible "13". Use this instead
+// when re-normalizing an EXISTING value after a unit switch — it properly
+// rounds rather than concatenating.
+export function requantizeForUnit(raw: string, unit: LeftoverUnit): string {
+  if (unit !== 'pcs' || raw.trim() === '') return raw;
+  const n = Number(raw);
+  return Number.isFinite(n) ? String(Math.round(n)) : raw;
 }
 
 export const qtyFmt = (v: number) => Number(v || 0).toLocaleString('en-IN', { maximumFractionDigits: 3 });
@@ -252,13 +264,37 @@ export function useLeftoverBalanceMap(): { balances: Map<string, { itemName: str
   const refresh = useCallback(() => { void fetchLeftoverLedger().then(({ rows: fetched }) => setRows(fetched)); }, []);
   useEffect(() => { refresh(); }, [refresh]);
   const balances = useMemo(() => {
-    const map = new Map<string, { itemName: string; unit: LeftoverUnit; balance: number }>();
+    // AUDIT FIX (2026-09-03): this used to add every row's delta into one
+    // number regardless of the row's own unit ("in practice each item only
+    // ever carries a balance in one unit at a time" — an assumption nothing
+    // actually enforces: staff can and do pick either kg or pcs for the
+    // same item on different occasions). A kg delta and a pcs delta for the
+    // same item slug were silently summed into one meaningless figure (e.g.
+    // "3.2 kg" + "40 pcs" reported as balance 43.2) — feeding wrong
+    // available-to-dispatch quantities AND wrong ₹ stock valuation (Owner
+    // Dashboard multiplies this balance by price). Tracked per slug+unit
+    // internally now so the two never get added together; still exposed as
+    // one balance per slug (same external shape every caller already
+    // expects) — picking whichever unit has real, non-trivial activity.
+    // If genuinely both units have real activity for one item (should be
+    // rare — see the sanitize-on-unit-switch fix below, which removes the
+    // main way that happens by accident), the one with the larger absolute
+    // balance wins, so the reported number is at least internally correct
+    // for the unit it names, never a cross-unit sum.
+    const perUnit = new Map<string, { itemName: string; unit: LeftoverUnit; balance: number }>();
     rows.forEach((row) => {
-      const current = map.get(row.itemSlug) ?? { itemName: row.itemName, unit: row.unit, balance: 0 };
+      const key = `${row.itemSlug}|${row.unit}`;
+      const current = perUnit.get(key) ?? { itemName: row.itemName, unit: row.unit, balance: 0 };
       current.balance += row.delta;
       current.itemName = row.itemName;
-      map.set(row.itemSlug, current);
+      perUnit.set(key, current);
     });
+    const map = new Map<string, { itemName: string; unit: LeftoverUnit; balance: number }>();
+    for (const [key, entry] of perUnit) {
+      const slug = key.slice(0, key.lastIndexOf('|'));
+      const existing = map.get(slug);
+      if (!existing || Math.abs(entry.balance) > Math.abs(existing.balance)) map.set(slug, entry);
+    }
     for (const [slug, entry] of map) if (entry.balance <= 0.001) map.delete(slug);
     return map;
   }, [rows]);
@@ -278,9 +314,18 @@ export function useBranchOnlyCatalog(branch: Branch | null): MergedCatalogItem[]
   useEffect(() => { if (branch === 'SNB' || branch === 'VRSNB') void loadCatalog(branch); }, [branch, loadCatalog]);
   return useMemo(() => {
     if (branch !== 'SNB' && branch !== 'VRSNB') return [];
+    // AUDIT FIX (2026-09-03): was canonicalItemSlug, which strips ANY
+    // parenthetical content — see closingStockItemSlug's comment below for
+    // the exact bug this causes (confirmed live: "Birthday Eggless Cake (
+    // Butter Cream )" ₹700 and "Birthday Eggless Cake ( Pastry )" ₹1000 are
+    // two real, active, differently-priced SNB items that both slugged to
+    // "birthday-eggless-cake"). closingStockItemSlug only strips genuine
+    // weight/pack-size qualifiers like "(200g)", so it still correctly
+    // merges e.g. "Rusk" and "Rusk (250G)" while keeping distinct items
+    // distinct.
     return (catalogItems[branch] ?? [])
       .filter((item) => item.active)
-      .map((item) => ({ slug: canonicalItemSlug(item.name) || item.name.toLowerCase(), name: item.name, branches: [branch] }))
+      .map((item) => ({ slug: closingStockItemSlug(item.name) || item.name.toLowerCase(), name: item.name, branches: [branch] }))
       .sort((a, b) => a.name.localeCompare(b.name));
   }, [catalogItems, branch]);
 }
@@ -292,7 +337,11 @@ export function useMergedLeftoverCatalog(): MergedCatalogItem[] {
     const map = new Map<string, MergedCatalogItem>();
     (['SNB', 'VRSNB'] as const).forEach((branch) => {
       (catalogItems[branch] ?? []).filter((item) => item.active).forEach((item) => {
-        const slug = canonicalItemSlug(item.name);
+        // AUDIT FIX (2026-09-03): was canonicalItemSlug — see
+        // useBranchOnlyCatalog's comment above for the confirmed real
+        // collision this caused (two active, differently-priced SNB items
+        // silently merging in this picker).
+        const slug = closingStockItemSlug(item.name);
         if (!slug) return;
         const existing = map.get(slug);
         if (existing) { if (!existing.branches.includes(branch)) existing.branches.push(branch); }
@@ -324,7 +373,9 @@ export function useMergedCatalogWithPrice(): MergedCatalogItemWithPrice[] {
     const map = new Map<string, MergedCatalogItemWithPrice>();
     (['SNB', 'VRSNB'] as const).forEach((branch) => {
       (catalogItems[branch] ?? []).filter((item) => item.active).forEach((item) => {
-        const slug = canonicalItemSlug(item.name);
+        // AUDIT FIX (2026-09-03): was canonicalItemSlug — see
+        // useBranchOnlyCatalog's comment above.
+        const slug = closingStockItemSlug(item.name);
         if (!slug) return;
         const existing = map.get(slug);
         if (existing) { if (!existing.branches.includes(branch)) existing.branches.push(branch); }
@@ -446,25 +497,37 @@ export default function PlannerLeftoverTab() {
   const [unit, setUnit] = useState<LeftoverUnit>('kg');
   const [entryDate, setEntryDate] = useState(kolkataToday());
   const [saving, setSaving] = useState(false);
+  // AUDIT FIX (2026-09-03): `saving` state alone updates too late to block a
+  // fast double-click/tap — same fix already applied to every other
+  // financial write in this app. recordLeftoverMovement inserts a fresh
+  // ledger row per call (not idempotent by row id), so a double-fire here
+  // silently doubles a real closing-stock addition.
+  const addSavingRef = useRef(false);
 
   const resetForm = () => { setItemQuery(''); setSelectedItem(null); setQty(''); setUnit('kg'); setMessage(''); };
 
   const addLeftover = async () => {
+    if (addSavingRef.current) return;
     setError(''); setMessage('');
     const name = (selectedItem?.name || itemQuery).trim();
     const amount = Number(qty);
     if (!name) { setError('Search and pick (or type) an item first.'); return; }
     if (!Number.isFinite(amount) || amount <= 0) { setError('Enter a quantity greater than zero.'); return; }
+    addSavingRef.current = true;
     setSaving(true);
-    const result = await recordLeftoverMovement({
-      itemName: name, unit, delta: amount, businessDate: entryDate,
-      reason: 'closing_stock', recordedBy: staffName,
-    });
-    setSaving(false);
-    if ('error' in result) { setError(result.error); return; }
-    setMessage(`${name}: ${qtyFmt(amount)} ${unit} added to leftover (new balance ${qtyFmt(result.newBalance)} ${unit}).`);
-    resetForm();
-    void refresh();
+    try {
+      const result = await recordLeftoverMovement({
+        itemName: name, unit, delta: amount, businessDate: entryDate,
+        reason: 'closing_stock', recordedBy: staffName,
+      });
+      if ('error' in result) { setError(result.error); return; }
+      setMessage(`${name}: ${qtyFmt(amount)} ${unit} added to leftover (new balance ${qtyFmt(result.newBalance)} ${unit}).`);
+      resetForm();
+      void refresh();
+    } finally {
+      setSaving(false);
+      addSavingRef.current = false;
+    }
   };
 
   // NOTE: Transfer Out now lives in its own standalone top-level Planner
@@ -479,21 +542,29 @@ export default function PlannerLeftoverTab() {
   const [adjustQty, setAdjustQty] = useState('');
   const [adjustNote, setAdjustNote] = useState('');
   const [adjustSaving, setAdjustSaving] = useState(false);
+  // AUDIT FIX (2026-09-03): same class as addSavingRef above.
+  const adjustSavingRef = useRef(false);
 
   const submitAdjustment = async (balanceRow: { itemName: string; unit: LeftoverUnit; balance: number }) => {
+    if (adjustSavingRef.current) return;
     const amount = Number(adjustQty);
     if (!Number.isFinite(amount) || amount <= 0) { setError('Enter a quantity to remove.'); return; }
     if (amount > balanceRow.balance + 0.001) { setError(`Cannot remove more than the ${qtyFmt(balanceRow.balance)} ${balanceRow.unit} available.`); return; }
+    adjustSavingRef.current = true;
     setAdjustSaving(true); setError('');
-    const result = await recordLeftoverMovement({
-      itemName: balanceRow.itemName, unit: balanceRow.unit, delta: -amount, businessDate: kolkataToday(),
-      reason: 'adjustment', recordedBy: staffName, notes: adjustNote || 'Write-off / correction',
-    });
-    setAdjustSaving(false);
-    if ('error' in result) { setError(result.error); return; }
-    setMessage(`${balanceRow.itemName}: ${qtyFmt(amount)} ${balanceRow.unit} removed (spoilage/correction).`);
-    setAdjustingSlug(null); setAdjustQty(''); setAdjustNote('');
-    void refresh();
+    try {
+      const result = await recordLeftoverMovement({
+        itemName: balanceRow.itemName, unit: balanceRow.unit, delta: -amount, businessDate: kolkataToday(),
+        reason: 'adjustment', recordedBy: staffName, notes: adjustNote || 'Write-off / correction',
+      });
+      if ('error' in result) { setError(result.error); return; }
+      setMessage(`${balanceRow.itemName}: ${qtyFmt(amount)} ${balanceRow.unit} removed (spoilage/correction).`);
+      setAdjustingSlug(null); setAdjustQty(''); setAdjustNote('');
+      void refresh();
+    } finally {
+      setAdjustSaving(false);
+      adjustSavingRef.current = false;
+    }
   };
 
   // ── Edit the aggregate "Current Leftover Balance" row directly (item
@@ -504,6 +575,8 @@ export default function PlannerLeftoverTab() {
   const [editBalanceUnit, setEditBalanceUnit] = useState<LeftoverUnit>('kg');
   const [editBalanceQty, setEditBalanceQty] = useState('');
   const [editBalanceSaving, setEditBalanceSaving] = useState(false);
+  // AUDIT FIX (2026-09-03): same class as addSavingRef above.
+  const editBalanceSavingRef = useRef(false);
 
   const startEditBalance = (row: { itemSlug: string; itemName: string; unit: LeftoverUnit; balance: number }) => {
     setEditBalanceKey(`${row.itemSlug}|${row.unit}`);
@@ -514,21 +587,27 @@ export default function PlannerLeftoverTab() {
   };
 
   const submitEditBalance = async (row: { itemSlug: string; itemName: string; unit: LeftoverUnit; balance: number }) => {
+    if (editBalanceSavingRef.current) return;
     const name = editBalanceName.trim();
     const target = Number(editBalanceQty);
     if (!name) { setError('Enter an item name.'); return; }
     if (!Number.isFinite(target)) { setError('Enter a valid balance quantity.'); return; }
+    editBalanceSavingRef.current = true;
     setEditBalanceSaving(true); setError('');
-    const result = await renameAndCorrectClosingStockBalance({
-      oldItemSlug: row.itemSlug, oldUnit: row.unit,
-      newItemName: name, newUnit: editBalanceUnit, targetQuantity: target,
-      editedBy: staffName,
-    });
-    setEditBalanceSaving(false);
-    if ('error' in result) { setError(result.error); return; }
-    setMessage(`${name}: balance updated to ${qtyFmt(target)} ${editBalanceUnit}.`);
-    setEditBalanceKey(null); setEditBalanceName(''); setEditBalanceQty('');
-    void refresh();
+    try {
+      const result = await renameAndCorrectClosingStockBalance({
+        oldItemSlug: row.itemSlug, oldUnit: row.unit,
+        newItemName: name, newUnit: editBalanceUnit, targetQuantity: target,
+        editedBy: staffName,
+      });
+      if ('error' in result) { setError(result.error); return; }
+      setMessage(`${name}: balance updated to ${qtyFmt(target)} ${editBalanceUnit}.`);
+      setEditBalanceKey(null); setEditBalanceName(''); setEditBalanceQty('');
+      void refresh();
+    } finally {
+      setEditBalanceSaving(false);
+      editBalanceSavingRef.current = false;
+    }
   };
 
   // ── Edit a Closing Stock entry (item/qty/unit) ───────────────────────────
@@ -537,6 +616,8 @@ export default function PlannerLeftoverTab() {
   const [editQty, setEditQty] = useState('');
   const [editUnit, setEditUnit] = useState<LeftoverUnit>('kg');
   const [editSaving, setEditSaving] = useState(false);
+  // AUDIT FIX (2026-09-03): same class as addSavingRef above.
+  const editSavingRef = useRef(false);
 
   const startEdit = (row: LeftoverLedgerRow) => {
     setEditingId(row.id);
@@ -547,18 +628,24 @@ export default function PlannerLeftoverTab() {
   };
 
   const submitEdit = async () => {
+    if (editSavingRef.current) return;
     if (!editingId) return;
     const name = editName.trim();
     const amount = Number(editQty);
     if (!name) { setError('Enter an item name.'); return; }
     if (!Number.isFinite(amount) || amount <= 0) { setError('Enter a quantity greater than zero.'); return; }
+    editSavingRef.current = true;
     setEditSaving(true); setError('');
-    const result = await editClosingStockEntry({ entryId: editingId, itemName: name, unit: editUnit, quantity: amount, editedBy: staffName });
-    setEditSaving(false);
-    if ('error' in result) { setError(result.error); return; }
-    setMessage(`${name}: entry updated to ${qtyFmt(amount)} ${editUnit}.`);
-    setEditingId(null); setEditName(''); setEditQty('');
-    void refresh();
+    try {
+      const result = await editClosingStockEntry({ entryId: editingId, itemName: name, unit: editUnit, quantity: amount, editedBy: staffName });
+      if ('error' in result) { setError(result.error); return; }
+      setMessage(`${name}: entry updated to ${qtyFmt(amount)} ${editUnit}.`);
+      setEditingId(null); setEditName(''); setEditQty('');
+      void refresh();
+    } finally {
+      setEditSaving(false);
+      editSavingRef.current = false;
+    }
   };
 
   // ── Current running balance (all-time sum per item+unit) ────────────────
@@ -875,8 +962,13 @@ export default function PlannerLeftoverTab() {
               </label>
             </div>
             <div className="flex gap-2">
-              <button onClick={() => setUnit('kg')} className={cn('flex-1 rounded-xl border py-2.5 text-sm font-black', unit === 'kg' ? 'border-teal-700 bg-teal-700 text-white' : 'bg-background')}>Kg / Weight</button>
-              <button onClick={() => setUnit('pcs')} className={cn('flex-1 rounded-xl border py-2.5 text-sm font-black', unit === 'pcs' ? 'border-teal-700 bg-teal-700 text-white' : 'bg-background')}>Pcs / Pieces</button>
+              {/* AUDIT FIX (2026-09-03): the qty box only sanitized on its own
+                  keystroke — typing e.g. "12.75" then switching the unit
+                  toggle to Pcs left "12.75" sitting there unsanitized, so a
+                  fractional pcs quantity could reach recordLeftoverMovement.
+                  Re-sanitize the existing value against the NEW unit here too. */}
+              <button onClick={() => { setUnit('kg'); setQty(q => requantizeForUnit(q, 'kg')); }} className={cn('flex-1 rounded-xl border py-2.5 text-sm font-black', unit === 'kg' ? 'border-teal-700 bg-teal-700 text-white' : 'bg-background')}>Kg / Weight</button>
+              <button onClick={() => { setUnit('pcs'); setQty(q => requantizeForUnit(q, 'pcs')); }} className={cn('flex-1 rounded-xl border py-2.5 text-sm font-black', unit === 'pcs' ? 'border-teal-700 bg-teal-700 text-white' : 'bg-background')}>Pcs / Pieces</button>
             </div>
             <button onClick={addLeftover} disabled={saving} className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-teal-700 text-sm font-black text-white disabled:opacity-50">
               {saving ? <Loader2 className="size-4 animate-spin" /> : <Plus className="size-4" />}Add To Leftover
@@ -902,7 +994,10 @@ export default function PlannerLeftoverTab() {
                           <div className="flex flex-wrap items-center gap-1.5">
                             <input autoFocus value={editBalanceName} onChange={(e) => setEditBalanceName(e.target.value)} placeholder="Item name" className="h-8 min-w-[140px] flex-1 rounded-lg border bg-background px-2 text-xs font-bold" />
                             <input type="number" step={editBalanceUnit === 'pcs' ? 1 : 0.001} value={editBalanceQty} onChange={(e) => setEditBalanceQty(sanitizeQtyForUnit(e.target.value, editBalanceUnit))} placeholder="Balance qty" className="h-8 w-24 rounded-lg border bg-background px-2 text-right text-xs font-bold" />
-                            <select value={editBalanceUnit} onChange={(e) => setEditBalanceUnit(e.target.value as LeftoverUnit)} className="h-8 rounded-lg border bg-background px-1 text-xs font-bold">
+                            {/* AUDIT FIX (2026-09-03): re-sanitize the existing
+                                qty against the newly-picked unit too — see the
+                                Add-form fix above for the failure scenario. */}
+                            <select value={editBalanceUnit} onChange={(e) => { const nextUnit = e.target.value as LeftoverUnit; setEditBalanceUnit(nextUnit); setEditBalanceQty(q => requantizeForUnit(q, nextUnit)); }} className="h-8 rounded-lg border bg-background px-1 text-xs font-bold">
                               <option value="kg">kg</option>
                               <option value="pcs">pcs</option>
                             </select>
@@ -1064,7 +1159,10 @@ export default function PlannerLeftoverTab() {
                       <td className="px-4 py-2">
                         <div className="flex items-center justify-end gap-1">
                           <input type="number" min="0" step={editUnit === 'pcs' ? 1 : 0.001} value={editQty} onChange={(e) => setEditQty(sanitizeQtyForUnit(e.target.value, editUnit))} className="h-8 w-20 rounded-lg border bg-background px-2 text-right text-xs font-bold" />
-                          <select value={editUnit} onChange={(e) => setEditUnit(e.target.value as LeftoverUnit)} className="h-8 rounded-lg border bg-background px-1 text-xs font-bold">
+                          {/* AUDIT FIX (2026-09-03): re-sanitize the existing
+                              qty against the newly-picked unit too — see the
+                              Add-form fix above for the failure scenario. */}
+                          <select value={editUnit} onChange={(e) => { const nextUnit = e.target.value as LeftoverUnit; setEditUnit(nextUnit); setEditQty(q => requantizeForUnit(q, nextUnit)); }} className="h-8 rounded-lg border bg-background px-1 text-xs font-bold">
                             <option value="kg">kg</option>
                             <option value="pcs">pcs</option>
                           </select>
@@ -1233,6 +1331,8 @@ export function PlannerTransferOutTab() {
   const [transferUnit, setTransferUnit] = useState<LeftoverUnit>('kg');
   const [transferReason, setTransferReason] = useState('');
   const [transferSaving, setTransferSaving] = useState(false);
+  // AUDIT FIX (2026-09-03): same class as addSavingRef above — recordLeftoverMovement inserts a fresh row per call.
+  const transferSavingRef = useRef(false);
   // FEATURE (2026-08-12): destination decides which branch's catalog price
   // gets used on the invoice — SNB dest -> SNB price, VRSNB dest -> VRSNB
   // price, Custom -> priced against SNB but requires its own reason text.
@@ -1241,7 +1341,13 @@ export function PlannerTransferOutTab() {
   const resetTransferForm = () => { setTransferQuery(''); setTransferItem(null); setTransferQty(''); setTransferUnit('kg'); setTransferReason(''); setTransferDestination('SNB'); };
 
   const transferItemName = (transferItem?.name || transferQuery).trim();
-  const transferItemSlug = transferItem?.slug ?? canonicalItemSlug(transferItemName);
+  // AUDIT FIX (2026-09-03): was canonicalItemSlug for the free-typed
+  // fallback (no picker selection) — but the pool this slug is used to
+  // debit is actually keyed by closingStockItemSlug (see
+  // recordLeftoverMovement above), so a free-typed name with a non-weight
+  // parenthetical (e.g. "Egg Puff (Half)") resolved to the wrong pool
+  // bucket ("egg-puff") than the one it was actually stored under.
+  const transferItemSlug = transferItem?.slug ?? closingStockItemSlug(transferItemName);
   const transferCatalogEntry = transferItemName ? transferPriceFor(transferCatalogItems, transferDestination, transferItemName) : null;
   const transferQtyNumber = Number(transferQty);
   const transferQtyValid = Number.isFinite(transferQtyNumber) && transferQtyNumber > 0;
@@ -1258,37 +1364,43 @@ export function PlannerTransferOutTab() {
   const transferTotalValue = transferConverted && transferCatalogEntry ? transferCatalogEntry.price * transferConverted.qty : null;
 
   const submitTransferOut = async () => {
+    if (transferSavingRef.current) return;
     setError(''); setMessage('');
     const name = transferItemName;
     const amount = Number(transferQty);
     if (!name) { setError('Search and pick (or type) an item first.'); return; }
     if (!Number.isFinite(amount) || amount <= 0) { setError('Enter a quantity greater than zero.'); return; }
     if (!transferReason.trim()) { setError(transferDestination === 'Custom' ? 'Enter a reason for this custom transfer.' : 'Enter a reason for this transfer out.'); return; }
+    transferSavingRef.current = true;
     setTransferSaving(true);
-    const reasonText = transferReason.trim();
-    const result = await recordLeftoverMovement({
-      itemName: name, unit: transferUnit, delta: -amount, businessDate: kolkataToday(),
-      reason: 'transfer_out', recordedBy: staffName, notes: `${reasonText} [Destination: ${transferDestination}]`,
-    });
-    setTransferSaving(false);
-    if ('error' in result) { setError(result.error); return; }
-    setMessage(`${name}: ${qtyFmt(amount)} ${transferUnit} transferred out to ${transferDestination} (${reasonText}). New balance ${qtyFmt(result.newBalance)} ${transferUnit}.`);
-    // The ledger entry above always uses the form's own unit (transferUnit)
-    // — that's the actual physical movement being recorded and shouldn't
-    // change. Only the PRINTED invoice's quantity/unit are converted, so
-    // the price shown is for the same unit as the quantity shown.
-    downloadTransferOutInvoice({
-      itemName: name, qty: transferConverted?.qty ?? amount, unit: transferConverted?.unit ?? transferUnit, destination: transferDestination,
-      unitPrice: transferCatalogEntry?.price ?? null, reason: reasonText, staffName, createdAt: new Date(),
-      // BUG FIX (audit 2026-08-30): `Date.now().toString().slice(-6)` repeats
-      // every ~16.7 minutes (10^6 ms) — two transfers on the same day that
-      // far apart (easily possible on a busy day) could print with the
-      // identical reference number. Same root cause as the GST invoice and
-      // walk-in bill numbering bugs fixed elsewhere today; same fix.
-      transferNo: `TO-${kolkataToday()}-${crypto.randomUUID().slice(0, 6).toUpperCase()}`,
-    });
-    resetTransferForm();
-    void refresh();
+    try {
+      const reasonText = transferReason.trim();
+      const result = await recordLeftoverMovement({
+        itemName: name, unit: transferUnit, delta: -amount, businessDate: kolkataToday(),
+        reason: 'transfer_out', recordedBy: staffName, notes: `${reasonText} [Destination: ${transferDestination}]`,
+      });
+      if ('error' in result) { setError(result.error); return; }
+      setMessage(`${name}: ${qtyFmt(amount)} ${transferUnit} transferred out to ${transferDestination} (${reasonText}). New balance ${qtyFmt(result.newBalance)} ${transferUnit}.`);
+      // The ledger entry above always uses the form's own unit (transferUnit)
+      // — that's the actual physical movement being recorded and shouldn't
+      // change. Only the PRINTED invoice's quantity/unit are converted, so
+      // the price shown is for the same unit as the quantity shown.
+      downloadTransferOutInvoice({
+        itemName: name, qty: transferConverted?.qty ?? amount, unit: transferConverted?.unit ?? transferUnit, destination: transferDestination,
+        unitPrice: transferCatalogEntry?.price ?? null, reason: reasonText, staffName, createdAt: new Date(),
+        // BUG FIX (audit 2026-08-30): `Date.now().toString().slice(-6)` repeats
+        // every ~16.7 minutes (10^6 ms) — two transfers on the same day that
+        // far apart (easily possible on a busy day) could print with the
+        // identical reference number. Same root cause as the GST invoice and
+        // walk-in bill numbering bugs fixed elsewhere today; same fix.
+        transferNo: `TO-${kolkataToday()}-${crypto.randomUUID().slice(0, 6).toUpperCase()}`,
+      });
+      resetTransferForm();
+      void refresh();
+    } finally {
+      setTransferSaving(false);
+      transferSavingRef.current = false;
+    }
   };
 
   const history = useMemo(
@@ -1364,8 +1476,12 @@ export function PlannerTransferOutTab() {
               <input type="number" min="0" step={transferUnit === 'pcs' ? 1 : 0.001} value={transferQty} onChange={(e) => setTransferQty(sanitizeQtyForUnit(e.target.value, transferUnit))} className="h-11 w-full rounded-xl border border-orange-200 bg-white px-3 text-sm font-bold" placeholder="0" />
             </label>
             <div className="flex items-end gap-2">
-              <button onClick={() => setTransferUnit('kg')} className={cn('flex-1 rounded-xl border py-2.5 text-sm font-black', transferUnit === 'kg' ? 'border-orange-600 bg-orange-600 text-white' : 'border-orange-200 bg-white text-orange-900')}>Kg</button>
-              <button onClick={() => setTransferUnit('pcs')} className={cn('flex-1 rounded-xl border py-2.5 text-sm font-black', transferUnit === 'pcs' ? 'border-orange-600 bg-orange-600 text-white' : 'border-orange-200 bg-white text-orange-900')}>Pcs</button>
+              {/* AUDIT FIX (2026-09-03): re-sanitize the existing qty against
+                  the newly-picked unit too — see the Add-form fix above for
+                  the failure scenario (the 2026-08-30 fix on this same field
+                  only sanitized as-you-type, not on this toggle). */}
+              <button onClick={() => { setTransferUnit('kg'); setTransferQty(q => requantizeForUnit(q, 'kg')); }} className={cn('flex-1 rounded-xl border py-2.5 text-sm font-black', transferUnit === 'kg' ? 'border-orange-600 bg-orange-600 text-white' : 'border-orange-200 bg-white text-orange-900')}>Kg</button>
+              <button onClick={() => { setTransferUnit('pcs'); setTransferQty(q => requantizeForUnit(q, 'pcs')); }} className={cn('flex-1 rounded-xl border py-2.5 text-sm font-black', transferUnit === 'pcs' ? 'border-orange-600 bg-orange-600 text-white' : 'border-orange-200 bg-white text-orange-900')}>Pcs</button>
             </div>
           </div>
           {/* Live price/value preview — SNB dest -> SNB price, VRSNB dest ->

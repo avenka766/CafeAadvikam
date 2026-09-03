@@ -23,6 +23,26 @@ import { combinedMaterialsForItems } from './materialCalc';
 import { useRecipeStore } from './recipeStore';
 import { useStoreStockStore, type DeductionContext } from './storeStockStore';
 
+// AUDIT FIX (2026-09-03): mergeOrdersForStore / confirmStockSelected /
+// releaseToProduction each do a two-step write (create/update the primary
+// row, then delete-or-update the secondary rows) that isn't a real Postgres
+// transaction — if step 2 fails right after step 1 already committed, the
+// same physical items can end up live on two rows at once (double-counted
+// stock/production). A full RPC/transaction rewrite of these three
+// money/stock-critical functions was judged too risky to make casually on a
+// live system without a staging environment to test against. As a bounded,
+// purely-additive mitigation, retry the second step a few times with a short
+// backoff before giving up — this closes the most common real-world cause
+// (a transient network blip) without changing any logic or write shape.
+async function retrySecondStep<T extends { error: unknown }>(fn: () => PromiseLike<T>, attempts = 3): Promise<T> {
+  let result = await fn();
+  for (let i = 1; i < attempts && result.error; i++) {
+    await new Promise(resolve => setTimeout(resolve, 400 * i));
+    result = await fn();
+  }
+  return result;
+}
+
 // Planner's "Planning" tab tags a proactive/extra-production batch with this
 // marker in `notes` (target_branch stays null since the destination branch
 // isn't decided until Dispatch). Exported so PlannerDashboard.tsx can both
@@ -658,10 +678,10 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     if (updateError) throw new Error('Failed to merge orders for Store — please try again.');
 
     if (others.length > 0) {
-      const { error: deleteError } = await supabase
-        .from('bakery_orders')
-        .delete()
-        .in('id', others.map(o => o.id));
+      // See retrySecondStep's comment above — this delete is step 2 of a
+      // non-atomic pair with the update above it.
+      const { error: deleteError } = await retrySecondStep(() =>
+        supabase.from('bakery_orders').delete().in('id', others.map(o => o.id)));
       if (deleteError) throw new Error('Merged order saved, but the old separate entries could not be cleaned up.');
     }
 
@@ -765,10 +785,10 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     if (insertError || !data) throw new Error('Failed to send selected items — please try again.');
     const sentOrder = rowToOrder(data as Record<string, unknown>);
 
-    const { error: updateError } = await supabase
-      .from('bakery_orders')
-      .update({ items: remainingItems })
-      .eq('id', orderId);
+    // See retrySecondStep's comment above — this update is step 2 of a
+    // non-atomic pair with the insert above it.
+    const { error: updateError } = await retrySecondStep(() =>
+      supabase.from('bakery_orders').update({ items: remainingItems }).eq('id', orderId));
     if (updateError) throw new Error('Items were sent, but the remaining order could not be updated — please refresh.');
 
     set(s => ({
@@ -856,10 +876,10 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
       if (insertError || !data) throw new Error('Failed to send selected items — please try again.');
       const releasedOrder = rowToOrder(data as Record<string, unknown>);
 
-      const { error: updateError } = await supabase
-        .from('bakery_orders')
-        .update({ items: remainingItems })
-        .eq('id', orderId);
+      // See retrySecondStep's comment above — this update is step 2 of a
+      // non-atomic pair with the insert above it.
+      const { error: updateError } = await retrySecondStep(() =>
+        supabase.from('bakery_orders').update({ items: remainingItems }).eq('id', orderId));
       if (updateError) throw new Error('Items were sent, but the remaining order could not be updated — please refresh.');
 
       set(s => ({
@@ -885,13 +905,30 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     // kg via weightGrams before storage — see kgToPcs usage below), so this
     // only ever needs the 3-decimal kg cap, never the pcs whole-number rule.
     producedItems = producedItems.map(p => ({ ...p, quantityPrepared: clampQtyForUnit(p.quantityPrepared, 'kg') }));
+    // AUDIT FIX (2026-09-03): this used to unconditionally write
+    // status: 'produced' with no guard at all — unlike updateOrderItems
+    // (scoped to status='pending') or submitDispatch (computes its new
+    // status from a freshly-fetched row). An order's own `status` and its
+    // per-item `producedItems[].status` ('pending'/'completed', chosen
+    // separately by the planner) are independent: an order can already be
+    // fully `dispatched` (goods physically gone) while one item's own
+    // production entry is still marked 'pending', keeping it visible in
+    // Production Entry. Recording a later batch for that item then
+    // regressed the ALREADY-DISPATCHED order back to 'produced', making it
+    // reappear as awaiting dispatch — enabling a genuine second dispatch/
+    // stock-debit for goods already delivered. Fetch the real current
+    // status first and never move it backward from 'dispatched'.
+    const { data: currentRow, error: statusFetchError } = await supabase
+      .from('bakery_orders').select('status').eq('id', orderId).single();
+    if (statusFetchError) throw statusFetchError;
+    const nextStatus = (currentRow as { status: string } | null)?.status === 'dispatched' ? 'dispatched' : 'produced';
     const { error } = await supabase
       .from('bakery_orders')
-      .update({ produced_items: producedItems, status: 'produced' })
+      .update({ produced_items: producedItems, status: nextStatus })
       .eq('id', orderId);
     if (error) throw error;
     set(s => ({
-      orders: s.orders.map(o => o.id === orderId ? { ...o, producedItems, status: 'produced' } : o),
+      orders: s.orders.map(o => o.id === orderId ? { ...o, producedItems, status: nextStatus } : o),
     }));
 
     const order = get().orders.find(o => o.id === orderId);

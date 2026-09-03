@@ -7,7 +7,7 @@
 // price where receiving detail — accepted/rejected qty, remarks, vehicle
 // number — gets added for the first time) and stock finally syncs on submit
 // — identical to how a GRN created directly has always worked.
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import {
   ClipboardList, Plus, Trash2, ChevronDown, ChevronUp, CheckCircle2,
   XCircle, Clock, X, Check, Loader2, AlertTriangle, Search, ArrowRightCircle,
@@ -320,6 +320,13 @@ function CreatePOModal({ onClose, onCreated }: { onClose: () => void; onCreated:
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [lineErrors, setLineErrors] = useState<Record<string, string[]>>({});
+  // AUDIT FIX (2026-09-03): `saving` (useState) is checked/set asynchronously,
+  // so a fast double-tap on "Send for Owner Approval" can fire handleSave
+  // twice before React commits the disabled state, creating two real PO rows
+  // for the same order. Same double-submit class fixed elsewhere this session
+  // (checkoutInFlightRef, sendingRef, savingInFlightRef) — a synchronous ref
+  // checked/set before any await, reset in finally.
+  const savingRef = useRef(false);
 
   const selectedSupplier = suppliers.find(s => s.id === supplierId);
   const selectedItemNames = lines.map(l => l.itemName).filter(Boolean);
@@ -352,6 +359,16 @@ function CreatePOModal({ onClose, onCreated }: { onClose: () => void; onCreated:
       const key = normalizeItemName(itemName);
       if (!itemName) errors.push('Select or enter an item name.');
       if (!Number.isFinite(quantity) || quantity <= 0) errors.push('Quantity must be greater than zero.');
+      // AUDIT FIX (2026-09-03): a "pcs"/"nos" quantity must never be
+      // fractional — this input previously allowed any decimal (step="any"),
+      // matching the "pcs decimal ledger drift" bug class fixed elsewhere in
+      // this codebase via sanitizeQtyForUnit / the same check already present
+      // in InvoiceTab.tsx's GRN validation. The PO doesn't touch real stock
+      // itself, but the value flows straight into the GRN draft on convert,
+      // and a PO that reads "3.5 pcs of bread" is nonsensical either way.
+      if ((line.unit === 'pcs' || line.unit === 'nos') && Number.isFinite(quantity) && !Number.isInteger(quantity)) {
+        errors.push('Quantity must be a whole number for a pcs/nos item.');
+      }
       if (!Number.isFinite(pricePerUnit) || pricePerUnit < 0) errors.push('Rate cannot be negative.');
       if (itemName && seen.has(key)) errors.push('This item is already present in another row.');
       if (itemName) seen.add(key);
@@ -371,9 +388,10 @@ function CreatePOModal({ onClose, onCreated }: { onClose: () => void; onCreated:
   };
 
   const handleSave = async () => {
-    if (saving) return;
+    if (savingRef.current) return;
     const poLines = validate();
     if (!poLines) return;
+    savingRef.current = true;
     setSaving(true);
     setError('');
     try {
@@ -384,6 +402,7 @@ function CreatePOModal({ onClose, onCreated }: { onClose: () => void; onCreated:
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Unable to save the purchase order. Please try again.');
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };
@@ -536,7 +555,11 @@ function SuccessToast({ message, onClose }: { message: string; onClose: () => vo
 
 // ─── Main Purchase Order Tab ────────────────────────────────────────────────
 export default function StorePurchaseOrderTab() {
-  const { orders, loaded, loading, load } = useStorePurchaseOrderStore();
+  // AUDIT FIX (2026-09-03): `error` was fetched into the store on a failed
+  // load() but never read here, so a failed query (RLS/session/network) fell
+  // through to the "No purchase orders yet" empty state — silently telling
+  // Store staff zero POs exist when the real problem was the fetch itself.
+  const { orders, loaded, loading, error, load } = useStorePurchaseOrderStore();
   const [showCreate, setShowCreate] = useState(false);
   const [convertingPO, setConvertingPO] = useState<StorePurchaseOrder | null>(null);
   const [search, setSearch] = useState('');
@@ -596,6 +619,12 @@ export default function StorePurchaseOrderTab() {
           </button>
         ))}
       </div>
+
+      {error && (
+        <div className="flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 px-3 py-3 text-xs font-body text-red-700">
+          <AlertTriangle className="mt-0.5 size-4 shrink-0" /><span>{error}</span>
+        </div>
+      )}
 
       {loading && !loaded ? (
         <div className="flex justify-center py-12"><Loader2 className="size-5 animate-spin text-muted-foreground" /></div>

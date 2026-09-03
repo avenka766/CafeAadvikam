@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useState, type ComponentType, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from 'react';
 import * as XLSX from '@/lib/safeSpreadsheet';
-import { Calendar, Download, FileText, Loader2, MinusCircle, Package, Receipt, RefreshCw, ChevronDown, ChevronUp, LayoutGrid } from 'lucide-react';
+import { Calendar, Download, FileText, Info, Loader2, MinusCircle, Package, Receipt, RefreshCw, ChevronDown, ChevronUp, LayoutGrid } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { supabase } from '@/lib/supabase';
 import { useInvoiceStore } from './invoiceStore';
@@ -9,6 +9,7 @@ import type { ProductionCategory } from './productionRouting';
 import { storeOrderCategory } from './productionRouting';
 import { useBakeryItemsStore } from './bakeryItemsStore';
 import { useStoreStockStore, convertToStockUnit, normaliseName } from './storeStockStore';
+import { kolkataToday } from './PlannerLeftoverTab';
 import type { BakeryOrder } from './types';
 
 type PeriodKey = 'today' | '7d' | '30d' | 'custom';
@@ -47,27 +48,45 @@ const PERIODS: { key: PeriodKey; label: string; days: number | null }[] = [
   { key: 'custom', label: 'Custom', days: null },
 ];
 
-function toInputDate(date: Date) {
-  return date.toISOString().slice(0, 10);
+// AUDIT FIX (2026-09-03): dateRange() used to build "today"/"7 days"/"30 days"
+// boundaries from `new Date()` read on the STAFF DEVICE's local clock/timezone
+// (setHours/setDate on a plain JS Date), and the Custom range parsed
+// `${customFrom}T00:00:00` the same way — with no explicit timezone, that's
+// also interpreted in the browser's local timezone. This app's business date
+// is IST (see kolkataToday() in PlannerLeftoverTab.tsx, and the same
+// `${date}T00:00:00+05:30` pattern used by DayEndReport.tsx/StoreDashboard.tsx/
+// PlannerDashboard.tsx) — a device set to a different timezone (or just past
+// midnight IST but not yet past midnight locally, e.g. UTC) would silently
+// shift which calendar day "Today" or the edges of "7 Days"/"30 Days" cover,
+// same bug class that hit multiple other dashboards' date pickers this
+// session. Anchoring on kolkataToday() and building explicit +05:30 boundaries
+// makes every period consistent with the business's actual operating day
+// regardless of the device's clock/timezone.
+function addDaysToDateKey(dateKey: string, delta: number): string {
+  const d = new Date(`${dateKey}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + delta);
+  return d.toISOString().slice(0, 10);
 }
 
 function dateRange(period: PeriodKey, customFrom: string, customTo: string) {
   if (period === 'custom') {
     return {
-      from: new Date(`${customFrom}T00:00:00`).toISOString(),
-      to: new Date(`${customTo}T23:59:59.999`).toISOString(),
+      from: `${customFrom}T00:00:00+05:30`,
+      to: `${customTo}T23:59:59.999+05:30`,
       fromDate: customFrom,
       toDate: customTo,
     };
   }
 
-  const to = new Date();
-  to.setHours(23, 59, 59, 999);
-  const from = new Date(to);
-  from.setHours(0, 0, 0, 0);
+  const toDate = kolkataToday();
   const days = PERIODS.find(p => p.key === period)?.days ?? 0;
-  if (days > 0) from.setDate(from.getDate() - (days - 1));
-  return { from: from.toISOString(), to: to.toISOString(), fromDate: toInputDate(from), toDate: toInputDate(to) };
+  const fromDate = days > 0 ? addDaysToDateKey(toDate, -(days - 1)) : toDate;
+  return {
+    from: `${fromDate}T00:00:00+05:30`,
+    to: `${toDate}T23:59:59.999+05:30`,
+    fromDate,
+    toDate,
+  };
 }
 
 function money(value: number) {
@@ -96,18 +115,36 @@ function StatCard({ icon: Icon, label, value, sub }: { icon: ComponentType<{ cla
 }
 
 export default function StoreReportTab() {
-  const { invoices, loaded: invoicesLoaded, load: loadInvoices } = useInvoiceStore();
+  const { invoices, loaded: invoicesLoaded, load: loadInvoices, error: invoicesError } = useInvoiceStore();
   const [view, setView] = useState<'overview' | 'price' | 'category'>('overview');
   const [period, setPeriod] = useState<PeriodKey>('7d');
-  const [customFrom, setCustomFrom] = useState(toInputDate(new Date()));
-  const [customTo, setCustomTo] = useState(toInputDate(new Date()));
+  // AUDIT FIX (2026-09-03): defaulted from the device's local date — now the
+  // IST business date, matching dateRange() below (see its comment).
+  const [customFrom, setCustomFrom] = useState(kolkataToday());
+  const [customTo, setCustomTo] = useState(kolkataToday());
   const [materials, setMaterials] = useState<MaterialDeduction[]>([]);
   const [custom, setCustom] = useState<CustomDeduction[]>([]);
   const [loading, setLoading] = useState(false);
+  // AUDIT FIX (2026-09-03): materialRes.error / customRes.error were never
+  // checked — a failed fetch (RLS/session expiry, network error) silently
+  // fell through `?? []` to empty arrays with no console log and nothing
+  // shown to the user, indistinguishable from "genuinely no deductions in
+  // this range". Surfaced as a banner below so a real failure reads as a
+  // failure, not as an empty report.
+  const [reportError, setReportError] = useState<string | null>(null);
 
   const range = useMemo(() => dateRange(period, customFrom, customTo), [period, customFrom, customTo]);
 
+  // AUDIT FIX (2026-09-03): switching the period/date range while a previous
+  // fetch for the OLD range was still in flight (or double-clicking Refresh)
+  // could let the two requests resolve out of order — whichever settled last
+  // would silently overwrite the UI with the wrong range's data even if it
+  // wasn't the most recently requested one. requestSeqRef makes each call
+  // only apply its own result if no newer call has started since.
+  const requestSeqRef = useRef(0);
+
   const loadReports = useCallback(async () => {
+    const seq = ++requestSeqRef.current;
     setLoading(true);
     try {
       const [materialRes, customRes] = await Promise.all([
@@ -124,6 +161,16 @@ export default function StoreReportTab() {
           .lte('created_at', range.to)
           .order('created_at', { ascending: false }),
       ]);
+
+      if (seq !== requestSeqRef.current) return; // a newer request has already started — don't apply a stale result
+
+      if (materialRes.error || customRes.error) {
+        const msg = materialRes.error?.message || customRes.error?.message || 'Unable to load reports';
+        console.error('[StoreReportTab] loadReports:', msg);
+        setReportError(msg);
+      } else {
+        setReportError(null);
+      }
 
       setMaterials((materialRes.data ?? []).map((r: Record<string, unknown>) => ({
         id: String(r.id ?? ''),
@@ -148,7 +195,7 @@ export default function StoreReportTab() {
         createdAt: String(r.created_at ?? ''),
       })));
     } finally {
-      setLoading(false);
+      if (seq === requestSeqRef.current) setLoading(false);
     }
   }, [range.from, range.to]);
 
@@ -212,11 +259,19 @@ export default function StoreReportTab() {
   // attribution instead of order-level aggregation.
   const { items: bakeryItems, loadAllItems, subscribe: subscribeBakeryItems } = useBakeryItemsStore();
   useEffect(() => { void loadAllItems(); return subscribeBakeryItems(); }, [loadAllItems, subscribeBakeryItems]);
-  const { items: stockItems, load: loadStock, subscribe: subscribeStock } = useStoreStockStore();
+  // AUDIT FIX (2026-09-03): storeStockStore.load() previously had no error
+  // state at all — a failed fetch left this tab's stock-comparison math
+  // silently working off zero/stale stock items with no indication why.
+  const { items: stockItems, load: loadStock, subscribe: subscribeStock, error: stockError } = useStoreStockStore();
   useEffect(() => { void loadStock(); return subscribeStock(); }, [loadStock, subscribeStock]);
 
   const [categoryOrders, setCategoryOrders] = useState<Pick<BakeryOrder, 'id' | 'orderNumber' | 'items'>[]>([]);
   const [categoryLoading, setCategoryLoading] = useState(false);
+  // AUDIT FIX (2026-09-03): this fetch error was only ever console.error'd —
+  // the Category Wise tab would just render "No production found for this
+  // range" (its normal empty state), indistinguishable from a genuinely
+  // empty range. Now surfaced as a banner too.
+  const [categoryError, setCategoryError] = useState<string | null>(null);
 
   const deductionOrderIds = useMemo(
     () => Array.from(new Set(materials.map(m => m.orderId).filter(Boolean))),
@@ -224,14 +279,20 @@ export default function StoreReportTab() {
   );
 
   const loadCategoryOrders = useCallback(async () => {
-    if (deductionOrderIds.length === 0) { setCategoryOrders([]); return; }
+    if (deductionOrderIds.length === 0) { setCategoryOrders([]); setCategoryError(null); return; }
     setCategoryLoading(true);
     try {
       const { data, error } = await supabase
         .from('bakery_orders')
         .select('id, order_number, items')
         .in('id', deductionOrderIds);
-      if (error) { console.error('[StoreReportTab] category orders fetch:', error.message); setCategoryOrders([]); return; }
+      if (error) {
+        console.error('[StoreReportTab] category orders fetch:', error.message);
+        setCategoryError(error.message);
+        setCategoryOrders([]);
+        return;
+      }
+      setCategoryError(null);
       setCategoryOrders((data ?? []).map((r: Record<string, unknown>) => ({
         id: String(r.id ?? ''),
         orderNumber: Number(r.order_number ?? 0),
@@ -261,9 +322,16 @@ export default function StoreReportTab() {
 
         if (!groups.has(category)) groups.set(category, new Map());
         const itemMap = groups.get(category)!;
-        const key = item.itemName.trim().toLowerCase();
         const displayQty = item.dispatchUnit === 'pcs' ? (item.originalPcs ?? item.quantity) : item.quantity;
         const displayUnit = item.dispatchUnit ?? (item.originalPcs != null ? 'pcs' : 'kg');
+        // AUDIT FIX (2026-09-03): key was itemName alone — but confirmed via a
+        // live-DB check that at least 9 real item names (e.g. GARLIC NIPPAT,
+        // CARROT CAKE, PLUM CAKE) are genuinely ordered in BOTH kg and pcs by
+        // different branches/orders. Aggregating them under one key summed a
+        // pcs COUNT into the same totalQuantity as a kg WEIGHT — e.g. "40 pcs
+        // + 5 kg" silently became a meaningless "45 pcs". Splitting the key by
+        // unit keeps each physically-different quantity in its own row.
+        const key = `${item.itemName.trim().toLowerCase()}__${displayUnit}`;
 
         let entry = itemMap.get(key);
         if (!entry) {
@@ -483,7 +551,18 @@ export default function StoreReportTab() {
             <button onClick={loadReports} className="size-9 rounded-xl border border-border bg-background flex items-center justify-center hover:bg-muted">
               <RefreshCw className={cn('size-4 text-muted-foreground', loading && 'animate-spin')} />
             </button>
-            <button onClick={downloadExcel} className="h-9 rounded-xl bg-emerald-600 px-3 text-xs font-body font-bold text-white flex items-center gap-2 hover:bg-emerald-700">
+            {/* AUDIT FIX (2026-09-03): this stayed clickable while `loading`
+                was true (e.g. right after switching the period/date range) —
+                `materials`/`custom` still held the PREVIOUS range's data
+                until the fetch resolved, while the Invoices sheet (computed
+                live from `range`) and the filename already reflected the NEW
+                range, producing an internally-inconsistent export. Disabled
+                until the fetch for the current range finishes. */}
+            <button
+              onClick={downloadExcel}
+              disabled={loading}
+              className="h-9 rounded-xl bg-emerald-600 px-3 text-xs font-body font-bold text-white flex items-center gap-2 hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
               <Download className="size-4" /> Excel
             </button>
           </div>
@@ -497,11 +576,24 @@ export default function StoreReportTab() {
             </label>
             <label className="text-[10px] font-body font-bold uppercase text-muted-foreground">
               To
-              <input type="date" value={customTo} min={customFrom} max={toInputDate(new Date())} onChange={e => setCustomTo(e.target.value)} className="mt-1 h-10 w-full rounded-xl border border-border bg-background px-3 text-xs font-body text-foreground" />
+              <input type="date" value={customTo} min={customFrom} max={kolkataToday()} onChange={e => setCustomTo(e.target.value)} className="mt-1 h-10 w-full rounded-xl border border-border bg-background px-3 text-xs font-body text-foreground" />
             </label>
           </div>
         )}
       </div>
+
+      {/* AUDIT FIX (2026-09-03): loadReports (materials/custom deductions) and
+          the shared invoice store both used to swallow a genuine fetch
+          failure into an empty-looking report with no on-screen indication —
+          surfaced here so a real failure reads as a failure. */}
+      {(reportError || invoicesError || stockError) && (
+        <div className="bg-destructive/10 border border-destructive/30 rounded-2xl p-4 flex gap-3">
+          <Info className="size-4 text-destructive shrink-0 mt-0.5" />
+          <p className="text-sm font-body text-destructive">
+            Failed to load some report data: {reportError || invoicesError || stockError}. Figures below may be incomplete — try Refresh.
+          </p>
+        </div>
+      )}
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard icon={Package} label="Deductions" value={materials.length} sub="Recipe based stock cuts" />
@@ -553,6 +645,14 @@ export default function StoreReportTab() {
         </div>
       ) : view === 'category' ? (
         <div className="space-y-4">
+          {categoryError && (
+            <div className="bg-destructive/10 border border-destructive/30 rounded-2xl p-4 flex gap-3">
+              <Info className="size-4 text-destructive shrink-0 mt-0.5" />
+              <p className="text-sm font-body text-destructive">
+                Failed to load orders for this category report: {categoryError}. The figures below are incomplete — try switching tabs and back to retry.
+              </p>
+            </div>
+          )}
           <div className="grid gap-3 sm:grid-cols-3">
             <StatCard icon={LayoutGrid} label="Stock Value by Category" value={money(categoryReportTotal)} sub={`${range.fromDate} to ${range.toDate}`} />
             <StatCard icon={Package} label="Categories" value={categoryReport.length} sub="With items sent to baker" />
@@ -649,7 +749,10 @@ function CategoryGroupCard({ group }: { group: CategoryGroup }) {
       {expanded && (
         <div className="px-3 pb-3 pt-1 space-y-2 bg-muted/10">
           {group.items.map(item => (
-            <CategoryItemCard key={item.itemName} item={item} />
+            // AUDIT FIX (2026-09-03): itemName alone is no longer a unique key
+            // now that the same item name can appear twice (once per unit —
+            // see categoryReport's key comment above).
+            <CategoryItemCard key={`${item.itemName}__${item.unit}`} item={item} />
           ))}
         </div>
       )}

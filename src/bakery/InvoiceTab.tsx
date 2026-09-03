@@ -1,7 +1,7 @@
 // src/bakery/InvoiceTab.tsx
 // Store Invoice Tab – create supplier delivery invoices, sync stock, send to admin.
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { businessDate } from '@/lib/businessDate'; // BUG #14 FIX: needed for synced_to_stock update after invoice created
 import {
   FileText, Plus, Trash2, Printer, Send, ChevronDown,
@@ -864,6 +864,7 @@ export function CreateInvoiceModal({
     return initialLines.length > 0 ? initialLines : [createLineDraft()];
   });
   const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false); // synchronous double-submit guard — see handleSave
   const [error, setError] = useState('');
   const [info, setInfo] = useState('');
   const [lineErrors, setLineErrors] = useState<Record<string, string[]>>({});
@@ -1018,12 +1019,22 @@ export function CreateInvoiceModal({
 
 
   const handleSave = async () => {
-    if (saving) return;
+    // AUDIT FIX (2026-09-03): `saving` is a useState flag, which only blocks a
+    // second click after React commits the re-render that disables the Save
+    // button — not guaranteed to beat a fast double-click/double-tap. This is
+    // an invoice-number-generating, stock-syncing write (create_store_invoice_secure
+    // / convert_store_purchase_order_to_invoice_secure), exactly the
+    // highest-risk kind of flow for this bug class elsewhere in the
+    // codebase — a double-fire here would create two GRNs and sync stock
+    // twice for the same delivery. Guard synchronously with a ref, set
+    // before any `await`, reset in `finally`.
+    if (saving || savingRef.current) return;
+    savingRef.current = true;
     const invoiceLines = validate();
-    if (!invoiceLines) return;
+    if (!invoiceLines) { savingRef.current = false; return; }
 
     const supplier = suppliers.find(item => item.id === supplierId);
-    if (!supplier) { setError('The selected supplier is no longer available. Refresh and select it again.'); return; }
+    if (!supplier) { savingRef.current = false; setError('The selected supplier is no longer available. Refresh and select it again.'); return; }
 
     setSaving(true);
     setError('');
@@ -1146,6 +1157,7 @@ export function CreateInvoiceModal({
       setError(caught instanceof Error ? caught.message : 'Unable to save the invoice. Please try again.');
     } finally {
       setSaving(false);
+      savingRef.current = false;
     }
   };
 

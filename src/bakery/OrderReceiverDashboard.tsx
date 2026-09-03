@@ -9,6 +9,8 @@
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
+import { isNativeApp } from "@/lib/platform";
+import NativeNav from "@/components/layout/NativeNav";
 import {
   Loader2,
   Bell,
@@ -3049,8 +3051,11 @@ export default function OrderReceiverDashboard() {
                           : "Create today’s bakery requirement with live branch stock and a complete-order note.";
 
 
+  const native = isNativeApp();
+
   return (
-    <div className="order-receiver-workspace dashboard-screen flex h-full min-h-0 flex-col overflow-hidden bg-transparent pb-2 font-semibold">
+    <div className={cn('order-receiver-workspace dashboard-screen flex h-full min-h-0 flex-col overflow-hidden bg-transparent pb-2 font-semibold', native && 'owner-native-shell')}>
+      {native && <NativeNav title={`${branch ?? 'SNB'} Order`} subtitle={`${branch ?? 'SNB'} Branch`} />}
       {/* Receiver header */}
       <div
         className={cn(

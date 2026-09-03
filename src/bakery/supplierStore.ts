@@ -26,6 +26,15 @@ interface SupplierState {
   deleteSupplier: (id: string) => Promise<void>;
 }
 
+// AUDIT FIX (2026-09-03): store_suppliers has no unique constraint on
+// business_name (unlike bakery_items, protected by its text primary key),
+// so two rapid submits of the "Add Supplier" form could create two
+// identical supplier rows with different ids. Track an in-flight add at
+// module scope, same pattern used elsewhere this session
+// (bakeryItemsStore.ts's loadItemsPromise, storeStockStore.ts's
+// addItemInFlight).
+let addSupplierInFlight = false;
+
 export const useSupplierStore = create<SupplierState>((set, get) => ({
   suppliers: [],
   loaded: false,
@@ -38,7 +47,8 @@ export const useSupplierStore = create<SupplierState>((set, get) => ({
       const { data, error } = await supabase
         .from('store_suppliers')
         .select('id, business_name, contact_name, phone, email, address, items_supplied, created_at, archived_at')
-        .order('business_name', { ascending: true });
+        .order('business_name', { ascending: true })
+        .limit(2000); // AUDIT FIX (2026-09-03): no explicit limit previously — PostgREST's default 1000-row cap would silently truncate this list once the table grows past it; an explicit generous cap pushes that ceiling well beyond today's ~80 rows
       if (error) throw error;
       const suppliers: Supplier[] = (data ?? []).filter((r: Record<string, unknown>) => !r.archived_at).map((r: Record<string, unknown>) => ({
         id: r.id as string,
@@ -58,17 +68,24 @@ export const useSupplierStore = create<SupplierState>((set, get) => ({
   },
 
   addSupplier: async (data) => {
-    const { error } = await supabase.from('store_suppliers').insert({
-      business_name: data.businessName.trim(),
-      contact_name: data.contactName.trim(),
-      phone: data.phone.trim(),
-      email: data.email.trim(),
-      address: data.address.trim(),
-      items_supplied: data.itemsSupplied.trim(),
-    });
-    if (error) return error.message;
-    await get().load();
-    return null;
+    // AUDIT FIX (2026-09-03): see addSupplierInFlight comment above.
+    if (addSupplierInFlight) return 'Already adding a supplier — please wait for that to finish.';
+    addSupplierInFlight = true;
+    try {
+      const { error } = await supabase.from('store_suppliers').insert({
+        business_name: data.businessName.trim(),
+        contact_name: data.contactName.trim(),
+        phone: data.phone.trim(),
+        email: data.email.trim(),
+        address: data.address.trim(),
+        items_supplied: data.itemsSupplied.trim(),
+      });
+      if (error) return error.message;
+      await get().load();
+      return null;
+    } finally {
+      addSupplierInFlight = false;
+    }
   },
 
   updateSupplier: async (id, data) => {

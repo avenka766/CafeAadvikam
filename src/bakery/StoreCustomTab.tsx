@@ -16,7 +16,7 @@
 // );
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import {
   Scissors, Search, Plus, Loader2, CheckCircle2,
   AlertCircle, History, X, Trash2, Package, Printer,
@@ -373,9 +373,9 @@ function DeductionRowEditor({
             id={`ded-qty-${index}`}
             type="number"
             min={0.01}
-            step={0.01}
+            step={row.item?.unit === 'pcs' || row.item?.unit === 'nos' ? 1 : 0.01}
             value={row.quantity}
-            onChange={e => onUpdate(index, { quantity: e.target.value })}
+            onChange={e => onUpdate(index, { quantity: sanitizeDeductionQty(e.target.value, row.item?.unit) })}
             onKeyDown={e => {
               if (e.key === 'Enter' && row.item && Number(row.quantity) > 0) {
                 e.preventDefault();
@@ -505,10 +505,29 @@ function DeductionBatchCard({ batch }: { batch: DeductionBatch }) {
   );
 }
 
+// AUDIT FIX (2026-09-03): every field below is staff-entered free text —
+// item name (typed when the item was first added to stock), the reason
+// (including the fully-freeform "Custom reason" input), and who deducted
+// it — interpolated directly into an HTML string that printViaIframe then
+// document.write()s into a same-origin iframe. Exactly the same stored-XSS
+// pattern already found and fixed in InvoiceTab.tsx's printInvoice
+// (unescaped values could carry e.g. `<img src=x onerror=...>` and execute
+// as real script the moment the slip is printed/reprinted) — this file
+// wasn't covered by that pass. Escape every interpolated field.
+function escapeHtml(value: unknown): string {
+  const s = value == null ? '' : String(value);
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 function deductionSlipHtml(items: { name: string; qty: number; unit: string }[], reason: string, meta?: { deductedBy?: string | null; createdAt?: string }) {
-  const itemRows = items.map(i => `<tr><td>${i.name}</td><td style="text-align:right">${i.qty} ${i.unit}</td></tr>`).join('');
+  const itemRows = items.map(i => `<tr><td>${escapeHtml(i.name)}</td><td style="text-align:right">${i.qty} ${escapeHtml(i.unit)}</td></tr>`).join('');
   const whenLine = meta?.createdAt ? new Date(meta.createdAt).toLocaleString('en-IN') : new Date().toLocaleString('en-IN');
-  return `<!doctype html><html><head><title>Deduction Slip</title><style>@page{size:auto;margin:6mm}@media print{html,body{height:auto !important}}html,body{width:fit-content;height:fit-content}body{font-family:Arial;padding:16px;color:#111}h2,p{margin:0 0 6px}table{width:100%;border-collapse:collapse;margin-top:10px}th,td{border-bottom:1px solid #ddd;padding:6px;text-align:left;font-size:12px}</style></head><body><h2>Cafe Aadvikam</h2><p>Custom Stock Deduction</p><p style="font-size:12px;color:#555">${whenLine}</p><p style="font-size:12px"><b>Reason:</b> ${reason}</p>${meta?.deductedBy ? `<p style="font-size:12px"><b>By:</b> ${meta.deductedBy}</p>` : ''}<table><thead><tr><th>Item</th><th style="text-align:right">Qty</th></tr></thead><tbody>${itemRows}</tbody></table></body></html>`;
+  return `<!doctype html><html><head><title>Deduction Slip</title><style>@page{size:auto;margin:6mm}@media print{html,body{height:auto !important}}html,body{width:fit-content;height:fit-content}body{font-family:Arial;padding:16px;color:#111}h2,p{margin:0 0 6px}table{width:100%;border-collapse:collapse;margin-top:10px}th,td{border-bottom:1px solid #ddd;padding:6px;text-align:left;font-size:12px}</style></head><body><h2>Cafe Aadvikam</h2><p>Custom Stock Deduction</p><p style="font-size:12px;color:#555">${whenLine}</p><p style="font-size:12px"><b>Reason:</b> ${escapeHtml(reason)}</p>${meta?.deductedBy ? `<p style="font-size:12px"><b>By:</b> ${escapeHtml(meta.deductedBy)}</p>` : ''}<table><thead><tr><th>Item</th><th style="text-align:right">Qty</th></tr></thead><tbody>${itemRows}</tbody></table></body></html>`;
 }
 
 function printDeductionSlip(rows: DeductionRow[], reason: string) {
@@ -539,6 +558,19 @@ function blankRow(): DeductionRow {
   return { item: null, itemSearch: '', showDD: false, quantity: '' };
 }
 
+// AUDIT FIX (2026-09-03): the qty input had no unit-aware rounding — a
+// "pcs" or "nos" stock item (a real, indivisible piece count) could be
+// deducted with a fractional quantity like 2.5, which deductMaterials
+// would apply directly to real inventory as-is. Same "pcs decimal ledger
+// drift" bug class fixed via sanitizeQtyForUnit everywhere else in this
+// codebase (see PlannerLeftoverTab.tsx) — strips digits-after-decimal-point
+// as the user types once a whole-count unit is selected. 'kg'/'ltr'/'g'/
+// 'bunch' items are untouched (fractional quantities are legitimate there).
+function sanitizeDeductionQty(raw: string, unit: string | undefined): string {
+  if (unit !== 'pcs' && unit !== 'nos') return raw;
+  return raw.replace(/[^0-9]/g, '');
+}
+
 // ─── Main Component ────────────────────────────────────────────────────────────
 export default function StoreCustomTab() {
   const { items: stockItems, loaded: stockLoaded, load: loadStock, deductMaterials } = useStoreStockStore();
@@ -555,6 +587,7 @@ export default function StoreCustomTab() {
 
   const [showConfirm, setShowConfirm] = useState(false);
   const [saving, setSaving]           = useState(false);
+  const savingRef = useRef(false); // synchronous double-submit guard — see handleConfirm
   const [error, setError]             = useState('');
   const [success, setSuccess]         = useState('');
 
@@ -606,7 +639,15 @@ export default function StoreCustomTab() {
   };
 
   const handleConfirm = async (withPrint: boolean) => {
-    if (!canSubmit) return;
+    // AUDIT FIX (2026-09-03): `saving` is a useState flag — it only blocks a
+    // second click once React has committed the re-render that disables the
+    // confirm buttons, which is not guaranteed to happen before a fast
+    // double-click/double-tap on the same button is dispatched. That could
+    // deduct the same batch of items from real stock twice. Guard
+    // synchronously with a ref, set before any `await`, same pattern used
+    // for every other double-submit fix in this codebase.
+    if (!canSubmit || saving || savingRef.current) return;
+    savingRef.current = true;
     if (withPrint) printDeductionSlip(validRows, finalReason);
     setSaving(true); setError('');
 
@@ -638,10 +679,23 @@ export default function StoreCustomTab() {
 
       // Log to DB
       const record = await insertDeduction(r.item!, qty, finalReason, actorName, batchId);
-      if (record) newRecords.push(record);
+      if (record) {
+        newRecords.push(record);
+      } else {
+        // AUDIT FIX (2026-09-03): insertDeduction failing used to be
+        // completely silent — the stock deduction above still went through
+        // (real inventory really was reduced), but the row this file's own
+        // header comment promises as "logged... for audit trail" silently
+        // never got written, and the user still saw a plain "Deducted
+        // successfully" toast with no way to know the audit trail was
+        // incomplete. Surface it the same way a deduction failure is
+        // surfaced, so it's at least visible and can be manually reconciled.
+        results.push(`${r.item!.name}: stock was deducted, but saving the audit log entry failed — this deduction won't appear in Deduction History.`);
+      }
     }
 
     setSaving(false);
+    savingRef.current = false;
 
     if (newRecords.length > 0) {
       setDeductions(prev => [...newRecords.reverse(), ...prev]);

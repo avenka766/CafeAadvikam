@@ -55,11 +55,23 @@ function resolveRecipeKey(recipes: Record<string, LiveRecipe>, itemId: string, i
     canonicalItemSlug(recipe.itemName || key) === canonicalSlug
   );
   if (byStoredName) return byStoredName[0];
-  const prefix = entries.find(([key]) => {
+  // AUDIT FIX (2026-09-03): this took the FIRST prefix match in object
+  // iteration order, not the best one — the exact bug class already fixed
+  // in itemMatcher.ts's own findRecipeId() (2026-09-02: "RECIPE_DEFINITIONS
+  // has real keys that are prefixes of each other... whichever shorter/
+  // unrelated key happened to be declared earlier could silently win over
+  // the correct, more specific recipe"), but this file has its own separate
+  // re-implementation that never got the same fix. Pick the LONGEST
+  // matching key instead, same as itemMatcher.ts — a longer prefix match is
+  // always more specific, and calculateMaterials() (below) scales whichever
+  // recipe this resolves to, silently deducting the wrong materials/
+  // quantities for a production run if the wrong one wins.
+  const prefixMatches = entries.filter(([key]) => {
     const canonicalKey = canonicalItemSlug(key);
     return canonicalSlug.startsWith(canonicalKey) || canonicalKey.startsWith(canonicalSlug);
   });
-  return prefix?.[0] ?? null;
+  if (prefixMatches.length === 0) return null;
+  return prefixMatches.reduce((best, entry) => entry[0].length > best[0].length ? entry : best)[0];
 }
 
 interface RecipeState {

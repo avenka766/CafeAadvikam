@@ -90,8 +90,18 @@ function DiffBadge({ diff, pct }: { diff: number | null; pct: number | null }) {
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 export default function StoreAnalyticsTab() {
-  const { invoices, loaded, load } = useInvoiceStore();
-  const { items: stockItems, load: loadStock, subscribe: subscribeStock } = useStoreStockStore();
+  // AUDIT FIX (2026-09-03): `error` from the invoice store was never
+  // read here — if load() failed (session expiry, RLS, network error),
+  // `loaded` still flips true with an empty `invoices` array, and this tab
+  // silently rendered "No invoices found — create invoices to see
+  // analytics", indistinguishable from a store that genuinely has none.
+  // Surfaced as a banner below so a real load failure isn't mistaken for
+  // empty data.
+  const { invoices, loaded, load, error: invoicesError } = useInvoiceStore();
+  // AUDIT FIX (2026-09-03): storeStockStore.load() previously had no error
+  // state at all — a failed fetch left this tab's price/stock-comparison
+  // math silently working off zero stock items, with no indication why.
+  const { items: stockItems, load: loadStock, subscribe: subscribeStock, error: stockError } = useStoreStockStore();
   const [search, setSearch] = useState('');
   const [selectedItem, setSelectedItem] = useState<string | null>(null);
 
@@ -294,6 +304,24 @@ export default function StoreAnalyticsTab() {
           Review purchase spend first, then drill into item-wise price changes across months and suppliers.
         </p>
       </div>
+
+      {invoicesError && (
+        <div className="bg-destructive/10 border border-destructive/30 rounded-2xl p-4 flex gap-3">
+          <Info className="size-4 text-destructive shrink-0 mt-0.5" />
+          <p className="text-sm font-body text-destructive">
+            Failed to load invoices: {invoicesError}. The analytics below may be incomplete or empty because of this — not because there's genuinely no data.
+          </p>
+        </div>
+      )}
+
+      {stockError && (
+        <div className="bg-destructive/10 border border-destructive/30 rounded-2xl p-4 flex gap-3">
+          <Info className="size-4 text-destructive shrink-0 mt-0.5" />
+          <p className="text-sm font-body text-destructive">
+            Failed to load stock levels: {stockError}. Stock-comparison figures below may be wrong because of this.
+          </p>
+        </div>
+      )}
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 sm:gap-3">
         {[

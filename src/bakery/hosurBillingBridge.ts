@@ -211,6 +211,23 @@ export async function dispatchReceiveAndBill(params: {
       shop_whatsapp: order.shopWhatsapp, subtotal, paid_amount: 0, credit_amount: 0,
       status: 'draft', whatsapp_status: 'pending',
     }).select('id').single();
+    // AUDIT FIX (2026-09-03): the SELECT-then-INSERT above is a genuine
+    // check-then-act race — two near-simultaneous calls for the same order
+    // (two tabs, a slow retry) could both pass the SELECT before either
+    // INSERT lands, and used to both succeed, creating two separate bills
+    // for one dispatch. A DB-level unique constraint on order_id now makes
+    // the SECOND insert fail instead (code 23505) — recover gracefully by
+    // re-fetching the bill the OTHER call just created, rather than
+    // surfacing a raw constraint-violation error for what is, from the
+    // planner's point of view, a real success (their order did get billed —
+    // just by the other in-flight request).
+    if (billError?.code === '23505') {
+      const { data: raceBillRow } = await supabase.from('hosur_bills').select('id, bill_no, subtotal').eq('order_id', order.id).neq('status', 'cancelled').maybeSingle();
+      if (!raceBillRow) throw billError;
+      billId = raceBillRow.id;
+      billNo = raceBillRow.bill_no;
+      billSubtotal = Number(raceBillRow.subtotal ?? 0);
+    } else {
     if (billError) throw billError;
     billId = billData.id;
 
@@ -232,6 +249,7 @@ export async function dispatchReceiveAndBill(params: {
     ];
     const { error: itemsError } = await supabase.from('hosur_bill_items').insert(rows);
     if (itemsError) { await supabase.from('hosur_bills').delete().eq('id', billId); throw itemsError; }
+    }
   }
 
   // 3. Capture payment (full / partial / credit) — mirrors confirmBill exactly.
@@ -298,7 +316,17 @@ export async function dispatchReceiveAndBill(params: {
       branch: BRANCH, item_name: i.itemName, quantity_sold: i.receivedQuantity, sold_at: now,
       sold_by: userName, payment_method: paymentMode, unit_price: i.unitPrice, bill_no: billNo, source: 'hosur_wholesale',
     }));
-    supabase.from('branch_sales').insert(salesRows).then(({ error }) => { if (error) console.warn('[hosurBillingBridge] branch_sales mirror failed:', error.message); });
+    // AUDIT FIX (2026-09-03): un-awaited, console.warn-only on failure — the
+    // real bill/credit record above is correct either way, but a failure
+    // here silently under-reports this sale on the branch sales dashboard
+    // forever (nothing retries it, nothing else surfaces it). Notify admin
+    // on failure too, same as the credit-bill notification right above.
+    void supabase.from('branch_sales').insert(salesRows).then(({ error }) => {
+      if (error) {
+        console.warn('[hosurBillingBridge] branch_sales mirror failed:', error.message);
+        void notifyAdmin('Hosur sale missing from branch_sales report', `Bill ${billNo} (${order.shopName}) was billed correctly, but its branch_sales report row failed to save: ${error.message}. This sale is under-reported in Branch Sales until fixed manually.`, billId, billNo, { billId, error: error.message });
+      }
+    });
   }
 
   // 4. Send the WhatsApp bill — the actual automation the user asked for.

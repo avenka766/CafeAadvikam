@@ -36,7 +36,7 @@ import { notifyAdmin } from '@/pages/HosurDashboard';
 import { buildHosurOrderTag, buildHosurItemId, checkRecentDuplicateHosurOrder } from './hosurOrderShared';
 import { closestRecipeMatch } from './recipeNameMatch';
 import KgPackAdder from './KgPackAdder';
-import { sanitizeQtyForUnit } from './PlannerLeftoverTab';
+import { sanitizeQtyForUnit, requantizeForUnit } from './PlannerLeftoverTab';
 
 const money = (v: number | null | undefined) => 'Rs.' + (v ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
 const num = (v: number | null | undefined) => (v ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
@@ -214,6 +214,11 @@ function PlaceOrderSection({ shops, prices, userName, onSaved }: { shops: HosurS
   const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  // AUDIT FIX (2026-09-03): `saving` state alone updates too late to block a
+  // fast double-click/tap on Send — the checkRecentDuplicateHosurOrder guard
+  // mitigates most cases, but it's a read-then-insert itself, so two truly
+  // near-simultaneous calls can both pass it before either insert lands.
+  const savingRef = useRef(false);
 
   useEffect(() => { if (!shopId && activeShops[0]) setShopId(activeShops[0].id); }, [activeShops, shopId]);
   const selectedShop = activeShops.find(s => s.id === shopId) ?? activeShops[0];
@@ -277,7 +282,9 @@ function PlaceOrderSection({ shops, prices, userName, onSaved }: { shops: HosurS
 
   // Saves ONE order per shop that currently has items in its cart.
   const saveOrder = async () => {
+    if (savingRef.current) return;
     if (shopsWithItems.length === 0) { setError('Add at least one item.'); return; }
+    savingRef.current = true;
     setSaving(true); setError('');
     try {
       for (const [sId, items] of shopsWithItems) {
@@ -365,13 +372,25 @@ function PlaceOrderSection({ shops, prices, userName, onSaved }: { shops: HosurS
         }
 
         void notifyAdmin('New Hosur shop order', `${shop.shopName} order ${orderNumber} created by ${userName} and sent to Store. Total ${money(shopSubtotal)}.`, order.id, orderNumber, { shopId: shop.id, subtotal: shopSubtotal });
+
+        // AUDIT FIX (2026-09-03): this used to clear the WHOLE cart only
+        // once, after every shop in the loop finished — so if shop #2 of 3
+        // failed, shop #1's already-successfully-placed order stayed in the
+        // cart too. Retrying then hit checkRecentDuplicateHosurOrder's guard
+        // for shop #1 (correctly — it's real) and never even reached shops
+        // #2/#3, permanently stranding the batch with no obvious way to
+        // recover except manually clearing shop #1's items first. Clear
+        // each shop's own cart the moment ITS OWN order succeeds, so a
+        // retry only ever touches the shops that actually failed.
+        setCartByShop(prev => { const next = { ...prev }; delete next[sId]; return next; });
       }
 
-      setCartByShop({}); setNotes(''); onSaved();
+      setNotes(''); onSaved();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to send order.');
     } finally {
       setSaving(false);
+      savingRef.current = false;
     }
   };
 
@@ -476,7 +495,13 @@ function PlaceOrderSection({ shops, prices, userName, onSaved }: { shops: HosurS
                 (addCustomItem below doesn't clamp it either) — same gap
                 fixed across other Planner qty inputs today. */}
             <input value={customQty} onChange={e => setCustomQty(sanitizeQtyForUnit(e.target.value, customUnit))} type="number" step={customUnit === 'pcs' ? 1 : 0.001} placeholder="Qty" className="rounded-lg border border-border bg-background px-2 py-1.5 text-xs font-bold" />
-            <select value={customUnit} onChange={e => { const nextUnit = e.target.value as 'pcs' | 'kg'; setCustomUnit(nextUnit); setCustomQty(q => sanitizeQtyForUnit(q, nextUnit)); }} className="rounded-lg border border-border bg-background px-2 py-1.5 text-xs font-bold">
+            {/* AUDIT FIX (2026-09-03): was sanitizeQtyForUnit here, which is a
+                keystroke filter (strips non-digits) — feeding it an ALREADY-
+                COMPLETE decimal string on unit switch mashes the digits
+                together (e.g. "12.75" -> "1275") instead of rounding to 13.
+                requantizeForUnit rounds properly for this "already-typed
+                value, unit just changed" case. */}
+            <select value={customUnit} onChange={e => { const nextUnit = e.target.value as 'pcs' | 'kg'; setCustomUnit(nextUnit); setCustomQty(q => requantizeForUnit(q, nextUnit)); }} className="rounded-lg border border-border bg-background px-2 py-1.5 text-xs font-bold">
               <option value="kg">kg</option><option value="pcs">pcs</option>
             </select>
             <input value={customPrice} onChange={e => setCustomPrice(e.target.value)} type="number" placeholder="Price/unit" className="rounded-lg border border-border bg-background px-2 py-1.5 text-xs font-bold" />
@@ -613,6 +638,13 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
   const [bulkDueDate, setBulkDueDate] = useState('');
   const [bulkRunning, setBulkRunning] = useState(false);
   const [bulkProgress, setBulkProgress] = useState<{ done: number; total: number } | null>(null);
+  // AUDIT FIX (2026-09-03): the progress counter used to advance on every
+  // order regardless of whether its bill actually succeeded, so a batch
+  // could finish reading "Billing 10/10…" with no error banner while one
+  // order silently failed (dispatchAndBill's own catch never rethrows) and
+  // dropped out of `selected` — the planner would reasonably assume the
+  // whole batch billed. Track real outcomes and show a summary instead.
+  const [bulkSummary, setBulkSummary] = useState<{ succeeded: number; failed: { shopName: string; message: string }[] } | null>(null);
   const fullyDispatchedOrders = useMemo(
     () => filteredOrders.filter(o => items.filter(i => i.orderId === o.id).every(i => i.dispatchedQuantity >= i.quantity - 0.01)),
     [filteredOrders, items],
@@ -660,6 +692,11 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
     bulkRunningRef.current = true;
     setBulkRunning(true);
     setBulkProgress({ done: 0, total: selectedOrders.length });
+    setBulkSummary(null);
+    // AUDIT FIX (2026-09-03): local accumulator, not React state — avoids
+    // reading back a possibly-stale `result` snapshot from the closure.
+    const failed: { shopName: string; message: string }[] = [];
+    let succeeded = 0;
     // Sequential, not parallel — each call touches shared leftover-pool rows
     // and the same Planner counter session; running them one at a time
     // avoids two orders racing over the same leftover stock.
@@ -668,12 +705,15 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
       setPaymentMode(v => ({ ...v, [order.id]: bulkPaymentMode }));
       if (bulkPaymentType === 'credit') setDueDate(v => ({ ...v, [order.id]: bulkDueDate }));
       // eslint-disable-next-line no-await-in-loop
-      await dispatchAndBill(order);
+      const outcome = await dispatchAndBill(order);
+      if (outcome.ok) succeeded += 1;
+      else failed.push({ shopName: order.shopName, message: outcome.message || 'Unknown error.' });
       setBulkProgress(p => p ? { ...p, done: p.done + 1 } : p);
       setSelected(v => { const next = new Set(v); next.delete(order.id); return next; });
     }
     setBulkRunning(false);
     setBulkProgress(null);
+    setBulkSummary({ succeeded, failed });
     bulkRunningRef.current = false;
   };
   // BUG FIX: dispatchReceiveAndBill already refuses to bill when Planner's
@@ -742,8 +782,13 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
   // from what was actually entered (post-override) at the moment of dispatch.
   const [lastBillSnapshot, setLastBillSnapshot] = useState<Record<string, { billNo: string; order: HosurOrder; items: { itemName: string; unit: string; quantity: number; unitPrice: number }[] }>>({});
 
-  const dispatchAndBill = async (order: HosurOrder) => {
-    if (dispatchInFlightRef.current.has(order.id)) return;
+  // AUDIT FIX (2026-09-03): returns whether this order's bill actually
+  // succeeded, in addition to setting `result` state as before (unchanged
+  // for the direct per-order "Dispatch & Bill" button below, which ignores
+  // the return value) — runBulkBill uses this to tell a real failure apart
+  // from a success instead of just counting "done" regardless of outcome.
+  const dispatchAndBill = async (order: HosurOrder): Promise<{ ok: boolean; message?: string }> => {
+    if (dispatchInFlightRef.current.has(order.id)) return { ok: false, message: 'Already in progress.' };
     dispatchInFlightRef.current.add(order.id);
     const orderItems = items.filter(i => i.orderId === order.id);
     const pType = paymentType[order.id] ?? 'full';
@@ -797,10 +842,17 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
         .map(i => ({ ...i, shortfall: Math.round((i.quantity - i.receivedQuantity) * 1000) / 1000 }))
         .filter(i => i.shortfall > 0.01);
       if (shortfalls.length > 0) {
-        await supabase.from('hosur_leftover_pool').insert(shortfalls.map(s => ({
+        // AUDIT FIX (2026-09-03): unchecked — if this insert failed, the
+        // under-shipped quantity was never tracked anywhere, while the bill
+        // and WhatsApp send had already succeeded and the planner saw a
+        // clean success message. Same "never silently dropped" intent the
+        // comment above already states; this specific write just wasn't
+        // actually checked.
+        const { error: shortfallError } = await supabase.from('hosur_leftover_pool').insert(shortfalls.map(s => ({
           item_name: s.itemName, unit: s.unit, quantity: s.shortfall, unit_price: s.unitPrice,
           source_order_id: order.id, source_shop_name: order.shopName, reason: 'dispatch_shortfall',
         })));
+        if (shortfallError) console.warn('[HosurShopOrderPanel] Failed to record dispatch shortfall in leftover pool:', shortfallError.message);
       }
       // Actually consume any leftover the planner applied to this order —
       // reduce the pool row by what was used, or resolve it fully if used up.
@@ -837,8 +889,11 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
       }
       setLeftoverTick(t => t + 1);
       onDone();
+      return { ok: true };
     } catch (err) {
-      setResult(r => ({ ...r, [order.id]: { ok: false, message: err instanceof Error ? err.message : 'Failed to dispatch and bill this order.' } }));
+      const message = err instanceof Error ? err.message : 'Failed to dispatch and bill this order.';
+      setResult(r => ({ ...r, [order.id]: { ok: false, message } }));
+      return { ok: false, message };
     } finally {
       // BUG FIX (2026-08-07): unconditionally nulling `busy` here let a
       // still-in-flight dispatch for a DIFFERENT order get re-enabled the
@@ -963,6 +1018,16 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
           )}
         </div>
       )}
+      {bulkSummary && (
+        <div className={cn('mt-2 rounded-xl border p-3 text-xs font-bold', bulkSummary.failed.length > 0 ? 'border-red-300 bg-red-50 text-red-800' : 'border-teal-300 bg-teal-50 text-teal-800')}>
+          <p>{bulkSummary.succeeded} billed successfully{bulkSummary.failed.length > 0 ? `, ${bulkSummary.failed.length} FAILED — these are still unbilled, retry them individually below:` : '.'}</p>
+          {bulkSummary.failed.length > 0 && (
+            <ul className="mt-1 space-y-0.5">
+              {bulkSummary.failed.map((f, i) => <li key={i}>• {f.shopName}: {f.message}</li>)}
+            </ul>
+          )}
+        </div>
+      )}
       {filteredOrders.map(order => {
         const orderItems = items.filter(i => i.orderId === order.id);
         const pType = paymentType[order.id] ?? 'full';
@@ -1038,6 +1103,16 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
                     const exceedsOrdered = Number.isFinite(overrideNum) && overrideNum > item.quantity + 0.001;
                     const exceedsDispatched = Number.isFinite(overrideNum) && overrideNum > item.dispatchedQuantity + 0.001;
                     const notYetDispatched = item.dispatchedQuantity <= 0.01;
+                    // AUDIT FIX (2026-09-03): only over-dispatch was ever
+                    // flagged — clearing/reducing the override field for an
+                    // item that genuinely HAS been dispatched (e.g. select-
+                    // all + delete while retyping) silently bills 0 (or
+                    // whatever partial value) with no warning at all, while
+                    // the shop actually received the full dispatched
+                    // quantity — undercharging them and (via the shortfall
+                    // logic) creating phantom "returned" leftover stock for
+                    // goods that never came back.
+                    const belowDispatched = Number.isFinite(overrideNum) && item.dispatchedQuantity > 0.01 && overrideNum < item.dispatchedQuantity - 0.001;
                     return (
                       <div key={item.id} className={cn('rounded-lg px-3 py-1.5', notYetDispatched ? 'bg-red-50' : 'bg-muted/40')}>
                         <div className="flex items-center justify-between text-xs font-bold">
@@ -1070,6 +1145,7 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
                         {notYetDispatched && !applied && <p className="mt-0.5 text-[10px] font-black text-red-700">Not yet dispatched from production — billing this will send 0 unless you know it's already physically with this shop.</p>}
                         {exceedsOrdered && <p className="mt-0.5 text-[10px] font-black text-amber-700">More than ordered ({num(item.quantity)} {item.unit}) — double-check before dispatching.</p>}
                         {!exceedsOrdered && exceedsDispatched && <p className="mt-0.5 text-[10px] font-black text-amber-700">More than what's been dispatched from production ({num(item.dispatchedQuantity)} {item.unit}) so far — double-check before dispatching.</p>}
+                        {belowDispatched && <p className="mt-0.5 text-[10px] font-black text-amber-700">Less than what was actually dispatched ({num(item.dispatchedQuantity)} {item.unit}) — the shop already has the rest; billing less than that will undercharge them and mark it as a returned shortfall.</p>}
                         {applied && <p className="mt-0.5 text-[10px] font-black text-teal-700">Using {num(applied.qty)} {item.unit} from leftover pool</p>}
                       </div>
                     );
@@ -1306,6 +1382,13 @@ function HosurLeftoverAndCancelPanel({ pendingOrders, pendingItems, appliedLefto
   const [cancelQty, setCancelQty] = useState<Record<string, string>>({});
   const [cancelReason, setCancelReason] = useState('');
   const [busyItemId, setBusyItemId] = useState<string | null>(null);
+  // AUDIT FIX (2026-09-03): `busyItemId` is React state, which updates too
+  // late to block a fast double-click on the same item's Cancel button —
+  // every other financial write in this file/app guards with a synchronous
+  // ref set before the first await. A double-fire here inserted the
+  // leftover-pool row AND the credit-delta RPC call twice, double-crediting
+  // phantom stock and double-reducing the shop's owed credit for one cancel.
+  const cancelInFlightRef = useRef<Set<string>>(new Set());
   const [notice, setNotice] = useState<string | null>(null);
 
   // Manual "Add Leftover Item" — for stock the planner is physically holding
@@ -1583,25 +1666,37 @@ function HosurLeftoverAndCancelPanel({ pendingOrders, pendingItems, appliedLefto
 
   const cancelItem = async (item: HosurOrderItem) => {
     if (!selectedOrder) return;
+    if (cancelInFlightRef.current.has(item.id)) return;
     const qty = Number(cancelQty[item.id] || 0);
     const stillAvailable = Math.round((item.dispatchedQuantity - item.cancelledQuantity) * 1000) / 1000;
     if (qty <= 0 || qty > stillAvailable + 0.01) return;
+    cancelInFlightRef.current.add(item.id);
     setBusyItemId(item.id);
     setNotice(null);
     try {
-      await supabase.from('hosur_order_items').update({ cancelled_quantity: Math.round((item.cancelledQuantity + qty) * 1000) / 1000 }).eq('id', item.id);
-      await supabase.from('hosur_leftover_pool').insert({
+      // AUDIT FIX (2026-09-03): none of these three writes checked `error`
+      // before — if the FIRST one (the actual cancelled_quantity update)
+      // failed, the code still inserted a leftover-pool row and a bill-
+      // adjustment credit-note for an item that, per the DB, was never
+      // actually cancelled — phantom leftover stock plus a real credit
+      // reduction with nothing behind it. Stop and surface an error instead
+      // of proceeding on any of the three failing.
+      const { error: cancelledQtyError } = await supabase.from('hosur_order_items').update({ cancelled_quantity: Math.round((item.cancelledQuantity + qty) * 1000) / 1000 }).eq('id', item.id);
+      if (cancelledQtyError) { setNotice(`Could not cancel — ${cancelledQtyError.message}. Nothing was changed.`); return; }
+      const { error: leftoverError } = await supabase.from('hosur_leftover_pool').insert({
         item_name: item.itemName, unit: item.unit, quantity: qty, unit_price: item.unitPrice,
         source_order_id: selectedOrder.id, source_shop_name: selectedOrder.shopName, reason: 'post_dispatch_cancel',
         notes: cancelReason.trim() || null,
       });
+      if (leftoverError) { setNotice(`Item was marked cancelled, but the leftover pool entry failed to save — ${leftoverError.message}. Add it to the pool manually.`); load(); return; }
       const adjustmentAmount = -Math.round(qty * item.unitPrice * 100) / 100;
       if (selectedOrder.billId) {
-        await supabase.from('hosur_bill_adjustments').insert({
+        const { error: adjustmentError } = await supabase.from('hosur_bill_adjustments').insert({
           bill_id: selectedOrder.billId, order_id: selectedOrder.id, item_name: item.itemName, unit: item.unit,
           quantity: qty, unit_price: item.unitPrice, adjustment_amount: adjustmentAmount,
           reason: cancelReason.trim() || null, created_by: currentUser?.displayName || 'Planner',
         });
+        if (adjustmentError) { setNotice(`Item cancelled and added to the leftover pool, but the bill credit-note failed to save — ${adjustmentError.message}. Adjust the shop's credit manually.`); load(); return; }
         // Only reduce money not yet collected — anything already paid is left
         // untouched and flagged for the planner to settle with the shop.
         // AUDIT FIX (2026-09-02): was a read-then-write off a possibly-stale
@@ -1628,6 +1723,7 @@ function HosurLeftoverAndCancelPanel({ pendingOrders, pendingItems, appliedLefto
       // snapshot (neither is an atomic server-side increment), risking a
       // lost update — a double leftover-pool insert or a wrong credit total.
       setBusyItemId(id => (id === item.id ? null : id));
+      cancelInFlightRef.current.delete(item.id);
     }
   };
 
@@ -1663,7 +1759,14 @@ function HosurLeftoverAndCancelPanel({ pendingOrders, pendingItems, appliedLefto
                         fixed across many other Planner qty inputs today.
                         This writes straight into the shared leftover pool. */}
                     <input value={addQty} onChange={e => setAddQty(sanitizeQtyForUnit(e.target.value, addUnit))} type="number" step={addUnit === 'pcs' ? 1 : 0.001} placeholder="Qty" className="rounded-lg border border-border bg-background px-2 py-1.5 text-xs font-bold" />
-                    <select value={addUnit} onChange={e => setAddUnit(e.target.value as 'kg' | 'pcs')} className="rounded-lg border border-border bg-background px-2 py-1.5 text-xs font-bold">
+                    {/* AUDIT FIX (2026-09-03): the qty box only sanitized on
+                        its own keystroke — typing e.g. "2.5" then switching
+                        this unit dropdown to pcs left it unsanitized, so a
+                        fractional pcs quantity could reach hosur_leftover_pool
+                        (and later seed a fractional dispatchQty if this row
+                        gets "Dispatch to Shop"'d). Re-sanitize the existing
+                        value against the NEW unit here too. */}
+                    <select value={addUnit} onChange={e => { const nextUnit = e.target.value as 'kg' | 'pcs'; setAddUnit(nextUnit); setAddQty(q => requantizeForUnit(q, nextUnit)); }} className="rounded-lg border border-border bg-background px-2 py-1.5 text-xs font-bold">
                       <option value="kg">kg</option><option value="pcs">pcs</option>
                     </select>
                     <input value={addPrice} onChange={e => setAddPrice(e.target.value)} type="number" placeholder="Price/unit (optional)" className="rounded-lg border border-border bg-background px-2 py-1.5 text-xs font-bold" />
@@ -1702,7 +1805,16 @@ function HosurLeftoverAndCancelPanel({ pendingOrders, pendingItems, appliedLefto
                             </div>
                             <div className="flex items-center gap-1.5">
                               <button
-                                onClick={() => { setDispatchRowId(v => v === row.id ? null : row.id); setDispatchShopId(''); setDispatchQty(String(remaining)); setDispatchPrice(String(row.unitPrice || '')); }}
+                                // AUDIT FIX (2026-09-03): pre-filled with the
+                                // raw `remaining` figure unsanitized — a pcs
+                                // row whose remaining balance had drifted
+                                // fractional (e.g. from an old ledger entry)
+                                // seeded dispatchQty with something like
+                                // "2.5", and if the planner clicked Confirm
+                                // without touching the field, it created a
+                                // real hosur_orders/hosur_order_items row and
+                                // bill for 2.5 pcs. Round it for pcs rows.
+                                onClick={() => { setDispatchRowId(v => v === row.id ? null : row.id); setDispatchShopId(''); setDispatchQty(String(row.unit === 'pcs' ? Math.round(remaining) : remaining)); setDispatchPrice(String(row.unitPrice || '')); }}
                                 disabled={remaining <= 0.01}
                                 className="flex items-center gap-1 rounded-lg bg-teal-600 px-2.5 py-1 text-[11px] font-bold text-white hover:bg-teal-700 disabled:opacity-40"
                               >

@@ -70,7 +70,8 @@ export const useBakeryItemsStore = create<BakeryItemsState>((set, get) => ({
         .from('bakery_items')
         .select('id, name, icon, category, enabled, sort_order, price')
         .eq('enabled', true)
-        .order('sort_order', { ascending: true });
+        .order('sort_order', { ascending: true })
+        .limit(2000); // AUDIT FIX (2026-09-03): no explicit limit — PostgREST's default 1000-row cap would silently truncate this once the catalogue grows past it
       if (!error && data) {
         set({ items: data.map(d => rowToItem(d as Record<string, unknown>)), loaded: true });
       }
@@ -89,7 +90,8 @@ export const useBakeryItemsStore = create<BakeryItemsState>((set, get) => ({
     const { data, error } = await supabase
       .from('bakery_items')
       .select('id, name, icon, category, enabled, sort_order, price')
-      .order('sort_order', { ascending: true });
+      .order('sort_order', { ascending: true })
+      .limit(2000); // AUDIT FIX (2026-09-03): same unbounded-query gap as loadItems above
     if (!error && data) {
       set({ items: data.map(d => rowToItem(d as Record<string, unknown>)), loaded: true });
     }

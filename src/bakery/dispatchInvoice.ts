@@ -18,6 +18,7 @@
 import { supabase } from '@/lib/supabase';
 import { printViaIframe } from '@/lib/printViaIframe';
 import type { Branch } from './types';
+import { clampQtyForUnit } from './bakeryStore';
 
 export interface DispatchInvoiceItem {
   itemName: string;
@@ -579,9 +580,19 @@ export async function updateDispatchInvoice(params: {
   const original = recordFromRow(invRow as Record<string, unknown>);
   if (original.status === 'cancelled') return { error: 'This invoice has been cancelled and can no longer be edited.' };
 
+  // AUDIT FIX (2026-09-03): quantities used to be trusted verbatim from the
+  // caller — the only defense was the Edit Bill modal's own per-keystroke
+  // clamp on the qty box, which isn't reapplied if the unit dropdown is
+  // switched afterward (e.g. type "10.5" while unit=kg, then switch to
+  // pcs). That let a fractional-pcs quantity reach here, get saved/printed
+  // on the invoice verbatim, while the real stock write below (submitDispatch,
+  // step 3) independently rounds it — the printed bill and the actual stock
+  // movement could silently disagree on how much left the shelf. Clamp here
+  // too, at the single choke point every edit funnels through, same as the
+  // real stock write already does.
   const cleanedUpdatedItems = params.updatedItems
     .filter(i => i.itemName.trim() && i.quantity > 0 && i.unitPrice >= 0)
-    .map(i => ({ ...i, itemName: i.itemName.trim() }));
+    .map(i => ({ ...i, itemName: i.itemName.trim(), quantity: i.unit === 'charge' ? i.quantity : clampQtyForUnit(i.quantity, i.unit === 'kg' ? 'kg' : 'pcs') }));
   if (cleanedUpdatedItems.length === 0) {
     return { error: 'A bill needs at least one item with a name, quantity above 0 and a valid price — cancel the whole bill instead if it should no longer exist.' };
   }
@@ -618,10 +629,22 @@ export async function updateDispatchInvoice(params: {
     entriesByKey.get(k)!.push(e);
   }
 
-  const removedKeys = [...originalByKey.keys()].filter(k => !updatedByKey.has(k));
-  const addedKeys = [...updatedByKey.keys()].filter(k => !originalByKey.has(k));
+  // AUDIT FIX (2026-09-03): charge lines (unit === 'charge' — a named fee
+  // like a delivery/packing charge, not a real catalog item) have no
+  // backing dispatch_log entry, so entriesByKey.get(k) for one is always
+  // empty. Step 2 below correctly no-ops on that (nothing to delete), but
+  // step 3 didn't know a charge key was different from a real item key —
+  // it reissued the "changed quantity" charge as a brand-new dispatch,
+  // coercing its unit to 'kg' and debiting the shared Closing Stock pool
+  // for a fabricated stock item literally named after the charge (e.g.
+  // "Packing Charge"), anchored onto an unrelated real order. Charges are
+  // bill-only lines — excluded from the whole stock-sync reconciliation,
+  // same as saveBill/cancelBill/EditWalkinBillModal already exclude them.
+  const isChargeKey = (k: string) => (originalByKey.get(k)?.unit ?? updatedByKey.get(k)?.unit) === 'charge';
+  const removedKeys = [...originalByKey.keys()].filter(k => !updatedByKey.has(k) && !isChargeKey(k));
+  const addedKeys = [...updatedByKey.keys()].filter(k => !originalByKey.has(k) && !isChargeKey(k));
   const changedQtyKeys = [...updatedByKey.keys()].filter(k => {
-    if (!originalByKey.has(k)) return false;
+    if (!originalByKey.has(k) || isChargeKey(k)) return false;
     return Math.abs(originalByKey.get(k)!.quantity - updatedByKey.get(k)!.quantity) > 0.001;
   });
 

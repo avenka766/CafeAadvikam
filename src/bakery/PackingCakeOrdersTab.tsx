@@ -528,6 +528,11 @@ function CustomCakeOrderPanel({ dispatchedBy }: { dispatchedBy: string }) {
   const [messageOnCake, setMessageOnCake] = useState('');
   const [discountPct, setDiscountPct] = useState('0');
   const [saving, setSaving] = useState(false);
+  // AUDIT FIX (2026-09-03): `saving` state alone updates too late to block a
+  // fast double-click/tap — same fix already applied to every other
+  // financial write in this app. saveDispatchInvoice inserts a fresh
+  // invoice row (burning a real Cake/26-27/N number) per call.
+  const savingInFlightRef = useRef(false);
   const [error, setError] = useState('');
   const [result, setResult] = useState<DispatchInvoiceRecord | null>(null);
 
@@ -559,10 +564,12 @@ function CustomCakeOrderPanel({ dispatchedBy }: { dispatchedBy: string }) {
   };
 
   const createAndPrint = async () => {
+    if (savingInFlightRef.current) return;
     if (!customerName.trim()) { setError("Enter the customer's name."); return; }
     if (!cakeTypeId) { setError('Pick a cake type.'); return; }
     if (!(Number(weightKg) > 0)) { setError('Enter a cake weight above 0.'); return; }
     if (!(priceCalc.total > 0)) { setError('This combination has no price — check the cake type and weight.'); return; }
+    savingInFlightRef.current = true;
     setSaving(true); setError('');
     try {
       const item: DispatchInvoiceItem = { itemName: itemLabel(), unit: 'pcs', quantity: 1, unitPrice: priceCalc.total, lineTotal: priceCalc.total };
@@ -586,6 +593,7 @@ function CustomCakeOrderPanel({ dispatchedBy }: { dispatchedBy: string }) {
       setError(err instanceof Error ? err.message : 'Failed to save the custom cake order.');
     } finally {
       setSaving(false);
+      savingInFlightRef.current = false;
     }
   };
 
@@ -761,6 +769,13 @@ function CakeDispatchReviewModal({ orders, dispatchedBy, onClose, onDone }: {
   // this cache, retrying would call saveDispatchInvoice for branch A again
   // too, creating a second duplicate invoice for cakes that already have one.
   const createdInvoicesRef = useRef<Map<DispatchInvoiceScope, DispatchInvoiceRecord>>(new Map());
+  // AUDIT FIX (2026-09-03): `createdInvoicesRef` only protects a RETRY after
+  // a partial failure (checked once the first pass has already set an
+  // entry) — it's still a check-then-act race for two genuinely concurrent
+  // calls (a fast double-click), which could both read "not yet created"
+  // for the same branch before either write lands, double-dispatching and
+  // double-invoicing. A synchronous flag set before any await closes that.
+  const sendingInFlightRef = useRef(false);
 
   const byBranch = useMemo(() => {
     // Keyed on the full CakeOrderRow branch union (includes 'Planner'), not
@@ -796,10 +811,12 @@ function CakeDispatchReviewModal({ orders, dispatchedBy, onClose, onDone }: {
   const total = Math.max(0, Math.round(subtotal - discountAmount));
 
   const confirm = async () => {
+    if (sendingInFlightRef.current) return;
     if (missingPriceOrders.length > 0) {
       setError(`These cakes have no price recorded on their advance order: ${missingPriceOrders.map(o => o.order_no).join(', ')}. Fix the advance order's price before dispatching.`);
       return;
     }
+    sendingInFlightRef.current = true;
     setSending(true);
     setError(null);
     try {
@@ -833,6 +850,7 @@ function CakeDispatchReviewModal({ orders, dispatchedBy, onClose, onDone }: {
       setError(err instanceof Error ? err.message : 'Failed to dispatch.');
     } finally {
       setSending(false);
+      sendingInFlightRef.current = false;
     }
   };
 

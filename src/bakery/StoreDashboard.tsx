@@ -37,7 +37,7 @@ import { searchItems, getSuppliersForItem, getAllSupplierNames, getItemsForSuppl
 import { useAuthStore } from '@/stores/authStore';
 import { useNotificationStore } from './notificationStore';
 import type { DeductionContext } from './storeStockStore';
-import { resolveItemWeightGrams } from './itemMatcher';
+import { resolveItemWeightGrams, canonicalItemSlug } from './itemMatcher';
 import { matForItem } from './materialCalc';
 import InvoiceTab from './InvoiceTab';
 import StorePurchaseOrderTab from './StorePurchaseOrderTab';
@@ -324,6 +324,29 @@ function stockUnitLabel(unit: StockUnit | string): string {
   return UNIT_OPTIONS.find(u => u.value === unit)?.label ?? String(unit);
 }
 
+// AUDIT FIX (2026-09-03): Store's own "Add/Edit Stock Item" forms let staff
+// type any decimal quantity regardless of the selected unit — for a 'pcs'
+// item that wrote a fractional piece count straight into store_raw_stock.
+// Confirmed live: DARK BAR (38.5 pcs) and MUSHROOM (19.4 pcs) already sitting
+// in the table from this exact gap. Same "pcs must be a whole number" rule
+// this codebase enforces everywhere else a quantity gets typed (see
+// sanitizeQtyForUnit in PlannerLeftoverTab.tsx) — reimplemented locally
+// since this file's StockUnit type carries extra values (ltr/nos/bunch)
+// that helper doesn't know about. sanitizeStockQtyInput is a keystroke
+// filter (used in onChange, stops the decimal point from ever being typed);
+// roundIfPcs is the save-time backstop (used in handleSave) that guarantees
+// no fractional pcs value can reach the database even if a value arrives
+// pre-typed some other way (e.g. picking a suggestion, switching units).
+function sanitizeStockQtyInput(raw: string, unit: StockUnit): string {
+  if (unit !== 'pcs') return raw;
+  const negative = raw.trim().startsWith('-');
+  const digits = raw.replace(/[^0-9]/g, '');
+  return negative ? (digits ? `-${digits}` : '-') : digits;
+}
+function roundIfPcs(value: number, unit: StockUnit): number {
+  return unit === 'pcs' ? Math.round(value) : value;
+}
+
 // ─── Item Row (per-item raw materials + stock status) ────────────────────────
 function ItemRow({ order, item, category, selectionEnabled = false, selected = false, onToggle }: {
   order: BakeryOrder;
@@ -594,6 +617,9 @@ function OrderCard({ order, searchTerm = '' }: { order: BakeryOrder; searchTerm?
   // items. Same double-submit class fixed elsewhere this session (checkoutInFlightRef,
   // sendingRef, savingInFlightRef) — a synchronous ref checked/set before any await.
   const sendingRef = useRef(false);
+  // AUDIT FIX (2026-09-03): same double-submit gap on "Accept Order" — the
+  // `accepting` useState flag is read/set the same async way.
+  const acceptingRef = useRef(false);
 
   useEffect(() => {
     setAccepted(order.status !== 'pending');
@@ -639,6 +665,8 @@ function OrderCard({ order, searchTerm = '' }: { order: BakeryOrder; searchTerm?
     .filter((entry): entry is { item: BakeryOrder['items'][number]; index: number } => Boolean(entry.item)), [selectedIndexes, order.items]);
 
   const handleAccept = async () => {
+    if (acceptingRef.current) return;
+    acceptingRef.current = true;
     setAccepting(true); setSendError(null);
     try {
       await acceptOrder(order.id);
@@ -646,6 +674,7 @@ function OrderCard({ order, searchTerm = '' }: { order: BakeryOrder; searchTerm?
     } catch {
       setSendError('Failed to accept — please try again.');
     } finally {
+      acceptingRef.current = false;
       setAccepting(false);
     }
   };
@@ -1020,6 +1049,13 @@ function AddItemModal({ onClose, onSave, defaultCategory = 'raw' }: { onClose: (
   const [showSug, setShowSug] = useState(false);
 
   const [selectedSuppliers, setSelectedSuppliers] = useState<string[]>([]);
+  // AUDIT FIX (2026-09-03): this was the only stock-write modal in this file
+  // relying solely on the button's `disabled={saving}` prop — a fast
+  // double-tap can fire handleSave twice before React commits that state,
+  // creating two stock items for the same name. Same double-submit class
+  // fixed elsewhere this session via a synchronous ref checked/set before
+  // any await (sendingRef, checkoutInFlightRef, etc.).
+  const savingRef = useRef(false);
 
   const suggestions = useMemo(() => {
     // Items from STORE_ITEM_MASTER (667 real store items)
@@ -1042,9 +1078,17 @@ function AddItemModal({ onClose, onSave, defaultCategory = 'raw' }: { onClose: (
   }, [recipeMats, existingItems, search]);
 
   const handleSave = async () => {
+    if (savingRef.current) return;
     if (!name.trim()) { setError('Enter a name'); return; }
-    const q = parseFloat(qty), m = parseFloat(min);
-    if (isNaN(q) || q < 0 || isNaN(m) || m < 0) { setError('Invalid quantity or minimum'); return; }
+    const parsedQty = parseFloat(qty), parsedMin = parseFloat(min);
+    if (isNaN(parsedQty) || parsedQty < 0 || isNaN(parsedMin) || parsedMin < 0) { setError('Invalid quantity or minimum'); return; }
+    // AUDIT FIX (2026-09-03): round to a whole number for 'pcs' — see
+    // roundIfPcs's comment above. The onChange handlers below already block
+    // typing a decimal point for 'pcs', but this is the backstop for a value
+    // that arrived pre-typed (a picked suggestion, or a unit switch after
+    // typing a decimal).
+    const q = roundIfPcs(parsedQty, unit), m = roundIfPcs(parsedMin, unit);
+    savingRef.current = true;
     setSaving(true); setError('');
     try {
       await onSave(name, unit, q, m, selectedSuppliers, category);
@@ -1056,6 +1100,7 @@ function AddItemModal({ onClose, onSave, defaultCategory = 'raw' }: { onClose: (
       // string), show that instead of hiding it behind "Save failed."
       setError(err instanceof Error ? err.message : 'Save failed — please try again.');
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };
@@ -1106,12 +1151,12 @@ function AddItemModal({ onClose, onSave, defaultCategory = 'raw' }: { onClose: (
         <div className="flex gap-3">
           <div className="flex-1">
             <label className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-1.5 block">Stock ({stockUnitLabel(unit)})</label>
-            <input type="number" min={0} step={0.1} value={qty} onChange={e => setQty(e.target.value)}
+            <input type="number" min={0} step={unit === 'pcs' ? 1 : 0.1} value={qty} onChange={e => setQty(sanitizeStockQtyInput(e.target.value, unit))}
               className="w-full h-11 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30" />
           </div>
           <div className="flex-1">
             <label className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-1.5 block">Low Alert ({stockUnitLabel(unit)})</label>
-            <input type="number" min={0} step={0.1} value={min} onChange={e => setMin(e.target.value)}
+            <input type="number" min={0} step={unit === 'pcs' ? 1 : 0.1} value={min} onChange={e => setMin(sanitizeStockQtyInput(e.target.value, unit))}
               className="w-full h-11 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30" />
           </div>
         </div>
@@ -1167,9 +1212,21 @@ function EditItemModal({ item, onClose, onSave }: { item: StockItem; onClose: ()
   // wrapper throws on failure instead, this needs its own visible error
   // display too, matching AddItemModal's existing pattern.
   const [error, setError] = useState('');
+  // AUDIT FIX (2026-09-03): same double-submit class fixed elsewhere this
+  // session — a synchronous ref checked/set before any await, since the
+  // `saving` useState flag and the button's `disabled` prop both lag a
+  // fast double-tap by a render.
+  const savingRef = useRef(false);
   const handleSave = async () => {
-    const q = parseFloat(qty), m = parseFloat(min);
-    if (isNaN(q) || isNaN(m)) return;
+    if (savingRef.current) return;
+    const parsedQty = parseFloat(qty), parsedMin = parseFloat(min);
+    if (isNaN(parsedQty) || isNaN(parsedMin)) return;
+    // AUDIT FIX (2026-09-03): "pcs must be a whole number" — see
+    // roundIfPcs's comment on AddItemModal above. Without this, editing an
+    // existing pcs item could write a fractional count straight into
+    // store_raw_stock (confirmed live on 2 real items before this fix).
+    const q = roundIfPcs(parsedQty, unit), m = roundIfPcs(parsedMin, unit);
+    savingRef.current = true;
     setSaving(true); setError('');
     try {
       await onSave({ quantity: q, minThreshold: m, unit, category });
@@ -1177,6 +1234,7 @@ function EditItemModal({ item, onClose, onSave }: { item: StockItem; onClose: ()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Save failed — please try again.');
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };
@@ -1198,11 +1256,11 @@ function EditItemModal({ item, onClose, onSave }: { item: StockItem; onClose: ()
         <div className="flex gap-3">
           <div className="flex-1">
             <label className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-1.5 block">Stock ({stockUnitLabel(unit)})</label>
-            <input type="number" min={0} step={0.1} value={qty} onChange={e => setQty(e.target.value)} className="w-full h-11 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30" />
+            <input type="number" min={0} step={unit === 'pcs' ? 1 : 0.1} value={qty} onChange={e => setQty(sanitizeStockQtyInput(e.target.value, unit))} className="w-full h-11 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30" />
           </div>
           <div className="flex-1">
             <label className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-1.5 block">Low Alert ({stockUnitLabel(unit)})</label>
-            <input type="number" min={0} step={0.1} value={min} onChange={e => setMin(e.target.value)} className="w-full h-11 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30" />
+            <input type="number" min={0} step={unit === 'pcs' ? 1 : 0.1} value={min} onChange={e => setMin(sanitizeStockQtyInput(e.target.value, unit))} className="w-full h-11 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30" />
           </div>
         </div>
         <div>
@@ -1353,7 +1411,10 @@ function InlineDeductionsView() {
 
 // ─── Inventory Tab ────────────────────────────────────────────────────────────
 function StoreInventoryTab() {
-  const { items, loaded, loading, load, addItem, updateItem, deleteItem, bulkImportFromRecipes, bulkSetCategory } = useStoreStockStore();
+  // AUDIT FIX (2026-09-03): storeStockStore.load() previously had no error
+  // state — a failed fetch left `loaded` false forever with nothing shown
+  // here, this tab's PRIMARY view of live stock.
+  const { items, loaded, loading, load, error: stockError, addItem, updateItem, deleteItem, bulkImportFromRecipes, bulkSetCategory } = useStoreStockStore();
   const { pushStoreItemChange } = useNotificationStore();
   const currentUser = useAuthStore(s => s.currentUser);
   const [search, setSearch]         = useState('');
@@ -1374,6 +1435,11 @@ function StoreInventoryTab() {
   const [selectMode, setSelectMode]   = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [moving, setMoving]           = useState(false);
+  // AUDIT FIX (2026-09-03): same double-submit class fixed elsewhere this
+  // session — `moving` is a useState flag read at call time, not a
+  // synchronous ref, so a fast double-tap on "Move to..." can fire
+  // handleBulkMove twice before the first call's setMoving(true) commits.
+  const movingRef = useRef(false);
 
   useEffect(() => { if (!loaded) load(); }, [loaded, load]);
   useEffect(() => { setSelectMode(false); setSelectedIds(new Set()); }, [categoryTab]);
@@ -1416,12 +1482,14 @@ function StoreInventoryTab() {
     return next;
   });
   const handleBulkMove = async (target: StockCategory) => {
-    if (selectedIds.size === 0 || moving) return;
+    if (selectedIds.size === 0 || moving || movingRef.current) return;
+    movingRef.current = true;
     setMoving(true);
     try {
       const err = await bulkSetCategory(Array.from(selectedIds), target);
       if (!err) { setSelectMode(false); setSelectedIds(new Set()); }
     } finally {
+      movingRef.current = false;
       setMoving(false);
     }
   };
@@ -1453,7 +1521,12 @@ function StoreInventoryTab() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `inventory-${categoryTab}-${stockView}-${new Date().toISOString().slice(0, 10)}.csv`;
+    // AUDIT FIX (2026-09-03): UTC slice, not Kolkata — same class of bug
+    // already fixed for inputDate/dayWindow above (see that comment); this
+    // one only affects the exported filename's date, not any query, but for
+    // consistency it should read the same "today" everywhere else in this
+    // file does.
+    a.download = `inventory-${categoryTab}-${stockView}-${inputDate(new Date())}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -1585,6 +1658,11 @@ function StoreInventoryTab() {
             </div>
           )}
 
+          {stockError && !loading && (
+            <div className="flex items-center gap-2 px-3 py-2.5 bg-destructive/10 border border-destructive/30 rounded-xl">
+              <p className="text-xs font-body text-destructive">Failed to load stock: {stockError}. The list below may be empty or stale because of this — not because there's genuinely nothing in stock.</p>
+            </div>
+          )}
           {importError && <p className="text-xs font-body text-destructive px-1">{importError}</p>}
           {importToast && (
             <div className="flex items-center gap-2 px-3 py-2.5 bg-emerald-50 border border-emerald-200 rounded-xl">
@@ -1680,7 +1758,20 @@ function aggregateReleasableItems(orders: BakeryOrder[]): AggregatedProductionIt
   const byKey = new Map<string, AggregatedProductionItem>();
   for (const order of orders) {
     order.items.forEach((item, index) => {
-      const key = item.itemName.trim().toLowerCase();
+      // AUDIT FIX (2026-09-03): a raw trim().toLowerCase() key only
+      // catches case differences — it does NOT catch the singular/plural
+      // and punctuation variance that's actually live right now in pending
+      // store_confirmed orders (confirmed via DB query: "Mushroom Puff" vs
+      // "Mushroom Puffs" among others). Two orders for what's genuinely the
+      // same item were rendering as two separate rows/checkboxes here, each
+      // showing an undercounted quantity — exactly the "case/whitespace-
+      // sensitive item-name matching" bug class fixed elsewhere in this
+      // codebase via canonicalItemSlug (itemMatcher.ts), the same shared
+      // comparator order/catalog/recipe names are matched with everywhere
+      // else. Using it here doesn't change what actually gets released —
+      // contributions still carry the real per-order orderId/index — only
+      // which rows get grouped for display/selection.
+      const key = canonicalItemSlug(item.itemName) || item.itemName.trim().toLowerCase();
       let agg = byKey.get(key);
       if (!agg) {
         agg = {
@@ -1940,7 +2031,9 @@ function OrdersTab() {
     const url  = URL.createObjectURL(blob);
     const a    = document.createElement('a');
     a.href     = url;
-    a.download = `pending-orders-${new Date().toISOString().slice(0, 10)}.csv`;
+    // AUDIT FIX (2026-09-03): same UTC-vs-Kolkata filename fix as the
+    // Inventory Excel export above.
+    a.download = `pending-orders-${inputDate(new Date())}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -2071,7 +2164,11 @@ function aggregateHistoryItems(orders: BakeryOrder[]): HistoryAggregateRow[] {
     const at = order.storeConfirmedAt || order.createdAt;
     const dateLabel = kolkataDateLabel(at);
     for (const item of order.items) {
-      const key = `${item.itemName.trim().toLowerCase()}|${dateLabel}`;
+      // AUDIT FIX (2026-09-03): same fix as aggregateReleasableItems above —
+      // canonicalItemSlug instead of a raw trim/lowercase key, so e.g.
+      // "Mushroom Puff" and "Mushroom Puffs" land in one History row
+      // instead of two separate (each undercounted) ones.
+      const key = `${canonicalItemSlug(item.itemName) || item.itemName.trim().toLowerCase()}|${dateLabel}`;
       let row = byKey.get(key);
       if (!row) {
         row = { key, itemName: item.itemName, unit: item.dispatchUnit || 'kg', quantity: 0, dateLabel, latestAt: at };
@@ -2174,8 +2271,31 @@ function StoreHistoryTab() {
 }
 
 // ─── Supplier Card ────────────────────────────────────────────────────────────
-function SupplierCard({ supplier, onEdit, onDelete }: { supplier: Supplier; onEdit: (s: Supplier) => void; onDelete: (id: string) => void }) {
+function SupplierCard({ supplier, onEdit, onDelete }: { supplier: Supplier; onEdit: (s: Supplier) => void; onDelete: (id: string) => Promise<void> }) {
   const [expanded, setExpanded] = useState(false);
+  // AUDIT FIX (2026-09-03): this Delete button called onDelete(supplier.id)
+  // directly with no try/catch anywhere in the component tree — deleteSupplier
+  // (supplierStore.ts) genuinely throws (e.g. "can't delete, this supplier has
+  // existing invoices"), so a failed delete surfaced as nothing more than an
+  // unhandled promise rejection: no error shown, no confirmation, staff just
+  // saw the click apparently do nothing. Also had no double-submit guard —
+  // same class fixed elsewhere this session via a synchronous ref.
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const deletingRef = useRef(false);
+  const handleDelete = async () => {
+    if (deletingRef.current) return;
+    deletingRef.current = true;
+    setDeleting(true); setDeleteError(null);
+    try {
+      await onDelete(supplier.id);
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : 'Failed to delete — please try again.');
+    } finally {
+      deletingRef.current = false;
+      setDeleting(false);
+    }
+  };
   return (
     <div className="rounded-2xl border border-border bg-card overflow-hidden">
       <button className="w-full px-4 py-3.5 flex items-center gap-3 text-left active:bg-muted/20"
@@ -2232,11 +2352,12 @@ function SupplierCard({ supplier, onEdit, onDelete }: { supplier: Supplier; onEd
               className="flex-1 h-9 rounded-xl border border-border text-xs font-body font-semibold text-foreground flex items-center justify-center gap-1.5 hover:bg-muted active:scale-[0.98]">
               <Pencil className="size-3.5" /> Edit
             </button>
-            <button onClick={() => onDelete(supplier.id)}
-              className="flex-1 h-9 rounded-xl border border-red-200 text-xs font-body font-semibold text-red-600 bg-red-50 flex items-center justify-center gap-1.5 hover:bg-red-100 active:scale-[0.98]">
-              <Trash2 className="size-3.5" /> Delete
+            <button onClick={() => void handleDelete()} disabled={deleting}
+              className="flex-1 h-9 rounded-xl border border-red-200 text-xs font-body font-semibold text-red-600 bg-red-50 flex items-center justify-center gap-1.5 hover:bg-red-100 active:scale-[0.98] disabled:opacity-50">
+              {deleting ? <Loader2 className="size-3.5 animate-spin" /> : <Trash2 className="size-3.5" />} Delete
             </button>
           </div>
+          {deleteError && <p className="text-xs font-body text-destructive">{deleteError}</p>}
         </div>
       )}
     </div>
@@ -2478,6 +2599,12 @@ function SupplierModal({
   const [selectedItems, setSelectedItems] = useState<string[]>(() => splitSupplierItems(initial?.itemsSupplied ?? ''));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  // AUDIT FIX (2026-09-03): same double-submit class fixed elsewhere this
+  // session — a synchronous ref checked/set before any await, since a fast
+  // double-tap can fire handleSave twice before the `saving` state (and the
+  // button's `disabled` prop derived from it) actually commits, creating two
+  // suppliers for one submit.
+  const savingRef = useRef(false);
 
   useEffect(() => {
     if (!stockLoaded) void loadStock();
@@ -2489,6 +2616,7 @@ function SupplierModal({
   }, [error]);
 
   const handleSave = async () => {
+    if (savingRef.current) return;
     const businessName = form.businessName.trim();
     const contactName = form.contactName.trim();
     const phone = form.phone.trim();
@@ -2500,6 +2628,7 @@ function SupplierModal({
     if (phoneDigits.length < 7 || phoneDigits.length > 15) { setError('Enter a valid phone number.'); return; }
     if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { setError('Enter a valid email address.'); return; }
 
+    savingRef.current = true;
     setSaving(true);
     setError('');
     try {
@@ -2520,6 +2649,7 @@ function SupplierModal({
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Unable to save the supplier. Please try again.');
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };
