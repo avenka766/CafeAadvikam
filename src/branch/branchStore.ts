@@ -9,6 +9,7 @@ import { cakeIncomingDispatchId, ensureCakeDispatchIncoming, type CakeDispatchSo
 import { startOfBusinessDayISO } from '@/lib/businessDate';
 import { useOfflineQueueStore, registerReplayHandler } from '@/lib/offlineQueue';
 import { generateId } from '@/lib/utils';
+import { isAdvanceOrderTagged, parseAdvanceOrderNotes } from '@/bakery/bakeryStore';
 
 const normalizeStockName = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
@@ -178,6 +179,10 @@ export interface IncomingStock {
   returnRequestedAt?: string | null;
   returnRequestedBy?: string | null;
   transferInReturnId?: string | null;
+  /** SNB-ADV-N / VRSNB-ADV-N tag when this incoming item was dispatched from
+   *  an advance order, so the SNB/VRSNB Order Dashboard's Stock/Incoming tab
+   *  can show it next to the item — null for a regular (non-advance) item. */
+  advanceOrderNo?: string | null;
 }
 
 export interface StockMismatch {
@@ -412,6 +417,7 @@ function computeBranchRealtimeChange(state: BranchState, branch: Branch, table: 
         returnRequestedAt: row.return_requested_at == null ? null : String(row.return_requested_at),
         returnRequestedBy: row.return_requested_by == null ? null : String(row.return_requested_by),
         transferInReturnId: row.transfer_in_return_id == null ? null : String(row.transfer_in_return_id),
+        advanceOrderNo: row.advance_order_no == null ? null : String(row.advance_order_no),
       };
       return { incoming: { ...state.incoming, [branch]: [next, ...current.filter((item) => item.id !== id)].slice(0, 500) } };
     }
@@ -913,7 +919,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         // EGRESS FIX (2026-09-01): shrunk 1000 -> 300 — real observed max for
         // "today's incoming" across all 3 branches is ~67 rows.
         wantIncoming ? supabase.from('branch_incoming')
-          .select('id,item_barcode,item_name,quantity,unit,received_at,dispatched_by,confirmed,disputed,dispute_reason,disputed_by,disputed_at,disputed_received_quantity,return_requested,return_requested_at,return_requested_by,transfer_in_return_id')
+          .select('id,item_barcode,item_name,quantity,unit,received_at,dispatched_by,confirmed,disputed,dispute_reason,disputed_by,disputed_at,disputed_received_quantity,return_requested,return_requested_at,return_requested_by,transfer_in_return_id,advance_order_no')
           .eq('branch', branch)
           .gte('received_at', startOfToday)
           .order('received_at', { ascending: false }).limit(300) : SKIP,
@@ -965,7 +971,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         // pull those regardless of date too (small cap — this should normally
         // be empty or tiny).
         wantIncoming ? supabase.from('branch_incoming')
-          .select('id,item_barcode,item_name,quantity,unit,received_at,dispatched_by,confirmed,disputed,dispute_reason,disputed_by,disputed_at,disputed_received_quantity,return_requested,return_requested_at,return_requested_by,transfer_in_return_id')
+          .select('id,item_barcode,item_name,quantity,unit,received_at,dispatched_by,confirmed,disputed,dispute_reason,disputed_by,disputed_at,disputed_received_quantity,return_requested,return_requested_at,return_requested_by,transfer_in_return_id,advance_order_no')
           .eq('branch', branch)
           .eq('confirmed', false)
           .order('received_at', { ascending: false })
@@ -1053,6 +1059,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
             returnRequestedAt: d.return_requested_at ?? null,
             returnRequestedBy: d.return_requested_by ?? null,
             transferInReturnId: d.transfer_in_return_id ?? null,
+            advanceOrderNo: d.advance_order_no ?? null,
           }));
         }
 
@@ -1517,7 +1524,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
 
     const { data: orders, error: ordersError } = await supabase
       .from('bakery_orders')
-      .select('id, dispatch_log')
+      .select('id, dispatch_log, notes')
       .not('dispatch_log', 'is', null)
       .gte('created_at', recoveryWindowStartISO)
       .order('created_at', { ascending: false })
@@ -1568,7 +1575,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
 
     const newEntries: {
       dispatch_id: string; item_name: string; item_barcode: number | null; quantity: number; unit: string;
-      received_at: string; dispatched_by: string; branch: Branch;
+      received_at: string; dispatched_by: string; branch: Branch; advance_order_no: string | null;
     }[] = [];
 
     for (const order of orders) {
@@ -1576,6 +1583,11 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         id: string; itemName: string; itemBarcode?: number; barcode?: number; quantity: number; unit?: string;
         branch: Branch; dispatchedAt: string; dispatchedBy: string;
       }[];
+      // FEATURE (2026-09-05): same advance-order tag this recovery path's
+      // primary counterpart (submitDispatch in bakeryStore.ts) already writes
+      // — computed once per order rather than per dispatch-log entry.
+      const notes = order.notes as string | null | undefined;
+      const advanceOrderNo = isAdvanceOrderTagged(notes) ? parseAdvanceOrderNotes(notes)?.orderNo ?? null : null;
       log
         .filter((e) => e.branch === branch && !existingDispatchIds.has(e.id))
         .forEach((e) =>
@@ -1588,6 +1600,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
             received_at:   e.dispatchedAt,
             dispatched_by: e.dispatchedBy,
             branch,
+            advance_order_no: advanceOrderNo,
           }),
         );
     }
