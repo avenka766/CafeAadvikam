@@ -52,6 +52,12 @@ interface Row {
   dispatchedBy: string;
   status: DispatchInvoiceRecord['status'];
   record: DispatchInvoiceRecord;
+  // FEATURE (2026-09-04): only 'Sales' (walk-in bill) rows carry a real
+  // payment mode — a TO/Cake dispatch invoice is an internal stock
+  // movement, nothing was collected at a counter for it. Left undefined
+  // for those rather than guessing a mode, so the bill-wise sheet's
+  // Cash/UPI/Card columns honestly show 0 rather than a fabricated split.
+  paymentMode?: string;
 }
 
 function todayInput(d = new Date()) {
@@ -65,6 +71,10 @@ function daysAgoInput(days: number) {
 function fmtDateTime(iso: string) {
   return new Date(iso).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
+// FEATURE (2026-09-04): the standardized bill-wise Excel sheet wants Date
+// and Time as their own columns, not one combined string.
+function fmtDate(iso: string) { return new Date(iso).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }); }
+function fmtTime(iso: string) { return new Date(iso).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }); }
 
 function KpiCard({ label, value, sub, icon, tone }: { label: string; value: string; sub?: string; icon: React.ReactNode; tone: string }) {
   return (
@@ -132,6 +142,7 @@ export default function AdminDispatchDetailsTab() {
       date: b.createdAt, itemCount: b.items.length,
       subtotal: b.subtotal, discountAmount: b.discountAmount, total: b.total,
       dispatchedBy: b.cashierName || 'Planner', status: 'paid', record: walkinBillToInvoiceRecord(b),
+      paymentMode: b.paymentMode,
     }));
     return [...fromInvoices, ...fromSales].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   }, [invoices, sales]);
@@ -184,15 +195,31 @@ export default function AdminDispatchDetailsTab() {
         ],
       },
       {
+        // FEATURE (2026-09-04): standardized bill-wise column set across
+        // Cafe Control / Branch Sales / Hosur Sales / Dispatch Details —
+        // Branch, Bill No, Date, Time, Total Sales, Cash, UPI, Card,
+        // Salesperson, Biller. Cash/UPI/Card only apply to 'Sales'
+        // (walk-in bill) rows — a TO/Cake dispatch invoice moves stock
+        // internally, nothing was collected at a counter for it, so those
+        // stay 0 rather than a fabricated split. "Group"/"Items"/"Subtotal"/
+        // "Discount"/"Status" (dropped from this sheet) are still fully
+        // covered by the Summary sheet and the per-bucket Item sheets below.
         name: 'Bill-wise (All)', title: `Dispatch Details — Bill-wise (${fromDate} to ${toDate})`,
         columns: [
-          { header: 'Invoice No', key: 'invoiceNo', width: 16 }, { header: 'Group', key: 'bucket', width: 10 },
-          { header: 'Source', key: 'scopeLabel', width: 10 }, { header: 'Party', key: 'party', width: 22 },
-          { header: 'Date', key: 'date', width: 20 }, { header: 'Items', key: 'itemCount' },
-          { header: 'Subtotal', key: 'subtotal' }, { header: 'Discount', key: 'discountAmount' }, { header: 'Total', key: 'total' },
-          { header: 'Dispatched By', key: 'dispatchedBy', width: 16 }, { header: 'Status', key: 'status', width: 10 },
+          { header: 'Branch', key: 'branch', width: 10 }, { header: 'Bill No', key: 'billNo', width: 16 }, { header: 'Date', key: 'date', width: 14 }, { header: 'Time', key: 'time', width: 12 },
+          { header: 'Total Sales', key: 'totalSales' }, { header: 'Cash', key: 'cash' }, { header: 'UPI', key: 'upi' }, { header: 'Card', key: 'card' },
+          { header: 'Salesperson', key: 'salesperson', width: 14 }, { header: 'Biller', key: 'biller', width: 16 },
         ],
-        rows: rows.map(r => ({ ...r, date: fmtDateTime(r.date) })),
+        rows: rows.map(r => {
+          const mode = (r.paymentMode || '').toLowerCase();
+          const cash = mode === 'cash' ? r.total : 0;
+          const upi = mode === 'upi' ? r.total : 0;
+          const card = mode && mode !== 'cash' && mode !== 'upi' ? r.total : 0;
+          return {
+            branch: r.scopeLabel, billNo: r.invoiceNo, date: fmtDate(r.date), time: fmtTime(r.date),
+            totalSales: r.total, cash, upi, card, salesperson: '—', biller: r.dispatchedBy,
+          };
+        }),
       },
       sheetFor('TO'), sheetFor('SALES'), sheetFor('Cake'),
     ]);
