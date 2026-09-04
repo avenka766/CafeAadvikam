@@ -3,6 +3,7 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "main": "electron/main.cjs",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
@@ -15,7 +16,10 @@
     "test:wallet-promotions": "node --no-warnings --experimental-strip-types --experimental-specifier-resolution=node scripts/wallet-promotions-regression.mjs",
     "android:init": "npx cap add android",
     "android:sync": "npm run build && npx cap sync android",
-    "android:open": "npx cap open android"
+    "android:open": "npx cap open android",
+    "electron:dev": "cross-env ELECTRON_DEV_URL=http://localhost:8080 concurrently -k \"npm:dev\" \"wait-on tcp:8080 && electron .\"",
+    "electron:start": "npm run build && electron .",
+    "electron:build": "npm run build && electron-builder --win"
   },
   "dependencies": {
     "@capacitor/android": "^8.0.0",
@@ -100,6 +104,10 @@
     "@types/three": "^0.169.0",
     "@vitejs/plugin-react-swc": "^3.7.2",
     "autoprefixer": "^10.4.20",
+    "concurrently": "^9.1.0",
+    "cross-env": "^7.0.3",
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8",
     "eslint": "^9.9.0",
     "eslint-plugin-react-hooks": "^5.1.0-rc.0",
     "eslint-plugin-react-refresh": "^0.4.9",
@@ -110,7 +118,35 @@
     "typescript": "^5.5.3",
     "typescript-eslint": "^8.0.1",
     "vite": "^5.4.11",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.10",
+    "wait-on": "^8.0.1"
+  },
+  "build": {
+    "appId": "com.cafeaadvikam.app",
+    "productName": "Cafe Aadvikam",
+    "files": [
+      "electron/**/*",
+      "dist/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "win": {
+      "target": [
+        { "target": "nsis", "arch": ["x64"] },
+        { "target": "portable", "arch": ["x64"] }
+      ],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Cafe Aadvikam"
+    }
   },
   "engines": {
     "node": ">=20.0.0",
