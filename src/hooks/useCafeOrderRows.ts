@@ -8,7 +8,7 @@
 // the non-zero Gross Sales figure shown just above it. This hook returns
 // individual Cafe order rows (not just aggregate totals) shaped so they can
 // be spliced directly into that same log table's row list.
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 
 export type CafeOrderRow = {
@@ -21,12 +21,23 @@ export type CafeOrderRow = {
   paymentType: string;
 };
 
+export type CafeOrderRowsResult = {
+  rows: CafeOrderRow[];
+  // Bumped by the caller to force a fresh re-fetch on demand (a manual
+  // "Refresh" button) without needing fromDate/toDate/enabled to change —
+  // this hook otherwise only ever re-queries when one of those changes, so
+  // it can silently lag behind real Cafe `orders` activity between refetches.
+  refresh: () => void;
+};
+
 function isValidDate(value: string) {
   return /^\d{4}-\d{2}-\d{2}$/.test(value);
 }
 
-export function useCafeOrderRows(fromDate: string, toDate: string, enabled: boolean): CafeOrderRow[] {
+export function useCafeOrderRows(fromDate: string, toDate: string, enabled: boolean): CafeOrderRowsResult {
   const [rows, setRows] = useState<CafeOrderRow[]>([]);
+  const [refreshToken, setRefreshToken] = useState(0);
+  const refresh = useCallback(() => setRefreshToken((t) => t + 1), []);
 
   useEffect(() => {
     if (!enabled || !isValidDate(fromDate) || !isValidDate(toDate) || fromDate > toDate) {
@@ -56,7 +67,7 @@ export function useCafeOrderRows(fromDate: string, toDate: string, enabled: bool
       })));
     })();
     return () => { active = false; };
-  }, [fromDate, toDate, enabled]);
+  }, [fromDate, toDate, enabled, refreshToken]);
 
-  return rows;
+  return { rows, refresh };
 }

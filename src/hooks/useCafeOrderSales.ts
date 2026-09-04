@@ -10,7 +10,7 @@
 // queried at all. This hook fetches Cafe's real completed sales directly
 // from `orders`, independent of that other pipeline, so it can be added
 // into the combined totals wherever Cafe is in scope.
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 
 export type CafeOrderSalesSummary = {
@@ -23,9 +23,14 @@ export type CafeOrderSalesSummary = {
   otherSales: number; // wallet/advance/anything not cash-upi-card-credit
   loading: boolean;
   error: string;
+  // Bumped by the caller to force a fresh re-fetch on demand (a manual
+  // "Refresh" button) without needing fromDate/toDate/enabled to change —
+  // this hook otherwise only ever re-queries when one of those changes, so
+  // it can silently lag behind real Cafe `orders` activity between refetches.
+  refresh: () => void;
 };
 
-const EMPTY: CafeOrderSalesSummary = {
+const EMPTY: Omit<CafeOrderSalesSummary, 'refresh'> = {
   grossSales: 0, billsCount: 0, cashSales: 0, upiSales: 0, cardSales: 0,
   creditSales: 0, otherSales: 0, loading: false, error: '',
 };
@@ -41,7 +46,11 @@ function isValidDate(value: string) {
 // served-but-unpaid rows exist for complimentary/staff orders and shouldn't
 // count as revenue).
 export function useCafeOrderSales(fromDate: string, toDate: string, enabled: boolean): CafeOrderSalesSummary {
-  const [summary, setSummary] = useState<CafeOrderSalesSummary>(EMPTY);
+  const [summary, setSummary] = useState<Omit<CafeOrderSalesSummary, 'refresh'>>(EMPTY);
+  // Bumped by refresh() to force the effect below to re-run on demand,
+  // without needing fromDate/toDate/enabled to change.
+  const [refreshToken, setRefreshToken] = useState(0);
+  const refresh = useCallback(() => setRefreshToken((t) => t + 1), []);
 
   useEffect(() => {
     if (!enabled) { setSummary(EMPTY); return; }
@@ -89,7 +98,7 @@ export function useCafeOrderSales(fromDate: string, toDate: string, enabled: boo
       });
     })();
     return () => { active = false; };
-  }, [fromDate, toDate, enabled]);
+  }, [fromDate, toDate, enabled, refreshToken]);
 
-  return summary;
+  return { ...summary, refresh };
 }
