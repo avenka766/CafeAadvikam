@@ -3002,6 +3002,11 @@ function ReportsTab({ shops, bills, billItems, credits, logs, reminders, dispute
   const [rangeFetchedBills, setRangeFetchedBills] = useState<HosurBill[] | null>(null);
   const [rangeFetchedItems, setRangeFetchedItems] = useState<Record<string, HosurBillItem[]> | null>(null);
   const [rangeFetchLoading, setRangeFetchLoading] = useState(false);
+  // Manual re-fetch trigger: this range-scoped fetch only re-runs when `from`/`to`
+  // change, so once it lands it becomes this tab's sole source of truth (see the
+  // fix above) with no way to pull newer bills for the SAME range short of
+  // nudging the date fields. Bumping this forces the effect below to re-run.
+  const [refreshToken, setRefreshToken] = useState(0);
   useEffect(() => {
     let cancelled = false;
     if (!(from <= to)) { setRangeFetchedBills(null); setRangeFetchedItems(null); return; }
@@ -3037,7 +3042,7 @@ function ReportsTab({ shops, bills, billItems, credits, logs, reminders, dispute
       setRangeFetchLoading(false);
     })();
     return () => { cancelled = true; };
-  }, [from, to]);
+  }, [from, to, refreshToken]);
   // Fall back to the capped prop data only while the fresh range fetch hasn't landed yet
   // (first render) — once it lands, it's the source of truth for every total below.
   const effectiveBills = rangeFetchedBills ?? bills;
@@ -3142,6 +3147,7 @@ function ReportsTab({ shops, bills, billItems, credits, logs, reminders, dispute
           <p className="mt-1 max-w-2xl text-sm text-white/60">Sales, collections, credit exposure, item movement, WhatsApp delivery and operational exceptions in one readable workspace.</p>
         </div>
         <div className="flex flex-wrap gap-2">
+          <button className="inline-flex h-11 items-center gap-2 rounded-xl border border-white/15 bg-white/10 px-4 text-xs font-black hover:bg-white/15" disabled={rangeFetchLoading} onClick={() => setRefreshToken((k) => k + 1)} title="Reload bills for the selected date range"><RefreshCw className={cn('size-4', rangeFetchLoading && 'animate-spin')} /> Refresh</button>
           <button className="inline-flex h-11 items-center gap-2 rounded-xl border border-white/15 bg-white/10 px-4 text-xs font-black hover:bg-white/15" onClick={exportExcel}><FileSpreadsheet className="size-4" /> Export Excel</button>
           <button className="inline-flex h-11 items-center gap-2 rounded-xl bg-white px-4 text-xs font-black text-slate-950 hover:bg-emerald-50" onClick={printReport}><Printer className="size-4" /> Print Report</button>
         </div>

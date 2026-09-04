@@ -2,7 +2,7 @@ import { useState, useMemo, useRef, useEffect } from 'react';
 import { useMenuStore } from '@/stores/menuStore';
 import {
   Search, X, Camera, ToggleLeft, ToggleRight, ImageOff,
-  Edit3, Check, Plus, ChevronDown, Loader2, Tag, Pencil,
+  Edit3, Check, Plus, ChevronDown, Loader2, Tag, Pencil, RefreshCw,
 } from 'lucide-react';
 import { formatCurrency, cn } from '@/lib/utils';
 import { supabase } from '@/lib/supabase';
@@ -366,9 +366,15 @@ export default function MenuManagement({ embedded = false }: { embedded?: boolea
   const [uploadTarget, setUploadTarget] = useState<string | null>(null);
   const [uploadingImageFor, setUploadingImageFor] = useState<string | null>(null);
   const [imageUploadError, setImageUploadError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
   const menuCategories = useMenuCategories();
 
   useEffect(() => { loadMenu(); }, [loadMenu]);
+
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    try { await loadMenu(true); } finally { setRefreshing(false); }
+  };
 
   const filtered = useMemo(() => {
     let list = [...items];
@@ -464,6 +470,16 @@ export default function MenuManagement({ embedded = false }: { embedded?: boolea
             )}
           </div>
 
+          {/* Refresh button */}
+          <button
+            onClick={handleRefresh}
+            disabled={refreshing}
+            className="shrink-0 size-10 rounded-xl bg-muted text-foreground flex items-center justify-center active:scale-95 transition-all border border-border disabled:opacity-60"
+            aria-label="Refresh menu"
+            title="Refresh menu"
+          >
+            <RefreshCw className={cn('size-4', refreshing && 'animate-spin')} />
+          </button>
           {/* Manage Categories button */}
           <button
             onClick={() => setShowCategorySheet(true)}

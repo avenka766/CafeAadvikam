@@ -1892,6 +1892,15 @@ function NewBillPanel() {
 
   // -- Table Board: live status of every table (Free / Running + item count) --
   const [tableBoard, setTableBoard] = useState<Record<number, number>>({});
+  // REFRESH-AUDIT FIX: this only ever loaded once on mount (plus after this
+  // terminal's own actions re-call it below) — another biller/terminal
+  // starting or closing a table never reached this screen until the next
+  // action here happened to trigger a reload. No manual way to force a fresh
+  // read existed, so a stale "Free" table could silently double-book. Tracks
+  // its own loading flag (separate from runningOrderLoading) so the new
+  // refresh button below can show a spinner without touching the per-table
+  // fetch's own state.
+  const [tableBoardRefreshing, setTableBoardRefreshing] = useState(false);
   const loadTableBoard = useCallback(async () => {
     try {
       const { data, error } = await supabase.rpc('get_running_table_orders_v1');
@@ -1909,6 +1918,15 @@ function NewBillPanel() {
     }
   }, []);
   useEffect(() => { void loadTableBoard(); }, [loadTableBoard]);
+  const refreshTableBoard = useCallback(async () => {
+    if (tableBoardRefreshing) return;
+    setTableBoardRefreshing(true);
+    try {
+      await loadTableBoard();
+    } finally {
+      setTableBoardRefreshing(false);
+    }
+  }, [loadTableBoard, tableBoardRefreshing]);
 
   const captureDraft = (): Draft => ({ cart, customItems });
 
@@ -3730,6 +3748,19 @@ function NewBillPanel() {
                   <MapPin className="size-2.5" />Table
                 </label>
                 <div className="flex items-center gap-1.5 text-[9px] font-body text-muted-foreground">
+                  {/* REFRESH-AUDIT FIX: table board (Free/Running per table) only ever
+                      loaded on mount + after this terminal's own actions - another
+                      biller/terminal's changes never showed up here without one. */}
+                  <button
+                    type="button"
+                    onClick={() => void refreshTableBoard()}
+                    disabled={tableBoardRefreshing}
+                    title="Refresh table board"
+                    aria-label="Refresh table board"
+                    className="inline-flex size-5 items-center justify-center rounded-md border border-border bg-card text-muted-foreground transition-colors hover:bg-muted disabled:opacity-60"
+                  >
+                    <RefreshCw className={cn('size-2.5', tableBoardRefreshing && 'animate-spin')} />
+                  </button>
                   <span className="flex items-center gap-0.5"><span className="size-1.5 rounded-full bg-muted-foreground/30" />Free</span>
                   <span className="flex items-center gap-0.5"><span className="size-1.5 rounded-full bg-amber-500" />Running</span>
                   <span className="flex items-center gap-0.5"><span className="size-1.5 rounded-full bg-blue-400" />Draft</span>
@@ -4474,6 +4505,12 @@ function CafePaymentModeEditTab({ orders }: { orders: Order[] }) {
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
   const [auditRows, setAuditRows] = useState<CafePaymentEditAudit[]>([]);
+  // REFRESH-AUDIT FIX: this tab does its own on-demand 365-day orders fetch
+  // plus a separate audit-log fetch, both of which only ever ran on mount
+  // (or after this tab's own edit). The top-level status-bar refresh button
+  // only reloads a 90-day order window and never touches the audit log, so
+  // it doesn't cover this tab - no manual way to force a fresh read existed.
+  const [refreshing, setRefreshing] = useState(false);
 
   const loadAuditRows = useCallback(async () => {
     const { data, error } = await supabase
@@ -4491,6 +4528,16 @@ function CafePaymentModeEditTab({ orders }: { orders: Order[] }) {
     void loadOrders(365);
     void loadAuditRows();
   }, [loadAuditRows, loadOrders]);
+
+  const refreshData = useCallback(async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    try {
+      await Promise.all([loadOrders(365), loadAuditRows()]);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [loadOrders, loadAuditRows, refreshing]);
 
   const auditsByOrder = useMemo(() => {
     const map = new Map<string, CafePaymentEditAudit>();
@@ -4559,7 +4606,19 @@ function CafePaymentModeEditTab({ orders }: { orders: Order[] }) {
             <h2 className="text-2xl font-black text-slate-950">Payment Mode Edit</h2>
             <p className="text-sm font-semibold text-slate-500">Only Cash, UPI and Card can be corrected. Items, quantities and bill totals remain locked.</p>
           </div>
-          <div className="relative w-full sm:max-w-sm"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search bill, customer or cashier" className="h-11 w-full rounded-xl border border-slate-200 bg-slate-50 pl-9 pr-3 text-sm font-bold outline-none focus:border-rose-500 focus:bg-white" /></div>
+          <div className="flex items-center gap-2 w-full sm:w-auto">
+            <div className="relative w-full sm:max-w-sm"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search bill, customer or cashier" className="h-11 w-full rounded-xl border border-slate-200 bg-slate-50 pl-9 pr-3 text-sm font-bold outline-none focus:border-rose-500 focus:bg-white" /></div>
+            <button
+              type="button"
+              onClick={() => void refreshData()}
+              disabled={refreshing}
+              title="Refresh bills and correction history"
+              aria-label="Refresh bills and correction history"
+              className="inline-flex size-7 shrink-0 items-center justify-center rounded-lg border border-border bg-card text-muted-foreground transition-colors hover:bg-muted disabled:opacity-60"
+            >
+              <RefreshCw className={cn('size-3.5', refreshing && 'animate-spin')} />
+            </button>
+          </div>
         </div>
 
         {message && <div className={cn('mx-4 mt-3 rounded-xl px-3 py-2 text-sm font-bold', message.includes('updated') ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-800')}>{message}</div>}

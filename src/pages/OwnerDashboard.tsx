@@ -1939,6 +1939,19 @@ function OwnerComplaintsTab() {
   const { complaints, updateComplaintStatus } = useBranchOpsStore();
   const [statusUpdates, setStatusUpdates] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState<string | null>(null);
+  // AUDIT FIX (2026-09-04): "every other tab in this file has its own Refresh
+  // button, this one didn't" (same gap already fixed on OwnerAuditTab
+  // 2026-09-02) — complaints only ever populate from branchOpsStore's
+  // persist-storage hydration on first mount; there was no way to pull in a
+  // complaint filed by a branch admin after this screen loaded short of a
+  // full page reload. rehydrate() re-runs the same Supabase query this store
+  // hydrates from and merges the result back in.
+  const [complaintsRefreshing, setComplaintsRefreshing] = useState(false);
+  const refreshComplaints = useCallback(async () => {
+    setComplaintsRefreshing(true);
+    await useBranchOpsStore.persist.rehydrate();
+    setComplaintsRefreshing(false);
+  }, []);
 
   const allComplaints = useMemo(() =>
     [...(complaints || [])].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
@@ -1975,6 +1988,14 @@ function OwnerComplaintsTab() {
           <p className="text-sm font-semibold text-foreground">Complaints</p>
           <p className="text-xs text-muted-foreground">All branch admin complaints — owner view</p>
         </div>
+        <button
+          type="button"
+          onClick={() => void refreshComplaints()}
+          disabled={complaintsRefreshing}
+          className="ml-auto inline-flex items-center gap-1.5 rounded-2xl border border-border bg-card px-3 py-2 text-xs font-black text-muted-foreground hover:bg-slate-50 disabled:opacity-60"
+        >
+          <RefreshCw className={cn('size-3.5', complaintsRefreshing && 'animate-spin')} />Refresh
+        </button>
       </div>
 
       <div className="grid grid-cols-3 gap-3">
@@ -2645,6 +2666,29 @@ function OwnerAlertsTab() {
   useEffect(() => { void fetchStockMismatches(); }, [fetchStockMismatches]);
   useEffect(() => { load(); }, [load]);
 
+  // AUDIT FIX (2026-09-04): "every other tab in this file has its own Refresh
+  // button, this one didn't" (same gap already fixed on OwnerAuditTab
+  // 2026-09-02) — this tab's alerts are built from 7 different sources
+  // (creditSales/fetchBranchData, invoices, and purchases/cashierClosures/
+  // notifications/storeOrders/returns from branchOpsStore) and every one of
+  // them only ever loads once on mount or off a background poll/realtime
+  // subscription. Refresh re-runs all of them: fetchBranchData with
+  // force=true to bypass its normal throttle (see BRANCH_FETCH_FRESH_MS in
+  // branchStore.ts) since this is an explicit user-triggered refresh, plus
+  // branchOpsStore's rehydrate() for the purchases/closures/notifications/
+  // storeOrders/returns slices it doesn't otherwise expose a fetch for.
+  const [alertsRefreshing, setAlertsRefreshing] = useState(false);
+  const refreshAlerts = useCallback(async () => {
+    setAlertsRefreshing(true);
+    await Promise.all([
+      ...OWNER_FULL_BRANCHES.map(branch => fetchBranchData(branch, true)),
+      fetchStockMismatches(),
+      load(),
+      useBranchOpsStore.persist.rehydrate(),
+    ]);
+    setAlertsRefreshing(false);
+  }, [fetchBranchData, fetchStockMismatches, load]);
+
   const alerts: OwnerAlert[] = useMemo(() => {
     const today = ownerDateInput();
     const list: OwnerAlert[] = [];
@@ -2694,6 +2738,7 @@ function OwnerAlertsTab() {
     <div className="owner-tab-stack">
       <OwnerToolbar>
         {(['all', 'danger', 'warning', 'neutral', 'success'] as const).map(option => <button key={option} type="button" onClick={() => setTone(option)} className={cn(tone === option && 'is-active')}>{option === 'all' ? 'All alerts' : option}</button>)}
+        <button type="button" onClick={() => void refreshAlerts()} disabled={alertsRefreshing} className="inline-flex items-center gap-1.5 disabled:opacity-60"><RefreshCw className={cn('size-4', alertsRefreshing && 'animate-spin')} />Refresh</button>
         <button type="button" onClick={() => ownerCsvDownload('owner-alerts.csv', visible.map(a => ({ Alert: a.title, Value: a.value, Branch: a.branch || 'Business', Tone: a.tone, Details: a.note })))}><Download className="size-4" />Export</button>
       </OwnerToolbar>
       {/* CHANGE 9c: improved KPI metrics */}
@@ -2983,6 +3028,19 @@ function OwnerPurchasesTab() {
 
 function OwnerStockVarianceTab() {
   const { stockVarianceRecords } = useBranchOpsStore();
+  // AUDIT FIX (2026-09-04): "every other tab in this file has its own Refresh
+  // button, this one didn't" (same gap already fixed on OwnerAuditTab
+  // 2026-09-02) — stockVarianceRecords only ever populates from
+  // branchOpsStore's persist-storage hydration on first mount; a variance
+  // report confirmed by SNB/VRSNB Admin after this screen loaded wouldn't
+  // show up here without a full page reload. rehydrate() re-runs the same
+  // Supabase query this store hydrates from and merges the result back in.
+  const [varianceRefreshing, setVarianceRefreshing] = useState(false);
+  const refreshVariance = useCallback(async () => {
+    setVarianceRefreshing(true);
+    await useBranchOpsStore.persist.rehydrate();
+    setVarianceRefreshing(false);
+  }, []);
   // FEATURE (2026-08-09): "there is no price of the difference how much is
   // loss this should be highlighted" — stock variance rows only ever stored
   // quantities, no rupee value. Price the difference against the live
@@ -3111,6 +3169,14 @@ function OwnerStockVarianceTab() {
       </section>
 
       <OwnerToolbar>
+        <button
+          type="button"
+          onClick={() => void refreshVariance()}
+          disabled={varianceRefreshing}
+          className="inline-flex items-center gap-1.5 disabled:opacity-60"
+        >
+          <RefreshCw className={cn('size-4', varianceRefreshing && 'animate-spin')} />Refresh
+        </button>
         <button
           type="button"
           onClick={() =>

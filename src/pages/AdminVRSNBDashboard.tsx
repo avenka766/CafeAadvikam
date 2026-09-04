@@ -453,6 +453,7 @@ export default function AdminVRSNBDashboard() {
     addAuditLog,
     fetchBillsInRange,
   } = useBranchOpsStore();
+  const rehydrateBranchOps = () => useBranchOpsStore.persist.rehydrate();
 
   const today = dateInput();
   const requestedTab = searchParams.get("tab") as TabId | null;
@@ -1010,6 +1011,11 @@ export default function AdminVRSNBDashboard() {
     notice,
     setNotice,
     adminLedger,
+    refreshCafeOrderSales: cafeOrderSales.refresh,
+    fetchBranchData,
+    fetchBillsInRange,
+    fetchCreditPayments,
+    rehydrateBranchOps,
   };
 
   if (!canManage) {
@@ -1627,7 +1633,24 @@ function SalesReturnsTab(props: any) {
   // includes Cafe's dine-in sales (see useCafeOrderSales), but this table
   // itself only ever listed VRSNB retail rows — showing "No sales or return
   // records" for Cafe while the KPI card right above it showed real money.
-  const cafeRows = useCafeOrderRows(props.fromDate, props.toDate, (props.reportBranches || []).includes('Cafe'));
+  const { rows: cafeRows, refresh: refreshCafeRows } = useCafeOrderRows(props.fromDate, props.toDate, (props.reportBranches || []).includes('Cafe'));
+  const [refreshing, setRefreshing] = useState(false);
+  const refreshAll = async () => {
+    setRefreshing(true);
+    try {
+      const branches: Branch[] = props.reportBranches || [];
+      await Promise.all([
+        ...branches.map((branch) => props.fetchBranchData(branch, true, ['sales', 'credit'])),
+        ...branches.map((branch) => props.fetchCreditPayments(branch)),
+        ...branches.map((branch) => props.fetchBillsInRange(props.fromDate, props.toDate, branch)),
+        props.rehydrateBranchOps(),
+        props.refreshCafeOrderSales(),
+      ]);
+      refreshCafeRows();
+    } finally {
+      setRefreshing(false);
+    }
+  };
   const salesRows = [
     ...cafeRows.map((r) => ({
       type: 'Sale',
@@ -1737,27 +1760,37 @@ function SalesReturnsTab(props: any) {
         title="Sales and Returns Log"
         icon={<History className="size-4" />}
         action={
-          <button
-            className={cn(btnCls, "bg-slate-950 text-white")}
-            onClick={() =>
-              csvDownload(
-                `VRSNB_Sales_Returns_${dateInput()}.xls`,
-                salesRows.map((r) => ({
-                  Type: r.type,
-                  Number: r.no,
-                  Date: fmtDateTime(r.date),
-                  Person: r.person,
-                  GrossSales: r.gross,
-                  ReturnAmount: r.returns,
-                  NetSales: r.net,
-                  Payment: r.payment,
-                })),
-              )
-            }
-          >
-            <Download className="size-4" />
-            Export
-          </button>
+          <div className="flex gap-2">
+            <button
+              className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")}
+              onClick={() => void refreshAll()}
+              disabled={refreshing}
+            >
+              <RefreshCcw className={cn("size-4", refreshing && "animate-spin")} />
+              Refresh
+            </button>
+            <button
+              className={cn(btnCls, "bg-slate-950 text-white")}
+              onClick={() =>
+                csvDownload(
+                  `VRSNB_Sales_Returns_${dateInput()}.xls`,
+                  salesRows.map((r) => ({
+                    Type: r.type,
+                    Number: r.no,
+                    Date: fmtDateTime(r.date),
+                    Person: r.person,
+                    GrossSales: r.gross,
+                    ReturnAmount: r.returns,
+                    NetSales: r.net,
+                    Payment: r.payment,
+                  })),
+                )
+              }
+            >
+              <Download className="size-4" />
+              Export
+            </button>
+          </div>
         }
       >
         <DataTable
@@ -1853,6 +1886,16 @@ function StockTab(props: any) {
       .sort((a: any, b: any) => a.status.localeCompare(b.status) || a.itemName.localeCompare(b.itemName));
   }, [props.branchStock, catalogItems, stockSearch, category, status, unit, minQty, maxQty]);
   const stockValue = enrichedRows.reduce((sum: number, item: any) => sum + item.stockValue, 0);
+  const [refreshing, setRefreshing] = useState(false);
+  const refreshStock = async () => {
+    setRefreshing(true);
+    try {
+      const branches: Branch[] = props.reportBranches || [BRANCH];
+      await Promise.all(branches.map((branch) => props.fetchBranchData(branch, true, ['stock'])));
+    } finally {
+      setRefreshing(false);
+    }
+  };
   return (
     <div className="space-y-4">
       <div className="grid gap-3 sm:grid-cols-3">
@@ -1874,7 +1917,20 @@ function StockTab(props: any) {
           tone="blue"
         />
       </div>
-      <Panel title="Stock Register" icon={<Package className="size-4" />}>
+      <Panel
+        title="Stock Register"
+        icon={<Package className="size-4" />}
+        action={
+          <button
+            className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")}
+            onClick={() => void refreshStock()}
+            disabled={refreshing}
+          >
+            <RefreshCcw className={cn("size-4", refreshing && "animate-spin")} />
+            Refresh
+          </button>
+        }
+      >
         <div className="grid gap-3 lg:grid-cols-[minmax(0,1.4fr)_repeat(5,minmax(120px,1fr))]">
           <div className="flex items-center gap-2 rounded-2xl border border-slate-200 px-3 py-2">
             <Search className="size-4 text-slate-400" />
@@ -2123,6 +2179,15 @@ function ExpensesTab({ userName, expenseAmount, cashBalance }: any) {
     mode: "cash",
   });
   const rows = expenses.filter((e) => e.branch === BRANCH);
+  const [refreshing, setRefreshing] = useState(false);
+  const refreshExpenses = async () => {
+    setRefreshing(true);
+    try {
+      await useBranchOpsStore.persist.rehydrate();
+    } finally {
+      setRefreshing(false);
+    }
+  };
   const save = () => {
     const amount = Number(form.amount);
     // AUDIT FIX (2026-09-02): `!amount` only rejects zero/NaN — a negative
@@ -2155,7 +2220,7 @@ function ExpensesTab({ userName, expenseAmount, cashBalance }: any) {
             <button onClick={save} className={cn(btnCls, "w-full bg-slate-950 text-white")}>Save Expense</button>
           </div>
         </Panel>
-        <Panel title="Expense History" icon={<History className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("VRSNB_Expenses.xls", rows.map((e) => ({ Date: e.expenseDate, Category: e.category, Details: e.description, Amount: e.amount, Mode: e.mode, EnteredBy: e.enteredBy })))}><Download className="size-4" /> Excel</button>}>
+        <Panel title="Expense History" icon={<History className="size-4" />} action={<div className="flex gap-2"><button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => void refreshExpenses()} disabled={refreshing}><RefreshCcw className={cn("size-4", refreshing && "animate-spin")} /> Refresh</button><button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("VRSNB_Expenses.xls", rows.map((e) => ({ Date: e.expenseDate, Category: e.category, Details: e.description, Amount: e.amount, Mode: e.mode, EnteredBy: e.enteredBy })))}><Download className="size-4" /> Excel</button></div>}>
           <DataTable headers={["Date", "Category", "Details", "Amount", "Mode", "Entered By"]} rows={rows.map((e) => [fmtDate(e.expenseDate), e.category, e.description, money(e.amount), e.mode.toUpperCase(), e.enteredBy])} empty="No expenses added." />
         </Panel>
       </div>
@@ -2168,13 +2233,16 @@ function ComplaintsTab({ userName }: { userName: string }) {
   const [rows, setRows] = useState<any[]>([]);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [loading, setLoading] = useState(false);
 
   const load = async () => {
+    setLoading(true);
     const { data, error: loadError } = await supabase
       .from("branch_complaint_tickets")
       .select("ticket_no, created_at, complaint_area, subject, description, created_by_username, status")
       .eq("branch", BRANCH)
       .order("created_at", { ascending: false });
+    setLoading(false);
     if (loadError) {
       setError(loadError.message);
       return;
@@ -2241,7 +2309,15 @@ function ComplaintsTab({ userName }: { userName: string }) {
           </button>
         </div>
       </Panel>
-      <Panel title="Complaint Ticket Register" icon={<Bell className="size-4" />}>
+      <Panel
+        title="Complaint Ticket Register"
+        icon={<Bell className="size-4" />}
+        action={
+          <button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => void load()} disabled={loading}>
+            <RefreshCcw className={cn("size-4", loading && "animate-spin")} /> Refresh
+          </button>
+        }
+      >
         <p className="mb-3 rounded-xl bg-blue-50 px-3 py-2 text-xs font-bold text-blue-800 ring-1 ring-blue-200">
           VRSNB Admin can raise tickets and add branch details. Review, resolution and closure are restricted to Owner and Main Admin.
         </p>
@@ -2539,6 +2615,15 @@ function WasteLogsTab({ userName, role }: { userName: string; role: string }) {
 function QuotationsTab({ userName }: { userName: string }) {
   const catalogItems = useVRSNBCatalog();
   const { quotations, addQuotation, updateQuotationStatus } = useBranchOpsStore();
+  const [refreshing, setRefreshing] = useState(false);
+  const refreshQuotations = async () => {
+    setRefreshing(true);
+    try {
+      await useBranchOpsStore.persist.rehydrate();
+    } finally {
+      setRefreshing(false);
+    }
+  };
   const [mode, setMode] = useState<"list" | "custom">("list");
   const [form, setForm] = useState({ customerName: "", companyName: "", mobile: "", gstNumber: "", itemName: catalogItems[0]?.name || "", customName: "", qty: "1", rate: "", deliveryCharges: "0", packingCharges: "0", extraCharges: "0", discount: "0" });
   const [lines, setLines] = useState<any[]>([]);
@@ -2590,7 +2675,15 @@ function QuotationsTab({ userName }: { userName: string }) {
           <button onClick={save} className={cn(btnCls, "w-full bg-slate-950 text-white")}>Save Quotation</button>
         </div>
       </Panel>
-      <Panel title="Quotation History" icon={<History className="size-4" />}>
+      <Panel
+        title="Quotation History"
+        icon={<History className="size-4" />}
+        action={
+          <button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => void refreshQuotations()} disabled={refreshing}>
+            <RefreshCcw className={cn("size-4", refreshing && "animate-spin")} /> Refresh
+          </button>
+        }
+      >
         <DataTable headers={["No", "Customer", "Mobile", "GST", "Items", "Charges", "Discount", "Total", "Status", "Action"]} rows={rows.map((q) => [q.quoteNo, q.customerName, q.mobile || "-", q.gstNumber || "-", q.items.length, money((q.deliveryCharges || 0) + (q.packingCharges || 0) + (q.extraCharges || 0)), money(q.discount || 0), money(q.total), q.status, <div key="a" className="flex gap-2"><button className={cn(btnCls, "bg-emerald-50 text-emerald-700")} onClick={() => updateQuotationStatus(q.id, "Converted", userName)}>Convert</button><button className={cn(btnCls, "bg-red-50 text-red-600")} onClick={() => updateQuotationStatus(q.id, "Cancelled", userName)}>Cancel</button></div>])} empty="No quotations saved." />
       </Panel>
     </div>
@@ -2603,7 +2696,23 @@ function CashierReportTab(props: any) {
   // per-cashier breakdown only ever grouped VRSNB retail bills, so
   // switching scope to "Cafe" showed "No cashier sales data found" here
   // while other tabs on the same page showed non-zero Cafe revenue.
-  const cafeRows = useCafeOrderRows(props.fromDate, props.toDate, (props.reportBranches || []).includes('Cafe'));
+  const { rows: cafeRows, refresh: refreshCafeRows } = useCafeOrderRows(props.fromDate, props.toDate, (props.reportBranches || []).includes('Cafe'));
+  const [refreshing, setRefreshing] = useState(false);
+  const refreshAll = async () => {
+    setRefreshing(true);
+    try {
+      const branches: Branch[] = props.reportBranches || [];
+      await Promise.all([
+        ...branches.map((branch) => props.fetchBranchData(branch, true, ['sales', 'credit'])),
+        ...branches.map((branch) => props.fetchBillsInRange(props.fromDate, props.toDate, branch)),
+        props.rehydrateBranchOps(),
+        props.refreshCafeOrderSales(),
+      ]);
+      refreshCafeRows();
+    } finally {
+      setRefreshing(false);
+    }
+  };
   const rows = useMemo(() => {
     const map = new Map<string, any>();
     const ensure = (name: string) => {
@@ -2675,7 +2784,7 @@ function CashierReportTab(props: any) {
         <Kpi label="Combined Net Sales" value={money(totalNet)} icon={<IndianRupee className="size-5" />} tone="green" />
         <Kpi label="Top Cashier" value={best ? best.name : "-"} sub={best ? money(best.netSales) : undefined} icon={<BarChart3 className="size-5" />} tone="amber" />
       </div>
-      <Panel title="Cashier Report" icon={<BarChart3 className="size-4" />} action={<button className={cn(btnCls, "bg-slate-950 text-white")} onClick={() => csvDownload("VRSNB_Cashier_Report.xls", rows.map((r: any) => ({ CashierLogin: r.name, GrossSales: r.grossSales, Returns: r.returns, NetSales: r.netSales, Bills: r.bills, Cash: r.cash, UPI: r.upi, Card: r.card, Credit: r.credit })))}><Download className="size-4" /> Export</button>}>
+      <Panel title="Cashier Report" icon={<BarChart3 className="size-4" />} action={<div className="flex gap-2"><button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => void refreshAll()} disabled={refreshing}><RefreshCcw className={cn("size-4", refreshing && "animate-spin")} /> Refresh</button><button className={cn(btnCls, "bg-slate-950 text-white")} onClick={() => csvDownload("VRSNB_Cashier_Report.xls", rows.map((r: any) => ({ CashierLogin: r.name, GrossSales: r.grossSales, Returns: r.returns, NetSales: r.netSales, Bills: r.bills, Cash: r.cash, UPI: r.upi, Card: r.card, Credit: r.credit })))}><Download className="size-4" /> Export</button></div>}>
         <DataTable headers={["Rank", "Cashier Login", "Gross", "Returns", "Net", "Bills", "Cash", "UPI", "Card", "Credit"]} rows={rows.map((r: any, idx: number) => [`#${idx + 1}`, r.name, money(r.grossSales), money(r.returns), <span key="n" className="font-black text-emerald-700">{money(r.netSales)}</span>, r.bills, money(r.cash), money(r.upi), money(r.card), money(r.credit)])} empty="No cashier sales data found." />
       </Panel>
     </div>
@@ -2687,6 +2796,15 @@ function CashierClosureTab(props: any) {
   const rows = cashierClosures.filter((c) => c.branch === BRANCH);
   const totalDifference = rows.reduce((sum, c) => sum + c.difference, 0);
   const mismatches = rows.filter((c) => c.difference !== 0).length;
+  const [refreshing, setRefreshing] = useState(false);
+  const refreshClosures = async () => {
+    setRefreshing(true);
+    try {
+      await useBranchOpsStore.persist.rehydrate();
+    } finally {
+      setRefreshing(false);
+    }
+  };
   return (
     <div className="space-y-4">
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -2699,33 +2817,43 @@ function CashierClosureTab(props: any) {
         title="All Cashier Closure Data"
         icon={<CalendarClock className="size-4" />}
         action={
-          <button
-            className={cn(btnCls, "bg-slate-950 text-white")}
-            onClick={() =>
-              csvDownload(
-                "VRSNB_All_Cashier_Closures.xls",
-                rows.map((c) => ({
-                  Date: fmtDateTime(c.createdAt),
-                  Cashier: c.cashier,
-                  Opening: c.openingCash,
-                  Expected: c.expectedCash,
-                  Closing: c.closingCash,
-                  Difference: c.difference,
-                  Bills: c.billsCount,
-                  Cash: c.cash,
-                  UPI: c.upi,
-                  Card: c.card,
-                  Returns: c.returns,
-                  CreditSales: c.creditSales ?? 0,
-                  CreditCollections: c.creditCollections ?? 0,
-                  Notes: c.notes,
-                })),
-              )
-            }
-          >
-            <Download className="size-4" />
-            Export
-          </button>
+          <div className="flex gap-2">
+            <button
+              className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")}
+              onClick={() => void refreshClosures()}
+              disabled={refreshing}
+            >
+              <RefreshCcw className={cn("size-4", refreshing && "animate-spin")} />
+              Refresh
+            </button>
+            <button
+              className={cn(btnCls, "bg-slate-950 text-white")}
+              onClick={() =>
+                csvDownload(
+                  "VRSNB_All_Cashier_Closures.xls",
+                  rows.map((c) => ({
+                    Date: fmtDateTime(c.createdAt),
+                    Cashier: c.cashier,
+                    Opening: c.openingCash,
+                    Expected: c.expectedCash,
+                    Closing: c.closingCash,
+                    Difference: c.difference,
+                    Bills: c.billsCount,
+                    Cash: c.cash,
+                    UPI: c.upi,
+                    Card: c.card,
+                    Returns: c.returns,
+                    CreditSales: c.creditSales ?? 0,
+                    CreditCollections: c.creditCollections ?? 0,
+                    Notes: c.notes,
+                  })),
+                )
+              }
+            >
+              <Download className="size-4" />
+              Export
+            </button>
+          </div>
         }
       >
         <DataTable
@@ -3049,6 +3177,19 @@ function HistoryTab(props: any) {
   const { purchases, purchasePayments, bankDeposits, expenses, auditLogs, cashierClosures } = useBranchOpsStore();
   const branches: Branch[] = props.reportBranches || [BRANCH];
   const withinRange = (value: string) => inRange(value, props.fromDate, props.toDate);
+  const [refreshing, setRefreshing] = useState(false);
+  const refreshHistory = async () => {
+    setRefreshing(true);
+    try {
+      await Promise.all([
+        ...branches.map((branch) => props.fetchBranchData(branch, true, ['sales'])),
+        ...branches.map((branch) => props.fetchBillsInRange(props.fromDate, props.toDate, branch)),
+        props.rehydrateBranchOps(),
+      ]);
+    } finally {
+      setRefreshing(false);
+    }
+  };
   const rows = [
     ...props.branchBills.map((bill: any) => ({ date: bill.createdAt, type: "Sale", reference: bill.billNo, details: `${bill.customerName || "Walk-in"} - ${bill.items.length} item(s)`, amount: bill.total, user: bill.cashier || bill.createdBy || "-", status: bill.status || "Completed" })),
     ...props.branchReturns.map((row: any) => ({ date: row.createdAt, type: "Sales Return", reference: row.returnNo, details: row.reason, amount: -Number(row.total || 0), user: row.returnedBy, status: "Completed" })),
@@ -3060,7 +3201,7 @@ function HistoryTab(props: any) {
     ...auditLogs.filter((row) => branches.includes(row.branch) && withinRange(row.createdAt)).map((row) => ({ date: row.createdAt, type: "Audit", reference: row.id, details: row.action, amount: 0, user: row.user, status: "Recorded" })),
   ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   return (
-    <Panel title="Complete VRSNB History" icon={<History className="size-4" />} action={<button className={cn(btnCls, "bg-slate-950 text-white")} onClick={() => csvDownload("VRSNB_Complete_History.xls", rows)}><Download className="size-4" />Excel</button>}>
+    <Panel title="Complete VRSNB History" icon={<History className="size-4" />} action={<div className="flex gap-2"><button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => void refreshHistory()} disabled={refreshing}><RefreshCcw className={cn("size-4", refreshing && "animate-spin")} />Refresh</button><button className={cn(btnCls, "bg-slate-950 text-white")} onClick={() => csvDownload("VRSNB_Complete_History.xls", rows)}><Download className="size-4" />Excel</button></div>}>
       <DataTable headers={["Date & Time", "Type", "Reference", "Details", "Amount", "User", "Status"]} rows={rows.map((row) => [fmtDateTime(row.date), row.type, row.reference, row.details, row.amount === 0 ? "-" : money(row.amount), row.user || "-", row.status])} empty="No VRSNB history found for this date range." />
     </Panel>
   );
@@ -4052,6 +4193,18 @@ function CreditTab({ fromDate, toDate, viewBranches }: { fromDate: string; toDat
     });
   }, [fetchCreditPayments, fetchCreditSales, scopedBranches]);
 
+  const [refreshing, setRefreshing] = useState(false);
+  const refreshCredit = async () => {
+    setRefreshing(true);
+    try {
+      await Promise.all(
+        scopedBranches.flatMap((branch) => [fetchCreditSales(branch), fetchCreditPayments(branch)]),
+      );
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
   const sales = useMemo(
     () =>
       scopedBranches.flatMap((branch) =>
@@ -4124,6 +4277,13 @@ function CreditTab({ fromDate, toDate, viewBranches }: { fromDate: string; toDat
               <option value="partial">Partial</option>
               <option value="settled">Settled</option>
             </select>
+            <button
+              className={cn(btnCls, "h-10 bg-white text-slate-700 ring-1 ring-slate-200")}
+              onClick={() => void refreshCredit()}
+              disabled={refreshing}
+            >
+              <RefreshCcw className={cn("size-4", refreshing && "animate-spin")} /> Refresh
+            </button>
             <button
               className={cn(btnCls, "h-10 bg-white text-slate-700 ring-1 ring-slate-200")}
               onClick={() =>
@@ -4368,22 +4528,23 @@ function DailyClosureTab({ userName, ...props }: any) {
     });
     setForm({ openingCash: "0", closingCash: "", remarks: "" });
   };
-  useEffect(() => {
-    let alive = true;
-    const loadClosures = async () => {
-      const { data, error } = await supabase
-        .from("branch_daily_closures")
-        .select("branch, closure_date, cashier, created_at, opening_cash, expected_cash, actual_cash, difference, bill_count, cash_total, upi_total, card_total, refunds, notes")
-        .in("branch", CREDIT_BRANCHES)
-        .order("closure_date", { ascending: false });
-      if (!alive) return;
-      if (!error && Array.isArray(data)) setRemoteClosures(data);
-    };
-    void loadClosures();
-    return () => {
-      alive = false;
-    };
+  const [closuresLoading, setClosuresLoading] = useState(false);
+  const loadClosures = useCallback(async () => {
+    setClosuresLoading(true);
+    const { data, error } = await supabase
+      .from("branch_daily_closures")
+      .select("branch, closure_date, cashier, created_at, opening_cash, expected_cash, actual_cash, difference, bill_count, cash_total, upi_total, card_total, refunds, notes")
+      .in("branch", CREDIT_BRANCHES)
+      .order("closure_date", { ascending: false });
+    setClosuresLoading(false);
+    if (!error && Array.isArray(data)) setRemoteClosures(data);
   }, []);
+  useEffect(() => {
+    void loadClosures();
+  }, [loadClosures]);
+  const refreshClosureReports = async () => {
+    await Promise.all([loadClosures(), useBranchOpsStore.persist.rehydrate()]);
+  };
   const rows = useMemo(() => {
     const localRows = cashierClosures.filter((c) => CREDIT_BRANCHES.includes(c.branch as Branch));
     const mappedRemote = remoteClosures.map((row) => ({
@@ -4571,7 +4732,15 @@ function DailyClosureTab({ userName, ...props }: any) {
           />
         </div>
       </Panel>
-      <Panel title="Cashier Counter Open & Closure Reports" icon={<History className="size-4" />}>
+      <Panel
+        title="Cashier Counter Open & Closure Reports"
+        icon={<History className="size-4" />}
+        action={
+          <button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => void refreshClosureReports()} disabled={closuresLoading}>
+            <RefreshCcw className={cn("size-4", closuresLoading && "animate-spin")} /> Refresh
+          </button>
+        }
+      >
         <DataTable
           headers={[
             "Unit",
@@ -4611,9 +4780,24 @@ function DailyClosureTab({ userName, ...props }: any) {
 }
 
 function ReportsTab(props: any) {
-  const { creditSales } = useBranchStore();
+  const { creditSales, fetchCreditSales } = useBranchStore();
   const { purchases, purchasePayments, expenses, bankDeposits, wasteLogs, quotations, cashierClosures } =
     useBranchOpsStore();
+  const [refreshing, setRefreshing] = useState(false);
+  const refreshReports = async () => {
+    setRefreshing(true);
+    try {
+      const branches: Branch[] = props.reportBranches || [BRANCH];
+      await Promise.all([
+        ...branches.map((branch) => fetchCreditSales(branch)),
+        ...branches.map((branch) => props.fetchBranchData(branch, true, ['stock', 'sales', 'credit'])),
+        props.rehydrateBranchOps(),
+        props.refreshCafeOrderSales(),
+      ]);
+    } finally {
+      setRefreshing(false);
+    }
+  };
   const dueCredits = (creditSales[BRANCH] || []).filter((c) => c.status !== "settled");
   const whatsappRows: any[] = [];
   const reminderRows: any[] = [];
@@ -4778,6 +4962,14 @@ function ReportsTab(props: any) {
         icon={<FileSpreadsheet className="size-4" />}
         action={
           <div className="flex gap-2">
+            <button
+              className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")}
+              onClick={() => void refreshReports()}
+              disabled={refreshing}
+            >
+              <RefreshCcw className={cn("size-4", refreshing && "animate-spin")} />
+              Refresh
+            </button>
             <button
               className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")}
               onClick={() => printOverview(props, props.reportLabel || "VRSNB Branch")}
@@ -4996,6 +5188,15 @@ function StockAuditTab({
     field: "difference",
     direction: "desc",
   });
+  const [refreshingReports, setRefreshingReports] = useState(false);
+  const refreshStockAudit = async () => {
+    setRefreshingReports(true);
+    try {
+      await Promise.all([fetchBranchData(BRANCH, true, ['stock']), useBranchOpsStore.persist.rehydrate()]);
+    } finally {
+      setRefreshingReports(false);
+    }
+  };
   const reports = stockCountReports
     .filter((report) => report.branch === BRANCH)
     .sort((a, b) => Number(new Date(b.createdAt)) - Number(new Date(a.createdAt)));
@@ -5233,9 +5434,14 @@ function StockAuditTab({
           <p className="text-sm font-black text-slate-900">Admin stock verification</p>
           <p className="text-xs font-semibold text-slate-500">Pending physical quantities can be corrected before confirmation. Click Difference or Difference Value to sort.</p>
         </div>
-        <button type="button" onClick={downloadAudit} className={cn(btnCls, "bg-emerald-600 text-white shadow-lg shadow-emerald-100")}>
-          <FileSpreadsheet className="size-4" /> Download Excel
-        </button>
+        <div className="flex gap-2">
+          <button type="button" onClick={() => void refreshStockAudit()} disabled={refreshingReports} className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")}>
+            <RefreshCcw className={cn("size-4", refreshingReports && "animate-spin")} /> Refresh
+          </button>
+          <button type="button" onClick={downloadAudit} className={cn(btnCls, "bg-emerald-600 text-white shadow-lg shadow-emerald-100")}>
+            <FileSpreadsheet className="size-4" /> Download Excel
+          </button>
+        </div>
       </div>
 
       {reports.length === 0 ? (
@@ -5480,9 +5686,26 @@ function IncomingDisputeReview({ userName }: { userName: string }) {
 function NotificationsTab({ userName }: { userName: string }) {
   const { notifications, updateNotificationStatus } = useBranchOpsStore();
   const rows = notifications.filter((n) => n.branch === BRANCH && n.type !== "Stock Dispute");
+  const [refreshing, setRefreshing] = useState(false);
+  const refreshNotifications = async () => {
+    setRefreshing(true);
+    try {
+      await useBranchOpsStore.persist.rehydrate();
+    } finally {
+      setRefreshing(false);
+    }
+  };
   return (
     <div className="space-y-4">
-      <Panel title="Admin Notifications" icon={<Bell className="size-4" />}>
+      <Panel
+        title="Admin Notifications"
+        icon={<Bell className="size-4" />}
+        action={
+          <button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => void refreshNotifications()} disabled={refreshing}>
+            <RefreshCcw className={cn("size-4", refreshing && "animate-spin")} /> Refresh
+          </button>
+        }
+      >
         <DataTable
           headers={[
             "Date",

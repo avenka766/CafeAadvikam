@@ -4,7 +4,7 @@ import { useAuthStore } from '@/stores/authStore';
 import { cn } from '@/lib/utils';
 import {
   UserPlus, Key, Trash2, ShieldCheck, User,
-  AlertCircle, Check, Pencil, X, ChevronDown, ChevronUp,
+  AlertCircle, Check, Pencil, X, ChevronDown, ChevronUp, RefreshCw,
 } from 'lucide-react';
 import type { UserRole } from '@/types';
 
@@ -134,8 +134,14 @@ export default function StaffManagement() {
   const [removingId, setRemovingId]     = useState<string | null>(null);
   const [removeError, setRemoveError]   = useState<Record<string, string>>({});
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; displayName: string } | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
 
   useEffect(() => { loadStaff(); }, [loadStaff]);
+
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    try { await loadStaff(); } finally { setRefreshing(false); }
+  };
 
   // ── Handlers ────────────────────────────────────────────────────────────────
   const isOwner = currentUser?.role === 'owner';
@@ -228,13 +234,24 @@ export default function StaffManagement() {
           <h1 className="font-display text-2xl font-bold text-foreground">Staff</h1>
           <p className="text-xs font-body text-muted-foreground mt-0.5">{staffList.length} members</p>
         </div>
-        <button
-          onClick={() => { setShowAdd(!showAdd); setAddError(''); }}
-          className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-body font-bold active:scale-95 transition-all text-white shadow-teal"
-          style={{ background: 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))' }}
-        >
-          <UserPlus className="size-4" />{showAdd ? 'Cancel' : 'Add Staff'}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleRefresh}
+            disabled={refreshing}
+            title="Refresh staff list"
+            aria-label="Refresh staff list"
+            className="flex items-center justify-center size-10 rounded-xl bg-card border border-border text-muted-foreground hover:text-foreground active:scale-95 transition-all disabled:opacity-60"
+          >
+            <RefreshCw className={cn('size-4', refreshing && 'animate-spin')} />
+          </button>
+          <button
+            onClick={() => { setShowAdd(!showAdd); setAddError(''); }}
+            className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-body font-bold active:scale-95 transition-all text-white shadow-teal"
+            style={{ background: 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))' }}
+          >
+            <UserPlus className="size-4" />{showAdd ? 'Cancel' : 'Add Staff'}
+          </button>
+        </div>
       </div>
 
       <div className="px-4 py-4 space-y-3">

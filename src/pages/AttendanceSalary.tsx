@@ -3,7 +3,7 @@ import {
   Users, Building2, Search, ChevronDown, ChevronUp,
   IndianRupee, Calendar, TrendingDown, Plus, Trash2,
   Download, UserPlus, X, Pencil, Loader2,
-  AlertCircle, CheckCircle2, BarChart3, CreditCard,
+  AlertCircle, CheckCircle2, BarChart3, CreditCard, RefreshCw,
 } from 'lucide-react';
 import { cn, formatCurrency } from '@/lib/utils';
 import { supabase } from '@/lib/supabase';
@@ -101,16 +101,35 @@ const CHART_COLORS = ['#E07A3A', '#2563EB', '#059669', '#F59E0B', '#DC2626', '#7
 const ak = (eid: string, d: number) => `${eid}_${d}`;
 const defaultDay = (): DayAttendance => ({ present: false, half: false, woff: false, bf: false, lunch: false, dinner: false });
 const defaultDecision = (): DeductionDecision => ({ deductAdvance: false, deductOther: true, deductUniform: true, deductESI: false, deductPF: false });
-// BUG FIX (2026-08-20): "why did you remove the 5-day Admin Office rule?" —
-// this was never removed, it was always here. The real spreadsheet's
-// department header is "ADMIN OFFICE STAFFS" (imported verbatim, correctly),
-// not the bare "Admin Office" this exact-match was written against, so
-// those 6 employees were silently falling through to the 4-day default.
-// .includes() catches "ADMIN OFFICE STAFFS" and any other "admin office ..."
-// variant while staying specific enough not to match STORE STAFFS, PACKING
-// STAFFS, or any of the other "... STAFFS" departments in the same sheet.
-const weekOffLimit = (employee: Pick<Employee, 'department'>) =>
-  employee.department.trim().toLowerCase().includes('admin office') ? 5 : 4;
+// BUG FIX (2026-09-04): two compounding bugs found from a live data check.
+//
+// 1. The department name changed again since the 2026-08-20 fix below —
+//    live data now stores it as the bare "ADMIN" (5 employees), which does
+//    NOT contain the substring "admin office" the old check required. Every
+//    Admin employee was silently falling through to the generic 4-day cap,
+//    the exact same class of bug the 2026-08-20 fix addressed for the
+//    previous rename. Matched on startsWith('admin') instead of a fixed
+//    phrase so "ADMIN", "ADMIN OFFICE", and "ADMIN OFFICE STAFFS" (the
+//    department's three names on record across this dataset's history) all
+//    match, without catching any other department in this dataset (none of
+//    them start with "admin").
+// 2. The cap was hardcoded to always 5 for Admin regardless of the actual
+//    number of Sundays that month — a real week-off allowance should track
+//    the calendar, not a flat number: 5 in a month that actually has 5
+//    Sundays, 4 otherwise (every other department stays a flat 4 — that
+//    part was correct and is untouched).
+function countSundaysInMonth(year: number, month: number): number {
+  const daysInMonth = new Date(year, month, 0).getDate();
+  let count = 0;
+  for (let d = 1; d <= daysInMonth; d++) {
+    if (new Date(year, month - 1, d).getDay() === 0) count++;
+  }
+  return count;
+}
+const weekOffLimit = (employee: Pick<Employee, 'department'>, year: number, month: number) => {
+  if (!employee.department.trim().toLowerCase().startsWith('admin')) return 4;
+  return countSundaysInMonth(year, month) >= 5 ? 5 : 4;
+};
 
 // ─── Month helpers ─────────────────────────────────────────────────────────────
 function getMonthMeta(year: number, month: number) {
@@ -301,9 +320,13 @@ function calcSalary(emp: Employee, att: MonthAttendance, daysInMonth: number, de
     if (a.present) presentDays++;
     if (a.half)    halfDays++;
     if (a.woff)    woffDays++;
-    // BUG-M5 FIX: canteen deduction only applies on actual working days (present or half),
-    // never on week-off days — even if meals were accidentally ticked on a woff day.
-    if ((a.present || a.half) && !a.woff) {
+    // BUG-M5 FIX: canteen deduction never applies on a week-off day — even if
+    // meals were accidentally ticked there.
+    // AUDIT FIX (2026-09-05): "even if they are absent the food deduction
+    // should show B L D" — this used to ALSO require present/half, so a
+    // meal ticked on an absent day silently never counted. Absent staff can
+    // still eat at the canteen; only week-off is excluded now.
+    if (!a.woff) {
       const m = [a.bf, a.lunch, a.dinner].filter(Boolean).length;
       canteenTotal += m === 3 ? 30 : m * 10;
     }
@@ -489,7 +512,7 @@ function exportAttendanceExcel(
       if (a.present) return 'P';
       if (a.half)    return 'H';
       if (a.woff)    return 'W';
-      return 'A';
+      return 'X'; // AUDIT FIX (2026-09-05): "change the symbol to X instead of A" for Absent
     });
     return [i + 1, e.name, e.branch, e.department, ...days, c.presentDays, c.halfDays, c.woffDays, c.worked, c.canteenTotal, c.net];
   });
@@ -509,7 +532,7 @@ function exportAttendanceExcel(
   const ws = XLSX.utils.aoa_to_sheet([
     [`ATTENDANCE REGISTER — ${monthLabel.toUpperCase()}`],
     [`Cafe Aadvikam Group | Generated on ${new Date().toLocaleDateString('en-IN')} | ${employees.length} employees`],
-    ['P = Present   H = Half Day   W = Week Off   A = Absent'],
+    ['P = Present   H = Half Day   W = Week Off   X = Absent'],
     [],
     attHeaders,
     ...attRows,
@@ -878,12 +901,13 @@ function EditEmpModal({ emp, onSave, onClose }: { emp: Employee; onSave: (e: Emp
 }
 
 // ─── Attendance row ───────────────────────────────────────────────────────────
-function AttRow({ emp, att, onUpdate, expanded, onToggle, decision, onDecisionChange, daysInMonth }: {
+function AttRow({ emp, att, onUpdate, expanded, onToggle, decision, onDecisionChange, daysInMonth, year, month }: {
   emp: Employee; att: MonthAttendance; daysInMonth: number;
   onUpdate: (empId: string, day: number, v: DayAttendance) => void;
   expanded: boolean; onToggle: () => void;
   decision: DeductionDecision;
   onDecisionChange: (empId: string, d: DeductionDecision) => void;
+  year: number; month: number;
 }) {
   const { presentDays, halfDays, woffDays, canteenTotal, net } = calcSalary(emp, att, daysInMonth, decision);
 
@@ -891,7 +915,7 @@ function AttRow({ emp, att, onUpdate, expanded, onToggle, decision, onDecisionCh
     Array.from({ length: daysInMonth }, (_, i) => i + 1).filter(d => att[ak(emp.id, d)]?.woff).length,
     [emp.id, att, daysInMonth]
   );
-  const maxWeekOffs = weekOffLimit(emp);
+  const maxWeekOffs = weekOffLimit(emp, year, month);
 
   const toggleDay = (day: number) => {
     const k = ak(emp.id, day);
@@ -919,8 +943,11 @@ function AttRow({ emp, att, onUpdate, expanded, onToggle, decision, onDecisionCh
 
   const toggleMeal = (day: number, meal: 'bf' | 'lunch' | 'dinner') => {
     const k = ak(emp.id, day);
-    const cur = att[k];
-    if (!cur?.present && !cur?.half) return;
+    const cur = att[k] ?? defaultDay();
+    // AUDIT FIX (2026-09-05): used to no-op unless present/half — matches
+    // the calcSalary fix above: meals can be marked on an absent day too,
+    // only week-off is excluded.
+    if (cur.woff) return;
     onUpdate(emp.id, day, { ...cur, [meal]: !cur[meal] });
   };
 
@@ -972,9 +999,18 @@ function AttRow({ emp, att, onUpdate, expanded, onToggle, decision, onDecisionCh
                       a.half    && 'bg-yellow-400 border-yellow-500 text-white',
                       a.woff    && 'bg-sky-100 border-sky-300 text-sky-700',
                     )}>
-                      {a.present ? '✓' : a.half ? '½' : a.woff ? 'W' : ''}
+                      {/* AUDIT FIX (2026-09-05): "not only in Excel but
+                          also in the UI show X instead of A" — this cell
+                          rendered nothing at all for an absent day; now
+                          shows X, matching the Excel export's symbol. */}
+                      {a.present ? '✓' : a.half ? '½' : a.woff ? 'W' : 'X'}
                     </button>
-                    {(a.present || a.half) ? (
+                    {/* AUDIT FIX (2026-09-05): "even if they are absent the
+                        food deduction should show B L D" — this used to be
+                        gated on present/half, hiding the meal buttons
+                        entirely for an absent day. Only week-off hides them
+                        now (matches the calcSalary/toggleMeal fixes above). */}
+                    {!a.woff ? (
                       <div className="flex gap-[2px] mt-0.5">
                         {(['bf', 'lunch', 'dinner'] as const).map(m => (
                           <button key={m} onClick={e => { e.stopPropagation(); toggleMeal(day, m); }} title={m === 'bf' ? 'Breakfast ₹10' : m === 'lunch' ? 'Lunch ₹10' : 'Dinner ₹10'}
@@ -1678,32 +1714,35 @@ export default function AttendanceSalary() {
   const [editEmp, setEditEmp] = useState<Employee | null>(null);
   const [advanceRecords, setAdvanceRecords] = useState<SalaryAdvanceRecord[]>([]);
   const [advanceTableReady, setAdvanceTableReady] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const ddRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    async function load() {
-      setLoading(true);
-      try {
-        const [emps, attData, decData, advResult] = await Promise.all([
-          fetchEmployees(),
-          fetchAttendance(activeMonth.year, activeMonth.month),
-          fetchDeductionDecisions(activeMonth.year, activeMonth.month),
-          fetchAdvanceRecords(),
-        ]);
-        setEmployees(emps);
-        setAtt(attData);
-        setDecisions(decData);
-        setAdvanceRecords(advResult.records);
-        setAdvanceTableReady(advResult.tableReady);
-        const now = new Date();
-        deleteOldAttendance(now.getFullYear(), now.getMonth() + 1);
-      } catch (e) {
-        console.error('Load error:', e);
-      } finally {
-        setLoading(false);
-      }
+  const loadData = useCallback(async (opts?: { silent?: boolean }) => {
+    if (opts?.silent) setRefreshing(true); else setLoading(true);
+    try {
+      const [emps, attData, decData, advResult] = await Promise.all([
+        fetchEmployees(),
+        fetchAttendance(activeMonth.year, activeMonth.month),
+        fetchDeductionDecisions(activeMonth.year, activeMonth.month),
+        fetchAdvanceRecords(),
+      ]);
+      setEmployees(emps);
+      setAtt(attData);
+      setDecisions(decData);
+      setAdvanceRecords(advResult.records);
+      setAdvanceTableReady(advResult.tableReady);
+      const now = new Date();
+      deleteOldAttendance(now.getFullYear(), now.getMonth() + 1);
+    } catch (e) {
+      console.error('Load error:', e);
+    } finally {
+      if (opts?.silent) setRefreshing(false); else setLoading(false);
     }
-    load();
+  }, [activeMonth.year, activeMonth.month]);
+
+  useEffect(() => {
+    loadData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeMonth.year, activeMonth.month]);
 
   useEffect(() => {
@@ -1879,22 +1918,32 @@ export default function AttendanceSalary() {
           <h1 className="font-display text-2xl font-bold text-foreground">Attendance & Salary</h1>
           <p className="text-xs font-body text-muted-foreground mt-0.5">{employees.length} employees</p>
         </div>
-        <div className="relative shrink-0" ref={ddRef}>
-          <button onClick={() => setShowBranchDD(v => !v)} className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-card border border-border text-xs font-body font-semibold active:scale-95 transition-all">
-            <Building2 className="size-3.5 text-muted-foreground" />
-            {branch}
-            <ChevronDown className={cn('size-3.5 text-muted-foreground transition-transform', showBranchDD && 'rotate-180')} />
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            onClick={() => loadData({ silent: true })}
+            disabled={refreshing}
+            title="Refresh data"
+            className="size-9 rounded-xl bg-card border border-border flex items-center justify-center text-muted-foreground hover:text-foreground active:scale-95 transition-all disabled:opacity-60"
+          >
+            <RefreshCw className={cn('size-3.5', refreshing && 'animate-spin')} />
           </button>
-          {showBranchDD && (
-            <div className="absolute top-full right-0 mt-1 bg-card border border-border rounded-xl shadow-xl z-30 min-w-[160px] overflow-hidden">
-              {(['All', ...BRANCHES] as const).map(b => (
-                <button key={b} onClick={() => { setBranch(b); setShowBranchDD(false); }}
-                  className={cn('w-full px-4 py-2.5 text-left text-sm font-body font-semibold transition-colors', b === branch ? 'cafe-gradient text-primary-foreground' : 'hover:bg-muted text-foreground')}>
-                  {b}
-                </button>
-              ))}
-              </div>
-          )}
+          <div className="relative" ref={ddRef}>
+            <button onClick={() => setShowBranchDD(v => !v)} className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-card border border-border text-xs font-body font-semibold active:scale-95 transition-all">
+              <Building2 className="size-3.5 text-muted-foreground" />
+              {branch}
+              <ChevronDown className={cn('size-3.5 text-muted-foreground transition-transform', showBranchDD && 'rotate-180')} />
+            </button>
+            {showBranchDD && (
+              <div className="absolute top-full right-0 mt-1 bg-card border border-border rounded-xl shadow-xl z-30 min-w-[160px] overflow-hidden">
+                {(['All', ...BRANCHES] as const).map(b => (
+                  <button key={b} onClick={() => { setBranch(b); setShowBranchDD(false); }}
+                    className={cn('w-full px-4 py-2.5 text-left text-sm font-body font-semibold transition-colors', b === branch ? 'cafe-gradient text-primary-foreground' : 'hover:bg-muted text-foreground')}>
+                    {b}
+                  </button>
+                ))}
+                </div>
+            )}
+            </div>
           </div>
         </div>
 
@@ -2043,7 +2092,7 @@ export default function AttendanceSalary() {
           {filtered.length === 0
             ? <EmptyState icon="👥" message="No employees found" sub="Add staff in Staff Management to see them here." />
             : filtered.map(e => (
-              <AttRow key={e.id} emp={e} att={att} onUpdate={updateAtt} expanded={expandedId === e.id} onToggle={() => setExpandedId(prev => prev === e.id ? null : e.id)} decision={getDecision(e.id)} onDecisionChange={updateDecision} daysInMonth={activeMonth.daysInMonth} />
+              <AttRow key={e.id} emp={e} att={att} onUpdate={updateAtt} expanded={expandedId === e.id} onToggle={() => setExpandedId(prev => prev === e.id ? null : e.id)} decision={getDecision(e.id)} onDecisionChange={updateDecision} daysInMonth={activeMonth.daysInMonth} year={activeMonth.year} month={activeMonth.month} />
             ))
           }
         </div>

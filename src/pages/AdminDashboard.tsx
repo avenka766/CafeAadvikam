@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useState, type ElementType, type ReactNode } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ElementType, type ReactNode } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useOrderStore } from '@/stores/orderStore';
 import { useShallow } from 'zustand/react/shallow';
@@ -103,6 +103,22 @@ function inRange(iso: string, fromDate: string, toDate: string) { const t = new 
 function localDateKey(iso: string) { return todayInput(new Date(iso)); }
 function fmtDate(iso: string) { return new Date(iso).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }); }
 function fmtDateTime(iso: string) { return new Date(iso).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }); }
+// FEATURE (2026-09-04): bill-wise Excel sheets need Date and Time as their
+// own columns (not one combined string) — added alongside fmtDate/fmtDateTime
+// rather than reformatting those, since several existing sheets/PDFs still
+// rely on the combined form.
+function fmtTime(iso: string) { return new Date(iso).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }); }
+// Cafe orders carry a single paymentType + an optional paymentBreakdown
+// (only populated for 'part_payment') rather than the per-payment-row table
+// branch/Hosur bills use — this derives the same {cash, upi, card} shape so
+// the bill-wise sheet's Cash/UPI/Card columns mean the same thing everywhere.
+function cafePaidByMode(paymentType: string, breakdown?: { cash: number; upi: number; card: number } | null, total = 0) {
+  if (paymentType === 'part_payment' && breakdown) return { cash: breakdown.cash || 0, upi: breakdown.upi || 0, card: breakdown.card || 0 };
+  if (paymentType === 'cash') return { cash: total, upi: 0, card: 0 };
+  if (paymentType === 'upi') return { cash: 0, upi: total, card: 0 };
+  if (paymentType === 'card') return { cash: 0, upi: 0, card: total };
+  return { cash: 0, upi: 0, card: 0 }; // wallet/credit/advance/unpaid — not cash/upi/card
+}
 function paymentIncludes(payment: string | null | undefined, key: 'cash' | 'upi' | 'card' | 'credit') {
   const m = (payment || '').toLowerCase();
   if (key === 'cash') return m === 'cash' || m.includes('cash');
@@ -239,8 +255,8 @@ function AdminDashboard() {
   const [auditSearch, setAuditSearch] = useState('');
   const [auditBranchFilter, setAuditBranchFilter] = useState<Branch | 'all'>('all');
 
-  const { orders, polling, startPolling, stopPolling } = useOrderStore(
-    useShallow(s => ({ orders: s.orders, polling: s.polling, startPolling: s.startPolling, stopPolling: s.stopPolling }))
+  const { orders, polling, startPolling, stopPolling, loadOrders, ordersLoading } = useOrderStore(
+    useShallow(s => ({ orders: s.orders, polling: s.polling, startPolling: s.startPolling, stopPolling: s.stopPolling, loadOrders: s.loadOrders, ordersLoading: s.loading }))
   );
   const { stock, sales, incoming, creditSales, stockMismatches, fetchBranchData, fetchStockMismatches, confirmIncoming } = useBranchStore();
   const { bills, returns, purchasePayments, cashMovements, bankDeposits, cashierClosures, stockVarianceRecords, auditLogs, notifications, updateNotificationStatus, complaints, updateComplaintStatus, fetchBillsInRange } = useBranchOpsStore();
@@ -263,7 +279,14 @@ function AdminDashboard() {
   };
 
   useEffect(() => { startPolling(90); return () => stopPolling(); }, [startPolling, stopPolling]);
-  useEffect(() => { BRANCHES.forEach(branch => void fetchBranchData(branch)); void fetchStockMismatches(); }, [fetchBranchData, fetchStockMismatches]);
+  // AUDIT FIX (2026-09-04): named so the header's "Refresh" button (and the
+  // new per-tab Refresh buttons on Overview/Audit below) can call the exact
+  // same fetch on demand instead of only ever running once on mount.
+  const refreshBranchAndStock = useCallback(() => {
+    BRANCHES.forEach(branch => void fetchBranchData(branch));
+    void fetchStockMismatches();
+  }, [fetchBranchData, fetchStockMismatches]);
+  useEffect(() => { refreshBranchAndStock(); }, [refreshBranchAndStock]);
   // Branch waste (dump/damage/transfer-out) is shared across SNB Order, SNB Admin,
   // VRSNB Admin, Owner, and here via the `branch_waste_logs` Supabase table.
   // This used to read a local-only branchOpsStore that never synced across devices.
@@ -271,7 +294,13 @@ function AdminDashboard() {
     id: string; branch: string; logType: string; itemName: string;
     quantity: number; unit: string; reason: string; verifiedBy: string; createdAt: string;
   }>>([]);
-  useEffect(() => {
+  const [wasteLogsLoading, setWasteLogsLoading] = useState(false);
+  // AUDIT FIX (2026-09-04): extracted out of the mount/date-change effect
+  // below so the Waste & Loss tab (previously refresh-only-on-date-change,
+  // with no manual re-fetch) can call this same query on demand — see the
+  // `wasteRequestRef` generation-counter pattern's comment further down.
+  const wasteRequestRef = useRef(0);
+  const fetchWasteLogsNow = useCallback(async () => {
     // BUG FIX: a date <input> can be cleared to an empty string (select-all
     // + delete, or some mobile date pickers) which propagated straight into
     // `${fromDate}T00:00:00` here, producing the literal string "T00:00:00"
@@ -279,16 +308,17 @@ function AdminDashboard() {
     // until a new valid date was picked. Skip the query entirely until both
     // dates are actually set rather than sending a malformed filter.
     if (!fromDate || !toDate) return;
-    let cancelled = false;
-    (async () => {
-      const { data, error } = await supabase
-        .from('branch_waste_logs')
-        .select('id,branch,log_type,item_name,quantity,unit,reason,verified_by,created_at')
-        .gte('created_at', `${fromDate}T00:00:00`)
-        .lte('created_at', `${toDate}T23:59:59`)
-        .order('created_at', { ascending: false })
-        .limit(2000);
-      if (cancelled || error || !data) return;
+    const requestId = ++wasteRequestRef.current;
+    setWasteLogsLoading(true);
+    const { data, error } = await supabase
+      .from('branch_waste_logs')
+      .select('id,branch,log_type,item_name,quantity,unit,reason,verified_by,created_at')
+      .gte('created_at', `${fromDate}T00:00:00`)
+      .lte('created_at', `${toDate}T23:59:59`)
+      .order('created_at', { ascending: false })
+      .limit(2000);
+    if (wasteRequestRef.current !== requestId) return;
+    if (!error && data) {
       setWasteLogs(data.map((d: any) => ({
         id: d.id,
         branch: d.branch,
@@ -300,9 +330,12 @@ function AdminDashboard() {
         verifiedBy: d.verified_by || '',
         createdAt: d.created_at,
       })));
-    })();
-    return () => { cancelled = true; };
+    }
+    setWasteLogsLoading(false);
   }, [fromDate, toDate]);
+  useEffect(() => {
+    void fetchWasteLogsNow();
+  }, [fetchWasteLogsNow]);
 
   // BUG FIX: "Branch sales data is wrong." Branch-wise revenue/trend/payment-
   // split above all derived from `opsBillsInRange` (useBranchOpsStore's
@@ -356,10 +389,19 @@ function AdminDashboard() {
   const [realExpenses, setRealExpenses] = useState<Array<{ id: string; branch: string; amount: number; mode: string; category: string; description: string; createdAt: string }>>([]);
   const [realPurchases, setRealPurchases] = useState<Array<{ id: string; branch: string; supplier: string; total: number; createdAt: string }>>([]);
 
-  useEffect(() => {
+  // AUDIT FIX (2026-09-04): extracted out of the mount/date-change effect so
+  // Overview, Cafe, Branches and Hosur (every tab that reads realBills/
+  // realBillItems/realPayments/realExpenses/realPurchases/
+  // hosurUnbilledDispatched) can also trigger this exact fetch on demand via
+  // their own "Refresh" button, not just implicitly on a date-range change.
+  // requestId (rather than the previous cancelled-boolean-per-effect-run
+  // pattern) also correctly supersedes an in-flight run when the button is
+  // clicked again before the first call resolves.
+  const realSalesRequestRef = useRef(0);
+  const fetchRealSalesData = useCallback(async () => {
     if (!fromDate || !toDate) return;
-    let cancelled = false;
-    (async () => {
+    const requestId = ++realSalesRequestRef.current;
+    {
       setRealSalesLoading(true);
       setRealSalesError('');
       const fromTs = `${fromDate}T00:00:00`;
@@ -448,7 +490,7 @@ function AdminDashboard() {
           .eq('record_type', 'purchase_invoice')
           .gte('created_at', fromTs).lte('created_at', toTs)),
       ]);
-      if (cancelled) return;
+      if (realSalesRequestRef.current !== requestId) return;
       const err = headersRes.error || itemsRes.error || paymentsRes.error || hosurRes.error || unbilledRes.error || expensesRes.error || purchasesRes.error;
       if (err) { setRealSalesError(err.message); setRealSalesLoading(false); return; }
 
@@ -469,7 +511,7 @@ function AdminDashboard() {
         if (chunkRes.error) { setRealSalesError(chunkRes.error.message); setRealSalesLoading(false); return; }
         hosurItemsChunks.push(...chunkRes.data);
       }
-      if (cancelled) return;
+      if (realSalesRequestRef.current !== requestId) return;
       const hosurItemsRes = { data: hosurItemsChunks, error: null as { message: string } | null };
       setHosurUnbilledDispatched((unbilledRes.data as Array<Record<string, unknown>>).map((o) => ({
         id: String(o.id), orderNumber: String(o.order_number ?? ''), shopName: String(o.shop_name ?? ''),
@@ -527,9 +569,10 @@ function AdminDashboard() {
         ...hosurBills.map((h) => ({ billId: String(h.id), mode: String(h.payment_mode ?? '').toLowerCase() || 'cash', amount: Number(h.paid_amount || 0) })),
       ]);
       setRealSalesLoading(false);
-    })();
-    return () => { cancelled = true; };
+    }
   }, [fromDate, toDate]);
+
+  useEffect(() => { void fetchRealSalesData(); }, [fetchRealSalesData]);
 
   useEffect(() => { void loadAdminNotifications(); }, [loadAdminNotifications]);
   const loadPublicOrders = useCallback(async () => {
@@ -1037,6 +1080,19 @@ function AdminDashboard() {
             <option value="all">All branches</option>
             {BRANCHES.map(branch => <option key={branch} value={branch}>{BRANCH_LABELS[branch]}</option>)}
           </select>
+          {/* AUDIT FIX (2026-09-04): this whole tab (branch-wise sales,
+              payment split, daily trend, top items, purchases/expenses,
+              available balance) previously had no manual refresh at all —
+              realBills/realExpenses/realPurchases (fetchRealSalesData) and
+              the ledger-backed balance figures (adminLedger) only ever
+              re-fetch on a fromDate/toDate change, and `orders` only via the
+              90s background poll. */}
+          <button
+            onClick={() => { void fetchRealSalesData(); refreshBranchAndStock(); adminLedger.refresh(); void loadOrders(90); }}
+            disabled={realSalesLoading}
+            className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700 hover:bg-slate-50 disabled:opacity-60">
+            <RefreshCw className={cn('size-3.5', realSalesLoading && 'animate-spin')} />Refresh
+          </button>
           <button onClick={exportOverviewExcel}
             className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-3 py-2 text-xs font-black text-white">
             <FileSpreadsheet className="size-3.5" /> Excel
@@ -1189,9 +1245,34 @@ function AdminDashboard() {
       rows: cafeItemWiseSales,
     },
     {
+      // FEATURE (2026-09-04): standardized bill-wise column set across
+      // Cafe Control / Branch Sales / Hosur Sales / Dispatch Details —
+      // Branch, Bill No, Date, Time, Total Sales, Cash, UPI, Card,
+      // Salesperson, Biller, in that exact order.
       name: 'Bill-wise Sales', title: `Cafe Control — Bill-wise Sales (${fromDate} to ${toDate})`,
-      columns: [{ header: 'Order No', key: 'orderNo' }, { header: 'Customer', key: 'customer' }, { header: 'Items', key: 'items' }, { header: 'Payment', key: 'payment' }, { header: 'Total', key: 'total' }, { header: 'Status', key: 'status' }, { header: 'Time', key: 'time', width: 20 }],
-      rows: cafeOrdersInRange.map(o => ({ orderNo: o.orderNumber, customer: o.customerName || '-', items: o.items.reduce((s, i) => s + i.quantity, 0), payment: o.paymentType || '-', total: o.total || 0, status: o.status, time: fmtDateTime(o.createdAt) })),
+      columns: [
+        { header: 'Branch', key: 'branch' }, { header: 'Bill No', key: 'billNo' }, { header: 'Date', key: 'date', width: 14 }, { header: 'Time', key: 'time', width: 12 },
+        { header: 'Total Sales', key: 'totalSales' }, { header: 'Cash', key: 'cash' }, { header: 'UPI', key: 'upi' }, { header: 'Card', key: 'card' },
+        { header: 'Salesperson', key: 'salesperson', width: 18 }, { header: 'Biller', key: 'biller', width: 18 },
+      ],
+      rows: cafeOrdersInRange.map(o => {
+        const paid = cafePaidByMode(o.paymentType, o.paymentBreakdown, o.total || 0);
+        return { branch: 'Cafe', billNo: o.orderNumber, date: fmtDate(o.createdAt), time: fmtTime(o.createdAt), totalSales: o.total || 0, cash: paid.cash, upi: paid.upi, card: paid.card, salesperson: o.createdBy || '-', biller: o.billedBy || o.createdBy || '-' };
+      }),
+    },
+    {
+      // FEATURE (2026-09-04): "extra sheet with bill number and what all
+      // item was sold in that bill" — one row per item per bill, same order
+      // set as the Bill-wise Sales sheet above.
+      name: 'Bill Items', title: `Cafe Control — Bill Items (${fromDate} to ${toDate})`,
+      columns: [
+        { header: 'Bill No', key: 'billNo' }, { header: 'Date', key: 'date', width: 14 }, { header: 'Item Name', key: 'itemName', width: 28 },
+        { header: 'Qty', key: 'qty' }, { header: 'Unit Price', key: 'unitPrice' }, { header: 'Line Total', key: 'lineTotal' },
+      ],
+      rows: cafeOrdersInRange.flatMap(o => o.items.map(i => ({
+        billNo: o.orderNumber, date: fmtDate(o.createdAt), itemName: i.menuItem.name, qty: i.quantity,
+        unitPrice: Number(i.menuItem.price || 0), lineTotal: Number(i.menuItem.price || 0) * Number(i.quantity || 0),
+      }))),
     },
   ]);
 
@@ -1228,6 +1309,17 @@ function AdminDashboard() {
           <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
             To<input type="date" value={toDate} onChange={e => setToDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
           </label>
+          {/* AUDIT FIX (2026-09-04): Cafe Control's every figure derives
+              from `orders` (useOrderStore), which only ever refreshes via
+              its own 90s background poll — no way to force a fresh pull
+              right now. loadOrders always does a real re-fetch (not a
+              throttled/cached call). */}
+          <button
+            onClick={() => void loadOrders(90)}
+            disabled={ordersLoading}
+            className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700 hover:bg-slate-50 disabled:opacity-60">
+            <RefreshCw className={cn('size-3.5', ordersLoading && 'animate-spin')} />Refresh
+          </button>
           <button onClick={exportCafeExcel}
             className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-3 py-2 text-xs font-black text-white">
             <FileSpreadsheet className="size-3.5" /> Excel
@@ -1422,16 +1514,30 @@ function AdminDashboard() {
       rows: branchItemWiseSales,
     },
     {
+      // FEATURE (2026-09-04): standardized bill-wise column set across
+      // Cafe Control / Branch Sales / Hosur Sales / Dispatch Details.
       name: 'Bill-wise Sales', title: `Branch Sales — Bill-wise Sales (${fromDate} to ${toDate})`,
       columns: [
-        { header: 'Branch', key: 'branch' }, { header: 'Bill No', key: 'billNo' }, { header: 'Items', key: 'itemCount' }, { header: 'Total', key: 'total' },
-        { header: 'Cash', key: 'cash' }, { header: 'UPI', key: 'upi' }, { header: 'Card', key: 'card' },
-        { header: 'Salesperson', key: 'salesperson' }, { header: 'Biller', key: 'biller' }, { header: 'Time', key: 'time', width: 20 },
+        { header: 'Branch', key: 'branch' }, { header: 'Bill No', key: 'billNo' }, { header: 'Date', key: 'date', width: 14 }, { header: 'Time', key: 'time', width: 12 },
+        { header: 'Total Sales', key: 'totalSales' }, { header: 'Cash', key: 'cash' }, { header: 'UPI', key: 'upi' }, { header: 'Card', key: 'card' },
+        { header: 'Salesperson', key: 'salesperson' }, { header: 'Biller', key: 'biller' },
       ],
       rows: filteredRealBills.map(b => {
         const paid = billPaidByMode.get(b.id) ?? { cash: 0, upi: 0, card: 0 };
-        return { branch: b.branch, billNo: b.billNo, itemCount: (realBillItemsByBillId.get(b.id) ?? []).length, total: b.total, cash: paid.cash, upi: paid.upi, card: paid.card, salesperson: b.salesperson, biller: b.biller, time: fmtDateTime(b.createdAt) };
+        return { branch: b.branch, billNo: b.billNo, date: fmtDate(b.createdAt), time: fmtTime(b.createdAt), totalSales: b.total, cash: paid.cash, upi: paid.upi, card: paid.card, salesperson: b.salesperson, biller: b.biller };
       }),
+    },
+    {
+      // FEATURE (2026-09-04): "extra sheet with bill number and what all
+      // item was sold in that bill" — one row per item per bill.
+      name: 'Bill Items', title: `Branch Sales — Bill Items (${fromDate} to ${toDate})`,
+      columns: [
+        { header: 'Branch', key: 'branch' }, { header: 'Bill No', key: 'billNo' }, { header: 'Date', key: 'date', width: 14 }, { header: 'Item Name', key: 'itemName', width: 28 },
+        { header: 'Qty', key: 'qty' }, { header: 'Line Total', key: 'lineTotal' },
+      ],
+      rows: filteredRealBills.flatMap(b => (realBillItemsByBillId.get(b.id) ?? []).map(i => ({
+        branch: b.branch, billNo: b.billNo, date: fmtDate(b.createdAt), itemName: i.itemName, qty: i.quantity, lineTotal: i.lineTotal,
+      }))),
     },
   ]);
 
@@ -1481,6 +1587,15 @@ function AdminDashboard() {
             <option value="all">All branches</option>
             {BRANCH_ONLY_OPTIONS.map(branch => <option key={branch} value={branch}>{BRANCH_LABELS[branch]}</option>)}
           </select>
+          {/* AUDIT FIX (2026-09-04): "Bills" and "Branch Financial Detail"
+              below (realBills/realBillItems/realPayments/adminLedger) only
+              ever re-fetch on a fromDate/toDate change — no manual refresh. */}
+          <button
+            onClick={() => { void fetchRealSalesData(); adminLedger.refresh(); }}
+            disabled={realSalesLoading}
+            className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700 hover:bg-slate-50 disabled:opacity-60">
+            <RefreshCw className={cn('size-3.5', realSalesLoading && 'animate-spin')} />Refresh
+          </button>
           <button onClick={exportBranchSalesExcel}
             className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-3 py-2 text-xs font-black text-white">
             <FileSpreadsheet className="size-3.5" /> Excel
@@ -1704,9 +1819,32 @@ function AdminDashboard() {
       rows: hosurItemWiseSales,
     },
     {
+      // FEATURE (2026-09-04): standardized bill-wise column set across
+      // Cafe Control / Branch Sales / Hosur Sales / Dispatch Details. Hosur
+      // bills go through the same realPayments table as branch bills, so
+      // billPaidByMode (built above from realPayments) covers these too.
       name: 'Bill-wise Sales', title: `Hosur Sales — Bill-wise Sales (${fromDate} to ${toDate})`,
-      columns: [{ header: 'Bill No', key: 'billNo' }, { header: 'Shop', key: 'shop' }, { header: 'Items', key: 'itemCount' }, { header: 'Total', key: 'total' }, { header: 'Biller', key: 'biller' }, { header: 'Time', key: 'time', width: 20 }],
-      rows: hosurBillsInRange.map(b => ({ billNo: b.billNo || '—', shop: b.biller || b.salesperson || '—', itemCount: hosurBillItemsInRange.filter(i => i.billId === b.id).length, total: b.total, biller: b.biller || '—', time: fmtDateTime(b.createdAt) })),
+      columns: [
+        { header: 'Branch', key: 'branch' }, { header: 'Bill No', key: 'billNo' }, { header: 'Date', key: 'date', width: 14 }, { header: 'Time', key: 'time', width: 12 },
+        { header: 'Total Sales', key: 'totalSales' }, { header: 'Cash', key: 'cash' }, { header: 'UPI', key: 'upi' }, { header: 'Card', key: 'card' },
+        { header: 'Salesperson', key: 'salesperson', width: 18 }, { header: 'Biller', key: 'biller' },
+      ],
+      rows: hosurBillsInRange.map(b => {
+        const paid = billPaidByMode.get(b.id) ?? { cash: 0, upi: 0, card: 0 };
+        return { branch: 'Hosur', billNo: b.billNo || '—', date: fmtDate(b.createdAt), time: fmtTime(b.createdAt), totalSales: b.total, cash: paid.cash, upi: paid.upi, card: paid.card, salesperson: b.salesperson || '—', biller: b.biller || '—' };
+      }),
+    },
+    {
+      // FEATURE (2026-09-04): "extra sheet with bill number and what all
+      // item was sold in that bill" — one row per item per bill.
+      name: 'Bill Items', title: `Hosur Sales — Bill Items (${fromDate} to ${toDate})`,
+      columns: [
+        { header: 'Bill No', key: 'billNo' }, { header: 'Date', key: 'date', width: 14 }, { header: 'Item Name', key: 'itemName', width: 28 },
+        { header: 'Qty', key: 'qty' }, { header: 'Line Total', key: 'lineTotal' },
+      ],
+      rows: hosurBillsInRange.flatMap(b => hosurBillItemsInRange.filter(i => i.billId === b.id).map(i => ({
+        billNo: b.billNo || '—', date: fmtDate(b.createdAt), itemName: i.itemName, qty: i.quantity, lineTotal: i.lineTotal,
+      }))),
     },
   ]);
 
@@ -1748,6 +1886,16 @@ function AdminDashboard() {
           <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
             To<input type="date" value={toDate} onChange={e => setToDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
           </label>
+          {/* AUDIT FIX (2026-09-04): "Dispatched, Not Yet Billed" and
+              "Confirmed Bills" below (hosurUnbilledDispatched/realBills) —
+              same fetchRealSalesData source as Branches Sales, only ever
+              re-fetching on a fromDate/toDate change with no manual refresh. */}
+          <button
+            onClick={() => void fetchRealSalesData()}
+            disabled={realSalesLoading}
+            className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700 hover:bg-slate-50 disabled:opacity-60">
+            <RefreshCw className={cn('size-3.5', realSalesLoading && 'animate-spin')} />Refresh
+          </button>
           <button onClick={exportHosurExcel}
             className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-3 py-2 text-xs font-black text-white">
             <FileSpreadsheet className="size-3.5" /> Excel
@@ -2230,6 +2378,15 @@ function AdminDashboard() {
             <input value={varianceSearch} onChange={e => setVarianceSearch(e.target.value)} placeholder="Search item or report" className="rounded-2xl border border-slate-200 bg-white py-2 pl-9 pr-3 text-sm outline-none" />
           </div>
         </div>
+        {/* AUDIT FIX (2026-09-04): stockVarianceRecords is a useBranchOpsStore
+            field hydrated from branch_stock_variance_records via Zustand's
+            persist storage — it only ever loads once, at store creation.
+            persist.rehydrate() re-runs that same Supabase-backed hydration
+            on demand. */}
+        <button onClick={() => void useBranchOpsStore.persist.rehydrate()}
+          className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700 hover:bg-slate-50">
+          <RefreshCw className="size-3.5" />Refresh
+        </button>
         <button onClick={exportStockVarianceExcel}
           className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-3 py-2 text-xs font-black text-white">
           <FileSpreadsheet className="size-3.5" /> Excel
@@ -2285,7 +2442,17 @@ function AdminDashboard() {
       <Panel title="Admin Audit Logs" subtitle="Sensitive edits, stock changes, duplicate prints and closure actions"
         action={
           <div className="flex flex-wrap items-center gap-2">
-            <button onClick={() => { BRANCHES.forEach(b => void fetchBranchData(b)); void fetchStockMismatches(); }}
+            <button
+              // AUDIT FIX (2026-09-04): this used to call the same
+              // fetchBranchData/fetchStockMismatches pair as the page
+              // header's own Refresh — neither one touches auditLogs at all
+              // (it's a useBranchOpsStore field, hydrated from
+              // branch_operation_records via Zustand's persist storage, not
+              // fetchBranchData). The button looked like it refreshed this
+              // tab's own data but never actually did. persist.rehydrate()
+              // re-runs that same Supabase-backed hydration on demand — the
+              // real "force a fresh pull" for audit logs.
+              onClick={() => { refreshBranchAndStock(); void useBranchOpsStore.persist.rehydrate(); }}
               className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700 hover:bg-slate-50">
               <RefreshCw className="size-3.5" />Refresh
             </button>
@@ -2349,7 +2516,15 @@ function AdminDashboard() {
         <KpiCard label="Unread" value={nonLowStockNotifications.filter(n => !n.isRead).length} icon={<AlertTriangle className="size-5" />} tone={nonLowStockNotifications.filter(n => !n.isRead).length > 0 ? 'red' : 'slate'} />
         <KpiCard label="Credit Alerts" value={nonLowStockNotifications.filter(n => n.type === 'credit_sale').length} icon={<WalletCards className="size-5" />} tone="amber" />
       </div>
-      <Panel title="Business Alerts" subtitle="Credit, packing, invoice and operational alerts — low stock excluded">
+      <Panel title="Business Alerts" subtitle="Credit, packing, invoice and operational alerts — low stock excluded"
+        // AUDIT FIX (2026-09-04): adminNotifications only ever loads once, on
+        // mount (loadAdminNotifications) — no manual refresh anywhere on this tab.
+        action={
+          <button onClick={() => void loadAdminNotifications()}
+            className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700 hover:bg-slate-50">
+            <RefreshCw className="size-3.5" />Refresh
+          </button>
+        }>
         {nonLowStockNotifications.length === 0 ? <EmptyState label="No alerts. Credit sales, invoice and packing alerts will appear here." /> : (
           <div className="space-y-3">
             {nonLowStockNotifications.slice(0, 50).map(n => (
@@ -2386,10 +2561,21 @@ function AdminDashboard() {
       </div>
       <Panel title="Branch Admin Complaints" subtitle="Complaints raised by VRSNB and SNB admins"
         action={
-          <button onClick={() => exportWorkbook('Admin_Complaints', [{ name: 'Complaints', title: 'Branch Admin Complaints', columns: [{ header: 'Branch', key: 'Branch' }, { header: 'Area', key: 'Area', width: 20 }, { header: 'Title', key: 'Title', width: 24 }, { header: 'Details', key: 'Details', width: 40 }, { header: 'Raised By', key: 'Raised By', width: 22 }, { header: 'Status', key: 'Status' }, { header: 'Date', key: 'Date', width: 14 }], rows: adminComplaints.map(c => ({ Branch: c.branch, Area: c.complaintArea, Title: c.title, Details: c.details, 'Raised By': c.raisedBy, Status: c.status, Date: fmtDate(c.createdAt) })) }])}
-            className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-3 py-2 text-xs font-black text-white">
-            <FileSpreadsheet className="size-3.5" /> Excel
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            {/* AUDIT FIX (2026-09-04): complaints is a useBranchOpsStore field
+                hydrated from branch_complaint_tickets via Zustand's persist
+                storage — it only ever loads once, at store creation.
+                persist.rehydrate() re-runs that same Supabase-backed
+                hydration on demand. */}
+            <button onClick={() => void useBranchOpsStore.persist.rehydrate()}
+              className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700 hover:bg-slate-50">
+              <RefreshCw className="size-3.5" />Refresh
+            </button>
+            <button onClick={() => exportWorkbook('Admin_Complaints', [{ name: 'Complaints', title: 'Branch Admin Complaints', columns: [{ header: 'Branch', key: 'Branch' }, { header: 'Area', key: 'Area', width: 20 }, { header: 'Title', key: 'Title', width: 24 }, { header: 'Details', key: 'Details', width: 40 }, { header: 'Raised By', key: 'Raised By', width: 22 }, { header: 'Status', key: 'Status' }, { header: 'Date', key: 'Date', width: 14 }], rows: adminComplaints.map(c => ({ Branch: c.branch, Area: c.complaintArea, Title: c.title, Details: c.details, 'Raised By': c.raisedBy, Status: c.status, Date: fmtDate(c.createdAt) })) }])}
+              className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-3 py-2 text-xs font-black text-white">
+              <FileSpreadsheet className="size-3.5" /> Excel
+            </button>
+          </div>
         }>
         {adminComplaints.length === 0 ? <EmptyState label="No complaints from VRSNB or SNB admins yet." /> : (
           <div className="space-y-4">
@@ -2450,7 +2636,19 @@ function AdminDashboard() {
 
   const WasteTab = (
     <Panel title="Branch Waste & Loss" subtitle="Confirmed dump, damage and transfer-out entries from all branches"
-      action={<button onClick={exportWastePdf} className="inline-flex items-center gap-2 rounded-2xl bg-slate-950 px-3 py-2 text-xs font-black text-white"><FileDown className="size-3.5" /> PDF</button>}>
+      action={
+        <div className="flex flex-wrap items-center gap-2">
+          {/* AUDIT FIX (2026-09-04): wasteLogs only ever re-fetched on a
+              fromDate/toDate change — no manual refresh. */}
+          <button
+            onClick={() => void fetchWasteLogsNow()}
+            disabled={wasteLogsLoading}
+            className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700 hover:bg-slate-50 disabled:opacity-60">
+            <RefreshCw className={cn('size-3.5', wasteLogsLoading && 'animate-spin')} />Refresh
+          </button>
+          <button onClick={exportWastePdf} className="inline-flex items-center gap-2 rounded-2xl bg-slate-950 px-3 py-2 text-xs font-black text-white"><FileDown className="size-3.5" /> PDF</button>
+        </div>
+      }>
       <div className="overflow-x-auto">
         <table className="min-w-full text-left text-sm">
           <thead className="bg-slate-50 text-xs font-black uppercase text-slate-500">
@@ -2492,7 +2690,15 @@ function AdminDashboard() {
   );
 
   const PublicOrdersTab = (
-    <Panel title="Paid Online Orders" subtitle="Orders appear here only after Razorpay signature verification succeeds">
+    <Panel title="Paid Online Orders" subtitle="Orders appear here only after Razorpay signature verification succeeds"
+      // AUDIT FIX (2026-09-04): publicOrders only ever loads once, on mount
+      // (loadPublicOrders) — no manual refresh anywhere on this tab.
+      action={
+        <button onClick={() => void loadPublicOrders()} disabled={publicOrdersLoading}
+          className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700 hover:bg-slate-50 disabled:opacity-60">
+          <RefreshCw className={cn('size-3.5', publicOrdersLoading && 'animate-spin')} />Refresh
+        </button>
+      }>
       {publicOrdersLoading ? <p className="p-8 text-center text-sm font-bold text-slate-500">Loading online orders…</p> : publicOrders.length === 0 ? <p className="p-8 text-center text-sm font-bold text-slate-500">No paid online orders yet.</p> : (
         <div className="space-y-3">{publicOrders.map(order => <article key={order.id} className="rounded-2xl border border-slate-200 p-4">
           <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="font-black text-slate-950">{order.order_number} · {order.customer_name}</p><p className="text-xs text-slate-500">{order.customer_phone} · {fmtDateTime(order.created_at)}</p></div><div className="text-right"><p className="font-black text-emerald-700">{formatCurrency(order.amount)}</p><Badge tone="green">{order.status}</Badge></div></div>
@@ -2552,7 +2758,7 @@ function AdminDashboard() {
           <h2 className="mt-1 font-display text-2xl font-black text-slate-950 sm:text-3xl">{activeMeta.label}</h2>
           <p className="mt-1 text-sm text-slate-500">{activeMeta.description}</p>
         </div>
-        <button onClick={() => { BRANCHES.forEach(b => void fetchBranchData(b)); void fetchStockMismatches(); }} className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700 hover:bg-slate-50"><RefreshCw className="size-3.5" />Refresh</button>
+        <button onClick={refreshBranchAndStock} className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700 hover:bg-slate-50"><RefreshCw className="size-3.5" />Refresh</button>
       </div>
 
       {!isAdmin && (

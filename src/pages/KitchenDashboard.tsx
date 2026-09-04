@@ -59,23 +59,27 @@ function WasteTab() {
   const [deleting, setDeleting] = useState<string | null>(null);
   const [voidTarget, setVoidTarget] = useState<WasteEntry | null>(null);
   const [voidReason, setVoidReason] = useState('');
+  const [refreshing, setRefreshing] = useState(false);
 
   const todayKey = businessDateKey(new Date());
 
+  const loadEntries = async (opts?: { silent?: boolean }) => {
+    if (opts?.silent) setRefreshing(true); else setLoading(true);
+    const historyStart = new Date();
+    historyStart.setDate(historyStart.getDate() - 31);
+    const { data } = await supabase
+      .from('kitchen_waste_log')
+      .select('id, food_item, quantity, logged_at, voided_at, void_reason')
+      .gte('logged_at', historyStart.toISOString())
+      .is('voided_at', null)
+      .order('logged_at', { ascending: false });
+    setEntries((data as WasteEntry[]) ?? []);
+    if (opts?.silent) setRefreshing(false); else setLoading(false);
+  };
+
   useEffect(() => {
-    (async () => {
-      setLoading(true);
-      const historyStart = new Date();
-      historyStart.setDate(historyStart.getDate() - 31);
-      const { data } = await supabase
-        .from('kitchen_waste_log')
-        .select('id, food_item, quantity, logged_at, voided_at, void_reason')
-        .gte('logged_at', historyStart.toISOString())
-        .is('voided_at', null)
-        .order('logged_at', { ascending: false });
-      setEntries((data as WasteEntry[]) ?? []);
-      setLoading(false);
-    })();
+    void loadEntries();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const todaysEntries = useMemo(
@@ -144,6 +148,17 @@ function WasteTab() {
             <p>{new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' })}</p>
           </div>
           {todaysEntries.length > 0 && <strong>{todaysEntries.length}</strong>}
+          <button
+            type="button"
+            onClick={() => void loadEntries({ silent: true })}
+            disabled={refreshing}
+            title="Refresh waste log"
+            aria-label="Refresh waste log"
+            className="kitchen-sound-toggle"
+            style={{ marginLeft: 8 }}
+          >
+            <RefreshCw className={cn('size-4', refreshing && 'animate-spin')} />
+          </button>
         </div>
 
         <label>

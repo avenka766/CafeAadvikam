@@ -361,6 +361,25 @@ function csvDownload(
   downloadExcel(`${base}.xls`, title, rows);
 }
 
+// Manual-refresh helper for tabs whose list is populated purely from
+// useBranchOpsStore's persisted snapshot (suppliers, expenses, quotations,
+// stock audit reports, bank deposits, notifications) with no dedicated
+// per-entity live fetch of their own. persist.rehydrate() re-runs the same
+// Supabase hydration query the store used on first load, so it's the real
+// "force a fresh re-fetch" action available for these views.
+function useOpsStoreRefresh() {
+  const [refreshing, setRefreshing] = useState(false);
+  const refresh = async () => {
+    setRefreshing(true);
+    try {
+      await useBranchOpsStore.persist.rehydrate();
+    } finally {
+      setRefreshing(false);
+    }
+  };
+  return { refreshing, refresh };
+}
+
 function amountForLegacyPayment(
   method: string | null,
   mode: "cash" | "upi" | "card" | "credit",
@@ -1119,6 +1138,7 @@ export default function AdminSNBDashboard() {
           setLowStockOpen={setLowStockOpen}
           lowSearch={lowSearch}
           setLowSearch={setLowSearch}
+          fetchBranchData={fetchBranchData}
           {...commonProps}
         />
       )}
@@ -1302,9 +1322,17 @@ function printOverview(props: any, branchLabel: string) {
 }
 
 function OverviewTab(props: any) {
+  const db = props.dbReports as ReturnType<typeof useSnbAdminReports>;
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-end">
+      <div className="flex items-center justify-end gap-2">
+        <button
+          disabled={db.loading}
+          className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200 disabled:opacity-50")}
+          onClick={() => void db.refresh()}
+        >
+          <RefreshCcw className={cn("size-4", db.loading && "animate-spin")} /> Refresh
+        </button>
         <button
           onClick={() => printOverview(props, "SNB")}
           className={cn(btnCls, "bg-slate-950 text-white")}
@@ -1590,6 +1618,7 @@ function buildSalesRows(props: any) {
 }
 
 function SalesReturnsTab(props: any) {
+  const db = props.dbReports as ReturnType<typeof useSnbAdminReports>;
   const salesRows = buildSalesRows(props);
   return (
     <div className="space-y-4">
@@ -1630,6 +1659,14 @@ function SalesReturnsTab(props: any) {
         title="Sales and Returns Log"
         icon={<History className="size-4" />}
         action={
+          <div className="flex flex-wrap gap-2">
+          <button
+            disabled={db.loading}
+            className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200 disabled:opacity-50")}
+            onClick={() => void db.refresh()}
+          >
+            <RefreshCcw className={cn("size-4", db.loading && "animate-spin")} /> Refresh
+          </button>
           <button
             className={cn(btnCls, "bg-slate-950 text-white")}
             onClick={() =>
@@ -1652,6 +1689,7 @@ function SalesReturnsTab(props: any) {
             <Download className="size-4" />
             Export
           </button>
+          </div>
         }
       >
         <DataTable
@@ -1854,6 +1892,15 @@ function StockDisputesPanel() {
 
 function StockTab(props: any) {
   const catalogItems = useSNBCatalog();
+  const [stockRefreshing, setStockRefreshing] = useState(false);
+  const refreshStock = async () => {
+    setStockRefreshing(true);
+    try {
+      await props.fetchBranchData(BRANCH, true, ['stock']); // manual refresh: bypass the throttle
+    } finally {
+      setStockRefreshing(false);
+    }
+  };
   const [stockSearch, setStockSearch] = useState("");
   const [category, setCategory] = useState("All");
   const [status, setStatus] = useState("All");
@@ -1922,6 +1969,14 @@ function StockTab(props: any) {
         title="Stock Register"
         icon={<Package className="size-4" />}
         action={
+          <div className="flex flex-wrap gap-2">
+          <button
+            className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")}
+            onClick={() => void refreshStock()}
+            disabled={stockRefreshing}
+          >
+            <RefreshCcw className={cn("size-4", stockRefreshing && "animate-spin")} /> Refresh
+          </button>
           <button
             className={cn(btnCls, "bg-slate-950 text-white")}
             onClick={() =>
@@ -1946,6 +2001,7 @@ function StockTab(props: any) {
             <Download className="size-4" />
             Export
           </button>
+          </div>
         }
       >
         <div className="grid gap-3 lg:grid-cols-[minmax(0,1.4fr)_repeat(5,minmax(120px,1fr))]">
@@ -2182,6 +2238,7 @@ function UpdateStockTab({
 
 function SuppliersTab({ userName }: { userName: string }) {
   const { suppliers, addSupplier, updateSupplier, removeSupplier } = useBranchOpsStore();
+  const { refreshing: suppliersRefreshing, refresh: refreshSuppliers } = useOpsStoreRefresh();
   const [form, setForm] = useState({
     name: "",
     address: "",
@@ -2214,7 +2271,15 @@ function SuppliersTab({ userName }: { userName: string }) {
           <div className="flex gap-2"><button onClick={save} className={cn(btnCls, "flex-1 bg-slate-950 text-white")}><Plus className="size-4" /> {editingId ? "Update Supplier" : "Save Supplier"}</button>{editingId && <button onClick={reset} className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")}>Cancel</button>}</div>
         </div>
       </Panel>
-      <Panel title="Supplier List" icon={<BookOpenCheck className="size-4" />}>
+      <Panel
+        title="Supplier List"
+        icon={<BookOpenCheck className="size-4" />}
+        action={
+          <button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => void refreshSuppliers()} disabled={suppliersRefreshing}>
+            <RefreshCcw className={cn("size-4", suppliersRefreshing && "animate-spin")} /> Refresh
+          </button>
+        }
+      >
         <DataTable
           headers={["Name", "Mobile", "GST", "Items", "Address", "Notes", "Added", "Actions"]}
           rows={rows.map((supplier) => [supplier.name, supplier.mobile, supplier.gstNumber || "-", supplier.itemsProvided || "-", supplier.address || "-", supplier.notes || "-", fmtDateTime(supplier.createdAt), <div key={supplier.id} className="flex gap-2"><button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => { setEditingId(supplier.id); setForm({ name: supplier.name, address: supplier.address, mobile: supplier.mobile, gstNumber: supplier.gstNumber, itemsProvided: supplier.itemsProvided, notes: supplier.notes }); }}>Edit</button><button className={cn(btnCls, "bg-red-50 text-red-700 ring-1 ring-red-200")} onClick={() => { if (window.confirm(`Delete ${supplier.name}?`)) removeSupplier(supplier.id, userName); }}>Delete</button></div>])}
@@ -2279,6 +2344,7 @@ function PasswordConfirmEditModal({
 function ExpensesTab({ userName, expenseAmount, cashBalance }: any) {
   const { expenses, addExpense, updateExpense } = useBranchOpsStore();
   const { currentUser } = useAuthStore();
+  const { refreshing: expensesRefreshing, refresh: refreshExpenses } = useOpsStoreRefresh();
   const [form, setForm] = useState({
     expenseDate: dateInput(),
     category: "",
@@ -2357,7 +2423,7 @@ function ExpensesTab({ userName, expenseAmount, cashBalance }: any) {
             <button onClick={save} className={cn(btnCls, "w-full bg-slate-950 text-white")}>Save Expense</button>
           </div>
         </Panel>
-        <Panel title="Expense History" icon={<History className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Expenses.xls", rows.map((e) => ({ Date: e.expenseDate, Category: e.category, Details: e.description, Amount: e.amount, Mode: e.mode, EnteredBy: e.enteredBy })))}><Download className="size-4" /> Excel</button>}>
+        <Panel title="Expense History" icon={<History className="size-4" />} action={<div className="flex flex-wrap gap-2"><button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => void refreshExpenses()} disabled={expensesRefreshing}><RefreshCcw className={cn("size-4", expensesRefreshing && "animate-spin")} /> Refresh</button><button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Expenses.xls", rows.map((e) => ({ Date: e.expenseDate, Category: e.category, Details: e.description, Amount: e.amount, Mode: e.mode, EnteredBy: e.enteredBy })))}><Download className="size-4" /> Excel</button></div>}>
           <DataTable headers={["Date", "Category", "Details", "Amount", "Mode", "Entered By", "Action"]} rows={rows.map((e) => [fmtDate(e.expenseDate), e.category, e.description, money(e.amount), e.mode.toUpperCase(), e.enteredBy, <div key={e.id} className="flex gap-2"><button className={cn(btnCls, "bg-slate-100 px-3 py-1.5 text-slate-700")} onClick={() => printExpense(e)}><Printer className="size-4" /> Print</button><button className={cn(btnCls, "bg-amber-50 px-3 py-1.5 text-amber-700 ring-1 ring-amber-200")} onClick={() => openEdit(e)}><Pencil className="size-3.5" /> Edit</button></div>])} empty="No expenses added." />
         </Panel>
       </div>
@@ -2535,13 +2601,16 @@ function ComplaintsTab({ userName }: { userName: string }) {
   const [rows, setRows] = useState<any[]>([]);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [loading, setLoading] = useState(false);
 
   const load = async () => {
+    setLoading(true);
     const { data, error: loadError } = await supabase
       .from("branch_complaint_tickets")
       .select("ticket_no, created_at, complaint_area, subject, description, created_by_username, status")
       .eq("branch", BRANCH)
       .order("created_at", { ascending: false });
+    setLoading(false);
     if (loadError) {
       setError(loadError.message);
       return;
@@ -2608,7 +2677,15 @@ function ComplaintsTab({ userName }: { userName: string }) {
           </button>
         </div>
       </Panel>
-      <Panel title="Complaint Ticket Register" icon={<Bell className="size-4" />}>
+      <Panel
+        title="Complaint Ticket Register"
+        icon={<Bell className="size-4" />}
+        action={
+          <button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => void load()} disabled={loading}>
+            <RefreshCcw className={cn("size-4", loading && "animate-spin")} /> Refresh
+          </button>
+        }
+      >
         <p className="mb-3 rounded-xl bg-blue-50 px-3 py-2 text-xs font-bold text-blue-800 ring-1 ring-blue-200">
           SNB Admin can raise tickets and add branch details. Review, resolution and closure are restricted to Owner and Main Admin.
         </p>
@@ -3197,6 +3274,7 @@ function downloadQuotationPdf(quote: QuotationRecord) {
 function QuotationsTab({ userName }: { userName: string }) {
   const catalogItems = useSNBCatalog();
   const { quotations, addQuotation, updateQuotationStatus } = useBranchOpsStore();
+  const { refreshing: quotationsRefreshing, refresh: refreshQuotations } = useOpsStoreRefresh();
   const [mode, setMode] = useState<"list" | "custom">("list");
   const [form, setForm] = useState({ customerName: "", companyName: "", mobile: "", gstNumber: "", itemName: catalogItems[0]?.name || "", customName: "", qty: "1", unit: "pcs" as "pcs" | "kg", rate: "", deliveryCharges: "0", packingCharges: "0", extraCharges: "0", discount: "0" });
   const [lines, setLines] = useState<any[]>([]);
@@ -3271,7 +3349,15 @@ function QuotationsTab({ userName }: { userName: string }) {
           <button onClick={save} className={cn(btnCls, "w-full bg-slate-950 text-white")}><Download className="size-4" /> Save Quotation &amp; Download PDF</button>
         </div>
       </Panel>
-      <Panel title="Quotation History" icon={<History className="size-4" />}>
+      <Panel
+        title="Quotation History"
+        icon={<History className="size-4" />}
+        action={
+          <button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => void refreshQuotations()} disabled={quotationsRefreshing}>
+            <RefreshCcw className={cn("size-4", quotationsRefreshing && "animate-spin")} /> Refresh
+          </button>
+        }
+      >
         <DataTable headers={["No", "Customer", "Mobile", "GST", "Items", "Charges", "Discount", "Total", "Status", "Action"]} rows={rows.map((q) => [q.quoteNo, q.customerName, q.mobile || "-", q.gstNumber || "-", q.items.length, money((q.deliveryCharges || 0) + (q.packingCharges || 0) + (q.extraCharges || 0)), money(q.discount || 0), money(q.total), q.status, <div key="a" className="flex flex-wrap gap-2"><button className={cn(btnCls, "bg-slate-100 text-slate-700")} onClick={() => downloadQuotationPdf(q)}><Download className="size-4" /> PDF</button><button className={cn(btnCls, "bg-emerald-50 text-emerald-700")} onClick={() => updateQuotationStatus(q.id, "Converted", userName)}>Convert</button><button className={cn(btnCls, "bg-red-50 text-red-600")} onClick={() => updateQuotationStatus(q.id, "Cancelled", userName)}>Cancel</button></div>])} empty="No quotations saved." />
       </Panel>
     </div>
@@ -3285,6 +3371,15 @@ function CreditTab({ userName, role, fromDate, toDate }: { userName: string; rol
   const payments = creditPayments[BRANCH] || [];
   const paymentsInRange = payments.filter((payment) => inRange(payment.createdAt, fromDate, toDate));
   const pending = credits.filter((credit) => credit.status !== "settled" && credit.creditAmount > 0);
+  const [creditRefreshing, setCreditRefreshing] = useState(false);
+  const refreshCredit = async () => {
+    setCreditRefreshing(true);
+    try {
+      await Promise.all([fetchBranchData(BRANCH, true, ['credit']), fetchCreditPayments(BRANCH)]);
+    } finally {
+      setCreditRefreshing(false);
+    }
+  };
   const [selectedId, setSelectedId] = useState("");
   const [amount, setAmount] = useState("");
   const [mode, setMode] = useState<"cash" | "upi" | "card" | "bank">("cash");
@@ -3553,7 +3648,7 @@ function CreditTab({ userName, role, fromDate, toDate }: { userName: string; rol
             <p className="text-[11px] text-slate-500">This writes off the balance directly — it is not counted as cash/UPI/card collected.</p>
           </div>
         </Panel>
-        <Panel className="xl:col-span-2" title="SNB Branch Credit Register" icon={<WalletCards className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Credit_Register.xls", sortedCredits.map((credit) => ({ Bill: credit.billNo, Customer: credit.customerName, Mobile: credit.customerPhone || "-", Total: credit.subtotal, Paid: credit.amountPaid, Balance: credit.creditAmount, Due: credit.dueDate || "-", Status: credit.status })))}><Download className="size-4" /> Excel</button>}>
+        <Panel className="xl:col-span-2" title="SNB Branch Credit Register" icon={<WalletCards className="size-4" />} action={<div className="flex flex-wrap gap-2"><button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => void refreshCredit()} disabled={creditRefreshing}><RefreshCcw className={cn("size-4", creditRefreshing && "animate-spin")} /> Refresh</button><button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Credit_Register.xls", sortedCredits.map((credit) => ({ Bill: credit.billNo, Customer: credit.customerName, Mobile: credit.customerPhone || "-", Total: credit.subtotal, Paid: credit.amountPaid, Balance: credit.creditAmount, Due: credit.dueDate || "-", Status: credit.status })))}><Download className="size-4" /> Excel</button></div>}>
           <div className="grid min-h-[420px] gap-3 lg:grid-cols-[minmax(0,1.35fr)_minmax(280px,.65fr)]">
             <div className="overflow-auto rounded-2xl border border-slate-200">
               <table className="w-full min-w-[720px] text-left text-xs"><thead className="sticky top-0 bg-slate-950 text-white"><tr>{([["Bill","billNo"],["Customer","customerName"],["Mobile","customerPhone"],["Total","subtotal"],["Paid","amountPaid"],["Balance","creditAmount"],["Due","dueDate"],["Status","status"]] as const).map(([label, field]) => <th key={label} onClick={() => toggleCreditSort(field)} className="cursor-pointer select-none px-3 py-2.5 font-black uppercase tracking-wide hover:bg-slate-800">{label}{creditSortArrow(field)}</th>)}</tr></thead><tbody>{sortedCredits.map((credit) => <tr key={credit.id} onClick={() => setDetailId(credit.id)} className={cn("cursor-pointer border-t border-slate-100 hover:bg-amber-50", detailId === credit.id && "bg-amber-100")}><td className="px-3 py-2.5 font-black text-blue-700 underline">{credit.billNo}</td><td className="px-3 py-2.5 font-bold">{credit.customerName}</td><td className="px-3 py-2.5">{credit.customerPhone || "-"}</td><td className="px-3 py-2.5 font-bold">{money(credit.subtotal)}</td><td className="px-3 py-2.5">{money(credit.amountPaid)}</td><td className="px-3 py-2.5 font-black text-red-600">{money(credit.creditAmount)}</td><td className="px-3 py-2.5">{credit.dueDate || "-"}</td><td className="px-3 py-2.5"><StatusBadge tone={credit.status === "settled" ? "green" : credit.status === "partial" ? "amber" : "red"}>{credit.status}</StatusBadge></td></tr>)}</tbody></table>
@@ -3627,12 +3722,22 @@ function CashierManagementTab({ userName }: { userName: string }) {
 
 function CurrentCashTab({ userName }: { userName: string }) {
   const { expenses, purchasePayments, bankDeposits } = useBranchOpsStore();
+  const { refresh: refreshOps } = useOpsStoreRefresh();
 
   // Authoritative all-time source: every closed/open counter session ever
   // recorded for this branch (no date filter, not scoped to the page-level
   // date filter). Same source the Overview tab's breakdown uses, so these
   // numbers line up with the rest of the app.
   const allTimeReports = useSnbCashSummary(BRANCH);
+  const [cashRefreshing, setCashRefreshing] = useState(false);
+  const refreshCurrentCash = async () => {
+    setCashRefreshing(true);
+    try {
+      await Promise.all([allTimeReports.refresh(), refreshOps()]);
+    } finally {
+      setCashRefreshing(false);
+    }
+  };
   const sessions = useMemo(
     () => allTimeReports.counterSessions.filter((row: any) => !row.branch || row.branch === BRANCH),
     [allTimeReports.counterSessions],
@@ -3735,8 +3840,11 @@ function CurrentCashTab({ userName }: { userName: string }) {
 
   return (
     <div className="space-y-4">
-      <div className="rounded-2xl bg-indigo-50 px-3 py-2 text-xs font-bold text-indigo-700 ring-1 ring-indigo-100">
-        Showing complete cash flow from the first recorded sale till now - no date filter applies to this tab.
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-indigo-50 px-3 py-2 text-xs font-bold text-indigo-700 ring-1 ring-indigo-100">
+        <span>Showing complete cash flow from the first recorded sale till now - no date filter applies to this tab.</span>
+        <button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => void refreshCurrentCash()} disabled={cashRefreshing}>
+          <RefreshCcw className={cn("size-4", cashRefreshing && "animate-spin")} /> Refresh
+        </button>
       </div>
       {allTimeReports.error && (
         <div className="rounded-2xl bg-amber-50 px-4 py-3 text-sm font-bold text-amber-900 ring-1 ring-amber-100">
@@ -3859,6 +3967,7 @@ function CurrentCashTab({ userName }: { userName: string }) {
   );
 }
 function CashierReportTab(props: any) {
+  const db = props.dbReports as ReturnType<typeof useSnbAdminReports>;
   const rows = useMemo(() => {
     const map = new Map<string, any>();
     props.dbReports.counterTotals.forEach((entry: any) => {
@@ -3900,7 +4009,7 @@ function CashierReportTab(props: any) {
         <Kpi label="Top Cashier" value={best ? best.name : "-"} sub={best ? money(best.netSales) : undefined} icon={<BarChart3 className="size-5" />} tone="amber" />
       </div>
       {props.dbReports.error && <div className="rounded-2xl bg-amber-50 p-3 text-xs font-bold text-amber-800 ring-1 ring-amber-100">Some database reports could not load: {props.dbReports.error}</div>}
-      <Panel title="Cashier Accountability Report" icon={<BarChart3 className="size-4" />} action={<button className={cn(btnCls, "bg-slate-950 text-white")} onClick={() => csvDownload("SNB_Cashier_Report.xls", rows.map((row: any) => ({ CashierLogin: row.name, Sessions: row.sessions, GrossSales: row.grossSales, Returns: row.returns, NetSales: row.netSales, Bills: row.bills, Cash: row.cash, UPI: row.upi, Card: row.card, CreditSales: row.credit, CreditCollected: row.creditCollected, AdvanceCollected: row.advance, TotalAmount: row.totalAmount })))}><Download className="size-4" /> Excel</button>}>
+      <Panel title="Cashier Accountability Report" icon={<BarChart3 className="size-4" />} action={<div className="flex flex-wrap gap-2"><button disabled={db.loading} className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200 disabled:opacity-50")} onClick={() => void db.refresh()}><RefreshCcw className={cn("size-4", db.loading && "animate-spin")} /> Refresh</button><button className={cn(btnCls, "bg-slate-950 text-white")} onClick={() => csvDownload("SNB_Cashier_Report.xls", rows.map((row: any) => ({ CashierLogin: row.name, Sessions: row.sessions, GrossSales: row.grossSales, Returns: row.returns, NetSales: row.netSales, Bills: row.bills, Cash: row.cash, UPI: row.upi, Card: row.card, CreditSales: row.credit, CreditCollected: row.creditCollected, AdvanceCollected: row.advance, TotalAmount: row.totalAmount })))}><Download className="size-4" /> Excel</button></div>}>
         <DataTable
           headers={["Rank", "Cashier Login", "Sessions", "Gross", "Returns", "Net", "Bills", "Cash", "UPI", "Card", "Credit Sales", "Credit Collected", "Advance", "Total Amount"]}
           rows={rows.map((row: any, index: number) => [`#${index + 1}`, row.name, row.sessions || "-", money(row.grossSales), money(row.returns), <span key="net" className="font-black text-emerald-700">{money(row.netSales)}</span>, row.bills, money(row.cash), money(row.upi), money(row.card), money(row.credit), money(row.creditCollected), money(row.advance), <span key="total" className="font-black text-purple-700">{money(row.totalAmount)}</span>])}
@@ -4004,6 +4113,7 @@ function DenominationAuditModal({ row, onClose }: { row: any; onClose: () => voi
 }
 
 function CashierClosureTab(props: any) {
+  const db = props.dbReports as ReturnType<typeof useSnbAdminReports>;
   const rows = props.dbReports.counterSessions as any[];
   // BUG FIX (2026-08-09): branch_counter_sessions.status is actually either
   // "open" or "finalized" (confirmed live - every closed session in the DB
@@ -4027,7 +4137,7 @@ function CashierClosureTab(props: any) {
         <Kpi label="Mismatches" value={mismatches} icon={<AlertTriangle className="size-5" />} tone={mismatches ? "red" : "green"} />
         <Kpi label="Net Difference" value={money(totalDifference)} icon={<IndianRupee className="size-5" />} tone={Math.abs(totalDifference) < 0.01 ? "green" : "red"} />
       </div>
-      <Panel title="Per-Cashier Counter Sessions" icon={<CalendarClock className="size-4" />} action={<button className={cn(btnCls, "bg-slate-950 text-white")} onClick={() => csvDownload("SNB_Cashier_Closures.xls", rows.map((row: any) => ({ BusinessDate: row.business_date, CashierLogin: row.cashier_display_name || row.cashier_username || "Legacy / Unattributed", OpenedAt: row.opened_at, ClosedAt: row.closed_at || "", Status: row.status, OpeningCash: asNumber(row.opening_cash), GrossSales: asNumber(row.gross_sales), Discounts: asNumber(row.discounts), Returns: asNumber(row.returns), NetSales: asNumber(row.net_sales), CashSales: asNumber(row.cash_sales), UPISales: asNumber(row.upi_sales), CardSales: asNumber(row.card_sales), CreditSales: asNumber(row.credit_sales), CreditCollected: asNumber(row.credit_collected), AdvanceCollected: asNumber(row.advance_collected), Expenses: asNumber(row.expenses), SupplierPayments: asNumber(row.supplier_payments), BankDeposits: asNumber(row.bank_deposits), ExpectedCash: asNumber(row.expected_cash), CountedCash: asNumber(row.counted_cash), Difference: asNumber(row.difference), Bills: asNumber(row.bill_count), Notes: row.notes || "" })))}><Download className="size-4" /> Excel</button>}>
+      <Panel title="Per-Cashier Counter Sessions" icon={<CalendarClock className="size-4" />} action={<div className="flex flex-wrap gap-2"><button disabled={db.loading} className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200 disabled:opacity-50")} onClick={() => void db.refresh()}><RefreshCcw className={cn("size-4", db.loading && "animate-spin")} /> Refresh</button><button className={cn(btnCls, "bg-slate-950 text-white")} onClick={() => csvDownload("SNB_Cashier_Closures.xls", rows.map((row: any) => ({ BusinessDate: row.business_date, CashierLogin: row.cashier_display_name || row.cashier_username || "Legacy / Unattributed", OpenedAt: row.opened_at, ClosedAt: row.closed_at || "", Status: row.status, OpeningCash: asNumber(row.opening_cash), GrossSales: asNumber(row.gross_sales), Discounts: asNumber(row.discounts), Returns: asNumber(row.returns), NetSales: asNumber(row.net_sales), CashSales: asNumber(row.cash_sales), UPISales: asNumber(row.upi_sales), CardSales: asNumber(row.card_sales), CreditSales: asNumber(row.credit_sales), CreditCollected: asNumber(row.credit_collected), AdvanceCollected: asNumber(row.advance_collected), Expenses: asNumber(row.expenses), SupplierPayments: asNumber(row.supplier_payments), BankDeposits: asNumber(row.bank_deposits), ExpectedCash: asNumber(row.expected_cash), CountedCash: asNumber(row.counted_cash), Difference: asNumber(row.difference), Bills: asNumber(row.bill_count), Notes: row.notes || "" })))}><Download className="size-4" /> Excel</button></div>}>
         <DataTable
           headers={["Date", "Cashier Login", "Session", "Status", "Opening", "Gross", "Returns", "Net", "Expected", "Counted", "Difference", "Bills", "Cash", "UPI", "Card", "Credit Collected", "Advance", "Expenses", "Supplier Payments", "Bank Deposits", "Notes", "Action"]}
           rows={rows.map((row: any) => [
@@ -4974,6 +5084,13 @@ export function PurchaseInvoicesTab({
         icon={<ShoppingCart className="size-4" />}
         action={
           <div className="flex flex-wrap items-center gap-2">
+            <button
+              disabled={dbReports.loading}
+              className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200 disabled:opacity-50")}
+              onClick={() => void dbReports.refresh()}
+            >
+              <RefreshCcw className={cn("size-4", dbReports.loading && "animate-spin")} /> Refresh
+            </button>
             <button
               className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")}
               onClick={() =>
@@ -6233,12 +6350,22 @@ function SupplierPaymentsTab({
 function BankDepositsTab({ userName }: { userName: string }) {
   const { bankDeposits, addBankDeposit, updateBankDeposit, expenses } = useBranchOpsStore();
   const { currentUser } = useAuthStore();
+  const { refresh: refreshOps } = useOpsStoreRefresh();
 
   // Authoritative all-time source: every closed/open counter session ever
   // recorded for this branch (no date filter). This is the same source
   // the Overview tab's Rupee Source Breakdown uses, so the numbers here
   // line up with the rest of the app.
   const allTimeReports = useSnbCashSummary(BRANCH);
+  const [depositsRefreshing, setDepositsRefreshing] = useState(false);
+  const refreshDeposits = async () => {
+    setDepositsRefreshing(true);
+    try {
+      await Promise.all([allTimeReports.refresh(), refreshOps()]);
+    } finally {
+      setDepositsRefreshing(false);
+    }
+  };
   const sessions = useMemo(
     () => allTimeReports.counterSessions.filter((row: any) => !row.branch || row.branch === BRANCH),
     [allTimeReports.counterSessions],
@@ -6550,6 +6677,7 @@ function BankDepositsTab({ userName }: { userName: string }) {
           title="Bank Deposit History (All-time)"
           icon={<History className="size-4" />}
           action={<div className="flex gap-2">
+            <button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => void refreshDeposits()} disabled={depositsRefreshing}><RefreshCcw className={cn("size-4", depositsRefreshing && "animate-spin")} /> Refresh</button>
             <button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={printDetailReport}><Printer className="size-4" /> Print Detail</button>
             <button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Bank_Deposits.xls", rows.map((d) => ({ Date: d.depositDate, Amount: d.amount, Method: d.paymentMode, BankAccount: d.bankAccount, Slip: d.slipNo, Ref: d.transactionRef, EnteredBy: d.enteredBy, Remarks: d.remarks, TotalDepositedSoFar: d.cumulativeDeposited, CashInHandAfter: d.cashAfter })))}><Download className="size-4" /> Export</button>
           </div>}
@@ -6618,6 +6746,16 @@ function SalespersonManagementTab({ userName }: { userName: string }) {
   // relying solely on the general branch-ops hydration, so a stale/
   // incomplete persisted snapshot can't leave this screen showing nobody.
   useEffect(() => { void refreshSalespeople(BRANCH); }, [refreshSalespeople]);
+
+  const [rosterRefreshing, setRosterRefreshing] = useState(false);
+  const refreshRoster = async () => {
+    setRosterRefreshing(true);
+    try {
+      await refreshSalespeople(BRANCH);
+    } finally {
+      setRosterRefreshing(false);
+    }
+  };
 
   const [editId, setEditId] = useState("");
   const [form, setForm] = useState({
@@ -6767,6 +6905,11 @@ function SalespersonManagementTab({ userName }: { userName: string }) {
       <Panel
         title="Salesperson Master"
         icon={<BookOpenCheck className="size-4" />}
+        action={
+          <button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => void refreshRoster()} disabled={rosterRefreshing}>
+            <RefreshCcw className={cn("size-4", rosterRefreshing && "animate-spin")} /> Refresh
+          </button>
+        }
       >
         <DataTable
           headers={[
@@ -6816,6 +6959,7 @@ function SalespersonManagementTab({ userName }: { userName: string }) {
 }
 
 function SalespersonReportTab(props: any) {
+  const db = props.dbReports as ReturnType<typeof useSnbAdminReports>;
   const [selectedPerson, setSelectedPerson] = useState("All");
   const paymentByPerson = useMemo(() => {
     const map = new Map<string, { cash: number; upi: number; card: number; credit: number }>();
@@ -6893,6 +7037,9 @@ function SalespersonReportTab(props: any) {
               <option value="All">All Salespersons</option>
               {rows.map((row: any) => <option key={row.name} value={row.name}>{row.name}</option>)}
             </select>
+            <button disabled={db.loading} className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200 disabled:opacity-50")} onClick={() => void db.refresh()}>
+              <RefreshCcw className={cn("size-4", db.loading && "animate-spin")} /> Refresh
+            </button>
             <button className={cn(btnCls, "bg-slate-950 text-white")} onClick={() => csvDownload("SNB_Salesperson_Report.xls", filteredRows.map((row: any) => ({ Salesperson: row.name, GrossSales: row.grossSales, Discounts: row.discounts, NetSales: row.netSales, Cash: row.cash, UPI: row.upi, Card: row.card, CreditSales: row.credit, Reconciliation: row.cash + row.upi + row.card + row.credit, Bills: row.bills, AverageBill: row.avgBillValue, Outstanding: row.outstanding, CashierLogins: row.cashierCount })))}><Download className="size-4" /> Excel</button>
           </div>
         }
@@ -7052,10 +7199,15 @@ function HistoryTab(props: any) {
         title="SNB Branch History"
         icon={<History className="size-4" />}
         action={
-          <button className={cn(btnCls, "bg-slate-950 text-white")} onClick={exportAll}>
-            <Download className="size-4" />
-            Export Excel
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <button disabled={db.loading} className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200 disabled:opacity-50")} onClick={() => void db.refresh()}>
+              <RefreshCcw className={cn("size-4", db.loading && "animate-spin")} /> Refresh
+            </button>
+            <button className={cn(btnCls, "bg-slate-950 text-white")} onClick={exportAll}>
+              <Download className="size-4" />
+              Export Excel
+            </button>
+          </div>
         }
       >
         <div className="overflow-auto rounded-xl border border-slate-200">
@@ -7549,6 +7701,7 @@ function StockAuditTab({
 }) {
   const catalogItems = useSNBCatalog();
   const { stockCountReports, updateStockCountPhysicalQty, confirmStockCountReport } = useBranchOpsStore();
+  const { refreshing: auditRefreshing, refresh: refreshAudit } = useOpsStoreRefresh();
   const [savingId, setSavingId] = useState("");
   const [savingLine, setSavingLine] = useState("");
   const [physicalDrafts, setPhysicalDrafts] = useState<Record<string, string>>({});
@@ -7795,9 +7948,14 @@ function StockAuditTab({
           <p className="text-sm font-black text-slate-900">Admin stock verification</p>
           <p className="text-xs font-semibold text-slate-500">Pending physical quantities can be corrected before confirmation. Click Difference or Difference Value to sort.</p>
         </div>
+        <div className="flex flex-wrap gap-2">
+        <button type="button" onClick={() => void refreshAudit()} disabled={auditRefreshing} className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")}>
+          <RefreshCcw className={cn("size-4", auditRefreshing && "animate-spin")} /> Refresh
+        </button>
         <button type="button" onClick={downloadAudit} className={cn(btnCls, "bg-emerald-600 text-white shadow-lg shadow-emerald-100")}>
           <FileSpreadsheet className="size-4" /> Download Excel
         </button>
+        </div>
       </div>
 
       <StockCountClaimsPanel userName={userName} />
@@ -8043,33 +8201,39 @@ function IncomingDisputeReview({ userName }: { userName: string }) {
 
 function NotificationsTab({ userName }: { userName: string }) {
   const { notifications, cashierClosures, updateNotificationStatus } = useBranchOpsStore();
-  const { creditSales } = useBranchStore();
+  const { creditSales, fetchBranchData } = useBranchStore();
+  const { refresh: refreshOps } = useOpsStoreRefresh();
   const [priceNotifications, setPriceNotifications] = useState<any[]>([]);
+  const [notifRefreshing, setNotifRefreshing] = useState(false);
+  const loadPriceNotifications = async () => {
+    const { data, error } = await supabase
+      .from("admin_notifications")
+      .select("id, type, title, body, ref_label, meta, created_at")
+      .in("type", ["price_change", "snb_purchase_invoice_revision"])
+      .order("created_at", { ascending: false })
+      .limit(100);
+    if (!error) {
+      setPriceNotifications(
+        (data || []).filter((n: any) => {
+          const metaBranch = n.meta?.branch;
+          const label = String(n.ref_label || "");
+          return n.type === "snb_purchase_invoice_revision" || metaBranch === BRANCH || label.includes(BRANCH);
+        }),
+      );
+    }
+  };
   useEffect(() => {
-    let active = true;
-    const load = async () => {
-      const { data, error } = await supabase
-        .from("admin_notifications")
-        .select("id, type, title, body, ref_label, meta, created_at")
-        .in("type", ["price_change", "snb_purchase_invoice_revision"])
-        .order("created_at", { ascending: false })
-        .limit(100);
-      if (!active) return;
-      if (!error) {
-        setPriceNotifications(
-          (data || []).filter((n: any) => {
-            const metaBranch = n.meta?.branch;
-            const label = String(n.ref_label || "");
-            return n.type === "snb_purchase_invoice_revision" || metaBranch === BRANCH || label.includes(BRANCH);
-          }),
-        );
-      }
-    };
-    void load();
-    return () => {
-      active = false;
-    };
+    void loadPriceNotifications();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  const refreshNotifications = async () => {
+    setNotifRefreshing(true);
+    try {
+      await Promise.all([loadPriceNotifications(), refreshOps(), fetchBranchData(BRANCH, true, ['credit'])]);
+    } finally {
+      setNotifRefreshing(false);
+    }
+  };
   const rows = [
     ...priceNotifications.map((n) => {
       const isPurchaseRevision = n.type === "snb_purchase_invoice_revision";
@@ -8128,7 +8292,15 @@ function NotificationsTab({ userName }: { userName: string }) {
   ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   return (
     <div className="space-y-4">
-    <Panel title="Admin Notifications" icon={<Bell className="size-4" />}>
+    <Panel
+      title="Admin Notifications"
+      icon={<Bell className="size-4" />}
+      action={
+        <button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => void refreshNotifications()} disabled={notifRefreshing}>
+          <RefreshCcw className={cn("size-4", notifRefreshing && "animate-spin")} /> Refresh
+        </button>
+      }
+    >
       <DataTable
         headers={[
           "Date",
