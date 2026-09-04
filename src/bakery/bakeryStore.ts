@@ -81,6 +81,62 @@ export function isAdvanceOrderTagged(notes?: string | null): boolean {
   return /^[A-Za-z]+-ADV-\d+\s*\|/.test(String(notes ?? ''));
 }
 
+// FEATURE (2026-09-05): "Advance orders that come from SNB and VRSNB are
+// unable to track and unable to dispatch — this is causing confusion."
+// isAdvanceOrderTagged above was only ever used as a boolean for dispatch
+// priority weighting — the rich customer/mobile/delivery details a branch's
+// sendToStoreDashboard actually embeds in `notes` (see BranchBusinessModules.tsx)
+// were never parsed or shown anywhere in Planner. This is that parser, shared
+// by the new Advance Orders tab (PlannerDashboard.tsx) and anywhere else that
+// wants to display these details rather than just detect the tag.
+//
+// Two real shapes this has to handle:
+//   Full (fresh from the branch):
+//     "SNB-ADV-248 | Customer Name | 9876543210 | Delivery 2026-09-10 14:00 | notes"
+//   Post-split (buildSplitOrderNotes above rewrites notes when Planner splits
+//   a partial batch off a merged/produced order — see its own comment):
+//     "SNB-ADV-248|Store batch from order #1250"
+// The split form deliberately keeps only the tag — everything else about
+// that specific split-off order comes from `orderNumber`/`items` themselves,
+// not from notes. Returns null for anything that isn't advance-tagged at all.
+export interface ParsedAdvanceOrder {
+  orderNo: string;
+  customerName: string;
+  mobile: string;
+  deliveryDate: string;
+  deliveryTime: string;
+  remarks: string;
+  /** True once this order has passed through a Planner/Store split and lost its
+   *  original customer/mobile/delivery detail — only the tag itself survives. */
+  detailsLost: boolean;
+}
+export function parseAdvanceOrderNotes(notes?: string | null): ParsedAdvanceOrder | null {
+  const text = String(notes ?? '').trim();
+  const tagMatch = text.match(/^([A-Za-z]+-ADV-\d+)\s*\|/);
+  if (!tagMatch) return null;
+  const orderNo = tagMatch[1];
+  const rest = text.slice(tagMatch[0].length);
+  const parts = rest.split('|').map((s) => s.trim());
+  const deliveryPart = parts[2] ?? '';
+  const deliveryMatch = /^Delivery\s+(\S+)\s*(.*)$/i.exec(deliveryPart);
+  if (parts.length >= 3 && deliveryMatch) {
+    return {
+      orderNo,
+      customerName: parts[0] || '',
+      mobile: parts[1] || '',
+      deliveryDate: deliveryMatch[1] || '',
+      deliveryTime: (deliveryMatch[2] || '').trim(),
+      remarks: parts.slice(3).join(' | '),
+      detailsLost: false,
+    };
+  }
+  return {
+    orderNo, customerName: '', mobile: '', deliveryDate: '', deliveryTime: '',
+    remarks: rest.trim(),
+    detailsLost: true,
+  };
+}
+
 // FEATURE (2026-08-10): "for pcs item never mark the quantity in decimal /
 // for kgs the decimal should not be more than 3 numbers." Applied at every
 // write path below (order submission, production entry, dispatch) rather
@@ -1468,6 +1524,14 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
       if (!(newEntry.quantity > 0)) {
         throw new Error('Dispatch quantity must be greater than zero.');
       }
+      // FEATURE (2026-09-05): "For the Advance orders they need the adv
+      // number to be displayed next to that item" (SNB/VRSNB Order
+      // Dashboard's Stock/Incoming tab) — tag the incoming row at write time
+      // with the order's SNB-ADV-N/VRSNB-ADV-N number so it survives
+      // regardless of what happens to the order afterward.
+      const advanceOrderNo = isAdvanceOrderTagged(fullOrderData?.notes as string | undefined | null)
+        ? parseAdvanceOrderNotes(fullOrderData?.notes as string | undefined | null)?.orderNo ?? null
+        : null;
       const { error: incomingErr } = await supabase.from('branch_incoming').insert({
         dispatch_id:   newEntry.id,
         branch:        newEntry.branch,
@@ -1477,6 +1541,7 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
         received_at:   newEntry.dispatchedAt,
         dispatched_by: newEntry.dispatchedBy,
         confirmed:     false,
+        advance_order_no: advanceOrderNo,
       });
       if (incomingErr) {
         console.error('[submitDispatch] branch_incoming write failed:', incomingErr);

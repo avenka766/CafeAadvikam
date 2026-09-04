@@ -238,7 +238,11 @@ export const useStoreStockStore = create<StoreStockState>()((set, get) => ({
 
   updateQuantity: async (id, quantity) => {
     const existingItem = get().items.find(i => i.id === id);
-    const sanitizedQuantity = roundForUnit(quantity, existingItem?.unit ?? 'kg'); // AUDIT FIX (2026-09-03): see roundForUnit
+    // AUDIT FIX (2026-09-05): "raw material should never go into negative" —
+    // the Add/Edit form already has min={0} on its input, but that's only a
+    // soft browser hint, not an enforced floor; clamp for real here too, the
+    // same way deduct_materials now clamps server-side.
+    const sanitizedQuantity = Math.max(0, roundForUnit(quantity, existingItem?.unit ?? 'kg')); // AUDIT FIX (2026-09-03): see roundForUnit
 
     // AUDIT FIX (2026-09-03): this was a blind "set quantity to X" write
     // with no compare-and-swap — the exact absolute-overwrite pattern
@@ -279,7 +283,9 @@ export const useStoreStockStore = create<StoreStockState>()((set, get) => ({
       // AUDIT FIX (2026-09-03): see roundForUnit — round pcs/nos edits to a
       // whole piece using whichever unit this save will actually leave the
       // item with (the new unit if it's being changed in the same save).
-      sanitizedQuantity = roundForUnit(updates.quantity, updates.unit ?? existingItem?.unit ?? 'kg');
+      // AUDIT FIX (2026-09-05): "raw material should never go into
+      // negative" — same hard floor as updateQuantity above.
+      sanitizedQuantity = Math.max(0, roundForUnit(updates.quantity, updates.unit ?? existingItem?.unit ?? 'kg'));
       payload.quantity = sanitizedQuantity;
     }
     if (updates.minThreshold !== undefined) payload.min_threshold = updates.minThreshold;
@@ -413,6 +419,18 @@ export const useStoreStockStore = create<StoreStockState>()((set, get) => ({
         if (deductQty <= 0) {
           warnings.push(`${d.name}: computed deduction rounds to 0 ${match.unit} — skipped`);
           continue;
+        }
+
+        // AUDIT FIX (2026-09-05): "the stock should not go into negative...
+        // show the store manager that this item is not in stock so please
+        // check." deduct_materials (the RPC below) now clamps at 0 itself,
+        // but that alone is silent — this is the actual warning surfaced to
+        // Store staff (via the existing sendNotice banner every caller of
+        // deductMaterials already shows) when a deduction is about to run
+        // short, so it reads as a real alert rather than stock quietly
+        // being capped with no explanation.
+        if (match.quantity < deductQty) {
+          warnings.push(`${d.name} is not in stock (have ${match.quantity} ${match.unit}, need ${deductQty} ${match.unit}) — please check`);
         }
 
         updates.push({ id: match.id, name: match.name, unit: match.unit, deductQty });

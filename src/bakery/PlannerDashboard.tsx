@@ -18,7 +18,7 @@ import {
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import * as XLSX from 'xlsx';
 import jsPDF from 'jspdf';
-import { useBakeryStore, isPlannedOrder, clampQtyForUnit, isAdvanceOrderTagged } from './bakeryStore';
+import { useBakeryStore, isPlannedOrder, clampQtyForUnit, isAdvanceOrderTagged, parseAdvanceOrderNotes, type ParsedAdvanceOrder } from './bakeryStore';
 import { useAuthStore } from '@/stores/authStore';
 import { cn } from '@/lib/utils';
 import type { BakeryOrder, BakeryOrderItem, PreparedItem, Branch } from './types';
@@ -32,8 +32,9 @@ import HosurDashboard from '@/pages/HosurDashboard';
 import HosurShopOrderPanel, { leftoverReasonLabel } from './HosurShopOrderPanel';
 import { dispatchReceiveAndBill, type HosurOrderItemForBilling } from './hosurBillingBridge';
 import PackingCakeOrdersTab from './PackingCakeOrdersTab';
+import { useCakeReadyCount } from './useCakeReadyCount';
 import PlannerLeftoverTab, { PlannerTransferOutTab, useLeftoverBalanceMap, recordLeftoverMovement, kolkataToday, qtyFmt, sanitizeQtyForUnit, type LeftoverUnit, useMergedLeftoverCatalog, useMergedCatalogWithPrice, useBranchOnlyCatalog, ItemSearchPicker, type MergedCatalogItem } from './PlannerLeftoverTab';
-import { canonicalItemSlug, closingStockItemSlug, parseWeightGrams, pcsToKg, resolveItemWeightGrams } from './itemMatcher';
+import { canonicalItemSlug, closingStockItemSlug, kgToPcs, parseWeightGrams, pcsToKg, resolveItemWeightGrams } from './itemMatcher';
 import { useBranchCatalogStore } from '@/stores/branchCatalogStore';
 import { useRecipeStore } from './recipeStore';
 import { useBranchStore } from '@/branch/branchStore';
@@ -59,7 +60,7 @@ import {
 // list rendered as a panel inside it. The 'done' key is kept in the type
 // (but no longer in TABS/nav) purely so any stale bookmarked URL still
 // resolves instead of erroring.
-type PlannerTab = 'incoming' | 'sent' | 'merged' | 'planning' | 'production' | 'dispatch' | 'hosur' | 'cake' | 'transfer-in' | 'transfer-out' | 'closure' | 'leftover-stock' | 'invoice' | 'reports' | 'billing' | 'waste' | 'done';
+type PlannerTab = 'incoming' | 'sent' | 'merged' | 'planning' | 'production' | 'dispatch' | 'hosur' | 'cake' | 'advance' | 'transfer-in' | 'transfer-out' | 'closure' | 'leftover-stock' | 'invoice' | 'reports' | 'billing' | 'waste' | 'done';
 const TABS: { key: PlannerTab; label: string; icon: React.ReactNode }[] = [
   { key: 'incoming',    label: 'Incoming Orders',  icon: <ClipboardList className="size-4" /> },
   { key: 'sent',        label: 'Sent',             icon: <Send className="size-4" /> },
@@ -69,6 +70,12 @@ const TABS: { key: PlannerTab; label: string; icon: React.ReactNode }[] = [
   { key: 'dispatch',    label: 'Dispatch',         icon: <Truck className="size-4" /> },
   { key: 'hosur',       label: 'Hosur Shops & Billing', icon: <PackageCheck className="size-4" /> },
   { key: 'cake',        label: 'Cake Dispatch',    icon: <Cake className="size-4" /> },
+  // FEATURE (2026-09-05): "Advance orders that come from SNB and VRSNB are
+  // unable to track and unable to dispatch — same like Cake orders." Cake
+  // Dispatch's dedicated tab already exists purely because those orders
+  // couldn't be found in the generic pipeline either — this is the same fix
+  // for SNB/VRSNB's own advance orders (see AdvancePlannerOrdersTab below).
+  { key: 'advance',     label: 'Advance Orders',   icon: <Clock3 className="size-4" /> },
   { key: 'transfer-in', label: 'Transfer In',      icon: <ArrowRightLeft className="size-4" /> },
   { key: 'transfer-out', label: 'Transfer Out',    icon: <PackageMinus className="size-4" /> },
   { key: 'waste',       label: 'Dump / Damage',    icon: <Trash2 className="size-4" /> },
@@ -809,6 +816,46 @@ export default function PlannerDashboard({ embedded = false }: { embedded?: bool
   const activeLeftovers    = useMemo(() => orders.filter(o => (o.leftoverStatus ?? 'pending') === 'pending' && o.status === 'dispatched'), [orders]);
   const doneOrders         = useMemo(() => orders.filter(o => o.leftoverStatus === 'done'), [orders]);
 
+  // INDICATION BADGES (2026-09-05): "In Incoming order tab and Advance orders
+  // tab get an order those tabs should show indication mark. Same for Cake
+  // dispatch tab if any cake is ready to dispatch." incomingOrders.length
+  // above already covers Incoming Orders. Advance Orders needs its own count
+  // of tagged orders that still have something left to dispatch — same
+  // produced-minus-already-dispatched math AdvancePlannerOrdersTab uses per
+  // order (kept in sync with buildActionsFor there; not shared as one
+  // function since this only needs a boolean-ish count, not the actions
+  // themselves). Cake Dispatch has no order data in this component at all
+  // (PackingCakeOrdersTab owns its own fetch from cake_master_orders) — see
+  // useCakeReadyCount for why a tiny shared count-only query was added
+  // instead of duplicating that fetch here.
+  const advanceReadyCount = useMemo(() => {
+    let n = 0;
+    for (const order of orders) {
+      if (order.status === 'dispatched') continue;
+      if (!isAdvanceOrderTagged(order.notes)) continue;
+      const hasRemaining = order.items.some((item) => {
+        const producedKg = (order.producedItems ?? [])
+          .filter(p => sameItem(p.itemName, item.itemName))
+          .reduce((s, p) => s + p.quantityPrepared, 0);
+        const producedInUnit = item.dispatchUnit === 'pcs' && item.weightGrams != null
+          ? (kgToPcs(producedKg, item.weightGrams) ?? 0)
+          : producedKg;
+        const alreadyDispatched = (order.dispatchLog ?? [])
+          .filter(d => sameItem(d.itemName, item.itemName) && !d.isExtra)
+          .reduce((s, d) => s + d.quantity, 0);
+        return Math.round((producedInUnit - alreadyDispatched) * 1000) / 1000 > 0.001;
+      });
+      if (hasRemaining) n++;
+    }
+    return n;
+  }, [orders]);
+  const cakeReadyCount = useCakeReadyCount(true);
+  const tabBadgeCounts: Partial<Record<PlannerTab, number>> = {
+    incoming: incomingOrders.length,
+    advance: advanceReadyCount,
+    cake: cakeReadyCount,
+  };
+
   return (
     // BUG FIX (2026-08-12): dropped the forced `min-h-screen warm-gradient`
     // when embedded — this div used to assume it was always the page root,
@@ -826,19 +873,27 @@ export default function PlannerDashboard({ embedded = false }: { embedded?: bool
             fix — this used to render unconditionally). */}
         {embedded && (
           <div className="mb-4 -mx-1 flex gap-1.5 overflow-x-auto pb-1">
-            {TABS.map(t => (
-              <button
-                key={t.key}
-                type="button"
-                onClick={() => goToTab(t.key)}
-                className={cn(
-                  'flex items-center gap-1.5 whitespace-nowrap rounded-xl px-3 py-2 text-sm font-semibold transition-colors shrink-0',
-                  tab === t.key ? 'bg-primary text-primary-foreground shadow-sm' : 'bg-card border border-border text-muted-foreground hover:text-foreground',
-                )}
-              >
-                {t.icon}{t.label}
-              </button>
-            ))}
+            {TABS.map(t => {
+              const badgeCount = tabBadgeCounts[t.key] ?? 0;
+              return (
+                <button
+                  key={t.key}
+                  type="button"
+                  onClick={() => goToTab(t.key)}
+                  className={cn(
+                    'relative flex items-center gap-1.5 whitespace-nowrap rounded-xl px-3 py-2 text-sm font-semibold transition-colors shrink-0',
+                    tab === t.key ? 'bg-primary text-primary-foreground shadow-sm' : 'bg-card border border-border text-muted-foreground hover:text-foreground',
+                  )}
+                >
+                  {t.icon}{t.label}
+                  {badgeCount > 0 && (
+                    <span className="ml-0.5 grid min-w-[18px] place-items-center rounded-full bg-red-600 px-1 text-[10px] font-black leading-none text-white">
+                      {badgeCount > 99 ? '99+' : badgeCount}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
           </div>
         )}
         {loading && orders.length === 0 ? (
@@ -857,6 +912,7 @@ export default function PlannerDashboard({ embedded = false }: { embedded?: bool
             )}
             {tab === 'hosur' && <HosurUnifiedSection embedded={embedded} />}
             {tab === 'cake' && <PackingCakeOrdersTab mode="planner" />}
+            {tab === 'advance' && <AdvancePlannerOrdersTab orders={orders} />}
             {tab === 'transfer-in' && <PackingTransferInTab />}
             {tab === 'transfer-out' && <PlannerTransferOutTab />}
             {tab === 'waste' && <PlannerWasteLogsTab />}
@@ -2700,6 +2756,17 @@ function InvoiceTab({ orders }: { orders: BakeryOrder[] }) {
   }, [monthRange, batchBranch]);
 
   useEffect(() => { void loadBatches(); }, [loadBatches]);
+  // AUDIT FIX (2026-09-04): this batch browser reads from dispatch_invoices —
+  // a separate table from the shared `orders` store the top toolbar's
+  // RefreshOrdersButton refetches — so a batch saved from another device
+  // (or another tab's dispatch just now) never showed up here until the
+  // month/branch filter itself changed. Own manual refresh, same
+  // refreshing-boolean + spin-icon pattern used elsewhere in this file.
+  const [refreshingBatches, setRefreshingBatches] = useState(false);
+  const refreshBatches = async () => {
+    setRefreshingBatches(true);
+    try { await loadBatches(); } finally { setRefreshingBatches(false); }
+  };
 
   const batchesByBranch = useMemo(() => {
     const map = new Map<Branch, DispatchInvoiceRecord[]>();
@@ -3119,6 +3186,15 @@ function InvoiceTab({ orders }: { orders: BakeryOrder[] }) {
               <option value="All">All Branches</option>
               {BRANCHES.map(b => <option key={b} value={b}>{b}</option>)}
             </select>
+            <button
+              type="button"
+              onClick={() => void refreshBatches()}
+              disabled={refreshingBatches}
+              title="Refresh dispatch batches"
+              className="flex items-center gap-1.5 rounded-xl border border-border bg-card px-3 py-2 text-xs font-bold text-muted-foreground hover:bg-muted disabled:cursor-wait disabled:opacity-60"
+            >
+              <RefreshCw className={cn('size-3.5', refreshingBatches && 'animate-spin')} /> Refresh
+            </button>
             <button
               onClick={downloadMonthExcel}
               disabled={!batches || batches.length === 0}
@@ -6279,9 +6355,18 @@ function HosurShopDispatchPanel({ rows, mode, orders, leftoverBalances, onDispat
 
   return (
     <div className="space-y-2.5">
-      <div className="relative max-w-sm">
-        <Search className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-        <input value={shopSearch} onChange={e => setShopSearch(e.target.value)} placeholder="Select / search a shop..." className="w-full rounded-xl border border-border bg-background py-2 pl-8 pr-3 text-xs font-bold" />
+      <div className="flex items-center gap-2">
+        <div className="relative max-w-sm flex-1">
+          <Search className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+          <input value={shopSearch} onChange={e => setShopSearch(e.target.value)} placeholder="Select / search a shop..." className="w-full rounded-xl border border-border bg-background py-2 pl-8 pr-3 text-xs font-bold" />
+        </div>
+        {/* AUDIT FIX (2026-09-04): shopOrders (hosur_orders/hosur_order_items)
+            only auto-refetches when the set of order ids changes or a card
+            is opened/dispatched — not on demand, and not touched by
+            DispatchTab's own RefreshOrdersButton (which only refetches the
+            shared bakery_orders store). Same inline refresh pattern already
+            used for RecentDispatchInvoices below. */}
+        <button type="button" onClick={reload} title="Refresh shop orders" className="flex shrink-0 items-center gap-1 text-[10px] font-bold text-teal-700 hover:underline"><RefreshCw className="size-3" /> Refresh</button>
       </div>
       {filtered.length === 0 && <EmptyState text={`No shop orders match "${shopSearch}".`} />}
       {cardDateGroups.map(group => (
@@ -7471,14 +7556,33 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
             </button>
           ))}
         </div>
-        {/* Hosur-only: switch between item-first (original) and shop-first
-            (shop name, items requested underneath) grouping. */}
-        {branchFilter === 'Hosur' && (
-          <div className="flex gap-1 rounded-xl bg-indigo-50 p-1">
-            <button onClick={() => setHosurView('shop')} className={cn('rounded-lg px-2.5 py-1 text-[11px] font-black', hosurView === 'shop' ? 'bg-indigo-600 text-white' : 'text-indigo-700')}>By Shop</button>
-            <button onClick={() => setHosurView('item')} className={cn('rounded-lg px-2.5 py-1 text-[11px] font-black', hosurView === 'item' ? 'bg-indigo-600 text-white' : 'text-indigo-700')}>By Item</button>
-          </div>
-        )}
+        <div className="flex items-center gap-2">
+          {/* AUDIT FIX (2026-09-04): the "available to dispatch" quantities
+              below come from the Closing Stock ledger (useLeftoverBalanceMap),
+              a completely separate table from `orders` — DispatchTab's own
+              RefreshOrdersButton (in the toolbar above this date group) only
+              refetches orders, never this. It otherwise only refreshes itself
+              once on mount and again after this planner's own dispatches, so
+              a stock change made elsewhere (another device, a transfer, a
+              waste log) stays invisible here until something else happens to
+              trigger it. */}
+          <button
+            type="button"
+            onClick={() => refreshLeftover()}
+            title="Refresh available stock balances"
+            className="flex items-center gap-1 rounded-lg border border-border bg-card px-2 py-1 text-[10px] font-bold text-muted-foreground hover:bg-muted"
+          >
+            <RefreshCw className="size-3" /> Stock
+          </button>
+          {/* Hosur-only: switch between item-first (original) and shop-first
+              (shop name, items requested underneath) grouping. */}
+          {branchFilter === 'Hosur' && (
+            <div className="flex gap-1 rounded-xl bg-indigo-50 p-1">
+              <button onClick={() => setHosurView('shop')} className={cn('rounded-lg px-2.5 py-1 text-[11px] font-black', hosurView === 'shop' ? 'bg-indigo-600 text-white' : 'text-indigo-700')}>By Shop</button>
+              <button onClick={() => setHosurView('item')} className={cn('rounded-lg px-2.5 py-1 text-[11px] font-black', hosurView === 'item' ? 'bg-indigo-600 text-white' : 'text-indigo-700')}>By Item</button>
+            </div>
+          )}
+        </div>
       </div>
 
       {branchFilter !== 'Custom' && (
@@ -8698,6 +8802,202 @@ function DispatchChecklistModal({ row, orders, branchFilter, onClose, onDispatch
   );
 }
 
+// ─── Tab: Advance Orders (SNB/VRSNB) ───────────────────────────────────────
+// FEATURE (2026-09-05): "Advance orders that come from SNB and VRSNB are
+// unable to track and unable to dispatch — this is causing confusion...
+// same like Cake orders." Deliberately reuses the SAME underlying pipeline
+// these orders already flow through (bakery_orders + isAdvanceOrderTagged,
+// releaseToProduction/submitDispatch) rather than a parallel table like
+// cake_master_orders — that pipeline is already proven (dozens of these
+// orders have dispatched successfully this month, confirmed against live
+// data) and rebuilding it in parallel on a live system would be far riskier
+// than the actual problem, which was pure visibility: nothing in Planner's
+// UI ever showed these as advance orders, who they're for, or when they're
+// due — isAdvanceOrderTagged was only ever read for dispatch-priority
+// weighting. This tab is that missing view, with the same dedicated-tab
+// shape Cake Dispatch already has (its own stages, a direct per-order
+// Dispatch action) built on top of the real, already-working order data.
+function fmtAdvDate(dateOnly: string): string {
+  // Formats a plain "YYYY-MM-DD" string directly, no Date object round-trip
+  // — avoids any risk of the browser's local timezone shifting a date-only
+  // value by a day (the same class of bug fixed elsewhere in this app).
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(dateOnly);
+  if (!m) return dateOnly;
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  return `${Number(m[3])} ${months[Number(m[2]) - 1] || m[2]}`;
+}
+
+function AdvancePlannerOrdersTab({ orders }: { orders: BakeryOrder[] }) {
+  const { currentUser } = useAuthStore();
+  const dispatchedBy = currentUser?.displayName || currentUser?.username || 'Planner';
+  const { submitDispatch, fetchOrders } = useBakeryStore();
+  const [refreshing, setRefreshing] = useState(false);
+  const refresh = async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    try { await fetchOrders(true, true); } finally { setRefreshing(false); }
+  };
+
+  const advanceOrders = useMemo(
+    () => orders
+      .map(o => ({ order: o, parsed: parseAdvanceOrderNotes(o.notes) }))
+      .filter((x): x is { order: BakeryOrder; parsed: ParsedAdvanceOrder } => x.parsed !== null)
+      .sort((a, b) => {
+        // Orders with a real delivery date sort by how soon that's due;
+        // split-off batches with no parseable date (detailsLost) fall back
+        // to when the batch itself was created.
+        const ad = a.parsed.deliveryDate || a.order.createdAt;
+        const bd = b.parsed.deliveryDate || b.order.createdAt;
+        return ad.localeCompare(bd);
+      }),
+    [orders],
+  );
+
+  const [view, setView] = useState<'active' | 'history'>('active');
+  const activeOrders = advanceOrders.filter(x => x.order.status !== 'dispatched');
+  const historyOrders = advanceOrders.filter(x => x.order.status === 'dispatched');
+  const visible = view === 'active' ? activeOrders : historyOrders;
+
+  const [dispatchReview, setDispatchReview] = useState<{ scope: Branch; actions: PendingDispatchAction[]; orderId: string } | null>(null);
+  const [dispatchNotice, setDispatchNotice] = useState<Record<string, string>>({});
+
+  // Same "produced minus already dispatched" math the main Dispatch tab uses
+  // per item, scoped to just this one order — an advance order is never
+  // aggregated together with other orders' quantities the way a regular
+  // stock item is, since that would blur which customer's order actually
+  // went out.
+  const buildActionsFor = (order: BakeryOrder): PendingDispatchAction[] => {
+    const actions: PendingDispatchAction[] = [];
+    for (const item of order.items) {
+      const producedKg = (order.producedItems ?? [])
+        .filter(p => sameItem(p.itemName, item.itemName))
+        .reduce((s, p) => s + p.quantityPrepared, 0);
+      const producedInUnit = item.dispatchUnit === 'pcs' && item.weightGrams != null
+        ? (kgToPcs(producedKg, item.weightGrams) ?? 0)
+        : producedKg;
+      const alreadyDispatched = (order.dispatchLog ?? [])
+        .filter(d => sameItem(d.itemName, item.itemName) && !d.isExtra)
+        .reduce((s, d) => s + d.quantity, 0);
+      const remaining = Math.round((producedInUnit - alreadyDispatched) * 1000) / 1000;
+      if (remaining > 0.001) {
+        actions.push({
+          orderId: order.id, itemName: item.itemName, quantity: remaining,
+          unit: item.dispatchUnit || 'kg', dispatchEntryId: crypto.randomUUID(),
+        });
+      }
+    }
+    return actions;
+  };
+
+  const openDispatch = (order: BakeryOrder) => {
+    if (!order.targetBranch) return;
+    const actions = buildActionsFor(order);
+    if (actions.length === 0) return;
+    setDispatchReview({ scope: order.targetBranch, actions, orderId: order.id });
+  };
+
+  const todayKey = kolkataToday();
+
+  return (
+    <section className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border bg-card p-3.5">
+        <div className="flex items-center gap-2">
+          <Clock3 className="size-4 text-amber-500" />
+          <h3 className="text-sm font-black text-foreground">Advance Orders — SNB &amp; VRSNB</h3>
+          <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-black text-muted-foreground">{visible.length}</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="flex rounded-xl bg-muted p-1">
+            <button type="button" onClick={() => setView('active')} className={cn('rounded-lg px-3 py-1.5 text-[11px] font-black', view === 'active' ? 'bg-white text-slate-950 shadow-sm' : 'text-muted-foreground')}>Active ({activeOrders.length})</button>
+            <button type="button" onClick={() => setView('history')} className={cn('rounded-lg px-3 py-1.5 text-[11px] font-black', view === 'history' ? 'bg-white text-emerald-700 shadow-sm' : 'text-muted-foreground')}>Dispatched ({historyOrders.length})</button>
+          </div>
+          <button type="button" title="Refresh" onClick={() => void refresh()} disabled={refreshing} className="grid size-9 place-items-center rounded-lg border border-border text-muted-foreground disabled:cursor-wait disabled:opacity-60">
+            <RefreshCw className={cn('size-3.5', refreshing && 'animate-spin')} />
+          </button>
+        </div>
+      </div>
+
+      {visible.length === 0 && (
+        <div className="flex flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-border py-16 text-center">
+          <Clock3 className="size-8 text-muted-foreground/40" />
+          <p className="text-sm font-bold text-muted-foreground">{view === 'active' ? 'No advance orders waiting right now.' : 'No advance orders dispatched yet.'}</p>
+        </div>
+      )}
+
+      <div className="space-y-2.5">
+        {visible.map(({ order, parsed }) => {
+          const isOverdue = !!parsed.deliveryDate && parsed.deliveryDate < todayKey && order.status !== 'dispatched';
+          const readyActions = order.status !== 'dispatched' ? buildActionsFor(order) : [];
+          const stage = order.status === 'dispatched' ? 'Dispatched'
+            : readyActions.length > 0 ? 'Ready to dispatch'
+            : order.status === 'produced' ? 'Produced — nothing pending dispatch'
+            : order.status === 'store_confirmed' ? 'Awaiting production'
+            : order.status === 'accepted' ? 'Accepted, not yet merged'
+            : 'Awaiting Planner merge';
+          const splitFromMatch = parsed.detailsLost ? /#(\d+)/.exec(parsed.remarks) : null;
+          return (
+            <div key={order.id} className={cn(
+              'flex flex-wrap items-start justify-between gap-3 rounded-2xl border bg-card p-3.5',
+              order.status === 'dispatched' ? 'border-emerald-200 bg-emerald-50/30' : isOverdue ? 'border-red-300' : 'border-border',
+            )}>
+              <div className="flex min-w-0 items-start gap-3">
+                <div className={cn('flex size-10 shrink-0 items-center justify-center rounded-xl', order.status === 'dispatched' ? 'bg-emerald-100' : 'bg-amber-50')}>
+                  <Clock3 className={cn('size-5', order.status === 'dispatched' ? 'text-emerald-600' : 'text-amber-500')} />
+                </div>
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="rounded-md bg-foreground px-1.5 py-0.5 text-[10px] font-black text-white">{order.targetBranch || '—'}</span>
+                    <span className="flex items-center gap-1 rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-bold text-muted-foreground"><Receipt className="size-3" />{parsed.orderNo}</span>
+                    <span className="rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-bold text-muted-foreground">Order #{order.orderNumber}</span>
+                    {isOverdue && <span className="rounded-md bg-red-600 px-1.5 py-0.5 text-[10px] font-black text-white">OVERDUE</span>}
+                    <span className={cn('rounded-md px-1.5 py-0.5 text-[10px] font-black', order.status === 'dispatched' ? 'bg-emerald-600 text-white' : readyActions.length > 0 ? 'bg-teal-600 text-white' : 'bg-slate-200 text-slate-600')}>{stage}</span>
+                  </div>
+                  <p className="mt-0.5 truncate text-sm font-black text-foreground">
+                    {parsed.detailsLost ? `Advance order${splitFromMatch ? ` (split from order #${splitFromMatch[1]})` : ''}` : (parsed.customerName || 'Customer')}
+                  </p>
+                  {!parsed.detailsLost ? (
+                    <p className="truncate text-[11px] font-bold text-muted-foreground">
+                      {parsed.mobile || '—'} · Delivery {parsed.deliveryDate ? fmtAdvDate(parsed.deliveryDate) : '—'} {parsed.deliveryTime}
+                    </p>
+                  ) : (
+                    <p className="truncate text-[11px] font-bold text-amber-700">Customer/delivery details are on the original order — this is a production batch split from it.</p>
+                  )}
+                  {!parsed.detailsLost && parsed.remarks && <p className="truncate text-[11px] text-muted-foreground">{parsed.remarks}</p>}
+                  <p className="mt-1 truncate text-[11px] font-bold text-muted-foreground">
+                    {order.items.map(i => `${i.itemName} (${i.dispatchUnit === 'pcs' && i.originalPcs != null ? i.originalPcs : i.quantity} ${i.dispatchUnit || 'kg'})`).join(', ')}
+                  </p>
+                </div>
+              </div>
+              <div className="flex shrink-0 flex-col items-end gap-1.5">
+                {order.status !== 'dispatched' && readyActions.length > 0 && (
+                  <button type="button" onClick={() => openDispatch(order)} className="flex items-center gap-2 rounded-xl bg-foreground px-4 py-2.5 text-sm font-black text-white active:scale-95">
+                    <Send className="size-4" /> Dispatch to {order.targetBranch}
+                  </button>
+                )}
+                {dispatchNotice[order.id] && <p className="max-w-[16rem] text-right text-[11px] font-bold text-teal-700">{dispatchNotice[order.id]}</p>}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {dispatchReview && (
+        <DispatchReviewModal
+          scope={dispatchReview.scope}
+          actions={dispatchReview.actions}
+          dispatchedBy={dispatchedBy}
+          onDispatch={submitDispatch}
+          onClose={() => setDispatchReview(null)}
+          onDone={() => {
+            setDispatchNotice(v => ({ ...v, [dispatchReview.orderId]: 'Dispatched — see the Dispatched tab.' }));
+            setDispatchReview(null);
+          }}
+        />
+      )}
+    </section>
+  );
+}
+
 // ─── Dispatch review — checklist + price/discount + invoice, one screen ───
 // WORKFLOW CHANGE (2026-08-08): "when we select the item and click on
 // dispatch, it should not directly go to SNB orders dashboard" — every
@@ -8830,12 +9130,18 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
   // items/prices/quantities, via the same buildGstTaxInvoiceHtml the Sales
   // tab's own Invoice sub-tab uses (gstTaxInvoice.ts) — so it can never
   // disagree with what was actually dispatched, and is guaranteed to be the
-  // same document, not a second hand-maintained copy. Only offered for
-  // Hosur, matching what was asked for.
-  const gstInvoiceOffered = scope === 'Hosur' && !!hosurShop;
+  // same document, not a second hand-maintained copy.
+  // AUDIT FIX (2026-09-05): "For Hosur and custom (Planned) I need check
+  // box" — this was only ever offered for Hosur (`!!customer` added below).
+  // The buyer-name line further down used `hosurShop!.name` with a
+  // non-null assertion — genuinely undefined for a Custom sale, since
+  // hosurShop and customer are mutually exclusive — fixed alongside this.
+  const gstInvoiceOffered = (scope === 'Hosur' && !!hosurShop) || !!customer;
   const [gstEnabled, setGstEnabled] = useState(false);
   const [gstBuyerGstin, setGstBuyerGstin] = useState('');
-  const [gstBuyerAddress, setGstBuyerAddress] = useState('');
+  // Custom sales already know the buyer's address (entered when the sale
+  // was created) — no reason to make the planner retype it.
+  const [gstBuyerAddress, setGstBuyerAddress] = useState(customer?.address ?? '');
   const [gstBuyerStateName, setGstBuyerStateName] = useState('Tamil Nadu');
   const [gstBuyerStateCode, setGstBuyerStateCode] = useState('33');
   const [gstSupplyType, setGstSupplyType] = useState<'intra' | 'inter'>('intra');
@@ -9147,7 +9453,11 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
             rate: Math.round(l.unitPrice * gstDiscountMult * 100) / 100,
             gstPct: Math.max(0, Number(gstLineFor(l.itemName).gstPct) || 0),
           }));
-          const buyer = { name: hosurShop!.name, address: gstBuyerAddress, gstin: gstBuyerGstin, stateName: gstBuyerStateName, stateCode: gstBuyerStateCode };
+          // AUDIT FIX (2026-09-05): was `hosurShop!.name` — a non-null
+          // assertion that's genuinely null for a Custom sale (hosurShop
+          // and customer are mutually exclusive, see gstInvoiceOffered
+          // above). Custom's buyer name is the walk-in customer instead.
+          const buyer = { name: customer?.name ?? hosurShop?.name ?? '', address: gstBuyerAddress, gstin: gstBuyerGstin, stateName: gstBuyerStateName, stateCode: gstBuyerStateCode };
           const { html } = buildGstTaxInvoiceHtml({
             buyer, consignee: buyer,
             invoiceNo: gstInvoiceNo, invoiceDate,
@@ -9714,7 +10024,22 @@ function PlannerWasteLogsTab() {
           </button>
         </div>
         <div className="space-y-2">
-          <h3 className="text-sm font-black text-foreground">Recent {subTab} entries — {branch}</h3>
+          <div className="flex items-center justify-between gap-2">
+            <h3 className="text-sm font-black text-foreground">Recent {subTab} entries — {branch}</h3>
+            {/* AUDIT FIX (2026-09-04): this whole tab (branch_waste_logs +
+                live stock levels) only ever fetched on mount/branch-switch
+                and after a save — no manual way to pull fresh data, and this
+                tab has no shared parent-level refresh at all. */}
+            <button
+              type="button"
+              onClick={() => { void Promise.all([loadRows(), fetchBranchData(branch, true, ['stock'])]); }}
+              disabled={rowsLoading}
+              title="Refresh entries and stock"
+              className="flex items-center gap-1.5 rounded-xl border border-border bg-card px-3 py-1.5 text-xs font-bold text-muted-foreground hover:bg-muted disabled:cursor-wait disabled:opacity-60"
+            >
+              <RefreshCw className={cn('size-3.5', rowsLoading && 'animate-spin')} /> Refresh
+            </button>
+          </div>
           {rowsLoading && <p className="text-xs font-bold text-muted-foreground">Loading…</p>}
           {!rowsLoading && rows.filter(r => r.logType === subTab).length === 0 && <EmptyState text={`No ${subTab.toLowerCase()} entries yet for ${branch}.`} />}
           <div className="space-y-1.5">
@@ -9742,7 +10067,7 @@ function PlannerWasteLogsTab() {
 // just outputQty × batches — the useRecipeStore data already carries
 // everything needed, no new backend work required.
 function BatchCalculationSubTab() {
-  const { recipes, loadRecipes } = useRecipeStore();
+  const { recipes, loadRecipes, loading: recipesLoading } = useRecipeStore();
   useEffect(() => { void loadRecipes(); }, [loadRecipes]);
 
   const recipeList = useMemo(() => {
@@ -9776,13 +10101,28 @@ function BatchCalculationSubTab() {
   return (
     <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_22rem]">
       <section className="space-y-3 card-base p-5">
-        <label className="space-y-1">
-          <span className="text-[11px] font-black uppercase tracking-wide text-muted-foreground">Search recipe item</span>
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-            <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search item..." className="h-11 w-full rounded-xl border border-border bg-background pl-9 pr-3 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-primary/30" />
-          </div>
-        </label>
+        <div className="flex items-end gap-2">
+          <label className="flex-1 space-y-1">
+            <span className="text-[11px] font-black uppercase tracking-wide text-muted-foreground">Search recipe item</span>
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+              <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search item..." className="h-11 w-full rounded-xl border border-border bg-background pl-9 pr-3 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-primary/30" />
+            </div>
+          </label>
+          {/* AUDIT FIX (2026-09-04): recipe output_qty/unit is fetched once
+              (useRecipeStore.loadRecipes short-circuits once loaded) with no
+              other refresh path on this tab — a recipe edited elsewhere
+              mid-session stayed stale here until a full page reload. */}
+          <button
+            type="button"
+            onClick={() => void loadRecipes(true)}
+            disabled={recipesLoading}
+            title="Refresh recipes"
+            className="flex h-11 shrink-0 items-center gap-1.5 rounded-xl border border-border bg-card px-3 text-xs font-bold text-muted-foreground hover:bg-muted disabled:cursor-wait disabled:opacity-60"
+          >
+            <RefreshCw className={cn('size-3.5', recipesLoading && 'animate-spin')} /> Refresh
+          </button>
+        </div>
         {recipeList.length === 0 && <EmptyState text="No recipes with a batch yield found yet." />}
         <div className="max-h-[28rem] space-y-1.5 overflow-y-auto">
           {filtered.map(r => (

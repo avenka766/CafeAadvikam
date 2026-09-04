@@ -316,6 +316,17 @@ export function SnbPurchaseReturnPanel() {
   }, []);
 
   useEffect(() => { void loadBase(); }, [loadBase]);
+  // AUDIT FIX (2026-09-05): "BREAD: only 0 nos is unreserved in live
+  // stock" on every bill item — confirmed live, BREAD actually has 255 pcs
+  // with 0 reserved, so this was never a real stock shortage. This panel
+  // reads SNB's stock straight from the shared branch store but never
+  // loaded it itself — if Purchase Return was opened before any other tab
+  // that happens to fetch stock, `stock` was an empty array, so `stockFor`
+  // missed every single item and the submit-time check fell back to its
+  // `?? 0` default for all of them. Same fetch other panels in this file
+  // that read this same store slice already do on mount (e.g. the advance
+  // order panel below).
+  useEffect(() => { void useBranchStore.getState().fetchBranchData('SNB', false, ['stock']); }, []);
   useEffect(() => {
     if (!invoiceId) {
       setItems([]);

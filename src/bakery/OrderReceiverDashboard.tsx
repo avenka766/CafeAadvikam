@@ -2847,7 +2847,7 @@ export default function OrderReceiverDashboard() {
     fetchStockMismatches,
     subscribeToStock,
   } = useBranchStore();
-  const { notifications, loaded, load, markRead, markAllRead } =
+  const { notifications, loaded, loading: notificationsLoading, load, markRead, markAllRead } =
     useNotificationStore();
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -3222,14 +3222,26 @@ export default function OrderReceiverDashboard() {
                   </span>
                 )}
               </div>
-              {unreadCount > 0 && (
+              <div className="flex items-center gap-3">
+                {unreadCount > 0 && (
+                  <button
+                    onClick={markAllRead}
+                    className="text-[11px] font-body font-black text-muted-foreground underline underline-offset-2"
+                  >
+                    Mark all read
+                  </button>
+                )}
                 <button
-                  onClick={markAllRead}
-                  className="text-[11px] font-body font-black text-muted-foreground underline underline-offset-2"
+                  type="button"
+                  onClick={() => void load()}
+                  disabled={notificationsLoading}
+                  aria-label="Refresh packing alerts"
+                  title="Refresh packing alerts"
+                  className="grid size-9 shrink-0 place-items-center rounded-xl border border-border bg-white disabled:opacity-60"
                 >
-                  Mark all read
+                  <RefreshCw className={cn("size-4", notificationsLoading && "animate-spin")} />
                 </button>
-              )}
+              </div>
             </div>
 
             {/* Info pill */}

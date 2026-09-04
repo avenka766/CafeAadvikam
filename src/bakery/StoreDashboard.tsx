@@ -7,7 +7,7 @@ import {
   Warehouse, Plus, Pencil, Trash2, AlertTriangle,
   Search, X, Check, RefreshCw, Flame,
   Printer, Truck, Mail, MapPin, ShoppingBag, BarChart2, MinusCircle,
-  History, WalletCards, Download, FileText, Calendar, ClipboardList,
+  History, WalletCards, Download, FileText, Calendar, ClipboardList, Clock,
 } from 'lucide-react';
 import { Layers } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
@@ -57,6 +57,16 @@ const kolkataDateKey = (iso: string) =>
   new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(iso));
 const kolkataDateLabel = (iso: string) =>
   new Intl.DateTimeFormat('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short' }).format(new Date(iso));
+// AUDIT FIX (2026-09-05): "I need date wise means it should show 4/9/2026"
+// — the Orders tab's date-group headers want that exact D/M/YYYY form.
+// Formats straight from the already-computed kolkataDateKey ("YYYY-MM-DD")
+// string instead of round-tripping back through `new Date(...)`, which
+// avoids any risk of the browser's own local timezone silently shifting a
+// date-only string by a day.
+function formatDateKeyLabel(dateKey: string): string {
+  const [y, m, d] = dateKey.split('-');
+  return `${Number(d)}/${Number(m)}/${y}`;
+}
 
 // PRODUCT DECISION (2026-08-13): "items sent today by Planner should stay
 // in Orders only until Store selects and sends to the Baker — only THEN
@@ -1752,11 +1762,23 @@ type AggregatedProductionItem = {
   representativeOrder: BakeryOrder;
   representativeItem: BakeryOrder['items'][number];
   contributions: { orderId: string; index: number }[];
+  // AUDIT FIX (2026-09-05): "I need date wise means it should show
+  // 4/9/2026 -> orders and then the previous date orders" — every
+  // contributing order for one aggregated row must share the same
+  // business date now (see the grouping key below), so this is a single
+  // real date, not a range.
+  dateKey: string;
 };
 
 function aggregateReleasableItems(orders: BakeryOrder[]): AggregatedProductionItem[] {
   const byKey = new Map<string, AggregatedProductionItem>();
   for (const order of orders) {
+    // AUDIT FIX (2026-09-05): grouping now keys on (date, item) instead of
+    // just item — see dateKey above. The same item ordered on two different
+    // days now renders as two separate rows, one under each date's
+    // section, instead of one row silently blending quantities from
+    // different days together.
+    const dateKey = kolkataDateKey(order.createdAt);
     order.items.forEach((item, index) => {
       // AUDIT FIX (2026-09-03): a raw trim().toLowerCase() key only
       // catches case differences — it does NOT catch the singular/plural
@@ -1771,7 +1793,8 @@ function aggregateReleasableItems(orders: BakeryOrder[]): AggregatedProductionIt
       // else. Using it here doesn't change what actually gets released —
       // contributions still carry the real per-order orderId/index — only
       // which rows get grouped for display/selection.
-      const key = canonicalItemSlug(item.itemName) || item.itemName.trim().toLowerCase();
+      const itemKey = canonicalItemSlug(item.itemName) || item.itemName.trim().toLowerCase();
+      const key = `${dateKey}::${itemKey}`;
       let agg = byKey.get(key);
       if (!agg) {
         agg = {
@@ -1782,6 +1805,7 @@ function aggregateReleasableItems(orders: BakeryOrder[]): AggregatedProductionIt
           representativeOrder: order,
           representativeItem: item,
           contributions: [],
+          dateKey,
         };
         byKey.set(key, agg);
       }
@@ -1797,7 +1821,10 @@ function aggregateReleasableItems(orders: BakeryOrder[]): AggregatedProductionIt
       agg.contributions.push({ orderId: order.id, index });
     });
   }
-  return Array.from(byKey.values()).sort((a, b) => a.itemName.localeCompare(b.itemName));
+  // AUDIT FIX (2026-09-05): "show 4/9/2026 -> orders and then the previous
+  // date orders" — most recent date first, then item name within a date.
+  return Array.from(byKey.values()).sort((a, b) =>
+    b.dateKey.localeCompare(a.dateKey) || a.itemName.localeCompare(b.itemName));
 }
 
 function ProductionReadyPanel({ orders }: { orders: BakeryOrder[] }) {
@@ -1831,6 +1858,22 @@ function ProductionReadyPanel({ orders }: { orders: BakeryOrder[] }) {
     if (!q) return aggregated;
     return aggregated.filter(a => a.itemName.toLowerCase().includes(q));
   }, [aggregated, search]);
+
+  // AUDIT FIX (2026-09-05): "I need date wise means it should show
+  // 4/9/2026 -> orders and then the previous date orders" — real date
+  // section headers, not just a per-row badge. `filtered` is already
+  // sorted newest-date-first (see aggregateReleasableItems), so grouping
+  // is a straight run-length pass, no re-sort needed.
+  const dateGroups = useMemo(() => {
+    const groups: { dateKey: string; items: AggregatedProductionItem[] }[] = [];
+    for (const agg of filtered) {
+      const last = groups[groups.length - 1];
+      if (last && last.dateKey === agg.dateKey) last.items.push(agg);
+      else groups.push({ dateKey: agg.dateKey, items: [agg] });
+    }
+    return groups;
+  }, [filtered]);
+  const todayKey = kolkataDateKey(new Date().toISOString());
 
   const toggle = (key: string) => {
     setSendError(null); setSendNotice(null);
@@ -1913,18 +1956,38 @@ function ProductionReadyPanel({ orders }: { orders: BakeryOrder[] }) {
           No items match &quot;{search}&quot;.
         </p>
       ) : (
-        <div className="space-y-2">
-          {filtered.map(agg => (
-            <ItemRow
-              key={agg.key}
-              order={agg.representativeOrder}
-              item={{ ...agg.representativeItem, quantity: agg.quantity, originalPcs: agg.originalPcs ?? agg.representativeItem.originalPcs }}
-              category={storeOrderCategory(agg.representativeItem, bakeryItems)}
-              selectionEnabled
-              selected={selected.has(agg.key)}
-              onToggle={() => toggle(agg.key)}
-            />
-          ))}
+        <div className="space-y-4">
+          {dateGroups.map(group => {
+            const isPastDue = group.dateKey < todayKey;
+            return (
+              <div key={group.dateKey} className="space-y-2">
+                <div className="flex items-center gap-2 sticky top-0 z-10 bg-background/95 backdrop-blur py-1">
+                  <Calendar className="size-3.5 text-muted-foreground" />
+                  <p className="text-xs font-body font-black text-foreground">{formatDateKeyLabel(group.dateKey)}</p>
+                  {group.dateKey === todayKey && (
+                    <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700">TODAY</span>
+                  )}
+                  {isPastDue && (
+                    <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-red-600 text-white flex items-center gap-0.5">
+                      <Clock className="size-2.5" /> PAST DUE
+                    </span>
+                  )}
+                  <span className="text-[10px] font-body text-muted-foreground ml-auto">{group.items.length} item{group.items.length === 1 ? '' : 's'}</span>
+                </div>
+                {group.items.map(agg => (
+                  <ItemRow
+                    key={agg.key}
+                    order={agg.representativeOrder}
+                    item={{ ...agg.representativeItem, quantity: agg.quantity, originalPcs: agg.originalPcs ?? agg.representativeItem.originalPcs }}
+                    category={storeOrderCategory(agg.representativeItem, bakeryItems)}
+                    selectionEnabled
+                    selected={selected.has(agg.key)}
+                    onToggle={() => toggle(agg.key)}
+                  />
+                ))}
+              </div>
+            );
+          })}
         </div>
       )}
 
@@ -2184,6 +2247,7 @@ function aggregateHistoryItems(orders: BakeryOrder[]): HistoryAggregateRow[] {
 function StoreHistoryTab() {
   const { orders, fetchOrders, subscribe: subscribeOrders } = useBakeryStore();
   const [initialLoading, setInitialLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [search, setSearch] = useState('');
 
   useEffect(() => {
@@ -2191,6 +2255,17 @@ function StoreHistoryTab() {
     const unsubOrders = subscribeOrders();
     return () => unsubOrders();
   }, [fetchOrders, subscribeOrders]);
+
+  // AUDIT FIX (2026-09-04): this tab had no manual refresh at all — it
+  // relied solely on the mount-time fetchOrders() above plus the realtime
+  // subscription, same gap OrdersTab's own "Refresh" button (right next to
+  // this one in the tab bar) was added to close. force=true bypasses the
+  // store's normal throttle, same call OrdersTab's refreshNow makes.
+  const refreshNow = async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    try { await fetchOrders(true, true); } finally { setRefreshing(false); }
+  };
 
   // Mirror of OrdersTab's `pending` split: an order sent to Store today stays
   // visible in Orders as "new"; it only falls back here once that day has
@@ -2223,6 +2298,14 @@ function StoreHistoryTab() {
         <p className="text-xs font-body font-bold text-muted-foreground uppercase flex-1 min-w-fit">
           {search.trim() ? `${filtered.length} of ${aggregated.length} Item${aggregated.length !== 1 ? 's' : ''}` : `${aggregated.length} Item${aggregated.length !== 1 ? 's' : ''}`}
         </p>
+        <button
+          type="button"
+          onClick={() => void refreshNow()}
+          disabled={refreshing}
+          className="h-8 px-3 rounded-xl border border-border bg-card text-xs font-body font-semibold flex items-center gap-1.5 disabled:cursor-wait disabled:opacity-60 hover:bg-muted transition-colors active:scale-95"
+        >
+          <RefreshCw className={cn('size-3.5 text-primary', refreshing && 'animate-spin')} /> Refresh
+        </button>
         <div className="relative w-full sm:w-56">
           <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
           <input

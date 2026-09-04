@@ -1305,6 +1305,70 @@ function downloadTransferOutInvoice(params: {
   doc.save(`transfer-out-${transferNo}.pdf`);
 }
 
+// AUDIT FIX (2026-09-05): "Need the ability to add multiple items at once."
+// Multi-line counterpart to downloadTransferOutInvoice above — that one
+// stays exactly as it was and keeps serving the History tab's per-row
+// reprint (the ledger itself is still one row per item, so a single old
+// entry only ever needs a single-item invoice). This one is for the new
+// batch-submit flow: one destination/reason/staff/date, several item rows.
+function downloadTransferOutInvoiceMulti(params: {
+  items: { itemName: string; qty: number; unit: LeftoverUnit; unitPrice: number | null }[];
+  destination: 'SNB' | 'VRSNB' | 'Custom'; reason: string; staffName: string; createdAt: Date; transferNo: string;
+}) {
+  const { items, destination, reason, staffName, createdAt, transferNo } = params;
+  const doc = new jsPDF({ unit: 'pt', format: 'a5' });
+  const marginX = 36;
+  const pageWidth = doc.internal.pageSize.getWidth();
+  let y = 46;
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(16); doc.setTextColor(20);
+  doc.text('Cafe Aadvikam — Transfer Out Invoice', marginX, y); y += 20;
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(100);
+  doc.text(`Transfer No: ${transferNo}`, marginX, y); y += 14;
+  doc.text(`Date: ${createdAt.toLocaleString('en-IN')}`, marginX, y); y += 14;
+  doc.text(`Recorded By: ${staffName}`, marginX, y); y += 14;
+  doc.text(`Destination: ${destination}`, marginX, y); y += 20;
+  doc.setDrawColor(210); doc.line(marginX, y, pageWidth - marginX, y); y += 16;
+
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(0);
+  doc.text('Item', marginX, y);
+  doc.text('Qty', marginX + 190, y);
+  doc.text('Unit Price', marginX + 250, y);
+  doc.text('Value', pageWidth - marginX - 50, y);
+  y += 10;
+  doc.setDrawColor(230); doc.line(marginX, y, pageWidth - marginX, y); y += 14;
+
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(9);
+  let grandTotal = 0;
+  let anyPriceMissing = false;
+  for (const item of items) {
+    const value = item.unitPrice != null ? item.unitPrice * item.qty : null;
+    if (value != null) grandTotal += value; else anyPriceMissing = true;
+    const nameLines = doc.splitTextToSize(item.itemName, 180);
+    doc.text(nameLines, marginX, y);
+    doc.text(`${qtyFmt(item.qty)} ${item.unit}`, marginX + 190, y);
+    doc.text(item.unitPrice != null ? `Rs. ${item.unitPrice.toFixed(2)}` : 'N/A', marginX + 250, y);
+    doc.text(value != null ? `Rs. ${value.toFixed(2)}` : 'N/A', pageWidth - marginX - 50, y);
+    y += Math.max(14, nameLines.length * 12);
+  }
+  y += 8;
+  doc.setDrawColor(210); doc.line(marginX, y, pageWidth - marginX, y); y += 18;
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(12);
+  doc.text('Total Value', marginX, y);
+  doc.text(`Rs. ${grandTotal.toFixed(2)}${anyPriceMissing ? ' (+ items priced N/A)' : ''}`, pageWidth - marginX - 110, y);
+  y += 24;
+
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(0);
+  doc.text('Reason', marginX, y); y += 14;
+  const reasonLines = doc.splitTextToSize(reason || '-', pageWidth - marginX * 2);
+  doc.text(reasonLines, marginX, y);
+  if (destination === 'Custom') {
+    y += reasonLines.length * 12 + 10;
+    doc.setFontSize(8); doc.setTextColor(120);
+    doc.text('Custom transfer — priced against the SNB catalog for reference.', marginX, y);
+  }
+  doc.save(`transfer-out-${transferNo}.pdf`);
+}
+
 export function PlannerTransferOutTab() {
   const { currentUser } = useAuthStore();
   const staffName = currentUser?.displayName || currentUser?.username || 'Planner Staff';
@@ -1337,8 +1401,16 @@ export function PlannerTransferOutTab() {
   // gets used on the invoice — SNB dest -> SNB price, VRSNB dest -> VRSNB
   // price, Custom -> priced against SNB but requires its own reason text.
   const [transferDestination, setTransferDestination] = useState<'SNB' | 'VRSNB' | 'Custom'>('SNB');
+  // AUDIT FIX (2026-09-05): "Need the ability to add multiple items at
+  // once." Destination and Reason stay batch-level (one transfer, several
+  // items — same shape as a GRN's one supplier/several line items); item
+  // name/qty/unit become a "draft" that gets snapshotted into this cart via
+  // Add Item instead of submitting straight away.
+  type TransferOutLine = { itemName: string; slug: string; qty: number; unit: LeftoverUnit; unitPrice: number | null; convertedQty: number; convertedUnit: LeftoverUnit; totalValue: number | null };
+  const [transferLines, setTransferLines] = useState<TransferOutLine[]>([]);
 
-  const resetTransferForm = () => { setTransferQuery(''); setTransferItem(null); setTransferQty(''); setTransferUnit('kg'); setTransferReason(''); setTransferDestination('SNB'); };
+  const resetTransferDraft = () => { setTransferQuery(''); setTransferItem(null); setTransferQty(''); };
+  const resetTransferForm = () => { resetTransferDraft(); setTransferUnit('kg'); setTransferReason(''); setTransferDestination('SNB'); setTransferLines([]); };
 
   const transferItemName = (transferItem?.name || transferQuery).trim();
   // AUDIT FIX (2026-09-03): was canonicalItemSlug for the free-typed
@@ -1363,40 +1435,71 @@ export function PlannerTransferOutTab() {
     : null;
   const transferTotalValue = transferConverted && transferCatalogEntry ? transferCatalogEntry.price * transferConverted.qty : null;
 
+  const addTransferLine = () => {
+    setError(''); setMessage('');
+    if (!transferItemName) { setError('Search and pick (or type) an item first.'); return; }
+    if (!transferQtyValid) { setError('Enter a quantity greater than zero.'); return; }
+    setTransferLines((v) => [...v, {
+      itemName: transferItemName, slug: transferItemSlug, qty: transferQtyNumber, unit: transferUnit,
+      unitPrice: transferCatalogEntry?.price ?? null,
+      convertedQty: transferConverted?.qty ?? transferQtyNumber, convertedUnit: transferConverted?.unit ?? transferUnit,
+      totalValue: transferTotalValue,
+    }]);
+    resetTransferDraft();
+  };
+  const removeTransferLine = (index: number) => setTransferLines((v) => v.filter((_, i) => i !== index));
+  const transferLinesGrandTotal = transferLines.reduce((s, l) => s + (l.totalValue ?? 0), 0);
+
   const submitTransferOut = async () => {
     if (transferSavingRef.current) return;
     setError(''); setMessage('');
-    const name = transferItemName;
-    const amount = Number(transferQty);
-    if (!name) { setError('Search and pick (or type) an item first.'); return; }
-    if (!Number.isFinite(amount) || amount <= 0) { setError('Enter a quantity greater than zero.'); return; }
+    if (transferLines.length === 0) { setError('Add at least one item before confirming.'); return; }
     if (!transferReason.trim()) { setError(transferDestination === 'Custom' ? 'Enter a reason for this custom transfer.' : 'Enter a reason for this transfer out.'); return; }
     transferSavingRef.current = true;
     setTransferSaving(true);
     try {
       const reasonText = transferReason.trim();
-      const result = await recordLeftoverMovement({
-        itemName: name, unit: transferUnit, delta: -amount, businessDate: kolkataToday(),
-        reason: 'transfer_out', recordedBy: staffName, notes: `${reasonText} [Destination: ${transferDestination}]`,
-      });
-      if ('error' in result) { setError(result.error); return; }
-      setMessage(`${name}: ${qtyFmt(amount)} ${transferUnit} transferred out to ${transferDestination} (${reasonText}). New balance ${qtyFmt(result.newBalance)} ${transferUnit}.`);
-      // The ledger entry above always uses the form's own unit (transferUnit)
-      // — that's the actual physical movement being recorded and shouldn't
-      // change. Only the PRINTED invoice's quantity/unit are converted, so
-      // the price shown is for the same unit as the quantity shown.
-      downloadTransferOutInvoice({
-        itemName: name, qty: transferConverted?.qty ?? amount, unit: transferConverted?.unit ?? transferUnit, destination: transferDestination,
-        unitPrice: transferCatalogEntry?.price ?? null, reason: reasonText, staffName, createdAt: new Date(),
-        // BUG FIX (audit 2026-08-30): `Date.now().toString().slice(-6)` repeats
-        // every ~16.7 minutes (10^6 ms) — two transfers on the same day that
-        // far apart (easily possible on a busy day) could print with the
-        // identical reference number. Same root cause as the GST invoice and
-        // walk-in bill numbering bugs fixed elsewhere today; same fix.
-        transferNo: `TO-${kolkataToday()}-${crypto.randomUUID().slice(0, 6).toUpperCase()}`,
-      });
-      resetTransferForm();
-      void refresh();
+      // AUDIT FIX (2026-09-05): posts one ledger movement per line (same
+      // recordLeftoverMovement call as before — each is its own real DB
+      // write, there's no wrapping transaction across the batch) — a
+      // failure partway through doesn't undo the lines that already
+      // succeeded, so failures are collected and reported rather than
+      // treated as all-or-nothing, matching this app's other multi-item
+      // write paths.
+      const succeeded: TransferOutLine[] = [];
+      const failures: string[] = [];
+      for (const line of transferLines) {
+        const result = await recordLeftoverMovement({
+          itemName: line.itemName, unit: line.unit, delta: -line.qty, businessDate: kolkataToday(),
+          reason: 'transfer_out', recordedBy: staffName, notes: `${reasonText} [Destination: ${transferDestination}]`,
+        });
+        if ('error' in result) failures.push(`${line.itemName}: ${result.error}`);
+        else succeeded.push(line);
+      }
+      if (succeeded.length > 0) {
+        setMessage(
+          `${succeeded.length} item${succeeded.length === 1 ? '' : 's'} transferred out to ${transferDestination} (${reasonText}).` +
+          (failures.length > 0 ? ` ⚠ Failed: ${failures.join(' · ')}` : ''),
+        );
+        // The ledger entries above always use each line's own unit — that's
+        // the actual physical movement and shouldn't change. Only the
+        // PRINTED invoice's quantity/unit are converted, same as the
+        // single-item version this replaced.
+        downloadTransferOutInvoiceMulti({
+          items: succeeded.map((l) => ({ itemName: l.itemName, qty: l.convertedQty, unit: l.convertedUnit, unitPrice: l.unitPrice })),
+          destination: transferDestination, reason: reasonText, staffName, createdAt: new Date(),
+          // BUG FIX (audit 2026-08-30): `Date.now().toString().slice(-6)` repeats
+          // every ~16.7 minutes (10^6 ms) — two transfers on the same day that
+          // far apart (easily possible on a busy day) could print with the
+          // identical reference number. Same root cause as the GST invoice and
+          // walk-in bill numbering bugs fixed elsewhere today; same fix.
+          transferNo: `TO-${kolkataToday()}-${crypto.randomUUID().slice(0, 6).toUpperCase()}`,
+        });
+        resetTransferForm();
+        void refresh();
+      } else {
+        setError(`All items failed: ${failures.join(' · ')}`);
+      }
     } finally {
       setTransferSaving(false);
       transferSavingRef.current = false;
@@ -1439,7 +1542,7 @@ export function PlannerTransferOutTab() {
       <div className="grid gap-4 xl:grid-cols-[390px_minmax(0,1fr)]">
         <div className="rounded-2xl border border-orange-200 bg-orange-50/40 p-4 space-y-3">
           <h3 className="font-black text-orange-900">Record a Transfer Out</h3>
-          <p className="text-xs text-orange-800/80">Pick any stock item and send it out for a specific reason.</p>
+          <p className="text-xs text-orange-800/80">Add one or more items, then send them all out together for a specific reason.</p>
           <label className="block space-y-1">
             <span className="text-xs font-black text-orange-900">Destination</span>
             <div className="grid grid-cols-3 gap-2">
@@ -1447,13 +1550,23 @@ export function PlannerTransferOutTab() {
                 <button
                   key={dest}
                   type="button"
+                  disabled={transferLines.length > 0 && dest !== transferDestination}
                   onClick={() => setTransferDestination(dest)}
-                  className={cn('rounded-xl border py-2 text-xs font-black', transferDestination === dest ? 'border-orange-600 bg-orange-600 text-white' : 'border-orange-200 bg-white text-orange-900')}
+                  className={cn('rounded-xl border py-2 text-xs font-black disabled:opacity-40 disabled:cursor-not-allowed', transferDestination === dest ? 'border-orange-600 bg-orange-600 text-white' : 'border-orange-200 bg-white text-orange-900')}
                 >
                   {dest}
                 </button>
               ))}
             </div>
+            {/* AUDIT FIX (2026-09-05): each cart line freezes its unit price
+                at Add Item time (destination decides which catalog it's
+                priced against) — switching destination mid-cart would leave
+                already-added lines silently priced against the wrong branch.
+                Locked until the cart is empty (submitted, or cleared by
+                removing every line) rather than trying to re-price them. */}
+            {transferLines.length > 0 && (
+              <p className="text-[10px] font-bold text-orange-700/80">Destination is locked while items are in the list below — remove them to change it.</p>
+            )}
             {transferDestination === 'Custom' && (
               <p className="text-[10px] font-bold text-orange-700/80">Custom transfers are priced against the SNB catalog and require a reason below.</p>
             )}
@@ -1497,12 +1610,36 @@ export function PlannerTransferOutTab() {
               ) : 'Price not found in catalog for this item — invoice will show N/A.'}
             </div>
           )}
+          <button type="button" onClick={addTransferLine} className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-xl border border-orange-300 bg-white text-xs font-black text-orange-800 hover:bg-orange-50">
+            <Plus className="size-4" />Add Item to Transfer
+          </button>
+
+          {/* AUDIT FIX (2026-09-05): "Need the ability to add multiple items
+              at once" — the cart built up by Add Item above, before one
+              shared Reason + a single "Transfer Out & Generate Invoice"
+              posts every line. */}
+          {transferLines.length > 0 && (
+            <div className="space-y-1.5">
+              <p className="text-xs font-black text-orange-900">{transferLines.length} item{transferLines.length === 1 ? '' : 's'} to transfer</p>
+              {transferLines.map((line, i) => (
+                <div key={i} className="flex items-center justify-between gap-2 rounded-xl border border-orange-200 bg-white px-3 py-2 text-xs">
+                  <div className="min-w-0">
+                    <p className="font-bold text-foreground truncate">{line.itemName}</p>
+                    <p className="text-muted-foreground">{qtyFmt(line.qty)} {line.unit} {line.totalValue != null ? `· Rs. ${line.totalValue.toFixed(2)}` : '· Price N/A'}</p>
+                  </div>
+                  <button type="button" onClick={() => removeTransferLine(i)} aria-label={`Remove ${line.itemName}`} className="shrink-0 rounded-lg p-1.5 text-muted-foreground hover:bg-red-100 hover:text-red-600"><X className="size-3.5" /></button>
+                </div>
+              ))}
+              <p className="text-right text-xs font-black text-orange-900">Total Rs. {transferLinesGrandTotal.toFixed(2)}</p>
+            </div>
+          )}
+
           <label className="block space-y-1">
             <span className="text-xs font-black text-orange-900">Reason *</span>
             <input value={transferReason} onChange={(e) => setTransferReason(e.target.value)} className="h-11 w-full rounded-xl border border-orange-200 bg-white px-3 text-sm font-bold" placeholder={transferDestination === 'Custom' ? 'Required — why is this a custom transfer?' : 'e.g. Sent to Cafe for an event'} />
           </label>
-          <button onClick={submitTransferOut} disabled={transferSaving} className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-orange-600 text-sm font-black text-white disabled:opacity-50">
-            {transferSaving ? <Loader2 className="size-4 animate-spin" /> : <Truck className="size-4" />}Transfer Out & Generate Invoice
+          <button onClick={submitTransferOut} disabled={transferSaving || transferLines.length === 0} className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-orange-600 text-sm font-black text-white disabled:opacity-50">
+            {transferSaving ? <Loader2 className="size-4 animate-spin" /> : <Truck className="size-4" />}Transfer Out{transferLines.length > 0 ? ` (${transferLines.length})` : ''} & Generate Invoice
           </button>
         </div>
 

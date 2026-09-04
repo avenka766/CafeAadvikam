@@ -1,9 +1,9 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, ArrowDownToLine, CheckCircle2, Loader2, Package, Printer, RefreshCw, RotateCcw, Search } from 'lucide-react';
+import { AlertTriangle, ArrowDownToLine, CheckCircle2, Loader2, Package, Plus, Printer, RefreshCw, RotateCcw, Search, X } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
 import { supabase } from '@/lib/supabase';
 import { printViaIframe } from '@/lib/printViaIframe';
-import { sanitizeQtyForUnit } from './PlannerLeftoverTab';
+import { sanitizeQtyForUnit, requantizeForUnit } from './PlannerLeftoverTab';
 
 type SourceBranch = 'SNB' | 'VRSNB';
 type Unit = 'kg' | 'pcs';
@@ -28,7 +28,18 @@ type TransferIn = {
   request_reason?: string | null;
 };
 
-const emptyForm = { source: 'SNB' as SourceBranch, reference: '', itemName: '', expected: '', received: '', unit: 'kg' as Unit, remarks: '' };
+// AUDIT FIX (2026-09-05): "Need the ability to add multiple items at once."
+// A transfer_reference is already a shared batch id one real physical
+// transfer can carry several items under (the idempotency key below has
+// always included item name specifically to support that) — this was
+// purely a UI limitation forcing one full form-submit per item. Restructured
+// around a per-line "draft" (item/expected/received/unit) that gets added to
+// a `lines` cart before a single "Confirm Transfer In" posts every line,
+// sharing the one source branch + reference + remarks — same shape as the
+// GRN/Invoice multi-item forms elsewhere in this app.
+type DraftLine = { itemName: string; expected: string; received: string; unit: Unit };
+const emptyDraftLine: DraftLine = { itemName: '', expected: '', received: '', unit: 'kg' };
+const emptyBatch = { source: 'SNB' as SourceBranch, reference: '', remarks: '' };
 
 function escapeHtml(value: unknown) {
   return String(value ?? '').replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[char] || char));
@@ -38,7 +49,9 @@ export default function PackingTransferInTab() {
   const { currentUser } = useAuthStore();
   const [rows, setRows] = useState<TransferIn[]>([]);
   const [query, setQuery] = useState('');
-  const [form, setForm] = useState(emptyForm);
+  const [batch, setBatch] = useState(emptyBatch);
+  const [draft, setDraft] = useState<DraftLine>(emptyDraftLine);
+  const [lines, setLines] = useState<DraftLine[]>([]);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -65,36 +78,68 @@ export default function PackingTransferInTab() {
     return rows.filter((row) => `${row.source_branch} ${row.transfer_reference} ${row.item_name} ${row.remarks ?? ''} ${row.status}`.toLowerCase().includes(q));
   }, [rows, query]);
 
+  const addLine = () => {
+    setError('');
+    const received = Number(draft.received || 0);
+    if (!draft.itemName.trim()) return setError('Enter an item name before adding it.');
+    if (!Number.isFinite(received) || received <= 0) return setError('Received quantity must be greater than zero.');
+    const expected = Number(draft.expected || 0);
+    if (draft.expected.trim() !== '' && (!Number.isFinite(expected) || expected < 0)) return setError('Expected quantity cannot be negative.');
+    setLines((v) => [...v, { ...draft, itemName: draft.itemName.trim() }]);
+    setDraft({ ...emptyDraftLine, unit: draft.unit }); // keep the unit toggle, clear the rest
+  };
+  const removeLine = (index: number) => setLines((v) => v.filter((_, i) => i !== index));
+
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     setError('');
     if (!currentUser?.id) return setError('Your staff session is missing. Sign out and sign in again.');
-    const expected = Number(form.expected || 0);
-    const received = Number(form.received || 0);
-    if (!form.reference.trim()) return setError('Transfer reference is required.');
-    if (!form.itemName.trim()) return setError('Item name is required.');
-    if (!Number.isFinite(received) || received <= 0) return setError('Received quantity must be greater than zero.');
-    if (!Number.isFinite(expected) || expected < 0) return setError('Expected quantity cannot be negative.');
+    if (!batch.reference.trim()) return setError('Transfer reference is required.');
+    if (lines.length === 0) return setError('Add at least one item before confirming.');
 
     setSaving(true);
-    const idempotencyKey = `${form.source}:${form.reference.trim()}:${form.itemName.trim().toLowerCase()}:${form.unit}`;
-    const { error: saveError } = await supabase.rpc('post_packing_transfer_in_secure', {
-      p_source_branch: form.source,
-      p_transfer_reference: form.reference.trim(),
-      p_item_name: form.itemName.trim(),
-      p_expected_quantity: expected,
-      p_received_quantity: received,
-      p_unit: form.unit,
-      p_remarks: form.remarks.trim(),
-      p_idempotency_key: idempotencyKey,
-    });
-    setSaving(false);
-    if (saveError) {
-      setError(saveError.code === '23505' ? 'This transfer item has already been posted.' : saveError.message);
-      return;
+    try {
+      const failures: string[] = [];
+      // AUDIT FIX (2026-09-05): posts one line at a time (same RPC, same
+      // idempotency-key shape as before — source:reference:item:unit — a
+      // real transfer with multiple items already worked this way at the
+      // data level, just one form-submit per item). A failure on one line
+      // doesn't abandon the rest, matching the "collect warnings, keep
+      // going" pattern used across this app's other multi-item write paths
+      // — the alternative (stopping at the first failure) would leave the
+      // planner unsure which of several already-confirmed items to re-enter.
+      for (const line of lines) {
+        const expected = Number(line.expected || 0);
+        const received = Number(line.received || 0);
+        const idempotencyKey = `${batch.source}:${batch.reference.trim()}:${line.itemName.trim().toLowerCase()}:${line.unit}`;
+        const { error: saveError } = await supabase.rpc('post_packing_transfer_in_secure', {
+          p_source_branch: batch.source,
+          p_transfer_reference: batch.reference.trim(),
+          p_item_name: line.itemName.trim(),
+          p_expected_quantity: expected,
+          p_received_quantity: received,
+          p_unit: line.unit,
+          p_remarks: batch.remarks.trim(),
+          p_idempotency_key: idempotencyKey,
+        });
+        if (saveError) {
+          failures.push(`${line.itemName}: ${saveError.code === '23505' ? 'already posted' : saveError.message}`);
+        }
+      }
+      if (failures.length > 0) {
+        setError(`${lines.length - failures.length} of ${lines.length} item(s) posted. Failed: ${failures.join(' · ')}`);
+      }
+      // Clear only the lines that succeeded is unnecessary here — on a
+      // partial failure the planner can see exactly which items failed
+      // above and re-add just those; clearing everything on any outcome
+      // keeps the form's behavior simple and predictable.
+      setLines([]);
+      setDraft(emptyDraftLine);
+      if (failures.length === 0) setBatch(emptyBatch);
+      await loadRows();
+    } finally {
+      setSaving(false);
     }
-    setForm(emptyForm);
-    await loadRows();
   };
 
   const reverseRow = async (row: TransferIn) => {
@@ -140,21 +185,37 @@ export default function PackingTransferInTab() {
       <div className="grid gap-4 xl:grid-cols-[390px_minmax(0,1fr)]">
         <form onSubmit={submit} className="rounded-2xl border bg-card p-4 space-y-3">
           <div className="flex items-center gap-2 font-black"><ArrowDownToLine className="size-4" />New Transfer In</div>
-          <label className="block text-xs font-bold">Source branch<select value={form.source} onChange={(e) => setForm((v) => ({ ...v, source: e.target.value as SourceBranch }))} className="mt-1 h-11 w-full rounded-xl border bg-background px-3"><option value="SNB">SNB</option><option value="VRSNB">VRSNB</option></select></label>
-          <label className="block text-xs font-bold">Transfer reference *<input value={form.reference} onChange={(e) => setForm((v) => ({ ...v, reference: e.target.value }))} placeholder="Example: TRF-2026-001" className="mt-1 h-11 w-full rounded-xl border bg-background px-3" /></label>
-          <label className="block text-xs font-bold">Item name *<input value={form.itemName} onChange={(e) => setForm((v) => ({ ...v, itemName: e.target.value }))} placeholder="Enter item name" className="mt-1 h-11 w-full rounded-xl border bg-background px-3" /></label>
-          {/* BUG FIX (audit 2026-08-30): hardcoded step="0.001" and no
-              sanitization regardless of unit — same "pcs never allow decimal
-              points" gap found across several Planner qty inputs today. A
-              pcs transfer could be posted (and printed on the register) with
-              a fractional expected/received count. */}
-          <div className="grid grid-cols-2 gap-2">
-            <label className="block text-xs font-bold">Expected<input type="number" min="0" step={form.unit === 'pcs' ? 1 : 0.001} value={form.expected} onChange={(e) => setForm((v) => ({ ...v, expected: sanitizeQtyForUnit(e.target.value, v.unit) }))} className="mt-1 h-11 w-full rounded-xl border bg-background px-3" /></label>
-            <label className="block text-xs font-bold">Received *<input type="number" min="0.001" step={form.unit === 'pcs' ? 1 : 0.001} value={form.received} onChange={(e) => setForm((v) => ({ ...v, received: sanitizeQtyForUnit(e.target.value, v.unit) }))} className="mt-1 h-11 w-full rounded-xl border bg-background px-3" /></label>
+          <label className="block text-xs font-bold">Source branch<select value={batch.source} onChange={(e) => setBatch((v) => ({ ...v, source: e.target.value as SourceBranch }))} className="mt-1 h-11 w-full rounded-xl border bg-background px-3"><option value="SNB">SNB</option><option value="VRSNB">VRSNB</option></select></label>
+          <label className="block text-xs font-bold">Transfer reference *<input value={batch.reference} onChange={(e) => setBatch((v) => ({ ...v, reference: e.target.value }))} placeholder="Example: TRF-2026-001" className="mt-1 h-11 w-full rounded-xl border bg-background px-3" /></label>
+          <label className="block text-xs font-bold">Remarks (applies to every item below)<textarea value={batch.remarks} onChange={(e) => setBatch((v) => ({ ...v, remarks: e.target.value }))} placeholder="Shortage, excess, return or leftover reason" className="mt-1 min-h-16 w-full rounded-xl border bg-background p-3" /></label>
+
+          <div className="rounded-xl border border-dashed border-teal-300 bg-teal-50/40 p-3 space-y-2">
+            <p className="text-xs font-black text-teal-900">Add an item</p>
+            <label className="block text-xs font-bold">Item name<input value={draft.itemName} onChange={(e) => setDraft((v) => ({ ...v, itemName: e.target.value }))} placeholder="Enter item name" className="mt-1 h-11 w-full rounded-xl border bg-background px-3" /></label>
+            <div className="grid grid-cols-2 gap-2">
+              <label className="block text-xs font-bold">Expected<input type="number" min="0" step={draft.unit === 'pcs' ? 1 : 0.001} value={draft.expected} onChange={(e) => setDraft((v) => ({ ...v, expected: sanitizeQtyForUnit(e.target.value, v.unit) }))} className="mt-1 h-11 w-full rounded-xl border bg-background px-3" /></label>
+              <label className="block text-xs font-bold">Received *<input type="number" min="0.001" step={draft.unit === 'pcs' ? 1 : 0.001} value={draft.received} onChange={(e) => setDraft((v) => ({ ...v, received: sanitizeQtyForUnit(e.target.value, v.unit) }))} className="mt-1 h-11 w-full rounded-xl border bg-background px-3" /></label>
+            </div>
+            <label className="block text-xs font-bold">Unit<select value={draft.unit} onChange={(e) => { const nextUnit = e.target.value as Unit; setDraft((v) => ({ ...v, unit: nextUnit, expected: requantizeForUnit(v.expected, nextUnit), received: requantizeForUnit(v.received, nextUnit) })); }} className="mt-1 h-11 w-full rounded-xl border bg-background px-3"><option value="kg">KG</option><option value="pcs">Pcs</option></select></label>
+            <button type="button" onClick={addLine} className="h-10 w-full rounded-xl bg-teal-600 text-white text-xs font-black flex items-center justify-center gap-2"><Plus className="size-4" />Add Item to Transfer</button>
           </div>
-          <label className="block text-xs font-bold">Unit<select value={form.unit} onChange={(e) => { const nextUnit = e.target.value as Unit; setForm((v) => ({ ...v, unit: nextUnit, expected: sanitizeQtyForUnit(v.expected, nextUnit), received: sanitizeQtyForUnit(v.received, nextUnit) })); }} className="mt-1 h-11 w-full rounded-xl border bg-background px-3"><option value="kg">KG</option><option value="pcs">Pcs</option></select></label>
-          <label className="block text-xs font-bold">Remarks<textarea value={form.remarks} onChange={(e) => setForm((v) => ({ ...v, remarks: e.target.value }))} placeholder="Shortage, excess, return or leftover reason" className="mt-1 min-h-24 w-full rounded-xl border bg-background p-3" /></label>
-          <button type="submit" disabled={saving} className="h-11 w-full rounded-xl bg-teal-600 text-white font-black flex items-center justify-center gap-2 disabled:opacity-60">{saving ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}{saving ? 'Posting…' : 'Confirm Transfer In'}</button>
+
+          {lines.length > 0 && (
+            <div className="space-y-1.5">
+              <p className="text-xs font-black text-foreground">{lines.length} item{lines.length === 1 ? '' : 's'} in this transfer</p>
+              {lines.map((line, i) => (
+                <div key={i} className="flex items-center justify-between gap-2 rounded-xl border bg-muted/30 px-3 py-2 text-xs">
+                  <div className="min-w-0">
+                    <p className="font-bold truncate">{line.itemName}</p>
+                    <p className="text-muted-foreground">Expected {line.expected || '0'} · Received {line.received} {line.unit}</p>
+                  </div>
+                  <button type="button" onClick={() => removeLine(i)} aria-label={`Remove ${line.itemName}`} className="shrink-0 rounded-lg p-1.5 text-muted-foreground hover:bg-red-100 hover:text-red-600"><X className="size-3.5" /></button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <button type="submit" disabled={saving || lines.length === 0} className="h-11 w-full rounded-xl bg-teal-600 text-white font-black flex items-center justify-center gap-2 disabled:opacity-60">{saving ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}{saving ? 'Posting…' : `Confirm Transfer In${lines.length > 0 ? ` (${lines.length})` : ''}`}</button>
         </form>
 
         <div className="rounded-2xl border bg-card overflow-hidden min-w-0">
