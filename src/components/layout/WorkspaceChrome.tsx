@@ -51,6 +51,9 @@ import { useAuthStore } from '@/stores/authStore';
 import { cn } from '@/lib/utils';
 import CafeBillerTopNav from '@/components/layout/CafeBillerTopNav';
 import { useSnbTabStripStore } from '@/stores/snbTabStripStore';
+import { useBakeryStore, isAdvanceOrderTagged } from '@/bakery/bakeryStore';
+import { kgToPcs } from '@/bakery/itemMatcher';
+import { useCakeReadyCount } from '@/bakery/useCakeReadyCount';
 
 interface WorkspaceChromeProps {
   children: React.ReactNode;
@@ -65,6 +68,19 @@ export interface NavItem {
   icon: React.ReactNode;
   group: 'Main' | 'Operations' | 'Sales' | 'Stock' | 'Reports' | 'Admin';
 }
+
+// Stable empty-array reference for the useBakeryStore selector below — a
+// fresh `[]` literal there would make every non-planner role re-render this
+// selector's subscribers on every store change (Zustand compares by
+// reference), for state those roles never even read.
+const EMPTY_ORDERS: never[] = [];
+
+// Loose (no unit-disambiguation stripping) case/whitespace-insensitive item
+// match, used only for the Advance Orders badge count above — this sidebar
+// doesn't have access to PlannerDashboard.tsx's own private sameItem()/
+// stripUnitDisambiguation(), and a badge count only needs to be approximately
+// right; the actual dispatch math still runs through the precise version.
+const sameItemLoose = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
 
 interface PageMeta {
   title: string;
@@ -215,6 +231,13 @@ export function navForRole(role?: string): NavItem[] {
         // 'Custom' branchFilter option inside DispatchDateGroup in
         // PlannerDashboard.tsx. Not a standalone nav destination anymore.
         { label: 'Cake Dispatch', path: '/bakery/planner?tab=cake', icon: <Cake className="size-4" />, group: 'Operations' },
+        // FEATURE (2026-09-05): "Advance orders ... unable to track and
+        // unable to dispatch — same like Cake orders" — see
+        // AdvancePlannerOrdersTab in PlannerDashboard.tsx. Added here too,
+        // per the exact gotcha this file's own comment two lines below
+        // already warns about — this sidebar list does not auto-follow
+        // PlannerDashboard.tsx's in-page TABS array.
+        { label: 'Advance Orders', path: '/bakery/planner?tab=advance', icon: <Clock3 className="size-4" />, group: 'Operations' },
         // Stock movement + reconciliation, grouped together.
         { label: 'Transfer In', path: '/bakery/planner?tab=transfer-in', icon: <ArrowRightLeft className="size-4" />, group: 'Stock' },
         { label: 'Transfer Out', path: '/bakery/planner?tab=transfer-out', icon: <PackageMinus className="size-4" />, group: 'Stock' },
@@ -408,6 +431,49 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
     return names.map((name) => ({ name, items: items.filter((item) => item.group === name) })).filter((group) => group.items.length > 0);
   }, [items]);
 
+  // INDICATION BADGES (2026-09-05): "In Incoming order tab and Advance orders
+  // tab get an order those tabs should show indication mark. Same for Cake
+  // dispatch tab if any cake is ready to dispatch." This sidebar list is the
+  // ONLY way a standalone (non-embedded) Planner route is navigated — see
+  // the "Advance Orders" nav entry comment below — so the badges belong here,
+  // not just in PlannerDashboard.tsx's own in-page tab strip (which only
+  // renders when embedded inside Owner Dashboard). Matched by exact `path`
+  // rather than label, since 'Advance Orders' is also a nav label for
+  // several OTHER roles (admin, SNB/VRSNB receiver, SNB/VRSNB branch) that
+  // point at entirely unrelated features/paths — an exact-path match can
+  // never bleed a Planner count onto one of those.
+  const isPlanner = currentUser?.role === 'planner';
+  const bakeryOrders = useBakeryStore((s) => (isPlanner ? s.orders : EMPTY_ORDERS));
+  const cakeReadyCount = useCakeReadyCount(isPlanner);
+  const incomingCount = useMemo(() => (isPlanner ? bakeryOrders.filter((o) => o.status === 'pending').length : 0), [isPlanner, bakeryOrders]);
+  const advanceReadyCount = useMemo(() => {
+    if (!isPlanner) return 0;
+    let n = 0;
+    for (const order of bakeryOrders) {
+      if (order.status === 'dispatched') continue;
+      if (!isAdvanceOrderTagged(order.notes)) continue;
+      const hasRemaining = order.items.some((item) => {
+        const producedKg = (order.producedItems ?? [])
+          .filter((p) => sameItemLoose(p.itemName, item.itemName))
+          .reduce((s, p) => s + p.quantityPrepared, 0);
+        const producedInUnit = item.dispatchUnit === 'pcs' && item.weightGrams != null
+          ? (kgToPcs(producedKg, item.weightGrams) ?? 0)
+          : producedKg;
+        const alreadyDispatched = (order.dispatchLog ?? [])
+          .filter((d) => sameItemLoose(d.itemName, item.itemName) && !d.isExtra)
+          .reduce((s, d) => s + d.quantity, 0);
+        return Math.round((producedInUnit - alreadyDispatched) * 1000) / 1000 > 0.001;
+      });
+      if (hasRemaining) n++;
+    }
+    return n;
+  }, [isPlanner, bakeryOrders]);
+  const navBadges: Record<string, number> = {
+    '/bakery/planner?tab=incoming': incomingCount,
+    '/bakery/planner?tab=advance': advanceReadyCount,
+    '/bakery/planner?tab=cake': cakeReadyCount,
+  };
+
   const goTo = (path: string) => {
     navigate(path);
     setMobileNavOpen(false);
@@ -430,6 +496,7 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
           const active = isQueryRoute
             ? currentRoute === item.path
             : (location.pathname === item.path && !location.search) || location.pathname.startsWith(item.path + '/');
+          const badgeCount = navBadges[item.path] ?? 0;
           return (
             <button
               key={item.path}
@@ -439,6 +506,11 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
             >
               <span className="workspace-nav-icon">{item.icon}</span>
               <span>{item.label}</span>
+              {badgeCount > 0 && (
+                <span className="ml-auto grid min-w-[18px] place-items-center rounded-full bg-red-600 px-1 text-[10px] font-black leading-none text-white">
+                  {badgeCount > 99 ? '99+' : badgeCount}
+                </span>
+              )}
             </button>
           );
         })}
