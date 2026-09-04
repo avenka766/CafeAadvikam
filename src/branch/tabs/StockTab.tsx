@@ -730,7 +730,14 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
                       )}
                       {displayUnit === 'kg' ? <Scale className="size-3.5 text-muted-foreground shrink-0" /> : <Hash className="size-3.5 text-muted-foreground shrink-0" />}
                       <div className="min-w-0">
-                        <p className="text-sm font-medium truncate">{inc.itemName}</p>
+                        <p className="flex items-center gap-1.5 text-sm font-medium truncate">
+                          <span className="truncate">{inc.itemName}</span>
+                          {inc.advanceOrderNo && (
+                            <span className="inline-flex shrink-0 items-center rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-black text-violet-700" title="From an advance order">
+                              {inc.advanceOrderNo}
+                            </span>
+                          )}
+                        </p>
                         <p className="text-xs text-muted-foreground">{fmt(inc.receivedAt)} · {inc.dispatchedBy}</p>
                       </div>
                     </div>
