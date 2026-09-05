@@ -444,7 +444,7 @@ function AdminDashboard() {
 
       const [headersRes, itemsRes, paymentsRes, hosurRes, unbilledRes, expensesRes, purchasesRes] = await Promise.all([
         fetchAllRows(() => supabase.from('branch_bill_headers')
-          .select('id, branch, bill_no, subtotal, discount, total, status, created_at, salesperson, biller')
+          .select('id, branch, bill_no, subtotal, discount, total, status, created_at, salesperson, biller, notes')
           .in('branch', ['SNB', 'VRSNB'])
           .gte('created_at', fromTs).lte('created_at', toTs)
           .order('created_at', { ascending: false })),
@@ -462,7 +462,7 @@ function AdminDashboard() {
         // so billPaidByMode's lookup missed them and every cash/UPI/card
         // column silently fell back to 0 despite a real, nonzero bill total.
         fetchAllRows(() => supabase.from('branch_sale_payments')
-          .select('bill_id, payment_mode, amount')
+          .select('bill_id, payment_mode, amount, payment_purpose')
           .in('branch', ['SNB', 'VRSNB'])
           .in('payment_purpose', ['bill_collection', 'credit_upfront', 'advance_balance', 'credit_settlement'])
           .gte('created_at', fromTs).lte('created_at', toTs)),
@@ -573,8 +573,51 @@ function AdminDashboard() {
       ]);
 
       const payments = (paymentsRes.data || []) as Array<Record<string, unknown>>;
+
+      // BUG FIX (2026-09-05): "this Excel is used for GST filing" — even
+      // after including 'advance_balance'/'credit_settlement' above, an
+      // advance-order bill's Cash/UPI/Card still didn't add up to its Total
+      // Sales. Reason: the deposit taken when the advance order was PLACED
+      // is its own branch_sale_payments row with payment_purpose
+      // 'advance_paid' and bill_id = null (no bill exists yet at that
+      // point) — only the *balance* paid at pickup/billing carries the real
+      // bill_id, and some advance orders are fully covered by the deposit
+      // alone (no balance row at all). The reliable link (confirmed live
+      // across every advance-order bill, not just ones with a balance
+      // payment) is the advance order's own tag string, e.g. "SNB-ADV-259":
+      // branch_bill_headers.notes always starts with it, and the deposit
+      // row's `bill_no` holds the same tag. Fetched separately (not
+      // date-scoped) because the deposit is very often collected on an
+      // earlier day than the balance/billing.
+      const advanceTagByBillId = new Map<string, string>();
+      headers.forEach((h) => {
+        const match = /^([A-Za-z]+-ADV-\d+)/.exec(String(h.notes ?? ''));
+        if (match) advanceTagByBillId.set(String(h.id), match[1]);
+      });
+      const advanceTags = Array.from(new Set(advanceTagByBillId.values()));
+      let advanceDeposits: Array<Record<string, unknown>> = [];
+      if (advanceTags.length > 0) {
+        const depositRes = await fetchAllRows<Record<string, unknown>>(() => supabase.from('branch_sale_payments')
+          .select('bill_no, payment_mode, amount')
+          .eq('payment_purpose', 'advance_paid')
+          .in('bill_no', advanceTags));
+        if (!depositRes.error) advanceDeposits = depositRes.data;
+      }
+      const depositsByTag = new Map<string, Array<{ mode: string; amount: number }>>();
+      advanceDeposits.forEach((d) => {
+        const tag = String(d.bill_no ?? '').trim();
+        const list = depositsByTag.get(tag) ?? [];
+        list.push({ mode: String(d.payment_mode ?? '').toLowerCase(), amount: Number(d.amount || 0) });
+        depositsByTag.set(tag, list);
+      });
+
       setRealPayments([
         ...payments.map((p) => ({ billId: String(p.bill_id), mode: String(p.payment_mode ?? '').toLowerCase(), amount: Number(p.amount || 0) })),
+        // The matched deposit is attributed to the FINAL bill's id (from the
+        // header it was matched via), not left under its own null bill_id —
+        // that's what makes it show up on the right bill's row.
+        ...Array.from(advanceTagByBillId.entries()).flatMap(([billId, tag]) =>
+          (depositsByTag.get(tag) ?? []).map((d) => ({ billId, mode: d.mode, amount: d.amount }))),
         ...hosurBills.map((h) => ({ billId: String(h.id), mode: String(h.payment_mode ?? '').toLowerCase() || 'cash', amount: Number(h.paid_amount || 0) })),
       ]);
       setRealSalesLoading(false);
