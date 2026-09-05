@@ -31,6 +31,7 @@ import { cn } from '@/lib/utils';
 import { exportToExcel } from '@/lib/exportExcel';
 import { printViaIframe } from '@/lib/printViaIframe';
 import { dispatchReceiveAndBill } from './hosurBillingBridge';
+import { saveDispatchInvoice } from './dispatchInvoice';
 import { getPackingCounterStatus } from './packingCounter';
 import { notifyAdmin } from '@/pages/HosurDashboard';
 import { buildHosurOrderTag, buildHosurItemId, checkRecentDuplicateHosurOrder } from './hosurOrderShared';
@@ -38,7 +39,9 @@ import { closestRecipeMatch } from './recipeNameMatch';
 import KgPackAdder from './KgPackAdder';
 import { sanitizeQtyForUnit, requantizeForUnit } from './PlannerLeftoverTab';
 
-const money = (v: number | null | undefined) => 'Rs.' + (v ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
+// AUDIT FIX (2026-09-05): "the payment should be round off there should not
+// be any decimal points".
+const money = (v: number | null | undefined) => 'Rs.' + Math.round(v ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 0 });
 const num = (v: number | null | undefined) => (v ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
 const normalize = (s: string) => s.trim().toLowerCase();
 
@@ -800,18 +803,67 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
         receivedQuantity: overrides[item.id] !== undefined ? Number(overrides[item.id] || 0) : item.dispatchedQuantity,
       }));
       const orderChargesToBill = charges[order.id] ?? [];
-      const outcome = await dispatchReceiveAndBill({
-        order: { id: order.id, orderNumber: order.orderNumber, shopId: order.shopId, shopName: order.shopName, shopWhatsapp: order.shopWhatsapp },
-        items: billItems,
-        charges: orderChargesToBill,
-        payment: {
-          paymentType: pType,
-          paidAmount: pType === 'partial' ? Number(paidAmount[order.id] || 0) : undefined,
-          paymentMode: pType === 'credit' ? null : (paymentMode[order.id] || 'cash'),
-          dueDate: pType !== 'full' ? (dueDate[order.id] || null) : null,
-        },
-        userName: currentUser?.displayName || 'Planner',
-      });
+      // BUG FIX (2026-09-06): "should always show the invoice number" — this
+      // "Dispatch & Bill" quick action never went through Planner's own
+      // DispatchReviewModal.confirm() (the only other place that mints a
+      // real dispatch_invoices row), so a shop billed straight from here got
+      // NO invoice number at all — HosurDashboard/Admin's Hosur Sales tab
+      // then had nothing to show but the internal bill_no. Mint one here too
+      // (same 'Hosur' SALES/26-27/N sequence, no dispatchEntryIds since
+      // there's no bakery_orders/dispatch_log entry behind a Hosur shop
+      // order — same as a Cake invoice's own no-stock-link case) and pass it
+      // through. Best-effort: a numbering hiccup must never block a real
+      // dispatch + bill that's otherwise ready to go.
+      let mintedInvoiceNo: string | undefined;
+      let mintedInvoiceId: string | undefined;
+      try {
+        const invoiceItems = [
+          ...billItems.map(i => ({ itemName: i.itemName, unit: i.unit, quantity: i.receivedQuantity, unitPrice: i.unitPrice, lineTotal: Math.round(i.receivedQuantity * i.unitPrice * 100) / 100 })),
+          ...orderChargesToBill.map(c => ({ itemName: c.name, unit: 'charge', quantity: 1, unitPrice: c.amount, lineTotal: c.amount })),
+        ];
+        const invoiceRecord = await saveDispatchInvoice({
+          scope: 'Hosur',
+          hosurShopId: order.shopId, hosurShopName: order.shopName, hosurShopPhone: order.shopWhatsapp,
+          dispatchedBy: currentUser?.displayName || 'Planner',
+          items: invoiceItems,
+          discountPct: 0,
+        });
+        mintedInvoiceNo = invoiceRecord.invoiceNo;
+        mintedInvoiceId = invoiceRecord.id;
+      } catch (err) {
+        console.error('[HosurShopOrderPanel] Failed to mint a dispatch invoice number (non-fatal):', err);
+      }
+      // BUG FIX (2026-09-06, audit): saveDispatchInvoice above already
+      // consumes a real, gap-free invoice number and writes its row BEFORE
+      // any of dispatchReceiveAndBill's own validation (counter-open, due
+      // date, partial-amount) or writes run. If that call then throws — a
+      // stale counter-closed check, a network hiccup, anything — the invoice
+      // would be left behind as a phantom row: a real invoice number with no
+      // dispatch, no stock movement, and no bill ever actually created,
+      // silently inflating Admin Dispatch Details' totals. Delete it if the
+      // dispatch/bill itself never went through.
+      let outcome: Awaited<ReturnType<typeof dispatchReceiveAndBill>>;
+      try {
+        outcome = await dispatchReceiveAndBill({
+          order: { id: order.id, orderNumber: order.orderNumber, shopId: order.shopId, shopName: order.shopName, shopWhatsapp: order.shopWhatsapp },
+          items: billItems,
+          charges: orderChargesToBill,
+          payment: {
+            paymentType: pType,
+            paidAmount: pType === 'partial' ? Number(paidAmount[order.id] || 0) : undefined,
+            paymentMode: pType === 'credit' ? null : (paymentMode[order.id] || 'cash'),
+            dueDate: pType !== 'full' ? (dueDate[order.id] || null) : null,
+          },
+          userName: currentUser?.displayName || 'Planner',
+          invoiceNo: mintedInvoiceNo,
+        });
+      } catch (err) {
+        if (mintedInvoiceId) {
+          await supabase.from('dispatch_invoices').delete().eq('id', mintedInvoiceId)
+            .then(({ error }) => { if (error) console.error('[HosurShopOrderPanel] Failed to roll back orphaned invoice:', error); });
+        }
+        throw err;
+      }
       setResult(r => ({ ...r, [order.id]: {
         ok: outcome.whatsappStatus === 'sent',
         message: outcome.whatsappStatus === 'sent'
@@ -1600,17 +1652,49 @@ function HosurLeftoverAndCancelPanel({ pendingOrders, pendingItems, appliedLefto
       }).select('id').single();
       if (itemError || !newItem) throw itemError || new Error('Failed to create the item for this dispatch.');
 
-      const outcome = await dispatchReceiveAndBill({
-        order: { id: newOrder.id, orderNumber, shopId: shop.id, shopName: shop.shopName, shopWhatsapp: shop.whatsappNumber },
-        items: [{ id: newItem.id, itemName: row.itemName, unit: row.unit === 'pcs' ? 'pcs' : 'kg', quantity: qty, unitPrice: price, receivedQuantity: qty }],
-        payment: {
-          paymentType: dispatchPaymentType,
-          paidAmount: dispatchPaymentType === 'partial' ? Number(dispatchPaidAmount || 0) : undefined,
-          paymentMode: dispatchPaymentType === 'credit' ? null : (dispatchPaymentMode || 'cash'),
-          dueDate: dispatchPaymentType !== 'full' ? (dispatchDueDate || null) : null,
-        },
-        userName: currentUser?.displayName || 'Planner',
-      });
+      // BUG FIX (2026-09-06): same "always show the invoice number" fix as
+      // dispatchAndBill above — this leftover quick-dispatch never minted a
+      // real invoice either. Best-effort: never block a real dispatch+bill
+      // over a numbering hiccup.
+      let mintedInvoiceNo: string | undefined;
+      let mintedInvoiceId: string | undefined;
+      try {
+        const invoiceRecord = await saveDispatchInvoice({
+          scope: 'Hosur',
+          hosurShopId: shop.id, hosurShopName: shop.shopName, hosurShopPhone: shop.whatsappNumber,
+          dispatchedBy: currentUser?.displayName || 'Planner',
+          items: [{ itemName: row.itemName, unit: row.unit, quantity: qty, unitPrice: price, lineTotal }],
+          discountPct: 0,
+        });
+        mintedInvoiceNo = invoiceRecord.invoiceNo;
+        mintedInvoiceId = invoiceRecord.id;
+      } catch (err) {
+        console.error('[HosurShopOrderPanel] Failed to mint a dispatch invoice number (non-fatal):', err);
+      }
+      // BUG FIX (2026-09-06, audit): see the identical fix in dispatchAndBill
+      // above — don't leave a real, consumed invoice number as a phantom row
+      // if the bill itself never actually completed.
+      let outcome: Awaited<ReturnType<typeof dispatchReceiveAndBill>>;
+      try {
+        outcome = await dispatchReceiveAndBill({
+          order: { id: newOrder.id, orderNumber, shopId: shop.id, shopName: shop.shopName, shopWhatsapp: shop.whatsappNumber },
+          items: [{ id: newItem.id, itemName: row.itemName, unit: row.unit === 'pcs' ? 'pcs' : 'kg', quantity: qty, unitPrice: price, receivedQuantity: qty }],
+          payment: {
+            paymentType: dispatchPaymentType,
+            paidAmount: dispatchPaymentType === 'partial' ? Number(dispatchPaidAmount || 0) : undefined,
+            paymentMode: dispatchPaymentType === 'credit' ? null : (dispatchPaymentMode || 'cash'),
+            dueDate: dispatchPaymentType !== 'full' ? (dispatchDueDate || null) : null,
+          },
+          userName: currentUser?.displayName || 'Planner',
+          invoiceNo: mintedInvoiceNo,
+        });
+      } catch (err) {
+        if (mintedInvoiceId) {
+          await supabase.from('dispatch_invoices').delete().eq('id', mintedInvoiceId)
+            .then(({ error }) => { if (error) console.error('[HosurShopOrderPanel] Failed to roll back orphaned invoice:', error); });
+        }
+        throw err;
+      }
 
       // BUG FIX: the bill is already real and paid/credited at this point —
       // reporting the outcome BEFORE the pool-consumption update means a

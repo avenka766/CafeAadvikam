@@ -99,7 +99,7 @@ function POCard({ po, onConvert }: { po: StorePurchaseOrder; onConvert: (po: Sto
             </span>
           </div>
           <p className="text-[11px] font-body text-muted-foreground mt-0.5 truncate">
-            {po.supplierName} · {po.lineItems.length} item{po.lineItems.length === 1 ? '' : 's'} · ₹{po.grandTotal.toFixed(2)}
+            {po.supplierName} · {po.lineItems.length} item{po.lineItems.length === 1 ? '' : 's'} · ₹{Math.round(po.grandTotal)}
           </p>
         </div>
         {expanded ? <ChevronUp className="size-4 text-muted-foreground shrink-0" /> : <ChevronDown className="size-4 text-muted-foreground shrink-0" />}
@@ -127,12 +127,12 @@ function POCard({ po, onConvert }: { po: StorePurchaseOrder; onConvert: (po: Sto
                 <span className="col-span-5 font-semibold text-foreground truncate">{li.itemName}{li.itemCode ? ` (${li.itemCode})` : ''}</span>
                 <span className="col-span-3 text-right text-muted-foreground">{num(li.quantity)} {li.unit}</span>
                 <span className="col-span-2 text-right text-muted-foreground">₹{li.pricePerUnit}</span>
-                <span className="col-span-2 text-right font-bold text-foreground">₹{li.totalPrice.toFixed(2)}</span>
+                <span className="col-span-2 text-right font-bold text-foreground">₹{Math.round(li.totalPrice)}</span>
               </div>
             ))}
             <div className="flex justify-between px-3 py-2.5 bg-primary/5 border-t border-primary/20">
               <span className="text-xs font-body font-bold">Grand Total</span>
-              <span className="text-sm font-display font-bold text-primary">₹{po.grandTotal.toFixed(2)}</span>
+              <span className="text-sm font-display font-bold text-primary">₹{Math.round(po.grandTotal)}</span>
             </div>
           </div>
 
@@ -487,7 +487,7 @@ function CreatePOModal({ onClose, onCreated }: { onClose: () => void; onCreated:
                       />
                     </div>
                     <div className="flex h-10 items-center justify-end rounded-xl bg-primary/5 px-2.5">
-                      <span className="text-sm font-body font-bold tabular-nums text-primary">₹{poLineTotal(line).toFixed(2)}</span>
+                      <span className="text-sm font-body font-bold tabular-nums text-primary">₹{Math.round(poLineTotal(line))}</span>
                     </div>
                     <button type="button" onClick={() => removeLine(line.rowId)} disabled={lines.length === 1} className="flex size-9 items-center justify-center rounded-xl text-red-500 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-25" aria-label={`Remove item ${index + 1}`}>
                       <Trash2 className="size-4" />
@@ -512,7 +512,7 @@ function CreatePOModal({ onClose, onCreated }: { onClose: () => void; onCreated:
             </div>
             <div className="flex justify-between px-4 py-3 bg-primary/5 border-t border-primary/20">
               <span className="text-xs font-body font-bold">Grand Total</span>
-              <span className="text-base font-display font-bold text-primary">₹{lines.reduce((sum, l) => sum + poLineTotal(l), 0).toFixed(2)}</span>
+              <span className="text-base font-display font-bold text-primary">₹{Math.round(lines.reduce((sum, l) => sum + poLineTotal(l), 0))}</span>
             </div>
           </section>
 

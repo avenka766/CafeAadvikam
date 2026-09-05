@@ -116,7 +116,7 @@ function AdminInvoiceCard({
             )}
           </div>
           <p className="text-[11px] font-body text-muted-foreground mt-0.5 truncate">
-            {invoice.supplierName} · ₹{invoice.grandTotal.toFixed(2)} · {new Date(invoice.deliveryDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}
+            {invoice.supplierName} · ₹{Math.round(invoice.grandTotal)} · {new Date(invoice.deliveryDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}
           </p>
         </div>
         <span className="hidden sm:flex items-center gap-1 text-[10px] font-body font-semibold text-muted-foreground shrink-0">
@@ -152,12 +152,12 @@ function AdminInvoiceCard({
                 <span className="col-span-5 font-semibold text-foreground truncate">{li.itemName}</span>
                 <span className="col-span-3 text-right text-muted-foreground">{li.quantity} {li.unit}</span>
                 <span className="col-span-2 text-right text-muted-foreground">₹{li.pricePerUnit}</span>
-                <span className="col-span-2 text-right font-bold text-foreground">₹{li.totalPrice.toFixed(2)}</span>
+                <span className="col-span-2 text-right font-bold text-foreground">₹{Math.round(li.totalPrice)}</span>
               </div>
             ))}
             <div className="flex justify-between px-3 py-2.5 bg-primary/5 border-t border-primary/20">
               <span className="text-xs font-body font-bold">Grand Total</span>
-              <span className="text-sm font-display font-bold text-primary">₹{invoice.grandTotal.toFixed(2)}</span>
+              <span className="text-sm font-display font-bold text-primary">₹{Math.round(invoice.grandTotal)}</span>
             </div>
           </div>
 

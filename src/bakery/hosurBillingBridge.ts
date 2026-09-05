@@ -64,7 +64,7 @@ async function sendHosurWhatsapp(params: {
     let legacyFileName: string | null = null;
     if (params.messageType === 'bill') {
       const imageBlob = await createWhatsappBillImage(params.billForMedia, params.itemsForMedia);
-      legacyFileName = `${safeMediaFileName(params.billForMedia.billNo)}-bill-and-qr.png`;
+      legacyFileName = `${safeMediaFileName(params.billForMedia.invoiceNo ?? params.billForMedia.billNo)}-bill-and-qr.png`;
       legacyMediaUrl = await uploadWhatsappMedia(imageBlob, legacyFileName);
     } else if (params.messageType === 'reminder' && qrMedia) {
       const qrBlob = base64MediaBlob(qrMedia.base64, qrMedia.mimeType);
@@ -163,6 +163,17 @@ export async function dispatchReceiveAndBill(params: {
   // the existing manual Hosur tab caller, which still allows full/partial
   // payment and does need the counter open for that cash.
   requireCounterOpen?: boolean;
+  // FEATURE (2026-09-05): "dont use bill number anywhere... use invoice
+  // number" — the real GST-sequence number (SALES/26-27/N), captured
+  // straight from the same saveDispatchInvoice() call this batch's dispatch
+  // just made (see PlannerDashboard.tsx's DispatchReviewModal.confirm(),
+  // the only caller that has one to pass — HosurShopOrderPanel.tsx's two
+  // direct callers bill without an accompanying dispatch invoice and simply
+  // omit this). Optional and additive, never overwrites: a bill reused
+  // across multiple dispatch batches (see syncHosurBillWithInvoiceEdit's
+  // comment on this exact pattern) appends each new invoice number rather
+  // than replacing the ones already recorded.
+  invoiceNo?: string;
 }): Promise<{ billId: string; billNo: string; whatsappStatus: 'sent' | 'failed'; whatsappError: string | null }> {
   const { order, items, payment, userName, requireCounterOpen = true } = params;
   const charges = (params.charges ?? []).filter(c => c.name.trim() && Number.isFinite(c.amount) && c.amount > 0);
@@ -252,6 +263,110 @@ export async function dispatchReceiveAndBill(params: {
     }
   }
 
+  // BUG FIX (2026-09-06, audit): "reuses an existing draft bill" above only
+  // ever meant a bill still literally in `draft` (its very first batch,
+  // re-entered before payment was ever captured) — it silently assumed a
+  // bill that had ALREADY been confirmed by an earlier batch would never be
+  // reused at all. In reality a single Hosur order is routinely dispatched
+  // across several separate batches throughout the day, each its own
+  // dispatchReceiveAndBill call sharing this ONE bill (order_id is unique).
+  // From the second batch onward: no new hosur_bill_items ever got
+  // inserted (only the "brand-new bill" branch above does that), subtotal
+  // stayed frozen at whatever the FIRST batch billed, and step 3 below would
+  // then throw outright ("already confirmed...") because its `.eq('status',
+  // 'draft')` guard no longer matched. Net effect, confirmed live: real
+  // stock left the kitchen and a real dispatch invoice was created for every
+  // batch, but only the first batch's items/amount ever reached the shop's
+  // actual bill — Shree Skanda Villas had ₹1,051.60 of genuinely dispatched
+  // goods across two batches that never made it into what they were billed.
+  // Reconciles via the exact same "combined items across every batch, each
+  // priced at its own invoice's discount" merge already proven for
+  // updateDispatchInvoice's edit-sync and cancelDispatchInvoice's resync —
+  // then hands off to syncHosurBillWithInvoiceEdit (below, same file) to
+  // replace hosur_bill_items, recompute subtotal/credit, sync the credit
+  // ledger, and resend the WhatsApp bill, instead of duplicating any of that
+  // here a third time.
+  if (existingBillRow?.id) {
+    const { data: billStateRow } = await supabase.from('hosur_bills').select('status, invoice_no').eq('id', billId).single();
+    const billStatus = billStateRow?.status ?? 'draft';
+    const priorInvoiceNos = (billStateRow?.invoice_no ?? '').split(',').map((s: string) => s.trim()).filter(Boolean);
+
+    if (billStatus === 'draft') {
+      // Rarer edge case: a bill row exists (its very first batch created it)
+      // but was never actually confirmed — append this batch's items to it
+      // and fall through to the normal first-time-confirmation flow below,
+      // which still expects (and will find) status 'draft'.
+      const rows = [
+        ...items.map(i => ({ bill_id: billId, item_name: i.itemName, unit: i.unit, quantity: i.receivedQuantity, unit_price: i.unitPrice, line_total: Math.round(i.receivedQuantity * i.unitPrice * 100) / 100 })),
+        ...charges.map(c => ({ bill_id: billId, item_name: c.name.trim(), unit: 'charge', quantity: 1, unit_price: Math.round(c.amount * 100) / 100, line_total: Math.round(c.amount * 100) / 100 })),
+      ];
+      const { error: itemsError } = await supabase.from('hosur_bill_items').insert(rows);
+      if (itemsError) throw itemsError;
+      const { data: allItemRows } = await supabase.from('hosur_bill_items').select('line_total').eq('bill_id', billId);
+      billSubtotal = Math.round((allItemRows ?? []).reduce((s, r) => s + Number(r.line_total || 0), 0) * 100) / 100;
+      const { error: subtotalErr } = await supabase.from('hosur_bills').update({ subtotal: billSubtotal }).eq('id', billId);
+      if (subtotalErr) throw subtotalErr;
+    } else {
+      // Already confirmed by an earlier batch — merge instead of falling
+      // through to step 3 (which would just throw on this bill's status).
+      const finalPriced = (rowItems: { itemName: string; unit: string; quantity: number; unitPrice: number }[], discountPct: number) => {
+        const mult = 1 - Math.max(0, Math.min(100, discountPct || 0)) / 100;
+        return rowItems.map(i => ({ itemName: i.itemName, unit: i.unit, quantity: i.quantity, unitPrice: Math.round(i.unitPrice * mult * 100) / 100 }));
+      };
+      let combinedItems: { itemName: string; unit: string; quantity: number; unitPrice: number }[] = [];
+      if (priorInvoiceNos.length > 0) {
+        const { data: priorInvoiceRows } = await supabase.from('dispatch_invoices')
+          .select('items, discount_pct')
+          .eq('scope', 'Hosur').in('invoice_no', priorInvoiceNos).neq('status', 'cancelled');
+        for (const row of (priorInvoiceRows ?? []) as { items: { itemName: string; unit: string; quantity: number; unitPrice: number }[]; discount_pct: number }[]) {
+          combinedItems = combinedItems.concat(finalPriced(row.items ?? [], row.discount_pct ?? 0));
+        }
+      }
+      combinedItems = combinedItems.concat(
+        items.map(i => ({ itemName: i.itemName, unit: i.unit, quantity: i.receivedQuantity, unitPrice: i.unitPrice })),
+        charges.map(c => ({ itemName: c.name.trim(), unit: 'charge', quantity: 1, unitPrice: c.amount })),
+      );
+      // Record this batch's own invoice number on the bill before syncing —
+      // step 2b below never runs for this path since we return early.
+      if (params.invoiceNo && !priorInvoiceNos.includes(params.invoiceNo)) {
+        await supabase.from('hosur_bills').update({ invoice_no: [...priorInvoiceNos, params.invoiceNo].join(', ') }).eq('id', billId);
+      }
+      const sync = await syncHosurBillWithInvoiceEdit({ hosurOrderId: order.id, items: combinedItems });
+      return { billId, billNo, whatsappStatus: sync.whatsappStatus ?? 'failed', whatsappError: sync.whatsappError ?? sync.message ?? null };
+    }
+  }
+
+  // 2b. Record the real invoice number this bill was billed against —
+  // appended (not overwritten) since a bill can be reused across multiple
+  // dispatch batches, each with its own invoice. Runs regardless of which
+  // branch above resolved billId (new / reused-draft / race-recovered).
+  //
+  // BUG FIX (2026-09-06): "should always show the invoice number" — this
+  // used to silently swallow a failed SELECT/UPDATE (neither destructured
+  // `error`), so a real, already-consumed invoice number could vanish
+  // without a trace, leaving the bill's invoice_no permanently null (found
+  // live: 2 real Hosur bills with a valid dispatch_invoices row each, but no
+  // invoice_no ever recorded on the bill). Errors are now surfaced via
+  // console.error and one retry is attempted — a numbering hiccup must
+  // still never block the bill/dispatch itself.
+  if (params.invoiceNo) {
+    const attachInvoiceNo = async (): Promise<boolean> => {
+      const { data: currentBill, error: selectErr } = await supabase.from('hosur_bills').select('invoice_no').eq('id', billId).single();
+      if (selectErr) { console.error('[dispatchReceiveAndBill] Could not read current invoice_no before appending:', selectErr); return false; }
+      const existing = (currentBill?.invoice_no ?? '').split(',').map((s: string) => s.trim()).filter(Boolean);
+      if (existing.includes(params.invoiceNo!)) return true;
+      existing.push(params.invoiceNo!);
+      const { error: updateErr } = await supabase.from('hosur_bills').update({ invoice_no: existing.join(', ') }).eq('id', billId);
+      if (updateErr) { console.error('[dispatchReceiveAndBill] Failed to attach invoice number to bill:', updateErr); return false; }
+      return true;
+    };
+    if (!(await attachInvoiceNo())) {
+      // One retry — covers a transient hiccup (the exact class of bug this
+      // fix responds to had no visibility at all before this).
+      await attachInvoiceNo();
+    }
+  }
+
   // 3. Capture payment (full / partial / credit) — mirrors confirmBill exactly.
   const total = billSubtotal;
   const { paid, credit, status } = computePaymentSplit(total, payment);
@@ -308,7 +423,7 @@ export async function dispatchReceiveAndBill(params: {
       });
       if (paymentError) { await rollbackToDraft(); await supabase.from('branch_credit_sales').delete().eq('id', creditSale.id); throw paymentError; }
     }
-    await notifyAdmin('Hosur credit bill created', `${order.shopName} has credit of ₹${credit.toFixed(2)} on bill ${billNo}.`, billId, billNo, { billId, amount: credit });
+    await notifyAdmin('Hosur credit bill created', `${order.shopName} has credit of ₹${Math.round(credit)} on bill ${billNo}.`, billId, billNo, { billId, amount: credit });
   }
 
   if (paid > 0 && items.length > 0) {
@@ -335,15 +450,16 @@ export async function dispatchReceiveAndBill(params: {
   const finalBill = mapBill(billRow);
   const finalItems = (billItemRows ?? []).map(mapBillItem);
   const body = buildBillMessage(finalBill, finalItems);
+  const displayNo = finalBill.invoiceNo ?? billNo;
   const whatsapp = await sendHosurWhatsapp({
     shopId: order.shopId, shopName: order.shopName, phone: order.shopWhatsapp,
-    billId, billNo, messageType: 'bill', body, billForMedia: finalBill, itemsForMedia: finalItems,
+    billId, billNo: displayNo, messageType: 'bill', body, billForMedia: finalBill, itemsForMedia: finalItems,
   });
   if (whatsapp.status === 'failed') {
-    await notifyAdmin('Hosur WhatsApp bill failed', `${billNo} for ${order.shopName} could not be sent. Retry from WhatsApp Logs.`, billId, billNo, { error: whatsapp.errorMessage });
+    await notifyAdmin('Hosur WhatsApp bill failed', `${displayNo} for ${order.shopName} could not be sent. Retry from WhatsApp Logs.`, billId, displayNo, { error: whatsapp.errorMessage });
   }
 
-  return { billId, billNo, whatsappStatus: whatsapp.status, whatsappError: whatsapp.errorMessage };
+  return { billId, billNo: displayNo, whatsappStatus: whatsapp.status, whatsappError: whatsapp.errorMessage };
 }
 
 // FEATURE (2026-09-03): "if they edit the bill the new invoice should go to

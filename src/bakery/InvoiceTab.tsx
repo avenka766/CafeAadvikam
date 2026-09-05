@@ -85,8 +85,8 @@ export function printInvoice(invoice: StoreInvoice) {
       <td class="r">${li.quantity}</td>
       <td class="r">${li.acceptedQty ?? li.quantity}</td>
       <td class="r">${li.rejectedQty ?? 0}</td>
-      <td class="r">₹${li.pricePerUnit.toFixed(2)}</td>
-      <td class="r">₹${li.totalPrice.toFixed(2)}</td>
+      <td class="r">₹${Math.round(li.pricePerUnit)}</td>
+      <td class="r">₹${Math.round(li.totalPrice)}</td>
       <td>${escapeHtml(li.remarks)}</td>
     </tr>
   `).join('');
@@ -180,7 +180,7 @@ export function printInvoice(invoice: StoreInvoice) {
       </thead>
       <tbody>${rows}</tbody>
       <tfoot>
-        <tr><td colspan="8" class="r" style="font-weight:700; border-top:2px solid #999;">Grand Total</td><td class="r" style="font-weight:700; border-top:2px solid #999;">₹${invoice.grandTotal.toFixed(2)}</td><td style="border-top:2px solid #999;"></td></tr>
+        <tr><td colspan="8" class="r" style="font-weight:700; border-top:2px solid #999;">Grand Total</td><td class="r" style="font-weight:700; border-top:2px solid #999;">₹${Math.round(invoice.grandTotal)}</td><td style="border-top:2px solid #999;"></td></tr>
       </tfoot>
     </table>
 
@@ -243,7 +243,7 @@ function InvoiceCard({ invoice, onPrint, onEdit }: { invoice: StoreInvoice; onPr
             )}
           </div>
           <p className="text-[11px] font-body text-muted-foreground mt-0.5 truncate">
-            {invoice.supplierName} · ₹{invoice.grandTotal.toFixed(2)}
+            {invoice.supplierName} · ₹{Math.round(invoice.grandTotal)}
           </p>
         </div>
         {expanded ? <ChevronUp className="size-4 text-muted-foreground shrink-0" /> : <ChevronDown className="size-4 text-muted-foreground shrink-0" />}
@@ -268,12 +268,12 @@ function InvoiceCard({ invoice, onPrint, onEdit }: { invoice: StoreInvoice; onPr
                 <span className="col-span-5 font-semibold text-foreground truncate">{li.itemName}</span>
                 <span className="col-span-3 text-right text-muted-foreground">{li.quantity} {li.unit}</span>
                 <span className="col-span-2 text-right text-muted-foreground">₹{li.pricePerUnit}</span>
-                <span className="col-span-2 text-right font-bold text-foreground">₹{li.totalPrice.toFixed(2)}</span>
+                <span className="col-span-2 text-right font-bold text-foreground">₹{Math.round(li.totalPrice)}</span>
               </div>
             ))}
             <div className="flex justify-between px-3 py-2.5 bg-primary/5 border-t border-primary/20">
               <span className="text-xs font-body font-bold text-foreground">Grand Total</span>
-              <span className="text-sm font-display font-bold text-primary">₹{invoice.grandTotal.toFixed(2)}</span>
+              <span className="text-sm font-display font-bold text-primary">₹{Math.round(invoice.grandTotal)}</span>
             </div>
           </div>
 
@@ -747,7 +747,7 @@ function InvoiceLineEditor({
 
       <div className="mt-2 flex h-10 items-center justify-between rounded-xl bg-primary/5 px-3 md:mt-0 md:justify-end">
         <span className="text-[9px] font-body font-bold uppercase text-muted-foreground md:hidden">Amount</span>
-        <span className="text-sm font-body font-bold tabular-nums text-primary">₹{total.toFixed(2)}</span>
+        <span className="text-sm font-body font-bold tabular-nums text-primary">₹{Math.round(total)}</span>
       </div>
 
       <div className="mt-2 flex justify-end md:mt-1">
@@ -1348,7 +1348,7 @@ export function CreateInvoiceModal({
             <div className="rounded-2xl border border-primary/20 bg-primary/5 p-4">
               <div className="flex items-center justify-between">
                 <span className="flex items-center gap-2 text-sm font-body font-bold text-foreground"><IndianRupee className="size-4 text-primary" /> Grand Total</span>
-                <span className="font-display text-2xl font-bold tabular-nums text-primary">₹{grandTotal.toFixed(2)}</span>
+                <span className="font-display text-2xl font-bold tabular-nums text-primary">₹{Math.round(grandTotal)}</span>
               </div>
               <div className="mt-3 flex items-start gap-2 border-t border-primary/15 pt-3 text-[11px] font-body text-blue-700">
                 <Package className="mt-0.5 size-3.5 shrink-0" />

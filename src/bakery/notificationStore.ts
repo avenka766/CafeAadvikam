@@ -157,7 +157,7 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
     const { error } = await supabase.from('admin_notifications').insert(ADMIN_RECIPIENT_ROLES.map(role => ({
       type: 'invoice_pending',
       title: 'New Invoice Pending Review',
-      body: `${invoiceNumber} from ${supplierName} · ₹${grandTotal.toFixed(2)} — awaiting your approval.`,
+      body: `${invoiceNumber} from ${supplierName} · ₹${Math.round(grandTotal)} — awaiting your approval.`,
       ref_id: invoiceId,
       ref_label: invoiceNumber,
       meta: { supplierName, grandTotal },
@@ -303,7 +303,9 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
   },
 
   pushCreditSale: async ({ customerName, amount, billNo, branch, soldBy, dueDate }) => {
-    const amtFmt = amount.toLocaleString('en-IN', { minimumFractionDigits: 2 });
+    // AUDIT FIX (2026-09-05): "the payment should be round off there should
+    // not be any decimal points".
+    const amtFmt = Math.round(amount).toLocaleString('en-IN', { maximumFractionDigits: 0 });
     const shortBill = billNo.split('-').pop() ?? billNo;
     const dueLine = dueDate
       ? ` · Due ${new Date(dueDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}`
@@ -391,7 +393,7 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
       const { error } = await supabase.from('admin_notifications').insert({
         type: 'stock_movement',
         title: `${label} Posted – ${branch}`,
-        body: `${postedBy} posted ${items.length} item${items.length > 1 ? 's' : ''} as ${label} · ₹${totalValue.toFixed(2)} · ${lines} · Reason: ${reason}`,
+        body: `${postedBy} posted ${items.length} item${items.length > 1 ? 's' : ''} as ${label} · ₹${Math.round(totalValue)} · ${lines} · Reason: ${reason}`,
         ref_label: `${branch} ${label}`,
         meta: { branch, logType, items, totalValue, reason, postedBy },
         recipient_role: recipientRole,

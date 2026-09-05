@@ -164,7 +164,7 @@ function NotificationDetailModal({
             <span className="font-bold">Supplier:</span> {String(m.supplierName ?? '—')}
           </p>
           <p className="text-sm font-body text-amber-900">
-            <span className="font-bold">Amount:</span> ₹{Number(m.grandTotal ?? 0).toFixed(2)}
+            <span className="font-bold">Amount:</span> ₹{Math.round(Number(m.grandTotal ?? 0))}
           </p>
           <p className="text-xs font-body text-amber-700 mt-1">
             Go to the <span className="font-bold">Store Invoices</span> tab to review and approve or reject this invoice.
@@ -212,7 +212,7 @@ function NotificationDetailModal({
             <p className="text-sm text-orange-950"><span className="font-bold">Reason:</span> {String(m.editReason ?? '—')}</p>
             <p className="text-sm text-orange-950"><span className="font-bold">Edited by:</span> {String(m.editedBy ?? '—')}</p>
             {m.resyncedBy ? <p className="text-sm text-orange-950"><span className="font-bold">Re-synced by:</span> {String(m.resyncedBy)}</p> : null}
-            <p className="text-sm text-orange-950"><span className="font-bold">Total:</span> ₹{Number(m.oldTotal ?? 0).toFixed(2)} → ₹{Number(m.newTotal ?? 0).toFixed(2)}</p>
+            <p className="text-sm text-orange-950"><span className="font-bold">Total:</span> ₹{Math.round(Number(m.oldTotal ?? 0))} → ₹{Math.round(Number(m.newTotal ?? 0))}</p>
           </div>
           {changes.length > 0 && (
             <div className="rounded-xl border border-orange-200 overflow-hidden">
@@ -362,7 +362,7 @@ function NotificationDetailModal({
               <div>
                 <p className="text-[10px] font-body text-red-600 uppercase font-bold">Amount</p>
                 <p className="text-sm font-body font-bold text-red-700 tabular-nums">
-                  ₹{amount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                  ₹{Math.round(amount).toLocaleString('en-IN', { maximumFractionDigits: 0 })}
                 </p>
               </div>
               <div>

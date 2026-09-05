@@ -60,7 +60,9 @@ const sameItem = (a: string, b: string) => a.trim().toLowerCase() === b.trim().t
 const businessDate = (value?: string | null) => value ? new Intl.DateTimeFormat('en-CA', {
   timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit',
 }).format(new Date(value)) : '';
-const money = (value: number) => `₹${Number(value || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+// AUDIT FIX (2026-09-05): "the payment should be round off there should not
+// be any decimal points".
+const money = (value: number) => `₹${Math.round(Number(value || 0)).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
 const qty = (value: number) => Number(value || 0).toLocaleString('en-IN', { maximumFractionDigits: 3 });
 const dateLabel = (value: string) => new Date(`${value}T00:00:00`).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
 

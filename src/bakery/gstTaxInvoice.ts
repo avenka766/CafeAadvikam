@@ -179,18 +179,18 @@ export function buildGstTaxInvoiceHtml(p: BuildGstTaxInvoiceParams): BuiltGstTax
         <td>${l.itemName}</td>
         <td class="c">${l.hsnCode || ''}</td>
         <td class="r">${l.qty} ${l.uom}</td>
-        <td class="r">${l.rate.toFixed(2)}</td>
+        <td class="r">${Math.round(l.rate)}</td>
         <td class="c">${l.uom}</td>
-        <td class="r">${cl.amount.toFixed(2)}</td>
+        <td class="r">${Math.round(cl.amount)}</td>
       </tr>`;
   }).join('');
 
   const taxRowsHtml = gstSummaryRows.map(r => supplyType === 'intra'
     ? `
-    <tr><td></td><td class="r b">Output CGST ${r.gstPct / 2}%</td><td></td><td></td><td class="r">${(r.gstPct / 2).toFixed(2)}</td><td class="c">%</td><td class="r">${r.cgstAmt.toFixed(2)}</td></tr>
-    <tr><td></td><td class="r b">Output SGST ${r.gstPct / 2}%</td><td></td><td></td><td class="r">${(r.gstPct / 2).toFixed(2)}</td><td class="c">%</td><td class="r">${r.sgstAmt.toFixed(2)}</td></tr>`
+    <tr><td></td><td class="r b">Output CGST ${r.gstPct / 2}%</td><td></td><td></td><td class="r">${(r.gstPct / 2).toFixed(2)}</td><td class="c">%</td><td class="r">${Math.round(r.cgstAmt)}</td></tr>
+    <tr><td></td><td class="r b">Output SGST ${r.gstPct / 2}%</td><td></td><td></td><td class="r">${(r.gstPct / 2).toFixed(2)}</td><td class="c">%</td><td class="r">${Math.round(r.sgstAmt)}</td></tr>`
     : `
-    <tr><td></td><td class="r b">Output IGST ${r.gstPct}%</td><td></td><td></td><td class="r">${r.gstPct.toFixed(2)}</td><td class="c">%</td><td class="r">${r.igstAmt.toFixed(2)}</td></tr>`
+    <tr><td></td><td class="r b">Output IGST ${r.gstPct}%</td><td></td><td></td><td class="r">${r.gstPct.toFixed(2)}</td><td class="c">%</td><td class="r">${Math.round(r.igstAmt)}</td></tr>`
   ).join('');
 
   // AUDIT FIX (2026-09-03): this summary table was hardcoded to only ever
@@ -205,19 +205,19 @@ export function buildGstTaxInvoiceHtml(p: BuildGstTaxInvoiceParams): BuiltGstTax
   const gstSummaryHtml = gstSummaryRows.map(r => supplyType === 'intra' ? `
     <tr>
       <td class="c">${r.hsnCode}</td>
-      <td class="r">${r.taxableValue.toFixed(2)}</td>
+      <td class="r">${Math.round(r.taxableValue)}</td>
       <td class="c">${(r.gstPct / 2).toFixed(2)}%</td>
-      <td class="r">${r.cgstAmt.toFixed(2)}</td>
+      <td class="r">${Math.round(r.cgstAmt)}</td>
       <td class="c">${(r.gstPct / 2).toFixed(2)}%</td>
-      <td class="r">${r.sgstAmt.toFixed(2)}</td>
-      <td class="r">${(r.cgstAmt + r.sgstAmt + r.igstAmt).toFixed(2)}</td>
+      <td class="r">${Math.round(r.sgstAmt)}</td>
+      <td class="r">${Math.round(r.cgstAmt + r.sgstAmt + r.igstAmt)}</td>
     </tr>` : `
     <tr>
       <td class="c">${r.hsnCode}</td>
-      <td class="r">${r.taxableValue.toFixed(2)}</td>
+      <td class="r">${Math.round(r.taxableValue)}</td>
       <td class="c">${r.gstPct.toFixed(2)}%</td>
-      <td class="r">${r.igstAmt.toFixed(2)}</td>
-      <td class="r">${(r.cgstAmt + r.sgstAmt + r.igstAmt).toFixed(2)}</td>
+      <td class="r">${Math.round(r.igstAmt)}</td>
+      <td class="r">${Math.round(r.cgstAmt + r.sgstAmt + r.igstAmt)}</td>
     </tr>`).join('');
 
   const optionalHeaderRow = (label: string, value: string | undefined) => (value ?? '').trim()
@@ -292,7 +292,7 @@ export function buildGstTaxInvoiceHtml(p: BuildGstTaxInvoiceParams): BuiltGstTax
           </thead>
           <tbody>
             ${rowsHtml}
-            <tr><td></td><td></td><td></td><td></td><td></td><td></td><td class="r">${beforeTaxValue.toFixed(2)}</td></tr>
+            <tr><td></td><td></td><td></td><td></td><td></td><td></td><td class="r">${Math.round(beforeTaxValue)}</td></tr>
             ${taxRowsHtml}
           </tbody>
           <tfoot>
@@ -300,7 +300,7 @@ export function buildGstTaxInvoiceHtml(p: BuildGstTaxInvoiceParams): BuiltGstTax
               <td colspan="3" class="c">Total</td>
               <td class="r">${validLines.reduce((s, l) => s + l.qty, 0)}</td>
               <td></td><td></td>
-              <td class="r">Rs. ${totalAmount.toFixed(2)}</td>
+              <td class="r">Rs. ${Math.round(totalAmount)}</td>
             </tr>
           </tfoot>
         </table>
@@ -336,16 +336,16 @@ export function buildGstTaxInvoiceHtml(p: BuildGstTaxInvoiceParams): BuiltGstTax
             ${supplyType === 'intra' ? `
             <tr class="b">
               <td class="c">Total</td>
-              <td class="r">${beforeTaxValue.toFixed(2)}</td>
-              <td></td><td class="r">${totalCgst.toFixed(2)}</td>
-              <td></td><td class="r">${totalSgst.toFixed(2)}</td>
-              <td class="r">${gstSummaryTotalTax.toFixed(2)}</td>
+              <td class="r">${Math.round(beforeTaxValue)}</td>
+              <td></td><td class="r">${Math.round(totalCgst)}</td>
+              <td></td><td class="r">${Math.round(totalSgst)}</td>
+              <td class="r">${Math.round(gstSummaryTotalTax)}</td>
             </tr>` : `
             <tr class="b">
               <td class="c">Total</td>
-              <td class="r">${beforeTaxValue.toFixed(2)}</td>
-              <td></td><td class="r">${totalIgst.toFixed(2)}</td>
-              <td class="r">${gstSummaryTotalTax.toFixed(2)}</td>
+              <td class="r">${Math.round(beforeTaxValue)}</td>
+              <td></td><td class="r">${Math.round(totalIgst)}</td>
+              <td class="r">${Math.round(gstSummaryTotalTax)}</td>
             </tr>`}
           </tfoot>
         </table>

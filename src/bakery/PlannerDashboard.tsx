@@ -41,7 +41,7 @@ import { useBranchStore } from '@/branch/branchStore';
 import { useNotificationStore } from '@/bakery/notificationStore';
 import { printWasteLogBatch } from '@/pages/AdminSNBDashboard';
 import {
-  businessFor, defaultDiscountPct, saveDispatchInvoice, printDispatchInvoice, listDispatchInvoices, markDispatchInvoicePaid, updateDispatchInvoice,
+  businessFor, defaultDiscountPct, saveDispatchInvoice, printDispatchInvoice, listDispatchInvoices, markDispatchInvoicePaid, updateDispatchInvoice, cancelDispatchInvoice,
   mapWalkinBill, walkinBillToInvoiceRecord,
   type DispatchInvoiceRecord, type DispatchInvoiceItem, type WalkinBillRow, type WalkinBillItem,
 } from './dispatchInvoice';
@@ -2683,7 +2683,9 @@ function HosurUnifiedSection({ embedded = false }: { embedded?: boolean } = {}) 
 // printable invoice with a per-branch editable discount rate. Only SNB's
 // prices aren't pre-discounted, so it defaults to 15%; VRSNB and Hosur
 // (whose shop price lists are already discounted) default to 0%.
-const invoiceMoney = (v: number) => 'Rs. ' + (Math.round(v * 100) / 100).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+// AUDIT FIX (2026-09-05): "the payment should be round off there should not
+// be any decimal points".
+const invoiceMoney = (v: number) => 'Rs. ' + Math.round(v).toLocaleString('en-IN', { maximumFractionDigits: 0 });
 const normalizeItemName = (s: string) => s.trim().toLowerCase();
 const kolkataDateKey = (iso: string) =>
   new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(iso));
@@ -4382,7 +4384,7 @@ function GstInvoiceTab() {
               <input type="number" min="0" value={l.rate} onChange={e => patchLine(l.id, { rate: e.target.value })} placeholder="Rate" className="col-span-2 h-10 rounded-lg border border-border px-2 text-xs font-bold" />
               <input type="number" min="0" max="100" value={l.gstPct} onChange={e => patchLine(l.id, { gstPct: e.target.value })} placeholder="GST %" title="GST %" className="col-span-2 h-10 rounded-lg border border-primary/40 bg-primary/5 px-2 text-xs font-bold" />
               <button type="button" onClick={() => removeLine(l.id)} className="col-span-1 flex items-center justify-center rounded-lg text-muted-foreground hover:bg-red-50 hover:text-red-600"><X className="size-4" /></button>
-              <p className="col-span-12 text-right text-[11px] font-bold text-muted-foreground">Amount ₹{l.amount.toFixed(2)} + GST ₹{(l.cgstAmt + l.sgstAmt + l.igstAmt).toFixed(2)} = ₹{l.total.toFixed(2)}</p>
+              <p className="col-span-12 text-right text-[11px] font-bold text-muted-foreground">Amount ₹{Math.round(l.amount)} + GST ₹{Math.round(l.cgstAmt + l.sgstAmt + l.igstAmt)} = ₹{Math.round(l.total)}</p>
             </div>
           ))}
           <button type="button" onClick={addLine} className="rounded-xl border border-dashed border-border px-3 py-2 text-xs font-bold text-muted-foreground hover:bg-muted">+ Add item</button>
@@ -4406,10 +4408,10 @@ function GstInvoiceTab() {
       </div>
 
       <div className="rounded-xl border border-border bg-muted/30 p-3 text-right text-sm font-bold space-y-0.5">
-        <p>Before Tax Value: ₹{beforeTaxValue.toFixed(2)}</p>
-        <p>Total GST: ₹{totalGst.toFixed(2)}</p>
-        <p>Round Off: ₹{roundOff.toFixed(2)}</p>
-        <p className="text-lg">Total Amount: ₹{totalAmount.toFixed(2)}</p>
+        <p>Before Tax Value: ₹{Math.round(beforeTaxValue)}</p>
+        <p>Total GST: ₹{Math.round(totalGst)}</p>
+        <p>Round Off: ₹{Math.round(roundOff)}</p>
+        <p className="text-lg">Total Amount: ₹{Math.round(totalAmount)}</p>
       </div>
 
       <button onClick={() => void generateInvoice()} disabled={generating} className="flex w-full items-center justify-center gap-2 rounded-xl bg-purple-600 py-3 text-sm font-black text-white hover:bg-purple-700 disabled:opacity-60">
@@ -4666,14 +4668,22 @@ function BillingTab() {
       const { data: salesNo, error: salesNoError } = await supabase.rpc('next_sales_bill_number');
       if (salesNoError || !salesNo) throw new Error(salesNoError?.message || 'Could not generate the next bill number. Please try again.');
       const billNo = String(salesNo);
+      // BUG FIX (2026-09-05): "even if they check the tax invoice box the
+      // GST is not getting calculated for the items" — see the matching fix
+      // in DispatchReviewModal.confirm() for the full explanation.
       const items: WalkinBillItem[] = [
-        ...cartLines.map(l => ({ itemName: l.itemName, unit: l.unit, price: l.price, quantity: l.quantity, lineTotal: Math.round(l.price * l.quantity * 100) / 100 })),
+        ...cartLines.map(l => ({ itemName: l.itemName, unit: l.unit, price: l.price, quantity: l.quantity, lineTotal: Math.round(l.price * l.quantity * 100) / 100, ...(gstEnabled ? { hsnCode: gstLineFor(l.itemName).hsnCode, gstPct: Math.max(0, Number(gstLineFor(l.itemName).gstPct) || 0) } : {}) })),
         ...charges.map(c => ({ itemName: c.name, unit: 'charge', price: Number(c.amount) || 0, quantity: 1, lineTotal: Math.round((Number(c.amount) || 0) * 100) / 100 })),
       ];
       const { data, error: insertError } = await supabase.from('bakery_walkin_bills').insert({
         bill_no: billNo, items, subtotal, discount_type: discountType, discount_value: Number(discountValue) || 0,
         discount_amount: discountAmount, total, payment_mode: paymentMode, cashier_name: currentUser?.displayName || 'Planner',
         customer_name: customerName.trim() || 'Walk-in Customer', customer_mobile: customerMobile.trim() || null,
+        // FEATURE (2026-09-05): only checking the GST Tax Invoice box below
+        // should make this bill's own printed copy title itself "TAX
+        // INVOICE" — see DispatchInvoiceRecord.isGstInvoice.
+        is_gst_invoice: gstEnabled,
+        gst_supply_type: gstSupplyType,
       }).select().single();
       if (insertError || !data) throw new Error('Failed to save the bill — please try again.');
       const bill = mapWalkinBill(data as Record<string, unknown>);
@@ -4773,8 +4783,14 @@ function BillingTab() {
 
   const cancelBill = async (bill: WalkinBillRow) => {
     if (!window.confirm(`Cancel bill ${bill.billNo}? This can't be undone.`)) return;
-    const { error: updateError } = await supabase.from('bakery_walkin_bills').update({ status: 'cancelled', cancelled_at: new Date().toISOString() }).eq('id', bill.id);
-    if (!updateError) {
+    // AUDIT FIX (2026-09-06): plain update with no status guard — two
+    // concurrent cancels of the same bill (a double-click, or two staff on
+    // different devices) could both pass, both run the stock-reversal loop
+    // below, and double-credit the Closing Stock pool. `.neq('status',
+    // 'cancelled')` makes this a compare-and-swap: only the request that
+    // actually flips the row proceeds to reverse stock.
+    const { data: claimed, error: updateError } = await supabase.from('bakery_walkin_bills').update({ status: 'cancelled', cancelled_at: new Date().toISOString() }).eq('id', bill.id).neq('status', 'cancelled').select('id');
+    if (!updateError && claimed && claimed.length > 0) {
       // BUG FIX: cancelling a bill only ever flipped its status — the
       // stock deduction saveBill made for every line item (via
       // recordLeftoverMovement) was never reversed, so the Closing Stock
@@ -4800,6 +4816,18 @@ function BillingTab() {
         } catch (err) {
           console.error('[BillingTab] Closing Stock pool reversal on cancel threw:', err);
         }
+      }
+      // FEATURE (2026-09-06): "recorded in the report" — same audit trail
+      // cancelDispatchInvoice now writes for SNB/VRSNB/Hosur/Custom cancels,
+      // so a cancelled Sales bill shows up in Admin's Activity Log too.
+      if (currentUser) {
+        const { useActivityLogStore } = await import('./activityLogStore');
+        void useActivityLogStore.getState().log({
+          staffId: currentUser.id, staffName: currentUser.displayName, role: currentUser.role,
+          action: 'Cancelled Dispatch Invoice',
+          detail: `Bill ${bill.billNo} (Sales) cancelled — ${bill.items.length} item(s), Rs. ${Math.round(bill.total)} returned to stock`,
+          branch: 'SNB',
+        });
       }
       loadRecent();
     }
@@ -7099,6 +7127,32 @@ function RecentDispatchInvoices({ scope, hosurShopId, title, customSalesOnly }: 
   // entry point into full bill editing (delete/add items, change price/
   // qty/unit/name/discount) — see EditDispatchInvoiceModal.
   const [editingInvoice, setEditingInvoice] = useState<DispatchInvoiceRecord | null>(null);
+  // FEATURE (2026-09-06): "add a cancel button — once confirmed all items
+  // should return to stock and the invoice should be cancelled." Guarded by
+  // a ref (not just state) so a fast double-click can't fire
+  // cancelDispatchInvoice twice for the same invoice — it reverses real
+  // stock, a double-run would double-restock.
+  const [cancellingId, setCancellingId] = useState<string | null>(null);
+  const cancelInFlightRef = useRef(false);
+  const handleCancel = async (inv: DispatchInvoiceRecord) => {
+    if (cancelInFlightRef.current) return;
+    if (!window.confirm(`Cancel invoice ${inv.invoiceNo}? All ${inv.items.length} item(s) will be returned to stock and this can't be undone.`)) return;
+    cancelInFlightRef.current = true;
+    setCancellingId(inv.id);
+    try {
+      const result = await cancelDispatchInvoice({ invoiceId: inv.id });
+      if ('error' in result) {
+        window.alert(result.error);
+      } else {
+        void load();
+      }
+    } catch (err) {
+      window.alert(err instanceof Error ? err.message : 'Failed to cancel the invoice.');
+    } finally {
+      cancelInFlightRef.current = false;
+      setCancellingId(null);
+    }
+  };
 
   if (loading && invoices === null) return <p className="text-[11px] font-bold text-muted-foreground">Loading recent invoices…</p>;
   if (error) return <p className="text-[11px] font-bold text-red-700">{error}</p>;
@@ -7112,16 +7166,24 @@ function RecentDispatchInvoices({ scope, hosurShopId, title, customSalesOnly }: 
       </div>
       <div className="mt-2 max-h-64 space-y-1.5 overflow-auto pr-1">
         {invoices.map(inv => (
-          <div key={inv.id} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border/70 px-2.5 py-1.5">
+          <div key={inv.id} className={cn('flex flex-wrap items-center justify-between gap-2 rounded-xl border px-2.5 py-1.5', inv.status === 'cancelled' ? 'border-red-200 bg-red-50/60' : 'border-border/70')}>
             <div className="min-w-0">
-              <p className="truncate text-[11px] font-black text-foreground">{inv.invoiceNo}{inv.hosurShopName ? ` — ${inv.hosurShopName}` : ''}</p>
-              <p className="text-[10px] font-bold text-muted-foreground">{new Date(inv.createdAt).toLocaleString('en-IN')} · Rs. {inv.total.toFixed(2)}</p>
+              <p className="truncate text-[11px] font-black text-foreground">
+                {inv.invoiceNo}{inv.hosurShopName ? ` — ${inv.hosurShopName}` : ''}
+                {inv.status === 'cancelled' && <span className="ml-1.5 rounded bg-red-600 px-1.5 py-0.5 text-[9px] font-black uppercase text-white">Cancelled</span>}
+              </p>
+              <p className="text-[10px] font-bold text-muted-foreground">{new Date(inv.createdAt).toLocaleString('en-IN')} · Rs. {Math.round(inv.total)}</p>
             </div>
             <div className="flex gap-1.5">
               <button onClick={() => printDispatchInvoice(inv, 'thermal')} className="flex items-center gap-1 rounded-lg bg-muted px-2 py-1 text-[10px] font-bold text-muted-foreground hover:bg-slate-200"><Printer className="size-3" /> Thermal</button>
               <button onClick={() => printDispatchInvoice(inv, 'a4')} className="flex items-center gap-1 rounded-lg bg-muted px-2 py-1 text-[10px] font-bold text-muted-foreground hover:bg-slate-200"><Printer className="size-3" /> A4</button>
               {inv.status !== 'cancelled' && (
-                <button onClick={() => setEditingInvoice(inv)} className="flex items-center gap-1 rounded-lg border border-amber-300 bg-amber-50 px-2 py-1 text-[10px] font-black text-amber-800 hover:bg-amber-100"><Pencil className="size-3" /> Edit</button>
+                <>
+                  <button onClick={() => setEditingInvoice(inv)} className="flex items-center gap-1 rounded-lg border border-amber-300 bg-amber-50 px-2 py-1 text-[10px] font-black text-amber-800 hover:bg-amber-100"><Pencil className="size-3" /> Edit</button>
+                  <button onClick={() => void handleCancel(inv)} disabled={cancellingId === inv.id} className="flex items-center gap-1 rounded-lg border border-destructive/30 bg-destructive/10 px-2 py-1 text-[10px] font-black text-destructive hover:bg-destructive/20 disabled:opacity-50">
+                    {cancellingId === inv.id ? <Loader2 className="size-3 animate-spin" /> : <Trash2 className="size-3" />} Cancel
+                  </button>
+                </>
               )}
             </div>
           </div>
@@ -7313,8 +7375,8 @@ function EditDispatchInvoiceModal({ invoice, onClose, onSaved }: {
             />
           </label>
           <div className="text-right text-xs font-bold text-muted-foreground">
-            Subtotal Rs. {subtotal.toFixed(2)} &nbsp;·&nbsp; Discount Rs. {discountAmount.toFixed(2)} &nbsp;·&nbsp;
-            <span className="text-sm font-black text-foreground"> Total Rs. {total.toFixed(2)}</span>
+            Subtotal Rs. {Math.round(subtotal)} &nbsp;·&nbsp; Discount Rs. {Math.round(discountAmount)} &nbsp;·&nbsp;
+            <span className="text-sm font-black text-foreground"> Total Rs. {Math.round(total)}</span>
           </div>
         </div>
 
@@ -9357,9 +9419,25 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
         customerPhone: customer?.phone ?? null,
         customerAddress: customer?.address ?? null,
         dispatchedBy,
-        items: [...invoiceLines, ...chargeLines],
+        // BUG FIX (2026-09-05): "even if they check the tax invoice box the
+        // GST is not getting calculated for the items" — hsnCode/gstPct were
+        // only ever attached to the SEPARATE gstLines array built below for
+        // the standalone "GST Tax Invoice" document; this invoice's own
+        // items (what renderDispatchInvoiceHtml actually prints, and whose
+        // title the checkbox controls) never carried them, so it had nothing
+        // to calculate tax from. Attached here too whenever GST is enabled.
+        items: (gstInvoiceOffered && gstEnabled
+          ? [...invoiceLines, ...chargeLines].map(l => ({ ...l, hsnCode: gstLineFor(l.itemName).hsnCode, gstPct: Math.max(0, Number(gstLineFor(l.itemName).gstPct) || 0) }))
+          : [...invoiceLines, ...chargeLines]),
         discountPct,
         dispatchEntryIds: actions.map(a => ({ orderId: a.orderId, dispatchEntryId: a.dispatchEntryId })),
+        // FEATURE (2026-09-05): "only if we check the invoice box should the
+        // bill be called tax invoice, or else just invoice" — see
+        // DispatchInvoiceRecord.isGstInvoice. gstInvoiceOffered is false for
+        // SNB/VRSNB (no checkbox shown, gstEnabled stays false), so those
+        // print as a plain INVOICE exactly as asked.
+        isGstInvoice: gstInvoiceOffered && gstEnabled,
+        gstSupplyType,
       });
       setResult(record);
       onDone();
@@ -9411,6 +9489,10 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
             payment: { paymentType: 'credit', dueDate },
             userName: dispatchedBy,
             requireCounterOpen: false,
+            // FEATURE (2026-09-05): the real GST invoice number this exact
+            // batch was just dispatched under (record, from saveDispatchInvoice
+            // above) — see dispatchReceiveAndBill's invoiceNo comment.
+            invoiceNo: record.invoiceNo,
           });
           setHosurBillOutcome({ ok: true, billNo: outcome.billNo, whatsappStatus: outcome.whatsappStatus, whatsappError: outcome.whatsappError });
         } catch (billErr) {
@@ -9548,7 +9630,7 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
                             className={cn('w-20 rounded-lg border px-2 py-1 text-right', missing ? 'border-red-400 bg-white' : 'border-border')}
                           />
                         </td>
-                        <td className="px-3 py-2 text-right font-black text-foreground">{(price ?? 0) > 0 ? `Rs. ${(d.quantity * (price ?? 0)).toFixed(2)}` : '—'}</td>
+                        <td className="px-3 py-2 text-right font-black text-foreground">{(price ?? 0) > 0 ? `Rs. ${Math.round(d.quantity * (price ?? 0))}` : '—'}</td>
                       </tr>
                     );
                   })}
@@ -9563,7 +9645,7 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
                   <div key={idx} className="flex items-center justify-between rounded-lg bg-card px-2.5 py-1.5 text-xs font-bold">
                     <span>{c.name}</span>
                     <span className="flex items-center gap-2">
-                      Rs. {c.amount.toFixed(2)}
+                      Rs. {Math.round(c.amount)}
                       <button type="button" onClick={() => removeCharge(idx)} className="text-destructive hover:underline">Remove</button>
                     </span>
                   </div>
@@ -9638,8 +9720,8 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
                 />
               </label>
               <div className="text-right text-xs font-bold text-muted-foreground">
-                Subtotal Rs. {subtotal.toFixed(2)} &nbsp;·&nbsp; Discount Rs. {discountAmount.toFixed(2)} &nbsp;·&nbsp;
-                <span className="text-sm font-black text-foreground"> Total Rs. {total.toFixed(2)}</span>
+                Subtotal Rs. {Math.round(subtotal)} &nbsp;·&nbsp; Discount Rs. {Math.round(discountAmount)} &nbsp;·&nbsp;
+                <span className="text-sm font-black text-foreground"> Total Rs. {Math.round(total)}</span>
               </div>
             </div>
 
@@ -9656,7 +9738,7 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
           </>
         ) : (
           <>
-            <p className="text-sm font-black text-teal-700">Dispatched — Invoice {result.invoiceNo} created (Rs. {result.total.toFixed(2)}).</p>
+            <p className="text-sm font-black text-teal-700">Dispatched — Invoice {result.invoiceNo} created (Rs. {Math.round(result.total)}).</p>
             <p className="mt-1 text-[11px] font-bold text-muted-foreground">Stored under this batch — reprint any time from the Invoice tab.</p>
             {scope === 'Hosur' && hosurShop && (
               <div className="mt-3 rounded-xl border p-3 text-[11px] font-bold">

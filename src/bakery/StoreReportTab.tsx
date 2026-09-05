@@ -89,8 +89,10 @@ function dateRange(period: PeriodKey, customFrom: string, customTo: string) {
   };
 }
 
+// AUDIT FIX (2026-09-05): "the payment should be round off there should not
+// be any decimal points".
 function money(value: number) {
-  return `Rs ${value.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  return `Rs ${Math.round(value).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
 }
 
 function prettyDate(value: string) {
@@ -636,7 +638,7 @@ export default function StoreReportTab() {
                     key={r.id}
                     title={r.itemName}
                     right={r.price !== null ? money(r.value) : 'No price'}
-                    lines={[`${r.source} · ${r.quantity} ${r.unit}${r.price !== null ? ` @ Rs ${r.price.toFixed(2)}` : ''}`, prettyDate(r.date)]}
+                    lines={[`${r.source} · ${r.quantity} ${r.unit}${r.price !== null ? ` @ Rs ${Math.round(r.price)}` : ''}`, prettyDate(r.date)]}
                   />
                 ))}
               </div>
@@ -807,7 +809,7 @@ function CategoryItemCard({ item }: { item: CategoryItemRow }) {
                       {m.unresolvedUnit && <span className="ml-1.5 text-[9px] font-bold text-destructive align-middle" title="This recipe's unit and the stock item's unit are different kinds of measurement (e.g. weight vs volume) — fix the recipe or the stock item's unit to price this correctly.">⚠ unit mismatch</span>}
                     </td>
                     <td className="px-2.5 py-1.5 text-right text-foreground">{m.quantity} {m.unit}{m.unresolvedUnit ? ' (recipe unit)' : ''}</td>
-                    <td className="px-2.5 py-1.5 text-right text-muted-foreground">{m.price !== null ? `Rs ${m.price.toFixed(2)}` : '—'}</td>
+                    <td className="px-2.5 py-1.5 text-right text-muted-foreground">{m.price !== null ? `Rs ${Math.round(m.price)}` : '—'}</td>
                     <td className="px-2.5 py-1.5 text-right font-bold text-foreground">{m.price !== null ? money(m.value) : '—'}</td>
                   </tr>
                 ))}

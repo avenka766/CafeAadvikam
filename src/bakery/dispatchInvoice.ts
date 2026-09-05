@@ -34,6 +34,18 @@ export interface DispatchInvoiceItem {
   // entry and dispatch_log entry backing it — is tagged isExtra separately,
   // same as every other extra-item path in the app).
   isExtra?: boolean;
+  // FEATURE (2026-09-05): "even if they check the tax invoice box the GST
+  // is not getting calculated" — root cause: this printed invoice (the one
+  // the checkbox's title actually appears on) never had a tax breakdown at
+  // all; the real CGST/SGST/IGST math only ever showed up on a completely
+  // separate "GST Tax Invoice (A4)" document the client may never open.
+  // Carrying each line's own HSN/GST% here lets renderDispatchInvoiceHtml
+  // compute and print the same tax breakdown directly on THIS invoice
+  // whenever isGstInvoice is true — set only by callers offering the GST
+  // checkbox (see gstLineFor in PlannerDashboard.tsx); undefined/0 for
+  // every non-GST dispatch, same as before.
+  hsnCode?: string;
+  gstPct?: number;
 }
 
 // FEATURE (2026-09-03): 'Cake' added as a genuinely separate scope — cake
@@ -146,6 +158,27 @@ export interface DispatchInvoiceRecord {
   // function's comment for why this lookup is the safest way to edit a bill
   // without duplicating submitDispatch/deleteDispatchEntry's stock logic.
   dispatchEntryIds: { orderId: string; dispatchEntryId: string }[];
+  // FEATURE (2026-09-05): "only if we check the invoice box should the bill
+  // be called tax invoice, or else just invoice — for SNB, VRSNB and all"
+  // — this printed document (renderDispatchInvoiceHtml below) previously
+  // always titled itself "TAX INVOICE" regardless of whether the separate
+  // GST Tax Invoice checkbox (gstEnabled in PlannerDashboard.tsx) was ever
+  // checked for this transaction — misleading for the vast majority of
+  // dispatches (SNB/VRSNB/Cake/most Hosur/Custom) that never check it and
+  // carry no real GST breakdown. Captured once at save time from whichever
+  // caller's own checkbox state applies; defaults false for every scope
+  // that never offers the checkbox at all.
+  isGstInvoice: boolean;
+  // 'intra' -> CGST+SGST split, 'inter' -> IGST — same field the separate
+  // GST Tax Invoice document already uses (gstSupplyType). Only meaningful
+  // when isGstInvoice is true; defaults 'intra'.
+  gstSupplyType: 'intra' | 'inter';
+  // FEATURE (2026-09-06): "add a cancel button ... invoice should be
+  // cancelled" — set only when status === 'cancelled', by cancelDispatchInvoice
+  // below. null for every invoice that's never been cancelled.
+  cancelledBy: string | null;
+  cancelledAt: string | null;
+  cancelledReason: string | null;
 }
 
 export async function saveDispatchInvoice(input: {
@@ -171,6 +204,9 @@ export async function saveDispatchInvoice(input: {
   // real Dispatch tab flow) keeps generating its own branch-scoped number
   // exactly as before.
   invoiceNo?: string;
+  // See DispatchInvoiceRecord.isGstInvoice — defaults false (plain "INVOICE").
+  isGstInvoice?: boolean;
+  gstSupplyType?: 'intra' | 'inter';
 }): Promise<DispatchInvoiceRecord> {
   // AUDIT FIX (2026-09-02): discountPct is planner-entered and, until now, was
   // trusted verbatim with no bound in either direction — a stray value (typo,
@@ -208,6 +244,8 @@ export async function saveDispatchInvoice(input: {
     status,
     paid_at: status === 'paid' ? new Date().toISOString() : null,
     notes: input.notes ?? null,
+    is_gst_invoice: input.isGstInvoice ?? false,
+    gst_supply_type: input.gstSupplyType ?? 'intra',
   }).select('id, created_at, paid_at').single();
   if (error) throw error;
 
@@ -233,6 +271,11 @@ export async function saveDispatchInvoice(input: {
     notes: input.notes ?? null,
     createdAt: data.created_at as string,
     dispatchEntryIds: input.dispatchEntryIds ?? [],
+    isGstInvoice: input.isGstInvoice ?? false,
+    gstSupplyType: input.gstSupplyType ?? 'intra',
+    cancelledBy: null,
+    cancelledAt: null,
+    cancelledReason: null,
   };
 }
 
@@ -275,12 +318,16 @@ export async function markDispatchInvoicePaid(record: DispatchInvoiceRecord, rec
 // (2026-09-03, previously PlannerDashboard.tsx-local) so Admin's Dispatch
 // Details tab can render/print Sales rows through the identical invoice
 // template without importing that whole page module.
-export interface WalkinBillItem { itemName: string; unit: string; price: number; quantity: number; lineTotal: number }
+export interface WalkinBillItem { itemName: string; unit: string; price: number; quantity: number; lineTotal: number; hsnCode?: string; gstPct?: number }
 export interface WalkinBillRow {
   id: string; billNo: string; items: WalkinBillItem[]; subtotal: number;
   discountType: 'none' | 'percent' | 'amount'; discountValue: number; discountAmount: number; total: number;
   paymentMode: string; cashierName: string | null; status: 'active' | 'cancelled'; createdAt: string;
   customerName: string | null; customerMobile: string | null;
+  isGstInvoice: boolean;
+  gstSupplyType: 'intra' | 'inter';
+  cancelledAt: string | null;
+  cancelledReason: string | null;
 }
 
 export function mapWalkinBill(d: Record<string, unknown>): WalkinBillRow {
@@ -298,6 +345,10 @@ export function mapWalkinBill(d: Record<string, unknown>): WalkinBillRow {
     createdAt: d.created_at as string,
     customerName: (d.customer_name as string | null) ?? null,
     customerMobile: (d.customer_mobile as string | null) ?? null,
+    isGstInvoice: Boolean(d.is_gst_invoice),
+    gstSupplyType: (d.gst_supply_type as 'intra' | 'inter' | null) ?? 'intra',
+    cancelledAt: (d.cancelled_at as string | null) ?? null,
+    cancelledReason: (d.cancelled_reason as string | null) ?? null,
   };
 }
 
@@ -316,17 +367,26 @@ export function walkinBillToInvoiceRecord(bill: WalkinBillRow): DispatchInvoiceR
     customerPhone: bill.customerMobile,
     customerAddress: null,
     dispatchedBy: bill.cashierName || 'Planner',
-    items: bill.items.map(i => ({ itemName: i.itemName, unit: i.unit, quantity: i.quantity, unitPrice: i.price, lineTotal: i.lineTotal })),
+    items: bill.items.map(i => ({ itemName: i.itemName, unit: i.unit, quantity: i.quantity, unitPrice: i.price, lineTotal: i.lineTotal, hsnCode: i.hsnCode, gstPct: i.gstPct })),
     subtotal: bill.subtotal,
     discountPct: bill.discountType === 'percent' ? bill.discountValue : 0,
     discountAmount: bill.discountAmount,
     roundOff: 0,
     total: bill.total,
-    status: 'paid',
+    // BUG FIX (2026-09-06): this used to hardcode 'paid' regardless of the
+    // bill's real status — a cancelled Sales bill (see cancelBill in
+    // PlannerDashboard.tsx) would silently reprint as a normal paid invoice
+    // with no indication it had been cancelled at all.
+    status: bill.status === 'cancelled' ? 'cancelled' : 'paid',
     paidAt: bill.createdAt,
     notes: `Walk-in Bill · Payment: ${bill.paymentMode.toUpperCase()}`,
     createdAt: bill.createdAt,
     dispatchEntryIds: [], // not a real dispatch — nothing to trace back to
+    isGstInvoice: bill.isGstInvoice,
+    gstSupplyType: bill.gstSupplyType,
+    cancelledBy: null, // bakery_walkin_bills doesn't track who cancelled it
+    cancelledAt: bill.cancelledAt,
+    cancelledReason: bill.cancelledReason,
   };
 }
 
@@ -349,14 +409,74 @@ export function renderDispatchInvoiceHtml(record: DispatchInvoiceRecord, mode: '
     : `${esc(record.scope)} Branch`;
   const addressLine = record.customerName && record.customerAddress ? `<div class="row small"><span>${esc(record.customerAddress)}</span></div>` : '';
   const totalQty = record.items.reduce((s, i) => s + i.quantity, 0);
+
+  // BUG FIX (2026-09-05): "even if they check the tax invoice box the GST
+  // is not getting calculated for the items" — this invoice (the one whose
+  // title the checkbox actually controls) never computed or showed any tax
+  // at all; the real CGST/SGST/IGST math only ever lived on a completely
+  // separate "GST Tax Invoice" print button the client may never open.
+  // Treats each line's rate as tax-INCLUSIVE (extracts tax from within the
+  // already-charged, post-discount amount) rather than adding tax on top —
+  // record.total (what's actually billed/collected in the credit ledger)
+  // must stay exactly what it already is; GST here is a compliance
+  // breakdown of that same amount, not a second, larger total.
+  const isGst = record.isGstInvoice;
+  const discountMult = 1 - (record.discountPct || 0) / 100;
+  const gstLineCalc = isGst ? record.items.map((i) => {
+    const gstPct = Math.max(0, Number(i.gstPct) || 0);
+    const chargedAmount = Math.round(i.lineTotal * discountMult * 100) / 100;
+    const taxableValue = gstPct > 0 ? Math.round((chargedAmount / (1 + gstPct / 100)) * 100) / 100 : chargedAmount;
+    const taxAmount = Math.round((chargedAmount - taxableValue) * 100) / 100;
+    const cgstAmt = record.gstSupplyType === 'intra' ? Math.round((taxAmount / 2) * 100) / 100 : 0;
+    const sgstAmt = record.gstSupplyType === 'intra' ? Math.round((taxAmount - cgstAmt) * 100) / 100 : 0;
+    const igstAmt = record.gstSupplyType === 'inter' ? taxAmount : 0;
+    return { hsnCode: (i.hsnCode || '').trim(), gstPct, taxableValue, cgstAmt, sgstAmt, igstAmt, taxAmount };
+  }) : [];
+  const gstByRate = new Map<number, { taxableValue: number; cgstAmt: number; sgstAmt: number; igstAmt: number; hsnCodes: Set<string> }>();
+  gstLineCalc.forEach((l) => {
+    const row = gstByRate.get(l.gstPct) ?? { taxableValue: 0, cgstAmt: 0, sgstAmt: 0, igstAmt: 0, hsnCodes: new Set<string>() };
+    row.taxableValue += l.taxableValue; row.cgstAmt += l.cgstAmt; row.sgstAmt += l.sgstAmt; row.igstAmt += l.igstAmt;
+    if (l.hsnCode) row.hsnCodes.add(l.hsnCode);
+    gstByRate.set(l.gstPct, row);
+  });
+  const gstSummaryRows = Array.from(gstByRate.entries()).sort(([a], [b]) => a - b).map(([gstPct, row]) => ({
+    gstPct, taxableValue: row.taxableValue, cgstAmt: row.cgstAmt, sgstAmt: row.sgstAmt, igstAmt: row.igstAmt,
+    hsnCode: row.hsnCodes.size === 1 ? Array.from(row.hsnCodes)[0] : row.hsnCodes.size > 1 ? 'Multiple' : '-',
+  }));
+  const totalTax = Math.round(gstLineCalc.reduce((s, l) => s + l.taxAmount, 0) * 100) / 100;
+
   const rows = record.items.map((i, idx) => `
     <tr>
       <td>${idx + 1}</td>
       <td>${esc(i.itemName)}</td>
+      ${isGst ? `<td class="c">${esc(i.hsnCode || '—')}</td>` : ''}
       <td class="num">${i.quantity % 1 === 0 ? i.quantity : i.quantity.toFixed(3)}</td>
-      <td class="num">${i.unitPrice.toFixed(2)}</td>
-      <td class="num">${i.lineTotal.toFixed(2)}</td>
+      <td class="num">${Math.round(i.unitPrice)}</td>
+      <td class="num">${Math.round(i.lineTotal)}</td>
     </tr>`).join('');
+
+  const gstSummaryHtml = isGst && gstSummaryRows.length > 0 ? `
+    <table>
+      <thead><tr>
+        <th>HSN</th><th class="num">Taxable Value</th>
+        ${record.gstSupplyType === 'intra'
+          ? '<th class="num">CGST</th><th class="num">SGST</th>'
+          : '<th class="num">IGST</th>'}
+        <th class="num">Tax Amt</th>
+      </tr></thead>
+      <tbody>
+        ${gstSummaryRows.map((r) => `
+        <tr>
+          <td>${esc(r.hsnCode)} (${r.gstPct}%)</td>
+          <td class="num">${Math.round(r.taxableValue)}</td>
+          ${record.gstSupplyType === 'intra'
+            ? `<td class="num">${Math.round(r.cgstAmt)}</td><td class="num">${Math.round(r.sgstAmt)}</td>`
+            : `<td class="num">${Math.round(r.igstAmt)}</td>`}
+          <td class="num">${Math.round(r.cgstAmt + r.sgstAmt + r.igstAmt)}</td>
+        </tr>`).join('')}
+        <tr class="total-row"><td colspan="${record.gstSupplyType === 'intra' ? 4 : 3}">Total Tax (included above)</td><td class="num">${Math.round(totalTax)}</td></tr>
+      </tbody>
+    </table>` : '';
 
   const style = mode === 'thermal'
     ? `@page{size:80mm auto;margin:3mm}body{font-family:Arial,sans-serif;font-size:11px;color:#111;width:72mm}.brand{font-size:16px}.doc{font-size:13px}.summary{width:100%}`
@@ -379,26 +499,30 @@ export function renderDispatchInvoiceHtml(record: DispatchInvoiceRecord, mode: '
     .paybox{margin-top:10px;text-align:center}
     .paytitle{border-top:1px solid #111;border-bottom:1px solid #111;display:inline-block;min-width:64%;padding:2px 0}
     .footer{margin-top:12px;text-align:center;font-size:13px;font-weight:800}
+    .stamp-cancel{border:2px solid #b91c1c;color:#b91c1c;text-align:center;font-weight:900;font-size:14px;letter-spacing:1px;padding:4px 0;margin:6px 0}
   </style></head><body>
     <div class="c" style="font-weight:900;font-size:${mode === 'thermal' ? '16px' : '20px'}">${esc(business.name)}</div>
     <div class="c small">${business.lines.map(esc).join('<br/>')}</div>
     <div class="c small">GSTIN : ${esc(business.gstin)}${business.fssai ? ` &nbsp; FSSAI : ${esc(business.fssai)}` : ''}</div>
-    <div class="c doc" style="font-weight:900;margin:6px 0">TAX INVOICE${record.status === 'unpaid' ? ' — SAMPLE (AWAITING PAYMENT)' : ''}</div>
+    <div class="c doc" style="font-weight:900;margin:6px 0">${record.status === 'cancelled' ? 'CANCELLED INVOICE' : `${record.isGstInvoice ? 'TAX INVOICE' : 'INVOICE'}${record.status === 'unpaid' ? ' — SAMPLE (AWAITING PAYMENT)' : ''}`}</div>
+    ${record.status === 'cancelled' ? `<div class="stamp-cancel">CANCELLED${record.cancelledAt ? ` — ${esc(new Date(record.cancelledAt).toLocaleString('en-IN'))}` : ''}${record.cancelledBy ? ` by ${esc(record.cancelledBy)}` : ''}</div>` : ''}
     <div class="row"><span>Bill No : ${esc(record.invoiceNo)}</span><span>Date : ${esc(dateStr)}</span></div>
     <div class="row"><span>${customerLine}</span><span>Time : ${esc(timeStr)}</span></div>
     ${addressLine}
     <div class="dash"></div>
     <table>
-      <thead><tr><th>Sn</th><th>Item Name</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">Amount</th></tr></thead>
+      <thead><tr><th>Sn</th><th>Item Name</th>${isGst ? '<th>HSN</th>' : ''}<th class="num">Qty</th><th class="num">Rate</th><th class="num">Amount</th></tr></thead>
       <tbody>
         ${rows}
-        <tr class="total-row"><td></td><td>Total</td><td class="num">${totalQty % 1 === 0 ? totalQty : totalQty.toFixed(3)}</td><td></td><td class="num">${record.subtotal.toFixed(2)}</td></tr>
+        <tr class="total-row"><td></td><td>Total</td>${isGst ? '<td></td>' : ''}<td class="num">${totalQty % 1 === 0 ? totalQty : totalQty.toFixed(3)}</td><td></td><td class="num">${Math.round(record.subtotal)}</td></tr>
       </tbody>
     </table>
+    ${gstSummaryHtml}
     <div class="summary">
-      <div class="row"><span>Discount${record.discountPct ? ` (${record.discountPct}%)` : ''} :</span><span>${record.discountAmount.toFixed(2)}</span></div>
-      <div class="row"><span>Round-Off :</span><span>${record.roundOff >= 0 ? '+' : ''}${record.roundOff.toFixed(2)}</span></div>
-      <div class="row net"><span>Net Bill Amount :</span><span>Rs ${record.total.toFixed(2)}</span></div>
+      <div class="row"><span>Discount${record.discountPct ? ` (${record.discountPct}%)` : ''} :</span><span>${Math.round(record.discountAmount)}</span></div>
+      <div class="row"><span>Round-Off :</span><span>${record.roundOff >= 0 ? '+' : ''}${Math.round(record.roundOff)}</span></div>
+      ${isGst ? `<div class="row"><span>Includes GST :</span><span>Rs ${Math.round(totalTax)}</span></div>` : ''}
+      <div class="row net"><span>Net Bill Amount :</span><span>Rs ${Math.round(record.total)}</span></div>
     </div>
     <div class="paybox"><div class="paytitle">Dispatched By</div><div class="pay"><span>${esc(record.dispatchedBy)}</span><span>${esc(dateStr)} ${esc(timeStr)}</span></div></div>
     <div class="dash"></div>
@@ -503,6 +627,11 @@ export function recordFromRow(row: Record<string, unknown>): DispatchInvoiceReco
     notes: (row.notes as string | null) ?? null,
     createdAt: String(row.created_at ?? ''),
     dispatchEntryIds: (row.dispatch_entry_ids as { orderId: string; dispatchEntryId: string }[] | null) ?? [],
+    isGstInvoice: Boolean(row.is_gst_invoice),
+    gstSupplyType: (row.gst_supply_type as 'intra' | 'inter' | null) ?? 'intra',
+    cancelledBy: (row.cancelled_by as string | null) ?? null,
+    cancelledAt: (row.cancelled_at as string | null) ?? null,
+    cancelledReason: (row.cancelled_reason as string | null) ?? null,
   };
 }
 
@@ -796,7 +925,7 @@ export async function updateDispatchInvoice(params: {
     void useActivityLogStore.getState().log({
       staffId: user.id, staffName: user.displayName, role: user.role,
       action: 'Edited Dispatch Invoice',
-      detail: `Invoice ${original.invoiceNo} (${original.scope}) edited — ${finalItems.length} item(s), new total Rs. ${total.toFixed(2)}`,
+      detail: `Invoice ${original.invoiceNo} (${original.scope}) edited — ${finalItems.length} item(s), new total Rs. ${Math.round(total)}`,
       branch: original.scope,
     });
   }
@@ -857,6 +986,154 @@ export async function updateDispatchInvoice(params: {
       items: finalItems,
       subtotal, discountPct: safeUpdatedDiscountPct, discountAmount, roundOff, total,
       dispatchEntryIds: finalDispatchEntryIds,
+      notes: finalNotes,
+    },
+  };
+}
+
+// FEATURE (2026-09-06): "next to the dispatch invoices add a cancel button —
+// once confirmed all items should return to stock, the invoice should be
+// cancelled, reprinting shows it as a cancelled invoice, and it should be
+// recorded in the report and Admin Dispatch Details tab too." Reuses the
+// exact same stock-reversal primitive updateDispatchInvoice's own "fully
+// removed items" step already uses (deleteDispatchEntry per backing
+// dispatch_log entry) — cancelling is that same reversal applied to every
+// item on the invoice at once, then a status flip instead of a re-save.
+export async function cancelDispatchInvoice(params: {
+  invoiceId: string;
+  reason?: string;
+}): Promise<{ ok: true; record: DispatchInvoiceRecord } | { error: string }> {
+  const { data: invRow, error: invErr } = await supabase.from('dispatch_invoices').select('*').eq('id', params.invoiceId).single();
+  if (invErr || !invRow) return { error: invErr?.message || 'Invoice not found — it may have been removed.' };
+  const original = recordFromRow(invRow as Record<string, unknown>);
+  if (original.status === 'cancelled') return { error: 'This invoice is already cancelled.' };
+
+  const { useAuthStore } = await import('@/stores/authStore');
+  const user = useAuthStore.getState().currentUser;
+  const cancelledByName = user?.displayName || 'Planner';
+
+  const cancelledAt = new Date().toISOString();
+  const cancelNote = `Cancelled by ${cancelledByName} on ${new Date().toLocaleString('en-IN')}${params.reason ? ` — ${params.reason}` : ''}`;
+  const finalNotes = original.notes ? `${original.notes} · ${cancelNote}` : cancelNote;
+
+  // BUG FIX (2026-09-06, audit): flip the status FIRST, atomically — the
+  // early `original.status === 'cancelled'` check above reads a snapshot
+  // that two concurrent cancel clicks (two admins, or one impatient
+  // double-click that slipped past the client-side ref guard) could both
+  // pass before either write lands, and both would then reverse stock below
+  // — a real double-restock. `.neq('status','cancelled')` makes this update
+  // a compare-and-swap: only the request that actually flips a row is
+  // allowed to proceed to stock reversal; a request that loses the race gets
+  // back zero affected rows and stops here instead.
+  const { data: claimed, error: claimErr } = await supabase.from('dispatch_invoices').update({
+    status: 'cancelled',
+    cancelled_by: cancelledByName,
+    cancelled_at: cancelledAt,
+    cancelled_reason: params.reason ?? null,
+    notes: finalNotes,
+  }).eq('id', params.invoiceId).neq('status', 'cancelled').select('id');
+  if (claimErr) return { error: claimErr.message || 'Failed to cancel the invoice.' };
+  if (!claimed || claimed.length === 0) return { error: 'This invoice is already cancelled.' };
+
+  // Cake invoices (see updateDispatchInvoice's own doc comment above) never
+  // have a real dispatch_log entry to reconcile — nothing to restock, so
+  // cancelling one is a pure status flip.
+  const { useBakeryStore } = await import('./bakeryStore');
+  // Resolve each ref's real targetHosurOrderId BEFORE deleting anything below
+  // — deleteDispatchEntry removes the entry from the order's own dispatchLog,
+  // so looking this up AFTER deletion would always come back empty and the
+  // Hosur bill resync further down could never find the order to sync.
+  let anchorHosurOrderId: string | undefined;
+  if (original.scope !== 'Cake' && original.dispatchEntryIds.length > 0) {
+    try {
+      await useBakeryStore.getState().fetchOrders(true, true);
+      const freshOrders = useBakeryStore.getState().orders;
+      const store = useBakeryStore.getState();
+      anchorHosurOrderId = original.dispatchEntryIds
+        .map(ref => freshOrders.find(o => o.id === ref.orderId)?.dispatchLog?.find(d => d.id === ref.dispatchEntryId)?.targetHosurOrderId)
+        .find((id): id is string => Boolean(id));
+      for (const ref of original.dispatchEntryIds) {
+        const order = freshOrders.find(o => o.id === ref.orderId);
+        const entry = order?.dispatchLog?.find(d => d.id === ref.dispatchEntryId);
+        if (!entry) continue; // already gone/unresolved — nothing left to reverse
+        await store.deleteDispatchEntry(ref.orderId, ref.dispatchEntryId);
+      }
+    } catch (err) {
+      // BUG FIX (2026-09-06, audit): the status claim above already
+      // committed — if stock reversal then throws partway through, the
+      // invoice would be stuck permanently "cancelled" with some (or all)
+      // of its stock never actually returned, and no way to retry (the
+      // Cancel button only shows for a non-cancelled invoice). Revert the
+      // claim so the planner can see the failure and try again, instead of
+      // silently losing stock.
+      await supabase.from('dispatch_invoices').update({
+        status: original.status, cancelled_by: null, cancelled_at: null, cancelled_reason: null, notes: original.notes,
+      }).eq('id', params.invoiceId);
+      return { error: err instanceof Error ? `Stock reversal failed partway through — the invoice was NOT cancelled, please try again: ${err.message}` : 'Stock reversal failed partway through — the invoice was NOT cancelled, please try again.' };
+    }
+  }
+
+  if (user) {
+    const { useActivityLogStore } = await import('./activityLogStore');
+    void useActivityLogStore.getState().log({
+      staffId: user.id, staffName: user.displayName, role: user.role,
+      action: 'Cancelled Dispatch Invoice',
+      detail: `Invoice ${original.invoiceNo} (${original.scope}) cancelled — ${original.items.length} item(s), Rs. ${Math.round(original.total)} returned to stock${params.reason ? ` — ${params.reason}` : ''}`,
+      branch: original.scope,
+    });
+  }
+
+  // Best-effort: for a Hosur shop invoice, recompute the shop's combined
+  // WhatsApp bill/credit ledger from whatever OTHER (still non-cancelled)
+  // invoices share the same underlying Hosur order — same reconciliation
+  // updateDispatchInvoice's own edit-sync already does; this cancelled
+  // invoice naturally drops out since the sibling query excludes cancelled
+  // rows. If NOTHING else was ever billed for that order (this was the only
+  // invoice), there's nothing left to sync — the shop's hosur_bills row
+  // itself is marked cancelled/zeroed instead so its credit ledger doesn't
+  // keep showing money owed for goods that came back. Never blocks the
+  // invoice cancellation itself if any of this fails.
+  if (original.scope === 'Hosur' && original.hosurShopId) {
+    try {
+      const freshOrders = useBakeryStore.getState().orders;
+      if (anchorHosurOrderId) {
+        const { data: siblingRows } = await supabase.from('dispatch_invoices')
+          .select('items, discount_pct, dispatch_entry_ids')
+          .eq('scope', 'Hosur').eq('hosur_shop_id', original.hosurShopId).neq('status', 'cancelled').neq('id', params.invoiceId);
+        const finalPriced = (items: DispatchInvoiceItem[], discountPct: number) => {
+          const mult = 1 - Math.max(0, Math.min(100, discountPct || 0)) / 100;
+          return items.map(i => ({ itemName: i.itemName, unit: i.unit, quantity: i.quantity, unitPrice: Math.round(i.unitPrice * mult * 100) / 100 }));
+        };
+        let combinedItems: { itemName: string; unit: string; quantity: number; unitPrice: number }[] = [];
+        for (const row of (siblingRows ?? []) as { items: DispatchInvoiceItem[]; discount_pct: number; dispatch_entry_ids: { orderId: string; dispatchEntryId: string }[] }[]) {
+          const belongsToSameOrder = (row.dispatch_entry_ids ?? []).some(ref => {
+            const order = freshOrders.find(o => o.id === ref.orderId);
+            const entry = order?.dispatchLog?.find(d => d.id === ref.dispatchEntryId);
+            return entry?.targetHosurOrderId === anchorHosurOrderId;
+          });
+          if (belongsToSameOrder) combinedItems = combinedItems.concat(finalPriced(row.items ?? [], row.discount_pct ?? 0));
+        }
+        if (combinedItems.length > 0) {
+          const { syncHosurBillWithInvoiceEdit } = await import('./hosurBillingBridge');
+          await syncHosurBillWithInvoiceEdit({ hosurOrderId: anchorHosurOrderId, items: combinedItems });
+        } else {
+          await supabase.from('hosur_bills').update({ status: 'cancelled', subtotal: 0, credit_amount: 0, updated_at: cancelledAt })
+            .eq('order_id', anchorHosurOrderId).neq('status', 'cancelled');
+        }
+      }
+    } catch (err) {
+      console.error('[cancelDispatchInvoice] Hosur bill resync failed (non-fatal):', err);
+    }
+  }
+
+  return {
+    ok: true,
+    record: {
+      ...original,
+      status: 'cancelled',
+      cancelledBy: cancelledByName,
+      cancelledAt,
+      cancelledReason: params.reason ?? null,
       notes: finalNotes,
     },
   };

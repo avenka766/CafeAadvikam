@@ -475,8 +475,10 @@ function downloadExcel(filename: string, rows: Array<Array<string | number | und
   URL.revokeObjectURL(url);
 }
 
+// AUDIT FIX (2026-09-05): "the payment should be round off there should not
+// be any decimal points".
 const money = (value: number | null | undefined) =>
-  `Rs ${Number(value ?? 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  `Rs ${Math.round(Number(value ?? 0)).toLocaleString("en-IN", { maximumFractionDigits: 0 })}`;
 
 const num = (value: number | null | undefined) =>
   Number(value ?? 0).toLocaleString("en-IN", { maximumFractionDigits: 3 });
@@ -669,7 +671,7 @@ function SharedBranchOperationsPanel({ branch }: { branch: Branch }) {
           type: "Purchase Invoice",
           reference: String(row.invoice_number || "-"),
           party: String(row.supplier_name || "-"),
-          details: `Invoice ${String(row.invoice_date || "-")} · Outstanding ₹${Number(row.balance_amount || 0).toFixed(2)}`,
+          details: `Invoice ${String(row.invoice_date || "-")} · Outstanding ₹${Math.round(Number(row.balance_amount || 0))}`,
           amount: Number(row.total_amount || 0),
           status: String(row.sync_status || "Not Synced"),
           createdAt: String(row.created_at || row.invoice_date || ""),
@@ -777,7 +779,7 @@ function SharedBranchOperationsPanel({ branch }: { branch: Branch }) {
         ) : (
           <table className="w-full min-w-[820px] text-left text-xs">
             <thead className="sticky top-0 z-10 bg-slate-950 text-white"><tr><th className="px-3 py-2">Date</th><th className="px-3 py-2">Type</th><th className="px-3 py-2">Reference</th><th className="px-3 py-2">Supplier / Item</th><th className="px-3 py-2">Details</th><th className="px-3 py-2 text-right">Amount</th><th className="px-3 py-2">Status</th></tr></thead>
-            <tbody>{visible.map((row) => <tr key={`${row.type}-${row.id}`} className="border-b border-border/60 align-top"><td className="whitespace-nowrap px-3 py-2 font-bold">{row.createdAt ? new Date(row.createdAt).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" }) : "-"}</td><td className="px-3 py-2"><span className="rounded-full bg-amber-50 px-2 py-1 font-black text-amber-800">{row.type}</span></td><td className="px-3 py-2 font-black">{row.reference}</td><td className="px-3 py-2 font-bold">{row.party}</td><td className="max-w-[360px] px-3 py-2 text-slate-600">{row.details}</td><td className="px-3 py-2 text-right font-black">{row.amount == null ? "-" : `₹${row.amount.toFixed(2)}`}</td><td className="px-3 py-2 font-bold">{row.status}</td></tr>)}</tbody>
+            <tbody>{visible.map((row) => <tr key={`${row.type}-${row.id}`} className="border-b border-border/60 align-top"><td className="whitespace-nowrap px-3 py-2 font-bold">{row.createdAt ? new Date(row.createdAt).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" }) : "-"}</td><td className="px-3 py-2"><span className="rounded-full bg-amber-50 px-2 py-1 font-black text-amber-800">{row.type}</span></td><td className="px-3 py-2 font-black">{row.reference}</td><td className="px-3 py-2 font-bold">{row.party}</td><td className="max-w-[360px] px-3 py-2 text-slate-600">{row.details}</td><td className="px-3 py-2 text-right font-black">{row.amount == null ? "-" : `₹${Math.round(row.amount)}`}</td><td className="px-3 py-2 font-bold">{row.status}</td></tr>)}</tbody>
           </table>
         )}
       </div>
@@ -885,7 +887,7 @@ function SharedAdvanceOrdersPanel({ branch }: { branch: Branch }) {
       </div>
       <div className="min-h-0 flex-1 overflow-auto rounded-2xl border border-border bg-white shadow-sm">
         {error ? <p className="m-3 rounded-xl bg-red-50 px-3 py-2 text-sm font-bold text-red-700">{error}</p> : null}
-        {loading && rows.length === 0 ? <div className="flex h-full items-center justify-center"><Loader2 className="size-5 animate-spin"/></div> : rows.length === 0 ? <div className="flex h-full flex-col items-center justify-center p-8"><Clock3 className="mb-2 size-8 text-muted-foreground"/><p className="text-sm font-black">No advance orders found.</p></div> : <table className="w-full min-w-[980px] text-left text-xs"><thead className="sticky top-0 z-10 bg-slate-950 text-white"><tr><th className="px-3 py-2">Created</th><th className="px-3 py-2">Order</th><th className="px-3 py-2">Customer</th><th className="px-3 py-2">Items / Cake</th><th className="px-3 py-2">Delivery</th><th className="px-3 py-2 text-right">Total</th><th className="px-3 py-2 text-right">Advance</th><th className="px-3 py-2 text-right">Balance</th><th className="px-3 py-2">Live Status</th><th className="px-3 py-2">Note</th></tr></thead><tbody>{rows.map((row) => <tr key={`${row.reference}-${row.id}`} className="border-b border-border/60 align-top"><td className="whitespace-nowrap px-3 py-2 font-bold">{new Date(row.createdAt).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" })}</td><td className="px-3 py-2 font-black">{row.reference}</td><td className="px-3 py-2 font-bold">{row.customer}</td><td className="max-w-[280px] px-3 py-2">{row.items}</td><td className="px-3 py-2 font-bold">{row.deliveryDate || "-"}</td><td className="px-3 py-2 text-right font-black">₹{row.total.toFixed(2)}</td><td className="px-3 py-2 text-right font-black text-emerald-700">₹{row.advance.toFixed(2)}</td><td className="px-3 py-2 text-right font-black text-amber-700">₹{row.balance.toFixed(2)}</td><td className="px-3 py-2"><span className="rounded-full bg-blue-50 px-2 py-1 font-black text-blue-700">{row.status}</span></td><td className="max-w-[260px] px-3 py-2 text-slate-600">{row.notes || "-"}</td></tr>)}</tbody></table>}
+        {loading && rows.length === 0 ? <div className="flex h-full items-center justify-center"><Loader2 className="size-5 animate-spin"/></div> : rows.length === 0 ? <div className="flex h-full flex-col items-center justify-center p-8"><Clock3 className="mb-2 size-8 text-muted-foreground"/><p className="text-sm font-black">No advance orders found.</p></div> : <table className="w-full min-w-[980px] text-left text-xs"><thead className="sticky top-0 z-10 bg-slate-950 text-white"><tr><th className="px-3 py-2">Created</th><th className="px-3 py-2">Order</th><th className="px-3 py-2">Customer</th><th className="px-3 py-2">Items / Cake</th><th className="px-3 py-2">Delivery</th><th className="px-3 py-2 text-right">Total</th><th className="px-3 py-2 text-right">Advance</th><th className="px-3 py-2 text-right">Balance</th><th className="px-3 py-2">Live Status</th><th className="px-3 py-2">Note</th></tr></thead><tbody>{rows.map((row) => <tr key={`${row.reference}-${row.id}`} className="border-b border-border/60 align-top"><td className="whitespace-nowrap px-3 py-2 font-bold">{new Date(row.createdAt).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" })}</td><td className="px-3 py-2 font-black">{row.reference}</td><td className="px-3 py-2 font-bold">{row.customer}</td><td className="max-w-[280px] px-3 py-2">{row.items}</td><td className="px-3 py-2 font-bold">{row.deliveryDate || "-"}</td><td className="px-3 py-2 text-right font-black">₹{Math.round(row.total)}</td><td className="px-3 py-2 text-right font-black text-emerald-700">₹{Math.round(row.advance)}</td><td className="px-3 py-2 text-right font-black text-amber-700">₹{Math.round(row.balance)}</td><td className="px-3 py-2"><span className="rounded-full bg-blue-50 px-2 py-1 font-black text-blue-700">{row.status}</span></td><td className="max-w-[260px] px-3 py-2 text-slate-600">{row.notes || "-"}</td></tr>)}</tbody></table>}
       </div>
     </div>
   );

@@ -1287,11 +1287,11 @@ function downloadTransferOutInvoice(params: {
   doc.text(`${qtyFmt(qty)} ${unit}`, marginX + 160, y);
   y += 18;
   doc.text('Unit Price', marginX, y);
-  doc.text(unitPrice != null ? `Rs. ${unitPrice.toFixed(2)}` : 'N/A', marginX + 160, y);
+  doc.text(unitPrice != null ? `Rs. ${Math.round(unitPrice)}` : 'N/A', marginX + 160, y);
   y += 18;
   doc.setFontSize(13);
   doc.text('Total Value', marginX, y);
-  doc.text(totalValue != null ? `Rs. ${totalValue.toFixed(2)}` : 'N/A', marginX + 160, y);
+  doc.text(totalValue != null ? `Rs. ${Math.round(totalValue)}` : 'N/A', marginX + 160, y);
   y += 24;
   doc.setFont('helvetica', 'normal'); doc.setFontSize(10);
   doc.text('Reason', marginX, y); y += 14;
@@ -1346,15 +1346,15 @@ function downloadTransferOutInvoiceMulti(params: {
     const nameLines = doc.splitTextToSize(item.itemName, 180);
     doc.text(nameLines, marginX, y);
     doc.text(`${qtyFmt(item.qty)} ${item.unit}`, marginX + 190, y);
-    doc.text(item.unitPrice != null ? `Rs. ${item.unitPrice.toFixed(2)}` : 'N/A', marginX + 250, y);
-    doc.text(value != null ? `Rs. ${value.toFixed(2)}` : 'N/A', pageWidth - marginX - 50, y);
+    doc.text(item.unitPrice != null ? `Rs. ${Math.round(item.unitPrice)}` : 'N/A', marginX + 250, y);
+    doc.text(value != null ? `Rs. ${Math.round(value)}` : 'N/A', pageWidth - marginX - 50, y);
     y += Math.max(14, nameLines.length * 12);
   }
   y += 8;
   doc.setDrawColor(210); doc.line(marginX, y, pageWidth - marginX, y); y += 18;
   doc.setFont('helvetica', 'bold'); doc.setFontSize(12);
   doc.text('Total Value', marginX, y);
-  doc.text(`Rs. ${grandTotal.toFixed(2)}${anyPriceMissing ? ' (+ items priced N/A)' : ''}`, pageWidth - marginX - 110, y);
+  doc.text(`Rs. ${Math.round(grandTotal)}${anyPriceMissing ? ' (+ items priced N/A)' : ''}`, pageWidth - marginX - 110, y);
   y += 24;
 
   doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(0);
@@ -1602,9 +1602,9 @@ export function PlannerTransferOutTab() {
           {transferItemName && (
             <div className="rounded-xl border border-orange-200 bg-white/70 px-3 py-2 text-xs font-bold text-orange-900">
               {transferCatalogEntry != null ? (
-                <>Unit Price ({transferDestination === 'VRSNB' ? 'VRSNB' : 'SNB'} catalog): Rs. {transferCatalogEntry.price.toFixed(2)} / {transferCatalogEntry.uom}
+                <>Unit Price ({transferDestination === 'VRSNB' ? 'VRSNB' : 'SNB'} catalog): Rs. {Math.round(transferCatalogEntry.price)} / {transferCatalogEntry.uom}
                   {transferTotalValue != null
-                    ? <> &middot; Total Value: <strong>Rs. {transferTotalValue.toFixed(2)}</strong></>
+                    ? <> &middot; Total Value: <strong>Rs. {Math.round(transferTotalValue)}</strong></>
                     : transferQtyValid && <> &middot; <span className="text-destructive">Can't convert {transferUnit} to {transferCatalogEntry.uom} for this item — invoice will show N/A.</span></>}
                 </>
               ) : 'Price not found in catalog for this item — invoice will show N/A.'}
@@ -1625,12 +1625,12 @@ export function PlannerTransferOutTab() {
                 <div key={i} className="flex items-center justify-between gap-2 rounded-xl border border-orange-200 bg-white px-3 py-2 text-xs">
                   <div className="min-w-0">
                     <p className="font-bold text-foreground truncate">{line.itemName}</p>
-                    <p className="text-muted-foreground">{qtyFmt(line.qty)} {line.unit} {line.totalValue != null ? `· Rs. ${line.totalValue.toFixed(2)}` : '· Price N/A'}</p>
+                    <p className="text-muted-foreground">{qtyFmt(line.qty)} {line.unit} {line.totalValue != null ? `· Rs. ${Math.round(line.totalValue)}` : '· Price N/A'}</p>
                   </div>
                   <button type="button" onClick={() => removeTransferLine(i)} aria-label={`Remove ${line.itemName}`} className="shrink-0 rounded-lg p-1.5 text-muted-foreground hover:bg-red-100 hover:text-red-600"><X className="size-3.5" /></button>
                 </div>
               ))}
-              <p className="text-right text-xs font-black text-orange-900">Total Rs. {transferLinesGrandTotal.toFixed(2)}</p>
+              <p className="text-right text-xs font-black text-orange-900">Total Rs. {Math.round(transferLinesGrandTotal)}</p>
             </div>
           )}
 

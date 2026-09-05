@@ -183,8 +183,8 @@ function OrderCard({
           {order.status === 'Correction Required' && <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-xs font-bold text-red-800"><p className="font-black">Returned by Packing for weight correction</p><p className="mt-1">{order.correctionReason || 'Please verify and correct the prepared weight.'}</p><p className="mt-1 text-[10px] text-red-600">Requested by {order.correctionRequestedBy || 'Packing'}</p></div>}
           {order.status === 'Cancelled' && <div className="rounded-xl border border-slate-300 bg-slate-100 p-3 text-xs font-bold text-slate-700"><p className="font-black">Order cancelled by branch</p><p className="mt-1">{order.cancellationReason || 'No reason provided'}</p><p className="mt-1 text-[10px]">Cancelled by {order.cancelledBy || 'Branch'}</p></div>}
           <div className="flex items-center justify-between rounded-xl bg-slate-50 p-2.5 text-xs">
-            <span className="font-bold text-slate-500">Order Value ₹{order.orderValue.toFixed(2)} · Advance ₹{order.advanceAmount.toFixed(2)}</span>
-            <span className="font-black text-slate-800">Balance ₹{order.balanceAmount.toFixed(2)}</span>
+            <span className="font-bold text-slate-500">Order Value ₹{Math.round(order.orderValue)} · Advance ₹{Math.round(order.advanceAmount)}</span>
+            <span className="font-black text-slate-800">Balance ₹{Math.round(order.balanceAmount)}</span>
           </div>
 
           {order.status === 'New' && (
