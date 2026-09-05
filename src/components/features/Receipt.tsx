@@ -15,6 +15,12 @@ const CAFE = {
 };
 
 function fmt(n: number) { return n.toFixed(2); }
+// AUDIT FIX (2026-09-05): "the payment should be round off there should not
+// be any decimal points" — applies to the actual amounts charged (item
+// price/amount, Grand Total, Discount, payment split). Sub Total/CGST/SGST
+// above keep `fmt`'s 2-decimal precision since those are the GST-compliance
+// breakdown for this GST-registered receipt.
+function rupee(n: number) { return String(Math.round(n)); }
 
 // GST 5% inclusive → split CGST 2.5% + SGST 2.5%.
 // BUG FIX (audit): this used to run on `order.total` (post-discount, minus
@@ -214,8 +220,8 @@ table{width:100%;border-collapse:collapse}td{padding:1px 2px;vertical-align:top}
                   <tr key={ci.menuItem.id}>
                     <td className="py-0.5 pr-1">{ci.menuItem.name}</td>
                     <td className="text-center">{ci.quantity}</td>
-                    <td className="text-right tabular-nums">{fmt(unitBase)}</td>
-                    <td className="text-right tabular-nums">{fmt(unitBase * ci.quantity)}</td>
+                    <td className="text-right tabular-nums">{rupee(unitBase)}</td>
+                    <td className="text-right tabular-nums">{rupee(unitBase * ci.quantity)}</td>
                   </tr>
                 );
               })}
@@ -246,7 +252,7 @@ table{width:100%;border-collapse:collapse}td{padding:1px 2px;vertical-align:top}
                 <tr>
                   <td />
                   <td className="text-right">Parcel Charges</td>
-                  <td className="text-right tabular-nums pl-3">{fmt(parcelCharges)}</td>
+                  <td className="text-right tabular-nums pl-3">{rupee(parcelCharges)}</td>
                 </tr>
               )}
             </tbody>
@@ -255,14 +261,14 @@ table{width:100%;border-collapse:collapse}td{padding:1px 2px;vertical-align:top}
           <div className="border-t-2 border-gray-900 my-1.5" />
           <div className="flex justify-between font-black text-sm">
             <span>Grand Total</span>
-            <span className="tabular-nums">₹{fmt(order.total)}</span>
+            <span className="tabular-nums">₹{rupee(order.total)}</span>
           </div>
           <div className="border-t-2 border-gray-900 my-1.5" />
 
           {order.discount > 0 && (
             <div className="flex justify-between text-[11px] text-emerald-700 mb-1">
               <span>Discount</span>
-              <span className="tabular-nums">-₹{fmt(order.discount)}</span>
+              <span className="tabular-nums">-₹{rupee(order.discount)}</span>
             </div>
           )}
 
@@ -271,9 +277,9 @@ table{width:100%;border-collapse:collapse}td{padding:1px 2px;vertical-align:top}
           )}
           {order.paymentType === 'part_payment' && order.paymentBreakdown && (
             <div className="text-[11px] text-gray-500 ml-2 space-y-0.5 mt-0.5">
-              {order.paymentBreakdown.cash > 0 && <p>Cash: ₹{fmt(order.paymentBreakdown.cash)}</p>}
-              {order.paymentBreakdown.upi  > 0 && <p>UPI:  ₹{fmt(order.paymentBreakdown.upi)}</p>}
-              {order.paymentBreakdown.card > 0 && <p>Card: ₹{fmt(order.paymentBreakdown.card)}</p>}
+              {order.paymentBreakdown.cash > 0 && <p>Cash: ₹{rupee(order.paymentBreakdown.cash)}</p>}
+              {order.paymentBreakdown.upi  > 0 && <p>UPI:  ₹{rupee(order.paymentBreakdown.upi)}</p>}
+              {order.paymentBreakdown.card > 0 && <p>Card: ₹{rupee(order.paymentBreakdown.card)}</p>}
             </div>
           )}
 

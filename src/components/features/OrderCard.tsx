@@ -134,7 +134,7 @@ export default function OrderCard({ order, showActions = false, counterOpenedTod
       return;
     }
     if (discType === 'flat' && val > order.subtotal) {
-      setDiscountError(`Flat discount cannot exceed subtotal (₹${order.subtotal.toFixed(2)}).`);
+      setDiscountError(`Flat discount cannot exceed subtotal (₹${Math.round(order.subtotal)}).`);
       return;
     }
     setDiscountError('');
