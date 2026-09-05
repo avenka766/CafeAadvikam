@@ -24,6 +24,7 @@ import {
   listDispatchInvoices, printDispatchInvoice, mapWalkinBill, walkinBillToInvoiceRecord,
   type DispatchInvoiceRecord, type WalkinBillRow,
 } from '@/bakery/dispatchInvoice';
+import { useSortableRows, SortableTh } from '@/components/admin/SortableTable';
 
 type Bucket = 'TO' | 'SALES' | 'Cake';
 const BUCKET_LABEL: Record<Bucket, string> = { TO: 'TO — SNB & VRSNB', SALES: 'SALES — Hosur & Sales', Cake: 'Cake' };
@@ -153,6 +154,26 @@ export default function AdminDispatchDetailsTab() {
     if (q) list = list.filter(r => r.invoiceNo.toLowerCase().includes(q) || r.party.toLowerCase().includes(q) || r.dispatchedBy.toLowerCase().includes(q));
     return list;
   }, [rows, bucketFilter, search]);
+
+  // FEATURE (2026-09-05): "Also allow sort in all the tab" — click any
+  // column header to sort; defaults to newest-first same as before.
+  const { sorted: sortedRows, sortKey, sortDir, toggleSort } = useSortableRows<Row>(
+    filteredRows,
+    (r, key) => {
+      switch (key) {
+        case 'invoiceNo': return r.invoiceNo;
+        case 'group': return r.scopeLabel;
+        case 'party': return r.party;
+        case 'items': return r.itemCount;
+        case 'total': return r.total;
+        case 'dispatchedBy': return r.dispatchedBy;
+        case 'time': return new Date(r.date).getTime();
+        default: return new Date(r.date).getTime();
+      }
+    },
+    'date',
+    'desc',
+  );
 
   const totalsByBucket = useMemo(() => {
     const map: Record<Bucket, { count: number; value: number }> = { TO: { count: 0, value: 0 }, SALES: { count: 0, value: 0 }, Cake: { count: 0, value: 0 } };
@@ -309,36 +330,42 @@ export default function AdminDispatchDetailsTab() {
             <thead>
               <tr className="border-b bg-slate-50 text-left text-xs uppercase text-slate-500">
                 <th className="p-3 w-8" />
-                <th className="p-3">Invoice No</th>
-                <th className="p-3">Group</th>
-                <th className="p-3">Party</th>
-                <th className="p-3 text-right">Items</th>
-                <th className="p-3 text-right">Total</th>
-                <th className="p-3">Dispatched By</th>
-                <th className="p-3">Date</th>
+                <SortableTh label="Invoice No" sortKey="invoiceNo" activeKey={sortKey} dir={sortDir} onSort={toggleSort} />
+                {/* BUG FIX (2026-09-05): "still unable to see the date column"
+                    — Date/Time sat near the end of this wide table, past the
+                    right edge on a normal viewport. Moved right after Invoice
+                    No so they're visible without scrolling. */}
+                <SortableTh label="Date" sortKey="date" activeKey={sortKey} dir={sortDir} onSort={toggleSort} />
+                <SortableTh label="Time" sortKey="time" activeKey={sortKey} dir={sortDir} onSort={toggleSort} />
+                <SortableTh label="Group" sortKey="group" activeKey={sortKey} dir={sortDir} onSort={toggleSort} />
+                <SortableTh label="Party" sortKey="party" activeKey={sortKey} dir={sortDir} onSort={toggleSort} />
+                <SortableTh label="Items" sortKey="items" activeKey={sortKey} dir={sortDir} onSort={toggleSort} align="right" />
+                <SortableTh label="Total" sortKey="total" activeKey={sortKey} dir={sortDir} onSort={toggleSort} align="right" />
+                <SortableTh label="Dispatched By" sortKey="dispatchedBy" activeKey={sortKey} dir={sortDir} onSort={toggleSort} />
                 <th className="p-3 text-right">Invoice</th>
               </tr>
             </thead>
             <tbody className="divide-y">
               {loading && (
-                <tr><td colSpan={9} className="p-8 text-center text-sm font-semibold text-slate-500"><Loader2 className="mx-auto mb-2 size-5 animate-spin" /> Loading dispatch details…</td></tr>
+                <tr><td colSpan={10} className="p-8 text-center text-sm font-semibold text-slate-500"><Loader2 className="mx-auto mb-2 size-5 animate-spin" /> Loading dispatch details…</td></tr>
               )}
-              {!loading && filteredRows.length === 0 && (
-                <tr><td colSpan={9} className="p-8 text-center text-sm font-semibold text-slate-500">No dispatch invoices in this range.</td></tr>
+              {!loading && sortedRows.length === 0 && (
+                <tr><td colSpan={10} className="p-8 text-center text-sm font-semibold text-slate-500">No dispatch invoices in this range.</td></tr>
               )}
-              {!loading && filteredRows.map(r => {
+              {!loading && sortedRows.map(r => {
                 const expanded = expandedKey === r.key;
                 return (
                   <Fragment key={r.key}>
                     <tr onClick={() => setExpandedKey(expanded ? null : r.key)} className="cursor-pointer hover:bg-slate-50">
                       <td className="p-3"><ChevronDown className={cn('size-4 text-slate-400 transition-transform', expanded && 'rotate-180')} /></td>
                       <td className="p-3 font-black text-slate-900">{r.invoiceNo}</td>
+                      <td className="p-3 text-slate-500">{fmtDate(r.date)}</td>
+                      <td className="p-3 text-slate-500">{fmtTime(r.date)}</td>
                       <td className="p-3"><span className={cn('inline-flex rounded-full px-2 py-0.5 text-[10px] font-black uppercase ring-1', BUCKET_TONE[r.bucket])}>{r.scopeLabel}</span></td>
                       <td className="p-3 text-slate-700">{r.party}</td>
                       <td className="p-3 text-right tabular-nums text-slate-500">{r.itemCount}</td>
                       <td className="p-3 text-right font-black text-slate-900">{formatCurrency(r.total)}</td>
                       <td className="p-3 text-slate-500">{r.dispatchedBy}</td>
-                      <td className="p-3 text-slate-500">{fmtDateTime(r.date)}</td>
                       <td className="p-3 text-right" onClick={e => e.stopPropagation()}>
                         <div className="inline-flex gap-1.5">
                           <button onClick={() => void printDispatchInvoice(r.record, 'thermal')} className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2 py-1 text-[10px] font-black text-slate-700 hover:bg-slate-100">
@@ -352,7 +379,7 @@ export default function AdminDispatchDetailsTab() {
                     </tr>
                     {expanded && (
                       <tr>
-                        <td colSpan={9} className="bg-slate-50/70 p-4">
+                        <td colSpan={10} className="bg-slate-50/70 p-4">
                           <table className="w-full text-xs">
                             <thead><tr className="text-left uppercase text-slate-400"><th className="py-1.5">Item</th><th className="py-1.5 text-right">Qty</th><th className="py-1.5">Unit</th><th className="py-1.5 text-right">Unit Price</th><th className="py-1.5 text-right">Line Total</th></tr></thead>
                             <tbody className="divide-y divide-slate-200">
