@@ -452,10 +452,19 @@ function AdminDashboard() {
           .select('bill_id, branch, item_name, quantity, unit, unit_price, line_total')
           .in('branch', ['SNB', 'VRSNB'])
           .gte('created_at', fromTs).lte('created_at', toTs)),
+        // BUG FIX (2026-09-05): "the payment mode ... is not displaying" for
+        // a handful of Branch Sales bills in the Excel export — those bills'
+        // real payment rows exist in branch_sale_payments with purpose
+        // 'advance_balance' (balance paid at pickup for an advance order) or
+        // 'credit_settlement' (a credit bill paid off, possibly same day),
+        // both 100%-verified live to always reference a real bill_id — but
+        // this filter only ever allowed 'bill_collection'/'credit_upfront',
+        // so billPaidByMode's lookup missed them and every cash/UPI/card
+        // column silently fell back to 0 despite a real, nonzero bill total.
         fetchAllRows(() => supabase.from('branch_sale_payments')
           .select('bill_id, payment_mode, amount')
           .in('branch', ['SNB', 'VRSNB'])
-          .in('payment_purpose', ['bill_collection', 'credit_upfront'])
+          .in('payment_purpose', ['bill_collection', 'credit_upfront', 'advance_balance', 'credit_settlement'])
           .gte('created_at', fromTs).lte('created_at', toTs)),
         fetchAllRows(() => supabase.from('hosur_bills')
           .select('id, bill_no, shop_name, subtotal, paid_amount, credit_amount, payment_mode, confirmed_at, status')
