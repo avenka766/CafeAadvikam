@@ -13,6 +13,7 @@ import SnbItemsTab from '@/components/admin/SnbItemsTab';
 import VrsnbItemsTab from '@/components/admin/VrsnbItemsTab';
 import AdminCreditTab from '@/components/admin/AdminCreditTab';
 import AdminDispatchDetailsTab from '@/components/admin/AdminDispatchDetailsTab';
+import { useSortableRows, SortableTh } from '@/components/admin/SortableTable';
 import AdminAdvanceTab from '@/components/admin/AdminAdvanceTab';
 import AttendanceSalary from '@/pages/AttendanceSalary';
 import AdminWalletTab from '@/components/admin/AdminWalletTab';
@@ -357,7 +358,7 @@ function AdminDashboard() {
   const [realBills, setRealBills] = useState<Array<{
     id: string; billNo: string; branch: Branch; total: number; subtotal: number;
     discount: number; createdAt: string; status: 'original' | 'returned' | 'duplicate_printed';
-    salesperson: string; biller: string;
+    salesperson: string; biller: string; invoiceNo?: string;
   }>>([]);
   const [realBillItems, setRealBillItems] = useState<Array<{
     billId: string; branch: Branch; itemName: string; quantity: number; unit: string;
@@ -442,7 +443,26 @@ function AdminDashboard() {
         return { data: rows, error: null };
       };
 
-      const [headersRes, itemsRes, paymentsRes, hosurRes, unbilledRes, expensesRes, purchasesRes] = await Promise.all([
+      // FEATURE (2026-09-05): "the Bill No should not come this one it
+      // should come invoice number" — Hosur's own bill_no (HSR260905-0081)
+      // is an internal receivable reference, not the real GST-sequence tax
+      // invoice number. That number lives on a completely separate
+      // dispatch_invoices row with no FK back to hosur_bills (confirmed live
+      // — dispatchReceiveAndBill creates both rows independently). The only
+      // reliable correlation: same shop, and dispatch_invoices.created_at
+      // falls between the bill's own created_at and updated_at (a bill is
+      // reused across multiple dispatch batches for the same order — see
+      // syncHosurBillWithInvoiceEdit's comment — each bumping updated_at and
+      // adding its own invoice). Verified against 2 real bills: an
+      // exact-second single-invoice match and a confirmed 2-invoice
+      // (SALES/26-27/4 + 5) split whose totals sum to the bill's subtotal.
+      // Widened 1 day earlier than the bill window itself since a bill
+      // confirmed just after midnight can have its first dispatch invoice
+      // dated the day before.
+      const dispatchInvoiceWindowStart = new Date(fromTs);
+      dispatchInvoiceWindowStart.setDate(dispatchInvoiceWindowStart.getDate() - 1);
+
+      const [headersRes, itemsRes, paymentsRes, hosurRes, unbilledRes, expensesRes, purchasesRes, hosurInvoicesRes] = await Promise.all([
         fetchAllRows(() => supabase.from('branch_bill_headers')
           .select('id, branch, bill_no, subtotal, discount, total, status, created_at, salesperson, biller, notes')
           .in('branch', ['SNB', 'VRSNB'])
@@ -467,7 +487,7 @@ function AdminDashboard() {
           .in('payment_purpose', ['bill_collection', 'credit_upfront', 'advance_balance', 'credit_settlement'])
           .gte('created_at', fromTs).lte('created_at', toTs)),
         fetchAllRows(() => supabase.from('hosur_bills')
-          .select('id, bill_no, shop_name, subtotal, paid_amount, credit_amount, payment_mode, confirmed_at, status')
+          .select('id, bill_no, shop_id, shop_name, subtotal, paid_amount, credit_amount, payment_mode, confirmed_at, status, created_at, updated_at')
           .not('confirmed_at', 'is', null)
           .neq('status', 'cancelled')
           .gte('confirmed_at', fromTs).lte('confirmed_at', toTs)),
@@ -498,9 +518,14 @@ function AdminDashboard() {
           .select('payload, created_at')
           .eq('record_type', 'purchase_invoice')
           .gte('created_at', fromTs).lte('created_at', toTs)),
+        fetchAllRows(() => supabase.from('dispatch_invoices')
+          .select('invoice_no, hosur_shop_id, hosur_shop_name, created_at')
+          .eq('scope', 'Hosur')
+          .gte('created_at', dispatchInvoiceWindowStart.toISOString()).lte('created_at', toTs)
+          .order('created_at', { ascending: true })),
       ]);
       if (realSalesRequestRef.current !== requestId) return;
-      const err = headersRes.error || itemsRes.error || paymentsRes.error || hosurRes.error || unbilledRes.error || expensesRes.error || purchasesRes.error;
+      const err = headersRes.error || itemsRes.error || paymentsRes.error || hosurRes.error || unbilledRes.error || expensesRes.error || purchasesRes.error || hosurInvoicesRes.error;
       if (err) { setRealSalesError(err.message); setRealSalesLoading(false); return; }
 
       // BUG FIX (audit 2026-09-02): hosur_bill_items has no branch/date column of its own,
@@ -540,6 +565,34 @@ function AdminDashboard() {
       const hosurBills = (hosurRes.data || []) as Array<Record<string, unknown>>;
       const hosurBillIds = new Set(hosurBills.map((b) => String(b.id)));
 
+      // See the fetch-time comment above dispatchInvoiceWindowStart for why
+      // this match is shop + time-window based rather than a stored FK.
+      const hosurInvoiceRows = (hosurInvoicesRes.data || []) as Array<Record<string, unknown>>;
+      const invoiceNoByBillId = new Map<string, string>();
+      hosurBills.forEach((h) => {
+        const shopId = h.shop_id == null ? null : String(h.shop_id);
+        const shopName = String(h.shop_name ?? '');
+        // BUG FIX: dispatchReceiveAndBill creates the dispatch_invoices row
+        // FIRST, then the hosur_bills row a fraction of a second later
+        // (confirmed live: ~0.7s earlier in every sample checked) — using
+        // the bill's own created_at as the window's lower bound excluded
+        // that first invoice every time. Buffered back 2 minutes to comfortably
+        // cover that gap without risking pulling in an unrelated invoice.
+        const billCreatedAt = new Date(String(h.created_at ?? ''));
+        const windowStart = new Date(billCreatedAt.getTime() - 2 * 60_000).toISOString();
+        const windowEnd = String(h.updated_at ?? h.created_at ?? '');
+        const matches = hosurInvoiceRows.filter((inv) => {
+          const invShopId = inv.hosur_shop_id == null ? null : String(inv.hosur_shop_id);
+          const sameShop = shopId && invShopId ? invShopId === shopId : String(inv.hosur_shop_name ?? '') === shopName;
+          if (!sameShop) return false;
+          const invCreatedAt = String(inv.created_at ?? '');
+          return invCreatedAt >= windowStart && invCreatedAt <= windowEnd;
+        });
+        if (matches.length > 0) {
+          invoiceNoByBillId.set(String(h.id), matches.map((inv) => String(inv.invoice_no ?? '')).filter(Boolean).join(', '));
+        }
+      });
+
       setRealBills([
         ...headers.map((h) => ({
           id: String(h.id), billNo: String(h.bill_no ?? ''), branch: h.branch as Branch,
@@ -552,6 +605,7 @@ function AdminDashboard() {
           total: Number(h.subtotal || 0), subtotal: Number(h.subtotal || 0), discount: 0,
           createdAt: String(h.confirmed_at), status: 'original' as const,
           salesperson: '', biller: String(h.shop_name ?? ''),
+          invoiceNo: invoiceNoByBillId.get(String(h.id)) || String(h.bill_no ?? ''),
         })),
       ]);
 
@@ -675,6 +729,22 @@ function AdminDashboard() {
     : `${new Date(`${fromDate}T00:00:00`).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })} – ${new Date(`${toDate}T00:00:00`).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}`;
 
   const cafeOrdersInRange = useMemo(() => orders.filter(o => inRange(o.createdAt, fromDate, toDate)), [orders, fromDate, toDate]);
+  const { sorted: sortedCafeOrders, sortKey: cafeOrdersSortKey, sortDir: cafeOrdersSortDir, toggleSort: toggleCafeOrdersSort } = useSortableRows(
+    cafeOrdersInRange,
+    (o, key) => {
+      switch (key) {
+        case 'order': return o.orderNumber;
+        case 'customer': return o.customerName || '';
+        case 'items': return o.items.reduce((s, i) => s + i.quantity, 0);
+        case 'payment': return o.paymentType || '';
+        case 'total': return o.total || 0;
+        case 'status': return o.status;
+        default: return new Date(o.createdAt).getTime();
+      }
+    },
+    'date',
+    'desc',
+  );
   const cafeServedOrders = useMemo(() => cafeOrdersInRange.filter(o => o.status === 'served'), [cafeOrdersInRange]);
   const cafeCancelledOrders = useMemo(() => cafeOrdersInRange.filter(o => o.status === 'cancelled'), [cafeOrdersInRange]);
   const cafeSalesTotal = useMemo(() => cafeServedOrders.reduce((sum, o) => sum + Number(o.total || 0), 0), [cafeServedOrders]);
@@ -1434,9 +1504,17 @@ function AdminDashboard() {
         {cafeOrdersInRange.length === 0 ? <EmptyState label="No cafe orders in this range." /> : (
           <div className="overflow-x-auto">
             <table className="w-full min-w-[720px] text-sm">
-              <thead><tr className="border-b bg-slate-50 text-left text-xs uppercase text-slate-500"><th className="p-3">Order</th><th className="p-3">Customer</th><th className="p-3">Items</th><th className="p-3">Payment</th><th className="p-3 text-right">Total</th><th className="p-3">Status</th><th className="p-3">Time</th></tr></thead>
+              <thead><tr className="border-b bg-slate-50 text-left text-xs uppercase text-slate-500">
+                <SortableTh label="Order" sortKey="order" activeKey={cafeOrdersSortKey} dir={cafeOrdersSortDir} onSort={toggleCafeOrdersSort} />
+                <SortableTh label="Customer" sortKey="customer" activeKey={cafeOrdersSortKey} dir={cafeOrdersSortDir} onSort={toggleCafeOrdersSort} />
+                <SortableTh label="Items" sortKey="items" activeKey={cafeOrdersSortKey} dir={cafeOrdersSortDir} onSort={toggleCafeOrdersSort} />
+                <SortableTh label="Payment" sortKey="payment" activeKey={cafeOrdersSortKey} dir={cafeOrdersSortDir} onSort={toggleCafeOrdersSort} />
+                <SortableTh label="Total" sortKey="total" activeKey={cafeOrdersSortKey} dir={cafeOrdersSortDir} onSort={toggleCafeOrdersSort} align="right" />
+                <SortableTh label="Status" sortKey="status" activeKey={cafeOrdersSortKey} dir={cafeOrdersSortDir} onSort={toggleCafeOrdersSort} />
+                <SortableTh label="Time" sortKey="date" activeKey={cafeOrdersSortKey} dir={cafeOrdersSortDir} onSort={toggleCafeOrdersSort} />
+              </tr></thead>
               <tbody className="divide-y">
-                {cafeOrdersInRange.slice(0, 60).map(o => (
+                {sortedCafeOrders.slice(0, 60).map(o => (
                   <tr key={o.id} className="hover:bg-slate-50">
                     <td className="p-3 font-bold">#{String(o.orderNumber).padStart(3, '0')}</td>
                     <td className="p-3">{o.customerName || '-'}</td>
@@ -1516,6 +1594,21 @@ function AdminDashboard() {
     });
     return map;
   }, [realBillItems]);
+  const { sorted: sortedBranchBills, sortKey: branchBillsSortKey, sortDir: branchBillsSortDir, toggleSort: toggleBranchBillsSort } = useSortableRows(
+    filteredRealBills,
+    (b, key) => {
+      switch (key) {
+        case 'branch': return b.branch;
+        case 'billNo': return b.billNo;
+        case 'items': return (realBillItemsByBillId.get(b.id) ?? []).length;
+        case 'total': return b.total;
+        case 'biller': return b.biller || b.salesperson;
+        default: return new Date(b.createdAt).getTime();
+      }
+    },
+    'date',
+    'desc',
+  );
   const billPaidByMode = useMemo(() => {
     const map = new Map<string, { cash: number; upi: number; card: number }>();
     realPayments.forEach(p => {
@@ -1754,9 +1847,17 @@ function AdminDashboard() {
         {filteredRealBills.length === 0 ? <EmptyState label={realSalesLoading ? 'Loading bills…' : 'No bills in this range.'} /> : (
           <div className="overflow-x-auto">
             <table className="w-full min-w-[860px] text-sm">
-              <thead><tr className="border-b bg-slate-50 text-left text-xs uppercase text-slate-500"><th className="p-3 w-8" /><th className="p-3">Branch</th><th className="p-3">Bill No</th><th className="p-3 text-right">Items</th><th className="p-3 text-right">Bill Price</th><th className="p-3">Biller / Salesperson</th><th className="p-3">Time</th></tr></thead>
+              <thead><tr className="border-b bg-slate-50 text-left text-xs uppercase text-slate-500">
+                <th className="p-3 w-8" />
+                <SortableTh label="Branch" sortKey="branch" activeKey={branchBillsSortKey} dir={branchBillsSortDir} onSort={toggleBranchBillsSort} />
+                <SortableTh label="Bill No" sortKey="billNo" activeKey={branchBillsSortKey} dir={branchBillsSortDir} onSort={toggleBranchBillsSort} />
+                <SortableTh label="Items" sortKey="items" activeKey={branchBillsSortKey} dir={branchBillsSortDir} onSort={toggleBranchBillsSort} align="right" />
+                <SortableTh label="Bill Price" sortKey="total" activeKey={branchBillsSortKey} dir={branchBillsSortDir} onSort={toggleBranchBillsSort} align="right" />
+                <SortableTh label="Biller / Salesperson" sortKey="biller" activeKey={branchBillsSortKey} dir={branchBillsSortDir} onSort={toggleBranchBillsSort} />
+                <SortableTh label="Time" sortKey="date" activeKey={branchBillsSortKey} dir={branchBillsSortDir} onSort={toggleBranchBillsSort} />
+              </tr></thead>
               <tbody className="divide-y">
-                {filteredRealBills.slice(0, 200).map(b => {
+                {sortedBranchBills.slice(0, 200).map(b => {
                   const items = realBillItemsByBillId.get(b.id) ?? [];
                   const paid = billPaidByMode.get(b.id);
                   const expanded = expandedBillId === b.id;
@@ -1820,6 +1921,20 @@ function AdminDashboard() {
   // — the real reason Hosur revenue always looked like ₹0 elsewhere.
   const hosurBillsInRange = useMemo(() => realBillsInRange.filter(b => b.branch === 'Hosur'), [realBillsInRange]);
   const hosurBillItemsInRange = useMemo(() => realBillItems.filter(i => i.branch === 'Hosur'), [realBillItems]);
+  const { sorted: sortedHosurBills, sortKey: hosurBillsSortKey, sortDir: hosurBillsSortDir, toggleSort: toggleHosurBillsSort } = useSortableRows(
+    hosurBillsInRange,
+    (b, key) => {
+      switch (key) {
+        case 'invoiceNo': return b.invoiceNo || b.billNo;
+        case 'biller': return b.biller;
+        case 'items': return hosurBillItemsInRange.filter(i => i.billId === b.id).length;
+        case 'total': return b.total;
+        default: return new Date(b.createdAt).getTime();
+      }
+    },
+    'date',
+    'desc',
+  );
   const hosurTotalBilled = useMemo(() => hosurBillsInRange.reduce((sum, b) => sum + b.total, 0), [hosurBillsInRange]);
   const hosurUnbilledTotal = useMemo(() => hosurUnbilledDispatched.reduce((sum, o) => sum + o.subtotal, 0), [hosurUnbilledDispatched]);
   const hosurPaidByMode = useMemo(() => {
@@ -1875,15 +1990,18 @@ function AdminDashboard() {
       // Cafe Control / Branch Sales / Hosur Sales / Dispatch Details. Hosur
       // bills go through the same realPayments table as branch bills, so
       // billPaidByMode (built above from realPayments) covers these too.
+      // FEATURE (2026-09-05): "the Bill No should not come this one it
+      // should come invoice number" — see the invoiceNoByBillId matching
+      // comment in fetchRealSalesData above for how this is derived.
       name: 'Bill-wise Sales', title: `Hosur Sales — Bill-wise Sales (${fromDate} to ${toDate})`,
       columns: [
-        { header: 'Branch', key: 'branch' }, { header: 'Bill No', key: 'billNo' }, { header: 'Date', key: 'date', width: 14 }, { header: 'Time', key: 'time', width: 12 },
+        { header: 'Branch', key: 'branch' }, { header: 'Invoice Number', key: 'invoiceNo', width: 18 }, { header: 'Date', key: 'date', width: 14 }, { header: 'Time', key: 'time', width: 12 },
         { header: 'Total Sales', key: 'totalSales' }, { header: 'Cash', key: 'cash' }, { header: 'UPI', key: 'upi' }, { header: 'Card', key: 'card' },
         { header: 'Salesperson', key: 'salesperson', width: 18 }, { header: 'Biller', key: 'biller' },
       ],
       rows: hosurBillsInRange.map(b => {
         const paid = billPaidByMode.get(b.id) ?? { cash: 0, upi: 0, card: 0 };
-        return { branch: 'Hosur', billNo: b.billNo || '—', date: fmtDate(b.createdAt), time: fmtTime(b.createdAt), totalSales: b.total, cash: paid.cash, upi: paid.upi, card: paid.card, salesperson: b.salesperson || '—', biller: b.biller || '—' };
+        return { branch: 'Hosur', invoiceNo: b.invoiceNo || b.billNo || '—', date: fmtDate(b.createdAt), time: fmtTime(b.createdAt), totalSales: b.total, cash: paid.cash, upi: paid.upi, card: paid.card, salesperson: b.salesperson || '—', biller: b.biller || '—' };
       }),
     },
     {
@@ -1997,25 +2115,39 @@ function AdminDashboard() {
         {realSalesError && <p className="mb-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700">{realSalesError}</p>}
         {hosurBillsInRange.length === 0 ? <EmptyState label={realSalesLoading ? 'Loading bills…' : 'No confirmed Hosur bills in this range.'} /> : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[860px] text-sm">
-              <thead><tr className="border-b bg-slate-50 text-left text-xs uppercase text-slate-500"><th className="p-3 w-8" /><th className="p-3">Bill No</th><th className="p-3">Shop</th><th className="p-3 text-right">Items</th><th className="p-3 text-right">Bill Price</th><th className="p-3">Time</th></tr></thead>
+            <table className="w-full min-w-[900px] text-sm">
+              <thead><tr className="border-b bg-slate-50 text-left text-xs uppercase text-slate-500">
+                <th className="p-3 w-8" />
+                <SortableTh label="Invoice Number" sortKey="invoiceNo" activeKey={hosurBillsSortKey} dir={hosurBillsSortDir} onSort={toggleHosurBillsSort} />
+                {/* BUG FIX (2026-09-05): "still unable to see the date column" —
+                    Date/Time were the LAST two columns, pushed past the right edge
+                    of the viewport on this wide table (confirmed live: Bill Price
+                    itself was already clipped). Moved right after Invoice Number
+                    so they're visible without needing to scroll right. */}
+                <SortableTh label="Date" sortKey="date" activeKey={hosurBillsSortKey} dir={hosurBillsSortDir} onSort={toggleHosurBillsSort} />
+                <SortableTh label="Time" sortKey="date" activeKey={hosurBillsSortKey} dir={hosurBillsSortDir} onSort={toggleHosurBillsSort} />
+                <SortableTh label="Shop" sortKey="biller" activeKey={hosurBillsSortKey} dir={hosurBillsSortDir} onSort={toggleHosurBillsSort} />
+                <SortableTh label="Items" sortKey="items" activeKey={hosurBillsSortKey} dir={hosurBillsSortDir} onSort={toggleHosurBillsSort} align="right" />
+                <SortableTh label="Bill Price" sortKey="total" activeKey={hosurBillsSortKey} dir={hosurBillsSortDir} onSort={toggleHosurBillsSort} align="right" />
+              </tr></thead>
               <tbody className="divide-y">
-                {[...hosurBillsInRange].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()).slice(0, 200).map(b => {
+                {sortedHosurBills.slice(0, 200).map(b => {
                   const items = hosurBillItemsInRange.filter(i => i.billId === b.id);
                   const expanded = expandedBillId === b.id;
                   return (
                     <Fragment key={b.id}>
                       <tr onClick={() => setExpandedBillId(expanded ? null : b.id)} className="cursor-pointer hover:bg-slate-50">
                         <td className="p-3"><ChevronDown className={cn('size-4 text-slate-400 transition-transform', expanded && 'rotate-180')} /></td>
-                        <td className="p-3 font-semibold">{b.billNo || '—'}</td>
+                        <td className="p-3 font-semibold">{b.invoiceNo || b.billNo || '—'}</td>
+                        <td className="p-3 text-slate-500">{fmtDate(b.createdAt)}</td>
+                        <td className="p-3 text-slate-500">{fmtTime(b.createdAt)}</td>
                         <td className="p-3">{b.biller || '—'}</td>
                         <td className="p-3 text-right tabular-nums text-slate-500">{items.length}</td>
                         <td className="p-3 text-right font-black">{formatCurrency(b.total)}</td>
-                        <td className="p-3 text-slate-500">{fmtDateTime(b.createdAt)}</td>
                       </tr>
                       {expanded && (
                         <tr>
-                          <td colSpan={6} className="bg-slate-50/70 p-4">
+                          <td colSpan={7} className="bg-slate-50/70 p-4">
                             {items.length === 0 ? <p className="text-xs text-slate-500">No line items recorded for this bill.</p> : (
                               <table className="w-full text-xs">
                                 <thead><tr className="text-left uppercase text-slate-400"><th className="py-1.5">Item</th><th className="py-1.5 text-right">Qty</th><th className="py-1.5">Unit</th><th className="py-1.5 text-right">Unit Price</th><th className="py-1.5 text-right">Line Total</th></tr></thead>
