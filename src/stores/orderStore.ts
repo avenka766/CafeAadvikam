@@ -49,6 +49,37 @@ function hydrateOrdersFromCache(set: (partial: Partial<OrderState>) => void): Pr
   return orderCacheHydration;
 }
 
+// BUG FIX (2026-09-05): "Cafe Control's sales history keeps starting later
+// and later" (23 Aug, then 26 Aug a week on) — root cause: Supabase's
+// PostgREST gateway caps rows per request (this project's cap measured live
+// at ~1000) regardless of a client-side `.limit()` asking for more, so
+// loadOrders(90)/refreshRecentOrders's single-shot queries below were
+// silently truncated to only the newest ~1000 orders every time, no matter
+// what `days` or `.limit()` was passed. As daily order volume grew, that
+// fixed ~1000-row window covered fewer and fewer calendar days, so the
+// earliest visible date kept creeping forward — exactly the reported
+// symptom (confirmed live: a 19 Aug–5 Sept request returned 999 of the real
+// 1884 served orders). Same bug class, same fix, as the `fetchAllRows`
+// helper AdminDashboard.tsx already uses for branch_bill_items — page
+// through with `.range()` instead of trusting one request to return
+// everything up to the caller's own `.limit()`.
+async function fetchAllOrderRows(
+  build: () => any,
+  maxRows: number,
+  pageSize = 1000,
+): Promise<{ data: Record<string, unknown>[]; error: { message: string } | null }> {
+  const rows: Record<string, unknown>[] = [];
+  for (let from = 0; from < maxRows; from += pageSize) {
+    const to = Math.min(from + pageSize, maxRows) - 1;
+    const { data, error } = await build().range(from, to);
+    if (error) return { data: rows, error };
+    const page = (data || []) as Record<string, unknown>[];
+    rows.push(...page);
+    if (page.length < to - from + 1) break;
+  }
+  return { data: rows, error: null };
+}
+
 let orderRealtimeChannel: ReturnType<typeof supabase.channel> | null = null;
 let orderFetchInFlight = false;
 // BUG FIX (2026-08-09): "Owner Dashboard page is keep on refreshing 10 times
@@ -273,12 +304,13 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       // EGRESS FIX: defensive cap alongside the date cutoff — callers have
       // passed as much as 3650 days here, so this stops a single fetch from
       // ever being truly unbounded regardless of the `days` argument used.
-      const { data, error } = await supabase
+      // Paginated via fetchAllOrderRows (see its comment) since a single
+      // request silently gets capped well below 8000 by PostgREST itself.
+      const { data, error } = await fetchAllOrderRows(() => supabase
         .from('orders')
         .select('id, order_number, table_number, order_type, items, subtotal, discount, discount_type, discount_value, total, status, created_by, created_at, updated_at, notes, customer_name, payment_type, payment_breakdown, billed_by, cancel_reason, order_source, advance_amount, advance_paid_by, balance_due, full_amount, fully_paid_at, balance_payment_type, balance_paid_by, balance_order_id, parcel_charges, delivery_date, wallet_id, wallet_amount, wallet_transaction_id, promotion_discount, promotion_ids, wallet_cashback')
         .gte('created_at', cutoff.toISOString())
-        .order('created_at', { ascending: false })
-        .limit(8000);
+        .order('created_at', { ascending: false }), 8000);
 
       if (error) throw error;
       if (data) {
@@ -346,12 +378,13 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     const cutoff = new Date();
     cutoff.setDate(cutoff.getDate() - days);
     try {
-      const { data, error } = await supabase
+      // Same PostgREST row-cap fix as loadOrders above — paginated so a busy
+      // 1-3 day window (POLL_REFRESH_DAYS) can't silently lose orders either.
+      const { data, error } = await fetchAllOrderRows(() => supabase
         .from('orders')
         .select('id, order_number, table_number, order_type, items, subtotal, discount, discount_type, discount_value, total, status, created_by, created_at, updated_at, notes, customer_name, payment_type, payment_breakdown, billed_by, cancel_reason, order_source, advance_amount, advance_paid_by, balance_due, full_amount, fully_paid_at, balance_payment_type, balance_paid_by, balance_order_id, parcel_charges, delivery_date, wallet_id, wallet_amount, wallet_transaction_id, promotion_discount, promotion_ids, wallet_cashback')
         .gte('created_at', cutoff.toISOString())
-        .order('created_at', { ascending: false })
-        .limit(2000);
+        .order('created_at', { ascending: false }), 2000);
       if (error) throw error;
       if (!data) return;
       const fresh = data.map(dbRowToOrder);
