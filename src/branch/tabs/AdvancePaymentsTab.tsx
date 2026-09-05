@@ -41,8 +41,10 @@ function toLocalDateKey(iso: string) {
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 }
 
+// AUDIT FIX (2026-09-05): "the payment should be round off there should not
+// be any decimal points".
 const fmt = (n: number) =>
-  `₹${n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  `₹${Math.round(n).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
 
 export function AdvancePaymentsTab({ branch, advanceOrders }: Props) {
   const [search, setSearch]     = useState('');
