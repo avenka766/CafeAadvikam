@@ -43,6 +43,15 @@ interface DayAttendance {
   present: boolean;
   half: boolean;   // half day
   woff: boolean;
+  // FEATURE (2026-09-06): "if they did not mark the attendance then it
+  // should be blank, if the mark as absent then its should come as X in red
+  // color" — before this field existed, "not yet marked" and "explicitly
+  // marked absent" were the exact same shape ({present:false, half:false,
+  // woff:false}), so a day nobody had touched yet was indistinguishable from
+  // one deliberately marked absent, and both showed the same 'X'. This is
+  // the explicit marker for the latter; a day with every flag false
+  // (including this one) is genuinely untouched.
+  absent: boolean;
   bf: boolean;
   lunch: boolean;
   dinner: boolean;
@@ -98,8 +107,19 @@ const BRANCH_SHORT: Record<Branch, string> = {
 
 const CHART_COLORS = ['#E07A3A', '#2563EB', '#059669', '#F59E0B', '#DC2626', '#7C3AED'];
 
+// FEATURE (2026-09-06): "Arrange every name in Alphabetical order" — applied
+// once wherever the roster is loaded/changed so the on-screen list, PDF
+// export, and every Excel sheet all inherit the same order automatically.
+const sortByName = (list: Employee[]) => [...list].sort((a, b) => a.name.localeCompare(b.name));
+// FEATURE (2026-09-06): "the employees are not coming in dep wise — the
+// excel should come properly dep wise" — every Excel export below groups by
+// Department first (alphabetically), Name second, instead of whatever ad-hoc
+// order the caller's current filter happened to produce.
+const sortByDeptThenName = (list: Employee[]) =>
+  [...list].sort((a, b) => a.department.trim().localeCompare(b.department.trim()) || a.name.localeCompare(b.name));
+
 const ak = (eid: string, d: number) => `${eid}_${d}`;
-const defaultDay = (): DayAttendance => ({ present: false, half: false, woff: false, bf: false, lunch: false, dinner: false });
+const defaultDay = (): DayAttendance => ({ present: false, half: false, woff: false, absent: false, bf: false, lunch: false, dinner: false });
 const defaultDecision = (): DeductionDecision => ({ deductAdvance: false, deductOther: true, deductUniform: true, deductESI: false, deductPF: false });
 // BUG FIX (2026-09-04): two compounding bugs found from a live data check.
 //
@@ -177,18 +197,18 @@ async function fetchEmployees(): Promise<Employee[]> {
 }
 
 async function fetchAttendance(year: number, month: number): Promise<MonthAttendance> {
-  const { data, error } = await supabase.from('attendance').select('employee_id, day, present, half, woff, bf, lunch, dinner').eq('year', year).eq('month', month);
+  const { data, error } = await supabase.from('attendance').select('employee_id, day, present, half, woff, absent, bf, lunch, dinner').eq('year', year).eq('month', month);
   if (error) throw error;
   const result: MonthAttendance = {};
   for (const row of (data || [])) {
     const k = ak(row.employee_id as string, row.day as number);
-    result[k] = { present: row.present as boolean, half: (row.half ?? false) as boolean, woff: row.woff as boolean, bf: row.bf as boolean, lunch: row.lunch as boolean, dinner: row.dinner as boolean };
+    result[k] = { present: row.present as boolean, half: (row.half ?? false) as boolean, woff: row.woff as boolean, absent: (row.absent ?? false) as boolean, bf: row.bf as boolean, lunch: row.lunch as boolean, dinner: row.dinner as boolean };
   }
   return result;
 }
 
 async function upsertAttendance(employeeId: string, year: number, month: number, day: number, val: DayAttendance) {
-  const { error } = await supabase.from('attendance').upsert({ employee_id: employeeId, year, month, day, present: val.present, half: val.half, woff: val.woff, bf: val.bf, lunch: val.lunch, dinner: val.dinner }, { onConflict: 'employee_id,year,month,day' });
+  const { error } = await supabase.from('attendance').upsert({ employee_id: employeeId, year, month, day, present: val.present, half: val.half, woff: val.woff, absent: val.absent, bf: val.bf, lunch: val.lunch, dinner: val.dinner }, { onConflict: 'employee_id,year,month,day' });
   if (error) console.error('Attendance upsert failed:', error.message);
 }
 
@@ -320,13 +340,13 @@ function calcSalary(emp: Employee, att: MonthAttendance, daysInMonth: number, de
     if (a.present) presentDays++;
     if (a.half)    halfDays++;
     if (a.woff)    woffDays++;
-    // BUG-M5 FIX: canteen deduction never applies on a week-off day — even if
-    // meals were accidentally ticked there.
     // AUDIT FIX (2026-09-05): "even if they are absent the food deduction
     // should show B L D" — this used to ALSO require present/half, so a
-    // meal ticked on an absent day silently never counted. Absent staff can
-    // still eat at the canteen; only week-off is excluded now.
-    if (!a.woff) {
+    // meal ticked on an absent day silently never counted.
+    // FEATURE (2026-09-06): "for Week off also the food deduction should
+    // show" — week-off used to be excluded here too (staff can still eat at
+    // the canteen on a week-off day); now counts the same as every other day.
+    {
       const m = [a.bf, a.lunch, a.dinner].filter(Boolean).length;
       canteenTotal += m === 3 ? 30 : m * 10;
     }
@@ -358,6 +378,7 @@ function exportExcel(
   monthLabel: string,
   getDecision: (id: string) => DeductionDecision
 ) {
+  employees = sortByDeptThenName(employees);
   const wb = XLSX.utils.book_new();
 
   // ── Sheet 1: Salary Summary ──
@@ -425,6 +446,7 @@ function exportExcel(
       if (a.present) return 'P';
       if (a.half)    return 'H';
       if (a.woff) return 'W';
+      if (a.absent) return 'X';
       return '';
     });
     return [i + 1, e.name, e.branch, e.department, ...days, c.presentDays, c.woffDays, c.worked, c.net];
@@ -432,7 +454,7 @@ function exportExcel(
 
   const ws2 = XLSX.utils.aoa_to_sheet([
     [`ATTENDANCE REGISTER — ${monthLabel.toUpperCase()}`],
-    ['P = Present   W = Week Off   blank = Absent'],
+    ['P = Present   W = Week Off   X = Absent   blank = Not Marked'],
     [],
     attHeaders,
     ...attRows,
@@ -494,6 +516,7 @@ function exportAttendanceExcel(
   monthLabel: string,
   getDecision: (id: string) => DeductionDecision
 ) {
+  employees = sortByDeptThenName(employees);
   const wb = XLSX.utils.book_new();
 
   // ── Sheet: Attendance Register ──
@@ -512,7 +535,12 @@ function exportAttendanceExcel(
       if (a.present) return 'P';
       if (a.half)    return 'H';
       if (a.woff)    return 'W';
-      return 'X'; // AUDIT FIX (2026-09-05): "change the symbol to X instead of A" for Absent
+      // BUG FIX (2026-09-06): "if they did not mark the attendance then it
+      // should be blank" — this used to fall through to 'X' for ANY
+      // unmatched day, including one nobody had marked at all, making a
+      // genuinely blank day indistinguishable from a real Absent mark. Only
+      // the explicit `absent` flag gets X now; everything else is blank.
+      return a.absent ? 'X' : '';
     });
     return [i + 1, e.name, e.branch, e.department, ...days, c.presentDays, c.halfDays, c.woffDays, c.worked, c.canteenTotal, c.net];
   });
@@ -559,7 +587,12 @@ function exportAttendanceExcel(
   employees.forEach(e => {
     for (let d = 1; d <= daysInMonth; d++) {
       const a = att[ak(e.id, d)];
-      if (!a || (!a.present && !a.half)) continue;
+      // FEATURE (2026-09-06): "for Week off also the food deduction should
+      // show" — this used to require present/half, silently dropping any
+      // meal ticked on a week-off or absent day from this log even though
+      // calcSalary above already counts its cost. Any day with a real meal
+      // ticked belongs here now, regardless of attendance status.
+      if (!a) continue;
       if (!a.bf && !a.lunch && !a.dinner) continue;
       const cost = [a.bf, a.lunch, a.dinner].filter(Boolean).length * 10;
       mealRows.push([mealIdx++, e.name, e.branch, e.department, d, a.bf ? 'Yes' : '', a.lunch ? 'Yes' : '', a.dinner ? 'Yes' : '', cost]);
@@ -592,14 +625,22 @@ function exportAdvanceExcel(
   allAdvanceRecords: SalaryAdvanceRecord[],
   monthLabel: string
 ) {
+  employees = sortByDeptThenName(employees);
   const wb = XLSX.utils.book_new();
   const empIds = new Set(employees.map(e => e.id));
 
-  // Filter advance records to the current employee list (dept/branch filter)
-  const records = allAdvanceRecords.filter(r => empIds.has(r.employeeId));
-
   const empMap: Record<string, Employee> = {};
   employees.forEach(e => { empMap[e.id] = e; });
+
+  // Filter advance records to the current employee list (dept/branch filter),
+  // grouped department-wise same as `employees` above (this sheet iterates
+  // records, not employees, so it needs its own explicit sort).
+  const records = allAdvanceRecords
+    .filter(r => empIds.has(r.employeeId))
+    .sort((a, b) => {
+      const ea = empMap[a.employeeId], eb = empMap[b.employeeId];
+      return (ea?.department.trim() ?? '').localeCompare(eb?.department.trim() ?? '') || (ea?.name ?? '').localeCompare(eb?.name ?? '');
+    });
 
   // ── Sheet 1: All Advance Records ──
   const headers = ['#', 'Employee', 'Branch', 'Department', 'Amount (₹)', 'Date Given', 'Note', 'Status', 'Outstanding (₹)'];
@@ -917,26 +958,36 @@ function AttRow({ emp, att, onUpdate, expanded, onToggle, decision, onDecisionCh
   );
   const maxWeekOffs = weekOffLimit(emp, year, month);
 
+  // FEATURE (2026-09-06): "if they did not mark the attendance then it
+  // should be blank, if the mark as absent then its should come as X in red
+  // color" — the cycle now has a real, distinct Absent step (before this,
+  // cycling past Week Off just reset back to the exact same shape as
+  // "never marked," so the two were indistinguishable once saved). Cycle:
+  // blank → Present → Half → Week Off (or straight to Absent once week-off
+  // slots are used up) → Absent → blank.
   const toggleDay = (day: number) => {
     const k = ak(emp.id, day);
     const cur = att[k] ?? defaultDay();
     let next: DayAttendance;
-    if (!cur.present && !cur.half && !cur.woff) {
-      // empty → Present
-      next = { ...cur, present: true, half: false };
+    if (!cur.present && !cur.half && !cur.woff && !cur.absent) {
+      // blank → Present
+      next = { ...cur, present: true, half: false, absent: false };
     } else if (cur.present) {
       // Present → Half day
-      next = { ...cur, present: false, half: true, bf: false, lunch: false, dinner: false };
+      next = { ...cur, present: false, half: true, absent: false, bf: false, lunch: false, dinner: false };
     } else if (cur.half) {
-      // Half → Week Off (if slots remain) or Absent
+      // Half → Week Off (if slots remain) or straight to Absent
       if (woffCount < maxWeekOffs) {
-        next = { ...cur, present: false, half: false, woff: true, bf: false, lunch: false, dinner: false };
+        next = { ...cur, present: false, half: false, woff: true, absent: false, bf: false, lunch: false, dinner: false };
       } else {
-        next = { ...cur, present: false, half: false, woff: false, bf: false, lunch: false, dinner: false };
+        next = { ...cur, present: false, half: false, woff: false, absent: true, bf: false, lunch: false, dinner: false };
       }
+    } else if (cur.woff) {
+      // Week Off → Absent
+      next = { ...cur, present: false, half: false, woff: false, absent: true, bf: false, lunch: false, dinner: false };
     } else {
-      // Week Off → empty
-      next = { ...cur, present: false, half: false, woff: false };
+      // Absent → blank
+      next = { ...cur, present: false, half: false, woff: false, absent: false };
     }
     onUpdate(emp.id, day, next);
   };
@@ -945,9 +996,10 @@ function AttRow({ emp, att, onUpdate, expanded, onToggle, decision, onDecisionCh
     const k = ak(emp.id, day);
     const cur = att[k] ?? defaultDay();
     // AUDIT FIX (2026-09-05): used to no-op unless present/half — matches
-    // the calcSalary fix above: meals can be marked on an absent day too,
-    // only week-off is excluded.
-    if (cur.woff) return;
+    // the calcSalary fix above: meals can be marked on an absent day too.
+    // FEATURE (2026-09-06): "for Week off also the food deduction should
+    // show" — week-off used to be the one status that still blocked meals
+    // entirely; now every status allows it.
     onUpdate(emp.id, day, { ...cur, [meal]: !cur[meal] });
   };
 
@@ -994,32 +1046,33 @@ function AttRow({ emp, att, onUpdate, expanded, onToggle, decision, onDecisionCh
                   <div key={day} className="flex flex-col items-center gap-0.5" style={{ minWidth: 32 }}>
                     <span className="text-[9px] font-body font-semibold text-muted-foreground">{day}</span>
                     <button onClick={() => toggleDay(day)} className={cn('size-7 rounded-lg text-[9px] font-bold transition-all active:scale-90 border flex items-center justify-center',
-                      !a.present && !a.half && !a.woff && 'bg-muted border-border text-muted-foreground/60 hover:border-primary/40',
+                      !a.present && !a.half && !a.woff && !a.absent && 'bg-muted border-border text-muted-foreground/60 hover:border-primary/40',
                       a.present && 'bg-emerald-500 border-emerald-600 text-white',
                       a.half    && 'bg-yellow-400 border-yellow-500 text-white',
                       a.woff    && 'bg-sky-100 border-sky-300 text-sky-700',
+                      a.absent  && 'bg-red-100 border-red-400 text-red-600',
                     )}>
-                      {/* AUDIT FIX (2026-09-05): "not only in Excel but
-                          also in the UI show X instead of A" — this cell
-                          rendered nothing at all for an absent day; now
-                          shows X, matching the Excel export's symbol. */}
-                      {a.present ? '✓' : a.half ? '½' : a.woff ? 'W' : 'X'}
+                      {/* FEATURE (2026-09-06): "if they did not mark the
+                          attendance then it should be blank, if the mark as
+                          absent then its should come as X in red color" —
+                          a genuinely untouched day (see the `absent` field's
+                          own comment) now renders nothing at all; only an
+                          explicit Absent mark shows the red X. */}
+                      {a.present ? '✓' : a.half ? '½' : a.woff ? 'W' : a.absent ? 'X' : ''}
                     </button>
-                    {/* AUDIT FIX (2026-09-05): "even if they are absent the
-                        food deduction should show B L D" — this used to be
-                        gated on present/half, hiding the meal buttons
-                        entirely for an absent day. Only week-off hides them
-                        now (matches the calcSalary/toggleMeal fixes above). */}
-                    {!a.woff ? (
-                      <div className="flex gap-[2px] mt-0.5">
-                        {(['bf', 'lunch', 'dinner'] as const).map(m => (
-                          <button key={m} onClick={e => { e.stopPropagation(); toggleMeal(day, m); }} title={m === 'bf' ? 'Breakfast ₹10' : m === 'lunch' ? 'Lunch ₹10' : 'Dinner ₹10'}
-                            className={cn('w-[18px] h-[16px] rounded text-[7px] font-bold transition-all active:scale-90 border leading-none flex items-center justify-center', a[m] ? 'bg-orange-400 border-orange-500 text-white' : 'bg-muted border-border text-muted-foreground hover:border-orange-300')}>
-                            {m === 'bf' ? 'B' : m === 'lunch' ? 'L' : 'D'}
-                          </button>
-                        ))}
-                      </div>
-                    ) : <div className="h-[16px] mt-0.5" />}
+                    {/* FEATURE (2026-09-06): "for Week off also the food
+                        deduction should show" — week-off was the one status
+                        that still hid the meal buttons entirely; every
+                        status shows them now (matches the calcSalary/
+                        toggleMeal fixes above). */}
+                    <div className="flex gap-[2px] mt-0.5">
+                      {(['bf', 'lunch', 'dinner'] as const).map(m => (
+                        <button key={m} onClick={e => { e.stopPropagation(); toggleMeal(day, m); }} title={m === 'bf' ? 'Breakfast ₹10' : m === 'lunch' ? 'Lunch ₹10' : 'Dinner ₹10'}
+                          className={cn('w-[18px] h-[16px] rounded text-[7px] font-bold transition-all active:scale-90 border leading-none flex items-center justify-center', a[m] ? 'bg-orange-400 border-orange-500 text-white' : 'bg-muted border-border text-muted-foreground hover:border-orange-300')}>
+                          {m === 'bf' ? 'B' : m === 'lunch' ? 'L' : 'D'}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 );
               })}
@@ -1029,6 +1082,7 @@ function AttRow({ emp, att, onUpdate, expanded, onToggle, decision, onDecisionCh
             <span className="flex items-center gap-1 text-[10px] font-body text-muted-foreground"><span className="size-2.5 rounded-sm bg-emerald-500 inline-block" /> Present</span>
             <span className="flex items-center gap-1 text-[10px] font-body text-muted-foreground"><span className="size-2.5 rounded-sm bg-yellow-400 inline-block" /> ½ Half Day</span>
             <span className="flex items-center gap-1 text-[10px] font-body text-muted-foreground"><span className="size-2.5 rounded-sm bg-sky-200 inline-block" /> W = Week Off ({woffCount}/{maxWeekOffs})</span>
+            <span className="flex items-center gap-1 text-[10px] font-body text-muted-foreground"><span className="size-2.5 rounded-sm bg-red-100 border border-red-400 inline-block" /> X = Absent</span>
             <span className="flex items-center gap-1 text-[10px] font-body text-muted-foreground"><span className="size-2.5 rounded-sm bg-orange-400 inline-block" /> BF / Lunch / Dinner ₹10</span>
             <span className="ml-auto text-[10px] font-body font-bold text-orange-600">🍽 {'₹'}{canteenTotal}</span>
           </div>
@@ -1726,7 +1780,7 @@ export default function AttendanceSalary() {
         fetchDeductionDecisions(activeMonth.year, activeMonth.month),
         fetchAdvanceRecords(),
       ]);
-      setEmployees(emps);
+      setEmployees(sortByName(emps));
       setAtt(attData);
       setDecisions(decData);
       setAdvanceRecords(advResult.records);
@@ -1789,7 +1843,7 @@ export default function AttendanceSalary() {
     ));
   };
 
-  const addEmp = (emp: Employee) => { setEmployees(prev => [...prev, emp]); setShowAddModal(false); };
+  const addEmp = (emp: Employee) => { setEmployees(prev => sortByName([...prev, emp])); setShowAddModal(false); };
   const [removeEmpError, setRemoveEmpError] = useState('');
   const [removingEmpId, setRemovingEmpId]   = useState<string | null>(null);
 
@@ -1807,7 +1861,7 @@ export default function AttendanceSalary() {
   };
   const saveEmp = (updated: Employee) => {
     const prev = employees.find(e => e.id === updated.id);
-    setEmployees(prevList => prevList.map(e => e.id === updated.id ? updated : e));
+    setEmployees(prevList => sortByName(prevList.map(e => e.id === updated.id ? updated : e)));
     // If advance was reduced to 0 via the edit modal, mark all their records as cleared
     if (prev && prev.salaryAdvance > 0 && updated.salaryAdvance === 0) {
       setAdvanceRecords(prevRecs => prevRecs.map(r => r.employeeId === updated.id ? { ...r, cleared: true } : r));
@@ -2087,7 +2141,7 @@ export default function AttendanceSalary() {
         <div className="mx-4 bg-card border border-border rounded-2xl overflow-hidden">
           <div className="px-4 py-3 border-b border-border">
             <h2 className="font-display font-bold text-foreground">Daily Attendance — {activeMonth.label}</h2>
-            <p className="text-[10px] font-body text-muted-foreground mt-0.5">Tap row to expand → tap day: ✓ Present → W Week Off → Absent. Meals ₹10 each. Admin Office staff can take 5 week offs; all other staff can take 4.</p>
+            <p className="text-[10px] font-body text-muted-foreground mt-0.5">Tap row to expand → tap day: blank → ✓ Present → ½ Half Day → W Week Off → X Absent → blank. Meals ₹10 each, on any day. Admin Office staff can take 5 week offs; all other staff can take 4.</p>
           </div>
           {filtered.length === 0
             ? <EmptyState icon="👥" message="No employees found" sub="Add staff in Staff Management to see them here." />

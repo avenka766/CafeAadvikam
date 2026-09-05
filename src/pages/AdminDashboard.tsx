@@ -443,26 +443,7 @@ function AdminDashboard() {
         return { data: rows, error: null };
       };
 
-      // FEATURE (2026-09-05): "the Bill No should not come this one it
-      // should come invoice number" — Hosur's own bill_no (HSR260905-0081)
-      // is an internal receivable reference, not the real GST-sequence tax
-      // invoice number. That number lives on a completely separate
-      // dispatch_invoices row with no FK back to hosur_bills (confirmed live
-      // — dispatchReceiveAndBill creates both rows independently). The only
-      // reliable correlation: same shop, and dispatch_invoices.created_at
-      // falls between the bill's own created_at and updated_at (a bill is
-      // reused across multiple dispatch batches for the same order — see
-      // syncHosurBillWithInvoiceEdit's comment — each bumping updated_at and
-      // adding its own invoice). Verified against 2 real bills: an
-      // exact-second single-invoice match and a confirmed 2-invoice
-      // (SALES/26-27/4 + 5) split whose totals sum to the bill's subtotal.
-      // Widened 1 day earlier than the bill window itself since a bill
-      // confirmed just after midnight can have its first dispatch invoice
-      // dated the day before.
-      const dispatchInvoiceWindowStart = new Date(fromTs);
-      dispatchInvoiceWindowStart.setDate(dispatchInvoiceWindowStart.getDate() - 1);
-
-      const [headersRes, itemsRes, paymentsRes, hosurRes, unbilledRes, expensesRes, purchasesRes, hosurInvoicesRes] = await Promise.all([
+      const [headersRes, itemsRes, paymentsRes, hosurRes, unbilledRes, expensesRes, purchasesRes] = await Promise.all([
         fetchAllRows(() => supabase.from('branch_bill_headers')
           .select('id, branch, bill_no, subtotal, discount, total, status, created_at, salesperson, biller, notes')
           .in('branch', ['SNB', 'VRSNB'])
@@ -486,8 +467,13 @@ function AdminDashboard() {
           .in('branch', ['SNB', 'VRSNB'])
           .in('payment_purpose', ['bill_collection', 'credit_upfront', 'advance_balance', 'credit_settlement'])
           .gte('created_at', fromTs).lte('created_at', toTs)),
+        // FEATURE (2026-09-05): "dont use bill number anywhere ... use
+        // invoice number" — invoice_no is the real GST-sequence number
+        // (SALES/26-27/N), written directly onto the bill by
+        // dispatchReceiveAndBill at billing time (see hosurBillingBridge.ts)
+        // rather than inferred here — no join needed.
         fetchAllRows(() => supabase.from('hosur_bills')
-          .select('id, bill_no, shop_id, shop_name, subtotal, paid_amount, credit_amount, payment_mode, confirmed_at, status, created_at, updated_at')
+          .select('id, bill_no, invoice_no, shop_id, shop_name, subtotal, paid_amount, credit_amount, payment_mode, confirmed_at, status, created_at, updated_at')
           .not('confirmed_at', 'is', null)
           .neq('status', 'cancelled')
           .gte('confirmed_at', fromTs).lte('confirmed_at', toTs)),
@@ -518,14 +504,9 @@ function AdminDashboard() {
           .select('payload, created_at')
           .eq('record_type', 'purchase_invoice')
           .gte('created_at', fromTs).lte('created_at', toTs)),
-        fetchAllRows(() => supabase.from('dispatch_invoices')
-          .select('invoice_no, hosur_shop_id, hosur_shop_name, created_at')
-          .eq('scope', 'Hosur')
-          .gte('created_at', dispatchInvoiceWindowStart.toISOString()).lte('created_at', toTs)
-          .order('created_at', { ascending: true })),
       ]);
       if (realSalesRequestRef.current !== requestId) return;
-      const err = headersRes.error || itemsRes.error || paymentsRes.error || hosurRes.error || unbilledRes.error || expensesRes.error || purchasesRes.error || hosurInvoicesRes.error;
+      const err = headersRes.error || itemsRes.error || paymentsRes.error || hosurRes.error || unbilledRes.error || expensesRes.error || purchasesRes.error;
       if (err) { setRealSalesError(err.message); setRealSalesLoading(false); return; }
 
       // BUG FIX (audit 2026-09-02): hosur_bill_items has no branch/date column of its own,
@@ -565,34 +546,6 @@ function AdminDashboard() {
       const hosurBills = (hosurRes.data || []) as Array<Record<string, unknown>>;
       const hosurBillIds = new Set(hosurBills.map((b) => String(b.id)));
 
-      // See the fetch-time comment above dispatchInvoiceWindowStart for why
-      // this match is shop + time-window based rather than a stored FK.
-      const hosurInvoiceRows = (hosurInvoicesRes.data || []) as Array<Record<string, unknown>>;
-      const invoiceNoByBillId = new Map<string, string>();
-      hosurBills.forEach((h) => {
-        const shopId = h.shop_id == null ? null : String(h.shop_id);
-        const shopName = String(h.shop_name ?? '');
-        // BUG FIX: dispatchReceiveAndBill creates the dispatch_invoices row
-        // FIRST, then the hosur_bills row a fraction of a second later
-        // (confirmed live: ~0.7s earlier in every sample checked) — using
-        // the bill's own created_at as the window's lower bound excluded
-        // that first invoice every time. Buffered back 2 minutes to comfortably
-        // cover that gap without risking pulling in an unrelated invoice.
-        const billCreatedAt = new Date(String(h.created_at ?? ''));
-        const windowStart = new Date(billCreatedAt.getTime() - 2 * 60_000).toISOString();
-        const windowEnd = String(h.updated_at ?? h.created_at ?? '');
-        const matches = hosurInvoiceRows.filter((inv) => {
-          const invShopId = inv.hosur_shop_id == null ? null : String(inv.hosur_shop_id);
-          const sameShop = shopId && invShopId ? invShopId === shopId : String(inv.hosur_shop_name ?? '') === shopName;
-          if (!sameShop) return false;
-          const invCreatedAt = String(inv.created_at ?? '');
-          return invCreatedAt >= windowStart && invCreatedAt <= windowEnd;
-        });
-        if (matches.length > 0) {
-          invoiceNoByBillId.set(String(h.id), matches.map((inv) => String(inv.invoice_no ?? '')).filter(Boolean).join(', '));
-        }
-      });
-
       setRealBills([
         ...headers.map((h) => ({
           id: String(h.id), billNo: String(h.bill_no ?? ''), branch: h.branch as Branch,
@@ -605,7 +558,7 @@ function AdminDashboard() {
           total: Number(h.subtotal || 0), subtotal: Number(h.subtotal || 0), discount: 0,
           createdAt: String(h.confirmed_at), status: 'original' as const,
           salesperson: '', biller: String(h.shop_name ?? ''),
-          invoiceNo: invoiceNoByBillId.get(String(h.id)) || String(h.bill_no ?? ''),
+          invoiceNo: String(h.invoice_no ?? '') || String(h.bill_no ?? ''),
         })),
       ]);
 
@@ -1093,7 +1046,9 @@ function AdminDashboard() {
   });
 
   const printDailyClosure = () => {
-    const rows = filteredClosureRows.map(r => `<tr><td>${BRANCH_LABELS[r.branch]}</td><td>${r.status}</td><td>₹${r.openingBalance.toFixed(2)}</td><td>₹${r.totalSales.toFixed(2)}</td><td>₹${r.cashSales.toFixed(2)}</td><td>₹${r.upiSales.toFixed(2)}</td><td>₹${r.cardSales.toFixed(2)}</td><td>₹${r.creditSales.toFixed(2)}</td><td>₹${r.returns.toFixed(2)}</td><td>₹${r.purchasePayments.toFixed(2)}</td><td>₹${r.bankDeposits.toFixed(2)}</td><td>₹${r.closingBalance.toFixed(2)}</td><td>₹${r.differenceAmount.toFixed(2)}</td><td>${r.closedBy}</td><td>${r.remarks}</td></tr>`).join('');
+    // AUDIT FIX (2026-09-05): "the payment should be round off there should
+    // not be any decimal points".
+    const rows = filteredClosureRows.map(r => `<tr><td>${BRANCH_LABELS[r.branch]}</td><td>${r.status}</td><td>₹${Math.round(r.openingBalance)}</td><td>₹${Math.round(r.totalSales)}</td><td>₹${Math.round(r.cashSales)}</td><td>₹${Math.round(r.upiSales)}</td><td>₹${Math.round(r.cardSales)}</td><td>₹${Math.round(r.creditSales)}</td><td>₹${Math.round(r.returns)}</td><td>₹${Math.round(r.purchasePayments)}</td><td>₹${Math.round(r.bankDeposits)}</td><td>₹${Math.round(r.closingBalance)}</td><td>₹${Math.round(r.differenceAmount)}</td><td>${r.closedBy}</td><td>${r.remarks}</td></tr>`).join('');
     const html = `<!doctype html><html><head><title>Daily Closure ${closureDate}</title><style>@page{size:landscape;margin:9mm}@media print{html,body{height:auto !important}}*{box-sizing:border-box}body{margin:0;background:#f8fafc;color:#111827;font-family:Arial,sans-serif;font-size:12px}body:before{content:"";display:block;height:12px;background:linear-gradient(90deg,#f97316,#059669,#111827)}main{background:#fff;min-height:100vh;padding:24px}.hero{display:flex;justify-content:space-between;gap:18px;align-items:flex-start;margin-bottom:18px;border-bottom:2px solid #111827;padding-bottom:14px}.stamp{display:inline-block;border-radius:999px;background:#fff7ed;color:#c2410c;padding:7px 12px;font-size:11px;font-weight:900;text-transform:uppercase;letter-spacing:.12em}h1{font-size:24px;line-height:1.05;margin:7px 0 0;font-weight:900}.muted{color:#64748b;font-size:12px;font-weight:700}table{width:100%;border-collapse:separate;border-spacing:0;border:1px solid #e2e8f0;border-radius:16px;overflow:hidden}th,td{border-bottom:1px solid #e2e8f0;padding:9px 10px;font-size:12px;text-align:left;vertical-align:top}th{background:#f1f5f9;color:#475569;font-size:10px;text-transform:uppercase;letter-spacing:.08em;font-weight:900}tr:nth-child(even) td{background:#f8fafc}tr:last-child td{border-bottom:0}@media print{body{background:#fff;print-color-adjust:exact;-webkit-print-color-adjust:exact}main{padding:16px}tr{break-inside:avoid}button{display:none}}</style></head><body><main><div class="hero"><div><div class="stamp">Admin Report</div><h1>Daily Closure Verification</h1></div><p class="muted">Date: ${closureDate}<br/>Generated ${new Date().toLocaleString('en-IN')}</p></div><table><thead><tr><th>Branch</th><th>Status</th><th>Opening</th><th>Total Sales</th><th>Cash</th><th>UPI</th><th>Card</th><th>Credit</th><th>Returns</th><th>Purchase Pay.</th><th>Bank Deposit</th><th>Closing</th><th>Difference</th><th>Closed By</th><th>Remarks</th></tr></thead><tbody>${rows}</tbody></table><script>window.onload=()=>window.print()</script></main></body></html>`;
     const win = window.open('', '_blank', 'width=1200,height=800');
     if (win) { win.document.write(html); win.document.close(); }
@@ -2009,11 +1964,11 @@ function AdminDashboard() {
       // item was sold in that bill" — one row per item per bill.
       name: 'Bill Items', title: `Hosur Sales — Bill Items (${fromDate} to ${toDate})`,
       columns: [
-        { header: 'Bill No', key: 'billNo' }, { header: 'Date', key: 'date', width: 14 }, { header: 'Item Name', key: 'itemName', width: 28 },
+        { header: 'Invoice Number', key: 'invoiceNo', width: 18 }, { header: 'Date', key: 'date', width: 14 }, { header: 'Item Name', key: 'itemName', width: 28 },
         { header: 'Qty', key: 'qty' }, { header: 'Line Total', key: 'lineTotal' },
       ],
       rows: hosurBillsInRange.flatMap(b => hosurBillItemsInRange.filter(i => i.billId === b.id).map(i => ({
-        billNo: b.billNo || '—', date: fmtDate(b.createdAt), itemName: i.itemName, qty: i.quantity, lineTotal: i.lineTotal,
+        invoiceNo: b.invoiceNo || b.billNo || '—', date: fmtDate(b.createdAt), itemName: i.itemName, qty: i.quantity, lineTotal: i.lineTotal,
       }))),
     },
   ]);
@@ -2038,8 +1993,8 @@ function AdminDashboard() {
         },
         {
           heading: hosurBillsInRange.length > PDF_BILL_CAP ? `Confirmed Bills (first ${PDF_BILL_CAP} of ${hosurBillsInRange.length})` : 'Confirmed Bills',
-          columns: [{ header: 'Bill No', width: 30 }, { header: 'Items', width: 20, align: 'right' }, { header: 'Total', width: 30, align: 'right' }, { header: 'Biller', width: 40 }, { header: 'Time', width: 40 }],
-          rows: hosurBillsInRange.slice(0, PDF_BILL_CAP).map(b => [b.billNo || '—', String((realBillItemsByBillId.get(b.id) ?? []).length), pdfMoney(b.total), b.biller || b.salesperson || '—', fmtDateTime(b.createdAt)]),
+          columns: [{ header: 'Invoice Number', width: 30 }, { header: 'Items', width: 20, align: 'right' }, { header: 'Total', width: 30, align: 'right' }, { header: 'Biller', width: 40 }, { header: 'Time', width: 40 }],
+          rows: hosurBillsInRange.slice(0, PDF_BILL_CAP).map(b => [b.invoiceNo || b.billNo || '—', String((realBillItemsByBillId.get(b.id) ?? []).length), pdfMoney(b.total), b.biller || b.salesperson || '—', fmtDateTime(b.createdAt)]),
         },
       ],
     });

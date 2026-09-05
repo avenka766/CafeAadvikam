@@ -77,8 +77,11 @@ export async function getHosurCounterStatus(): Promise<HosurCounterStatus> {
   };
 }
 
+// AUDIT FIX (2026-09-05): "the payment should be round off there should not
+// be any decimal points" — was forcing 2 decimals on every amount shown
+// across this whole dashboard (bills, credit ledger, reminders, exports).
 const money = (value: number | null | undefined) =>
-  `₹${Number(value ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  `₹${Math.round(Number(value ?? 0)).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
 
 const num = (value: number | null | undefined) =>
   Number(value ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 3 });
@@ -166,6 +169,13 @@ interface HosurOrderItem {
 export interface HosurBill {
   id: string;
   billNo: string;
+  // FEATURE (2026-09-05): "dont use bill number anywhere ... use invoice
+  // number" — the real GST-sequence number (SALES/26-27/N), written by
+  // dispatchReceiveAndBill straight from the dispatch invoice this bill was
+  // billed against (see hosurBillingBridge.ts). Null only for bills billed
+  // through a path with no accompanying dispatch invoice (HosurShopOrderPanel's
+  // direct billing) — every display site must fall back to billNo for those.
+  invoiceNo: string | null;
   orderId: string | null;
   shopId: string;
   shopName: string;
@@ -197,6 +207,13 @@ interface HosurCreditLedger {
   id: string;
   billId: string;
   billNo: string;
+  // FEATURE (2026-09-05): resolved client-side against the already-loaded
+  // `bills` list (billId -> HosurBill.invoiceNo) rather than a stored
+  // column — branch_credit_sales.bill_no is denormalized at insert time,
+  // but adding a second denormalized invoice field to a table this widely
+  // shared (credit sales across every branch, not just Hosur) wasn't worth
+  // the extra write-path risk for a value already available via billId.
+  invoiceNo: string | null;
   shopId: string;
   shopName: string;
   openingAmount: number;
@@ -419,6 +436,7 @@ export function mapBill(row: any): HosurBill {
   return {
     id: row.id,
     billNo: row.bill_no ?? '',
+    invoiceNo: row.invoice_no ?? null,
     orderId: row.order_id ?? null,
     shopId: row.shop_id,
     shopName: row.shop_name ?? '',
@@ -454,6 +472,7 @@ function mapCredit(row: any): HosurCreditLedger {
     id: row.id,
     billId: row.source_id ?? row.id,
     billNo: row.bill_no ?? '',
+    invoiceNo: null, // resolved against the bills list right after mapping — see setCredits call site
     shopId: row.customer_ref ?? '',
     shopName: row.customer_name ?? '',
     openingAmount: Number(row.subtotal ?? 0),
@@ -594,7 +613,7 @@ export async function createWhatsappQrMedia(amount?: number, reference?: string 
     mimeType: 'image/png',
     fileName: `${safeMediaFileName(reference || 'hosur-payment')}-qr.png`,
     caption: Number(amount) > 0
-      ? `Scan to pay Rs. ${Number(amount).toFixed(2)} to ${HOSUR_PAYEE_NAME}. UPI: ${HOSUR_UPI_ID}`
+      ? `Scan to pay Rs. ${Math.round(Number(amount))} to ${HOSUR_PAYEE_NAME}. UPI: ${HOSUR_UPI_ID}`
       : `Scan to pay ${HOSUR_PAYEE_NAME}. UPI: ${HOSUR_UPI_ID}`,
   };
 }
@@ -631,7 +650,7 @@ export async function createWhatsappBillDocument(bill: HosurBill, items: HosurBi
   line('HOSUR BRANCH', 9, true, 'center');
   line('ORIGINAL BILL', 9, true, 'center');
   divider();
-  line(`Bill No: ${bill.billNo}`, 8, true);
+  line(`Invoice Number: ${bill.invoiceNo ?? bill.billNo}`, 8, true);
   line(`Date: ${toDateTimeLabel(bill.confirmedAt ?? bill.createdAt)}`, 7.5);
   line(`Shop: ${bill.shopName}`, 8, true);
   divider();
@@ -645,13 +664,13 @@ export async function createWhatsappBillDocument(bill: HosurBill, items: HosurBi
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(7.2);
     doc.text(`${num(item.quantity)} ${item.unit}`, 53, y, { align: 'right' });
-    doc.text(`Rs. ${Number(item.lineTotal).toFixed(2)}`, right, y, { align: 'right' });
+    doc.text(`Rs. ${Math.round(Number(item.lineTotal))}`, right, y, { align: 'right' });
     y += itemHeight + 1.5;
   });
   divider();
-  line(`Total: Rs. ${Number(bill.subtotal).toFixed(2)}`, 10, true, 'right');
-  line(`Paid: Rs. ${Number(bill.paidAmount).toFixed(2)}`, 8, false, 'right');
-  line(`Credit: Rs. ${Number(bill.creditAmount).toFixed(2)}`, 8, bill.creditAmount > 0, 'right');
+  line(`Total: Rs. ${Math.round(Number(bill.subtotal))}`, 10, true, 'right');
+  line(`Paid: Rs. ${Math.round(Number(bill.paidAmount))}`, 8, false, 'right');
+  line(`Credit: Rs. ${Math.round(Number(bill.creditAmount))}`, 8, bill.creditAmount > 0, 'right');
   if (bill.dueDate) line(`Due Date: ${toDateLabel(bill.dueDate)}`, 8, true, 'right');
   divider();
 
@@ -659,7 +678,7 @@ export async function createWhatsappBillDocument(bill: HosurBill, items: HosurBi
   doc.addImage(qrDataUrl, 'PNG', 22, y, qrSize, qrSize);
   y += qrSize + 4;
   line(`UPI: ${HOSUR_UPI_ID}`, 7.5, true, 'center');
-  line(`Scan to pay Rs. ${Number(paymentAmount).toFixed(2)}`, 7.5, false, 'center');
+  line(`Scan to pay Rs. ${Math.round(Number(paymentAmount))}`, 7.5, false, 'center');
   y += 2;
   line('Thank you!', 9, true, 'center');
 
@@ -667,8 +686,8 @@ export async function createWhatsappBillDocument(bill: HosurBill, items: HosurBi
   return {
     base64: dataUrlPayload(dataUri),
     mimeType: 'application/pdf',
-    fileName: `${safeMediaFileName(bill.billNo)}.pdf`,
-    caption: `${bill.billNo} - ${bill.shopName} - Total Rs. ${Number(bill.subtotal).toFixed(2)}`,
+    fileName: `${safeMediaFileName(bill.invoiceNo ?? bill.billNo)}.pdf`,
+    caption: `${bill.invoiceNo ?? bill.billNo} - ${bill.shopName} - Total Rs. ${Math.round(Number(bill.subtotal))}`,
   };
 }
 
@@ -729,7 +748,7 @@ export async function createWhatsappBillImage(bill: HosurBill, items: HosurBillI
   context.textAlign = 'left';
   context.fillStyle = '#111827';
   context.font = '700 20px Arial';
-  context.fillText(`Bill No: ${bill.billNo}`, padding, 205);
+  context.fillText(`Invoice Number: ${bill.invoiceNo ?? bill.billNo}`, padding, 205);
   context.font = '18px Arial';
   context.fillText(`Shop: ${bill.shopName}`, padding, 238);
   context.fillText(`Date: ${toDateTimeLabel(bill.confirmedAt ?? bill.createdAt)}`, padding, 270);
@@ -756,7 +775,7 @@ export async function createWhatsappBillImage(bill: HosurBill, items: HosurBillI
     context.font = '17px Arial';
     context.fillText(`${num(item.quantity)} ${item.unit}`, 600, y);
     context.font = '700 17px Arial';
-    context.fillText(`Rs. ${Number(item.lineTotal).toFixed(2)}`, width - padding - 12, y);
+    context.fillText(`Rs. ${Math.round(Number(item.lineTotal))}`, width - padding - 12, y);
     context.strokeStyle = '#e5e7eb';
     context.beginPath();
     context.moveTo(padding, y + 22);
@@ -769,14 +788,14 @@ export async function createWhatsappBillImage(bill: HosurBill, items: HosurBillI
   context.textAlign = 'right';
   context.fillStyle = '#111827';
   context.font = '700 25px Arial';
-  context.fillText(`Total: Rs. ${Number(bill.subtotal).toFixed(2)}`, width - padding, y);
+  context.fillText(`Total: Rs. ${Math.round(Number(bill.subtotal))}`, width - padding, y);
   y += 38;
   context.font = '20px Arial';
-  context.fillText(`Paid: Rs. ${Number(bill.paidAmount).toFixed(2)}`, width - padding, y);
+  context.fillText(`Paid: Rs. ${Math.round(Number(bill.paidAmount))}`, width - padding, y);
   y += 32;
   context.fillStyle = bill.creditAmount > 0 ? '#b91c1c' : '#111827';
   context.font = '700 20px Arial';
-  context.fillText(`Credit: Rs. ${Number(bill.creditAmount).toFixed(2)}`, width - padding, y);
+  context.fillText(`Credit: Rs. ${Math.round(Number(bill.creditAmount))}`, width - padding, y);
   if (bill.dueDate) {
     y += 32;
     context.fillText(`Due Date: ${toDateLabel(bill.dueDate)}`, width - padding, y);
@@ -789,7 +808,7 @@ export async function createWhatsappBillImage(bill: HosurBill, items: HosurBillI
   context.textAlign = 'center';
   context.fillStyle = '#065f46';
   context.font = '700 20px Arial';
-  context.fillText(`Scan to pay Rs. ${Number(paymentAmount).toFixed(2)}`, width / 2, y + 318);
+  context.fillText(`Scan to pay Rs. ${Math.round(Number(paymentAmount))}`, width / 2, y + 318);
   context.font = '17px Arial';
   context.fillText(`UPI: ${HOSUR_UPI_ID}`, width / 2, y + 346);
 
@@ -819,7 +838,7 @@ export function buildBillMessage(bill: HosurBill, items: HosurBillItem[]) {
   return [
     `Sri Nanjundeshwara Bakery - Hosur Branch`,
     `Shop: ${bill.shopName}`,
-    `Bill No: ${bill.billNo}`,
+    `Invoice Number: ${bill.invoiceNo ?? bill.billNo}`,
     `Date: ${toDateTimeLabel(bill.confirmedAt ?? bill.createdAt)}`,
     '',
     lines,
@@ -842,7 +861,7 @@ function buildReminderMessage(ledger: HosurCreditLedger) {
     `Payment Reminder`,
     '',
     `Shop: ${ledger.shopName}`,
-    `Pending Bill No: ${ledger.billNo}`,
+    `Pending Invoice Number: ${ledger.invoiceNo ?? ledger.billNo}`,
     `Pending Amount: ${money(ledger.balanceAmount)}`,
     `Due Date: ${toDateLabel(ledger.dueDate)}`,
     '',
@@ -864,7 +883,7 @@ function printBill(bill: HosurBill, items: HosurBillItem[], duplicate = false) {
     </tr>
   `).join('');
 
-  const html = `<!doctype html><html><head><title>${bill.billNo}</title>
+  const html = `<!doctype html><html><head><title>${bill.invoiceNo ?? bill.billNo}</title>
   <style>
     @page{size:80mm auto;margin:8mm}*{box-sizing:border-box}body{font-family:Arial,sans-serif;font-size:11px;color:#111;max-width:310px;margin:auto}.center{text-align:center}.bold{font-weight:700}.muted{color:#555}.num{text-align:right;white-space:nowrap}hr{border:0;border-top:1px dashed #777;margin:7px 0}table{width:100%;border-collapse:collapse}td{padding:2px 1px;vertical-align:top}.stamp{border:2px solid #111;padding:4px;margin:6px 0;text-align:center;font-size:13px;font-weight:800}.total{font-size:14px;font-weight:800}.credit{border:1px solid #111;padding:5px;margin-top:6px}
   </style></head><body>
@@ -872,7 +891,7 @@ function printBill(bill: HosurBill, items: HosurBillItem[], duplicate = false) {
     <div class="center bold">HOSUR BRANCH</div>
     <div class="stamp">${duplicate ? 'DUPLICATE BILL' : 'ORIGINAL BILL'}</div>
     <table>
-      <tr><td>Bill No</td><td class="num bold">${escapeHtml(bill.billNo)}</td></tr>
+      <tr><td>Invoice Number</td><td class="num bold">${escapeHtml(bill.invoiceNo ?? bill.billNo)}</td></tr>
       <tr><td>Date</td><td class="num">${toDateTimeLabel(bill.confirmedAt ?? bill.createdAt)}</td></tr>
       <tr><td>Shop</td><td class="num bold">${escapeHtml(bill.shopName)}</td></tr>
     </table>
@@ -1127,7 +1146,7 @@ export default function HosurDashboard({ hideNav = false }: { hideNav?: boolean 
         supabase.from('hosur_order_items').select('id, order_id, item_name, unit, quantity, unit_price, line_total, dispatched_quantity, received_quantity')
           .gte('created_at', new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString())
           .order('created_at', { ascending: false }).limit(8000),
-        supabase.from('hosur_bills').select('id, bill_no, order_id, shop_id, shop_name, shop_whatsapp, subtotal, paid_amount, credit_amount, payment_type, payment_mode, due_date, status, confirmed_by, confirmed_at, created_at, whatsapp_status').order('created_at', { ascending: false }).limit(250),
+        supabase.from('hosur_bills').select('id, bill_no, invoice_no, order_id, shop_id, shop_name, shop_whatsapp, subtotal, paid_amount, credit_amount, payment_type, payment_mode, due_date, status, confirmed_by, confirmed_at, created_at, whatsapp_status').order('created_at', { ascending: false }).limit(250),
         // EGRESS FIX: same fix as hosur_order_items above.
         supabase.from('hosur_bill_items').select('id, bill_id, item_name, unit, quantity, unit_price, line_total')
           .gte('created_at', new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString())
@@ -1163,7 +1182,8 @@ export default function HosurDashboard({ hideNav = false }: { hideNav?: boolean 
       });
       setOrderItems(itemsByOrder);
 
-      setBills((billsRes.data ?? []).map(mapBill));
+      const mappedBills = (billsRes.data ?? []).map(mapBill);
+      setBills(mappedBills);
       const itemsByBill: Record<string, HosurBillItem[]> = {};
       (billItemsRes.data ?? []).map(mapBillItem).forEach((item) => {
         if (!itemsByBill[item.billId]) itemsByBill[item.billId] = [];
@@ -1171,7 +1191,10 @@ export default function HosurDashboard({ hideNav = false }: { hideNav?: boolean 
       });
       setBillItems(itemsByBill);
 
-      setCredits((creditsRes.data ?? []).map(mapCredit));
+      // FEATURE (2026-09-05): resolve each credit row's invoiceNo against
+      // the bills just mapped above — see HosurCreditLedger.invoiceNo comment.
+      const invoiceNoByBillId = new Map(mappedBills.map((b) => [b.id, b.invoiceNo]));
+      setCredits((creditsRes.data ?? []).map(mapCredit).map((c) => ({ ...c, invoiceNo: invoiceNoByBillId.get(c.billId) ?? null })));
       setPayments((paymentsRes.data ?? []).map(mapPayment));
       setWhatsappLogs((logsRes.data ?? []).map(mapWhatsapp));
       setReminders((remindersRes.data ?? []).map(mapReminder));
@@ -1343,7 +1366,7 @@ export default function HosurDashboard({ hideNav = false }: { hideNav?: boolean 
         resolvedItems = billItems[billId] ?? [];
         if (!resolvedBill) {
           const [{ data: billRow, error: billLookupError }, { data: itemRows, error: itemLookupError }] = await Promise.all([
-            supabase.from('hosur_bills').select('id, bill_no, order_id, shop_id, shop_name, shop_whatsapp, subtotal, paid_amount, credit_amount, payment_type, payment_mode, due_date, status, confirmed_by, confirmed_at, created_at, whatsapp_status').eq('id', billId).single(),
+            supabase.from('hosur_bills').select('id, bill_no, invoice_no, order_id, shop_id, shop_name, shop_whatsapp, subtotal, paid_amount, credit_amount, payment_type, payment_mode, due_date, status, confirmed_by, confirmed_at, created_at, whatsapp_status').eq('id', billId).single(),
             supabase.from('hosur_bill_items').select('id, bill_id, item_name, unit, quantity, unit_price, line_total').eq('bill_id', billId).order('created_at', { ascending: true }),
           ]);
           if (billLookupError) throw billLookupError;
@@ -1369,7 +1392,7 @@ export default function HosurDashboard({ hideNav = false }: { hideNav?: boolean 
       let legacyFileName: string | null = null;
       if (messageType === 'bill' && resolvedBill) {
         const imageBlob = await createWhatsappBillImage(resolvedBill, resolvedItems);
-        legacyFileName = `${safeMediaFileName(resolvedBill.billNo)}-bill-and-qr.png`;
+        legacyFileName = `${safeMediaFileName(resolvedBill.invoiceNo ?? resolvedBill.billNo)}-bill-and-qr.png`;
         legacyMediaUrl = await uploadWhatsappMedia(imageBlob, legacyFileName);
       } else if (messageType === 'reminder' && qrMedia) {
         const qrBlob = base64MediaBlob(qrMedia.base64, qrMedia.mimeType);
@@ -1629,7 +1652,7 @@ export default function HosurDashboard({ hideNav = false }: { hideNav?: boolean 
         });
         if (paymentError) { await rollbackToDraft(); await supabase.from('branch_credit_sales').delete().eq('id', creditSale.id); throw paymentError; }
       }
-      await notifyAdmin('Hosur credit bill created', `${bill.shopName} has ${money(credit)} credit on bill ${bill.billNo}. Due ${toDateLabel(draft.dueDate)}.`, bill.id, bill.billNo, { billId: bill.id, amount: credit });
+      await notifyAdmin('Hosur credit bill created', `${bill.shopName} has ${money(credit)} credit on invoice ${bill.invoiceNo ?? bill.billNo}. Due ${toDateLabel(draft.dueDate)}.`, bill.id, bill.invoiceNo ?? bill.billNo, { billId: bill.id, amount: credit });
     }
 
     // FIX (MD Bug #19): Write branch_sales rows for the PAID portion of this bill so that
@@ -1658,9 +1681,9 @@ export default function HosurDashboard({ hideNav = false }: { hideNav?: boolean 
 
     const finalBill = { ...bill, paidAmount: paid, creditAmount: credit, paymentType, paymentMode: paymentType === 'credit' ? null : draft.paymentMode, dueDate: credit > 0 ? draft.dueDate : null, status, confirmedAt: now, confirmedBy: userName } as HosurBill;
     const body = buildBillMessage(finalBill, items);
-    const whatsapp = await sendWhatsapp({ shopId: bill.shopId, shopName: bill.shopName, phone: bill.shopWhatsapp, billId: bill.id, billNo: bill.billNo, messageType: 'bill', body, billForMedia: finalBill, itemsForMedia: items });
+    const whatsapp = await sendWhatsapp({ shopId: bill.shopId, shopName: bill.shopName, phone: bill.shopWhatsapp, billId: bill.id, billNo: bill.invoiceNo ?? bill.billNo, messageType: 'bill', body, billForMedia: finalBill, itemsForMedia: items });
     if (whatsapp.status === 'failed') {
-      await notifyAdmin('Hosur WhatsApp bill failed', `${bill.billNo} for ${bill.shopName} could not be sent. Retry from WhatsApp Logs.`, bill.id, bill.billNo, { error: whatsapp.errorMessage });
+      await notifyAdmin('Hosur WhatsApp bill failed', `${bill.invoiceNo ?? bill.billNo} for ${bill.shopName} could not be sent. Retry from WhatsApp Logs.`, bill.id, bill.invoiceNo ?? bill.billNo, { error: whatsapp.errorMessage });
     }
     printBill(finalBill, items, false);
   };
@@ -1672,14 +1695,14 @@ export default function HosurDashboard({ hideNav = false }: { hideNav?: boolean 
       shopName: bill.shopName,
       phone: bill.shopWhatsapp,
       billId: bill.id,
-      billNo: bill.billNo,
+      billNo: bill.invoiceNo ?? bill.billNo,
       messageType: 'bill',
       body: buildBillMessage(bill, items),
       billForMedia: bill,
       itemsForMedia: items,
     });
     if (result.status === 'failed') {
-      throw new Error(result.errorMessage || `WhatsApp bill ${bill.billNo} could not be sent.`);
+      throw new Error(result.errorMessage || `WhatsApp bill ${bill.invoiceNo ?? bill.billNo} could not be sent.`);
     }
   };
 
@@ -1725,7 +1748,7 @@ export default function HosurDashboard({ hideNav = false }: { hideNav?: boolean 
       const shop = shops.find((s) => s.id === ledger.shopId);
       const reminderNo = reminders.filter((r) => r.ledgerId === ledger.id).length + 1;
       const body = buildReminderMessage(ledger);
-      const whatsapp = await sendWhatsapp({ shopId: ledger.shopId, shopName: ledger.shopName, phone: shop?.whatsappNumber || '', billId: ledger.billId, billNo: ledger.billNo, messageType: 'reminder', body, qrAmount: ledger.balanceAmount });
+      const whatsapp = await sendWhatsapp({ shopId: ledger.shopId, shopName: ledger.shopName, phone: shop?.whatsappNumber || '', billId: ledger.billId, billNo: ledger.invoiceNo ?? ledger.billNo, messageType: 'reminder', body, qrAmount: ledger.balanceAmount });
       const { error: reminderError } = await supabase.from('hosur_payment_reminders').insert({
         credit_sale_id: ledger.id,
         ledger_id: null,
@@ -1782,7 +1805,7 @@ export default function HosurDashboard({ hideNav = false }: { hideNav?: boolean 
               {tab === 'receiving' && <ReceivingTab orders={orders} orderItems={orderItems} busy={busy} withBusy={withBusy} createDraftBill={createDraftBill} userName={userName} />}
               {tab === 'billing' && <BillingTab bills={bills} billItems={billItems} busy={busy} withBusy={withBusy} confirmBill={confirmBill} resendBillWhatsapp={resendBillWhatsapp} counterOpen={hosurCounterOpen} counterLoading={hosurCounterLoading} counterError={hosurCounterError} openCounter={goToPlannerDailyClosure} />}
               {tab === 'credit' && <CreditLedgerTab credits={credits} payments={payments} shops={shops} />}
-              {tab === 'whatsapp' && <WhatsappLogsTab logs={whatsappLogs} busy={busy} withBusy={withBusy} sendWhatsapp={sendWhatsapp} />}
+              {tab === 'whatsapp' && <WhatsappLogsTab logs={whatsappLogs} bills={bills} busy={busy} withBusy={withBusy} sendWhatsapp={sendWhatsapp} />}
               {tab === 'reminders' && <ReminderHistoryTab reminders={reminders} credits={openCredits} busy={busy} withBusy={withBusy} runDueReminders={runDueReminders} />}
               {tab === 'closure' && <DailyClosureTab actorId={currentUser?.id ?? ''} actorName={currentUser?.displayName || currentUser?.username || 'Hosur Staff'} orders={orders} bills={bills} credits={credits} payments={payments} disputes={disputes} logs={whatsappLogs} onCounterStatusChange={handleHosurCounterChange} />}
               {tab === 'reports' && <ReportsTab shops={shops} bills={bills} billItems={billItems} credits={credits} logs={whatsappLogs} reminders={reminders} disputes={disputes} />}
@@ -2672,31 +2695,35 @@ function CreditLedgerTab({ credits, payments, shops }: { credits: HosurCreditLed
   const open = credits.filter((c) => c.status !== 'cleared' && c.balanceAmount > 0);
   const total = open.reduce((s, c) => s + c.balanceAmount, 0);
   const exportExcel = () => downloadWorkbook(`hosur-credit-ledger-${TODAY_ISO()}.xls`, [
-    { name: 'Credit Ledger', rows: credits.map((c) => ({ Shop: c.shopName, Bill: c.billNo, 'Opening Amount': c.openingAmount, 'Paid Amount': c.paidAmount, 'Balance Amount': c.balanceAmount, 'Due Date': c.dueDate ?? '', Status: c.status, 'Credit Type': c.creditType })) },
+    { name: 'Credit Ledger', rows: credits.map((c) => ({ Shop: c.shopName, 'Invoice Number': c.invoiceNo ?? c.billNo, 'Opening Amount': c.openingAmount, 'Paid Amount': c.paidAmount, 'Balance Amount': c.balanceAmount, 'Due Date': c.dueDate ?? '', Status: c.status, 'Credit Type': c.creditType })) },
     { name: 'Payment History', rows: payments.map((p) => ({ Shop: shops.find((s) => s.id === p.shopId)?.shopName ?? '', Amount: p.amountCollected, Mode: p.paymentMode, Purpose: p.payment_purpose ?? '', Remarks: p.remarks ?? '', 'Collected By': p.collectedBy, Date: toDateTimeLabel(p.createdAt) })) },
   ]);
   return (
     <div className="space-y-4">
       <SectionTitle icon={<CreditCard className="size-5" />} title="Credit Ledger" subtitle="Read-only — payment collection is now handled in Admin Dashboard's Hosur Sales tab. Balances here update live the moment Admin collects." action={<button className={softButton} onClick={exportExcel}><FileSpreadsheet className="size-4" /> Excel Report</button>} />
       <div className="grid gap-3 md:grid-cols-3"><Metric label="Open Credits" value={open.length} icon={<CreditCard className="size-4" />} tone="amber" /><Metric label="Pending Amount" value={money(total)} icon={<IndianRupee className="size-4" />} tone="red" /><Metric label="Payments Recorded" value={payments.length} icon={<WalletCards className="size-4" />} tone="emerald" /></div>
-      <Card className="space-y-2">{credits.length === 0 ? <EmptyState icon={<CreditCard className="size-6" />} title="No credit records" /> : credits.map((credit) => <div key={credit.id} className="rounded-2xl border p-3"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="font-black">{credit.shopName}</p><p className="text-xs text-muted-foreground">Bill {credit.billNo} · Due {toDateLabel(credit.dueDate)} · WhatsApp {shops.find((s) => s.id === credit.shopId)?.whatsappNumber ?? '—'}</p></div><Badge tone={statusTone(credit.status)}>{credit.status}</Badge></div><div className="mt-3 grid gap-2 text-sm md:grid-cols-3"><div className="rounded-xl bg-muted p-2">Opening <b>{money(credit.openingAmount)}</b></div><div className="rounded-xl bg-muted p-2">Paid <b>{money(credit.paidAmount)}</b></div><div className="rounded-xl bg-red-50 p-2 text-red-700">Balance <b>{money(credit.balanceAmount)}</b></div></div></div>)}</Card>
+      <Card className="space-y-2">{credits.length === 0 ? <EmptyState icon={<CreditCard className="size-6" />} title="No credit records" /> : credits.map((credit) => <div key={credit.id} className="rounded-2xl border p-3"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="font-black">{credit.shopName}</p><p className="text-xs text-muted-foreground">Invoice {credit.invoiceNo ?? credit.billNo} · Due {toDateLabel(credit.dueDate)} · WhatsApp {shops.find((s) => s.id === credit.shopId)?.whatsappNumber ?? '—'}</p></div><Badge tone={statusTone(credit.status)}>{credit.status}</Badge></div><div className="mt-3 grid gap-2 text-sm md:grid-cols-3"><div className="rounded-xl bg-muted p-2">Opening <b>{money(credit.openingAmount)}</b></div><div className="rounded-xl bg-muted p-2">Paid <b>{money(credit.paidAmount)}</b></div><div className="rounded-xl bg-red-50 p-2 text-red-700">Balance <b>{money(credit.balanceAmount)}</b></div></div></div>)}</Card>
     </div>
   );
 }
 
-function WhatsappLogsTab({ logs, busy, withBusy, sendWhatsapp }: {
+function WhatsappLogsTab({ logs, bills, busy, withBusy, sendWhatsapp }: {
   logs: HosurWhatsappLog[];
+  bills: HosurBill[];
   busy: boolean;
   withBusy: (fn: () => Promise<void>, success?: string) => Promise<void>;
   sendWhatsapp: (args: { shopId?: string | null; shopName: string; phone: string; billId?: string | null; billNo?: string | null; messageType: HosurWhatsappLog['messageType']; body: string; retryLogId?: string }) => Promise<{ status: HosurWhatsappLog['status']; logId?: string; errorMessage?: string | null }>;
 }) {
+  // FEATURE (2026-09-05): logs only carry the internal bill_no — resolve
+  // invoiceNo client-side against the already-loaded bills list.
+  const invoiceNoByBillId = new Map(bills.map((b) => [b.id, b.invoiceNo]));
   const exportExcel = () => downloadWorkbook(`hosur-whatsapp-log-${TODAY_ISO()}.xls`, [
-    { name: 'WhatsApp Log', rows: logs.map((log) => ({ Shop: log.shopName, 'Bill/Type': log.billNo ?? log.messageType, Phone: log.phone, Status: log.status, 'Sent/Created': toDateTimeLabel(log.sentAt ?? log.createdAt), Error: log.errorMessage ?? '' })) },
+    { name: 'WhatsApp Log', rows: logs.map((log) => ({ Shop: log.shopName, 'Invoice/Type': (log.billId ? invoiceNoByBillId.get(log.billId) : null) ?? log.billNo ?? log.messageType, Phone: log.phone, Status: log.status, 'Sent/Created': toDateTimeLabel(log.sentAt ?? log.createdAt), Error: log.errorMessage ?? '' })) },
   ]);
   return (
     <div className="space-y-4">
       <SectionTitle icon={<MessageCircle className="size-5" />} title="WhatsApp Logs" subtitle="Success/failure status for bill and payment reminder messages. Failed messages can be retried." action={<button className={softButton} onClick={exportExcel}><FileSpreadsheet className="size-4" /> Excel Report</button>} />
-      <Card className="space-y-2">{logs.length === 0 ? <EmptyState icon={<MessageCircle className="size-6" />} title="No WhatsApp logs yet" /> : logs.map((log) => <div key={log.id} className="rounded-2xl border p-3"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="font-black">{log.shopName} · {log.billNo ?? log.messageType}</p><p className="text-xs text-muted-foreground">{log.phone} · {toDateTimeLabel(log.sentAt ?? log.createdAt)}</p>{log.errorMessage && <p className="mt-1 text-xs font-semibold text-red-600">{log.errorMessage}</p>}</div><div className="flex items-center gap-2"><Badge tone={statusTone(log.status)}>{log.status}</Badge>{log.status === 'failed' && <button className={softButton} disabled={busy} onClick={() => withBusy(() => sendWhatsapp({ shopId: log.shopId, shopName: log.shopName, phone: log.phone, billId: log.billId, billNo: log.billNo, messageType: log.messageType, body: log.messageBody, retryLogId: log.id }).then(() => undefined), 'WhatsApp retry completed.')}>Retry</button>}</div></div><details className="mt-2"><summary className="cursor-pointer text-xs font-black text-muted-foreground">View message</summary><pre className="mt-2 whitespace-pre-wrap rounded-xl bg-muted p-3 text-xs">{log.messageBody}</pre></details></div>)}</Card>
+      <Card className="space-y-2">{logs.length === 0 ? <EmptyState icon={<MessageCircle className="size-6" />} title="No WhatsApp logs yet" /> : logs.map((log) => <div key={log.id} className="rounded-2xl border p-3"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="font-black">{log.shopName} · {(log.billId ? invoiceNoByBillId.get(log.billId) : null) ?? log.billNo ?? log.messageType}</p><p className="text-xs text-muted-foreground">{log.phone} · {toDateTimeLabel(log.sentAt ?? log.createdAt)}</p>{log.errorMessage && <p className="mt-1 text-xs font-semibold text-red-600">{log.errorMessage}</p>}</div><div className="flex items-center gap-2"><Badge tone={statusTone(log.status)}>{log.status}</Badge>{log.status === 'failed' && <button className={softButton} disabled={busy} onClick={() => withBusy(() => sendWhatsapp({ shopId: log.shopId, shopName: log.shopName, phone: log.phone, billId: log.billId, billNo: log.billNo, messageType: log.messageType, body: log.messageBody, retryLogId: log.id }).then(() => undefined), 'WhatsApp retry completed.')}>Retry</button>}</div></div><details className="mt-2"><summary className="cursor-pointer text-xs font-black text-muted-foreground">View message</summary><pre className="mt-2 whitespace-pre-wrap rounded-xl bg-muted p-3 text-xs">{log.messageBody}</pre></details></div>)}</Card>
     </div>
   );
 }
@@ -3015,7 +3042,7 @@ function ReportsTab({ shops, bills, billItems, credits, logs, reminders, dispute
       const fromTs = `${from}T00:00:00+05:30`;
       const toTs = `${to}T23:59:59.999+05:30`;
       const { data: billRows, error: billErr } = await supabase.from('hosur_bills')
-        .select('id, bill_no, order_id, shop_id, shop_name, shop_whatsapp, subtotal, paid_amount, credit_amount, payment_type, payment_mode, due_date, status, confirmed_by, confirmed_at, created_at, whatsapp_status')
+        .select('id, bill_no, invoice_no, order_id, shop_id, shop_name, shop_whatsapp, subtotal, paid_amount, credit_amount, payment_type, payment_mode, due_date, status, confirmed_by, confirmed_at, created_at, whatsapp_status')
         .or(`and(confirmed_at.gte.${fromTs},confirmed_at.lte.${toTs}),and(confirmed_at.is.null,created_at.gte.${fromTs},created_at.lte.${toTs})`)
         .order('created_at', { ascending: false })
         .limit(5000);
@@ -3115,13 +3142,16 @@ function ReportsTab({ shops, bills, billItems, credits, logs, reminders, dispute
   const query = search.trim().toLowerCase();
   const visibleShops = shopSales.filter((row) => !query || row.shop.toLowerCase().includes(query));
   const visibleItems = itemSales.filter((row) => !query || row.item.toLowerCase().includes(query));
-  const visibleCredits = openCredits.filter((row) => !query || `${row.shopName} ${row.billNo}`.toLowerCase().includes(query));
+  const visibleCredits = openCredits.filter((row) => !query || `${row.shopName} ${row.invoiceNo ?? row.billNo}`.toLowerCase().includes(query));
+  // FEATURE (2026-09-05): WhatsApp logs only carry the internal bill_no —
+  // resolve invoiceNo client-side against the range's own bills list.
+  const invoiceNoByBillId = new Map(rangeBills.map((b) => [b.id, b.invoiceNo]));
 
   const exportExcel = () => downloadWorkbook(`hosur-management-report-${from}-to-${to}.xls`, [
     { name: 'Shop Performance', rows: shopSales.map((r) => ({ Shop: r.shop, Bills: r.bills, Billed: r.billed, Collected: r.collected, 'Credit Raised': r.creditRaised, 'Open Credit': r.openCredit })) },
     { name: 'Item Performance', rows: itemSales.map((r) => ({ Item: r.item, Quantity: r.qty, Bills: r.bills, Amount: r.total })) },
-    { name: 'Open Credit', rows: openCredits.map((c) => ({ Shop: c.shopName, Bill: c.billNo, 'Due Date': c.dueDate ?? '', Balance: c.balanceAmount, Overdue: c.dueDate && daysBetween(c.dueDate) > 0 ? 'Yes' : 'No', Status: c.status })) },
-    { name: 'WhatsApp', rows: rangeLogs.map((l) => ({ Shop: l.shopName, Bill: l.billNo ?? '', Type: l.messageType, Status: l.status, Date: toDateTimeLabel(l.createdAt), Error: l.errorMessage ?? '' })) },
+    { name: 'Open Credit', rows: openCredits.map((c) => ({ Shop: c.shopName, 'Invoice Number': c.invoiceNo ?? c.billNo, 'Due Date': c.dueDate ?? '', Balance: c.balanceAmount, Overdue: c.dueDate && daysBetween(c.dueDate) > 0 ? 'Yes' : 'No', Status: c.status })) },
+    { name: 'WhatsApp', rows: rangeLogs.map((l) => ({ Shop: l.shopName, 'Invoice Number': (l.billId ? invoiceNoByBillId.get(l.billId) : null) ?? l.billNo ?? '', Type: l.messageType, Status: l.status, Date: toDateTimeLabel(l.createdAt), Error: l.errorMessage ?? '' })) },
     { name: 'Disputes', rows: rangeDisputes.map((d) => ({ Order: d.orderNumber ?? '', Item: d.itemName, Expected: d.expectedQuantity, Received: d.receivedQuantity, Unit: d.unit, Status: d.status })) },
   ]);
 

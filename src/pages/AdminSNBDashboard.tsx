@@ -3012,12 +3012,12 @@ function WasteLogsTab({ userName, role }: { userName: string; role: string }) {
                 <div className="space-y-1.5">
                   {lines.map((line) => (
                     <div key={line.lineId} className="flex items-center justify-between gap-2 rounded-xl bg-white px-3 py-2 ring-1 ring-slate-200">
-                      <div className="text-sm font-bold"><span className="font-black">{line.itemName}</span> · {line.quantity} {line.unit} · @{priceForItem(line.itemName).toFixed(2)}</div>
-                      <div className="flex items-center gap-2"><span className="text-sm font-black text-slate-700">₹{(priceForItem(line.itemName) * Number(line.quantity || 0)).toFixed(2)}</span><button type="button" onClick={() => removeLine(line.lineId)} className="grid size-7 place-items-center rounded-lg text-slate-400 hover:bg-red-50 hover:text-red-600"><X className="size-3.5" /></button></div>
+                      <div className="text-sm font-bold"><span className="font-black">{line.itemName}</span> · {line.quantity} {line.unit} · @{Math.round(priceForItem(line.itemName))}</div>
+                      <div className="flex items-center gap-2"><span className="text-sm font-black text-slate-700">₹{Math.round(priceForItem(line.itemName) * Number(line.quantity || 0))}</span><button type="button" onClick={() => removeLine(line.lineId)} className="grid size-7 place-items-center rounded-lg text-slate-400 hover:bg-red-50 hover:text-red-600"><X className="size-3.5" /></button></div>
                     </div>
                   ))}
                 </div>
-                <div className="mt-2 flex justify-between border-t border-slate-200 pt-2 text-sm font-black text-slate-900"><span>Total Value</span><span>₹{lines.reduce((sum, line) => sum + priceForItem(line.itemName) * Number(line.quantity || 0), 0).toFixed(2)}</span></div>
+                <div className="mt-2 flex justify-between border-t border-slate-200 pt-2 text-sm font-black text-slate-900"><span>Total Value</span><span>₹{Math.round(lines.reduce((sum, line) => sum + priceForItem(line.itemName) * Number(line.quantity || 0), 0))}</span></div>
               </div>
             )}
 
@@ -3035,14 +3035,14 @@ function WasteLogsTab({ userName, role }: { userName: string; role: string }) {
             <button onClick={save} disabled={saving || lines.length === 0} className={cn(btnCls, "w-full bg-slate-950 text-white disabled:cursor-not-allowed disabled:opacity-50")}>{saving ? "Saving…" : `Save Waste Log (${lines.length} item${lines.length === 1 ? "" : "s"})`}</button>
           </div>
         </Panel>
-        <Panel title="Waste Log History" icon={<History className="size-4" />} action={<div className="flex items-center gap-2"><button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => void loadRows()}><RefreshCcw className={cn("size-4", rowsLoading && "animate-spin")} /> Refresh</button><button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Waste_Logs.xls", rows.map((w) => ({ Date: w.createdAt, Type: w.logType, Item: w.itemName, Quantity: w.quantity, Unit: w.unit, Price: priceForItem(w.itemName).toFixed(2), Total: (priceForItem(w.itemName) * w.quantity).toFixed(2), Reason: w.reason, VerifiedBy: w.verifiedBy })))}><Download className="size-4" /> Excel</button></div>}>
+        <Panel title="Waste Log History" icon={<History className="size-4" />} action={<div className="flex items-center gap-2"><button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => void loadRows()}><RefreshCcw className={cn("size-4", rowsLoading && "animate-spin")} /> Refresh</button><button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Waste_Logs.xls", rows.map((w) => ({ Date: w.createdAt, Type: w.logType, Item: w.itemName, Quantity: w.quantity, Unit: w.unit, Price: Math.round(priceForItem(w.itemName)), Total: Math.round(priceForItem(w.itemName) * w.quantity), Reason: w.reason, VerifiedBy: w.verifiedBy })))}><Download className="size-4" /> Excel</button></div>}>
           <DataTable headers={["Date", "Type", "Item", "Qty", "Price", "Total", "Reason", "Verified By", "Status", "Actions"]} rows={rows.map((w) => [
             fmtDateTime(w.createdAt),
             w.logType,
             w.itemName,
             `${w.quantity} ${w.unit}`,
-            `₹${priceForItem(w.itemName).toFixed(2)}`,
-            `₹${(priceForItem(w.itemName) * w.quantity).toFixed(2)}`,
+            `₹${Math.round(priceForItem(w.itemName))}`,
+            `₹${Math.round(priceForItem(w.itemName) * w.quantity)}`,
             w.reason,
             w.verifiedBy,
             <StatusBadge tone={w.status === "Cancelled" ? "red" : "green"}>{w.status}</StatusBadge>,
@@ -3106,8 +3106,10 @@ const SNB_QUOTE_TERMS: Array<[string, string]> = [
 // (which is prefixed with ₹) directly with align:"right" throws off the text's measured
 // width, so the digits land misaligned from the label/edge they're meant to line up with.
 // Use a plain "Rs." prefix inside the PDF only; the on-screen ₹ formatting is unaffected.
+// AUDIT FIX (2026-09-05): "the payment should be round off there should not
+// be any decimal points".
 function pdfMoney(value: number) {
-  return `Rs. ${value.toLocaleString("en-IN", { maximumFractionDigits: 2, minimumFractionDigits: 2 })}`;
+  return `Rs. ${Math.round(value).toLocaleString("en-IN", { maximumFractionDigits: 0 })}`;
 }
 
 function buildQuotationPdf(quote: QuotationRecord) {
@@ -3198,8 +3200,8 @@ function buildQuotationPdf(quote: QuotationRecord) {
     doc.text(String(index + 1), marginX + 2, y + 4.4);
     doc.text(nameLines, marginX + cols[0].width + 2, y + 4.4);
     doc.text(`${item.quantity} ${item.unit}`, marginX + cols[0].width + cols[1].width + cols[2].width - 2, y + 4.4, { align: "right" });
-    doc.text(item.price.toFixed(2), marginX + cols[0].width + cols[1].width + cols[2].width + cols[3].width - 2, y + 4.4, { align: "right" });
-    doc.text(item.lineTotal.toFixed(2), pageWidth - marginX - 2, y + 4.4, { align: "right" });
+    doc.text(String(Math.round(item.price)), marginX + cols[0].width + cols[1].width + cols[2].width + cols[3].width - 2, y + 4.4, { align: "right" });
+    doc.text(String(Math.round(item.lineTotal)), pageWidth - marginX - 2, y + 4.4, { align: "right" });
     y += rowHeight;
   });
   y += 3;

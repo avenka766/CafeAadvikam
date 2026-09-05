@@ -238,7 +238,7 @@ function BillerCreditTab() {
       <div className="bg-gradient-to-br from-orange-50 to-red-50 border border-orange-200 rounded-2xl p-4">
         <p className="text-xs font-bold text-orange-700 uppercase tracking-widest mb-1">Total Credit Outstanding</p>
         <p className="font-display text-3xl font-bold text-orange-600 tabular-nums">
-          Rs {totalDue.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+          Rs {Math.round(totalDue).toLocaleString('en-IN', { maximumFractionDigits: 0 })}
         </p>
         <p className="text-xs text-muted-foreground mt-1">
           {pendingCount} open account{pendingCount !== 1 ? 's' : ''}  -  All Branches
@@ -339,7 +339,7 @@ function BillerCreditTab() {
                 <div className="text-right ml-3 shrink-0">
                   <p className="text-[10px] text-muted-foreground">Due</p>
                   <p className="font-display font-bold text-lg text-red-600 tabular-nums">
-                    Rs {cs.creditAmount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                    Rs {Math.round(cs.creditAmount).toLocaleString('en-IN', { maximumFractionDigits: 0 })}
                   </p>
                 </div>
               </div>
@@ -347,7 +347,7 @@ function BillerCreditTab() {
               {/* Expand/collapse */}
               <button onClick={() => setExpanded(prev => prev === cs.id ? null : cs.id)}
                 className="w-full flex items-center justify-between px-4 py-2 bg-muted/30 border-t border-border text-xs text-muted-foreground">
-                <span>Total: Rs {cs.subtotal.toLocaleString('en-IN', { minimumFractionDigits: 2 })}  -  Paid: Rs {cs.amountPaid.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                <span>Total: Rs {Math.round(cs.subtotal).toLocaleString('en-IN', { maximumFractionDigits: 0 })}  -  Paid: Rs {Math.round(cs.amountPaid).toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span>
                 {expanded === cs.id ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
               </button>
 
@@ -357,7 +357,7 @@ function BillerCreditTab() {
                   {cs.items.map((item, i) => (
                     <div key={i} className="flex justify-between text-xs">
                       <span className="text-foreground">{item.quantity}{item.sellUnit === 'kg' ? 'kg' : 'x'} {item.itemName}</span>
-                      <span className="font-bold tabular-nums">Rs {item.lineTotal.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                      <span className="font-bold tabular-nums">Rs {Math.round(item.lineTotal).toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span>
                     </div>
                   ))}
                   {cs.notes && <p className="text-xs text-muted-foreground italic mt-1">"{cs.notes}"</p>}
@@ -379,7 +379,7 @@ function BillerCreditTab() {
                   <div className="flex gap-2">
                     <div className="relative flex-1">
                       <IndianRupee className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3 text-muted-foreground" />
-                      <input type="number" placeholder={`Max Rs ${cs.creditAmount.toFixed(2)}`}
+                      <input type="number" placeholder={`Max Rs ${Math.round(cs.creditAmount)}`}
                         value={settleAmts[cs.id] || ''}
                         onChange={e => { setSettleAmts(prev => ({ ...prev, [cs.id]: e.target.value })); setError(''); }}
                         className="w-full pl-7 pr-2 py-2 rounded-xl bg-card border border-border text-sm font-body focus:outline-none focus:ring-2 focus:ring-amber-400/40" />
@@ -519,7 +519,7 @@ function kvRow(cells: string[], opts: { bold?: boolean; big?: boolean } = {}): s
 }
 
 function moneyHtml(value: number): string {
-  return `&#8377;${Number(value || 0).toFixed(2)}`;
+  return `&#8377;${Math.round(Number(value || 0))}`;
 }
 
 // OFFLINE FIX (2026-09-01): an order completed while offline (see
@@ -567,8 +567,8 @@ function orderItemsRows(order: Pick<Order, 'items'>): string {
       <tr class="item-row">
         <td>${safeHtml(ci.menuItem.name)}</td>
         <td class="qty">${ci.quantity}</td>
-        <td class="num">${ci.menuItem.price.toFixed(2)}</td>
-        <td class="num">${lineAmount.toFixed(2)}</td>
+        <td class="num">${Math.round(ci.menuItem.price)}</td>
+        <td class="num">${Math.round(lineAmount)}</td>
       </tr>
     `;
   }).join('');
@@ -598,10 +598,10 @@ function receiptTotals(order: Order, payable: number, extraRows = ''): string {
   const roundOff = Math.round((payable - preRoundOff) * 100) / 100;
   return `
     <div class="solid"></div>
-    ${kvRow([`Total Qty: ${totalQty}`, 'Sub Total', itemsTotal.toFixed(2)])}
-    ${parcelCharges > 0 ? kvRow(['', 'Parcel', parcelCharges.toFixed(2)]) : ''}
-    ${Number(order.discount || 0) > 0 ? kvRow(['', 'Discount', `-${Number(order.discount).toFixed(2)}`]) : ''}
-    ${Math.abs(roundOff) >= 0.005 ? kvRow(['', 'Round off', `${roundOff >= 0 ? '+' : ''}${roundOff.toFixed(2)}`]) : ''}
+    ${kvRow([`Total Qty: ${totalQty}`, 'Sub Total', String(Math.round(itemsTotal))])}
+    ${parcelCharges > 0 ? kvRow(['', 'Parcel', String(Math.round(parcelCharges))]) : ''}
+    ${Number(order.discount || 0) > 0 ? kvRow(['', 'Discount', `-${Math.round(Number(order.discount))}`]) : ''}
+    ${Math.abs(roundOff) >= 0.005 ? kvRow(['', 'Round off', `${roundOff >= 0 ? '+' : ''}${Math.round(roundOff)}`]) : ''}
     ${extraRows}
     <div class="solid"></div>
     ${kvRow(['Grand Total', moneyHtml(payable)], { big: true })}
@@ -737,8 +737,8 @@ function printAdvanceSalesSlip(order: Order, mobile: string, orderDate: string, 
     <div class="dash"></div>
     ${receiptItemTable(order)}
     ${receiptTotals(order, fullAmount, `
-      ${kvRow(['', 'Tender Amount', advance.toFixed(2)])}
-      ${kvRow(['', 'Balance Due', balance.toFixed(2)])}
+      ${kvRow(['', 'Tender Amount', String(Math.round(advance))])}
+      ${kvRow(['', 'Balance Due', String(Math.round(balance))])}
     `)}
     <div>Paid via ${safeHtml(PAYMENT_LABELS_PRINT[order.advancePaidBy || ''] || order.advancePaidBy || '-')}</div>
     <div>Advances from Sales Order: ${moneyHtml(advance)}</div>
@@ -763,8 +763,8 @@ function printAdvanceClosureBill(order: Order, balancePaymentType: string, balan
     <div class="dash"></div>
     ${receiptItemTable(order)}
     ${receiptTotals(order, fullAmount, `
-      ${kvRow(['', 'Advance Paid', advance.toFixed(2)])}
-      ${kvRow(['', 'Paid Now', paidNow.toFixed(2)])}
+      ${kvRow(['', 'Advance Paid', String(Math.round(advance))])}
+      ${kvRow(['', 'Paid Now', String(Math.round(paidNow))])}
     `)}
     <div>Paid via ${safeHtml(PAYMENT_LABELS_PRINT[balancePaymentType] || balancePaymentType)}</div>
     <div class="solid"></div>
