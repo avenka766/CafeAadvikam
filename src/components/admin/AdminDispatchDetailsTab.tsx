@@ -59,6 +59,15 @@ interface Row {
   // for those rather than guessing a mode, so the bill-wise sheet's
   // Cash/UPI/Card columns honestly show 0 rather than a fabricated split.
   paymentMode?: string;
+  // BUG FIX (2026-09-06): "everything is showing status as paid" — `status`
+  // above is dispatch_invoices' own status (paid = dispatched/goods left,
+  // NOT money collected). Hosur is always billed on credit, so every real
+  // Hosur row showed "PAID" even though ~₹1.8L+ sits unpaid in hosur_bills'
+  // credit ledger. paymentStatus carries the REAL money status (from
+  // hosur_bills.status) for Hosur rows only; undefined elsewhere, where
+  // `status` already means what it says (an internal transfer/sale is
+  // "paid" the moment it's dispatched).
+  paymentStatus?: string;
 }
 
 function todayInput(d = new Date()) {
@@ -76,6 +85,24 @@ function fmtDateTime(iso: string) {
 // and Time as their own columns, not one combined string.
 function fmtDate(iso: string) { return new Date(iso).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }); }
 function fmtTime(iso: string) { return new Date(iso).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }); }
+
+// BUG FIX (2026-09-06): Hosur is always billed on credit — dispatch_invoices'
+// own status ('paid') only means the goods left, never that money came in —
+// so this maps the REAL hosur_bills status (r.paymentStatus) to what should
+// actually show, falling back to the dispatch status for every other scope.
+const HOSUR_PAYMENT_LABEL: Record<string, { label: string; tone: string }> = {
+  paid: { label: 'Paid', tone: 'bg-emerald-50 text-emerald-700 ring-emerald-200' },
+  settled: { label: 'Settled', tone: 'bg-emerald-50 text-emerald-700 ring-emerald-200' },
+  credit_open: { label: 'Credit', tone: 'bg-amber-50 text-amber-700 ring-amber-200' },
+  partial_credit: { label: 'Partial Credit', tone: 'bg-amber-50 text-amber-700 ring-amber-200' },
+  draft: { label: 'Draft', tone: 'bg-slate-100 text-slate-600 ring-slate-200' },
+  confirmed: { label: 'Confirmed', tone: 'bg-slate-100 text-slate-600 ring-slate-200' },
+};
+function statusDisplay(r: Pick<Row, 'status' | 'paymentStatus'>): { label: string; tone: string } {
+  if (r.status === 'cancelled') return { label: 'Cancelled', tone: 'bg-red-600 text-white ring-red-600' };
+  if (r.paymentStatus) return HOSUR_PAYMENT_LABEL[r.paymentStatus] ?? { label: r.paymentStatus, tone: 'bg-slate-100 text-slate-600 ring-slate-200' };
+  return { label: r.status === 'unpaid' ? 'Unpaid' : 'Paid', tone: 'bg-emerald-50 text-emerald-700 ring-emerald-200' };
+}
 
 function KpiCard({ label, value, sub, icon, tone }: { label: string; value: string; sub?: string; icon: React.ReactNode; tone: string }) {
   return (
@@ -102,19 +129,44 @@ export default function AdminDispatchDetailsTab() {
   const [bucketFilter, setBucketFilter] = useState<'All' | Bucket>('All');
   const [search, setSearch] = useState('');
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
+  // BUG FIX (2026-09-06): see paymentStatus on Row above — invoiceNo -> real
+  // hosur_bills payment status, built from a wider window than the visible
+  // date range (a bill can be reused/settled across several dispatch
+  // batches — see hosurBillingBridge's own "combined items across batches"
+  // comment — so its own created_at can predate the range being viewed).
+  const [hosurPaymentByInvoiceNo, setHosurPaymentByInvoiceNo] = useState<Map<string, string>>(new Map());
 
   const load = async () => {
     setLoading(true); setError('');
     try {
       const fromIso = `${fromDate}T00:00:00+05:30`;
       const toIso = new Date(new Date(`${toDate}T00:00:00+05:30`).getTime() + 86_400_000).toISOString();
-      const [invoiceRows, salesRes] = await Promise.all([
+      const [invoiceRows, salesRes, hosurBillsRes] = await Promise.all([
         listDispatchInvoices({ fromDate: fromIso, toDate: toIso }),
         supabase.from('bakery_walkin_bills').select('*').gte('created_at', fromIso).lt('created_at', toIso).order('created_at', { ascending: false }).limit(2000),
+        supabase.from('hosur_bills').select('invoice_no, status').not('invoice_no', 'is', null).limit(5000),
       ]);
       if (salesRes.error) throw salesRes.error;
-      setInvoices(invoiceRows.filter(r => r.status !== 'cancelled'));
-      setSales(((salesRes.data ?? []) as Record<string, unknown>[]).map(mapWalkinBill).filter(b => b.status !== 'cancelled'));
+      // FEATURE (2026-09-06): "recorded in the report and admin dispatch
+      // details tab also — that invoice number cancelled" — this used to
+      // filter cancelled invoices/bills out entirely, so a cancellation was
+      // invisible here. Now kept (tagged, see the Status column below) so
+      // admin can see it happened; totalsByBucket/grandTotal below exclude
+      // them from revenue since the goods came back to stock.
+      setInvoices(invoiceRows);
+      setSales(((salesRes.data ?? []) as Record<string, unknown>[]).map(mapWalkinBill));
+      const paymentMap = new Map<string, string>();
+      if (!hosurBillsRes.error) {
+        for (const row of (hosurBillsRes.data ?? []) as { invoice_no: string | null; status: string }[]) {
+          // invoice_no is a comma-joined list when one bill spans multiple
+          // dispatch batches (see hosurBillingBridge.ts step 2b) — register
+          // the bill's status against every invoice number it covers.
+          for (const no of (row.invoice_no ?? '').split(',').map(s => s.trim()).filter(Boolean)) {
+            paymentMap.set(no, row.status);
+          }
+        }
+      }
+      setHosurPaymentByInvoiceNo(paymentMap);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load dispatch details.');
       setInvoices([]); setSales([]);
@@ -134,6 +186,7 @@ export default function AdminDispatchDetailsTab() {
       date: r.createdAt, itemCount: r.items.length,
       subtotal: r.subtotal, discountAmount: r.discountAmount, total: r.total,
       dispatchedBy: r.dispatchedBy, status: r.status, record: r,
+      paymentStatus: r.scope === 'Hosur' ? hosurPaymentByInvoiceNo.get(r.invoiceNo) : undefined,
     }));
     const fromSales: Row[] = sales.map(b => ({
       key: `wb-${b.id}`, bucket: 'SALES',
@@ -142,11 +195,11 @@ export default function AdminDispatchDetailsTab() {
       party: b.customerName || 'Walk-in Customer',
       date: b.createdAt, itemCount: b.items.length,
       subtotal: b.subtotal, discountAmount: b.discountAmount, total: b.total,
-      dispatchedBy: b.cashierName || 'Planner', status: 'paid', record: walkinBillToInvoiceRecord(b),
+      dispatchedBy: b.cashierName || 'Planner', status: b.status === 'cancelled' ? 'cancelled' : 'paid', record: walkinBillToInvoiceRecord(b),
       paymentMode: b.paymentMode,
     }));
     return [...fromInvoices, ...fromSales].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-  }, [invoices, sales]);
+  }, [invoices, sales, hosurPaymentByInvoiceNo]);
 
   const filteredRows = useMemo(() => {
     let list = bucketFilter === 'All' ? rows : rows.filter(r => r.bucket === bucketFilter);
@@ -175,9 +228,15 @@ export default function AdminDispatchDetailsTab() {
     'desc',
   );
 
+  // Cancelled invoices/bills are kept in `rows` for visibility (see load())
+  // but excluded from revenue totals — the goods came back to stock, so
+  // counting them would overstate what was actually dispatched/sold.
   const totalsByBucket = useMemo(() => {
     const map: Record<Bucket, { count: number; value: number }> = { TO: { count: 0, value: 0 }, SALES: { count: 0, value: 0 }, Cake: { count: 0, value: 0 } };
-    for (const r of rows) { map[r.bucket].count += 1; map[r.bucket].value += r.total; }
+    for (const r of rows) {
+      if (r.status === 'cancelled') continue;
+      map[r.bucket].count += 1; map[r.bucket].value += r.total;
+    }
     return map;
   }, [rows]);
   const grandTotal = totalsByBucket.TO.value + totalsByBucket.SALES.value + totalsByBucket.Cake.value;
@@ -190,7 +249,7 @@ export default function AdminDispatchDetailsTab() {
       const itemRows = bucketRows.flatMap(r => r.record.items.map(i => ({
         invoiceNo: r.invoiceNo, source: r.scopeLabel, party: r.party, date: fmtDateTime(r.date),
         itemName: i.itemName, unit: i.unit, quantity: i.quantity, unitPrice: i.unitPrice, lineTotal: i.lineTotal,
-        invoiceTotal: r.total, dispatchedBy: r.dispatchedBy,
+        invoiceTotal: r.total, dispatchedBy: r.dispatchedBy, status: statusDisplay(r).label,
       })));
       return {
         name: `${bucket} Items`, title: `${BUCKET_LABEL[bucket]} — Item Detail (${fromDate} to ${toDate})`,
@@ -200,6 +259,7 @@ export default function AdminDispatchDetailsTab() {
           { header: 'Item', key: 'itemName', width: 28 }, { header: 'Unit', key: 'unit' }, { header: 'Qty', key: 'quantity' },
           { header: 'Unit Price', key: 'unitPrice' }, { header: 'Line Total', key: 'lineTotal' },
           { header: 'Invoice Total', key: 'invoiceTotal' }, { header: 'Dispatched By', key: 'dispatchedBy', width: 16 },
+          { header: 'Status', key: 'status', width: 12 },
         ],
         rows: itemRows,
       };
@@ -223,22 +283,26 @@ export default function AdminDispatchDetailsTab() {
         // (walk-in bill) rows — a TO/Cake dispatch invoice moves stock
         // internally, nothing was collected at a counter for it, so those
         // stay 0 rather than a fabricated split. "Group"/"Items"/"Subtotal"/
-        // "Discount"/"Status" (dropped from this sheet) are still fully
-        // covered by the Summary sheet and the per-bucket Item sheets below.
+        // "Discount" (dropped from this sheet) are still fully covered by
+        // the Summary sheet and the per-bucket Item sheets below. Status
+        // added (2026-09-06) so a cancelled invoice is visible here rather
+        // than silently vanishing, with its amounts zeroed out.
         name: 'Bill-wise (All)', title: `Dispatch Details — Bill-wise (${fromDate} to ${toDate})`,
         columns: [
           { header: 'Branch', key: 'branch', width: 10 }, { header: 'Bill No', key: 'billNo', width: 16 }, { header: 'Date', key: 'date', width: 14 }, { header: 'Time', key: 'time', width: 12 },
           { header: 'Total Sales', key: 'totalSales' }, { header: 'Cash', key: 'cash' }, { header: 'UPI', key: 'upi' }, { header: 'Card', key: 'card' },
-          { header: 'Salesperson', key: 'salesperson', width: 14 }, { header: 'Biller', key: 'biller', width: 16 },
+          { header: 'Salesperson', key: 'salesperson', width: 14 }, { header: 'Biller', key: 'biller', width: 16 }, { header: 'Status', key: 'status', width: 12 },
         ],
         rows: rows.map(r => {
+          const cancelled = r.status === 'cancelled';
           const mode = (r.paymentMode || '').toLowerCase();
-          const cash = mode === 'cash' ? r.total : 0;
-          const upi = mode === 'upi' ? r.total : 0;
-          const card = mode && mode !== 'cash' && mode !== 'upi' ? r.total : 0;
+          const cash = !cancelled && mode === 'cash' ? r.total : 0;
+          const upi = !cancelled && mode === 'upi' ? r.total : 0;
+          const card = !cancelled && mode && mode !== 'cash' && mode !== 'upi' ? r.total : 0;
           return {
             branch: r.scopeLabel, billNo: r.invoiceNo, date: fmtDate(r.date), time: fmtTime(r.date),
-            totalSales: r.total, cash, upi, card, salesperson: '—', biller: r.dispatchedBy,
+            totalSales: cancelled ? 0 : r.total, cash, upi, card, salesperson: '—', biller: r.dispatchedBy,
+            status: statusDisplay(r).label,
           };
         }),
       },
@@ -266,8 +330,9 @@ export default function AdminDispatchDetailsTab() {
           columns: [
             { header: 'Invoice No', width: 30 }, { header: 'Group', width: 18 }, { header: 'Party', width: 40 },
             { header: 'Items', width: 16, align: 'right' }, { header: 'Total', width: 24, align: 'right' }, { header: 'Date', width: 34 },
+            { header: 'Status', width: 20 },
           ],
-          rows: rows.slice(0, PDF_CAP).map(r => [r.invoiceNo, BUCKET_LABEL[r.bucket], r.party, String(r.itemCount), pdfMoney(r.total), fmtDateTime(r.date)]),
+          rows: rows.slice(0, PDF_CAP).map(r => [r.invoiceNo, BUCKET_LABEL[r.bucket], r.party, String(r.itemCount), pdfMoney(r.total), fmtDateTime(r.date), statusDisplay(r).label]),
         },
       ],
     });
@@ -342,23 +407,24 @@ export default function AdminDispatchDetailsTab() {
                 <SortableTh label="Items" sortKey="items" activeKey={sortKey} dir={sortDir} onSort={toggleSort} align="right" />
                 <SortableTh label="Total" sortKey="total" activeKey={sortKey} dir={sortDir} onSort={toggleSort} align="right" />
                 <SortableTh label="Dispatched By" sortKey="dispatchedBy" activeKey={sortKey} dir={sortDir} onSort={toggleSort} />
+                <th className="p-3">Status</th>
                 <th className="p-3 text-right">Invoice</th>
               </tr>
             </thead>
             <tbody className="divide-y">
               {loading && (
-                <tr><td colSpan={10} className="p-8 text-center text-sm font-semibold text-slate-500"><Loader2 className="mx-auto mb-2 size-5 animate-spin" /> Loading dispatch details…</td></tr>
+                <tr><td colSpan={11} className="p-8 text-center text-sm font-semibold text-slate-500"><Loader2 className="mx-auto mb-2 size-5 animate-spin" /> Loading dispatch details…</td></tr>
               )}
               {!loading && sortedRows.length === 0 && (
-                <tr><td colSpan={10} className="p-8 text-center text-sm font-semibold text-slate-500">No dispatch invoices in this range.</td></tr>
+                <tr><td colSpan={11} className="p-8 text-center text-sm font-semibold text-slate-500">No dispatch invoices in this range.</td></tr>
               )}
               {!loading && sortedRows.map(r => {
                 const expanded = expandedKey === r.key;
                 return (
                   <Fragment key={r.key}>
-                    <tr onClick={() => setExpandedKey(expanded ? null : r.key)} className="cursor-pointer hover:bg-slate-50">
+                    <tr onClick={() => setExpandedKey(expanded ? null : r.key)} className={cn('cursor-pointer hover:bg-slate-50', r.status === 'cancelled' && 'bg-red-50/40')}>
                       <td className="p-3"><ChevronDown className={cn('size-4 text-slate-400 transition-transform', expanded && 'rotate-180')} /></td>
-                      <td className="p-3 font-black text-slate-900">{r.invoiceNo}</td>
+                      <td className={cn('p-3 font-black text-slate-900', r.status === 'cancelled' && 'line-through decoration-red-400')}>{r.invoiceNo}</td>
                       <td className="p-3 text-slate-500">{fmtDate(r.date)}</td>
                       <td className="p-3 text-slate-500">{fmtTime(r.date)}</td>
                       <td className="p-3"><span className={cn('inline-flex rounded-full px-2 py-0.5 text-[10px] font-black uppercase ring-1', BUCKET_TONE[r.bucket])}>{r.scopeLabel}</span></td>
@@ -366,6 +432,9 @@ export default function AdminDispatchDetailsTab() {
                       <td className="p-3 text-right tabular-nums text-slate-500">{r.itemCount}</td>
                       <td className="p-3 text-right font-black text-slate-900">{formatCurrency(r.total)}</td>
                       <td className="p-3 text-slate-500">{r.dispatchedBy}</td>
+                      <td className="p-3">
+                        <span className={cn('inline-flex rounded-full px-2 py-0.5 text-[10px] font-black uppercase ring-1', statusDisplay(r).tone)}>{statusDisplay(r).label}</span>
+                      </td>
                       <td className="p-3 text-right" onClick={e => e.stopPropagation()}>
                         <div className="inline-flex gap-1.5">
                           <button onClick={() => void printDispatchInvoice(r.record, 'thermal')} className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2 py-1 text-[10px] font-black text-slate-700 hover:bg-slate-100">
@@ -379,7 +448,12 @@ export default function AdminDispatchDetailsTab() {
                     </tr>
                     {expanded && (
                       <tr>
-                        <td colSpan={10} className="bg-slate-50/70 p-4">
+                        <td colSpan={11} className="bg-slate-50/70 p-4">
+                          {r.status === 'cancelled' && (
+                            <div className="mb-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-800">
+                              Cancelled{r.record.cancelledBy ? ` by ${r.record.cancelledBy}` : ''}{r.record.cancelledAt ? ` on ${fmtDateTime(r.record.cancelledAt)}` : ''}{r.record.cancelledReason ? ` — ${r.record.cancelledReason}` : ''} · items returned to stock, excluded from totals above.
+                            </div>
+                          )}
                           <table className="w-full text-xs">
                             <thead><tr className="text-left uppercase text-slate-400"><th className="py-1.5">Item</th><th className="py-1.5 text-right">Qty</th><th className="py-1.5">Unit</th><th className="py-1.5 text-right">Unit Price</th><th className="py-1.5 text-right">Line Total</th></tr></thead>
                             <tbody className="divide-y divide-slate-200">

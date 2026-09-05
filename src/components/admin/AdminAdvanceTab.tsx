@@ -14,8 +14,10 @@ interface Props {
   branches: Branch[];
 }
 
+// AUDIT FIX (2026-09-05): "the payment should be round off there should not
+// be any decimal points".
 const fmt = (n: number) =>
-  `₹${n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  `₹${Math.round(n).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
 
 function toLocalDate(iso: string) {
   return new Date(iso).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });

@@ -14,7 +14,9 @@ import { useBakeryItemsStore } from '@/bakery/bakeryItemsStore';
 import { closestRecipeMatch } from '@/bakery/recipeNameMatch';
 import RecipeSpellingHint from '@/bakery/RecipeSpellingHint';
 
-const money = (value: number) => `₹${value.toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
+// AUDIT FIX (2026-09-05): "the payment should be round off there should not
+// be any decimal points".
+const money = (value: number) => `₹${Math.round(value).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
 const normal = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
 type Draft = { name: string; price: string; uom: CatalogUom; category: string; active: boolean };

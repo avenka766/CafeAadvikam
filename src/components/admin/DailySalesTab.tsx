@@ -10,8 +10,10 @@ import { downloadExcelWorkbook } from '@/lib/excelDownload';
 
 const BRANCH = 'SNB' as const;
 
+// AUDIT FIX (2026-09-05): "the payment should be round off there should not
+// be any decimal points".
 const money = (n: number) =>
-  `₹${(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  `₹${Math.round(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
 
 function pad2(n: number) { return String(n).padStart(2, '0'); }
 

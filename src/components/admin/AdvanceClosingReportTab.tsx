@@ -33,8 +33,10 @@ interface Props {
 
 const BRANCH = 'SNB' as const;
 
+// AUDIT FIX (2026-09-05): "the payment should be round off there should not
+// be any decimal points".
 const money = (n: number) =>
-  `₹${n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  `₹${Math.round(n).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
 
 function fmtDate(iso: string | undefined) {
   if (!iso) return '-';
