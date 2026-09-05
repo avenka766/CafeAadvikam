@@ -299,6 +299,13 @@ export function SnbPurchaseReturnPanel() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  // BUG FIX (2026-09-06): "still unable to return the item" — the per-item
+  // "Enter item details" / "only X remains returnable" / "only X unreserved"
+  // errors named the offending item by name, but on a return spanning many
+  // items (confirmed: a ₹66k+ return) that row can be scrolled well out of
+  // view — the error text alone gives no way to find it. Scrolls the exact
+  // row into view and highlights it whenever a per-item validation fails.
+  const [invalidItemId, setInvalidItemId] = useState<string | null>(null);
 
   const loadBase = useCallback(async () => {
     setLoading(true);
@@ -405,8 +412,19 @@ export function SnbPurchaseReturnPanel() {
     return sum + Math.max(0, qty * Number(item.rate || 0) + Number(item.tax || 0) * ratio - Number(item.discount || 0) * ratio);
   }, 0);
 
+  // BUG FIX (2026-09-06): pulled out so both the failing validation below and
+  // the item's own onChange handlers (once the user fixes it) can share the
+  // exact same scroll+highlight/clear logic instead of drifting apart.
+  const flagInvalidItem = (itemId: string, message: string) => {
+    setInvalidItemId(itemId);
+    setError(message);
+    requestAnimationFrame(() => {
+      document.getElementById(`return-item-${itemId}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+  };
+
   const submit = async () => {
-    setError(""); setSuccess("");
+    setError(""); setSuccess(""); setInvalidItemId(null);
     if (!invoiceId || !selectedInvoice) return setError("Select a fully synced purchase invoice.");
     if (selectedInvoice.sync_status !== "Synced" || selectedInvoice.revision_pending) {
       return setError("Re-sync the edited purchase invoice before creating a return.");
@@ -420,12 +438,17 @@ export function SnbPurchaseReturnPanel() {
       const live = stockFor(item.item_name);
       const available = Number(live?.availableQuantity ?? live?.quantity ?? 0);
       if (qty <= 0 || qty > item.returnableQuantity + 0.0001) {
-        return setError(`${item.item_name}: only ${formatQty(item.returnableQuantity, item.unit)} remains returnable.`);
+        flagInvalidItem(item.id, `${item.item_name}: only ${formatQty(item.returnableQuantity, item.unit)} remains returnable.`);
+        return;
       }
       if (qty > available + 0.0001) {
-        return setError(`${item.item_name}: only ${formatQty(available, live?.unit || item.unit)} is unreserved in live stock.`);
+        flagInvalidItem(item.id, `${item.item_name}: only ${formatQty(available, live?.unit || item.unit)} is unreserved in live stock.`);
+        return;
       }
-      if (item.itemReason.trim().length < 3) return setError(`Enter item details for ${item.item_name}.`);
+      if (item.itemReason.trim().length < 3) {
+        flagInvalidItem(item.id, `Enter item details for ${item.item_name}.`);
+        return;
+      }
     }
     if (form.settlementType === "Credit Note" && !form.creditNoteNo.trim()) return setError("Credit note number is required.");
     if (["Cash Refund", "Bank Refund"].includes(form.settlementType) && !form.referenceNo.trim()) return setError("Refund reference is required.");
@@ -458,16 +481,17 @@ export function SnbPurchaseReturnPanel() {
           const nextInvoice = invoices.find((invoice) => invoice.id === nextInvoiceId);
           setInvoiceId(nextInvoiceId);
           setError("");
+          setInvalidItemId(null);
           if (nextInvoice && form.returnDate < nextInvoice.invoice_date) {
             setForm((current) => ({ ...current, returnDate: nextInvoice.invoice_date }));
           }
         }}><option value="">Select invoice</option>{invoices.map((invoice) => <option key={invoice.id} value={invoice.id}>{invoice.invoice_number} · {invoice.supplier_name}</option>)}</select></Field>
         <div className="mt-3 grid gap-3 sm:grid-cols-2"><Field label="Return Date"><input type="date" min={selectedInvoice?.invoice_date} max={todayInput()} className={inputClass} value={form.returnDate} onChange={(event) => setForm({ ...form, returnDate: event.target.value })} /></Field><Field label="Reason"><select className={inputClass} value={form.reasonType} onChange={(event) => setForm({ ...form, reasonType: event.target.value })}><option>Damaged</option><option>Expired</option><option>Quality Issue</option><option>Short Received</option><option>Wrong Item</option><option>Other</option></select></Field><Field label="Settlement"><select className={inputClass} value={form.settlementType} onChange={(event) => setForm({ ...form, settlementType: event.target.value })}><option>Credit Note</option><option>Replacement</option><option>Cash Refund</option><option>Bank Refund</option><option>No Financial Adjustment</option></select></Field>{form.settlementType === "Credit Note" ? <Field label="Credit Note No"><input className={inputClass} value={form.creditNoteNo} onChange={(event) => setForm({ ...form, creditNoteNo: event.target.value })} /></Field> : ["Cash Refund", "Bank Refund"].includes(form.settlementType) ? <Field label="Reference No"><input className={inputClass} value={form.referenceNo} onChange={(event) => setForm({ ...form, referenceNo: event.target.value })} /></Field> : <div />}</div>
-        <div className="mt-3 space-y-2">{loading && invoiceId ? <div className="flex justify-center py-8"><Loader2 className="size-5 animate-spin" /></div> : items.map((item) => { const live = stockFor(item.item_name); return <div key={item.id} className="rounded-2xl border border-border bg-slate-50 p-2.5"><div className="flex items-center justify-between gap-2"><div><p className="text-xs font-black">{item.item_name}</p><p className="text-[10px] font-semibold text-muted-foreground">Purchased: {formatQty(Number(item.synced_quantity ?? item.quantity), item.unit)} · Returned: {formatQty(item.returnedQuantity, item.unit)} · Returnable: {formatQty(item.returnableQuantity, item.unit)} · Live unreserved: {formatQty(Number(live?.availableQuantity ?? live?.quantity ?? 0), live?.unit || item.unit)}</p></div>{/* BUG FIX (audit 2026-08-30): hardcoded step="0.001" and no
+        <div className="mt-3 space-y-2">{loading && invoiceId ? <div className="flex justify-center py-8"><Loader2 className="size-5 animate-spin" /></div> : items.map((item) => { const live = stockFor(item.item_name); const isInvalid = item.id === invalidItemId; return <div key={item.id} id={`return-item-${item.id}`} className={cn("rounded-2xl border p-2.5 transition-colors", isInvalid ? "border-destructive bg-destructive/5 ring-2 ring-destructive/30" : "border-border bg-slate-50")}><div className="flex items-center justify-between gap-2"><div><p className="text-xs font-black">{item.item_name}</p><p className="text-[10px] font-semibold text-muted-foreground">Purchased: {formatQty(Number(item.synced_quantity ?? item.quantity), item.unit)} · Returned: {formatQty(item.returnedQuantity, item.unit)} · Returnable: {formatQty(item.returnableQuantity, item.unit)} · Live unreserved: {formatQty(Number(live?.availableQuantity ?? live?.quantity ?? 0), live?.unit || item.unit)}</p></div>{/* BUG FIX (audit 2026-08-30): hardcoded step="0.001" and no
     sanitization regardless of unit — same "pcs never allow decimal
     points" gap found and fixed across the Planner dashboard's own
     equivalent tabs today. */}
-<input type="number" min="0" max={Math.min(item.returnableQuantity, Number(live?.availableQuantity ?? live?.quantity ?? 0))} step={item.unit === 'pcs' ? 1 : 0.001} disabled={item.returnableQuantity <= 0} value={item.returnQuantity} onChange={(event) => setItems((current) => current.map((line) => line.id === item.id ? { ...line, returnQuantity: sanitizeQtyForUnit(event.target.value, item.unit === 'pcs' ? 'pcs' : 'kg') } : line))} placeholder="Qty" className="h-9 w-24 rounded-xl border border-border px-2 text-right text-xs font-black outline-none disabled:bg-slate-100 disabled:text-slate-400" /></div><input value={item.itemReason} onChange={(event) => setItems((current) => current.map((line) => line.id === item.id ? { ...line, itemReason: event.target.value } : line))} placeholder="Damage / return details" className="mt-2 h-9 w-full rounded-xl border border-border px-3 text-xs font-bold outline-none" /></div>; })}</div>
+<input type="number" min="0" max={Math.min(item.returnableQuantity, Number(live?.availableQuantity ?? live?.quantity ?? 0))} step={item.unit === 'pcs' ? 1 : 0.001} disabled={item.returnableQuantity <= 0} value={item.returnQuantity} onChange={(event) => { if (isInvalid) setInvalidItemId(null); setItems((current) => current.map((line) => line.id === item.id ? { ...line, returnQuantity: sanitizeQtyForUnit(event.target.value, item.unit === 'pcs' ? 'pcs' : 'kg') } : line)); }} placeholder="Qty" className="h-9 w-24 rounded-xl border border-border px-2 text-right text-xs font-black outline-none disabled:bg-slate-100 disabled:text-slate-400" /></div><input value={item.itemReason} onChange={(event) => { if (isInvalid) setInvalidItemId(null); setItems((current) => current.map((line) => line.id === item.id ? { ...line, itemReason: event.target.value } : line)); }} placeholder="Damage / return details" className={cn("mt-2 h-9 w-full rounded-xl border px-3 text-xs font-bold outline-none", isInvalid ? "border-destructive" : "border-border")} /></div>; })}</div>
         <div className="mt-3"><Field label="Remarks"><textarea className={textareaClass} value={form.remarks} onChange={(event) => setForm({ ...form, remarks: event.target.value })} /></Field></div>
         <div className="mt-3 flex items-center justify-between rounded-xl bg-amber-50 px-3 py-2"><span className="text-xs font-black text-amber-800">Estimated return value</span><strong>{money(estimated)}</strong></div>
         <div className="mt-3"><StatusMessage error={error} success={success} /></div>
