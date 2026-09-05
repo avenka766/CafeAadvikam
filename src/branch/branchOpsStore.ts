@@ -1098,65 +1098,97 @@ const branchOpsSupabaseStorage: PersistStorage<BranchOpsState> = {
     // Admin/owner roles (sessionBranch === null) still load everything.
     const sessionBranch = getSessionBranch();
 
-    let opQuery = supabase
-      .from("branch_operation_records")
-      // BUG FIX: added "status" — this is the main hydration query (recent
-      // activity feed) and previously fed mergeOperationRecordsIntoState
-      // with no way to know a row had been soft-deleted, letting deleted
-      // records resurrect on the very next page load.
-      .select("record_type, record_id, payload, created_at, status")
-      .order("created_at", { ascending: false })
-      .limit(sessionBranch ? 300 : 8000); // Branch POS stays fast (300, today's activity). Admin/Owner/SNB Admin/VRSNB Admin need a full month across all branches combined for reports, so that path gets a much higher ceiling.
+    // RESILIENCE (2026-09-05): "I am keep on getting the error banner" —
+    // traced live to this exact hydration bundle: the admin/owner path's
+    // branch_operation_records query alone can return up to 8000 rows with
+    // no date bound, and it runs alongside several other wide queries the
+    // instant any admin screen mounts. Under concurrent load that genuinely
+    // hits the DB's statement timeout (confirmed live: 57014 "canceling
+    // statement due to statement timeout"), and since every failed Supabase
+    // request fires the app-wide "Live business data may be incomplete"
+    // banner (see supabase.ts's customFetch), a single slow tick here was
+    // enough to alarm the user for a screen that has nothing to do with
+    // whatever they were actually looking at. One retry after a short
+    // backoff — the same pattern already proven in useBranchLedger.ts —
+    // clears a transient timeout without ever surfacing it. Postgrest query
+    // builders are single-use thenables, so retrying means rebuilding them
+    // fresh, not re-awaiting the same objects — hence the whole bundle is
+    // wrapped in this local function instead of built once outside it.
+    const runQueries = () => {
+      let opQuery = supabase
+        .from("branch_operation_records")
+        // BUG FIX: added "status" — this is the main hydration query (recent
+        // activity feed) and previously fed mergeOperationRecordsIntoState
+        // with no way to know a row had been soft-deleted, letting deleted
+        // records resurrect on the very next page load.
+        .select("record_type, record_id, payload, created_at, status")
+        .order("created_at", { ascending: false })
+        .limit(sessionBranch ? 300 : 8000); // Branch POS stays fast (300, today's activity). Admin/Owner/SNB Admin/VRSNB Admin need a full month across all branches combined for reports, so that path gets a much higher ceiling.
 
-    let stockCountQuery = supabase
-      .from("branch_stock_count_reports")
-      .select("id, branch, report_no, lines, status, reported_by, confirmed_by, confirmed_at, created_at, updated_at")
-      .order("created_at", { ascending: false })
-      .limit(sessionBranch ? 200 : 1000); // EGRESS FIX: reduced from 1000
+      let stockCountQuery = supabase
+        .from("branch_stock_count_reports")
+        .select("id, branch, report_no, lines, status, reported_by, confirmed_by, confirmed_at, created_at, updated_at")
+        .order("created_at", { ascending: false })
+        .limit(sessionBranch ? 200 : 1000); // EGRESS FIX: reduced from 1000
 
-    let varianceQuery = supabase
-      .from("branch_stock_variance_records")
-      .select("id, branch, report_id, report_no, item_name, unit, system_qty, physical_qty, difference, reported_by, confirmed_by, created_at")
-      .order("created_at", { ascending: false })
-      .limit(sessionBranch ? 500 : 2000); // EGRESS FIX: reduced from 2000
+      let varianceQuery = supabase
+        .from("branch_stock_variance_records")
+        .select("id, branch, report_id, report_no, item_name, unit, system_qty, physical_qty, difference, reported_by, confirmed_by, created_at")
+        .order("created_at", { ascending: false })
+        .limit(sessionBranch ? 500 : 2000); // EGRESS FIX: reduced from 2000
 
-    let complaintQuery = supabase
-      .from("branch_complaint_tickets")
-      .select("id, branch, complaint_area, subject, description, created_by_username, status, created_at, updated_at")
-      .order("created_at", { ascending: false })
-      .limit(sessionBranch ? 200 : 1000);
+      let complaintQuery = supabase
+        .from("branch_complaint_tickets")
+        .select("id, branch, complaint_area, subject, description, created_by_username, status, created_at, updated_at")
+        .order("created_at", { ascending: false })
+        .limit(sessionBranch ? 200 : 1000);
 
-    // Expense history is sparse but can be older than the high-volume general
-    // operation feed. Load it separately so billing activity cannot push valid
-    // historical expenses beyond the operation query limit.
-    const sparseHistoryQuery = loadSparseOperationHistory(sessionBranch);
+      if (sessionBranch) {
+        opQuery = opQuery.eq("branch", sessionBranch);
+        stockCountQuery = stockCountQuery.eq("branch", sessionBranch);
+        varianceQuery = varianceQuery.eq("branch", sessionBranch);
+        complaintQuery = complaintQuery.eq("branch", sessionBranch);
+      }
 
-    if (sessionBranch) {
-      opQuery = opQuery.eq("branch", sessionBranch);
-      stockCountQuery = stockCountQuery.eq("branch", sessionBranch);
-      varianceQuery = varianceQuery.eq("branch", sessionBranch);
-      complaintQuery = complaintQuery.eq("branch", sessionBranch);
-    }
+      return Promise.all([
+        supabase
+          .from("app_state")
+          .select("value")
+          .eq("key", name)
+          .maybeSingle(),
+        opQuery,
+        stockCountQuery,
+        varianceQuery,
+        complaintQuery,
+        // Expense history is sparse but can be older than the high-volume
+        // general operation feed. Loaded separately so billing activity
+        // cannot push valid historical expenses beyond the operation query
+        // limit — called fresh each attempt, not shared with the retry.
+        loadSparseOperationHistory(sessionBranch),
+      ]);
+    };
 
-    const [
+    let [
       { data, error },
       { data: opRows, error: opError },
       { data: stockCountRows, error: stockCountError },
       { data: varianceRows, error: varianceError },
       { data: complaintRows, error: complaintError },
       { data: sparseHistoryRows, error: sparseHistoryError },
-    ] = await Promise.all([
-      supabase
-        .from("app_state")
-        .select("value")
-        .eq("key", name)
-        .maybeSingle(),
-      opQuery,
-      stockCountQuery,
-      varianceQuery,
-      complaintQuery,
-      sparseHistoryQuery,
-    ]);
+    ] = await runQueries();
+
+    if (error || opError || stockCountError || varianceError || complaintError || sparseHistoryError) {
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      [
+        { data, error },
+        { data: opRows, error: opError },
+        { data: stockCountRows, error: stockCountError },
+        { data: varianceRows, error: varianceError },
+        { data: complaintRows, error: complaintError },
+        { data: sparseHistoryRows, error: sparseHistoryError },
+      ] = await runQueries();
+    }
+
     if (error) {
       console.error("[branchOpsStore] Supabase load failed:", error.message);
       return null;
@@ -3430,6 +3462,9 @@ export async function nextBranchInvoiceAtomic(branch: Branch) {
   return nextBranchInvoice(branch);
 }
 
+// AUDIT FIX (2026-09-05): "the payment should be round off there should not
+// be any decimal points" — used to show up to 2 decimals whenever an amount
+// wasn't a whole rupee.
 export function money(value: number) {
-  return `₹${value.toLocaleString("en-IN", { maximumFractionDigits: 2, minimumFractionDigits: 0 })}`;
+  return `₹${Math.round(value).toLocaleString("en-IN", { maximumFractionDigits: 0 })}`;
 }

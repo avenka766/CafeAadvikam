@@ -9,6 +9,12 @@ import { printViaIframe } from '@/lib/printViaIframe';
 export const BRANCH_PRINT_COMPLETE_EVENT = 'cafe-aadvikam:branch-print-complete';
 
 const roundMoney = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100;
+// AUDIT FIX (2026-09-05): "the payment should be round off there should not
+// be any decimal points" — every rupee amount printed on a receipt in this
+// file used .toFixed(2), always showing paise even when the real accounting
+// (roundMoney above) already settles everything to whole rupees at billing
+// time. Quantity fields (kg weights) are untouched — only money amounts.
+const rupee = (value: number) => String(Math.round(Number(value) || 0));
 const billRoundOff = (bill: BranchBillRecord) => bill.roundOff ?? roundMoney(
   bill.total - (bill.amountBeforeRoundOff ?? Math.max(0, bill.subtotal + bill.tax - bill.discount)),
 );
@@ -26,7 +32,7 @@ const cashTenderedChangeHtml = (bill: BranchBillRecord, rowClass: string) => {
   const tendered = Number(bill.tendered || 0);
   const change = Math.max(0, roundMoney(tendered - bill.total));
   if (tendered <= 0 || tendered <= bill.total) return '';
-  return `<div class="${rowClass}"><span>Cash Tendered</span><span>&#x20B9;${tendered.toFixed(2)}</span></div><div class="${rowClass}"><span>Change Returned</span><span>&#x20B9;${change.toFixed(2)}</span></div>`;
+  return `<div class="${rowClass}"><span>Cash Tendered</span><span>&#x20B9;${rupee(tendered)}</span></div><div class="${rowClass}"><span>Change Returned</span><span>&#x20B9;${rupee(change)}</span></div>`;
 };
 
 // ─── Generic HTML print helper ─────────────────────────────────────────────────
@@ -84,10 +90,10 @@ function printVrsnbReceiptBill(bill: BranchBillRecord, duplicate = false, target
   const payModeLabel = bill.paymentMode === 'split' || bill.paymentMode === 'wallet'
     ? (() => {
         const parts: string[] = [];
-        if (bill.split?.cash) parts.push(`Cash ₹${Number(bill.split.cash).toFixed(2)}`);
-        if (bill.split?.upi) parts.push(`UPI ₹${Number(bill.split.upi).toFixed(2)}`);
-        if (bill.split?.card) parts.push(`Card ₹${Number(bill.split.card).toFixed(2)}`);
-        if (bill.split?.wallet) parts.unshift(`Wallet ₹${Number(bill.split.wallet).toFixed(2)}`);
+        if (bill.split?.cash) parts.push(`Cash ₹${rupee(bill.split.cash)}`);
+        if (bill.split?.upi) parts.push(`UPI ₹${rupee(bill.split.upi)}`);
+        if (bill.split?.card) parts.push(`Card ₹${rupee(bill.split.card)}`);
+        if (bill.split?.wallet) parts.unshift(`Wallet ₹${rupee(bill.split.wallet)}`);
         return parts.join(' + ');
       })()
     : bill.paymentMode.toUpperCase();
@@ -146,22 +152,22 @@ function printVrsnbReceiptBill(bill: BranchBillRecord, duplicate = false, target
     <table>
       <thead><tr><th style="text-align:left">Item</th><th class="num">Qty.</th><th class="num">Price</th><th class="num">Amount</th></tr></thead>
       <tbody>
-        ${bill.items.map((i) => `<tr><td>${i.itemName}</td><td class="num">${i.quantity % 1 === 0 ? i.quantity : i.quantity.toFixed(2)}</td><td class="num">${i.price.toFixed(2)}</td><td class="num">${i.lineTotal.toFixed(2)}</td></tr>`).join('')}
-        <tr class="total-row"><td colspan="1"></td><td colspan="1" style="font-size:10px">Total Qty: ${totalQty % 1 === 0 ? totalQty : totalQty.toFixed(2)}</td><td style="font-size:10px;text-align:right">Sub Total</td><td class="num">${bill.subtotal.toFixed(2)}</td></tr>
+        ${bill.items.map((i) => `<tr><td>${i.itemName}</td><td class="num">${i.quantity % 1 === 0 ? i.quantity : i.quantity.toFixed(2)}</td><td class="num">${rupee(i.price)}</td><td class="num">${rupee(i.lineTotal)}</td></tr>`).join('')}
+        <tr class="total-row"><td colspan="1"></td><td colspan="1" style="font-size:10px">Total Qty: ${totalQty % 1 === 0 ? totalQty : totalQty.toFixed(2)}</td><td style="font-size:10px;text-align:right">Sub Total</td><td class="num">${rupee(bill.subtotal)}</td></tr>
       </tbody>
     </table>
     <div class="summary">
-      ${Number(bill.additionalCharges || 0) > 0 ? `<div class="row"><span>Additional Charges</span><span>&#x20B9;${Number(bill.additionalCharges).toFixed(2)}</span></div>` : ''}
-      <div class="row"><span>${discountLabel(bill)}</span><span>-&#x20B9;${bill.discount.toFixed(2)}</span></div>
-      <div class="row"><span>Amount before round-off</span><span>&#x20B9;${(bill.amountBeforeRoundOff ?? Math.max(0, bill.subtotal + bill.tax - bill.discount)).toFixed(2)}</span></div>
-      <div class="row"><span>Round-Off</span><span>${billRoundOff(bill) >= 0 ? '+' : ''}${billRoundOff(bill).toFixed(2)}</span></div>
+      ${Number(bill.additionalCharges || 0) > 0 ? `<div class="row"><span>Additional Charges</span><span>&#x20B9;${rupee(bill.additionalCharges)}</span></div>` : ''}
+      <div class="row"><span>${discountLabel(bill)}</span><span>-&#x20B9;${rupee(bill.discount)}</span></div>
+      <div class="row"><span>Amount before round-off</span><span>&#x20B9;${rupee(bill.amountBeforeRoundOff ?? Math.max(0, bill.subtotal + bill.tax - bill.discount))}</span></div>
+      <div class="row"><span>Round-Off</span><span>${billRoundOff(bill) >= 0 ? '+' : ''}${rupee(billRoundOff(bill))}</span></div>
     </div>
-    <div class="grand"><span>Grand Total</span><span>&#x20B9;${bill.total.toFixed(2)}</span></div>
+    <div class="grand"><span>Grand Total</span><span>&#x20B9;${rupee(bill.total)}</span></div>
     <div class="paid-via">Paid via ${payModeLabel}</div>
     ${cashTenderedChangeHtml(bill, 'row')}
-    ${bill.walletTransactionId ? `<div class="row"><span>Wallet Txn</span><span>${bill.walletTransactionId}</span></div><div class="row"><span>Wallet Balance</span><span>&#x20B9;${Number(bill.walletBalanceRemaining || 0).toFixed(2)}</span></div>` : ''}
-    ${Number(bill.walletCashback || 0) > 0 ? `<div class="row"><span>Wallet Cashback</span><span>&#x20B9;${Number(bill.walletCashback).toFixed(2)}</span></div>` : ''}
-    ${Number(bill.refundAmount || 0) > 0 ? `<div class="row bold"><span>Refunded via ${String(bill.refundMode || '').toUpperCase()}</span><span>&#x20B9;${Number(bill.refundAmount).toFixed(2)}</span></div>` : ''}
+    ${bill.walletTransactionId ? `<div class="row"><span>Wallet Txn</span><span>${bill.walletTransactionId}</span></div><div class="row"><span>Wallet Balance</span><span>&#x20B9;${rupee(bill.walletBalanceRemaining || 0)}</span></div>` : ''}
+    ${Number(bill.walletCashback || 0) > 0 ? `<div class="row"><span>Wallet Cashback</span><span>&#x20B9;${rupee(bill.walletCashback)}</span></div>` : ''}
+    ${Number(bill.refundAmount || 0) > 0 ? `<div class="row bold"><span>Refunded via ${String(bill.refundMode || '').toUpperCase()}</span><span>&#x20B9;${rupee(bill.refundAmount)}</span></div>` : ''}
     <div class="dash"></div>
     <div class="footer">Thank You &amp; Visit Again...!!!</div>
     <script>window.onload=()=>window.print()</script>
@@ -183,8 +189,8 @@ function printSnbCounterBill(bill: BranchBillRecord, duplicate = false, target?:
   };
   const printedAt = new Date(bill.createdAt);
   const paymentRows = (bill.paymentMode === 'split' || bill.paymentMode === 'wallet') && bill.split
-    ? Object.entries(bill.split).filter(([, amount]) => Number(amount) > 0).map(([mode, amount]) => `<div class="pay"><span>${mode.toUpperCase()}</span><span>${Number(amount).toFixed(2)}</span></div>`).join('')
-    : `<div class="pay"><span>${bill.paymentMode.toUpperCase()}</span><span>${(bill.paymentMode === 'credit' ? bill.tendered : bill.total).toFixed(2)}</span></div>`;
+    ? Object.entries(bill.split).filter(([, amount]) => Number(amount) > 0).map(([mode, amount]) => `<div class="pay"><span>${mode.toUpperCase()}</span><span>${rupee(amount)}</span></div>`).join('')
+    : `<div class="pay"><span>${bill.paymentMode.toUpperCase()}</span><span>${rupee(bill.paymentMode === 'credit' ? bill.tendered : bill.total)}</span></div>`;
   const html = `<!doctype html><html><head><title>${title} ${bill.billNo}</title><style>
     @page{size:80mm auto;margin:3mm}body{font-family:Arial,sans-serif;font-size:11px;color:#111}.c{text-align:center}.brand{font-size:20px;font-weight:900;line-height:1.05}.small{font-size:10px}.doc{font-size:14px;font-weight:900;letter-spacing:.03em;margin:8px 0}.row,.pay{display:flex;justify-content:space-between;gap:8px}.dash{border-top:1px solid #111;margin:6px 0}table{width:100%;border-collapse:collapse}th{border-top:1px solid #111;border-bottom:1px solid #111;font-size:11px;text-align:left;padding:3px 2px}td{padding:3px 2px;vertical-align:top}.num{text-align:right}.total-row td{border-top:1px solid #111;font-weight:900}.summary{margin-left:auto;width:72%;font-size:12px}.summary .row{padding:2px 0}.net{border-top:1px solid #111;border-bottom:1px solid #111;font-size:16px;font-weight:900;margin-top:4px;padding:4px 0}.paybox{margin-top:8px;text-align:center}.paytitle{border-top:1px solid #111;border-bottom:1px solid #111;display:inline-block;min-width:64%;padding:2px 0}.gst{font-size:9px;margin-top:8px}.gst th,.gst td{border:1px solid #111;padding:2px;text-align:right}.gst th:first-child,.gst td:first-child{text-align:left}.footer{margin-top:10px;text-align:center;font-size:13px;font-weight:800}.copy{border:1px solid #111;font-weight:900;margin-bottom:5px;padding:3px;text-align:center}
   </style></head><body>
@@ -197,12 +203,12 @@ function printSnbCounterBill(bill: BranchBillRecord, duplicate = false, target?:
     ${returnBill._isReturn ? `<div class="row"><span>Original Bill :</span><span>${returnBill._originalBillNo || '-'}</span></div><div class="row"><span>Reason :</span><span>${returnBill._returnReason || '-'}</span></div>` : ''}
     <div class="row"><span>${bill.invoiceNo}</span><span>Time : ${printedAt.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span></div>
     <table><thead><tr><th>Sn</th><th>Item Name</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">Amount</th></tr></thead><tbody>
-      ${bill.items.map((i, idx) => `<tr><td>${idx + 1}</td><td>${i.itemName}</td><td class="num">${i.quantity.toFixed(i.unit === 'kg' ? 2 : 0)}</td><td class="num">${i.price.toFixed(2)}</td><td class="num">${i.lineTotal.toFixed(2)}</td></tr>`).join('')}
-      <tr class="total-row"><td></td><td>Total</td><td class="num">${bill.items.reduce((s, i) => s + i.quantity, 0).toFixed(2)}</td><td></td><td class="num">${bill.subtotal.toFixed(2)}</td></tr>
+      ${bill.items.map((i, idx) => `<tr><td>${idx + 1}</td><td>${i.itemName}</td><td class="num">${i.quantity.toFixed(i.unit === 'kg' ? 2 : 0)}</td><td class="num">${rupee(i.price)}</td><td class="num">${rupee(i.lineTotal)}</td></tr>`).join('')}
+      <tr class="total-row"><td></td><td>Total</td><td class="num">${bill.items.reduce((s, i) => s + i.quantity, 0).toFixed(2)}</td><td></td><td class="num">${rupee(bill.subtotal)}</td></tr>
     </tbody></table>
-    <div class="summary"><div class="row"><span>${discountLabel(bill)} :</span><span>${bill.discount.toFixed(2)}</span></div><div class="row"><span>Additional Charges :</span><span>${Number(bill.additionalCharges || 0).toFixed(2)}</span></div><div class="row"><span>GST :</span><span>${bill.tax.toFixed(2)}</span></div><div class="row"><span>Amount Before Round-Off :</span><span>${(bill.amountBeforeRoundOff ?? Math.max(0, bill.subtotal + bill.tax - bill.discount)).toFixed(2)}</span></div><div class="row"><span>Round-Off :</span><span>${billRoundOff(bill) >= 0 ? '+' : ''}${billRoundOff(bill).toFixed(2)}</span></div><div class="row net"><span>Net Bill Amount :</span><span>Rs ${bill.total.toFixed(2)}</span></div>${Number(advanceInfo._advanceAmount || 0) > 0 ? `<div class="row"><span>Advance Amount :</span><span>${Number(advanceInfo._advanceAmount).toFixed(2)}</span></div><div class="row"><span>Balance Paid Now :</span><span>${Math.max(0, bill.total - Number(advanceInfo._advanceAmount)).toFixed(2)}</span></div>` : ''}</div>
-    <div class="paybox"><div class="paytitle">Payment Details</div>${paymentRows}${cashTenderedChangeHtml(bill, 'pay')}${bill.walletTransactionId ? `<div class="pay"><span>WALLET BALANCE</span><span>${Number(bill.walletBalanceRemaining || 0).toFixed(2)}</span></div>` : ''}${Number(bill.walletCashback || 0) > 0 ? `<div class="pay"><span>WALLET CASHBACK</span><span>${Number(bill.walletCashback).toFixed(2)}</span></div>` : ''}${Number(bill.refundAmount || 0) > 0 ? `<div class="pay"><span>REFUND ${String(bill.refundMode || '').toUpperCase()}</span><span>-${Number(bill.refundAmount).toFixed(2)}</span></div>` : ''}</div>
-    ${bill.paymentMode === 'credit' ? `<div class="dash"></div><div class="row"><span>Credit Customer</span><span>${bill.creditCustomerName || '-'}</span></div><div class="row"><span>Mobile</span><span>${bill.creditCustomerMobile || '-'}</span></div><div class="row"><span>Due Date</span><span>${bill.creditDueDate || '-'}</span></div><div class="row"><span>Credit Due</span><span>${bill.balance.toFixed(2)}</span></div>` : ''}
+    <div class="summary"><div class="row"><span>${discountLabel(bill)} :</span><span>${rupee(bill.discount)}</span></div><div class="row"><span>Additional Charges :</span><span>${rupee(bill.additionalCharges || 0)}</span></div><div class="row"><span>GST :</span><span>${rupee(bill.tax)}</span></div><div class="row"><span>Amount Before Round-Off :</span><span>${rupee(bill.amountBeforeRoundOff ?? Math.max(0, bill.subtotal + bill.tax - bill.discount))}</span></div><div class="row"><span>Round-Off :</span><span>${billRoundOff(bill) >= 0 ? '+' : ''}${rupee(billRoundOff(bill))}</span></div><div class="row net"><span>Net Bill Amount :</span><span>Rs ${rupee(bill.total)}</span></div>${Number(advanceInfo._advanceAmount || 0) > 0 ? `<div class="row"><span>Advance Amount :</span><span>${rupee(advanceInfo._advanceAmount)}</span></div><div class="row"><span>Balance Paid Now :</span><span>${rupee(Math.max(0, bill.total - Number(advanceInfo._advanceAmount)))}</span></div>` : ''}</div>
+    <div class="paybox"><div class="paytitle">Payment Details</div>${paymentRows}${cashTenderedChangeHtml(bill, 'pay')}${bill.walletTransactionId ? `<div class="pay"><span>WALLET BALANCE</span><span>${rupee(bill.walletBalanceRemaining || 0)}</span></div>` : ''}${Number(bill.walletCashback || 0) > 0 ? `<div class="pay"><span>WALLET CASHBACK</span><span>${rupee(bill.walletCashback)}</span></div>` : ''}${Number(bill.refundAmount || 0) > 0 ? `<div class="pay"><span>REFUND ${String(bill.refundMode || '').toUpperCase()}</span><span>-${rupee(bill.refundAmount)}</span></div>` : ''}</div>
+    ${bill.paymentMode === 'credit' ? `<div class="dash"></div><div class="row"><span>Credit Customer</span><span>${bill.creditCustomerName || '-'}</span></div><div class="row"><span>Mobile</span><span>${bill.creditCustomerMobile || '-'}</span></div><div class="row"><span>Due Date</span><span>${bill.creditDueDate || '-'}</span></div><div class="row"><span>Credit Due</span><span>${rupee(bill.balance)}</span></div>` : ''}
     <div class="c small">Salesperson : ${bill.salesperson}</div>
     <div class="footer">Thank you, Visit Again</div>
     <script>window.onload=()=>window.print()</script>
@@ -216,7 +222,7 @@ function safeHtml(value: unknown): string {
   return String(value ?? '')
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
-const inr = (n: number) => `₹${Number(n || 0).toFixed(2)}`;
+const inr = (n: number) => `₹${rupee(n)}`;
 
 const SMALL_NUMBER_WORDS = [
   'Zero', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine',
