@@ -111,7 +111,7 @@ export function validatePaymentBreakdown(breakdown: PaymentBreakdown | undefined
   }
   const collected = moneyValue(values.reduce((sum, value) => sum + value, 0));
   if (collected !== moneyValue(expected)) {
-    throw new Error(`Split payment must equal the payable amount (${moneyValue(expected).toFixed(2)}).`);
+    throw new Error(`Split payment must equal the payable amount (${Math.round(moneyValue(expected))}).`);
   }
 }
 
