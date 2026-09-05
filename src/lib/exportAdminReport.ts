@@ -33,8 +33,11 @@ export async function exportWorkbook(filename: string, sheets: ReportSheet[]) {
 
 // jsPDF's built-in Helvetica font has no glyph for ₹ — same workaround used
 // in AdminSNBDashboard.tsx's quotation PDF.
+// AUDIT FIX (2026-09-05): "the payment should be round off there should not
+// be any decimal points" — shared by every Admin Dashboard PDF export
+// (Cafe Control, Branch Sales, Hosur Sales, Dispatch Details).
 export function pdfMoney(value: number) {
-  return `Rs. ${Number(value || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
+  return `Rs. ${Math.round(Number(value || 0)).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
 }
 
 export type PdfColumn = { header: string; width: number; align?: 'left' | 'right' };
