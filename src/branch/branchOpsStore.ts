@@ -879,6 +879,71 @@ const mirrorOperationRecord = (
   });
 };
 
+// BUG FIX (2026-09-06): "Planner dispatched an advance order, SNB confirmed
+// it, but the branch's own Advance tab stepper never lit up and Final Bill
+// stayed locked forever." updateAdvanceStoreStatus/updateAdvanceStoreStatusByOrderNo
+// below used to look the order up ONLY in this session's own local
+// advanceCakeOrders array and silently do nothing if it wasn't there. That
+// array is populated by the BRANCH's own Advance tab loading ITS OWN orders
+// — Planner's dispatch flow (bakeryStore.ts) calls these from a completely
+// separate browser session that never has it loaded, so the sync no-op'd on
+// essentially every real dispatch. This looks the order up directly in
+// branch_operation_records (the real, shared, cross-session source of
+// truth) as a fallback, and mirrors the change back the same way the
+// local-state fast path already does.
+async function updateAdvanceStoreStatusInDb(
+  match: { id: string } | { orderNo: string },
+  storeStatus: NonNullable<CakeAdvanceOrder["storeStatus"]>,
+  by: string,
+  set: (fn: (s: BranchOpsState) => Partial<BranchOpsState>) => void,
+): Promise<void> {
+  let query = supabase.from("branch_operation_records").select("branch, record_id, payload").eq("record_type", "advance_order");
+  query = "id" in match ? query.eq("record_id", match.id) : query.eq("record_no", match.orderNo);
+  const { data: row, error } = await query.maybeSingle();
+  if (error || !row) return; // best-effort — nothing found in the DB to sync either
+  const branch = row.branch as Branch;
+  const recordId = row.record_id as string;
+  const payload = (row.payload || {}) as CakeAdvanceOrder;
+  const now = new Date().toISOString();
+  const next: CakeAdvanceOrder = {
+    ...payload,
+    storeStatus,
+    storeAcceptedBy: by,
+    storeStatusHistory: [...(payload.storeStatusHistory || []), { status: storeStatus, by, at: now }],
+  };
+  mirrorOperationRecord(branch, "advance_order", recordId, next, {
+    recordNo: payload.orderNo,
+    amount: payload.orderValue,
+    status: storeStatus,
+    actor: by,
+  });
+  set((s) => ({
+    // Also patch this session's own local copy if it happens to have one
+    // loaded (harmless no-op otherwise) — the DB write above is what
+    // actually matters for the cross-session case this fixes.
+    advanceCakeOrders: s.advanceCakeOrders.some((o) => o.id === recordId)
+      ? s.advanceCakeOrders.map((o) => (o.id === recordId ? next : o))
+      : s.advanceCakeOrders,
+    notifications: [
+      {
+        id: uid("note"),
+        branch,
+        type: "Advance Order" as const,
+        title: `Advance order moved to ${storeStatus}`,
+        details: `${payload.orderNo} moved to ${storeStatus} by ${by} at ${new Date(now).toLocaleString("en-IN")}`,
+        createdAt: now,
+        raisedBy: by,
+        status: "Unread" as const,
+      },
+      ...s.notifications,
+    ],
+    auditLogs: [
+      audit(branch, by, "Advance Store Status", payload.storeStatus || "-", storeStatus),
+      ...s.auditLogs,
+    ],
+  }));
+}
+
 type BranchOperationRecordRow = {
   record_type: string;
   record_id: string;
@@ -2240,82 +2305,107 @@ export const useBranchOpsStore = create<BranchOpsState>()(
               : s.auditLogs,
           };
         }),
-      updateAdvanceStoreStatus: (id, storeStatus, by) =>
-        set((s) => {
-          const prev = s.advanceCakeOrders.find((o) => o.id === id);
-          if (!prev || !storeStatus) return {};
-          const now = new Date().toISOString();
-          const next = {
-            ...prev,
-            storeStatus,
-            storeAcceptedBy: by,
-            storeStatusHistory: [...(prev.storeStatusHistory || []), { status: storeStatus, by, at: now }],
-          };
-          mirrorOperationRecord(prev.branch, "advance_order", id, next, {
-            recordNo: prev.orderNo,
-            amount: prev.orderValue,
-            status: storeStatus,
-            actor: by,
+      updateAdvanceStoreStatus: (id, storeStatus, by) => {
+        if (!storeStatus) return;
+        const prev = get().advanceCakeOrders.find((o) => o.id === id);
+        if (prev) {
+          set((s) => {
+            const now = new Date().toISOString();
+            const next = {
+              ...prev,
+              storeStatus,
+              storeAcceptedBy: by,
+              storeStatusHistory: [...(prev.storeStatusHistory || []), { status: storeStatus, by, at: now }],
+            };
+            mirrorOperationRecord(prev.branch, "advance_order", id, next, {
+              recordNo: prev.orderNo,
+              amount: prev.orderValue,
+              status: storeStatus,
+              actor: by,
+            });
+            return {
+              advanceCakeOrders: s.advanceCakeOrders.map((o) => (o.id === id ? next : o)),
+              notifications: [
+                {
+                  id: uid("note"),
+                  branch: prev.branch,
+                  type: "Advance Order" as const,
+                  title: `Advance order moved to ${storeStatus}`,
+                  details: `${prev.orderNo} moved to ${storeStatus} by ${by} at ${new Date(now).toLocaleString("en-IN")}`,
+                  createdAt: now,
+                  raisedBy: by,
+                  status: "Unread" as const,
+                },
+                ...s.notifications,
+              ],
+              auditLogs: [
+                audit(prev.branch, by, "Advance Store Status", prev.storeStatus || "-", storeStatus),
+                ...s.auditLogs,
+              ],
+            };
           });
-          return {
-            advanceCakeOrders: s.advanceCakeOrders.map((o) => (o.id === id ? next : o)),
-            notifications: [
-              {
-                id: uid("note"),
-                branch: prev.branch,
-                type: "Advance Order" as const,
-                title: `Advance order moved to ${storeStatus}`,
-                details: `${prev.orderNo} moved to ${storeStatus} by ${by} at ${new Date(now).toLocaleString("en-IN")}`,
-                createdAt: now,
-                raisedBy: by,
-                status: "Unread" as const,
-              },
-              ...s.notifications,
-            ],
-            auditLogs: [
-              audit(prev.branch, by, "Advance Store Status", prev.storeStatus || "-", storeStatus),
-              ...s.auditLogs,
-            ],
-          };
-        }),
-      updateAdvanceStoreStatusByOrderNo: (orderNo, storeStatus, by) =>
-        set((s) => {
-          const prev = s.advanceCakeOrders.find((o) => o.orderNo === orderNo);
-          if (!prev || !storeStatus) return {};
-          const now = new Date().toISOString();
-          const next = {
-            ...prev,
-            storeStatus,
-            storeAcceptedBy: by,
-            storeStatusHistory: [...(prev.storeStatusHistory || []), { status: storeStatus, by, at: now }],
-          };
-          mirrorOperationRecord(prev.branch, "advance_order", prev.id, next, {
-            recordNo: prev.orderNo,
-            amount: prev.orderValue,
-            status: storeStatus,
-            actor: by,
+          return;
+        }
+        // BUG FIX (2026-09-06): "Planner dispatched it, SNB confirmed it, but
+        // the branch's own Advance tab stepper never lit up and Final Bill
+        // stayed locked" — this used to give up silently right here whenever
+        // the CALLING session's own local `advanceCakeOrders` array didn't
+        // already contain this order. In practice it almost never does: this
+        // is called from Planner's dispatch flow (a completely separate
+        // browser session from the branch cashier's), and Planner's own
+        // local state was never hydrated with that branch's advance orders
+        // in the first place — every real dispatch silently no-op'd here.
+        // Fall back to the real database row instead of the caller's
+        // in-memory snapshot.
+        void updateAdvanceStoreStatusInDb({ id }, storeStatus, by, set);
+      },
+      updateAdvanceStoreStatusByOrderNo: (orderNo, storeStatus, by) => {
+        if (!storeStatus) return;
+        const prev = get().advanceCakeOrders.find((o) => o.orderNo === orderNo);
+        if (prev) {
+          set((s) => {
+            const now = new Date().toISOString();
+            const next = {
+              ...prev,
+              storeStatus,
+              storeAcceptedBy: by,
+              storeStatusHistory: [...(prev.storeStatusHistory || []), { status: storeStatus, by, at: now }],
+            };
+            mirrorOperationRecord(prev.branch, "advance_order", prev.id, next, {
+              recordNo: prev.orderNo,
+              amount: prev.orderValue,
+              status: storeStatus,
+              actor: by,
+            });
+            return {
+              advanceCakeOrders: s.advanceCakeOrders.map((o) => (o.id === prev.id ? next : o)),
+              notifications: [
+                {
+                  id: uid("note"),
+                  branch: prev.branch,
+                  type: "Advance Order" as const,
+                  title: `Advance order moved to ${storeStatus}`,
+                  details: `${prev.orderNo} moved to ${storeStatus} by ${by} at ${new Date(now).toLocaleString("en-IN")}`,
+                  createdAt: now,
+                  raisedBy: by,
+                  status: "Unread" as const,
+                },
+                ...s.notifications,
+              ],
+              auditLogs: [
+                audit(prev.branch, by, "Advance Store Status", prev.storeStatus || "-", storeStatus),
+                ...s.auditLogs,
+              ],
+            };
           });
-          return {
-            advanceCakeOrders: s.advanceCakeOrders.map((o) => (o.id === prev.id ? next : o)),
-            notifications: [
-              {
-                id: uid("note"),
-                branch: prev.branch,
-                type: "Advance Order" as const,
-                title: `Advance order moved to ${storeStatus}`,
-                details: `${prev.orderNo} moved to ${storeStatus} by ${by} at ${new Date(now).toLocaleString("en-IN")}`,
-                createdAt: now,
-                raisedBy: by,
-                status: "Unread" as const,
-              },
-              ...s.notifications,
-            ],
-            auditLogs: [
-              audit(prev.branch, by, "Advance Store Status", prev.storeStatus || "-", storeStatus),
-              ...s.auditLogs,
-            ],
-          };
-        }),
+          return;
+        }
+        // BUG FIX (2026-09-06): see the identical fix + comment in
+        // updateAdvanceStoreStatus above — this is the variant Planner's own
+        // dispatch code (bakeryStore.ts) actually calls, so this is the one
+        // that was silently no-op'ing on every real cross-session dispatch.
+        void updateAdvanceStoreStatusInDb({ orderNo }, storeStatus, by, set);
+      },
       // Called when Packing dispatches a cake order with the ACTUAL prepared/dispatched
       // quantity. Keeps the originally-placed qty/value as a snapshot (originalCakeKg /
       // originalOrderValue) while updating the live cakeKg/items/orderValue/balance so the
