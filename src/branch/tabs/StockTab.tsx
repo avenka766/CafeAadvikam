@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react';
 import {
   ArrowDownToLine, Package, AlertTriangle, Loader2,
-  ChevronDown, ChevronUp, Scale, Hash, CheckCircle2, CheckCheck,
+  ChevronDown, ChevronUp, Scale, Hash, CheckCircle2,
   PencilLine, Search, X, Plus, RefreshCw, TrendingDown, Clock, User,
   Undo2,
 } from 'lucide-react';
@@ -478,13 +478,11 @@ function IncomingActionForm({ mode, defaultQty, unit, onCancel, onSubmit }: {
 type StockSubTab = 'incoming' | 'current' | 'manual' | 'negative' | 'threshold';
 
 export function StockTab({ branch, branchStock, branchIncoming, branchThresholds, loading, stockMismatches, allowManualUpdate = true }: Props) {
-  const { confirmIncoming, confirmAllIncoming, syncIncomingFromDispatches, fetchBranchData } = useBranchStore();
+  const { confirmIncoming, syncIncomingFromDispatches, fetchBranchData } = useBranchStore();
   const { addNotification } = useBranchOpsStore();
   const { currentUser } = useAuthStore();
   const [subTab, setSubTab]               = useState<StockSubTab>('incoming');
   const [outOfStockExpanded, setOutOfStockExpanded] = useState(false);
-  const [confirmingAll, setConfirmingAll] = useState(false);
-  const [confirmAllError, setConfirmAllError] = useState('');
   const [syncing, setSyncing]             = useState(false);
   const [disputedIncoming, setDisputedIncoming] = useState<Record<string, boolean>>(() =>
     Object.fromEntries(branchIncoming.filter((inc) => inc.disputed).map((inc) => [inc.id, true])),
@@ -544,15 +542,39 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
   // Items dispatched days ago that were never confirmed must still be actionable.
   const todayIncoming = branchIncoming.filter((inc) => !inc.confirmed);
 
-  const handleConfirmAll = async () => {
-    setConfirmingAll(true);
-    setConfirmAllError('');
-    // STOCK-FIX: confirmAllIncoming returns string|null — capture and display it.
-    // Previously the return value was discarded, so partial failures were invisible.
-    const err = await confirmAllIncoming(branch);
-    setConfirmingAll(false);
-    if (err) setConfirmAllError(err);
-  };
+  // FEATURE (2026-09-06): "same item is coming multiple time with different
+  // weight — I dont want like that, it should come as one" — Planner's own
+  // dispatch step splits a single dispatch across whichever bakery_orders
+  // contributed to it, so the SAME item dispatched in one action can land as
+  // several separate branch_incoming rows here (e.g. 10.15kg + 3kg for the
+  // same item, same moment, same dispatcher). Group the still-actionable rows
+  // by item+unit+advance-order-tag (keep an advance-order-linked delivery
+  // distinct from a regular one — its badge carries real meaning) and show
+  // ONE row with the summed quantity. Rows already disputed/return-requested
+  // are left un-grouped below — they already carry their own per-row history/
+  // status and shouldn't be silently folded into a fresh confirm/dispute/
+  // return action.
+  interface IncomingGroup { key: string; itemName: string; unit: 'pcs' | 'kg'; advanceOrderNo: string | null; entries: IncomingStock[]; totalQuantity: number; receivedAt: string; dispatchedBy: string; }
+  const actionableIncoming = todayIncoming.filter((inc) => !(disputedIncoming[inc.id] || inc.disputed) && !inc.returnRequested);
+  const lockedIncoming = todayIncoming.filter((inc) => (disputedIncoming[inc.id] || inc.disputed) || inc.returnRequested);
+  const groupMap = new Map<string, IncomingGroup>();
+  for (const inc of actionableIncoming) {
+    const key = `${normalizeItemName(inc.itemName)}|${inc.unit}|${inc.advanceOrderNo ?? ''}`;
+    const existing = groupMap.get(key);
+    if (existing) {
+      existing.entries.push(inc);
+      existing.totalQuantity += inc.quantity;
+      if (new Date(inc.receivedAt) > new Date(existing.receivedAt)) existing.receivedAt = inc.receivedAt;
+      if (!existing.dispatchedBy.split(', ').includes(inc.dispatchedBy)) existing.dispatchedBy = `${existing.dispatchedBy}, ${inc.dispatchedBy}`;
+    } else {
+      groupMap.set(key, { key, itemName: inc.itemName, unit: inc.unit, advanceOrderNo: inc.advanceOrderNo ?? null, entries: [inc], totalQuantity: inc.quantity, receivedAt: inc.receivedAt, dispatchedBy: inc.dispatchedBy });
+    }
+  }
+  type IncomingRow = { kind: 'group'; group: IncomingGroup } | { kind: 'single'; inc: IncomingStock };
+  const incomingRows: IncomingRow[] = [
+    ...Array.from(groupMap.values()).map((group): IncomingRow => ({ kind: 'group', group })),
+    ...lockedIncoming.map((inc): IncomingRow => ({ kind: 'single', inc })),
+  ].sort((a, b) => new Date(b.kind === 'group' ? b.group.receivedAt : b.inc.receivedAt).getTime() - new Date(a.kind === 'group' ? a.group.receivedAt : a.inc.receivedAt).getTime());
 
   const handleRefreshIncoming = async () => {
     setSyncing(true);
@@ -678,24 +700,14 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
                     {confirmingSelected ? 'Adding…' : `Confirm Selected (${Object.values(selectedIncoming).filter(Boolean).length})`}
                   </button>
                 )}
+                {/* FEATURE (2026-09-06): "Remove confirm All button" — removed per
+                    owner request; Confirm Selected + per-row Confirm remain. */}
                 {todayIncoming.length > 0 && (
-                  <>
-                    <span className="text-xs text-muted-foreground">{todayIncoming.length} pending</span>
-                    <button onClick={handleConfirmAll} disabled={confirmingAll}
-                      className="inline-flex items-center gap-1 text-xs font-semibold text-white bg-emerald-600 px-2.5 py-1 rounded-full disabled:opacity-50 transition active:scale-95">
-                      {confirmingAll ? <Loader2 className="size-3 animate-spin" /> : <CheckCheck className="size-3" />}
-                      {confirmingAll ? 'Adding…' : 'Confirm All'}
-                    </button>
-                  </>
+                  <span className="text-xs text-muted-foreground">{todayIncoming.length} pending</span>
                 )}
               </div>
             }
           />
-          {confirmAllError && (
-            <p className="mx-4 mt-2 text-xs text-destructive bg-destructive/10 px-3 py-2 rounded-xl">
-              {confirmAllError}
-            </p>
-          )}
           {confirmSelectedError && (
             <p className="mx-4 mt-2 text-xs text-destructive bg-destructive/10 px-3 py-2 rounded-xl">
               {confirmSelectedError}
@@ -715,35 +727,54 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
             <EmptyState message="No incoming stock today. Items dispatched from Packing will appear here." />
           ) : (
             <div className="divide-y">
-              {todayIncoming.map((inc) => {
-                const displayUnit = inc.unit ?? detectSellUnit(inc.itemName);
-                const isDisputed = disputedIncoming[inc.id] || inc.disputed;
-                const isReturnRequested = inc.returnRequested;
+              {incomingRows.map((row) => {
+                // Unify the group/single cases into one view model so the
+                // JSX below (unchanged from before) doesn't need to branch.
+                const entries = row.kind === 'group' ? row.group.entries : [row.inc];
+                const rowKey = row.kind === 'group' ? row.group.key : row.inc.id;
+                const itemName = row.kind === 'group' ? row.group.itemName : row.inc.itemName;
+                const unit = row.kind === 'group' ? row.group.unit : row.inc.unit;
+                const advanceOrderNo = row.kind === 'group' ? row.group.advanceOrderNo : (row.inc.advanceOrderNo ?? null);
+                const totalQuantity = row.kind === 'group' ? row.group.totalQuantity : row.inc.quantity;
+                const receivedAt = row.kind === 'group' ? row.group.receivedAt : row.inc.receivedAt;
+                const dispatchedBy = row.kind === 'group' ? row.group.dispatchedBy : row.inc.dispatchedBy;
+                const displayUnit = unit ?? detectSellUnit(itemName);
+                const isDisputed = row.kind === 'single' && (disputedIncoming[row.inc.id] || row.inc.disputed);
+                const isReturnRequested = row.kind === 'single' && row.inc.returnRequested;
                 const isLocked = isDisputed || isReturnRequested;
-                const [openForm, setOpenForm] = [openIncomingForm[inc.id], (v: 'dispute' | 'return' | null) => setOpenIncomingForm((p) => ({ ...p, [inc.id]: v }))];
+                const [openForm, setOpenForm] = [openIncomingForm[rowKey], (v: 'dispute' | 'return' | null) => setOpenIncomingForm((p) => ({ ...p, [rowKey]: v }))];
+                const allSelected = entries.every((e) => selectedIncoming[e.id]);
                 return (
-                  <div key={inc.id} className="flex flex-wrap items-center justify-between px-4 py-3 gap-3">
+                  <div key={rowKey} className="flex flex-wrap items-center justify-between px-4 py-3 gap-3">
                     <div className="flex items-center gap-2 min-w-0 flex-1">
                       {!isLocked && (
-                        <input type="checkbox" checked={!!selectedIncoming[inc.id]} onChange={() => toggleSelected(inc.id)}
-                          className="size-4 shrink-0 rounded border-slate-300" aria-label={`Select ${inc.itemName}`} />
+                        <input type="checkbox" checked={allSelected} onChange={() => setSelectedIncoming((prev) => {
+                          const next = { ...prev };
+                          for (const e of entries) next[e.id] = !allSelected;
+                          return next;
+                        })}
+                          className="size-4 shrink-0 rounded border-slate-300" aria-label={`Select ${itemName}`} />
                       )}
                       {displayUnit === 'kg' ? <Scale className="size-3.5 text-muted-foreground shrink-0" /> : <Hash className="size-3.5 text-muted-foreground shrink-0" />}
                       <div className="min-w-0">
                         <p className="flex items-center gap-1.5 text-sm font-medium truncate">
-                          <span className="truncate">{inc.itemName}</span>
-                          {inc.advanceOrderNo && (
+                          <span className="truncate">{itemName}</span>
+                          {advanceOrderNo && (
                             <span className="inline-flex shrink-0 items-center rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-black text-violet-700" title="From an advance order">
-                              {inc.advanceOrderNo}
+                              {advanceOrderNo}
                             </span>
                           )}
                         </p>
-                        <p className="text-xs text-muted-foreground">{fmt(inc.receivedAt)} · {inc.dispatchedBy}</p>
+                        {/* FEATURE (2026-09-06): entries.length > 1 means Planner's own
+                            dispatch split this into several branch_incoming rows for the
+                            same delivery — noted here so it's clear the summed total isn't
+                            a mistake, without cluttering the common (un-split) case. */}
+                        <p className="text-xs text-muted-foreground">{fmt(receivedAt)} · {dispatchedBy}{entries.length > 1 ? ` · ${entries.length} batches merged` : ''}</p>
                       </div>
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
                       <span className="text-sm font-bold text-emerald-600 bg-emerald-50 px-2.5 py-0.5 rounded-full tabular-nums">
-                        +{formatQtyLabel(inc.quantity, inc.itemName, inc.unit)}
+                        +{formatQtyLabel(totalQuantity, itemName, unit)}
                       </span>
                       {!isLocked && (
                         <>
@@ -755,7 +786,16 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
                             className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold bg-slate-100 text-slate-700 hover:bg-slate-200 transition active:scale-95">
                             <Undo2 className="size-3.5" /> Return
                           </button>
-                          <ConfirmButton onConfirm={() => confirmIncoming(branch, inc.id)} />
+                          <ConfirmButton onConfirm={async () => {
+                            // Merged row: confirm every underlying batch — same
+                            // loop-and-stop-on-first-error pattern as "Confirm
+                            // Selected"/"Confirm All" already use.
+                            for (const e of entries) {
+                              const err = await confirmIncoming(branch, e.id);
+                              if (err) return err;
+                            }
+                            return null;
+                          }} />
                         </>
                       )}
                       {isDisputed && <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold bg-amber-100 text-amber-700">Awaiting Admin Review</span>}
@@ -765,12 +805,24 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
                       <div className="w-full">
                         <IncomingActionForm
                           mode={openForm}
-                          defaultQty={inc.quantity}
+                          defaultQty={totalQuantity}
                           unit={displayUnit}
                           onCancel={() => setOpenForm(null)}
                           onSubmit={async ({ quantity, reason }) => {
-                            if (openForm === 'dispute') await raiseIncomingDispute(inc, quantity ?? inc.quantity, reason);
-                            else await requestReturn(inc, reason);
+                            if (openForm === 'dispute') {
+                              // Proportionally attribute a disputed received-quantity
+                              // across the underlying batches by their own share of
+                              // the merged total — a single (un-merged) row has one
+                              // entry with share 1, so this is identical to the old
+                              // per-row behavior in the common case.
+                              const enteredQty = quantity ?? totalQuantity;
+                              for (const e of entries) {
+                                const share = totalQuantity > 0 ? e.quantity / totalQuantity : 1 / entries.length;
+                                await raiseIncomingDispute(e, Math.round(enteredQty * share * 1000) / 1000, reason);
+                              }
+                            } else {
+                              for (const e of entries) await requestReturn(e, reason);
+                            }
                             setOpenForm(null);
                           }}
                         />
