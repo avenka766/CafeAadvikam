@@ -19,6 +19,7 @@ import { supabase } from '@/lib/supabase';
 import { printViaIframe } from '@/lib/printViaIframe';
 import type { Branch } from './types';
 import { clampQtyForUnit } from './bakeryStore';
+import { jsPDF } from 'jspdf';
 
 export interface DispatchInvoiceItem {
   itemName: string;
@@ -179,6 +180,19 @@ export interface DispatchInvoiceRecord {
   cancelledBy: string | null;
   cancelledAt: string | null;
   cancelledReason: string | null;
+  // FEATURE (2026-09-06): "add a Return sub tab ... invoice should clearly
+  // show the return items and quantity and already sent items" — a return is
+  // implemented as a normal updateDispatchInvoice() quantity-reduction (same
+  // stock-reversal engine cancel/edit already use), but that alone leaves no
+  // trace distinguishing "this bill was corrected" from "the customer
+  // returned goods". originalItems is a one-time snapshot of `items` taken
+  // the FIRST time a return is ever applied (stays null forever otherwise);
+  // returnLog is the full per-event audit trail (who/when/why/what). Both are
+  // purely additive — every existing reader of `items`/`total` etc. is
+  // unaffected, since a return still recomputes those exactly like any other
+  // bill edit.
+  originalItems: DispatchInvoiceItem[] | null;
+  returnLog: { at: string; by: string; reason: string | null; items: { itemName: string; unit: string; qty: number }[] }[];
 }
 
 export async function saveDispatchInvoice(input: {
@@ -276,6 +290,8 @@ export async function saveDispatchInvoice(input: {
     cancelledBy: null,
     cancelledAt: null,
     cancelledReason: null,
+    originalItems: null,
+    returnLog: [],
   };
 }
 
@@ -387,6 +403,8 @@ export function walkinBillToInvoiceRecord(bill: WalkinBillRow): DispatchInvoiceR
     cancelledBy: null, // bakery_walkin_bills doesn't track who cancelled it
     cancelledAt: bill.cancelledAt,
     cancelledReason: bill.cancelledReason,
+    originalItems: null, // Sales bills aren't part of the Return feature (dispatch_invoices only)
+    returnLog: [],
   };
 }
 
@@ -445,15 +463,51 @@ export function renderDispatchInvoiceHtml(record: DispatchInvoiceRecord, mode: '
   }));
   const totalTax = Math.round(gstLineCalc.reduce((s, l) => s + l.taxAmount, 0) * 100) / 100;
 
-  const rows = record.items.map((i, idx) => `
+  // FEATURE (2026-09-06): "the invoice should clearly show the return items
+  // and quantity and already sent items" — when this invoice has ever been
+  // returned against (originalItems set — see returnDispatchInvoiceItems),
+  // iterate the ORIGINAL item list (so a fully-returned line still shows,
+  // with Net 0) and add Sent/Returned/Net columns instead of a single Qty
+  // column. A never-returned invoice (the overwhelming majority) keeps
+  // today's exact single-Qty layout — originalItems is null, isReturned is
+  // false, nothing here changes for it.
+  const isReturned = !!record.originalItems;
+  const itemKey = (name: string, unit: string) => `${name.trim().toLowerCase()}|${unit}`;
+  const fmtQty = (n: number) => (n % 1 === 0 ? n : n.toFixed(3));
+  const returnedByKey = new Map<string, number>();
+  for (const entry of record.returnLog) {
+    for (const it of entry.items) {
+      const k = itemKey(it.itemName, it.unit);
+      returnedByKey.set(k, (returnedByKey.get(k) ?? 0) + it.qty);
+    }
+  }
+  const netByKey = new Map(record.items.map(i => [itemKey(i.itemName, i.unit), i]));
+  const rowSourceItems = isReturned ? (record.originalItems ?? record.items) : record.items;
+  const rows = rowSourceItems.map((i, idx) => {
+    const k = itemKey(i.itemName, i.unit);
+    const netItem = netByKey.get(k);
+    const netQty = netItem ? netItem.quantity : 0;
+    const netAmount = netItem ? netItem.lineTotal : 0;
+    const returnedQty = returnedByKey.get(k) ?? 0;
+    return `
     <tr>
       <td>${idx + 1}</td>
       <td>${esc(i.itemName)}</td>
       ${isGst ? `<td class="c">${esc(i.hsnCode || '—')}</td>` : ''}
-      <td class="num">${i.quantity % 1 === 0 ? i.quantity : i.quantity.toFixed(3)}</td>
+      ${isReturned
+        ? `<td class="num">${fmtQty(i.quantity)}</td><td class="num">${returnedQty > 0 ? fmtQty(returnedQty) : '-'}</td><td class="num">${fmtQty(netQty)}</td>`
+        : `<td class="num">${fmtQty(i.quantity)}</td>`}
       <td class="num">${Math.round(i.unitPrice)}</td>
-      <td class="num">${Math.round(i.lineTotal)}</td>
-    </tr>`).join('');
+      <td class="num">${Math.round(netAmount)}</td>
+    </tr>`;
+  }).join('');
+  const returnNoteHtml = record.returnLog.length > 0 ? `
+    <div class="stamp-return">
+      ${record.returnLog.map(entry => {
+        const itemsDesc = entry.items.map(it => `${fmtQty(it.qty)} ${it.unit} ${esc(it.itemName)}`).join(', ');
+        return `<div>Returned by ${esc(entry.by)} on ${esc(new Date(entry.at).toLocaleString('en-IN'))}: ${itemsDesc}${entry.reason ? ` — ${esc(entry.reason)}` : ''}</div>`;
+      }).join('')}
+    </div>` : '';
 
   const gstSummaryHtml = isGst && gstSummaryRows.length > 0 ? `
     <table>
@@ -500,6 +554,8 @@ export function renderDispatchInvoiceHtml(record: DispatchInvoiceRecord, mode: '
     .paytitle{border-top:1px solid #111;border-bottom:1px solid #111;display:inline-block;min-width:64%;padding:2px 0}
     .footer{margin-top:12px;text-align:center;font-size:13px;font-weight:800}
     .stamp-cancel{border:2px solid #b91c1c;color:#b91c1c;text-align:center;font-weight:900;font-size:14px;letter-spacing:1px;padding:4px 0;margin:6px 0}
+    .stamp-return{border:1.5px solid #b45309;color:#92400e;font-size:10.5px;font-weight:700;padding:5px 6px;margin:8px 0;border-radius:2px}
+    .stamp-return div+div{margin-top:3px}
   </style></head><body>
     <div class="c" style="font-weight:900;font-size:${mode === 'thermal' ? '16px' : '20px'}">${esc(business.name)}</div>
     <div class="c small">${business.lines.map(esc).join('<br/>')}</div>
@@ -511,13 +567,14 @@ export function renderDispatchInvoiceHtml(record: DispatchInvoiceRecord, mode: '
     ${addressLine}
     <div class="dash"></div>
     <table>
-      <thead><tr><th>Sn</th><th>Item Name</th>${isGst ? '<th>HSN</th>' : ''}<th class="num">Qty</th><th class="num">Rate</th><th class="num">Amount</th></tr></thead>
+      <thead><tr><th>Sn</th><th>Item Name</th>${isGst ? '<th>HSN</th>' : ''}${isReturned ? '<th class="num">Sent</th><th class="num">Returned</th><th class="num">Net</th>' : '<th class="num">Qty</th>'}<th class="num">Rate</th><th class="num">Amount</th></tr></thead>
       <tbody>
         ${rows}
-        <tr class="total-row"><td></td><td>Total</td>${isGst ? '<td></td>' : ''}<td class="num">${totalQty % 1 === 0 ? totalQty : totalQty.toFixed(3)}</td><td></td><td class="num">${Math.round(record.subtotal)}</td></tr>
+        <tr class="total-row"><td></td><td>Total</td>${isGst ? '<td></td>' : ''}${isReturned ? `<td></td><td></td><td class="num">${fmtQty(totalQty)}</td>` : `<td class="num">${fmtQty(totalQty)}</td>`}<td></td><td class="num">${Math.round(record.subtotal)}</td></tr>
       </tbody>
     </table>
     ${gstSummaryHtml}
+    ${returnNoteHtml}
     <div class="summary">
       <div class="row"><span>Discount${record.discountPct ? ` (${record.discountPct}%)` : ''} :</span><span>${Math.round(record.discountAmount)}</span></div>
       <div class="row"><span>Round-Off :</span><span>${record.roundOff >= 0 ? '+' : ''}${Math.round(record.roundOff)}</span></div>
@@ -632,6 +689,8 @@ export function recordFromRow(row: Record<string, unknown>): DispatchInvoiceReco
     cancelledBy: (row.cancelled_by as string | null) ?? null,
     cancelledAt: (row.cancelled_at as string | null) ?? null,
     cancelledReason: (row.cancelled_reason as string | null) ?? null,
+    originalItems: (row.original_items as DispatchInvoiceItem[] | null) ?? null,
+    returnLog: (row.return_log as DispatchInvoiceRecord['returnLog'] | null) ?? [],
   };
 }
 
@@ -1137,4 +1196,242 @@ export async function cancelDispatchInvoice(params: {
       notes: finalNotes,
     },
   };
+}
+
+// FEATURE (2026-09-06): "In dispatch tab create a Return sub tab — search by
+// invoice number, show items+qty, let them edit the return qty, on save the
+// items should go back to stock, the updated bill should go on WhatsApp, and
+// the reprinted invoice should clearly show the return items/quantity and
+// the already-sent items." A return is expressed as a normal quantity
+// reduction — updateDispatchInvoice above already does the hard part (stock
+// reversal via deleteDispatchEntry/submitDispatch, recomputing subtotal/
+// total, the Activity Log entry, and for Hosur the shop-bill/WhatsApp
+// resync). This wraps that call with: per-item validation against what's
+// still actually on the bill, a durable return record (originalItems snapshot
+// + returnLog audit trail — see the DispatchInvoiceRecord fields above) so a
+// reprint can show both figures, a distinct "Returned" activity-log entry,
+// and (for scopes updateDispatchInvoice doesn't already WhatsApp — i.e.
+// anything but Hosur) a best-effort WhatsApp send of the corrected invoice
+// PDF to whatever phone is on file (Custom's customerPhone; SNB/VRSNB have
+// none, so nothing is sent for them, only the stock/bill correction happens).
+export async function returnDispatchInvoiceItems(params: {
+  invoiceId: string;
+  returns: { itemName: string; unit: string; qty: number }[];
+  reason?: string;
+  returnedBy: string;
+}): Promise<{ ok: true; record: DispatchInvoiceRecord; whatsapp?: { ok: boolean; error?: string } } | { error: string }> {
+  const cleanedReturns = params.returns
+    .filter(r => r.itemName.trim() && r.qty > 0)
+    .map(r => ({ ...r, itemName: r.itemName.trim() }));
+  if (cleanedReturns.length === 0) return { error: 'Enter a return quantity for at least one item.' };
+
+  const { data: invRow, error: invErr } = await supabase.from('dispatch_invoices').select('*').eq('id', params.invoiceId).single();
+  if (invErr || !invRow) return { error: invErr?.message || 'Invoice not found — it may have been removed.' };
+  const original = recordFromRow(invRow as Record<string, unknown>);
+  if (original.status === 'cancelled') return { error: 'This invoice is cancelled — there is nothing to return.' };
+
+  const key = (it: { itemName: string; unit: string }) => `${it.itemName.trim().toLowerCase()}|${it.unit}`;
+  const currentByKey = new Map(original.items.map(i => [key(i), i]));
+  for (const r of cleanedReturns) {
+    const current = currentByKey.get(key(r));
+    if (!current) return { error: `"${r.itemName}" (${r.unit}) isn't on this invoice — refresh and try again.` };
+    if (r.qty > current.quantity + 0.01) {
+      return { error: `Can't return ${r.qty} ${r.unit} of ${r.itemName} — only ${current.quantity % 1 === 0 ? current.quantity : current.quantity.toFixed(3)} ${r.unit} is currently on this invoice.` };
+    }
+  }
+
+  const updatedItems: DispatchInvoiceItem[] = original.items
+    .map(i => {
+      const ret = cleanedReturns.find(r => key(r) === key(i));
+      if (!ret) return i;
+      const newQty = Math.max(0, i.quantity - ret.qty);
+      return { ...i, quantity: newQty, lineTotal: Math.round(newQty * i.unitPrice * 100) / 100 };
+    })
+    .filter(i => i.quantity > 0.001);
+  if (updatedItems.length === 0) {
+    return { error: 'That would return every item on this bill — use Cancel Invoice instead so it prints as a proper cancellation.' };
+  }
+
+  const updateResult = await updateDispatchInvoice({
+    invoiceId: params.invoiceId,
+    updatedItems,
+    updatedDiscountPct: original.discountPct,
+    editedBy: params.returnedBy,
+  });
+  if ('error' in updateResult) return { error: updateResult.error };
+
+  // Record the return itself — separate from updateDispatchInvoice's own
+  // "Edited Dispatch Invoice" write above, which only knows about the final
+  // item list, not that this particular edit was a customer return. Never
+  // block on this: the stock/bill correction above already succeeded and
+  // must stand even if this bookkeeping write fails.
+  const returnLogEntry = { at: new Date().toISOString(), by: params.returnedBy, reason: params.reason?.trim() || null, items: cleanedReturns };
+  const newOriginalItems = original.originalItems ?? original.items;
+  const newReturnLog = [...original.returnLog, returnLogEntry];
+  const { data: afterRow, error: afterErr } = await supabase.from('dispatch_invoices')
+    .update({ original_items: newOriginalItems, return_log: newReturnLog })
+    .eq('id', params.invoiceId)
+    .select('*')
+    .single();
+  if (afterErr) console.error('[returnDispatchInvoiceItems] Return succeeded but saving the return record failed:', afterErr);
+  const finalRecord = afterRow ? recordFromRow(afterRow as Record<string, unknown>) : updateResult.record;
+
+  const { useAuthStore } = await import('@/stores/authStore');
+  const user = useAuthStore.getState().currentUser;
+  if (user) {
+    const { useActivityLogStore } = await import('./activityLogStore');
+    const itemsDesc = cleanedReturns.map(r => `${r.qty % 1 === 0 ? r.qty : r.qty.toFixed(3)} ${r.unit} ${r.itemName}`).join(', ');
+    void useActivityLogStore.getState().log({
+      staffId: user.id, staffName: user.displayName, role: user.role,
+      action: 'Returned Dispatch Invoice Items',
+      detail: `Invoice ${original.invoiceNo} (${original.scope}) — returned ${itemsDesc}${params.reason ? ` — ${params.reason}` : ''}. New total Rs. ${Math.round(finalRecord.total)}`,
+      branch: original.scope,
+    });
+  }
+
+  // WhatsApp: Hosur is already handled inside updateDispatchInvoice (it
+  // resyncs the shop's real hosur_bills row and resends via the proven
+  // sendHosurWhatsapp path) — just surface that result. Everything else with
+  // a phone on file (currently only Custom) gets a new, generic PDF send;
+  // SNB/VRSNB have no phone at all, so nothing is attempted for them.
+  let whatsapp: { ok: boolean; error?: string } | undefined;
+  if (updateResult.hosurWhatsapp) {
+    whatsapp = {
+      ok: updateResult.hosurWhatsapp.ok && updateResult.hosurWhatsapp.whatsappStatus !== 'failed',
+      error: updateResult.hosurWhatsapp.whatsappError ?? updateResult.hosurWhatsapp.message ?? undefined,
+    };
+  } else {
+    const phone = finalRecord.customerPhone || finalRecord.hosurShopPhone;
+    if (phone) {
+      try {
+        await sendDispatchInvoiceWhatsapp(finalRecord, cleanedReturns, phone);
+        whatsapp = { ok: true };
+      } catch (err) {
+        whatsapp = { ok: false, error: err instanceof Error ? err.message : 'WhatsApp send failed.' };
+      }
+    }
+  }
+
+  return { ok: true, record: finalRecord, whatsapp };
+}
+
+// Hand-drawn jsPDF bill, same technique as HosurDashboard's own
+// createWhatsappBillDocument (proven in production) — deliberately not an
+// html2canvas render of renderDispatchInvoiceHtml, since html2canvas isn't a
+// project dependency and this keeps the WhatsApp media generation entirely
+// client-side with a library already in use.
+export async function createDispatchInvoiceWhatsappPdf(
+  record: DispatchInvoiceRecord,
+  justReturned: { itemName: string; unit: string; qty: number }[] = [],
+): Promise<{ base64: string; mimeType: 'application/pdf'; fileName: string; caption: string }> {
+  const business = businessFor(record.scope);
+  const pageHeight = Math.max(190, 140 + record.items.length * 10 + justReturned.length * 6);
+  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: [80, pageHeight], compress: true });
+  const left = 5;
+  const right = 75;
+  let y = 8;
+  const line = (text: string, size = 8, bold = false, align: 'left' | 'center' | 'right' = 'left') => {
+    doc.setFont('helvetica', bold ? 'bold' : 'normal');
+    doc.setFontSize(size);
+    const x = align === 'center' ? 40 : align === 'right' ? right : left;
+    doc.text(text, x, y, { align });
+    y += size <= 8 ? 4.3 : 5.2;
+  };
+  const divider = () => {
+    doc.setDrawColor(110);
+    doc.setLineDashPattern([1, 1], 0);
+    doc.line(left, y, right, y);
+    doc.setLineDashPattern([], 0);
+    y += 4;
+  };
+
+  line(business.name.toUpperCase(), 11, true, 'center');
+  line('UPDATED INVOICE (RETURN PROCESSED)', 8, true, 'center');
+  divider();
+  line(`Invoice No: ${record.invoiceNo}`, 8, true);
+  line(`Date: ${new Date(record.createdAt).toLocaleString('en-IN')}`, 7.5);
+  const who = record.customerName || record.hosurShopName || `${record.scope} Branch`;
+  line(`To: ${who}`, 8, true);
+  divider();
+
+  record.items.forEach((item, index) => {
+    const itemLines = doc.splitTextToSize(`${index + 1}. ${item.itemName}`, 45) as string[];
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(7.5);
+    doc.text(itemLines, left, y);
+    const itemHeight = Math.max(4, itemLines.length * 3.5);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7.2);
+    doc.text(`${item.quantity % 1 === 0 ? item.quantity : item.quantity.toFixed(3)} ${item.unit}`, 53, y, { align: 'right' });
+    doc.text(`Rs. ${Math.round(item.lineTotal)}`, right, y, { align: 'right' });
+    y += itemHeight + 1.5;
+  });
+  divider();
+  line(`New Total: Rs. ${Math.round(record.total)}`, 10, true, 'right');
+  divider();
+
+  if (justReturned.length > 0) {
+    doc.setTextColor(180, 40, 40);
+    line('ITEMS RETURNED', 8.5, true, 'center');
+    justReturned.forEach(r => {
+      line(`- ${r.qty % 1 === 0 ? r.qty : r.qty.toFixed(3)} ${r.unit} ${r.itemName}`, 7.5, false, 'left');
+    });
+    doc.setTextColor(0, 0, 0);
+    divider();
+  }
+
+  line('Thank you!', 9, true, 'center');
+
+  const dataUri = doc.output('datauristring');
+  const comma = dataUri.indexOf(',');
+  return {
+    base64: dataUri.slice(comma + 1),
+    mimeType: 'application/pdf',
+    fileName: `${record.invoiceNo.replace(/[^a-z0-9._-]+/gi, '-')}-updated.pdf`,
+    caption: `${record.invoiceNo} — Updated (return processed) — New Total Rs. ${Math.round(record.total)}`,
+  };
+}
+
+// Generic WhatsApp send for a corrected invoice — reuses the send-hosur-
+// whatsapp Edge Function directly (despite its name, it's a plain WhatsApp
+// Cloud API relay: phone/message/optional document, nothing Hosur-specific
+// in its implementation) rather than duplicating a second Edge Function for
+// exactly the same job. messageType 'manual' skips the payment-QR
+// requirement the 'bill'/'reminder' types carry — a return notice isn't a
+// payment collection ask.
+async function sendDispatchInvoiceWhatsapp(
+  record: DispatchInvoiceRecord,
+  justReturned: { itemName: string; unit: string; qty: number }[],
+  phone: string,
+): Promise<void> {
+  const supabaseUrl = String(import.meta.env.VITE_SUPABASE_URL || '').replace(/\/$/, '');
+  const anonKey = String(import.meta.env.VITE_SUPABASE_ANON_KEY || '');
+  if (!supabaseUrl || !anonKey) throw new Error('Supabase URL or publishable key is missing in the deployed app.');
+
+  const pdf = await createDispatchInvoiceWhatsappPdf(record, justReturned);
+  const itemsDesc = justReturned.map(r => `${r.qty % 1 === 0 ? r.qty : r.qty.toFixed(3)} ${r.unit} ${r.itemName}`).join(', ');
+  const message = `Hello, your bill ${record.invoiceNo} has been updated — ${itemsDesc} returned. New total: Rs. ${Math.round(record.total)}. Updated invoice attached.`;
+  const normalizedPhone = phone.replace(/\D/g, '');
+
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), 60000);
+  let response: Response;
+  try {
+    response = await window.fetch(`${supabaseUrl}/functions/v1/send-hosur-whatsapp`, {
+      method: 'POST',
+      headers: { apikey: anonKey, Authorization: `Bearer ${anonKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone: normalizedPhone, message, messageType: 'manual', billDocument: pdf, billNo: record.invoiceNo }),
+      signal: controller.signal,
+    });
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+  const responseText = await response.text();
+  let fnData: { ok?: boolean; error?: string; mediaErrors?: string[] } = {};
+  if (responseText) {
+    try { fnData = JSON.parse(responseText); } catch { throw new Error(`WhatsApp service returned an invalid response (HTTP ${response.status}).`); }
+  }
+  if (!response.ok || !fnData.ok) {
+    throw new Error([fnData.error, ...(fnData.mediaErrors ?? [])].filter(Boolean).join(' | ') || `WhatsApp service returned HTTP ${response.status}.`);
+  }
 }

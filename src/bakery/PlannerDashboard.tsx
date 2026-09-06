@@ -42,7 +42,7 @@ import { useNotificationStore } from '@/bakery/notificationStore';
 import { printWasteLogBatch } from '@/pages/AdminSNBDashboard';
 import {
   businessFor, defaultDiscountPct, saveDispatchInvoice, printDispatchInvoice, listDispatchInvoices, markDispatchInvoicePaid, updateDispatchInvoice, cancelDispatchInvoice,
-  mapWalkinBill, walkinBillToInvoiceRecord,
+  mapWalkinBill, walkinBillToInvoiceRecord, returnDispatchInvoiceItems, recordFromRow,
   type DispatchInvoiceRecord, type DispatchInvoiceItem, type WalkinBillRow, type WalkinBillItem,
 } from './dispatchInvoice';
 import { supabase } from '@/lib/supabase';
@@ -7021,6 +7021,15 @@ function plannedDispatchedForRow(row: ProductionRow, orders: BakeryOrder[]): num
 // only the cross-date merge is removed, so yesterday's still-pending items
 // stay under "Yesterday" instead of silently folding into "Today".
 function DispatchTab({ orders, allOrders }: { orders: BakeryOrder[]; allOrders: BakeryOrder[] }) {
+  // FEATURE (2026-09-06): "In dispatch tab: create a new sub tab called
+  // Return — search the invoice number, show items+qty, let them edit the
+  // return qty, save should send items back to stock and the updated bill on
+  // WhatsApp, reprint should show the return items/qty and already-sent
+  // items." A top-level toggle rather than folding it into DispatchDateGroup's
+  // own active/completed/planned subTab — Return works off an invoice number
+  // directly, with no branch/date scoping needed, so it doesn't belong
+  // nested inside that branch-filtered view.
+  const [topTab, setTopTab] = useState<'queue' | 'return'>('queue');
   const [search, setSearch] = useState('');
   // BUG FIX (2026-08-11): the Printer Setup entry point used to be a
   // position:fixed button floating at the top-right of the whole page —
@@ -7052,35 +7061,242 @@ function DispatchTab({ orders, allOrders }: { orders: BakeryOrder[]; allOrders: 
     <div className="space-y-4">
       {showPrinterSetup && <PlannerPrinterSetupModal onClose={() => setShowPrinterSetup(false)} />}
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-sm font-black text-foreground">Dispatch</h2>
         <div className="flex items-center gap-2">
-          <div className="relative">
-            <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-            <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search item..." className="rounded-xl border border-border py-1.5 pl-8 pr-3 text-xs font-bold" />
+          <h2 className="text-sm font-black text-foreground">Dispatch</h2>
+          <div className="flex gap-1 rounded-xl bg-muted p-1">
+            <button type="button" onClick={() => setTopTab('queue')} className={cn('rounded-lg px-3 py-1 text-[11px] font-black', topTab === 'queue' ? 'bg-white text-foreground shadow-sm' : 'text-muted-foreground')}>Dispatch Queue</button>
+            <button type="button" onClick={() => setTopTab('return')} className={cn('flex items-center gap-1 rounded-lg px-3 py-1 text-[11px] font-black', topTab === 'return' ? 'bg-white text-foreground shadow-sm' : 'text-muted-foreground')}><RotateCcw className="size-3" /> Return</button>
           </div>
-          <RefreshOrdersButton />
-          <button
-            type="button"
-            onClick={() => setShowPrinterSetup(true)}
-            title="Printer setup (route dispatch invoices/bills to your thermal printer)"
-            aria-label="Printer setup"
-            className="inline-flex size-8 items-center justify-center rounded-xl border border-border bg-card text-muted-foreground transition-colors hover:bg-muted"
-          >
-            <Printer className="size-3.5" />
-          </button>
-          <ExportButton
-            disabled={exportRows.length === 0}
-            onClick={() => exportToExcel({
-              filename: 'dispatch', sheetName: 'Dispatch', title: 'Planner — Dispatch',
-              columns: [{ header: 'Item', key: 'item' }, ...BRANCHES.map(b => ({ header: `${b} Req`, key: b })), { header: 'Produced', key: 'produced' }, { header: 'Dispatched', key: 'dispatched' }, { header: 'Status', key: 'status' }],
-              rows: exportRows,
-            })}
-          />
         </div>
+        {topTab === 'queue' && (
+          <div className="flex items-center gap-2">
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+              <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search item..." className="rounded-xl border border-border py-1.5 pl-8 pr-3 text-xs font-bold" />
+            </div>
+            <RefreshOrdersButton />
+            <button
+              type="button"
+              onClick={() => setShowPrinterSetup(true)}
+              title="Printer setup (route dispatch invoices/bills to your thermal printer)"
+              aria-label="Printer setup"
+              className="inline-flex size-8 items-center justify-center rounded-xl border border-border bg-card text-muted-foreground transition-colors hover:bg-muted"
+            >
+              <Printer className="size-3.5" />
+            </button>
+            <ExportButton
+              disabled={exportRows.length === 0}
+              onClick={() => exportToExcel({
+                filename: 'dispatch', sheetName: 'Dispatch', title: 'Planner — Dispatch',
+                columns: [{ header: 'Item', key: 'item' }, ...BRANCHES.map(b => ({ header: `${b} Req`, key: b })), { header: 'Produced', key: 'produced' }, { header: 'Dispatched', key: 'dispatched' }, { header: 'Status', key: 'status' }],
+                rows: exportRows,
+              })}
+            />
+          </div>
+        )}
       </div>
-      {orders.length === 0 && <EmptyState text="Nothing waiting on dispatch." />}
-      {orders.length > 0 && (
-        <DispatchDateGroup dateKey="all" label="Pending Dispatch" orders={orders} allOrders={allOrders} search={search} defaultOpen />
+      {topTab === 'return' ? (
+        <DispatchReturnPanel />
+      ) : (
+        <>
+          {orders.length === 0 && <EmptyState text="Nothing waiting on dispatch." />}
+          {orders.length > 0 && (
+            <DispatchDateGroup dateKey="all" label="Pending Dispatch" orders={orders} allOrders={allOrders} search={search} defaultOpen />
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// FEATURE (2026-09-06): Dispatch tab's "Return" sub-tab — look an invoice up
+// by number, edit down the quantities that came back, save. Reuses
+// returnDispatchInvoiceItems (dispatchInvoice.ts) for the actual stock
+// reversal/bill recompute/WhatsApp send — this component only collects the
+// input and reflects the result back.
+function DispatchReturnPanel() {
+  const currentUser = useAuthStore(s => s.currentUser);
+  const [term, setTerm] = useState('');
+  const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState('');
+  const [matches, setMatches] = useState<DispatchInvoiceRecord[] | null>(null);
+  const [invoice, setInvoice] = useState<DispatchInvoiceRecord | null>(null);
+  const [returnQty, setReturnQty] = useState<Record<string, number>>({});
+  const [reason, setReason] = useState('');
+  const [saving, setSaving] = useState(false);
+  const savingInFlightRef = useRef(false);
+  const [error, setError] = useState('');
+  const [result, setResult] = useState<{ record: DispatchInvoiceRecord; whatsapp?: { ok: boolean; error?: string } } | null>(null);
+
+  const openInvoice = (inv: DispatchInvoiceRecord) => {
+    setInvoice(inv);
+    setMatches(null);
+    setReturnQty({});
+    setReason('');
+    setError('');
+    setResult(null);
+  };
+
+  const runSearch = async () => {
+    const q = term.trim();
+    if (!q) return;
+    setSearching(true);
+    setSearchError('');
+    setMatches(null);
+    setInvoice(null);
+    setResult(null);
+    try {
+      const { data, error: err } = await supabase.from('dispatch_invoices').select('*').ilike('invoice_no', `%${q}%`).order('created_at', { ascending: false }).limit(20);
+      if (err) throw err;
+      const records = (data ?? []).map(recordFromRow);
+      if (records.length === 0) setSearchError(`No invoice found matching "${q}".`);
+      else if (records.length === 1) openInvoice(records[0]);
+      else setMatches(records);
+    } catch (err) {
+      setSearchError(err instanceof Error ? err.message : 'Search failed — please try again.');
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  const itemKey = (it: { itemName: string; unit: string }) => `${it.itemName.trim().toLowerCase()}|${it.unit}`;
+  const activeInvoice = result?.record ?? invoice;
+  const returns = activeInvoice
+    ? (activeInvoice.items
+        .map(i => ({ itemName: i.itemName, unit: i.unit, qty: returnQty[itemKey(i)] || 0 }))
+        .filter(r => r.qty > 0))
+    : [];
+
+  const save = async () => {
+    if (savingInFlightRef.current || !activeInvoice) return;
+    if (returns.length === 0) { setError('Enter a return quantity for at least one item.'); return; }
+    const summary = returns.map(r => `${r.qty} ${r.unit} ${r.itemName}`).join(', ');
+    if (!window.confirm(`Return ${summary} from invoice ${activeInvoice.invoiceNo}? These will go back to stock and the bill will be corrected. This can't be undone.`)) return;
+    savingInFlightRef.current = true;
+    setSaving(true);
+    setError('');
+    try {
+      const res = await returnDispatchInvoiceItems({
+        invoiceId: activeInvoice.id,
+        returns,
+        reason: reason.trim() || undefined,
+        returnedBy: currentUser?.displayName || currentUser?.username || 'Planner',
+      });
+      if ('error' in res) { setError(res.error); return; }
+      setResult({ record: res.record, whatsapp: res.whatsapp });
+      setInvoice(res.record);
+      setReturnQty({});
+      setReason('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save the return — please try again.');
+    } finally {
+      setSaving(false);
+      savingInFlightRef.current = false;
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="rounded-2xl border border-border bg-white p-3">
+        <p className="text-xs font-black text-foreground">Find Invoice</p>
+        <div className="mt-2 flex flex-wrap gap-2">
+          <div className="relative flex-1 min-w-[220px]">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+            <input
+              value={term} onChange={e => setTerm(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') void runSearch(); }}
+              placeholder="Enter invoice number (e.g. TO/26-27/145)"
+              className="w-full rounded-xl border border-border py-1.5 pl-8 pr-3 text-xs font-bold"
+            />
+          </div>
+          <button type="button" onClick={() => void runSearch()} disabled={searching || !term.trim()} className="flex items-center gap-1.5 rounded-xl bg-teal-600 px-4 py-1.5 text-xs font-bold text-white hover:bg-teal-700 disabled:opacity-50">
+            {searching ? <Loader2 className="size-3.5 animate-spin" /> : <Search className="size-3.5" />} Search
+          </button>
+        </div>
+        {searchError && <p className="mt-2 text-[11px] font-bold text-red-700">{searchError}</p>}
+        {matches && (
+          <div className="mt-2 space-y-1.5">
+            {matches.map(m => (
+              <button key={m.id} type="button" onClick={() => openInvoice(m)} className="flex w-full items-center justify-between rounded-xl border border-border/70 px-2.5 py-1.5 text-left hover:bg-muted">
+                <span className="text-[11px] font-black text-foreground">{m.invoiceNo} — {m.hosurShopName || m.customerName || `${m.scope} Branch`}</span>
+                <span className="text-[10px] font-bold text-muted-foreground">{new Date(m.createdAt).toLocaleDateString('en-IN')} · Rs. {Math.round(m.total)}{m.status === 'cancelled' ? ' · Cancelled' : ''}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {activeInvoice && (
+        <div className="rounded-2xl border border-border bg-white p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <p className="text-xs font-black text-foreground">
+                {activeInvoice.invoiceNo} — {activeInvoice.hosurShopName || activeInvoice.customerName || `${activeInvoice.scope} Branch`}
+                {activeInvoice.status === 'cancelled' && <span className="ml-1.5 rounded bg-red-600 px-1.5 py-0.5 text-[9px] font-black uppercase text-white">Cancelled</span>}
+              </p>
+              <p className="text-[10px] font-bold text-muted-foreground">{new Date(activeInvoice.createdAt).toLocaleString('en-IN')} · Currently billed Rs. {Math.round(activeInvoice.total)}</p>
+            </div>
+            <div className="flex gap-1.5">
+              <button onClick={() => printDispatchInvoice(activeInvoice, 'thermal')} className="flex items-center gap-1 rounded-lg bg-muted px-2 py-1 text-[10px] font-bold text-muted-foreground hover:bg-slate-200"><Printer className="size-3" /> Thermal</button>
+              <button onClick={() => printDispatchInvoice(activeInvoice, 'a4')} className="flex items-center gap-1 rounded-lg bg-muted px-2 py-1 text-[10px] font-bold text-muted-foreground hover:bg-slate-200"><Printer className="size-3" /> A4</button>
+            </div>
+          </div>
+
+          {activeInvoice.status === 'cancelled' ? (
+            <p className="mt-3 text-[11px] font-bold text-red-700">This invoice is cancelled — there is nothing left on it to return.</p>
+          ) : (
+            <>
+              <div className="mt-3 space-y-1.5">
+                {activeInvoice.items.map(item => {
+                  const k = itemKey(item);
+                  return (
+                    <div key={k} className="grid grid-cols-[1fr_5rem_6rem] items-center gap-2 rounded-xl border border-border/70 px-2.5 py-1.5">
+                      <span className="truncate text-[11px] font-bold text-foreground">{item.itemName}</span>
+                      <span className="text-right text-[11px] font-bold text-muted-foreground">{item.quantity % 1 === 0 ? item.quantity : item.quantity.toFixed(3)} {item.unit}</span>
+                      <input
+                        type="number" min={0} max={item.quantity} step={item.unit === 'pcs' ? 1 : 0.001}
+                        value={returnQty[k] || ''}
+                        onChange={e => {
+                          const raw = Number(e.target.value) || 0;
+                          const clamped = Math.max(0, Math.min(item.quantity, item.unit === 'pcs' ? Math.round(raw) : raw));
+                          setReturnQty(prev => ({ ...prev, [k]: clamped }));
+                        }}
+                        placeholder="Return qty"
+                        className="rounded-lg border border-border px-2 py-1 text-right text-xs font-bold"
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+              <textarea
+                value={reason} onChange={e => setReason(e.target.value)}
+                placeholder="Reason (optional)"
+                rows={2}
+                className="mt-2 w-full rounded-xl border border-border px-2.5 py-1.5 text-xs font-bold"
+              />
+              {error && <p className="mt-2 text-[11px] font-bold text-red-700">{error}</p>}
+              <div className="mt-3 flex justify-end">
+                <button onClick={() => void save()} disabled={saving || returns.length === 0} className="flex items-center gap-1.5 rounded-xl bg-amber-600 px-4 py-2 text-xs font-bold text-white hover:bg-amber-700 disabled:opacity-50">
+                  {saving ? <Loader2 className="size-3.5 animate-spin" /> : <RotateCcw className="size-3.5" />} Save Return
+                </button>
+              </div>
+            </>
+          )}
+
+          {result && (
+            <div className="mt-3 rounded-xl border border-emerald-300 bg-emerald-50 p-2.5 text-[11px] font-bold text-emerald-800">
+              <p>Return saved. New total: Rs. {Math.round(result.record.total)}. Items returned to stock.</p>
+              {result.whatsapp ? (
+                <p className="mt-1 flex items-center gap-1">
+                  <MessageCircle className="size-3.5" />
+                  {result.whatsapp.ok ? 'Updated invoice sent via WhatsApp.' : `WhatsApp send failed${result.whatsapp.error ? `: ${result.whatsapp.error}` : ''} — print the invoice for the customer instead.`}
+                </p>
+              ) : (
+                <p className="mt-1 flex items-center gap-1"><AlertTriangle className="size-3.5" /> No phone on file for this invoice — print the corrected invoice for the customer/branch.</p>
+              )}
+            </div>
+          )}
+        </div>
       )}
     </div>
   );
