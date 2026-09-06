@@ -103,6 +103,14 @@ function statusDisplay(r: Pick<Row, 'status' | 'paymentStatus'>): { label: strin
   if (r.paymentStatus) return HOSUR_PAYMENT_LABEL[r.paymentStatus] ?? { label: r.paymentStatus, tone: 'bg-slate-100 text-slate-600 ring-slate-200' };
   return { label: r.status === 'unpaid' ? 'Unpaid' : 'Paid', tone: 'bg-emerald-50 text-emerald-700 ring-emerald-200' };
 }
+// FEATURE (2026-09-06): Excel/PDF exports only have room for one Status
+// string per row (unlike the table, which can show a separate badge) — this
+// appends "(Returned)" onto whatever statusDisplay already says, so a
+// returned-but-not-cancelled invoice doesn't silently export as plain "Paid".
+function statusLabelForExport(r: Row): string {
+  const base = statusDisplay(r).label;
+  return r.status !== 'cancelled' && r.record.returnLog.length > 0 ? `${base} (Returned)` : base;
+}
 
 function KpiCard({ label, value, sub, icon, tone }: { label: string; value: string; sub?: string; icon: React.ReactNode; tone: string }) {
   return (
@@ -249,7 +257,7 @@ export default function AdminDispatchDetailsTab() {
       const itemRows = bucketRows.flatMap(r => r.record.items.map(i => ({
         invoiceNo: r.invoiceNo, source: r.scopeLabel, party: r.party, date: fmtDateTime(r.date),
         itemName: i.itemName, unit: i.unit, quantity: i.quantity, unitPrice: i.unitPrice, lineTotal: i.lineTotal,
-        invoiceTotal: r.total, dispatchedBy: r.dispatchedBy, status: statusDisplay(r).label,
+        invoiceTotal: r.total, dispatchedBy: r.dispatchedBy, status: statusLabelForExport(r),
       })));
       return {
         name: `${bucket} Items`, title: `${BUCKET_LABEL[bucket]} — Item Detail (${fromDate} to ${toDate})`,
@@ -302,7 +310,7 @@ export default function AdminDispatchDetailsTab() {
           return {
             branch: r.scopeLabel, billNo: r.invoiceNo, date: fmtDate(r.date), time: fmtTime(r.date),
             totalSales: cancelled ? 0 : r.total, cash, upi, card, salesperson: '—', biller: r.dispatchedBy,
-            status: statusDisplay(r).label,
+            status: statusLabelForExport(r),
           };
         }),
       },
@@ -332,7 +340,7 @@ export default function AdminDispatchDetailsTab() {
             { header: 'Items', width: 16, align: 'right' }, { header: 'Total', width: 24, align: 'right' }, { header: 'Date', width: 34 },
             { header: 'Status', width: 20 },
           ],
-          rows: rows.slice(0, PDF_CAP).map(r => [r.invoiceNo, BUCKET_LABEL[r.bucket], r.party, String(r.itemCount), pdfMoney(r.total), fmtDateTime(r.date), statusDisplay(r).label]),
+          rows: rows.slice(0, PDF_CAP).map(r => [r.invoiceNo, BUCKET_LABEL[r.bucket], r.party, String(r.itemCount), pdfMoney(r.total), fmtDateTime(r.date), statusLabelForExport(r)]),
         },
       ],
     });
@@ -434,6 +442,13 @@ export default function AdminDispatchDetailsTab() {
                       <td className="p-3 text-slate-500">{r.dispatchedBy}</td>
                       <td className="p-3">
                         <span className={cn('inline-flex rounded-full px-2 py-0.5 text-[10px] font-black uppercase ring-1', statusDisplay(r).tone)}>{statusDisplay(r).label}</span>
+                        {/* FEATURE (2026-09-06): "recorded... in admin dispatch details tab" for
+                            the new Return sub-tab — a return doesn't change dispatch_invoices.status
+                            (only Cancel does that), so it needs its own badge or it'd be invisible
+                            here even though the total above already reflects the reduced amount. */}
+                        {r.status !== 'cancelled' && r.record.returnLog.length > 0 && (
+                          <span className="ml-1.5 inline-flex rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-black uppercase text-amber-700 ring-1 ring-amber-300">Returned</span>
+                        )}
                       </td>
                       <td className="p-3 text-right" onClick={e => e.stopPropagation()}>
                         <div className="inline-flex gap-1.5">
@@ -454,18 +469,53 @@ export default function AdminDispatchDetailsTab() {
                               Cancelled{r.record.cancelledBy ? ` by ${r.record.cancelledBy}` : ''}{r.record.cancelledAt ? ` on ${fmtDateTime(r.record.cancelledAt)}` : ''}{r.record.cancelledReason ? ` — ${r.record.cancelledReason}` : ''} · items returned to stock, excluded from totals above.
                             </div>
                           )}
-                          <table className="w-full text-xs">
-                            <thead><tr className="text-left uppercase text-slate-400"><th className="py-1.5">Item</th><th className="py-1.5 text-right">Qty</th><th className="py-1.5">Unit</th><th className="py-1.5 text-right">Unit Price</th><th className="py-1.5 text-right">Line Total</th></tr></thead>
-                            <tbody className="divide-y divide-slate-200">
-                              {r.record.items.map((i, idx) => (
-                                <tr key={idx}>
-                                  <td className="py-1.5 font-semibold text-slate-700">{i.itemName}{i.isExtra && <span className="ml-1.5 rounded bg-amber-100 px-1 py-0.5 text-[9px] font-black text-amber-700">EXTRA</span>}</td>
-                                  <td className="py-1.5 text-right tabular-nums">{i.quantity}</td>
-                                  <td className="py-1.5 text-slate-500">{i.unit}</td>
-                                  <td className="py-1.5 text-right tabular-nums">{formatCurrency(i.unitPrice)}</td>
-                                  <td className="py-1.5 text-right font-bold">{formatCurrency(i.lineTotal)}</td>
-                                </tr>
+                          {r.status !== 'cancelled' && r.record.returnLog.length > 0 && (
+                            <div className="mb-3 space-y-1 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-800">
+                              {r.record.returnLog.map((entry, idx) => (
+                                <div key={idx}>
+                                  Returned by {entry.by} on {fmtDateTime(entry.at)}: {entry.items.map(it => `${it.qty} ${it.unit} ${it.itemName}`).join(', ')}{entry.reason ? ` — ${entry.reason}` : ''} · synced back to stock, Total above already reflects this.
+                                </div>
                               ))}
+                            </div>
+                          )}
+                          <table className="w-full text-xs">
+                            <thead>
+                              <tr className="text-left uppercase text-slate-400">
+                                <th className="py-1.5">Item</th>
+                                {r.record.returnLog.length > 0 ? (
+                                  <>
+                                    <th className="py-1.5 text-right">Sent</th>
+                                    <th className="py-1.5 text-right">Returned</th>
+                                    <th className="py-1.5 text-right">Net</th>
+                                  </>
+                                ) : (
+                                  <th className="py-1.5 text-right">Qty</th>
+                                )}
+                                <th className="py-1.5">Unit</th><th className="py-1.5 text-right">Unit Price</th><th className="py-1.5 text-right">Line Total</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-200">
+                              {(r.record.originalItems ?? r.record.items).map((i, idx) => {
+                                const netItem = r.record.items.find(n => n.itemName.trim().toLowerCase() === i.itemName.trim().toLowerCase() && n.unit === i.unit);
+                                const returnedQty = r.record.returnLog.reduce((s, entry) => s + entry.items.filter(it => it.itemName.trim().toLowerCase() === i.itemName.trim().toLowerCase() && it.unit === i.unit).reduce((s2, it) => s2 + it.qty, 0), 0);
+                                return (
+                                  <tr key={idx}>
+                                    <td className="py-1.5 font-semibold text-slate-700">{i.itemName}{i.isExtra && <span className="ml-1.5 rounded bg-amber-100 px-1 py-0.5 text-[9px] font-black text-amber-700">EXTRA</span>}</td>
+                                    {r.record.returnLog.length > 0 ? (
+                                      <>
+                                        <td className="py-1.5 text-right tabular-nums">{i.quantity}</td>
+                                        <td className="py-1.5 text-right tabular-nums text-amber-700">{returnedQty > 0 ? returnedQty : '-'}</td>
+                                        <td className="py-1.5 text-right tabular-nums font-bold">{netItem ? netItem.quantity : 0}</td>
+                                      </>
+                                    ) : (
+                                      <td className="py-1.5 text-right tabular-nums">{i.quantity}</td>
+                                    )}
+                                    <td className="py-1.5 text-slate-500">{i.unit}</td>
+                                    <td className="py-1.5 text-right tabular-nums">{formatCurrency(i.unitPrice)}</td>
+                                    <td className="py-1.5 text-right font-bold">{formatCurrency(netItem ? netItem.lineTotal : 0)}</td>
+                                  </tr>
+                                );
+                              })}
                             </tbody>
                           </table>
                           <div className="mt-3 flex flex-wrap gap-4 border-t border-slate-200 pt-3 text-xs font-semibold text-slate-500">
