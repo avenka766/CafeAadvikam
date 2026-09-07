@@ -531,7 +531,29 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
     unit: s.unit ?? (detectSellUnit(s.itemName) as 'kg' | 'pcs'),
     minThreshold: branchThresholds[s.itemName] ?? s.minThreshold ?? 0,
   }));
-  const fullStock = [...completeStock, ...extraNegativeItems];
+  // BUG FIX (2026-09-07): "items sync but not updated in stock — I believe
+  // this is new name and old name modified" — root cause traced to real
+  // dispatched/confirmed stock (branch_stock had the correct, fully-synced
+  // quantity the whole time) that had NO branch_items catalog entry at all
+  // (dispatched under a free-text name, e.g. "Thenkuzhal karam", never
+  // formally catalogued). `completeStock` above only ever shows CURRENT
+  // catalog items, so the moment that name doesn't match anything in the
+  // live catalogue, the row — and its correctly-synced balance — silently
+  // vanished from every Stock view with no error, no badge, nothing. Only
+  // NEGATIVE orphaned rows (above) ever got this same rescue treatment;
+  // extend it to positive quantities too so a real, confirmed balance is
+  // never invisible just because nobody's added/renamed a matching catalog
+  // item yet. Each is tagged `notInCatalog` so the UI can flag it clearly
+  // rather than presenting it as an ordinary catalogued item.
+  const extraOrphanedItems = branchStock.filter(
+    (s) => s.quantity > 0 && !completeStockNames.has(normalizeItemName(s.itemName))
+  ).map((s) => ({
+    ...s,
+    unit: s.unit ?? (detectSellUnit(s.itemName) as 'kg' | 'pcs'),
+    minThreshold: branchThresholds[s.itemName] ?? s.minThreshold ?? 0,
+    notInCatalog: true as const,
+  }));
+  const fullStock = [...completeStock, ...extraNegativeItems, ...extraOrphanedItems];
 
   const availableItems  = fullStock.filter((s) => s.quantity > 0);
   const outOfStockItems = fullStock.filter((s) => s.quantity <= 0);
@@ -855,18 +877,33 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
               <EmptyState message="No items currently in stock." />
             ) : (
               <div className="divide-y">
-                {availableItems.map((s) => (
-                  <div key={s.itemName} className={cn('flex items-center justify-between px-4 py-3', s.quantity <= s.minThreshold && 'bg-amber-50/60')}>
-                    <div className="flex items-center gap-2">
-                      {s.quantity <= s.minThreshold && <AlertTriangle className="size-3.5 text-amber-500 shrink-0" />}
-                      <div>
-                        <p className="text-sm font-medium">{s.itemName}</p>
-                        <p className="text-xs text-muted-foreground">Min: {formatQtyLabel(s.minThreshold, s.itemName, s.unit)}</p>
+                {availableItems.map((s) => {
+                  // BUG FIX (2026-09-07): flag stock that has no matching current
+                  // catalog item — a real, correctly-synced balance that would
+                  // otherwise look identical to an ordinary item here, hiding the
+                  // fact that it needs a catalog entry (new item, or a rename/
+                  // merge into an existing one) to stay reachable long-term.
+                  const notInCatalog = !completeStockNames.has(normalizeItemName(s.itemName));
+                  return (
+                    <div key={s.itemName} className={cn('flex items-center justify-between px-4 py-3', s.quantity <= s.minThreshold && 'bg-amber-50/60')}>
+                      <div className="flex items-center gap-2">
+                        {s.quantity <= s.minThreshold && <AlertTriangle className="size-3.5 text-amber-500 shrink-0" />}
+                        <div>
+                          <p className="flex items-center gap-1.5 text-sm font-medium">
+                            <span>{s.itemName}</span>
+                            {notInCatalog && (
+                              <span className="inline-flex shrink-0 items-center rounded-full bg-orange-100 px-2 py-0.5 text-[10px] font-black text-orange-700" title="This item has real, synced stock but no matching entry in the item catalog — add or rename a catalog item to link it.">
+                                Not in catalog
+                              </span>
+                            )}
+                          </p>
+                          <p className="text-xs text-muted-foreground">Min: {formatQtyLabel(s.minThreshold, s.itemName, s.unit)}</p>
+                        </div>
                       </div>
+                      <SmartStockBadge qty={s.quantity} threshold={s.minThreshold} itemName={s.itemName} unit={s.unit} />
                     </div>
-                    <SmartStockBadge qty={s.quantity} threshold={s.minThreshold} itemName={s.itemName} unit={s.unit} />
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
