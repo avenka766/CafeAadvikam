@@ -13,6 +13,12 @@ export interface BranchCatalogItem {
   price: number;
   uom: CatalogUom;
   category: string;
+  // AUDIT CONTROL (2026-09-08): "the Admin should be able to add department,
+  // category and under those items" — department is a new, optional grouping
+  // level above category (mirrors category's own branch_categories/
+  // create_branch_category pattern exactly — see branch_departments/
+  // create_branch_department). null for every item until assigned.
+  department: string | null;
   active: boolean;
   createdAt?: string;
   updatedAt?: string;
@@ -28,6 +34,7 @@ const seedItems = (branch: CatalogBranch): BranchCatalogItem[] =>
     price: Number(item.price),
     uom: item.uom,
     category: item.category,
+    department: null,
     active: true,
     source: 'seed' as const,
   }));
@@ -40,6 +47,7 @@ function mapDbRow(row: Record<string, unknown>): BranchCatalogItem {
     price: Number(row.price ?? 0),
     uom: String(row.uom ?? 'Nos') === 'Kgs' ? 'Kgs' : 'Nos',
     category: String(row.category ?? 'Other'),
+    department: row.department ? String(row.department) : null,
     active: row.active !== false,
     createdAt: row.created_at ? String(row.created_at) : undefined,
     updatedAt: row.updated_at ? String(row.updated_at) : undefined,
@@ -114,6 +122,16 @@ interface BranchCatalogState {
   categoriesLoaded: Record<CatalogBranch, boolean>;
   loadCategories: (branch: CatalogBranch, force?: boolean) => Promise<void>;
   addCategory: (branch: CatalogBranch, name: string, createdBy: string) => Promise<string | null>;
+  // AUDIT CONTROL (2026-09-08): department is the new grouping level above
+  // category — same "exists standalone before any item uses it" pattern.
+  departments: Record<CatalogBranch, string[]>;
+  departmentsLoaded: Record<CatalogBranch, boolean>;
+  loadDepartments: (branch: CatalogBranch, force?: boolean) => Promise<void>;
+  addDepartment: (branch: CatalogBranch, name: string, createdBy: string) => Promise<string | null>;
+  // Bulk-tags a set of items with a department — used by Audit Control's
+  // "Assign Items" panel so items can be organized department > category
+  // without a trip to the separate Item Master page.
+  assignItemsToDepartment: (branch: CatalogBranch, barcodes: number[], department: string | null, updatedBy: string) => Promise<string | null>;
 }
 
 export const useBranchCatalogStore = create<BranchCatalogState>((set, get) => ({
@@ -123,6 +141,8 @@ export const useBranchCatalogStore = create<BranchCatalogState>((set, get) => ({
   errors: { SNB: null, VRSNB: null },
   categories: { SNB: [], VRSNB: [] },
   categoriesLoaded: { SNB: false, VRSNB: false },
+  departments: { SNB: [], VRSNB: [] },
+  departmentsLoaded: { SNB: false, VRSNB: false },
 
   loadCatalog: async (branch, force = false) => {
     if (!force && (get().loaded[branch] || get().loading[branch])) return;
@@ -362,6 +382,64 @@ export const useBranchCatalogStore = create<BranchCatalogState>((set, get) => ({
         [branch]: state.categories[branch].includes(savedName)
           ? state.categories[branch]
           : [...state.categories[branch], savedName].sort((a, b) => a.localeCompare(b)),
+      },
+    }));
+    return null;
+  },
+
+  loadDepartments: async (branch, force = false) => {
+    if (!force && (get().departmentsLoaded[branch])) return;
+    const { data, error } = await supabase
+      .from('branch_departments')
+      .select('name')
+      .eq('branch', branch)
+      .order('name', { ascending: true });
+    if (error) {
+      set((state) => ({ departmentsLoaded: { ...state.departmentsLoaded, [branch]: true } }));
+      return;
+    }
+    set((state) => ({
+      departments: { ...state.departments, [branch]: (data ?? []).map((row) => String(row.name)) },
+      departmentsLoaded: { ...state.departmentsLoaded, [branch]: true },
+    }));
+  },
+
+  addDepartment: async (branch, name, createdBy) => {
+    const trimmed = name.trim();
+    if (!trimmed) return 'Department name is required.';
+    const { data, error } = await supabase.rpc('create_branch_department', {
+      p_branch: branch,
+      p_name: trimmed,
+      p_created_by: createdBy,
+    });
+    if (error) {
+      const missingRpc = /create_branch_department|could not find the function|does not exist|schema cache/i.test(error.message ?? '');
+      return missingRpc
+        ? 'The department management feature is not installed yet. Please redeploy.'
+        : error.message;
+    }
+    const savedName = data && typeof data === 'object' && 'name' in data ? String((data as { name: unknown }).name) : trimmed;
+    set((state) => ({
+      departments: {
+        ...state.departments,
+        [branch]: state.departments[branch].includes(savedName)
+          ? state.departments[branch]
+          : [...state.departments[branch], savedName].sort((a, b) => a.localeCompare(b)),
+      },
+    }));
+    return null;
+  },
+
+  assignItemsToDepartment: async (branch, barcodes, department, updatedBy) => {
+    if (barcodes.length === 0) return 'Select at least one item.';
+    const { error } = await supabase.rpc('set_branch_items_department', {
+      p_branch: branch, p_barcodes: barcodes, p_department: department, p_updated_by: updatedBy,
+    });
+    if (error) return error.message || 'Could not assign these items.';
+    set((state) => ({
+      items: {
+        ...state.items,
+        [branch]: state.items[branch].map((item) => barcodes.includes(item.barcode) ? { ...item, department } : item),
       },
     }));
     return null;
