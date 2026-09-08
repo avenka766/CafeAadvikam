@@ -8,9 +8,11 @@ import ProtectedRoute from '@/components/layout/ProtectedRoute';
 import ErrorBoundary from '@/components/layout/ErrorBoundary';
 import OfflineBanner from '@/components/layout/OfflineBanner';
 import DataHealthBanner from '@/components/layout/DataHealthBanner';
+import ElectronRefreshButton from '@/components/layout/ElectronRefreshButton';
 import WorkspaceChrome from '@/components/layout/WorkspaceChrome';
 import { getRoleDefaultPath } from '@/lib/routing';
 import { isNativeApp } from '@/lib/platform';
+import type { UserRole } from '@/types';
 import { useMenuStore } from '@/stores/menuStore';
 import { useOfflineQueueStore } from '@/lib/offlineQueue';
 import Landing from '@/pages/Landing';
@@ -98,6 +100,23 @@ const OWNER_AUTOLOGIN_PASSWORD = 'UaUs36zfZmL-MYxlMsYMRMYwE4zP3kKU';
 // anything baked into the shared JS bundle) instead of just isNativeApp().
 const OWNER_APP_ID = 'com.cafeaadvikam.owner';
 
+// FEATURE (2026-09-08): "in planner apk only the planner should be able to
+// login, others should not be able to login — same for the other 2 apk
+// files." Each native build is single-purpose (see the 3 mobile-apps/*
+// capacitor.config.ts files), but until now anyone's real login/password
+// still worked in any of them — a branch_snb staff member's account, for
+// instance, could log into the Planner app just fine. This is a hard
+// allow-list per real installed appId (read the same way Owner's own
+// auto-login check above already does — App.getInfo() reads the actual
+// Android manifest, not anything baked into the shared JS bundle, so all
+// four native apps compiling from this SAME dist/ can still tell each other
+// apart). Not present in this map (e.g. Owner's or the web app) -> no gate.
+const NATIVE_APP_ROLE_GATE: Record<string, UserRole[]> = {
+  'com.cafeaadvikam.planner': ['planner'],
+  'com.cafeaadvikam.store': ['store'],
+  'com.cafeaadvikam.branchstaff': ['receiver_snb', 'receiver_vrsnb'],
+};
+
 function LiveMenuSync() {
   const { loadMenu, subscribe } = useMenuStore();
   useEffect(() => {
@@ -180,6 +199,52 @@ function AppRoutes() {
       }
     })();
   }, [hydrated, native, currentUser, autoLoginStatus]);
+
+  // FEATURE (2026-09-08): per-app login role gate (see NATIVE_APP_ROLE_GATE
+  // above) — resolved independently of the Owner auto-login effect above
+  // (that one bails out immediately once `currentUser` exists, but this gate
+  // needs to run AFTER a real login too, not just pre-login). Fetches the
+  // real installed appId once per native session, then re-checks every time
+  // `currentUser` changes — i.e. right after a login attempt succeeds.
+  const [nativeAppId, setNativeAppId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!native) return;
+    void (async () => {
+      try {
+        const { App: NativeApp } = await import('@capacitor/app');
+        const info = await NativeApp.getInfo();
+        setNativeAppId(info.id);
+      } catch {
+        // @capacitor/app unavailable — no gate can be enforced; falls
+        // through to normal login, same safety net used everywhere else
+        // this pattern appears.
+      }
+    })();
+  }, [native]);
+
+  const [roleGateMessage, setRoleGateMessage] = useState<string | null>(null);
+  useEffect(() => {
+    if (!native || !currentUser || !nativeAppId) return;
+    const allowedRoles = NATIVE_APP_ROLE_GATE[nativeAppId];
+    if (!allowedRoles || allowedRoles.includes(currentUser.role)) return;
+    setRoleGateMessage(`This app is only for ${allowedRoles.join(' / ')} accounts. Your account (${currentUser.role}) can't log in here — please use the correct app for your role.`);
+    void useAuthStore.getState().logout();
+  }, [native, currentUser, nativeAppId]);
+
+  if (roleGateMessage) return (
+    <div className="min-h-screen bg-background flex items-center justify-center p-6">
+      <div className="max-w-sm rounded-2xl border border-destructive/30 bg-destructive/5 p-6 text-center">
+        <p className="text-sm font-body font-bold text-destructive">{roleGateMessage}</p>
+        <button
+          type="button"
+          onClick={() => setRoleGateMessage(null)}
+          className="mt-4 rounded-xl bg-destructive px-4 py-2 text-sm font-bold text-destructive-foreground"
+        >
+          Back to login
+        </button>
+      </div>
+    </div>
+  );
 
   if (!hydrated || (native && autoLoginStatus !== 'done')) return (
     <div className="min-h-screen bg-background flex items-center justify-center">
@@ -286,6 +351,7 @@ export default function App() {
     <ErrorBoundary>
       <OfflineBanner />
       <DataHealthBanner />
+      <ElectronRefreshButton />
       <BrowserRouter>
         <OfflineQueueBootstrap />
         <LiveMenuSync />
