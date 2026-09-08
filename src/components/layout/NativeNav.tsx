@@ -14,6 +14,14 @@
 // the web dashboard (WorkspaceChrome's own sidebar) is completely
 // unaffected. Visual language matches the Owner app's native shell
 // (.owner-native-* classes in index.css — generic enough to reuse here).
+//
+// FEATURE (2026-09-08): generalized for Planner/Store's Android apps — those
+// dashboards have no separate routes per section (unlike Branch/OrderReceiver
+// above), just one page with a large number of INTERNAL tabs kept in local
+// state. `items`/`activeId`/`onSelect` let a caller drive the SAME drawer off
+// its own in-page tab list instead of navForRole()+navigate, without forking
+// a second copy of this whole component (mirrors OwnerDashboard.tsx's own
+// hand-rolled native shell, which predates this generalization).
 import { useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Menu, X, UserCircle2, LogOut } from 'lucide-react';
@@ -21,13 +29,30 @@ import { cn } from '@/lib/utils';
 import { useAuthStore } from '@/stores/authStore';
 import { navForRole } from './WorkspaceChrome';
 
-export default function NativeNav({ title, subtitle }: { title: string; subtitle: string }) {
+export interface NativeNavTabItem {
+  id: string;
+  label: string;
+  icon: React.ReactNode;
+  hint?: string;
+  badge?: number;
+}
+
+export default function NativeNav({ title, subtitle, items: tabItems, activeId, onSelect }: {
+  title: string;
+  subtitle: string;
+  // In-page-tabs mode: pass all three. Cross-page mode (default): omit all
+  // three and the drawer falls back to navForRole(currentUser.role)+navigate.
+  items?: NativeNavTabItem[];
+  activeId?: string;
+  onSelect?: (id: string) => void;
+}) {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const { currentUser, logout } = useAuthStore();
   const navigate = useNavigate();
   const location = useLocation();
-  const items = navForRole(currentUser?.role);
+  const inPageMode = Boolean(tabItems && onSelect);
+  const crossPageItems = navForRole(currentUser?.role);
   const currentHref = `${location.pathname}${location.search}`;
 
   return (
@@ -70,17 +95,35 @@ export default function NativeNav({ title, subtitle }: { title: string; subtitle
               <span>Sections</span>
               <button type="button" onClick={() => setDrawerOpen(false)} aria-label="Close menu"><X className="size-5" /></button>
             </div>
-            {items.map((item) => (
-              <button
-                key={item.path}
-                type="button"
-                onClick={() => { navigate(item.path); setDrawerOpen(false); }}
-                className={cn('owner-native-drawer-item', currentHref === item.path && 'is-active')}
-              >
-                {item.icon}
-                <span><strong>{item.label}</strong></span>
-              </button>
-            ))}
+            {inPageMode
+              ? tabItems!.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => { onSelect!(item.id); setDrawerOpen(false); }}
+                    className={cn('owner-native-drawer-item', activeId === item.id && 'is-active')}
+                  >
+                    {item.icon}
+                    <span>
+                      <strong>
+                        {item.label}
+                        {Boolean(item.badge) && <span className="ml-1.5 rounded-full bg-red-600 px-1.5 py-0.5 text-[10px] font-black text-white">{item.badge}</span>}
+                      </strong>
+                      {item.hint && <em>{item.hint}</em>}
+                    </span>
+                  </button>
+                ))
+              : crossPageItems.map((item) => (
+                  <button
+                    key={item.path}
+                    type="button"
+                    onClick={() => { navigate(item.path); setDrawerOpen(false); }}
+                    className={cn('owner-native-drawer-item', currentHref === item.path && 'is-active')}
+                  >
+                    {item.icon}
+                    <span><strong>{item.label}</strong></span>
+                  </button>
+                ))}
           </nav>
         </>
       )}

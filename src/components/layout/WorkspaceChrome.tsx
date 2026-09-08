@@ -130,7 +130,9 @@ export function navForRole(role?: string): NavItem[] {
   switch (role) {
     case 'admin':
       return [
-        { label: 'Online Orders', path: '/admin-dashboard?tab=public-orders', icon: <Smartphone className="size-4" />, group: 'Main' },
+        // MOVED (2026-09-08): "Online Orders" relocated to Planner
+        // Dashboard's Incoming Orders tab per explicit request — see
+        // AdminDashboard.tsx's NAV_ITEMS for the matching removal note.
         { label: 'Wallet', path: '/admin-dashboard?tab=wallet', icon: <WalletCards className="size-4" />, group: 'Main' },
         { label: 'Promotions', path: '/admin-dashboard?tab=promotions', icon: <Sparkles className="size-4" />, group: 'Main' },
         { label: 'Dashboard Overview', path: '/admin-dashboard?tab=overview', icon: <LayoutDashboard className="size-4" />, group: 'Main' },
