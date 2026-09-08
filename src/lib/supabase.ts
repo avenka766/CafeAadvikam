@@ -114,3 +114,37 @@ export const supabase = createClient(
     auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
   },
 );
+
+// BUG FIX (2026-09-08): this project's PostgREST API has a hard 1000-row
+// response cap (confirmed live: a `.limit(20000)` query against `orders`
+// returned exactly 1000 rows while the exact-count header reported 2257
+// real matches) — a client-side `.limit(N)` for N > 1000 does NOT override
+// this; PostgREST silently returns only the first page (in whatever order
+// the query specifies, or physical row order if unspecified) with a normal
+// HTTP 200, so it never trips the app's error banner either. This was
+// found live-undercounting VRSNB Admin's "Cafe" sales totals by ~38% on a
+// 30-day range (useCafeOrderSales.ts). Any query whose real result set can
+// exceed 1000 rows needs to page through with `.range()` instead of trusting
+// a bigger `.limit()` — this small helper does that, matching the pattern
+// already established in useSnbAdminReports.ts's local `fetchPaged`. Use it
+// (or the same range-looping pattern) for anything summing/counting over a
+// date range on a table that can realistically hold >1000 matching rows.
+export async function fetchAllRows<T = Record<string, unknown>>(
+  table: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  build: (query: any) => any,
+  options: { pageSize?: number; maxRows?: number } = {},
+): Promise<{ data: T[]; error: string | null }> {
+  const pageSize = options.pageSize ?? 1000;
+  const maxRows = options.maxRows ?? 50000;
+  const rows: T[] = [];
+  for (let from = 0; from < maxRows; from += pageSize) {
+    const query = build(supabase.from(table));
+    const { data, error } = await query.range(from, from + pageSize - 1);
+    if (error) return { data: rows, error: error.message };
+    const page = (data ?? []) as T[];
+    rows.push(...page);
+    if (page.length < pageSize) break;
+  }
+  return { data: rows, error: null };
+}
