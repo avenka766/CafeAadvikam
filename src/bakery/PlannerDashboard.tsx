@@ -577,8 +577,21 @@ function autoSplitForItemByBranch(orders: BakeryOrder[], itemName: string, branc
     // round kept getting counted at full size in the next). Now weight by
     // what's actually still outstanding (requested minus already dispatched
     // to this branch for this item, from the order's own dispatch_log).
+    // BUG FIX (2026-09-08): "unable to dispatch Sweet Biscuit — Nothing to
+    // send." This was the ONE place in this file that summed dispatchLog
+    // entries WITHOUT excluding isExtra ones — every other "already
+    // dispatched" calculation here (12+ call sites) filters `!e.isExtra`,
+    // since an extra/non-requested dispatch is an overage on top of the
+    // request, not a fulfillment of it. Sweet Biscuit had a 15-pcs extra
+    // dispatch against a 12-pcs request; including it made `remaining`
+    // compute to max(0, 12-15)=0, so this order was silently excluded from
+    // `shares` — autoSplitForItemByBranch returned an empty split, and
+    // openReview's per-order loop (`if (!item || orderQty <= 0) continue`)
+    // dropped the item with no skip reason recorded, surfacing only the
+    // generic "Nothing to send" message with no clue why. Any item with an
+    // extra dispatch meeting/exceeding its original request would hit this.
     const alreadyDispatched = (o.dispatchLog || [])
-      .filter(e => e.branch === branch && sameItem(e.itemName, itemName))
+      .filter(e => e.branch === branch && sameItem(e.itemName, itemName) && !e.isExtra)
       .reduce((s, e) => s + e.quantity, 0);
     const rawRemaining = Math.max(0, requested - alreadyDispatched);
     const remaining = isPcs ? Math.round(rawRemaining) : Math.round(rawRemaining * 100) / 100;
@@ -7354,6 +7367,15 @@ function BranchFlatDispatchPanel({ branch, rows, orders, leftoverBalances, onDis
       });
       if (entries.length === 0) { skipped.push({ itemName, reason: `no linked ${branch} order found — refresh and try again` }); continue; }
       const split = autoSplitForItemByBranch(entries, row.itemName, branch, q);
+      // BUG FIX (2026-09-08): "Sweet Biscuit — Nothing to send" — this item
+      // could silently contribute zero actions (every order's split entry
+      // was 0 or missing) with no skip reason recorded anywhere, so a real
+      // checked item just vanished into the generic "Nothing to send"
+      // message. The underlying cause (autoSplitForItemByBranch counting
+      // isExtra dispatches against the request) is fixed at its source, but
+      // this safety net means any FUTURE case that still zeroes out here
+      // surfaces a real, specific reason instead of going silent again.
+      const actionsBefore = actions.length;
       for (const order of entries) {
         const item = order.items.find(i => sameItem(i.itemName, row.itemName));
         const orderQty = split[order.id] ?? 0;
@@ -7388,6 +7410,9 @@ function BranchFlatDispatchPanel({ branch, rows, orders, leftoverBalances, onDis
             dispatchEntryId: getId(`${order.id}:${row.itemName}:extra`), isExtra: true,
           });
         }
+      }
+      if (actions.length === actionsBefore) {
+        skipped.push({ itemName, reason: 'nothing owed on any linked order right now (already fully sent, including extras) — refresh if this looks wrong' });
       }
     }
     if (extraItems.length > 0) {
@@ -8985,7 +9010,7 @@ function CustomDispatchPanel({ rows, orders, onDispatch, dispatchedBy, leftoverB
   const [customerAddress, setCustomerAddress] = useState('');
   const [customerError, setCustomerError] = useState<string | null>(null);
   const { getId, reset: resetDispatchIds } = useStableDispatchIds();
-  const [review, setReview] = useState<{ actions: PendingDispatchAction[]; customer: { name: string; phone: string; address: string } } | null>(null);
+  const [review, setReview] = useState<{ actions: PendingDispatchAction[]; skipped: { itemName: string; reason: string }[]; customer: { name: string; phone: string; address: string } } | null>(null);
 
   // BUG FIX (audit, 2026-08-10): this used to suggest/inform off
   // `row.preparedTotal` alone, unlike BranchFlatDispatchPanel which also
@@ -9015,16 +9040,22 @@ function CustomDispatchPanel({ rows, orders, onDispatch, dispatchedBy, leftoverB
 
   const selectedCount = selected.size;
 
-  const buildActions = (): PendingDispatchAction[] | null => {
+  const buildActions = (): { actions: PendingDispatchAction[]; skipped: { itemName: string; reason: string }[] } | null => {
     setError(null);
     const actions: PendingDispatchAction[] = [];
     let clampedAny = false;
+    // BUG FIX (2026-09-08): "when we dispatch multiple items, if one fails
+    // silently it's never included and the planner never knows" — same
+    // silent-drop gap as the other two multi-item dispatch flows, same fix
+    // (per-item skip reason, surfaced via DispatchReviewModal's
+    // skippedItems prop below).
+    const skipped: { itemName: string; reason: string }[] = [];
     // FEATURE (2026-08-25): "selection order, not alphabetical" — same fix
     // as the other two dispatch flows above.
     const lineByName = new Map(lines.map(l => [l.row.itemName, l]));
     for (const itemName of selected) {
       const line = lineByName.get(itemName);
-      if (!line) continue;
+      if (!line) { skipped.push({ itemName, reason: 'no longer needs dispatch (already fully sent)' }); continue; }
       const { row, remainingPlanned, defaultQty } = line;
       const typed = qtyFor(row.itemName, defaultQty);
       // BUG FIX (2026-08-19): same fix as the other dispatch flows — a
@@ -9034,9 +9065,11 @@ function CustomDispatchPanel({ rows, orders, onDispatch, dispatchedBy, leftoverB
       const isManualQty = qty[row.itemName] !== undefined;
       const q = isManualQty ? typed : Math.min(typed, remainingPlanned);
       if (!isManualQty && typed > remainingPlanned + 0.01) clampedAny = true;
-      if (q <= 0) continue;
+      if (q <= 0) { skipped.push({ itemName, reason: 'quantity is 0' }); continue; }
       const entries = plannedContributingOrders(row, orders);
+      if (entries.length === 0) { skipped.push({ itemName, reason: 'no linked order found — refresh and try again' }); continue; }
       const split = autoSplitForItem(entries, row.itemName, q);
+      const actionsBefore = actions.length;
       for (const order of entries) {
         const item = order.items.find(i => sameItem(i.itemName, row.itemName));
         const orderQty = split[order.id] ?? 0;
@@ -9053,28 +9086,33 @@ function CustomDispatchPanel({ rows, orders, onDispatch, dispatchedBy, leftoverB
           actions.push({ orderId: order.id, itemName: item.itemName, quantity: orderBeyondRequest, unit: item.dispatchUnit || 'kg', dispatchEntryId: getId(`custom:${order.id}:${row.itemName}:extra`), isExtra: true });
         }
       }
+      if (actions.length === actionsBefore) {
+        skipped.push({ itemName, reason: 'nothing owed on any linked order right now (already fully sent, including extras) — refresh if this looks wrong' });
+      }
     }
     if (actions.length === 0) {
-      setError('Select at least one item with a quantity above 0.');
+      setError(skipped.length > 0
+        ? `None of the ${skipped.length} checked item${skipped.length > 1 ? 's' : ''} could be sent: ${skipped.map(s => `${s.itemName} (${s.reason})`).join('; ')}.`
+        : 'Select at least one item with a quantity above 0.');
       return null;
     }
     if (clampedAny) setError("One or more items were capped at what's still owed (some had already been sent).");
-    return actions;
+    return { actions, skipped };
   };
 
   const openCustomerStep = () => {
-    const actions = buildActions();
-    if (!actions) return;
+    const built = buildActions();
+    if (!built) return;
     setCustomerStep(true);
   };
 
   const confirmCustomer = () => {
-    const actions = buildActions();
-    if (!actions) { setCustomerStep(false); return; }
+    const built = buildActions();
+    if (!built) { setCustomerStep(false); return; }
     if (!customerName.trim()) { setCustomerError('Enter the customer\'s name.'); return; }
     if (!customerPhone.trim()) { setCustomerError('Enter the customer\'s mobile number.'); return; }
     setCustomerError(null);
-    setReview({ actions, customer: { name: customerName.trim(), phone: customerPhone.trim(), address: customerAddress.trim() } });
+    setReview({ actions: built.actions, skipped: built.skipped, customer: { name: customerName.trim(), phone: customerPhone.trim(), address: customerAddress.trim() } });
   };
 
   if (review) {
@@ -9083,6 +9121,7 @@ function CustomDispatchPanel({ rows, orders, onDispatch, dispatchedBy, leftoverB
         scope="SNB"
         customer={review.customer}
         actions={review.actions}
+        skippedItems={review.skipped}
         dispatchedBy={dispatchedBy}
         onDispatch={onDispatch}
         onClose={() => setReview(null)}
@@ -9208,6 +9247,12 @@ function BulkDispatchModal({ branch, rows, orders, onClose, onDispatch, dispatch
   // action list; DispatchReviewModal is the sole place submitDispatch
   // actually gets called, after price/discount entry.
   const [reviewActions, setReviewActions] = useState<PendingDispatchAction[] | null>(null);
+  // BUG FIX (2026-09-08): carried alongside reviewActions (not just left in
+  // local `error` state) so it's actually visible — the moment
+  // reviewActions is set, this component switches to rendering
+  // DispatchReviewModal instead, which never read `error` at all. Same fix
+  // as skippedInReview/skippedItems in the earlier VRSNB/SNB dispatch flow.
+  const [skippedInReview, setSkippedInReview] = useState<{ itemName: string; reason: string }[]>([]);
   // BulkDispatchModal is itself a modal whose onClose/onDone props are
   // provided by the caller (Cancel vs. "dispatch succeeded, close and clear
   // selection"). DispatchReviewModal shows its own success/reprint screen
@@ -9222,6 +9267,18 @@ function BulkDispatchModal({ branch, rows, orders, onClose, onDispatch, dispatch
     setError(null);
     const actions: PendingDispatchAction[] = [];
     let clampedAny = false;
+    // BUG FIX (2026-09-08): "when we dispatch multiple items, if one fails
+    // silently and isn't included, the planner will never know." This
+    // modal only ever checked `actions.length === 0` as a single aggregate
+    // — if 4 of 5 checked items produced real actions and 1 quietly
+    // contributed none (e.g. the isExtra-inflated-remaining bug just fixed
+    // in autoSplitForItemByBranch, or any future edge case), the dispatch
+    // would go ahead for the 4 with zero indication the 5th was ever
+        // dropped. Track a per-item skip reason (mirroring openReview's
+    // established pattern elsewhere in this file) and surface it
+    // regardless of whether the overall dispatch still has something to
+    // send, not just when it's completely empty.
+    const skipped: { itemName: string; reason: string }[] = [];
     for (const { row, remaining } of lines) {
       // CRITICAL BUG FIX (2026-08-07 re-audit): every other dispatch entry
       // point (BranchFlatDispatchPanel, HosurShopDispatchPanel,
@@ -9238,7 +9295,7 @@ function BulkDispatchModal({ branch, rows, orders, onClose, onDispatch, dispatch
       const isManualQty = touchedRef.current.has(row.itemName);
       const q = isManualQty ? typed : Math.min(typed, remaining);
       if (!isManualQty && typed > remaining + 0.01) clampedAny = true;
-      if (q <= 0) continue;
+      if (q <= 0) { if (typed > 0 || isManualQty) skipped.push({ itemName: row.itemName, reason: 'quantity is 0' }); continue; }
       // BUG FIX (audit 2026-08-26): same fix as the identical pattern
       // earlier in this file (VRSNB/SNB dispatch flow) — filtering entries
       // by o.targetBranch === branch completely excludes a cross-branch
@@ -9251,7 +9308,9 @@ function BulkDispatchModal({ branch, rows, orders, onClose, onDispatch, dispatch
         if (item?.branchSplit && Object.keys(item.branchSplit).length > 0) return !!item.branchSplit[branch];
         return o.targetBranch === branch;
       });
+      if (entries.length === 0) { skipped.push({ itemName: row.itemName, reason: `no linked ${branch} order found — refresh and try again` }); continue; }
       const split = autoSplitForItemByBranch(entries, row.itemName, branch, q);
+      const actionsBefore = actions.length;
       for (const order of entries) {
         const item = order.items.find(i => sameItem(i.itemName, row.itemName));
         const orderQty = split[order.id] ?? 0;
@@ -9270,12 +9329,23 @@ function BulkDispatchModal({ branch, rows, orders, onClose, onDispatch, dispatch
           actions.push({ orderId: order.id, itemName: item.itemName, quantity: orderBeyondRequest, unit: item.dispatchUnit || 'kg', dispatchEntryId: getId(`${order.id}:${row.itemName}:extra`), isExtra: true });
         }
       }
+      if (actions.length === actionsBefore) {
+        skipped.push({ itemName: row.itemName, reason: 'nothing owed on any linked order right now (already fully sent, including extras) — refresh if this looks wrong' });
+      }
     }
     if (actions.length === 0) {
-      setError('Nothing to send — check the quantities above are above 0.');
+      setError(skipped.length > 0
+        ? `None of the ${skipped.length} checked item${skipped.length > 1 ? 's' : ''} could be sent: ${skipped.map(s => `${s.itemName} (${s.reason})`).join('; ')}.`
+        : 'Nothing to send — check the quantities above are above 0.');
       return;
     }
+    // BUG FIX (2026-09-08, continued): a PARTIAL drop — some items sent,
+    // one or more silently skipped — is exactly the case that used to give
+    // zero indication anything was wrong. Carried into the review modal
+    // (skippedItems prop) rather than local `error` state, which stops
+    // being rendered the instant reviewActions is set below.
     setError(clampedAny ? "One or more items were capped at what's still owed (some had already been sent)." : null);
+    setSkippedInReview(skipped);
     setReviewActions(actions);
   };
 
@@ -9284,6 +9354,7 @@ function BulkDispatchModal({ branch, rows, orders, onClose, onDispatch, dispatch
       <DispatchReviewModal
         scope={branch}
         actions={reviewActions}
+        skippedItems={skippedInReview}
         dispatchedBy={dispatchedBy}
         onDispatch={onDispatch}
         onClose={() => (dispatchDone ? onDone() : onClose())}
