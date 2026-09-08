@@ -9,7 +9,7 @@
 // individual Cafe order rows (not just aggregate totals) shaped so they can
 // be spliced directly into that same log table's row list.
 import { useCallback, useEffect, useState } from 'react';
-import { supabase } from '@/lib/supabase';
+import { fetchAllRows } from '@/lib/supabase';
 
 export type CafeOrderRow = {
   id: string;
@@ -46,15 +46,22 @@ export function useCafeOrderRows(fromDate: string, toDate: string, enabled: bool
     }
     let active = true;
     (async () => {
-      const { data, error } = await supabase
-        .from('orders')
-        .select('id, order_number, created_at, customer_name, billed_by, created_by, total, payment_type')
-        .eq('status', 'served')
-        .neq('payment_type', 'unpaid')
-        .gte('created_at', `${fromDate}T00:00:00`)
-        .lte('created_at', `${toDate}T23:59:59.999`)
-        .order('created_at', { ascending: false })
-        .limit(2000);
+      // BUG FIX (2026-09-08): a plain `.limit(2000)` here was silently
+      // capped at 1000 rows by PostgREST's project-wide response cap — see
+      // fetchAllRows in src/lib/supabase.ts. Paged so a busy range is never
+      // silently truncated (and, since these are individual bill rows,
+      // never silently missing bills from the log either).
+      const { data, error } = await fetchAllRows<Record<string, unknown>>(
+        'orders',
+        (q) => q
+          .select('id, order_number, created_at, customer_name, billed_by, created_by, total, payment_type')
+          .eq('status', 'served')
+          .neq('payment_type', 'unpaid')
+          .gte('created_at', `${fromDate}T00:00:00`)
+          .lte('created_at', `${toDate}T23:59:59.999`)
+          .order('created_at', { ascending: false }),
+        { maxRows: 20000 },
+      );
       if (!active || error || !data) { if (!error) setRows([]); return; }
       setRows((data as Record<string, unknown>[]).map((row) => ({
         id: String(row.id),

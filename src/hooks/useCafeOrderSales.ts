@@ -11,7 +11,7 @@
 // from `orders`, independent of that other pipeline, so it can be added
 // into the combined totals wherever Cafe is in scope.
 import { useCallback, useEffect, useState } from 'react';
-import { supabase } from '@/lib/supabase';
+import { supabase, fetchAllRows } from '@/lib/supabase';
 
 export type CafeOrderSalesSummary = {
   grossSales: number;
@@ -61,20 +61,28 @@ export function useCafeOrderSales(fromDate: string, toDate: string, enabled: boo
     let active = true;
     (async () => {
       setSummary((prev) => ({ ...prev, loading: true, error: '' }));
-      const { data, error } = await supabase
-        .from('orders')
-        .select('total, payment_type, payment_breakdown')
-        .eq('status', 'served')
-        .neq('payment_type', 'unpaid')
-        .gte('created_at', `${fromDate}T00:00:00`)
-        .lte('created_at', `${toDate}T23:59:59.999`)
-        .limit(20000);
+      // BUG FIX (2026-09-08): a plain `.limit(20000)` here was silently
+      // capped at 1000 rows by PostgREST's project-wide response cap —
+      // confirmed live undercounting Cafe gross sales by ~38% on a 30-day
+      // range. Page through with `.range()` instead so a busy range (>1000
+      // served orders) is never silently truncated. See fetchAllRows in
+      // src/lib/supabase.ts for the full explanation.
+      const { data, error } = await fetchAllRows<{ total: number | string | null; payment_type: string | null; payment_breakdown: PaymentBreakdown }>(
+        'orders',
+        (q) => q
+          .select('total, payment_type, payment_breakdown')
+          .eq('status', 'served')
+          .neq('payment_type', 'unpaid')
+          .gte('created_at', `${fromDate}T00:00:00`)
+          .lte('created_at', `${toDate}T23:59:59.999`),
+        { maxRows: 20000 },
+      );
       if (!active) return;
       if (error) {
-        setSummary({ ...EMPTY, error: error.message || 'Unable to load Cafe sales.' });
+        setSummary({ ...EMPTY, error: error || 'Unable to load Cafe sales.' });
         return;
       }
-      const rows = (data ?? []) as { total: number | string | null; payment_type: string | null; payment_breakdown: PaymentBreakdown }[];
+      const rows = data;
       let grossSales = 0, cashSales = 0, upiSales = 0, cardSales = 0, creditSales = 0, otherSales = 0;
       for (const row of rows) {
         const total = Number(row.total ?? 0);
