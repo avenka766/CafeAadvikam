@@ -3095,7 +3095,9 @@ export const useBranchOpsStore = create<BranchOpsState>()(
         };
         set((state) => ({
           cashierClosures: [newClosure, ...state.cashierClosures],
-          auditLogs: [audit(closure.branch, closure.cashier, "Cashier Closure", "-", `Difference ${closure.difference}`), ...state.auditLogs],
+          // BUG FIX (2026-09-08): "amount should be round off in all the dashboard" —
+          // raw cash difference could carry float-subtraction noise (e.g. 42.00000000000004).
+          auditLogs: [audit(closure.branch, closure.cashier, "Cashier Closure", "-", `Difference ${Math.round((closure.difference + Number.EPSILON) * 100) / 100}`), ...state.auditLogs],
         }));
         mirrorOperationRecord(closure.branch, "cashier_closure", newClosure.id, newClosure, {
           recordNo: newClosure.createdAt.slice(0, 10), amount: closure.expectedCash, status: String(closure.difference), actor: closure.cashier,
