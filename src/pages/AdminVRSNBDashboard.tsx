@@ -10,7 +10,7 @@ import {
   type ReactNode,
 } from "react";
 import { useSearchParams } from "react-router-dom";
-import { cn } from "@/lib/utils";
+import { cn, roundQty, sanitizeDecimalInput } from "@/lib/utils";
 import { useBranchLedger } from "@/hooks/useBranchLedger";
 import { useCafeOrderSales } from "@/hooks/useCafeOrderSales";
 import { useCafeOrderRows } from "@/hooks/useCafeOrderRows";
@@ -1974,7 +1974,7 @@ function StockTab(props: any) {
               item.itemBarcode || "-",
               <span key="q" className="font-black tabular-nums">{item.current}</span>,
               item.minimum,
-              item.shortage ? <span key="s" className="font-black text-red-600">{item.shortage}</span> : "-",
+              item.shortage ? <span key="s" className="font-black text-red-600">{roundQty(item.shortage)}</span> : "-",
               item.unit,
               money(item.stockValue),
               <StatusBadge key="status" tone={item.status === "OK" ? "green" : item.status === "Low" ? "amber" : "red"}>{item.status}</StatusBadge>,
@@ -5554,7 +5554,7 @@ function StockAuditTab({
                           <p className="font-black text-slate-900">{line.itemName}</p>
                           <p className="mt-1 text-[10px] font-bold uppercase tracking-wide text-slate-400">{itemMeta.get(normal(line.itemName))?.category ?? "-"}</p>
                         </td>
-                        <td className="px-4 py-3 text-right font-black tabular-nums text-slate-700">{line.systemQty} {line.unit}</td>
+                        <td className="px-4 py-3 text-right font-black tabular-nums text-slate-700">{roundQty(line.systemQty)} {line.unit}</td>
                         <td className="px-4 py-3">
                           {report.status === "Pending Admin Review" ? (
                             <div className="flex items-center gap-2">
@@ -5563,7 +5563,12 @@ function StockAuditTab({
                                 min="0"
                                 step={step}
                                 value={draft}
-                                onChange={(event) => setPhysicalDrafts((current) => ({ ...current, [key]: event.target.value }))}
+                                onChange={(event) => {
+                                  // BUG FIX (2026-09-08): "for Pcs don't allow the decimal" —
+                                  // step alone doesn't stop typing "2.5"; strip it as-typed.
+                                  const sanitized = sanitizeDecimalInput(event.target.value, step !== "1");
+                                  setPhysicalDrafts((current) => ({ ...current, [key]: sanitized }));
+                                }}
                                 className="w-28 rounded-xl border border-slate-200 bg-white px-3 py-2 text-right font-black tabular-nums outline-none focus:border-amber-400 focus:ring-4 focus:ring-amber-100"
                                 aria-label={`Edit physical stock for ${line.itemName}`}
                               />
@@ -5578,12 +5583,15 @@ function StockAuditTab({
                               </button>
                             </div>
                           ) : (
-                            <span className="font-black tabular-nums">{line.physicalQty} {line.unit}</span>
+                            <span className="font-black tabular-nums">{roundQty(line.physicalQty)} {line.unit}</span>
                           )}
                         </td>
                         <td className="px-4 py-3 text-right">
                           <StatusBadge tone={line.difference === 0 ? "green" : line.difference > 0 ? "blue" : "red"}>
-                            {line.difference > 0 ? `+${line.difference}` : line.difference}
+                            {/* BUG FIX (2026-09-08): "max decimal points should be
+                                3" — raw physical-minus-system float subtraction
+                                showed IEEE-754 drift like "0.04200000000000004". */}
+                            {line.difference > 0 ? `+${roundQty(line.difference)}` : roundQty(line.difference)}
                           </StatusBadge>
                         </td>
                         <td className={cn("px-4 py-3 text-right font-black tabular-nums", differenceValue > 0 ? "text-blue-600" : differenceValue < 0 ? "text-red-600" : "text-emerald-700")}>
@@ -5598,7 +5606,7 @@ function StockAuditTab({
                           {line.editedAt ? (
                             <div className="space-y-1">
                               <p className="font-black text-amber-700">Admin corrected</p>
-                              <p>Original: <b className="text-slate-800">{line.originalPhysicalQty ?? line.physicalQty} {line.unit}</b></p>
+                              <p>Original: <b className="text-slate-800">{roundQty(line.originalPhysicalQty ?? line.physicalQty)} {line.unit}</b></p>
                               <p>{line.editedBy || "Admin"} · {fmtDateTime(line.editedAt)}</p>
                             </div>
                           ) : (

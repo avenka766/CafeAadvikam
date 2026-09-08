@@ -6,7 +6,7 @@ import { useBranchStore } from '@/branch/branchStore';
 import { useBranchOpsStore } from '@/branch/branchOpsStore';
 import { useAuthStore } from '@/stores/authStore';
 import { useBranchCatalogStore } from '@/stores/branchCatalogStore';
-import { formatCurrency } from '@/lib/utils';
+import { formatCurrency, roundQty } from '@/lib/utils';
 import { cn } from '@/lib/utils';
 import type { Branch } from '@/branch/types';
 import { BRANCHES, BRANCH_LABELS, BRANCH_COLORS } from '@/branch/types';
@@ -2602,9 +2602,10 @@ function AdminDashboard() {
                     <td className="p-3"><BranchPill branch={row.branch} /></td>
                     <td className="p-3 font-bold">{row.reportNo}</td>
                     <td className="p-3 font-semibold">{row.itemName}</td>
-                    <td className="p-3 text-right tabular-nums">{row.systemQty} {row.unit}</td>
-                    <td className="p-3 text-right tabular-nums">{row.physicalQty} {row.unit}</td>
-                    <td className="p-3 text-right"><Badge tone={row.difference > 0 ? 'blue' : row.difference < 0 ? 'red' : 'slate'}>{row.difference > 0 ? `+${row.difference}` : row.difference}</Badge></td>
+                    <td className="p-3 text-right tabular-nums">{roundQty(row.systemQty)} {row.unit}</td>
+                    <td className="p-3 text-right tabular-nums">{roundQty(row.physicalQty)} {row.unit}</td>
+                    {/* BUG FIX (2026-09-08): raw computed difference floated to JSX unrounded ("0.042...") — see roundQty in @/lib/utils */}
+                    <td className="p-3 text-right"><Badge tone={row.difference > 0 ? 'blue' : row.difference < 0 ? 'red' : 'slate'}>{row.difference > 0 ? `+${roundQty(row.difference)}` : roundQty(row.difference)}</Badge></td>
                     <td className="p-3 text-slate-500">{row.reportedBy}</td>
                     <td className="p-3 text-slate-500">{row.confirmedBy}</td>
                   </tr>

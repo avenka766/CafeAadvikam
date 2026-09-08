@@ -26,7 +26,7 @@ import { useBranchLedger } from '@/hooks/useBranchLedger';
 import { useAuthStore } from '@/stores/authStore';
 import { initNativeNotifications, notifyLocal } from '@/lib/nativeNotifications';
 import { supabase, fetchAllRows } from '@/lib/supabase';
-import { formatCurrency } from '@/lib/utils';
+import { formatCurrency, roundQty } from '@/lib/utils';
 import { cn } from '@/lib/utils';
 import OwnerCreditTab from '@/components/admin/OwnerCreditTab';
 import {
@@ -3289,9 +3289,10 @@ function OwnerStockVarianceTab() {
                   <td>{ownerBranchDisplay(row.branch)}</td>
                   <td><strong>{row.reportNo}</strong></td>
                   <td>{row.itemName}</td>
-                  <td>{row.systemQty} {row.unit}</td>
-                  <td>{row.physicalQty} {row.unit}</td>
-                  <td><em className={cn('owner-status', row.difference === 0 ? 'ok' : row.difference < 0 ? 'danger' : 'warn')}>{row.difference}</em></td>
+                  <td>{roundQty(row.systemQty)} {row.unit}</td>
+                  <td>{roundQty(row.physicalQty)} {row.unit}</td>
+                  {/* BUG FIX (2026-09-08): raw computed difference floated to JSX unrounded ("0.042...") — see roundQty in @/lib/utils */}
+                  <td><em className={cn('owner-status', row.difference === 0 ? 'ok' : row.difference < 0 ? 'danger' : 'warn')}>{roundQty(row.difference)}</em></td>
                   <td>
                     {row.difference < 0 ? (
                       row.lossValue != null
