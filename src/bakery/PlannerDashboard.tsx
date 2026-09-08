@@ -43,8 +43,12 @@ import { printWasteLogBatch } from '@/pages/AdminSNBDashboard';
 import {
   businessFor, defaultDiscountPct, saveDispatchInvoice, printDispatchInvoice, listDispatchInvoices, markDispatchInvoicePaid, updateDispatchInvoice, cancelDispatchInvoice,
   mapWalkinBill, walkinBillToInvoiceRecord, returnDispatchInvoiceItems, recordFromRow,
-  type DispatchInvoiceRecord, type DispatchInvoiceItem, type WalkinBillRow, type WalkinBillItem,
+  saveAdvanceSale, settleAdvanceSale, cancelAdvanceSale, listAdvanceSales, advanceSaleToInvoiceRecord,
+  type DispatchInvoiceRecord, type DispatchInvoiceItem, type WalkinBillRow, type WalkinBillItem, type AdvanceSaleRecord, type AdvanceSaleItem,
 } from './dispatchInvoice';
+import { useMenuStore } from '@/stores/menuStore';
+import { isNativeApp } from '@/lib/platform';
+import NativeNav from '@/components/layout/NativeNav';
 import { supabase } from '@/lib/supabase';
 import { getPackingCounterStatus } from './packingCounter';
 import {
@@ -856,6 +860,14 @@ export default function PlannerDashboard({ embedded = false }: { embedded?: bool
     cake: cakeReadyCount,
   };
 
+  // FEATURE (2026-09-08): "Planner APK" — App.tsx skips WorkspaceChrome
+  // (and therefore its sidebar) entirely for every native build, so a native
+  // Planner app had literally no way to switch any of these 17 tabs (the
+  // `embedded` strip below only renders inside Owner Dashboard's own embed,
+  // and the standalone route relies entirely on WorkspaceChrome's sidebar).
+  // Same hamburger-drawer fix already proven for the Branch/OrderReceiver
+  // native apps — see NativeNav's in-page-tabs mode.
+  const native = isNativeApp();
   return (
     // BUG FIX (2026-08-12): dropped the forced `min-h-screen warm-gradient`
     // when embedded — this div used to assume it was always the page root,
@@ -863,8 +875,17 @@ export default function PlannerDashboard({ embedded = false }: { embedded?: bool
     // visible extra-viewport-tall background-color seam under Owner's own
     // background whenever the Planner tab's content was shorter than one
     // screen.
-    <div className={embedded ? undefined : 'min-h-screen warm-gradient'}>
-      <main className={embedded ? undefined : 'mx-auto max-w-7xl px-4 py-6'}>
+    <div className={cn(embedded ? undefined : 'min-h-screen warm-gradient', native && !embedded && 'owner-native-shell')}>
+      {native && !embedded && (
+        <NativeNav
+          title="Planner"
+          subtitle={TABS.find(t => t.key === tab)?.label ?? 'Planner'}
+          items={TABS.map(t => ({ id: t.key, label: t.label, icon: t.icon, badge: tabBadgeCounts[t.key] }))}
+          activeId={tab}
+          onSelect={(id) => goToTab(id as PlannerTab)}
+        />
+      )}
+      <main className={native && !embedded ? 'owner-native-body workspace-redesign' : (embedded ? undefined : 'mx-auto max-w-7xl px-4 py-6')}>
         {/* In-page tab strip — ONLY when embedded (e.g. inside Owner
             Dashboard), where it's the sole way to switch top-level Planner
             tabs since there's no sidebar in that context. The standalone
@@ -1005,7 +1026,131 @@ function useHosurShopNames(orders: BakeryOrder[]): Map<string, string> {
   return byOrderId;
 }
 
+// MOVED (2026-09-08): "Online Orders" relocated here from Admin Dashboard
+// per explicit request — same RPCs (list_public_orders_secure /
+// update_public_order_status_secure), now also role-gated for 'planner'
+// (see the matching migration). Paid landing-page/storefront orders
+// (Razorpay), reviewed and progressed here instead of Admin Dashboard.
+type PublicOrder = { id: string; order_number: string; customer_name: string; customer_phone: string; customer_address: string; location_pin: string; notes: string | null; amount: number; status: string; payment_id: string | null; items: Array<{ name: string; qty: number; price: number; venue: string; unit?: string }>; created_at: string };
+
+const PUBLIC_ORDER_STATUS_OPTIONS = [
+  { value: 'paid', label: 'Payment received' },
+  { value: 'confirmed', label: 'Confirmed' },
+  { value: 'preparing', label: 'Preparing' },
+  { value: 'ready', label: 'Ready' },
+  { value: 'out_for_delivery', label: 'Out for delivery' },
+  { value: 'completed', label: 'Completed' },
+  { value: 'cancelled', label: 'Cancelled' },
+] as const;
+
+function OnlineOrdersPanel() {
+  const [orders, setOrders] = useState<PublicOrder[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [updatingId, setUpdatingId] = useState<string | null>(null);
+  const [error, setError] = useState('');
+
+  const loadOrders = useCallback(async () => {
+    setLoading(true);
+    setError('');
+    const { data, error: loadError } = await supabase.rpc('list_public_orders_secure', {
+      p_limit: 250,
+      p_offset: 0,
+      p_include_full_contact: true,
+      p_purpose: 'order_fulfilment',
+    });
+    if (loadError) {
+      setError(loadError.message || 'Unable to load online orders.');
+      setLoading(false);
+      return;
+    }
+    setOrders(((data ?? []) as PublicOrder[]).filter((order) => !['payment_pending', 'payment_failed'].includes(order.status)));
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { void loadOrders(); }, [loadOrders]);
+
+  const updateStatus = async (orderId: string, status: string) => {
+    setUpdatingId(orderId);
+    const { error: updateError } = await supabase.rpc('update_public_order_status_secure', {
+      p_order_id: orderId,
+      p_status: status,
+    });
+    if (updateError) {
+      setUpdatingId(null);
+      setError(updateError.message || 'Unable to update online order status.');
+      return;
+    }
+    await loadOrders();
+    setUpdatingId(null);
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h2 className="text-sm font-black text-foreground">Online Orders ({orders.length})</h2>
+        <button onClick={() => void loadOrders()} disabled={loading} className="flex items-center gap-1.5 rounded-xl border border-border bg-white px-3 py-2 text-xs font-bold hover:bg-slate-50 disabled:opacity-60">
+          <RefreshCw className={cn('size-3.5', loading && 'animate-spin')} /> Refresh
+        </button>
+      </div>
+      {error && <div className="flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 px-3 py-3 text-sm font-bold text-red-700"><AlertTriangle className="mt-0.5 size-4 shrink-0" />{error}</div>}
+      {loading && orders.length === 0 ? (
+        <p className="p-8 text-center text-sm font-bold text-muted-foreground">Loading online orders…</p>
+      ) : orders.length === 0 ? (
+        <p className="p-8 text-center text-sm font-bold text-muted-foreground">No paid online orders yet.</p>
+      ) : (
+        <div className="space-y-3">
+          {orders.map((order) => (
+            <article key={order.id} className="rounded-2xl border border-border bg-white p-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <p className="font-black text-foreground">{order.order_number} · {order.customer_name}</p>
+                  <p className="text-xs text-muted-foreground">{order.customer_phone} · {new Date(order.created_at).toLocaleString('en-IN')}</p>
+                </div>
+                <div className="text-right">
+                  <p className="font-black text-emerald-700">₹{Math.round(order.amount)}</p>
+                  <span className="rounded-full bg-emerald-100 px-2 py-1 text-[10px] font-black text-emerald-700">{order.status}</span>
+                </div>
+              </div>
+              <p className="mt-2 text-sm text-foreground">{order.customer_address}</p>
+              <p className="text-xs text-muted-foreground">PIN: {order.location_pin}</p>
+              <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                {(order.items || []).map((item, idx) => (
+                  <div key={idx} className="rounded-xl bg-slate-50 px-3 py-2 text-xs">
+                    <span className="font-black">{item.name}</span> × {item.qty}
+                    <span className="float-right font-bold">₹{Math.round(item.price * item.qty)}</span>
+                  </div>
+                ))}
+              </div>
+              {order.notes && <p className="mt-2 text-xs text-muted-foreground">Note: {order.notes}</p>}
+              <div className="mt-4 flex flex-col gap-2 rounded-2xl border border-border bg-slate-50 p-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="text-[10px] font-black uppercase tracking-wide text-muted-foreground">Customer tracking status</p>
+                  <p className="mt-1 text-xs font-bold text-foreground">Changing this updates the customer tracking page immediately.</p>
+                </div>
+                <select
+                  value={order.status}
+                  disabled={updatingId === order.id}
+                  onChange={(event) => void updateStatus(order.id, event.target.value)}
+                  className="h-10 rounded-xl border border-border bg-white px-3 text-xs font-black text-foreground outline-none disabled:opacity-50"
+                >
+                  {PUBLIC_ORDER_STATUS_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                </select>
+              </div>
+              <p className="mt-2 text-[10px] font-bold text-muted-foreground">Payment ID: {order.payment_id || '—'} · Tax included: 3%</p>
+            </article>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function IncomingOrdersTab({ orders, onAdd }: { orders: BakeryOrder[]; onAdd: ReturnType<typeof useBakeryStore.getState>['submitOrder'] }) {
+  // FEATURE (2026-09-08): "Incoming Orders tab: create a new sub tab called
+  // Online Orders" — a lightweight local sub-tab strip (this component's
+  // own state, not the parent's shared `tab` query param) since Online
+  // Orders is scoped entirely within Incoming Orders, not a sibling of it.
+  const [incomingSubTab, setIncomingSubTab] = useState<'orders' | 'online'>('orders');
   const [showAdd, setShowAdd] = useState(false);
   const [branch, setBranch] = useState<Branch>('SNB');
   const [itemName, setItemName] = useState('');
@@ -1059,6 +1204,12 @@ function IncomingOrdersTab({ orders, onAdd }: { orders: BakeryOrder[]; onAdd: Re
 
   return (
     <div className="space-y-4">
+      <div className="flex gap-2 rounded-2xl border border-border bg-white p-1.5 sm:w-fit">
+        <button onClick={() => setIncomingSubTab('orders')} className={cn('rounded-xl px-4 py-2 text-xs font-black transition', incomingSubTab === 'orders' ? 'bg-foreground text-white' : 'text-muted-foreground hover:bg-slate-50')}>Orders</button>
+        <button onClick={() => setIncomingSubTab('online')} className={cn('rounded-xl px-4 py-2 text-xs font-black transition', incomingSubTab === 'online' ? 'bg-foreground text-white' : 'text-muted-foreground hover:bg-slate-50')}>Online Orders</button>
+      </div>
+      {incomingSubTab === 'online' ? <OnlineOrdersPanel /> : (
+      <>
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-black text-foreground">Incoming Orders ({orders.length})</h2>
         <div className="flex gap-2">
@@ -1134,6 +1285,8 @@ function IncomingOrdersTab({ orders, onAdd }: { orders: BakeryOrder[]; onAdd: Re
       )}
 
       <DayGroupedOrderList orders={orders} badgeLabel="Pending" badgeTone="bg-amber-100 text-amber-700" editable />
+      </>
+      )}
     </div>
   );
 }
@@ -4427,19 +4580,23 @@ function GstInvoiceTab() {
 // Bill flow under one set of sub-tabs, same pattern as the Dispatch tab's
 // To Dispatch/Dispatched/Planned/Custom switcher.
 function BillingWalkinTab() {
-  const [sub, setSub] = useState<'new' | 'sample' | 'invoice'>('new');
+  const [sub, setSub] = useState<'new' | 'sample' | 'invoice' | 'advance'>('new');
   const [showPrinterSetup, setShowPrinterSetup] = useState(false);
   return (
     <div className="space-y-4">
       {showPrinterSetup && <PlannerPrinterSetupModal onClose={() => setShowPrinterSetup(false)} />}
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <button onClick={() => setSub('new')} className={cn('rounded-xl px-3 py-1.5 text-xs font-bold', sub === 'new' ? 'bg-foreground text-white' : 'bg-muted text-muted-foreground')}>New Bill</button>
           <button onClick={() => setSub('sample')} className={cn('rounded-xl px-3 py-1.5 text-xs font-bold', sub === 'sample' ? 'cafe-gradient text-white shadow-teal' : 'bg-primary/10 text-primary')}>Sample Bill</button>
           {/* FEATURE (audit 2026-08-27): "in sales tab add a new sub tab
               called Invoice" — replaces the removed Cake Dispatch Invoice
               sub-tab with a proper GST tax invoice generator. */}
           <button onClick={() => setSub('invoice')} className={cn('rounded-xl px-3 py-1.5 text-xs font-bold', sub === 'invoice' ? 'bg-purple-600 text-white shadow-sm' : 'bg-purple-100 text-purple-700')}>Invoice</button>
+          {/* FEATURE (2026-09-08): "Create a new sub tab called Advance Sales
+              — bill store/cafe/custom items with an advance now, collect the
+              balance and print the final bill later." */}
+          <button onClick={() => setSub('advance')} className={cn('rounded-xl px-3 py-1.5 text-xs font-bold', sub === 'advance' ? 'bg-amber-600 text-white shadow-sm' : 'bg-amber-100 text-amber-700')}>Advance Sales</button>
         </div>
         <button
           type="button"
@@ -4451,7 +4608,415 @@ function BillingWalkinTab() {
           <Printer className="size-3.5" />
         </button>
       </div>
-      {sub === 'new' ? <BillingTab /> : sub === 'sample' ? <SampleBillTab /> : <GstInvoiceTab />}
+      {sub === 'new' ? <BillingTab /> : sub === 'sample' ? <SampleBillTab /> : sub === 'invoice' ? <GstInvoiceTab /> : <AdvanceSalesTab />}
+    </div>
+  );
+}
+
+// FEATURE (2026-09-08): "Create a new sub tab called Advance Sales — bill the
+// store items of SNB/VRSNB, a toggle for Cafe items, and a Custom tab for a
+// custom bill. Print total/advance/payable amount + delivery date. Invoice
+// numbers ADV/26-27/N, continuing as BILL/26-27/N once fully paid, and the
+// advance bill stays live until the full amount is paid." Mirrors BillingTab's
+// item-picker/cart/custom-item patterns closely (same look/feel as New Bill)
+// but against the dedicated advance_sales table via dispatchInvoice.ts's new
+// saveAdvanceSale/settleAdvanceSale/cancelAdvanceSale/listAdvanceSales.
+type AdvanceCartLine = { itemName: string; unit: 'pcs' | 'kg'; price: number; quantity: number };
+
+function AdvanceSalesTab() {
+  const currentUser = useAuthStore(s => s.currentUser);
+  const storeCatalog = useMergedCatalogWithPrice();
+  const { items: cafeItemsRaw, loadMenu } = useMenuStore();
+  useEffect(() => { void loadMenu(); }, [loadMenu]);
+  const cafeItems = useMemo(() => cafeItemsRaw.filter(i => i.enabled), [cafeItemsRaw]);
+
+  const [source, setSource] = useState<'store' | 'cafe' | 'custom'>('store');
+  const [search, setSearch] = useState('');
+  const [cart, setCart] = useState<Record<string, AdvanceCartLine>>({});
+  // Switching source mid-bill would mix items from two unrelated catalogs
+  // (and `source` is a single value stored on the row) — clear the cart so a
+  // "Store" cart never silently survives into a "Cafe"/"Custom" bill.
+  useEffect(() => { setCart({}); }, [source]);
+
+  const setQty = (item: { name: string; unit: 'pcs' | 'kg'; price: number }, qty: number) => {
+    const clean = item.unit === 'pcs' ? Math.max(0, Math.round(qty)) : Math.max(0, Math.round(qty * 1000) / 1000);
+    setCart(prev => {
+      if (clean <= 0) { const next = { ...prev }; delete next[item.name]; return next; }
+      return { ...prev, [item.name]: { itemName: item.name, unit: item.unit, price: item.price, quantity: clean } };
+    });
+  };
+  const setCartLinePrice = (itemName: string, value: string) => {
+    const price = Math.max(0, Number(value) || 0);
+    setCart(prev => (prev[itemName] ? { ...prev, [itemName]: { ...prev[itemName], price } } : prev));
+  };
+
+  const [customItem, setCustomItem] = useState({ name: '', unit: 'pcs' as 'pcs' | 'kg', price: '', quantity: '1' });
+  const [customItemError, setCustomItemError] = useState('');
+  const addCustomItem = () => {
+    const name = customItem.name.trim();
+    const price = Number(customItem.price);
+    const quantity = clampQtyForUnit(Number(customItem.quantity), customItem.unit);
+    if (!name) { setCustomItemError('Enter an item name.'); return; }
+    if (!(price > 0)) { setCustomItemError('Enter a price greater than zero.'); return; }
+    if (!(quantity > 0)) { setCustomItemError('Enter a quantity greater than zero.'); return; }
+    setCustomItemError('');
+    setCart(prev => ({ ...prev, [name]: { itemName: name, unit: customItem.unit, price, quantity } }));
+    setCustomItem({ name: '', unit: customItem.unit, price: '', quantity: '1' });
+  };
+
+  const filteredStoreItems = useMemo(() => storeCatalog.filter(i => i.name.toLowerCase().includes(search.trim().toLowerCase())), [storeCatalog, search]);
+  const filteredCafeItems = useMemo(() => cafeItems.filter(i => i.name.toLowerCase().includes(search.trim().toLowerCase())), [cafeItems, search]);
+
+  const cartLines = Object.values(cart);
+  const subtotal = Math.round(cartLines.reduce((s, l) => s + l.price * l.quantity, 0) * 100) / 100;
+
+  const [customerName, setCustomerName] = useState('');
+  const [customerPhone, setCustomerPhone] = useState('');
+  const [deliveryDate, setDeliveryDate] = useState('');
+  const [deliveryTime, setDeliveryTime] = useState('');
+  const [discountType, setDiscountType] = useState<'none' | 'percent' | 'amount'>('none');
+  const [discountValue, setDiscountValue] = useState('');
+  const [advanceAmount, setAdvanceAmount] = useState('');
+  const [advancePaymentMode, setAdvancePaymentMode] = useState<typeof WALKIN_PAYMENT_MODES[number]['key']>('cash');
+  const [saving, setSaving] = useState(false);
+  const savingInFlightRef = useRef(false);
+  const [error, setError] = useState('');
+  const [lastSale, setLastSale] = useState<AdvanceSaleRecord | null>(null);
+
+  const discountAmount = discountType === 'percent'
+    ? Math.round(subtotal * (Math.min(100, Math.max(0, Number(discountValue) || 0)) / 100) * 100) / 100
+    : discountType === 'amount'
+    ? Math.min(subtotal, Math.max(0, Number(discountValue) || 0))
+    : 0;
+  const preRound = subtotal - discountAmount;
+  const total = Math.max(0, Math.round(preRound));
+  const advanceNum = Math.max(0, Number(advanceAmount) || 0);
+  const balance = Math.max(0, Math.round((total - advanceNum) * 100) / 100);
+
+  const [pending, setPending] = useState<AdvanceSaleRecord[] | null>(null);
+  const [pendingLoading, setPendingLoading] = useState(false);
+  const loadPending = useCallback(async () => {
+    setPendingLoading(true);
+    try {
+      const to = new Date(); to.setDate(to.getDate() + 1);
+      const from = new Date(); from.setDate(from.getDate() - 365);
+      const rows = await listAdvanceSales({ fromDate: from.toISOString(), toDate: to.toISOString(), status: 'advance' });
+      setPending(rows);
+    } catch (err) {
+      console.error('[AdvanceSalesTab] Failed to load pending advance sales:', err);
+      setPending([]);
+    } finally {
+      setPendingLoading(false);
+    }
+  }, []);
+  useEffect(() => { void loadPending(); }, [loadPending]);
+
+  const resetForm = () => {
+    setCart({}); setCustomerName(''); setCustomerPhone(''); setDeliveryDate(''); setDeliveryTime('');
+    setDiscountType('none'); setDiscountValue(''); setAdvanceAmount('');
+  };
+
+  const save = async () => {
+    if (savingInFlightRef.current) return;
+    setError('');
+    if (cartLines.length === 0) { setError('Add at least one item.'); return; }
+    if (!deliveryDate) { setError('Enter a delivery date.'); return; }
+    if (!(advanceNum > 0)) { setError('Enter an advance amount greater than 0.'); return; }
+    if (advanceNum > total) { setError(`Advance amount can't exceed the total bill amount (${invoiceMoney(total)}).`); return; }
+    savingInFlightRef.current = true;
+    setSaving(true);
+    try {
+      const items: AdvanceSaleItem[] = cartLines.map(l => ({ itemName: l.itemName, unit: l.unit, quantity: l.quantity, unitPrice: l.price, lineTotal: Math.round(l.price * l.quantity * 100) / 100 }));
+      const result = await saveAdvanceSale({
+        source, customerName: customerName.trim() || null, customerPhone: customerPhone.trim() || null, items,
+        discountType, discountValue: Math.max(0, Number(discountValue) || 0),
+        advanceAmount: advanceNum, advancePaymentMode,
+        deliveryDate, deliveryTime: deliveryTime.trim() || null,
+        createdBy: currentUser?.displayName || currentUser?.username || 'Planner',
+      });
+      if ('error' in result) { setError(result.error); return; }
+      setLastSale(result.record);
+      void printDispatchInvoice(advanceSaleToInvoiceRecord(result.record), 'thermal');
+      resetForm();
+      void loadPending();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save the advance sale — please try again.');
+    } finally {
+      setSaving(false);
+      savingInFlightRef.current = false;
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_22rem]">
+        <section className="space-y-3 card-base p-5">
+          <div className="flex gap-1.5 rounded-xl bg-muted p-1">
+            {(['store', 'cafe', 'custom'] as const).map(s => (
+              <button key={s} onClick={() => setSource(s)} className={cn('flex-1 rounded-lg px-3 py-1.5 text-xs font-black', source === s ? 'bg-white text-foreground shadow-sm' : 'text-muted-foreground')}>
+                {s === 'store' ? 'Store Items (SNB/VRSNB)' : s === 'cafe' ? 'Cafe Items' : 'Custom Bill'}
+              </button>
+            ))}
+          </div>
+
+          {source === 'custom' ? (
+            <div className="space-y-2 rounded-xl border border-dashed border-amber-400 bg-amber-50/60 p-3">
+              <p className="text-[11px] font-black uppercase tracking-wide text-amber-800">Custom item</p>
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+                <input value={customItem.name} onChange={e => setCustomItem(c => ({ ...c, name: e.target.value }))} placeholder="Item name" className="col-span-2 h-9 rounded-lg border border-border bg-background px-2 text-xs font-bold sm:col-span-2" />
+                <select value={customItem.unit} onChange={e => setCustomItem(c => ({ ...c, unit: e.target.value as 'pcs' | 'kg' }))} className="h-9 rounded-lg border border-border bg-background px-2 text-xs font-bold">
+                  <option value="pcs">pcs</option>
+                  <option value="kg">kg</option>
+                </select>
+                <input type="number" min="0" step="0.01" value={customItem.price} onChange={e => setCustomItem(c => ({ ...c, price: e.target.value }))} placeholder="Price" className="h-9 rounded-lg border border-border bg-background px-2 text-xs font-bold" />
+                <input type="number" min="0" step={customItem.unit === 'pcs' ? 1 : 0.001} value={customItem.quantity} onChange={e => setCustomItem(c => ({ ...c, quantity: e.target.value }))} placeholder="Qty" className="h-9 rounded-lg border border-border bg-background px-2 text-xs font-bold" />
+              </div>
+              <div className="flex items-center gap-2">
+                <button onClick={addCustomItem} className="flex h-8 items-center gap-1 rounded-lg bg-amber-600 px-3 text-[11px] font-black text-white hover:opacity-90"><Plus className="size-3.5" /> Add to cart</button>
+                {customItemError && <span className="text-[11px] font-bold text-destructive">{customItemError}</span>}
+              </div>
+            </div>
+          ) : (
+            <>
+              <label className="space-y-1">
+                <span className="text-[11px] font-black uppercase tracking-wide text-muted-foreground">Search item</span>
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                  <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search item..." className="h-11 w-full rounded-xl border border-border bg-background pl-9 pr-3 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-primary/30" />
+                </div>
+              </label>
+              {source === 'store' ? (
+                filteredStoreItems.length === 0 ? (
+                  <div className="rounded-2xl border border-dashed border-border p-8 text-center text-xs font-bold text-muted-foreground">No items match.</div>
+                ) : (
+                  <div className="grid gap-2 sm:grid-cols-2 max-h-[55vh] overflow-y-auto pr-1">
+                    {filteredStoreItems.map(item => {
+                      const current = cart[item.name]?.quantity ?? 0;
+                      const step = item.unit === 'kg' ? 0.25 : 1;
+                      return (
+                        <article key={item.name} className={cn('rounded-xl border p-3 transition-colors', current > 0 ? 'border-teal bg-primary/5' : 'border-border bg-muted/40')}>
+                          <p className="text-sm font-black text-foreground">{item.name}</p>
+                          <p className="text-xs font-bold text-muted-foreground">{invoiceMoney(item.price)} / {item.unit} · {item.category}</p>
+                          <div className="mt-2 flex items-center gap-2">
+                            <button onClick={() => setQty(item, current - step)} className="size-8 rounded-lg border border-border bg-card font-black text-foreground hover:bg-muted">-</button>
+                            <input type="number" step={item.unit === 'pcs' ? 1 : 0.001} value={current || ''} onChange={e => setQty(item, Number(e.target.value))} placeholder="0" className="h-8 w-full rounded-lg border border-border bg-background text-center text-sm font-black" />
+                            <button onClick={() => setQty(item, current + step)} className="size-8 rounded-lg bg-primary font-black text-primary-foreground hover:opacity-90">+</button>
+                          </div>
+                        </article>
+                      );
+                    })}
+                  </div>
+                )
+              ) : filteredCafeItems.length === 0 ? (
+                <div className="rounded-2xl border border-dashed border-border p-8 text-center text-xs font-bold text-muted-foreground">No Cafe items match.</div>
+              ) : (
+                <div className="grid gap-2 sm:grid-cols-2 max-h-[55vh] overflow-y-auto pr-1">
+                  {filteredCafeItems.map(item => {
+                    const current = cart[item.name]?.quantity ?? 0;
+                    return (
+                      <article key={item.id} className={cn('rounded-xl border p-3 transition-colors', current > 0 ? 'border-teal bg-primary/5' : 'border-border bg-muted/40')}>
+                        <p className="text-sm font-black text-foreground">{item.name}</p>
+                        <p className="text-xs font-bold text-muted-foreground">{invoiceMoney(item.price)} · {item.category}</p>
+                        <div className="mt-2 flex items-center gap-2">
+                          <button onClick={() => setQty({ name: item.name, unit: 'pcs', price: item.price }, current - 1)} className="size-8 rounded-lg border border-border bg-card font-black text-foreground hover:bg-muted">-</button>
+                          <input type="number" step={1} value={current || ''} onChange={e => setQty({ name: item.name, unit: 'pcs', price: item.price }, Number(e.target.value))} placeholder="0" className="h-8 w-full rounded-lg border border-border bg-background text-center text-sm font-black" />
+                          <button onClick={() => setQty({ name: item.name, unit: 'pcs', price: item.price }, current + 1)} className="size-8 rounded-lg bg-primary font-black text-primary-foreground hover:opacity-90">+</button>
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
+              )}
+            </>
+          )}
+        </section>
+
+        <aside className="space-y-3 card-base p-5">
+          <div className="flex items-center gap-2"><ShoppingCart className="size-4 text-primary" /><h3 className="font-display text-lg font-bold text-foreground">Advance Bill</h3></div>
+          {cartLines.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-border p-6 text-center text-xs font-bold text-muted-foreground">No items added</div>
+          ) : (
+            <div className="max-h-48 space-y-2 overflow-auto">
+              {cartLines.map(line => (
+                <div key={line.itemName} className="flex items-center justify-between gap-2 rounded-xl bg-muted/40 p-2.5">
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-xs font-black text-foreground">{line.itemName}</p>
+                    <div className="flex items-center gap-1 text-[11px] font-bold text-muted-foreground">
+                      <span>{line.quantity} {line.unit} ×</span>
+                      <input type="number" min="0" step="0.01" value={line.price} onChange={e => setCartLinePrice(line.itemName, e.target.value)} className="h-6 w-16 rounded border border-border bg-background px-1 text-right text-[11px] font-black text-foreground" />
+                      <span>= {invoiceMoney(line.price * line.quantity)}</span>
+                    </div>
+                  </div>
+                  <button onClick={() => setQty({ name: line.itemName, unit: line.unit, price: line.price }, 0)}><X className="size-3.5 text-destructive" /></button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="grid grid-cols-2 gap-2">
+            <input value={customerName} onChange={e => setCustomerName(e.target.value)} placeholder="Customer name" className="h-10 rounded-xl border border-border bg-background px-3 text-xs font-bold" />
+            <input value={customerPhone} onChange={e => setCustomerPhone(e.target.value.replace(/\D/g, '').slice(0, 10))} placeholder="Mobile" inputMode="numeric" className="h-10 rounded-xl border border-border bg-background px-3 text-xs font-bold" />
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <label className="space-y-1">
+              <span className="text-[10px] font-black uppercase tracking-wide text-muted-foreground">Delivery Date *</span>
+              <input type="date" value={deliveryDate} onChange={e => setDeliveryDate(e.target.value)} className="h-10 w-full rounded-xl border border-border bg-background px-3 text-xs font-bold" />
+            </label>
+            <label className="space-y-1">
+              <span className="text-[10px] font-black uppercase tracking-wide text-muted-foreground">Delivery Time</span>
+              <input type="time" value={deliveryTime} onChange={e => setDeliveryTime(e.target.value)} className="h-10 w-full rounded-xl border border-border bg-background px-3 text-xs font-bold" />
+            </label>
+          </div>
+
+          <div className="space-y-2 rounded-xl border border-border bg-muted/20 p-3">
+            <div className="flex items-center gap-1.5"><Percent className="size-3.5 text-muted-foreground" /><span className="text-[11px] font-black uppercase tracking-wide text-muted-foreground">Discount</span></div>
+            <div className="flex gap-1.5">
+              {(['none', 'percent', 'amount'] as const).map(t => (
+                <button key={t} onClick={() => { setDiscountType(t); if (t === 'none') setDiscountValue(''); }} className={cn('flex-1 rounded-lg px-2 py-1.5 text-[11px] font-bold', discountType === t ? 'bg-primary text-primary-foreground' : 'border border-border bg-card text-foreground')}>
+                  {t === 'none' ? 'None' : t === 'percent' ? '%' : '₹'}
+                </button>
+              ))}
+            </div>
+            {discountType !== 'none' && (
+              <input type="number" value={discountValue} onChange={e => setDiscountValue(e.target.value)} placeholder={discountType === 'percent' ? 'e.g. 10' : 'e.g. 50'} className="w-full rounded-lg border border-border bg-background px-2 py-1.5 text-sm font-bold" />
+            )}
+          </div>
+
+          <div className="space-y-1 rounded-xl bg-muted/40 p-3 text-sm">
+            <div className="flex justify-between font-bold text-muted-foreground"><span>Subtotal</span><span>{invoiceMoney(subtotal)}</span></div>
+            {discountAmount > 0 && <div className="flex justify-between font-bold text-red-600"><span>Discount</span><span>- {invoiceMoney(discountAmount)}</span></div>}
+            <div className="flex justify-between border-t border-border pt-1.5 text-base font-black text-foreground"><span>Total Amount</span><span>{invoiceMoney(total)}</span></div>
+          </div>
+
+          <div className="space-y-2 rounded-xl border border-dashed border-emerald-400 bg-emerald-50/60 p-3">
+            <p className="text-[11px] font-black uppercase tracking-wide text-emerald-800">Advance Amount *</p>
+            <input type="number" min={0} max={total} value={advanceAmount} onChange={e => setAdvanceAmount(e.target.value)} placeholder="e.g. 500" className="h-10 w-full rounded-lg border border-emerald-300 bg-white px-3 text-sm font-bold" />
+            <div className="flex gap-1.5">
+              {WALKIN_PAYMENT_MODES.map(m => (
+                <button key={m.key} onClick={() => setAdvancePaymentMode(m.key)} className={cn('flex-1 rounded-lg px-2 py-1.5 text-xs font-bold', advancePaymentMode === m.key ? 'bg-emerald-600 text-white' : 'border border-emerald-300 bg-white text-emerald-800')}>{m.label}</button>
+              ))}
+            </div>
+            <div className="flex justify-between text-sm font-black text-emerald-900"><span>Balance / Payable</span><span>{invoiceMoney(balance)}</span></div>
+          </div>
+
+          {error && <p className="rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs font-bold text-destructive">{error}</p>}
+
+          <button onClick={() => void save()} disabled={saving || cartLines.length === 0} className="flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-amber-600 text-sm font-black text-white shadow-sm hover:bg-amber-700 disabled:opacity-40">
+            {saving ? <Loader2 className="size-4 animate-spin" /> : <IndianRupee className="size-4" />} Save &amp; Print Advance Bill
+          </button>
+
+          {lastSale && (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 p-3">
+              <p className="text-xs font-black text-amber-900">ADV/{lastSale.fySeq} saved — Advance {invoiceMoney(lastSale.advanceAmount)}, Balance {invoiceMoney(lastSale.balanceAmount)}</p>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                <button onClick={() => printDispatchInvoice(advanceSaleToInvoiceRecord(lastSale), 'thermal')} className="flex items-center gap-1.5 rounded-lg bg-amber-600 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-amber-700"><Printer className="size-3.5" /> Thermal</button>
+                <button onClick={() => printDispatchInvoice(advanceSaleToInvoiceRecord(lastSale), 'a4')} className="flex items-center gap-1.5 rounded-lg bg-amber-600 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-amber-700"><Printer className="size-3.5" /> A4</button>
+              </div>
+            </div>
+          )}
+        </aside>
+      </div>
+
+      <div className="overflow-hidden rounded-2xl border border-border bg-white shadow-sm">
+        <div className="flex items-center justify-between border-b border-border bg-muted/40 px-4 py-3">
+          <p className="text-sm font-black text-foreground">Pending Advance Sales <span className="font-bold text-muted-foreground">— stays here until fully paid</span></p>
+          <button onClick={() => void loadPending()} className="flex items-center gap-1 text-[10px] font-bold text-amber-700 hover:underline"><RefreshCw className="size-3" /> Refresh</button>
+        </div>
+        {pendingLoading && pending === null ? (
+          <p className="px-4 py-6 text-center text-xs font-bold text-muted-foreground">Loading…</p>
+        ) : !pending || pending.length === 0 ? (
+          <EmptyState text="No advance sales waiting on balance payment." />
+        ) : (
+          <div className="divide-y">
+            {pending.map(sale => <PendingAdvanceSaleRow key={sale.id} sale={sale} onChanged={loadPending} />)}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PendingAdvanceSaleRow({ sale, onChanged }: { sale: AdvanceSaleRecord; onChanged: () => void }) {
+  const currentUser = useAuthStore(s => s.currentUser);
+  const [settling, setSettling] = useState(false);
+  const [showSettle, setShowSettle] = useState(false);
+  const [finalMode, setFinalMode] = useState<typeof WALKIN_PAYMENT_MODES[number]['key']>('cash');
+  const [settleError, setSettleError] = useState('');
+  const [cancelling, setCancelling] = useState(false);
+  const cancelInFlightRef = useRef(false);
+  const settleInFlightRef = useRef(false);
+
+  const handleSettle = async () => {
+    if (settleInFlightRef.current) return;
+    settleInFlightRef.current = true;
+    setSettling(true);
+    setSettleError('');
+    try {
+      const result = await settleAdvanceSale({ id: sale.id, finalPaymentMode: finalMode, settledBy: currentUser?.displayName || currentUser?.username || 'Planner' });
+      if ('error' in result) { setSettleError(result.error); return; }
+      void printDispatchInvoice(advanceSaleToInvoiceRecord(result.record), 'thermal');
+      setShowSettle(false);
+      onChanged();
+    } catch (err) {
+      setSettleError(err instanceof Error ? err.message : 'Failed to settle — please try again.');
+    } finally {
+      setSettling(false);
+      settleInFlightRef.current = false;
+    }
+  };
+
+  const handleCancel = async () => {
+    if (cancelInFlightRef.current) return;
+    if (!window.confirm(`Cancel advance sale ADV/${sale.fySeq} for ${sale.customerName || 'this customer'}? This can't be undone.`)) return;
+    cancelInFlightRef.current = true;
+    setCancelling(true);
+    try {
+      const result = await cancelAdvanceSale({ id: sale.id, cancelledBy: currentUser?.displayName || currentUser?.username || 'Planner' });
+      if ('error' in result) window.alert(result.error);
+      else onChanged();
+    } catch (err) {
+      window.alert(err instanceof Error ? err.message : 'Failed to cancel — please try again.');
+    } finally {
+      cancelInFlightRef.current = false;
+      setCancelling(false);
+    }
+  };
+
+  return (
+    <div className="px-4 py-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="min-w-0">
+          <p className="truncate text-[11px] font-black text-foreground">ADV/{sale.fySeq} — {sale.customerName || 'Walk-in Customer'}</p>
+          <p className="text-[10px] font-bold text-muted-foreground">
+            {new Date(sale.createdAt).toLocaleDateString('en-IN')} · Delivery {sale.deliveryDate ? new Date(sale.deliveryDate).toLocaleDateString('en-IN') : '—'}{sale.deliveryTime ? ` ${sale.deliveryTime}` : ''}
+            · Total {invoiceMoney(sale.total)} · Advance {invoiceMoney(sale.advanceAmount)} · <span className="font-black text-amber-700">Balance {invoiceMoney(sale.balanceAmount)}</span>
+          </p>
+        </div>
+        <div className="flex gap-1.5">
+          <button onClick={() => printDispatchInvoice(advanceSaleToInvoiceRecord(sale), 'thermal')} className="flex items-center gap-1 rounded-lg bg-muted px-2 py-1 text-[10px] font-bold text-muted-foreground hover:bg-slate-200"><Printer className="size-3" /> Thermal</button>
+          <button onClick={() => printDispatchInvoice(advanceSaleToInvoiceRecord(sale), 'a4')} className="flex items-center gap-1 rounded-lg bg-muted px-2 py-1 text-[10px] font-bold text-muted-foreground hover:bg-slate-200"><Printer className="size-3" /> A4</button>
+          <button onClick={() => setShowSettle(v => !v)} className="flex items-center gap-1 rounded-lg border border-emerald-300 bg-emerald-50 px-2 py-1 text-[10px] font-black text-emerald-800 hover:bg-emerald-100"><CheckCircle2 className="size-3" /> Collect Balance</button>
+          <button onClick={() => void handleCancel()} disabled={cancelling} className="flex items-center gap-1 rounded-lg border border-destructive/30 bg-destructive/10 px-2 py-1 text-[10px] font-black text-destructive hover:bg-destructive/20 disabled:opacity-50">
+            {cancelling ? <Loader2 className="size-3 animate-spin" /> : <Trash2 className="size-3" />} Cancel
+          </button>
+        </div>
+      </div>
+      {showSettle && (
+        <div className="mt-2 rounded-xl border border-emerald-200 bg-emerald-50/60 p-3">
+          <p className="text-xs font-black text-emerald-900">Collect the remaining {invoiceMoney(sale.balanceAmount)} and print the final bill (BILL/{sale.fySeq}).</p>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <div className="flex gap-1.5">
+              {WALKIN_PAYMENT_MODES.map(m => (
+                <button key={m.key} onClick={() => setFinalMode(m.key)} className={cn('rounded-lg px-2.5 py-1.5 text-xs font-bold', finalMode === m.key ? 'bg-emerald-600 text-white' : 'border border-emerald-300 bg-white text-emerald-800')}>{m.label}</button>
+              ))}
+            </div>
+            <button onClick={() => void handleSettle()} disabled={settling} className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-black text-white hover:bg-emerald-700 disabled:opacity-50">
+              {settling ? <Loader2 className="size-3.5 animate-spin" /> : <CheckCircle2 className="size-3.5" />} Confirm &amp; Print Final Bill
+            </button>
+          </div>
+          {settleError && <p className="mt-1.5 text-[11px] font-bold text-red-700">{settleError}</p>}
+        </div>
+      )}
     </div>
   );
 }

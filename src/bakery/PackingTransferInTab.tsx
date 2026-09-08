@@ -1,9 +1,9 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, ArrowDownToLine, CheckCircle2, Loader2, Package, Plus, Printer, RefreshCw, RotateCcw, Search, X } from 'lucide-react';
+import { AlertTriangle, ArrowDownToLine, CheckCircle2, Inbox, Loader2, Package, Plus, Printer, RefreshCw, RotateCcw, Search, X } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
 import { supabase } from '@/lib/supabase';
 import { printViaIframe } from '@/lib/printViaIframe';
-import { sanitizeQtyForUnit, requantizeForUnit } from './PlannerLeftoverTab';
+import { sanitizeQtyForUnit, requantizeForUnit, recordLeftoverMovement, kolkataToday } from './PlannerLeftoverTab';
 
 type SourceBranch = 'SNB' | 'VRSNB';
 type Unit = 'kg' | 'pcs';
@@ -43,6 +43,119 @@ const emptyBatch = { source: 'SNB' as SourceBranch, reference: '', remarks: '' }
 
 function escapeHtml(value: unknown) {
   return String(value ?? '').replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[char] || char));
+}
+
+// FEATURE (2026-09-08): "When SNB/VRSNB Order or Admin transfer out, they
+// should have an option to select if they are transferring out to Planner
+// or others — if Planner, the planner should see the Transfer Out details
+// in Transfer In tab, and once they check and click confirm the stock
+// should get added to current stock in planner." Reuses the SNB/VRSNB
+// 'Trans Out' mechanism (branch_waste_logs, extended with a `destination`
+// column) — a new, parallel path into Planner's stock pool
+// (planner_leftover_ledger), separate from the manual-entry Transfer In
+// form above and from the branch-return flow in Daily Closure ▸ Disputes &
+// Returns. Two-step confirm, matching that same return-confirm pattern:
+// confirm_branch_transfer_out_to_planner_secure marks it received, then
+// recordLeftoverMovement credits Planner's actual counted stock.
+type BranchTransferOut = {
+  id: string;
+  branch: 'SNB' | 'VRSNB';
+  item_name: string;
+  quantity: number;
+  unit: 'kg' | 'pcs';
+  reason: string;
+  verified_by: string;
+  created_by_username: string;
+  created_at: string;
+};
+
+function BranchTransferOutInbox() {
+  const { currentUser } = useAuthStore();
+  const staffName = currentUser?.displayName || currentUser?.username || 'Planner Staff';
+  const [rows, setRows] = useState<BranchTransferOut[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [confirmingId, setConfirmingId] = useState('');
+  const [success, setSuccess] = useState('');
+
+  const loadRows = useCallback(async () => {
+    setLoading(true);
+    setError('');
+    const { data, error: loadError } = await supabase.rpc('list_branch_transfer_out_to_planner_secure');
+    if (loadError) setError(`Unable to load incoming branch transfers: ${loadError.message}`);
+    else setRows((data ?? []) as BranchTransferOut[]);
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { void loadRows(); }, [loadRows]);
+
+  const confirmRow = async (row: BranchTransferOut) => {
+    setConfirmingId(row.id);
+    setError('');
+    setSuccess('');
+    const { error: confirmError } = await supabase.rpc('confirm_branch_transfer_out_to_planner_secure', { p_id: row.id });
+    if (confirmError) {
+      setError(`Could not confirm ${row.item_name}: ${confirmError.message}`);
+      setConfirmingId('');
+      return;
+    }
+    const result = await recordLeftoverMovement({
+      itemName: row.item_name,
+      unit: row.unit,
+      delta: Number(row.quantity),
+      businessDate: kolkataToday(),
+      reason: 'closing_stock',
+      recordedBy: staffName,
+      branch: row.branch,
+      notes: `Received via Transfer Out from ${row.branch} · ref TRANSOUT-${row.id.slice(0, 8)} · ${row.reason}`,
+    });
+    if ('error' in result) {
+      // The transfer is already marked received server-side — surface this
+      // clearly rather than silently leaving Planner's stock uncredited;
+      // an admin can re-run the credit manually if this ever fires.
+      setError(`${row.item_name} was marked received, but crediting Planner's stock failed: ${result.error}. Notify an admin.`);
+      setConfirmingId('');
+      return;
+    }
+    setSuccess(`${row.item_name}: ${row.quantity} ${row.unit} received from ${row.branch} and added to Planner's stock.`);
+    setConfirmingId('');
+    await loadRows();
+  };
+
+  return (
+    <div className="rounded-2xl border border-orange-200 bg-orange-50/40 p-4 space-y-3">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2 font-black text-orange-900"><Inbox className="size-4" />Incoming from Branches</div>
+        <button type="button" onClick={() => void loadRows()} className="h-9 rounded-xl border bg-card px-3 text-xs font-bold flex items-center gap-2"><RefreshCw className={`size-3.5 ${loading ? 'animate-spin' : ''}`} />Refresh</button>
+      </div>
+      <p className="text-xs text-muted-foreground">SNB/VRSNB Transfer Outs sent here — review, then Confirm to add the stock to Planner's Closing Stock pool.</p>
+      {error && <div className="flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700"><AlertTriangle className="mt-0.5 size-3.5 shrink-0" />{error}</div>}
+      {success && <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-700">{success}</div>}
+      {rows.length === 0 ? (
+        <p className="p-4 text-center text-xs text-muted-foreground">No pending transfers from SNB or VRSNB.</p>
+      ) : (
+        <div className="space-y-2">
+          {rows.map((row) => (
+            <div key={row.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-card px-3 py-2.5">
+              <div className="min-w-0">
+                <p className="text-sm font-black">{row.item_name} <span className="font-bold text-muted-foreground">· {row.quantity} {row.unit}</span></p>
+                <p className="text-[11px] text-muted-foreground">From {row.branch} · {row.reason} · Verified by {row.verified_by} by {row.created_by_username} · {new Date(row.created_at).toLocaleString('en-IN')}</p>
+              </div>
+              <button
+                type="button"
+                disabled={confirmingId === row.id}
+                onClick={() => void confirmRow(row)}
+                className="h-10 shrink-0 rounded-xl bg-orange-500 px-4 text-xs font-black text-white shadow flex items-center gap-2 disabled:opacity-60"
+              >
+                {confirmingId === row.id ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
+                {confirmingId === row.id ? 'Confirming…' : 'Confirm'}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 export default function PackingTransferInTab() {
@@ -181,6 +294,8 @@ export default function PackingTransferInTab() {
       </div>
 
       {error && <div className="flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 px-3 py-3 text-sm font-bold text-red-700"><AlertTriangle className="mt-0.5 size-4 shrink-0" />{error}</div>}
+
+      <BranchTransferOutInbox />
 
       <div className="grid gap-4 xl:grid-cols-[390px_minmax(0,1fr)]">
         <form onSubmit={submit} className="rounded-2xl border bg-card p-4 space-y-3">

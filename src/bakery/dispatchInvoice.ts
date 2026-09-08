@@ -15,7 +15,7 @@
 // printSnbCounterBill (SNB) and the VRSNB FOODS LLP block from
 // printVrsnbReceiptBill (VRSNB / Hosur), so every invoice in the app carries
 // the same real company details rather than inventing new ones.
-import { supabase } from '@/lib/supabase';
+import { supabase, fetchAllRows } from '@/lib/supabase';
 import { printViaIframe } from '@/lib/printViaIframe';
 import type { Branch } from './types';
 import { clampQtyForUnit } from './bakeryStore';
@@ -193,6 +193,15 @@ export interface DispatchInvoiceRecord {
   // bill edit.
   originalItems: DispatchInvoiceItem[] | null;
   returnLog: { at: string; by: string; reason: string | null; items: { itemName: string; unit: string; qty: number }[] }[];
+  // FEATURE (2026-09-08): "Advance Sales — the invoice should include total
+  // amount, advance amount and payable amount, plus a delivery date" — these
+  // are only ever set by advanceSaleToInvoiceRecord() below; every other
+  // invoice source (dispatch, walk-in bill, return) leaves them null/undefined
+  // and renderDispatchInvoiceHtml's summary/header stay exactly as before.
+  advanceAmount?: number | null;
+  balanceAmount?: number | null;
+  deliveryDate?: string | null;
+  deliveryTime?: string | null;
 }
 
 export async function saveDispatchInvoice(input: {
@@ -560,11 +569,12 @@ export function renderDispatchInvoiceHtml(record: DispatchInvoiceRecord, mode: '
     <div class="c" style="font-weight:900;font-size:${mode === 'thermal' ? '16px' : '20px'}">${esc(business.name)}</div>
     <div class="c small">${business.lines.map(esc).join('<br/>')}</div>
     <div class="c small">GSTIN : ${esc(business.gstin)}${business.fssai ? ` &nbsp; FSSAI : ${esc(business.fssai)}` : ''}</div>
-    <div class="c doc" style="font-weight:900;margin:6px 0">${record.status === 'cancelled' ? 'CANCELLED INVOICE' : `${record.isGstInvoice ? 'TAX INVOICE' : 'INVOICE'}${record.status === 'unpaid' ? ' — SAMPLE (AWAITING PAYMENT)' : ''}`}</div>
+    <div class="c doc" style="font-weight:900;margin:6px 0">${record.status === 'cancelled' ? 'CANCELLED INVOICE' : record.advanceAmount != null ? (record.status === 'unpaid' ? 'ADVANCE BILL — BALANCE DUE' : 'BILL (ADVANCE SETTLED)') : `${record.isGstInvoice ? 'TAX INVOICE' : 'INVOICE'}${record.status === 'unpaid' ? ' — SAMPLE (AWAITING PAYMENT)' : ''}`}</div>
     ${record.status === 'cancelled' ? `<div class="stamp-cancel">CANCELLED${record.cancelledAt ? ` — ${esc(new Date(record.cancelledAt).toLocaleString('en-IN'))}` : ''}${record.cancelledBy ? ` by ${esc(record.cancelledBy)}` : ''}</div>` : ''}
     <div class="row"><span>Bill No : ${esc(record.invoiceNo)}</span><span>Date : ${esc(dateStr)}</span></div>
     <div class="row"><span>${customerLine}</span><span>Time : ${esc(timeStr)}</span></div>
     ${addressLine}
+    ${record.deliveryDate ? `<div class="row"><span>Delivery : ${esc(new Date(record.deliveryDate).toLocaleDateString('en-GB'))}${record.deliveryTime ? ` ${esc(record.deliveryTime)}` : ''}</span><span></span></div>` : ''}
     <div class="dash"></div>
     <table>
       <thead><tr><th>Sn</th><th>Item Name</th>${isGst ? '<th>HSN</th>' : ''}${isReturned ? '<th class="num">Sent</th><th class="num">Returned</th><th class="num">Net</th>' : '<th class="num">Qty</th>'}<th class="num">Rate</th><th class="num">Amount</th></tr></thead>
@@ -580,6 +590,9 @@ export function renderDispatchInvoiceHtml(record: DispatchInvoiceRecord, mode: '
       <div class="row"><span>Round-Off :</span><span>${record.roundOff >= 0 ? '+' : ''}${Math.round(record.roundOff)}</span></div>
       ${isGst ? `<div class="row"><span>Includes GST :</span><span>Rs ${Math.round(totalTax)}</span></div>` : ''}
       <div class="row net"><span>Net Bill Amount :</span><span>Rs ${Math.round(record.total)}</span></div>
+      ${record.advanceAmount != null ? `
+      <div class="row"><span>Advance Paid :</span><span>- Rs ${Math.round(record.advanceAmount)}</span></div>
+      <div class="row" style="font-weight:900;${record.status === 'unpaid' ? 'color:#b45309' : 'color:#047857'}"><span>${record.status === 'unpaid' ? 'Balance Due' : 'Balance Settled'} :</span><span>Rs ${Math.round(record.balanceAmount ?? Math.max(0, record.total - record.advanceAmount))}</span></div>` : ''}
     </div>
     <div class="paybox"><div class="paytitle">Dispatched By</div><div class="pay"><span>${esc(record.dispatchedBy)}</span><span>${esc(dateStr)} ${esc(timeStr)}</span></div></div>
     <div class="dash"></div>
@@ -707,20 +720,25 @@ export async function listDispatchInvoices(opts: {
   toDate: string;   // exclusive, ISO date/timestamp — pass the START of the day AFTER the range end
   scope?: DispatchInvoiceScope;
 }): Promise<DispatchInvoiceRecord[]> {
-  let query = supabase.from('dispatch_invoices').select('*')
-    .gte('created_at', opts.fromDate)
-    .lt('created_at', opts.toDate)
-    .order('created_at', { ascending: false })
-    // EGRESS FIX (2026-08-15): this had no cap at all — fine while the
-    // table is young, but the exact same "unbounded date range on a
-    // JSONB-heavy table" shape that caused the SNB reports egress problem.
-    // 5000 is comfortably above a full month's dispatch batches today with
-    // room to grow.
-    .limit(5000);
-  if (opts.scope) query = query.eq('scope', opts.scope);
-  const { data, error } = await query;
-  if (error) throw error;
-  return ((data ?? []) as Record<string, unknown>[]).map(recordFromRow);
+  // BUG FIX (2026-09-08): a plain `.limit(5000)` here is silently capped at
+  // 1000 rows by PostgREST's project-wide response cap — see fetchAllRows
+  // in src/lib/supabase.ts. This feeds Admin Dispatch Details' aggregate
+  // totals, so a range with >1000 dispatch invoices would silently
+  // under-report exactly like the Cafe sales bug found this session.
+  const { data, error } = await fetchAllRows<Record<string, unknown>>(
+    'dispatch_invoices',
+    (q) => {
+      let query = q.select('*')
+        .gte('created_at', opts.fromDate)
+        .lt('created_at', opts.toDate)
+        .order('created_at', { ascending: false });
+      if (opts.scope) query = query.eq('scope', opts.scope);
+      return query;
+    },
+    { maxRows: 20000 },
+  );
+  if (error) throw new Error(error);
+  return (data ?? []).map(recordFromRow);
 }
 
 // FEATURE (2026-08-10): "for the dispatched items bill we need the edit
@@ -1434,4 +1452,316 @@ async function sendDispatchInvoiceWhatsapp(
   if (!response.ok || !fnData.ok) {
     throw new Error([fnData.error, ...(fnData.mediaErrors ?? [])].filter(Boolean).join(' | ') || `WhatsApp service returned HTTP ${response.status}.`);
   }
+}
+
+// FEATURE (2026-09-08): Planner Sales tab's new "Advance Sales" sub-tab — bill
+// store/cafe/custom items with a partial advance now, collect the balance and
+// print the final bill later. Lives in its own `advance_sales` table (not
+// bakery_walkin_bills/dispatch_invoices) since it's a genuinely different
+// lifecycle (advance -> paid, with a delivery date and a balance still owed)
+// rather than a one-shot bill. The "ADV/26-27/N continues as BILL/26-27/N"
+// requirement needs no special numbering trick: ONE number (`fySeq`) is
+// minted once via next_advance_sale_number() and never re-minted — the
+// printed prefix is derived purely from `status` (see advanceSaleToInvoiceRecord
+// below), so "settling" an advance never changes its number, only its label.
+export interface AdvanceSaleItem { itemName: string; unit: string; quantity: number; unitPrice: number; lineTotal: number; hsnCode?: string; gstPct?: number }
+
+export interface AdvanceSaleRecord {
+  id: string;
+  fySeq: string;
+  source: 'store' | 'cafe' | 'custom';
+  customerName: string | null;
+  customerPhone: string | null;
+  items: AdvanceSaleItem[];
+  subtotal: number;
+  discountType: 'none' | 'percent' | 'amount';
+  discountValue: number;
+  discountAmount: number;
+  roundOff: number;
+  total: number;
+  advanceAmount: number;
+  balanceAmount: number;
+  advancePaymentMode: string | null;
+  finalPaymentMode: string | null;
+  deliveryDate: string | null;
+  deliveryTime: string | null;
+  status: 'advance' | 'paid' | 'cancelled';
+  isGstInvoice: boolean;
+  gstSupplyType: 'intra' | 'inter';
+  createdBy: string;
+  createdAt: string;
+  paidAt: string | null;
+  paidBy: string | null;
+  cancelledAt: string | null;
+  cancelledBy: string | null;
+  cancelledReason: string | null;
+  notes: string | null;
+}
+
+function mapAdvanceSale(row: Record<string, unknown>): AdvanceSaleRecord {
+  return {
+    id: row.id as string,
+    fySeq: String(row.fy_seq ?? ''),
+    source: (row.source as AdvanceSaleRecord['source']) ?? 'store',
+    customerName: (row.customer_name as string | null) ?? null,
+    customerPhone: (row.customer_phone as string | null) ?? null,
+    items: (row.items as AdvanceSaleItem[] | null) ?? [],
+    subtotal: Number(row.subtotal ?? 0),
+    discountType: (row.discount_type as AdvanceSaleRecord['discountType']) ?? 'none',
+    discountValue: Number(row.discount_value ?? 0),
+    discountAmount: Number(row.discount_amount ?? 0),
+    roundOff: Number(row.round_off ?? 0),
+    total: Number(row.total ?? 0),
+    advanceAmount: Number(row.advance_amount ?? 0),
+    balanceAmount: Number(row.balance_amount ?? 0),
+    advancePaymentMode: (row.advance_payment_mode as string | null) ?? null,
+    finalPaymentMode: (row.final_payment_mode as string | null) ?? null,
+    deliveryDate: (row.delivery_date as string | null) ?? null,
+    deliveryTime: (row.delivery_time as string | null) ?? null,
+    status: (row.status as AdvanceSaleRecord['status']) ?? 'advance',
+    isGstInvoice: Boolean(row.is_gst_invoice),
+    gstSupplyType: (row.gst_supply_type as 'intra' | 'inter' | null) ?? 'intra',
+    createdBy: String(row.created_by ?? ''),
+    createdAt: String(row.created_at ?? ''),
+    paidAt: (row.paid_at as string | null) ?? null,
+    paidBy: (row.paid_by as string | null) ?? null,
+    cancelledAt: (row.cancelled_at as string | null) ?? null,
+    cancelledBy: (row.cancelled_by as string | null) ?? null,
+    cancelledReason: (row.cancelled_reason as string | null) ?? null,
+    notes: (row.notes as string | null) ?? null,
+  };
+}
+
+// Adapts an AdvanceSaleRecord into the shared DispatchInvoiceRecord shape so
+// it renders/prints through the exact same renderDispatchInvoiceHtml template
+// as every other bill in the app (see the advanceAmount/balanceAmount/
+// deliveryDate fields added to that interface above).
+export function advanceSaleToInvoiceRecord(sale: AdvanceSaleRecord): DispatchInvoiceRecord {
+  const invoiceNo = `${sale.status === 'paid' ? 'BILL' : 'ADV'}/${sale.fySeq}`;
+  return {
+    id: sale.id,
+    invoiceNo,
+    scope: 'SNB',
+    hosurShopId: null, hosurShopName: null, hosurShopPhone: null,
+    customerName: sale.customerName || 'Walk-in Customer',
+    customerPhone: sale.customerPhone,
+    customerAddress: null,
+    dispatchedBy: sale.status === 'paid' ? (sale.paidBy || sale.createdBy) : sale.createdBy,
+    items: sale.items.map(i => ({ itemName: i.itemName, unit: i.unit, quantity: i.quantity, unitPrice: i.unitPrice, lineTotal: i.lineTotal, hsnCode: i.hsnCode, gstPct: i.gstPct })),
+    subtotal: sale.subtotal,
+    discountPct: sale.discountType === 'percent' ? sale.discountValue : 0,
+    discountAmount: sale.discountAmount,
+    roundOff: sale.roundOff,
+    total: sale.total,
+    status: sale.status === 'cancelled' ? 'cancelled' : sale.status === 'paid' ? 'paid' : 'unpaid',
+    paidAt: sale.paidAt,
+    notes: sale.notes,
+    createdAt: sale.createdAt,
+    dispatchEntryIds: [],
+    isGstInvoice: sale.isGstInvoice,
+    gstSupplyType: sale.gstSupplyType,
+    cancelledBy: sale.cancelledBy,
+    cancelledAt: sale.cancelledAt,
+    cancelledReason: sale.cancelledReason,
+    originalItems: null,
+    returnLog: [],
+    advanceAmount: sale.advanceAmount,
+    balanceAmount: sale.balanceAmount,
+    deliveryDate: sale.deliveryDate,
+    deliveryTime: sale.deliveryTime,
+  };
+}
+
+export async function saveAdvanceSale(input: {
+  source: 'store' | 'cafe' | 'custom';
+  customerName?: string | null;
+  customerPhone?: string | null;
+  items: AdvanceSaleItem[];
+  discountType?: 'none' | 'percent' | 'amount';
+  discountValue?: number;
+  advanceAmount: number;
+  advancePaymentMode: 'cash' | 'upi' | 'card';
+  deliveryDate: string;
+  deliveryTime?: string | null;
+  createdBy: string;
+  isGstInvoice?: boolean;
+  gstSupplyType?: 'intra' | 'inter';
+  notes?: string | null;
+}): Promise<{ ok: true; record: AdvanceSaleRecord } | { error: string }> {
+  const cleanedItems = input.items.filter(i => i.itemName.trim() && i.quantity > 0 && i.unitPrice >= 0);
+  if (cleanedItems.length === 0) return { error: 'Add at least one item with a name, quantity above 0 and a valid price.' };
+  if (!input.deliveryDate) return { error: 'Delivery date is required.' };
+  if (!(input.advanceAmount > 0)) return { error: 'Enter an advance amount greater than 0.' };
+
+  const subtotal = Math.round(cleanedItems.reduce((s, i) => s + i.lineTotal, 0) * 100) / 100;
+  const discountType = input.discountType ?? 'none';
+  const safeDiscountValue = Math.max(0, input.discountValue ?? 0);
+  const discountAmount = discountType === 'percent'
+    ? Math.round(subtotal * (Math.min(100, safeDiscountValue) / 100) * 100) / 100
+    : discountType === 'amount'
+    ? Math.min(subtotal, safeDiscountValue)
+    : 0;
+  const preRound = subtotal - discountAmount;
+  const total = Math.max(0, Math.round(preRound));
+  const roundOff = Math.round((total - preRound) * 100) / 100;
+
+  if (input.advanceAmount > total) return { error: `Advance amount can't exceed the total bill amount (Rs ${total}).` };
+  const balanceAmount = Math.round((total - input.advanceAmount) * 100) / 100;
+
+  const { data: fySeq, error: seqErr } = await supabase.rpc('next_advance_sale_number');
+  if (seqErr || !fySeq) return { error: seqErr?.message || 'Failed to generate the advance bill number.' };
+
+  const { data, error } = await supabase.from('advance_sales').insert({
+    fy_seq: fySeq,
+    source: input.source,
+    customer_name: input.customerName?.trim() || null,
+    customer_phone: input.customerPhone?.trim() || null,
+    items: cleanedItems,
+    subtotal, discount_type: discountType, discount_value: safeDiscountValue, discount_amount: discountAmount,
+    round_off: roundOff, total,
+    advance_amount: input.advanceAmount, balance_amount: balanceAmount,
+    advance_payment_mode: input.advancePaymentMode,
+    delivery_date: input.deliveryDate, delivery_time: input.deliveryTime || null,
+    status: 'advance',
+    is_gst_invoice: input.isGstInvoice ?? false, gst_supply_type: input.gstSupplyType ?? 'intra',
+    created_by: input.createdBy,
+    notes: input.notes || null,
+  }).select('*').single();
+  if (error || !data) return { error: error?.message || 'Failed to save the advance sale.' };
+
+  const record = mapAdvanceSale(data as Record<string, unknown>);
+  const { useAuthStore } = await import('@/stores/authStore');
+  const user = useAuthStore.getState().currentUser;
+  if (user) {
+    const { useActivityLogStore } = await import('./activityLogStore');
+    void useActivityLogStore.getState().log({
+      staffId: user.id, staffName: user.displayName, role: user.role,
+      action: 'Created Advance Sale',
+      detail: `${invoiceNoFor(record)} — ${record.customerName || 'Walk-in'} — Total Rs. ${Math.round(total)}, Advance Rs. ${Math.round(input.advanceAmount)}, Balance Rs. ${Math.round(balanceAmount)}, Delivery ${input.deliveryDate}`,
+      branch: 'SNB',
+    });
+  }
+  return { ok: true, record };
+}
+
+function invoiceNoFor(sale: AdvanceSaleRecord): string {
+  return `${sale.status === 'paid' ? 'BILL' : 'ADV'}/${sale.fySeq}`;
+}
+
+export async function settleAdvanceSale(params: {
+  id: string;
+  finalPaymentMode: 'cash' | 'upi' | 'card';
+  settledBy: string;
+}): Promise<{ ok: true; record: AdvanceSaleRecord } | { error: string }> {
+  const { data: row, error: fetchErr } = await supabase.from('advance_sales').select('*').eq('id', params.id).single();
+  if (fetchErr || !row) return { error: fetchErr?.message || 'Advance sale not found.' };
+  const original = mapAdvanceSale(row as Record<string, unknown>);
+  if (original.status === 'cancelled') return { error: 'This advance sale has been cancelled.' };
+  if (original.status === 'paid') return { error: 'This advance sale is already fully paid.' };
+
+  const paidAt = new Date().toISOString();
+  // Compare-and-swap: only the request that actually flips 'advance' -> 'paid'
+  // proceeds to debit stock below — same race-safety pattern already used by
+  // cancelDispatchInvoice/cancelBill this session.
+  const { data: claimed, error: claimErr } = await supabase.from('advance_sales')
+    .update({ status: 'paid', paid_at: paidAt, paid_by: params.settledBy, final_payment_mode: params.finalPaymentMode })
+    .eq('id', params.id).eq('status', 'advance').select('id');
+  if (claimErr) return { error: claimErr.message || 'Failed to settle the advance sale.' };
+  if (!claimed || claimed.length === 0) return { error: 'This advance sale was already settled or cancelled by someone else — refresh and try again.' };
+
+  // Stock debits only now, at final settlement (per owner's explicit
+  // decision) — Cafe items are a separate POS domain with no Closing Stock
+  // pool entry, so only 'store'/'custom' sourced lines get a movement.
+  if (original.source !== 'cafe') {
+    try {
+      const { recordLeftoverMovement, kolkataToday } = await import('./PlannerLeftoverTab');
+      for (const item of original.items) {
+        if (item.unit === 'charge') continue;
+        const result = await recordLeftoverMovement({
+          itemName: item.itemName,
+          unit: item.unit === 'pcs' ? 'pcs' : 'kg',
+          delta: -Math.abs(item.quantity),
+          businessDate: kolkataToday(),
+          reason: 'dispatch',
+          recordedBy: params.settledBy,
+          notes: `Advance Sale settled — ${invoiceNoFor({ ...original, status: 'paid' })}${original.customerName ? ` — ${original.customerName}` : ''}`,
+        });
+        if ('error' in result) console.error('[settleAdvanceSale] Stock debit failed for', item.itemName, result.error);
+      }
+    } catch (err) {
+      console.error('[settleAdvanceSale] Stock debit threw:', err);
+    }
+  }
+
+  const { data: freshRow } = await supabase.from('advance_sales').select('*').eq('id', params.id).single();
+  const record = freshRow ? mapAdvanceSale(freshRow as Record<string, unknown>) : { ...original, status: 'paid' as const, paidAt, paidBy: params.settledBy, finalPaymentMode: params.finalPaymentMode };
+
+  const { useAuthStore } = await import('@/stores/authStore');
+  const user = useAuthStore.getState().currentUser;
+  if (user) {
+    const { useActivityLogStore } = await import('./activityLogStore');
+    void useActivityLogStore.getState().log({
+      staffId: user.id, staffName: user.displayName, role: user.role,
+      action: 'Settled Advance Sale',
+      detail: `${invoiceNoFor(record)} (was ${invoiceNoFor({ ...original, status: 'advance' })}) — ${record.customerName || 'Walk-in'} — Balance Rs. ${Math.round(original.balanceAmount)} paid via ${params.finalPaymentMode.toUpperCase()}`,
+      branch: 'SNB',
+    });
+  }
+  return { ok: true, record };
+}
+
+export async function cancelAdvanceSale(params: {
+  id: string;
+  reason?: string;
+  cancelledBy: string;
+}): Promise<{ ok: true; record: AdvanceSaleRecord } | { error: string }> {
+  const cancelledAt = new Date().toISOString();
+  // BUG FIX (audit pass): .single() throws (PGRST116) instead of returning
+  // data:null when the compare-and-swap matches zero rows — the exact "lost
+  // the race / already settled" case this needs to detect gracefully. Same
+  // fix shape as cancelDispatchInvoice/cancelBill: select as an array and
+  // check its length instead.
+  const { data: claimed, error: claimErr } = await supabase.from('advance_sales')
+    .update({ status: 'cancelled', cancelled_at: cancelledAt, cancelled_by: params.cancelledBy, cancelled_reason: params.reason ?? null })
+    .eq('id', params.id).neq('status', 'cancelled').neq('status', 'paid').select('*');
+  if (claimErr) return { error: claimErr.message || 'Failed to cancel the advance sale.' };
+  if (!claimed || claimed.length === 0) return { error: "Can't cancel — this advance sale is already fully paid or was already cancelled." };
+
+  const record = mapAdvanceSale(claimed[0] as Record<string, unknown>);
+  const { useAuthStore } = await import('@/stores/authStore');
+  const user = useAuthStore.getState().currentUser;
+  if (user) {
+    const { useActivityLogStore } = await import('./activityLogStore');
+    void useActivityLogStore.getState().log({
+      staffId: user.id, staffName: user.displayName, role: user.role,
+      action: 'Cancelled Advance Sale',
+      detail: `${invoiceNoFor(record)} — ${record.customerName || 'Walk-in'}${params.reason ? ` — ${params.reason}` : ''}`,
+      branch: 'SNB',
+    });
+  }
+  return { ok: true, record };
+}
+
+export async function listAdvanceSales(opts: {
+  fromDate: string;
+  toDate: string;
+  status?: 'advance' | 'paid' | 'cancelled';
+}): Promise<AdvanceSaleRecord[]> {
+  // BUG FIX (2026-09-08): plain `.limit()` calls are silently capped at
+  // 1000 rows by PostgREST's project-wide response cap — see fetchAllRows
+  // in src/lib/supabase.ts. Paged from the start here rather than waiting
+  // to discover it the same way the Cafe sales bug was found.
+  const { data, error } = await fetchAllRows<Record<string, unknown>>(
+    'advance_sales',
+    (q) => {
+      let query = q.select('*')
+        .gte('created_at', opts.fromDate).lt('created_at', opts.toDate)
+        .order('created_at', { ascending: false });
+      if (opts.status) query = query.eq('status', opts.status);
+      return query;
+    },
+    { maxRows: 20000 },
+  );
+  if (error) throw new Error(error);
+  return (data ?? []).map(mapAdvanceSale);
 }

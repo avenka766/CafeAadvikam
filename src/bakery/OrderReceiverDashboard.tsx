@@ -60,8 +60,10 @@ import {
   fetchStockCountGroupAssignment,
   subscribeStockCountClaims,
   stockCountBusinessDate,
+  fetchStockAuditGroups,
   type StockGroup,
   type StockCountGroupClaim,
+  type StockAuditGroup,
 } from "./stockCountClaims";
 import {
   LiveOrderStatusPanel,
@@ -2215,6 +2217,12 @@ function SnbSplitStockCountPanel({
   const { submitStockCountReport } = useBranchOpsStore();
   const businessDate = useMemo(() => stockCountBusinessDate(), []);
   const [groupMap, setGroupMap] = useState<Map<string, StockGroup> | null>(null);
+  // AUDIT CONTROL (2026-09-08): "Stock 1"/"Stock 2" is no longer a fixed
+  // pair — the admin can add any number of named audit groups (Audit
+  // Control tab). Fetched once per mount; a live realtime refresh isn't
+  // worth it here since groups rarely change mid-count and claims already
+  // refresh live below.
+  const [auditGroups, setAuditGroups] = useState<StockAuditGroup[] | null>(null);
   const [claims, setClaims] = useState<StockCountGroupClaim[]>([]);
   const [claimsLoading, setClaimsLoading] = useState(true);
   const [claimBusy, setClaimBusy] = useState<StockGroup | null>(null);
@@ -2246,6 +2254,9 @@ function SnbSplitStockCountPanel({
     fetchStockCountGroupAssignment(branch)
       .then(setGroupMap)
       .catch((err) => setClaimError(err instanceof Error ? err.message : "Could not load item groups."));
+    fetchStockAuditGroups(branch)
+      .then(setAuditGroups)
+      .catch((err) => setClaimError(err instanceof Error ? err.message : "Could not load the stock-audit group list."));
     const unsubscribe = subscribeStockCountClaims();
     const onChange = () => void loadClaims();
     window.addEventListener("stock-count-claims-changed", onChange);
@@ -2256,7 +2267,6 @@ function SnbSplitStockCountPanel({
   }, [loadClaims]);
 
   const myClaim = claims.find((c) => c.claimed_by === userName) ?? null;
-  const otherClaim = claims.find((c) => c.claimed_by !== userName) ?? null;
 
   const rows = useMemo(() => {
     if (!myClaim || !groupMap) return [];
@@ -2296,7 +2306,9 @@ function SnbSplitStockCountPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [myClaim?.id, myClaim?.stock_group, businessDate]);
 
-  const groupLabel = (g: StockGroup) => (g === "stock_1" ? "Stock 1" : "Stock 2");
+  // Falls back to the raw slug if the group list hasn't loaded yet or the
+  // slug is somehow stale — never blocks rendering on this lookup.
+  const groupLabel = (g: StockGroup) => auditGroups?.find((ag) => ag.slug === g)?.name ?? g;
 
   const handleClaim = async (group: StockGroup) => {
     setClaimBusy(group);
@@ -2307,7 +2319,7 @@ function SnbSplitStockCountPanel({
         setClaimError(
           result.reason === "done"
             ? `${result.claimedBy} already finished ${groupLabel(group)}.`
-            : `${result.claimedBy} has already taken ${groupLabel(group)} — please take ${groupLabel(group === "stock_1" ? "stock_2" : "stock_1")} instead.`,
+            : `${result.claimedBy} has already taken ${groupLabel(group)} — please pick a different open group instead.`,
         );
       }
       await loadClaims();
@@ -2352,22 +2364,28 @@ function SnbSplitStockCountPanel({
     }
   };
 
-  const bothDone = myClaim?.status === "done" && otherClaim?.status === "done";
+  // AUDIT CONTROL: "both done" -> "every currently active group is done" —
+  // active groups is whatever fetchStockAuditGroups returned (already
+  // active-only by default), so a group the admin deactivated mid-cycle
+  // doesn't block submission forever.
+  const allDone = Boolean(myClaim) && myClaim?.status === "done" && (auditGroups ?? []).every((g) => {
+    const claim = claims.find((c) => c.stock_group === g.slug);
+    return claim?.status === "done";
+  });
 
   const sendToAdmin = async () => {
-    if (!myClaim || !otherClaim || !bothDone) return;
+    if (!myClaim || !allDone) return;
     setSending(true);
     setNotice("");
     try {
-      const otherGroup: StockGroup = myClaim.stock_group === "stock_1" ? "stock_2" : "stock_1";
-      const [mine, theirs] = await Promise.all([
-        fetchStockCountDraftLines(branch, businessDate, myClaim.stock_group),
-        fetchStockCountDraftLines(branch, businessDate, otherGroup),
-      ]);
-      const combined = [...mine, ...theirs];
+      const allGroupSlugs = (auditGroups ?? []).map((g) => g.slug);
+      const combined = (await Promise.all(
+        allGroupSlugs.map((slug) => fetchStockCountDraftLines(branch, businessDate, slug)),
+      )).flat();
+      const allClaimants = Array.from(new Set(claims.filter((c) => c.status === "done").map((c) => c.claimed_by)));
       const report = await submitStockCountReport({
         branch,
-        reportedBy: `${myClaim.claimed_by} & ${otherClaim.claimed_by}`,
+        reportedBy: allClaimants.join(" & ") || myClaim.claimed_by,
         lines: combined.map((line) => {
           const physicalQty = Math.max(0, Number(line.physical_qty ?? 0));
           const systemQty = Number(line.system_qty);
@@ -2394,35 +2412,36 @@ function SnbSplitStockCountPanel({
     }
   };
 
-  if (claimsLoading || !groupMap) {
+  if (claimsLoading || !groupMap || !auditGroups) {
     return <div className="flex justify-center py-16"><Loader2 className="size-6 animate-spin text-muted-foreground" /></div>;
   }
 
   if (!myClaim) {
-    const stock1 = claims.find((c) => c.stock_group === "stock_1") ?? null;
-    const stock2 = claims.find((c) => c.stock_group === "stock_2") ?? null;
-    const renderOption = (group: StockGroup, claim: StockCountGroupClaim | null) => {
+    // AUDIT CONTROL: renders whatever named groups the admin has set up
+    // (Audit Control tab) instead of a fixed "Stock 1"/"Stock 2" pair.
+    const renderOption = (group: StockAuditGroup) => {
+      const claim = claims.find((c) => c.stock_group === group.slug) ?? null;
       const taken = Boolean(claim);
       return (
         <button
-          key={group}
+          key={group.slug}
           type="button"
           disabled={taken || claimBusy !== null}
-          onClick={() => void handleClaim(group)}
+          onClick={() => void handleClaim(group.slug)}
           className={cn(
             "flex flex-col items-start gap-2 rounded-3xl border p-6 text-left transition",
             taken ? "border-border bg-slate-50 opacity-70 cursor-not-allowed" : "border-amber-200 bg-white hover:border-amber-400 hover:bg-amber-50",
           )}
         >
-          <span className="font-display text-2xl font-black text-foreground">{groupLabel(group)}</span>
+          <span className="font-display text-2xl font-black text-foreground">{group.name}</span>
           {claim ? (
             <span className={cn("rounded-full px-3 py-1 text-xs font-black", claim.status === "done" ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-800")}>
               {claim.status === "done" ? `Done by ${claim.claimed_by}` : `${claim.claimed_by} is counting`}
             </span>
           ) : (
-            <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-black text-emerald-700">Open — tap to take this stock</span>
+            <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-black text-emerald-700">Open — tap to take this group</span>
           )}
-          {claimBusy === group && <Loader2 className="size-4 animate-spin text-amber-600" />}
+          {claimBusy === group.slug && <Loader2 className="size-4 animate-spin text-amber-600" />}
         </button>
       );
     };
@@ -2431,18 +2450,21 @@ function SnbSplitStockCountPanel({
         <div className="rounded-3xl border border-border bg-white p-4 shadow-soft">
           <p className="text-[11px] font-body font-black uppercase tracking-[0.18em] text-muted-foreground">End-of-day physical count</p>
           <h2 className="font-display text-2xl font-black text-foreground">Which stock are you counting?</h2>
-          <p className="text-sm font-body font-bold text-muted-foreground">Two people count today's stock together — pick the one that hasn't been taken yet.</p>
+          <p className="text-sm font-body font-bold text-muted-foreground">Everyone counts today's stock together — pick the group that hasn't been taken yet.</p>
         </div>
         {claimError && <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-2 text-sm font-body font-black text-red-700">{claimError}</div>}
-        <div className="grid gap-3 sm:grid-cols-2">
-          {renderOption("stock_1", stock1)}
-          {renderOption("stock_2", stock2)}
-        </div>
+        {auditGroups.length === 0 ? (
+          <div className="rounded-2xl border border-dashed border-border bg-slate-50 px-4 py-6 text-center text-sm font-body font-bold text-muted-foreground">
+            No stock-audit groups have been set up yet — ask SNB Admin to add one in Stock Audit → Audit Control.
+          </div>
+        ) : (
+          <div className="grid gap-3 sm:grid-cols-2">
+            {auditGroups.map(renderOption)}
+          </div>
+        )}
       </div>
     );
   }
-
-  const otherGroupLabel = groupLabel(myClaim.stock_group === "stock_1" ? "stock_2" : "stock_1");
 
   return (
     <div className="space-y-4">
@@ -2464,20 +2486,29 @@ function SnbSplitStockCountPanel({
             <button
               type="button"
               onClick={() => void sendToAdmin()}
-              disabled={!bothDone || sending}
-              title={!bothDone ? `Waiting for ${otherGroupLabel} to finish` : undefined}
+              disabled={!allDone || sending}
+              title={!allDone ? "Waiting for every other group to finish" : undefined}
               className="rounded-2xl bg-orange-500 px-5 py-3 text-sm font-body font-black text-white shadow-lg shadow-orange-200 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {sending ? "Sending..." : "Send to SNB Admin"}
             </button>
           </div>
         </div>
-        <div className="mt-3 rounded-2xl bg-slate-50 px-4 py-2 text-sm font-body font-bold text-slate-600">
-          {otherClaim
-            ? otherClaim.status === "done"
-              ? `${otherGroupLabel}: Done by ${otherClaim.claimed_by} ✓`
-              : `${otherGroupLabel}: ${otherClaim.claimed_by} is still counting`
-            : `${otherGroupLabel}: not started yet`}
+        {/* AUDIT CONTROL: was a single "other stock" line — now one line per
+            other active group, since there can be more than one. */}
+        <div className="mt-3 space-y-1 rounded-2xl bg-slate-50 px-4 py-2 text-sm font-body font-bold text-slate-600">
+          {auditGroups.filter((g) => g.slug !== myClaim.stock_group).map((g) => {
+            const claim = claims.find((c) => c.stock_group === g.slug) ?? null;
+            return (
+              <p key={g.slug}>
+                {claim
+                  ? claim.status === "done"
+                    ? `${g.name}: Done by ${claim.claimed_by} ✓`
+                    : `${g.name}: ${claim.claimed_by} is still counting`
+                  : `${g.name}: not started yet`}
+              </p>
+            );
+          })}
         </div>
         {notice && (
           <div className={cn("mt-3 rounded-2xl px-4 py-2 text-sm font-body font-black", noticeTone === "success" ? "bg-emerald-50 text-emerald-700" : "border border-red-200 bg-red-50 text-red-700")}>

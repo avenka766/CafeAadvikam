@@ -9,7 +9,14 @@
 import { supabase } from '@/lib/supabase';
 import { makeSingletonSubscriber } from '@/lib/realtimeChannel';
 
-export type StockGroup = 'stock_1' | 'stock_2';
+// AUDIT CONTROL (2026-09-08): "the Admin should be able to add a new stock
+// audit person" — was a hardcoded 2-value union ('stock_1'|'stock_2'); the
+// backing tables' CHECK constraints have been replaced with FKs into a new
+// `stock_audit_groups` table (see AdminSNBDashboard.tsx's Audit Control
+// sub-tab), so any admin-created group slug is now valid — widened to plain
+// `string`. Every RPC below already just passes this straight through
+// unchanged, so no other signature here needed to change.
+export type StockGroup = string;
 
 export interface StockCountGroupClaim {
   id: string;
@@ -197,6 +204,45 @@ export async function fetchStockCountDraftLines(
     .eq('stock_group', stockGroup);
   if (error) throw new Error(error.message || 'Could not load saved counts.');
   return (data ?? []) as StockCountDraftLine[];
+}
+
+// AUDIT CONTROL (2026-09-08): admin-managed roster of stock-audit groups
+// (what used to be the hardcoded "Stock 1"/"Stock 2") plus per-item
+// assignment. See AdminSNBDashboard.tsx's "Audit Control" sub-tab.
+export interface StockAuditGroup {
+  id: string;
+  branch: string;
+  slug: string;
+  name: string;
+  active: boolean;
+  created_by: string | null;
+  created_at: string;
+}
+
+export async function fetchStockAuditGroups(branch: string, opts?: { activeOnly?: boolean }): Promise<StockAuditGroup[]> {
+  let query = supabase.from('stock_audit_groups').select('id, branch, slug, name, active, created_by, created_at').eq('branch', branch).order('created_at', { ascending: true });
+  if (opts?.activeOnly !== false) query = query.eq('active', true);
+  const { data, error } = await query;
+  if (error) throw new Error(error.message || 'Could not load audit groups.');
+  return (data ?? []) as StockAuditGroup[];
+}
+
+export async function createStockAuditGroup(branch: string, name: string, createdBy: string): Promise<StockAuditGroup> {
+  const { data, error } = await supabase.rpc('create_stock_audit_group', { p_branch: branch, p_name: name, p_created_by: createdBy });
+  if (error) throw new Error(error.message || 'Could not add this audit person.');
+  return data as StockAuditGroup;
+}
+
+export async function deactivateStockAuditGroup(branch: string, slug: string, updatedBy: string): Promise<void> {
+  const { error } = await supabase.rpc('deactivate_stock_audit_group', { p_branch: branch, p_slug: slug, p_updated_by: updatedBy });
+  if (error) throw new Error(error.message || 'Could not remove this audit person.');
+}
+
+// Bulk-assigns a set of items (by barcode) to a stock-audit group — pass
+// `stockGroup: null` to unassign (removes them from every group's list).
+export async function assignItemsToStockAuditGroup(branch: string, barcodes: number[], stockGroup: string | null, updatedBy: string): Promise<void> {
+  const { error } = await supabase.rpc('set_branch_items_stock_count_group', { p_branch: branch, p_barcodes: barcodes, p_stock_group: stockGroup, p_updated_by: updatedBy });
+  if (error) throw new Error(error.message || 'Could not assign these items.');
 }
 
 // Realtime — any change to today's claims for this branch triggers the

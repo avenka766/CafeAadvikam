@@ -25,6 +25,8 @@ import { useRecipeStore } from './recipeStore';
 import { useBakeryItemsStore } from './bakeryItemsStore';
 import type { BakeryOrder } from './types';
 import { cn } from '@/lib/utils';
+import { isNativeApp } from '@/lib/platform';
+import NativeNav from '@/components/layout/NativeNav';
 import {
   useStoreStockStore, getAllRecipeMaterials, normaliseName, convertToStockUnit,
   type StockUnit, type StockItem, type StockCategory,
@@ -3049,7 +3051,7 @@ function StoreDailyClosureTab() {
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
 export default function StoreDashboard() {
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const recipes = useRecipeStore((state) => state.recipes);
   const { loadRecipes, subscribe: subscribeRecipes } = useRecipeStore();
   const { orders } = useBakeryStore();
@@ -3081,6 +3083,20 @@ export default function StoreDashboard() {
 
   const requestedTab = searchParams.get('tab') as StoreDashboardTab | null;
   const tab: StoreDashboardTab = requestedTab && STORE_TABS.includes(requestedTab) ? requestedTab : 'orders';
+  // FEATURE (2026-09-08): "Store APK" — this page previously had NO way to
+  // switch tabs from within itself at all (only the getter half of
+  // useSearchParams was even destructured); every tab change came from
+  // WorkspaceChrome's outer sidebar building the `?tab=` URL. That sidebar
+  // (and Header/BottomNav) is skipped entirely on every native build, so a
+  // native Store app would load straight to Orders with no way to reach any
+  // other tab. goToTab is the in-page equivalent of clicking that sidebar
+  // link; wired to the native hamburger drawer below.
+  const goToTab = (next: StoreDashboardTab) => {
+    const params = new URLSearchParams(searchParams);
+    params.set('tab', next);
+    setSearchParams(params, { replace: true });
+  };
+  const native = isNativeApp();
   // Kept in sync with OrdersTab/StoreHistoryTab's own filters (see
   // needsProductionRelease above) so the header counters and tab badges
   // never disagree with what each tab actually shows. OrdersTab no longer
@@ -3119,7 +3135,16 @@ export default function StoreDashboard() {
   const ActiveIcon = activeTab.icon;
 
   return (
-    <div className="dashboard-screen min-h-[100dvh] bg-transparent pb-24">
+    <div className={cn('dashboard-screen min-h-[100dvh] bg-transparent pb-24', native && 'owner-native-shell')}>
+      {native && (
+        <NativeNav
+          title="Store"
+          subtitle={activeTab.label}
+          items={tabs.map(t => ({ id: t.id, label: t.label, icon: <t.icon className="size-4" />, hint: t.description, badge: t.badge ? Number(t.badge) : undefined }))}
+          activeId={tab}
+          onSelect={(id) => goToTab(id as StoreDashboardTab)}
+        />
+      )}
       <div className="mx-auto w-full max-w-7xl px-3 sm:px-4 lg:px-6 py-4">
         <main className="min-w-0 space-y-4">
             <div className="rounded-3xl border border-border bg-card/90 shadow-soft px-4 py-3 sm:px-5 sm:py-4">

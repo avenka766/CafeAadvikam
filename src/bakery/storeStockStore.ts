@@ -4,7 +4,7 @@
 // Unit is fixed per item (KG, Ltr, Pcs, Nos, Bunch in the UI).
 
 import { create } from 'zustand';
-import { supabase } from '@/lib/supabase';
+import { supabase, fetchAllRows } from '@/lib/supabase';
 import { makeSingletonSubscriber } from '@/lib/realtimeChannel';
 import { useRecipeStore } from './recipeStore';
 
@@ -163,22 +163,32 @@ export const useStoreStockStore = create<StoreStockState>()((set, get) => ({
     if (get().loading) return;
     set({ loading: true, error: null });
     try {
-      const { data, error } = await supabase
-        .from('store_raw_stock')
-        .select('id, name, unit, quantity, min_threshold, archived_at, suppliers, item_category')
-        .order('name', { ascending: true })
-        // AUDIT FIX (2026-09-03): no explicit limit — PostgREST's default
-        // row cap (1000) would silently truncate this list with no error
-        // once the table crosses that size. Already at 835 live rows after
-        // the raw/packing split added ~140 items, so this was a real cliff
-        // approaching unnoticed, not a theoretical one. An explicit,
-        // generous cap makes the ceiling visible instead of a silent drop.
-        .limit(5000);
-      if (error) {
+      // BUG FIX (2026-09-08): the 2026-09-03 "AUDIT FIX" below raised this
+      // to `.limit(5000)` to get ahead of the table's growth, but that
+      // doesn't actually work — PostgREST's project-wide response cap
+      // silently returns at most 1000 rows no matter what `.limit()` the
+      // client asks for (confirmed live elsewhere this session: a
+      // `.limit(20000)` query came back with exactly 1000 rows). This table
+      // was already at 829 rows and climbing, so raising the cap was about
+      // to start silently hiding real inventory items with no error. Paged
+      // properly now so the full catalogue always loads.
+      // AUDIT FIX (2026-09-03): no explicit limit — PostgREST's default
+      // row cap (1000) would silently truncate this list with no error
+      // once the table crosses that size. Already at 835 live rows after
+      // the raw/packing split added ~140 items, so this was a real cliff
+      // approaching unnoticed, not a theoretical one.
+      const { data, error: errMsg } = await fetchAllRows<Record<string, unknown>>(
+        'store_raw_stock',
+        (q) => q
+          .select('id, name, unit, quantity, min_threshold, archived_at, suppliers, item_category')
+          .order('name', { ascending: true }),
+        { maxRows: 20000 },
+      );
+      if (errMsg) {
         // AUDIT FIX (2026-09-03): a failed fetch used to leave `loaded`
         // false and `error` didn't exist — callers had no way to
         // distinguish "still loading" from "failed" from "genuinely empty."
-        set({ error: error.message });
+        set({ error: errMsg });
         return;
       }
       if (data) {
