@@ -3,6 +3,7 @@
 import {
   Fragment,
   isValidElement,
+  useCallback,
   useEffect,
   useMemo,
   useState,
@@ -37,7 +38,14 @@ import {
   releaseStockCountClaim,
   subscribeStockCountClaims,
   stockCountBusinessDate,
+  fetchStockAuditGroups,
+  createStockAuditGroup,
+  deactivateStockAuditGroup,
+  assignItemsToStockAuditGroup,
+  fetchStockCountGroupAssignment,
   type StockCountGroupClaim,
+  type StockAuditGroup,
+  type StockGroup,
 } from "@/bakery/stockCountClaims";
 import type { Branch } from "@/branch/types";
 import {
@@ -1127,6 +1135,18 @@ export default function AdminSNBDashboard() {
           <button onClick={() => setNotice("")}>
             <X className="size-4" />
           </button>
+        </div>
+      )}
+      {/* BUG FIX (2026-09-08): "data should be accurate" — adminLedger
+          (useBranchLedger) already sets a real error when its fetch fails
+          (even after its own internal retry), but no caller ever read it —
+          confirmed live on Owner Dashboard's Sales tab this exact hook
+          silently fell back to a drastically understated figure with no
+          indication anything was wrong. Surfacing it here too. */}
+      {adminLedger.error && (
+        <div className="flex items-center justify-between gap-3 rounded-2xl bg-red-50 px-4 py-3 text-sm font-black text-red-800 ring-1 ring-red-100">
+          <span>Report figures below may be incomplete — the sales ledger failed to load fully ({adminLedger.error}). Click Refresh to reload.</span>
+          <button onClick={() => adminLedger.refresh()} className="shrink-0 rounded-lg bg-red-600 px-3 py-1.5 text-xs font-bold text-white">Refresh</button>
         </div>
       )}
 
@@ -2773,6 +2793,11 @@ function WasteLogsTab({ userName, role }: { userName: string; role: string }) {
   const [lineDraft, setLineDraft] = useState({ itemName: catalogItems[0]?.name || "", quantity: "", unit: "pcs" });
   const [lines, setLines] = useState<Array<{ lineId: string; itemName: string; quantity: string; unit: string }>>([]);
   const [meta, setMeta] = useState({ reason: "", verifiedBy: "", checklist: [] as string[] });
+  // FEATURE (2026-09-08): "when SNB/VRSNB Admin transfer out, they should
+  // have an option to select Planner or others — Planner should see it in
+  // Transfer In and confirming should add it to Planner's stock." Only
+  // meaningful for Trans Out.
+  const [destination, setDestination] = useState<"planner" | "others">("others");
   // Waste logs are shared across SNB Order, SNB Admin, and Owner via the
   // `branch_waste_logs` Supabase table (written by record_branch_waste_batch_secure).
   // The previous version read only from the local branchOpsStore, so entries
@@ -2834,7 +2859,7 @@ function WasteLogsTab({ userName, role }: { userName: string; role: string }) {
   const [saving, setSaving] = useState(false);
 
   // Reset the queued list whenever the subtab changes so a Dump list doesn't bleed into Damage, etc.
-  useEffect(() => { setLines([]); setValidationError(""); }, [subTab]);
+  useEffect(() => { setLines([]); setValidationError(""); setDestination("others"); }, [subTab]);
   useEffect(() => {
     if (lineDraft.itemName) {
       const correctUnit = stockRowFor(lineDraft.itemName)?.unit;
@@ -2952,6 +2977,7 @@ function WasteLogsTab({ userName, role }: { userName: string; role: string }) {
         p_reason: meta.reason.trim(),
         p_verified_by: meta.verifiedBy.trim(),
         p_checklist: meta.checklist,
+        p_destination: subTab === "Trans Out" ? destination : null,
       });
       if (rpcError) {
         const missingRpc = /record_branch_waste_batch_secure|could not find the function|function .* does not exist/i.test(rpcError.message);
@@ -3021,6 +3047,15 @@ function WasteLogsTab({ userName, role }: { userName: string; role: string }) {
               </div>
             )}
 
+            {subTab === "Trans Out" && (
+              <Field label="Transferring To">
+                <div className="grid grid-cols-2 gap-2">
+                  <button type="button" onClick={() => setDestination("planner")} className={cn("h-10 rounded-xl text-xs font-black transition", destination === "planner" ? "bg-orange-500 text-white shadow" : "bg-slate-100 text-slate-600")}>Planner</button>
+                  <button type="button" onClick={() => setDestination("others")} className={cn("h-10 rounded-xl text-xs font-black transition", destination === "others" ? "bg-orange-500 text-white shadow" : "bg-slate-100 text-slate-600")}>Others</button>
+                </div>
+                {destination === "planner" && <p className="mt-1 text-[10px] font-bold text-emerald-700">Planner will see this in their Transfer In tab and confirm receipt there.</p>}
+              </Field>
+            )}
             <Field label="Reason"><textarea className={inputCls} value={meta.reason} onChange={(e) => setMeta({ ...meta, reason: e.target.value })} /></Field>
             <Field label="Verified By"><input className={inputCls} value={meta.verifiedBy} onChange={(e) => setMeta({ ...meta, verifiedBy: e.target.value })} /></Field>
             <div className="rounded-2xl bg-slate-50 p-3 ring-1 ring-slate-100">
@@ -4146,7 +4181,13 @@ function CashierClosureTab(props: any) {
             row.business_date,
             row.cashier_display_name || row.cashier_username || "Legacy / Unattributed",
             `${fmtDateTime(row.opened_at)}${row.closed_at ? ` → ${fmtDateTime(row.closed_at)}` : ""}`,
-            <StatusBadge key="status" tone={row.status === "finalized" ? "green" : "amber"}>{row.status === "finalized" ? "closed" : row.status}</StatusBadge>,
+            // BUG FIX (2026-09-08): 'void' rows are historical duplicate
+            // tills reconciled after the counter-session reuse-scoping bug
+            // fix (see Supabase migration reconcile_orphaned_open_counter_sessions_v2)
+            // — never really "open" (amber) and never really "closed"
+            // with real figures (green), so give them their own neutral
+            // label instead of falling into the "open" bucket by default.
+            <StatusBadge key="status" tone={row.status === "finalized" ? "green" : row.status === "void" ? "slate" : "amber"}>{row.status === "finalized" ? "closed" : row.status === "void" ? "voided (duplicate)" : row.status}</StatusBadge>,
             money(asNumber(row.opening_cash)),
             money(asNumber(row.gross_sales)),
             money(asNumber(row.returns)),
@@ -7713,6 +7754,12 @@ function StockAuditTab({
     field: "difference",
     direction: "desc",
   });
+  // AUDIT CONTROL (2026-09-08): "Create a new sub tab called Audit Control —
+  // the Admin should have the power to add new stock audit persons, select
+  // which items each should audit, and add department/category and items
+  // under those." Sibling sub-tab alongside the existing report review,
+  // same inline segmented-button pattern WasteLogsTab already uses.
+  const [topSubTab, setTopSubTab] = useState<"reports" | "control">("reports");
   const reports = stockCountReports
     .filter((report) => report.branch === BRANCH)
     .sort((a, b) => Number(new Date(b.createdAt)) - Number(new Date(a.createdAt)));
@@ -7938,6 +7985,14 @@ function StockAuditTab({
 
   return (
     <div className="space-y-4">
+      <div className="flex gap-2">
+        <button type="button" onClick={() => setTopSubTab("reports")} className={cn(btnCls, topSubTab === "reports" ? "bg-orange-500 text-white" : "bg-white text-slate-700 ring-1 ring-slate-200")}>Reports</button>
+        <button type="button" onClick={() => setTopSubTab("control")} className={cn(btnCls, topSubTab === "control" ? "bg-orange-500 text-white" : "bg-white text-slate-700 ring-1 ring-slate-200")}>Audit Control</button>
+      </div>
+      {topSubTab === "control" ? (
+        <AuditControlPanel userName={userName} />
+      ) : (
+      <>
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
         <Kpi label="Pending Reports" value={pending.length} icon={<ClipboardCheck className="size-4" />} tone="amber" />
         <Kpi label="Total Reports" value={reports.length} icon={<PackageCheck className="size-4" />} tone="blue" />
@@ -8100,6 +8155,286 @@ function StockAuditTab({
           </Panel>
         ))
       )}
+      </>
+      )}
+    </div>
+  );
+}
+
+// FEATURE (2026-09-08): Stock Audit's "Audit Control" sub-tab — admin-managed
+// roster of stock-audit groups (was a hardcoded "Stock 1"/"Stock 2") plus a
+// Department -> Category -> item picker for bulk-assigning who audits what.
+function AuditControlPanel({ userName }: { userName: string }) {
+  const catalogItems = useSNBCatalog();
+  const { departments, loadDepartments, addDepartment, categories, loadCategories, addCategory, assignItemsToDepartment } = useBranchCatalogStore();
+  useEffect(() => { void loadDepartments("SNB"); void loadCategories("SNB"); }, [loadDepartments, loadCategories]);
+
+  const [groups, setGroups] = useState<StockAuditGroup[] | null>(null);
+  const [groupAssignment, setGroupAssignment] = useState<Map<string, StockGroup>>(new Map());
+  const [loadingGroups, setLoadingGroups] = useState(true);
+  const [groupError, setGroupError] = useState("");
+  const loadGroups = useCallback(async () => {
+    setLoadingGroups(true);
+    setGroupError("");
+    try {
+      const [gs, gm] = await Promise.all([
+        fetchStockAuditGroups("SNB", { activeOnly: false }),
+        fetchStockCountGroupAssignment("SNB"),
+      ]);
+      setGroups(gs);
+      setGroupAssignment(gm);
+    } catch (err) {
+      setGroupError(err instanceof Error ? err.message : "Could not load audit groups.");
+    } finally {
+      setLoadingGroups(false);
+    }
+  }, []);
+  useEffect(() => { void loadGroups(); }, [loadGroups]);
+
+  const [newGroupName, setNewGroupName] = useState("");
+  const [creatingGroup, setCreatingGroup] = useState(false);
+  const handleAddGroup = async () => {
+    const name = newGroupName.trim();
+    if (!name) return;
+    setCreatingGroup(true);
+    setGroupError("");
+    try {
+      await createStockAuditGroup("SNB", name, userName);
+      setNewGroupName("");
+      await loadGroups();
+    } catch (err) {
+      setGroupError(err instanceof Error ? err.message : "Could not add this audit person.");
+    } finally {
+      setCreatingGroup(false);
+    }
+  };
+  const handleDeactivateGroup = async (slug: string, name: string) => {
+    if (!window.confirm(`Remove "${name}" from the audit roster? Items currently assigned to them keep their assignment, but no one will be able to claim this group for counting anymore.`)) return;
+    try {
+      await deactivateStockAuditGroup("SNB", slug, userName);
+      await loadGroups();
+    } catch (err) {
+      window.alert(err instanceof Error ? err.message : "Could not remove this audit person.");
+    }
+  };
+
+  // Department -> Category -> items picker for bulk assignment.
+  const [deptFilter, setDeptFilter] = useState("");
+  const [catFilter, setCatFilter] = useState("");
+  const [newDept, setNewDept] = useState("");
+  const [newCat, setNewCat] = useState("");
+  const [selected, setSelected] = useState<Record<number, boolean>>({});
+  const [assignTarget, setAssignTarget] = useState("");
+  const [assigning, setAssigning] = useState(false);
+  const [assignMsg, setAssignMsg] = useState("");
+  // FEATURE (2026-09-08): "if there are any missing items also notify the
+  // SNB Admin in Stock Audit -> Audit Control" — an active catalog item with
+  // no stock_count_group assigned is never seen by anyone's count screen
+  // (SnbSplitStockCountPanel only ever shows items matching a claimed
+  // group), so it silently never gets audited. Surfaced as a banner right
+  // here rather than a separate notification channel, since this tab is
+  // exactly where the admin can act on it immediately.
+  const [showOnlyUnassigned, setShowOnlyUnassigned] = useState(false);
+  const unassignedItems = useMemo(
+    () => catalogItems.filter((item) => !groupAssignment.has(item.name)),
+    [catalogItems, groupAssignment],
+  );
+
+  const filteredItems = useMemo(() => catalogItems.filter((item) =>
+    (!deptFilter || item.department === deptFilter)
+    && (!catFilter || item.category === catFilter)
+    && (!showOnlyUnassigned || !groupAssignment.has(item.name)),
+  ), [catalogItems, deptFilter, catFilter, showOnlyUnassigned, groupAssignment]);
+  const selectedBarcodes = Object.entries(selected).filter(([, v]) => v).map(([k]) => Number(k));
+  const toggleSelected = (barcode: number) => setSelected((prev) => ({ ...prev, [barcode]: !prev[barcode] }));
+  const selectAllFiltered = () => setSelected((prev) => {
+    const next = { ...prev };
+    filteredItems.forEach((item) => { next[item.barcode] = true; });
+    return next;
+  });
+  const clearSelection = () => setSelected({});
+
+  const handleCreateDept = async () => {
+    const name = newDept.trim();
+    if (!name) return;
+    const err = await addDepartment("SNB", name, userName);
+    if (err) setAssignMsg(err);
+    else { setNewDept(""); setDeptFilter(name); setAssignMsg(""); }
+  };
+  const handleCreateCat = async () => {
+    const name = newCat.trim();
+    if (!name) return;
+    const err = await addCategory("SNB", name, userName);
+    if (err) setAssignMsg(err);
+    else { setNewCat(""); setCatFilter(name); setAssignMsg(""); }
+  };
+
+  const handleAssignDepartment = async () => {
+    if (selectedBarcodes.length === 0 || !deptFilter) { setAssignMsg("Pick a department and select at least one item first."); return; }
+    setAssigning(true);
+    setAssignMsg("");
+    try {
+      const err = await assignItemsToDepartment("SNB", selectedBarcodes, deptFilter, userName);
+      setAssignMsg(err || `Assigned ${selectedBarcodes.length} item(s) to "${deptFilter}".`);
+      if (!err) clearSelection();
+    } finally {
+      setAssigning(false);
+    }
+  };
+
+  const handleAssignGroup = async () => {
+    if (selectedBarcodes.length === 0 || !assignTarget) { setAssignMsg("Pick an audit person and select at least one item first."); return; }
+    setAssigning(true);
+    setAssignMsg("");
+    try {
+      await assignItemsToStockAuditGroup("SNB", selectedBarcodes, assignTarget, userName);
+      const groupName = groups?.find((g) => g.slug === assignTarget)?.name ?? assignTarget;
+      setAssignMsg(`Assigned ${selectedBarcodes.length} item(s) to ${groupName} for stock counting.`);
+      clearSelection();
+      await loadGroups();
+    } catch (err) {
+      setAssignMsg(err instanceof Error ? err.message : "Could not assign these items.");
+    } finally {
+      setAssigning(false);
+    }
+  };
+
+  const activeGroups = (groups ?? []).filter((g) => g.active);
+  const itemCountByGroup = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const group of groupAssignment.values()) counts.set(group, (counts.get(group) ?? 0) + 1);
+    return counts;
+  }, [groupAssignment]);
+
+  return (
+    <div className="space-y-4">
+      {unassignedItems.length > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-3xl border border-amber-300 bg-amber-50 px-4 py-3 shadow-sm">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="size-5 shrink-0 text-amber-600" />
+            <p className="text-sm font-black text-amber-900">
+              {unassignedItems.length} item{unassignedItems.length === 1 ? "" : "s"} {unassignedItems.length === 1 ? "isn't" : "aren't"} assigned to any audit person — {unassignedItems.length === 1 ? "it" : "they"} will never get counted until you assign {unassignedItems.length === 1 ? "it" : "them"}.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => { setShowOnlyUnassigned(true); setDeptFilter(""); setCatFilter(""); }}
+            className="shrink-0 rounded-xl bg-amber-600 px-3 py-1.5 text-xs font-black text-white hover:bg-amber-700"
+          >
+            Show unassigned items
+          </button>
+        </div>
+      )}
+
+      <Panel title="Stock-Audit Persons" icon={<ClipboardCheck className="size-4" />}>
+        {groupError && <div className="mb-3 rounded-2xl bg-red-50 p-3 text-sm font-black text-red-700 ring-1 ring-red-100">{groupError}</div>}
+        {loadingGroups ? (
+          <p className="text-sm font-bold text-slate-500">Loading…</p>
+        ) : (
+          <div className="space-y-2">
+            {(groups ?? []).map((g) => (
+              <div key={g.slug} className={cn("flex items-center justify-between gap-3 rounded-2xl px-4 py-3 ring-1", g.active ? "bg-white ring-slate-200" : "bg-slate-50 ring-slate-100 opacity-60")}>
+                <div>
+                  <p className="font-black text-slate-900">{g.name}{!g.active && <span className="ml-2 rounded-full bg-slate-200 px-2 py-0.5 text-[10px] font-black uppercase text-slate-600">Removed</span>}</p>
+                  <p className="text-xs font-semibold text-slate-500">{itemCountByGroup.get(g.slug) ?? 0} item(s) assigned</p>
+                </div>
+                {g.active && (
+                  <button type="button" onClick={() => void handleDeactivateGroup(g.slug, g.name)} className="rounded-xl bg-red-50 px-3 py-1.5 text-xs font-black text-red-700 ring-1 ring-red-200 hover:bg-red-100">Remove</button>
+                )}
+              </div>
+            ))}
+            <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-dashed border-slate-300 p-3">
+              <input value={newGroupName} onChange={(e) => setNewGroupName(e.target.value)} placeholder="New audit person's name (e.g. Person 3)" className={cn(inputCls, "max-w-xs")} />
+              <button type="button" onClick={() => void handleAddGroup()} disabled={creatingGroup || !newGroupName.trim()} className={cn(btnCls, "bg-emerald-600 text-white disabled:opacity-40")}>
+                {creatingGroup ? "Adding…" : "+ Add Audit Person"}
+              </button>
+            </div>
+          </div>
+        )}
+      </Panel>
+
+      <Panel title="Assign Items to an Audit Person" icon={<Package className="size-4" />}>
+        <p className="mb-3 text-xs font-semibold text-slate-500">Filter by department/category to narrow the list, tick the items, then assign them to a department and/or an audit person.</p>
+        <div className="mb-3 grid gap-3 sm:grid-cols-2">
+          <div className="space-y-1.5">
+            <div className="flex items-center gap-1.5">
+              <select className={inputCls} value={deptFilter} onChange={(e) => setDeptFilter(e.target.value)}>
+                <option value="">All departments</option>
+                {departments.SNB.map((d) => <option key={d} value={d}>{d}</option>)}
+              </select>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <input value={newDept} onChange={(e) => setNewDept(e.target.value)} placeholder="+ New department" className={inputCls} />
+              <button type="button" onClick={() => void handleCreateDept()} disabled={!newDept.trim()} className={cn(btnCls, "shrink-0 bg-white text-slate-700 ring-1 ring-slate-200 disabled:opacity-40")}>Add</button>
+            </div>
+          </div>
+          <div className="space-y-1.5">
+            <div className="flex items-center gap-1.5">
+              <select className={inputCls} value={catFilter} onChange={(e) => setCatFilter(e.target.value)}>
+                <option value="">All categories</option>
+                {categories.SNB.map((c) => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <input value={newCat} onChange={(e) => setNewCat(e.target.value)} placeholder="+ New category" className={inputCls} />
+              <button type="button" onClick={() => void handleCreateCat()} disabled={!newCat.trim()} className={cn(btnCls, "shrink-0 bg-white text-slate-700 ring-1 ring-slate-200 disabled:opacity-40")}>Add</button>
+            </div>
+          </div>
+        </div>
+
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <p className="text-xs font-black uppercase tracking-wide text-slate-500">{filteredItems.length} item(s) · {selectedBarcodes.length} selected</p>
+            <button
+              type="button"
+              onClick={() => setShowOnlyUnassigned((v) => !v)}
+              className={cn(
+                "rounded-full px-2.5 py-1 text-[10px] font-black uppercase ring-1",
+                showOnlyUnassigned ? "bg-amber-600 text-white ring-amber-600" : "bg-white text-amber-700 ring-amber-300",
+              )}
+            >
+              Unassigned only {unassignedItems.length > 0 ? `(${unassignedItems.length})` : ""}
+            </button>
+          </div>
+          <div className="flex gap-2">
+            <button type="button" onClick={selectAllFiltered} className="text-xs font-black text-blue-600 hover:underline">Select all</button>
+            <button type="button" onClick={clearSelection} className="text-xs font-black text-slate-500 hover:underline">Clear</button>
+          </div>
+        </div>
+        <div className="max-h-72 space-y-1 overflow-y-auto rounded-2xl border border-slate-200 p-2">
+          {filteredItems.length === 0 ? (
+            <p className="p-3 text-sm font-bold text-slate-400">{showOnlyUnassigned ? "Every item is assigned to someone — nothing unassigned right now." : "No items match this filter."}</p>
+          ) : filteredItems.map((item) => {
+            const currentGroup = groupAssignment.get(item.name);
+            return (
+              <label key={item.barcode} className={cn("flex items-center justify-between gap-2 rounded-xl px-3 py-2 hover:bg-slate-50", !currentGroup && "bg-amber-50/60")}>
+                <span className="flex items-center gap-2">
+                  <input type="checkbox" checked={Boolean(selected[item.barcode])} onChange={() => toggleSelected(item.barcode)} className="size-4" />
+                  <span className="text-sm font-bold text-slate-800">{item.name}</span>
+                  {item.department && <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-black text-slate-500">{item.department}</span>}
+                </span>
+                <span className={cn("text-[10px] font-black uppercase", currentGroup ? "text-slate-400" : "text-amber-600")}>{currentGroup ? (groups?.find((g) => g.slug === currentGroup)?.name ?? currentGroup) : "Unassigned"}</span>
+              </label>
+            );
+          })}
+        </div>
+
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <button type="button" onClick={() => void handleAssignDepartment()} disabled={assigning || selectedBarcodes.length === 0 || !deptFilter} className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200 disabled:opacity-40")}>
+            Set Department: {deptFilter || "—"}
+          </button>
+          <select value={assignTarget} onChange={(e) => setAssignTarget(e.target.value)} className={inputCls}>
+            <option value="">Assign to audit person…</option>
+            {activeGroups.map((g) => <option key={g.slug} value={g.slug}>{g.name}</option>)}
+          </select>
+          <button type="button" onClick={() => void handleAssignGroup()} disabled={assigning || selectedBarcodes.length === 0 || !assignTarget} className={cn(btnCls, "bg-emerald-600 text-white disabled:opacity-40")}>
+            {assigning ? "Assigning…" : "Assign for Counting"}
+          </button>
+        </div>
+        {assignMsg && <p className="mt-2 text-xs font-bold text-slate-600">{assignMsg}</p>}
+      </Panel>
+
+      <StockCountClaimsPanel userName={userName} />
     </div>
   );
 }

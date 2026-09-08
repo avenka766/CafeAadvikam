@@ -3,8 +3,9 @@ import {
   Users, Building2, Search, ChevronDown, ChevronUp,
   IndianRupee, Calendar, TrendingDown, Plus, Trash2,
   Download, UserPlus, X, Pencil, Loader2,
-  AlertCircle, CheckCircle2, BarChart3, CreditCard, RefreshCw,
+  AlertCircle, CheckCircle2, BarChart3, CreditCard, RefreshCw, FileText,
 } from 'lucide-react';
+import { jsPDF } from 'jspdf';
 import { cn, formatCurrency } from '@/lib/utils';
 import { supabase } from '@/lib/supabase';
 import { businessDate } from '@/lib/businessDate';
@@ -367,6 +368,128 @@ function calcSalary(emp: Employee, att: MonthAttendance, daysInMonth: number, de
   const pfDed       = decision.deductPF      ? calcPF(earned)  : 0;
   const totalDed = advanceDed + canteenTotal + uniformDed + otherDed + esiDed + pfDed;
   return { presentDays, halfDays, woffDays, worked, canteenTotal, earned, totalDed, advanceDed, uniformDed, otherDed, esiDed, pfDed, net: Math.max(0, earned - totalDed) };
+}
+
+// ─── Payslip PDF ──────────────────────────────────────────────────────────────
+// FEATURE (2026-09-08): "add Payslip PDF button — Company name: VRSNB Foods
+// LLP, Location: Berigai. Its should include pay days, deduction, net pay,
+// gross pay all the things that a payslip should have." Hand-drawn with
+// jsPDF (already a project dependency, same technique as the WhatsApp bill
+// PDFs in HosurDashboard.tsx/dispatchInvoice.ts) rather than pulling in a
+// table library just for this one document. Company details match the exact
+// VRSNB FOODS LLP letterhead already used on dispatch invoices elsewhere in
+// the app (dispatchInvoice.ts's VRSNB_FOODS_BUSINESS), so every printed
+// document in the app agrees on the same registered address.
+function generatePayslipPdf(emp: Employee, calc: ReturnType<typeof calcSalary>, monthLabel: string, daysInMonth: number) {
+  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+  const pageW = 210;
+  const left = 15;
+  const right = 195;
+  const mid = (left + right) / 2;
+  let y = 18;
+
+  const centerText = (text: string, size: number, bold = false, gap = 6) => {
+    doc.setFont('helvetica', bold ? 'bold' : 'normal');
+    doc.setFontSize(size);
+    doc.text(text, pageW / 2, y, { align: 'center' });
+    y += gap;
+  };
+  const hLine = (yPos = y) => { doc.setDrawColor(180); doc.line(left, yPos, right, yPos); };
+  const money = (n: number) => `Rs. ${Math.round(n).toLocaleString('en-IN')}`;
+
+  centerText('VRSNB FOODS LLP', 16, true, 6.5);
+  centerText('109/1C, Bagalur Main Road, Berigai, Hosur - 635105, Tamil Nadu', 9, false, 4);
+  centerText('GSTIN: 33AAZFV1266C1ZZ', 8, false, 6);
+  hLine(); y += 6;
+  centerText(`PAYSLIP FOR ${monthLabel.toUpperCase()}`, 12.5, true, 9);
+
+  // Employee details — 2-column grid.
+  const rowH = 6.2;
+  const col1Label = left, col1Val = left + 34, col2Label = mid + 3, col2Val = mid + 33;
+  const detailRow = (l1: string, v1: string, l2: string, v2: string) => {
+    doc.setFontSize(9.5);
+    doc.setFont('helvetica', 'normal'); doc.text(l1, col1Label, y);
+    doc.setFont('helvetica', 'bold'); doc.text(v1 || '-', col1Val, y);
+    doc.setFont('helvetica', 'normal'); doc.text(l2, col2Label, y);
+    doc.setFont('helvetica', 'bold'); doc.text(v2 || '-', col2Val, y);
+    y += rowH;
+  };
+  detailRow('Employee Name', emp.name, 'Branch', emp.branch);
+  detailRow('Department', emp.department, 'Payment Mode', emp.paymentMode || '-');
+  detailRow('Bank Name', emp.bankName || '-', 'Account No.', emp.accountNumber || '-');
+  detailRow('IFSC Code', emp.ifscCode || '-', 'Account Holder', emp.accountHolderName || emp.name);
+  y += 1;
+  hLine(); y += 7;
+
+  // Pay days / attendance summary.
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(10.5); doc.text('Attendance & Pay Days', left, y); y += 6.5;
+  detailRow('Days in Month', String(daysInMonth), 'Days Present', String(calc.presentDays));
+  detailRow('Half Days', `${calc.halfDays} (= ${calc.halfDays * 0.5}d)`, 'Week Offs', String(calc.woffDays));
+  doc.setFontSize(9.5); doc.setFont('helvetica', 'normal'); doc.text('Total Days Paid', col1Label, y);
+  doc.setFont('helvetica', 'bold'); doc.text(`${calc.worked} / ${daysInMonth}`, col1Val, y);
+  y += rowH + 3;
+  hLine(); y += 7;
+
+  // Earnings | Deductions, side by side.
+  const earningsRows: [string, number][] = [
+    ['Gross Salary (Monthly)', emp.grossSalary],
+    ['Gross Pay (This Period)', calc.earned],
+  ];
+  const deductionRows: [string, number][] = [
+    ...(calc.canteenTotal > 0 ? [['Food / Canteen', calc.canteenTotal] as [string, number]] : []),
+    ...(calc.advanceDed > 0 ? [['Salary Advance', calc.advanceDed] as [string, number]] : []),
+    ...(calc.uniformDed > 0 ? [['Uniform Deduction', calc.uniformDed] as [string, number]] : []),
+    ...(calc.otherDed > 0 ? [['Other Deduction', calc.otherDed] as [string, number]] : []),
+    ...(calc.esiDed > 0 ? [['ESI (0.75%)', calc.esiDed] as [string, number]] : []),
+    ...(calc.pfDed > 0 ? [['PF (12%)', calc.pfDed] as [string, number]] : []),
+  ];
+  if (deductionRows.length === 0) deductionRows.push(['No deductions this period', 0]);
+
+  doc.setFontSize(9.5); doc.setFont('helvetica', 'bold');
+  doc.text('EARNINGS', left + 1, y);
+  doc.text('AMOUNT', mid - 3, y, { align: 'right' });
+  doc.text('DEDUCTIONS', mid + 4, y);
+  doc.text('AMOUNT', right - 1, y, { align: 'right' });
+  y += 3;
+  hLine();
+  y += 5.5;
+
+  const tableRowCount = Math.max(earningsRows.length, deductionRows.length);
+  doc.setFont('helvetica', 'normal');
+  for (let i = 0; i < tableRowCount; i++) {
+    if (earningsRows[i]) { doc.text(earningsRows[i][0], left + 1, y); doc.text(money(earningsRows[i][1]), mid - 3, y, { align: 'right' }); }
+    if (deductionRows[i]) { doc.text(deductionRows[i][0], mid + 4, y); doc.text(deductionRows[i][1] > 0 ? money(deductionRows[i][1]) : '-', right - 1, y, { align: 'right' }); }
+    y += 6;
+  }
+  hLine(); y += 6;
+  doc.setFont('helvetica', 'bold');
+  doc.text('Gross Pay', left + 1, y); doc.text(money(calc.earned), mid - 3, y, { align: 'right' });
+  doc.text('Total Deductions', mid + 4, y); doc.text(money(calc.totalDed), right - 1, y, { align: 'right' });
+  y += 10;
+
+  // Net pay — highlighted.
+  doc.setFillColor(230, 246, 240);
+  doc.rect(left, y - 6.5, right - left, 12.5, 'F');
+  doc.setDrawColor(16, 130, 90);
+  doc.rect(left, y - 6.5, right - left, 12.5);
+  doc.setFontSize(12.5);
+  doc.setTextColor(6, 90, 60);
+  doc.text('NET PAY', left + 4, y + 1.5);
+  doc.text(money(calc.net), right - 4, y + 1.5, { align: 'right' });
+  doc.setTextColor(0, 0, 0);
+  y += 18;
+
+  if (calc.advanceDed === 0 && emp.salaryAdvance > 0) {
+    doc.setFont('helvetica', 'italic'); doc.setFontSize(8.5);
+    doc.text(`Note: Rs. ${emp.salaryAdvance.toLocaleString('en-IN')} salary advance carried forward, not deducted this period.`, left, y);
+    y += 6;
+  }
+
+  doc.setFont('helvetica', 'italic'); doc.setFontSize(8); doc.setTextColor(120);
+  centerText('This is a computer-generated payslip and does not require a signature.', 8, false, 4.5);
+  centerText(`Generated on ${new Date().toLocaleString('en-IN')}`, 8, false, 4);
+
+  doc.save(`Payslip_${emp.name.replace(/[^a-z0-9]+/gi, '_')}_${monthLabel.replace(/[^a-z0-9]+/gi, '_')}.pdf`);
 }
 
 // ─── Excel Export ─────────────────────────────────────────────────────────────
@@ -1093,15 +1216,16 @@ function AttRow({ emp, att, onUpdate, expanded, onToggle, decision, onDecisionCh
 }
 
 // ─── Salary card ──────────────────────────────────────────────────────────────
-function SalaryCard({ emp, att, decision, onDecisionChange, daysInMonth, onAdvanceCleared }: {
-  emp: Employee; att: MonthAttendance; daysInMonth: number;
+function SalaryCard({ emp, att, decision, onDecisionChange, daysInMonth, monthLabel, onAdvanceCleared }: {
+  emp: Employee; att: MonthAttendance; daysInMonth: number; monthLabel: string;
   decision: DeductionDecision;
   onDecisionChange: (empId: string, d: DeductionDecision) => void;
   onAdvanceCleared: (empId: string) => void;
 }) {
   const [clearing, setClearing] = useState(false);
   const [clearError, setClearError] = useState<string | null>(null);
-  const { presentDays, halfDays, woffDays, worked, canteenTotal, earned, advanceDed, uniformDed, otherDed, esiDed, pfDed, net } = calcSalary(emp, att, daysInMonth, decision);
+  const calc = calcSalary(emp, att, daysInMonth, decision);
+  const { presentDays, halfDays, woffDays, worked, canteenTotal, earned, advanceDed, uniformDed, otherDed, esiDed, pfDed, net } = calc;
   // Preview amounts shown in toggle labels: use earned as base, gross for ESI eligibility check
   const esiAmount = calcESI(earned, emp.grossSalary);
   const pfAmount  = calcPF(earned);
@@ -1137,6 +1261,13 @@ function SalaryCard({ emp, att, decision, onDecisionChange, daysInMonth, onAdvan
         <div className="shrink-0 text-right">
           <p className={cn('font-display font-bold text-xl tabular-nums', net < 0 ? 'text-destructive' : 'text-primary')}>{'₹'}{net.toLocaleString('en-IN')}</p>
           <p className="text-[10px] font-body text-muted-foreground">Net Salary</p>
+          <button
+            type="button"
+            onClick={() => generatePayslipPdf(emp, calc, monthLabel, daysInMonth)}
+            className="mt-1.5 inline-flex items-center gap-1 rounded-lg bg-primary/10 px-2 py-1 text-[10px] font-body font-bold text-primary hover:bg-primary/20"
+          >
+            <FileText className="size-3" /> Payslip PDF
+          </button>
         </div>
       </div>
 
@@ -2170,7 +2301,7 @@ export default function AttendanceSalary() {
             </div>
           </div>
           {filtered.map(e => (
-            <SalaryCard key={e.id} emp={e} att={att} decision={getDecision(e.id)} onDecisionChange={updateDecision} daysInMonth={activeMonth.daysInMonth} onAdvanceCleared={handleAdvanceCleared} />
+            <SalaryCard key={e.id} emp={e} att={att} decision={getDecision(e.id)} onDecisionChange={updateDecision} daysInMonth={activeMonth.daysInMonth} monthLabel={activeMonth.label} onAdvanceCleared={handleAdvanceCleared} />
           ))}
           {filtered.length === 0 && <EmptyState icon="👥" message="No employees found" sub="Add staff in Staff Management to see them here." />}
         </div>

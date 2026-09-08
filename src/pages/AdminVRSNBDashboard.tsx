@@ -1075,6 +1075,21 @@ export default function AdminVRSNBDashboard() {
           </button>
         </div>
       )}
+      {/* BUG FIX (2026-09-08): "data should be accurate" — adminLedger
+          (useBranchLedger) already sets a real error when its fetch fails
+          (even after its own internal retry), but no caller ever read it —
+          confirmed live on Owner Dashboard's Sales tab, the same hook
+          silently fell back to a drastically understated figure with no
+          indication anything was wrong. Same gap here: every report tab
+          below (Overview, Sales & Returns, Cashier Report, Branch Reports,
+          Daily Closure...) reads adminLedger's derived totals with no
+          error surfaced at all. */}
+      {adminLedger.error && (
+        <div className="flex items-center justify-between gap-3 rounded-2xl bg-red-50 px-4 py-3 text-sm font-black text-red-800 ring-1 ring-red-100">
+          <span>Report figures below may be incomplete — the sales ledger failed to load fully ({adminLedger.error}). Click Refresh to reload.</span>
+          <button onClick={() => adminLedger.refresh()} className="shrink-0 rounded-lg bg-red-600 px-3 py-1.5 text-xs font-bold text-white">Refresh</button>
+        </div>
+      )}
 
       {tab === "overview" && <OverviewTab {...commonProps} />}
       {tab === "sales" && <SalesReturnsTab {...commonProps} />}
@@ -2383,6 +2398,12 @@ function WasteLogsTab({ userName, role }: { userName: string; role: string }) {
   const { stock } = useBranchStore();
   const [subTab, setSubTab] = useState<"Dump" | "Damage" | "Trans Out">("Dump");
   const [form, setForm] = useState({ itemName: catalogItems[0]?.name || "", quantity: "", unit: "pcs", reason: "", verifiedBy: "", checklist: [] as string[] });
+  // FEATURE (2026-09-08): "when SNB/VRSNB Admin transfer out, they should
+  // have an option to select Planner or others — Planner should see it in
+  // Transfer In and confirming should add it to Planner's stock." Only
+  // meaningful for Trans Out.
+  const [destination, setDestination] = useState<"planner" | "others">("others");
+  useEffect(() => { setDestination("others"); }, [subTab]);
   const transferOutChecklist = [
     "Verify standard quantity in box or Kgs or Pcs before transfer",
     "Cross-check all box or Kgs or Pcs before transfer-out and sync",
@@ -2525,6 +2546,7 @@ function WasteLogsTab({ userName, role }: { userName: string; role: string }) {
         p_reason: form.reason.trim(),
         p_verified_by: form.verifiedBy.trim(),
         p_checklist: form.checklist,
+        p_destination: subTab === "Trans Out" ? destination : null,
       });
       if (rpcError) {
         const missingRpc = /record_branch_waste_secure|could not find the function|function .* does not exist/i.test(rpcError.message);
@@ -2536,6 +2558,7 @@ function WasteLogsTab({ userName, role }: { userName: string; role: string }) {
       addWasteLog({ branch: BRANCH, logType: subTab, itemName: form.itemName, quantity: qty, unit: form.unit, reason: form.reason, verifiedBy: form.verifiedBy, checklist: form.checklist, createdBy: userName });
       printWasteLog({ ...form, quantity: qty, logType: subTab, createdBy: userName }, "VRSNB");
       setForm({ ...form, quantity: "", reason: "", verifiedBy: "", checklist: [] });
+      setDestination("others");
       await loadRows();
     } catch (saveError) {
       setValidationError(saveError instanceof Error ? saveError.message : "Unable to save waste log");
@@ -2554,6 +2577,15 @@ function WasteLogsTab({ userName, role }: { userName: string; role: string }) {
               <Field label="Quantity"><input type="number" className={inputCls} value={form.quantity} onChange={(e) => setForm({ ...form, quantity: e.target.value })} /></Field>
               <Field label="Unit"><select className={inputCls} value={form.unit} onChange={(e) => setForm({ ...form, unit: e.target.value })}><option>pcs</option><option>kg</option><option>g</option><option>box</option></select></Field>
             </div>
+            {subTab === "Trans Out" && (
+              <Field label="Transferring To">
+                <div className="grid grid-cols-2 gap-2">
+                  <button type="button" onClick={() => setDestination("planner")} className={cn("h-10 rounded-xl text-xs font-black transition", destination === "planner" ? "bg-orange-500 text-white shadow" : "bg-slate-100 text-slate-600")}>Planner</button>
+                  <button type="button" onClick={() => setDestination("others")} className={cn("h-10 rounded-xl text-xs font-black transition", destination === "others" ? "bg-orange-500 text-white shadow" : "bg-slate-100 text-slate-600")}>Others</button>
+                </div>
+                {destination === "planner" && <p className="mt-1 text-[10px] font-bold text-emerald-700">Planner will see this in their Transfer In tab and confirm receipt there.</p>}
+              </Field>
+            )}
             <Field label="Reason"><textarea className={inputCls} value={form.reason} onChange={(e) => setForm({ ...form, reason: e.target.value })} /></Field>
             <Field label="Verified By"><input className={inputCls} value={form.verifiedBy} onChange={(e) => setForm({ ...form, verifiedBy: e.target.value })} /></Field>
             <div className="rounded-2xl bg-slate-50 p-3 ring-1 ring-slate-100">

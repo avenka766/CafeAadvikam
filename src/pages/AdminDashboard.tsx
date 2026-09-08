@@ -5,6 +5,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useBranchStore } from '@/branch/branchStore';
 import { useBranchOpsStore } from '@/branch/branchOpsStore';
 import { useAuthStore } from '@/stores/authStore';
+import { useBranchCatalogStore } from '@/stores/branchCatalogStore';
 import { formatCurrency } from '@/lib/utils';
 import { cn } from '@/lib/utils';
 import type { Branch } from '@/branch/types';
@@ -22,7 +23,7 @@ import AdminInvoicesTab from '@/bakery/AdminInvoicesTab';
 import AdminPurchaseOrdersTab from '@/bakery/AdminPurchaseOrdersTab';
 import { useBranchLedger } from '@/hooks/useBranchLedger';
 import { useNotificationStore } from '@/bakery/notificationStore';
-import { supabase } from '@/lib/supabase';
+import { supabase, fetchAllRows } from '@/lib/supabase';
 import { exportWorkbook, exportReportPdf, pdfMoney } from '@/lib/exportAdminReport';
 import {
   Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Line, LineChart,
@@ -41,7 +42,7 @@ const CHART_COLORS = ['#2563eb', '#d97706', '#059669', '#7c3aed', '#dc2626', '#0
 const PAYMENT_COLORS = ['#16a34a', '#2563eb', '#7c3aed', '#f97316', '#dc2626'];
 
 // CHANGE 3: Removed 'stock-alerts' from AdminTab union
-type AdminTab = 'public-orders' | 'wallet' | 'promotions' | 'overview' | 'cafe' | 'branches' | 'hosur' | 'dispatch-details' | 'items' | 'daily-closure' | 'credits' | 'advance' | 'stock-disputes' | 'stock-variance' | 'waste' | 'audit' | 'invoices' | 'purchase-orders' | 'alerts' | 'complaints' | 'attendance';
+type AdminTab = 'wallet' | 'promotions' | 'overview' | 'cafe' | 'branches' | 'hosur' | 'dispatch-details' | 'items' | 'daily-closure' | 'credits' | 'advance' | 'stock-disputes' | 'stock-variance' | 'waste' | 'audit' | 'invoices' | 'purchase-orders' | 'alerts' | 'complaints' | 'attendance';
 
 type SalesTxn = {
   id: string; branch: Branch; itemName: string; qty: number; revenue: number;
@@ -58,20 +59,15 @@ type ClosureRow = {
 };
 
 // CHANGE 3: Removed 'stock-alerts' nav item
-type PublicOrder = { id: string; order_number: string; customer_name: string; customer_phone: string; customer_address: string; location_pin: string; notes: string | null; amount: number; status: string; payment_id: string | null; items: Array<{name:string;qty:number;price:number;venue:string;unit?:string}>; created_at: string };
-
-const PUBLIC_ORDER_STATUS_OPTIONS = [
-  { value: 'paid', label: 'Payment received' },
-  { value: 'confirmed', label: 'Confirmed' },
-  { value: 'preparing', label: 'Preparing' },
-  { value: 'ready', label: 'Ready' },
-  { value: 'out_for_delivery', label: 'Out for delivery' },
-  { value: 'completed', label: 'Completed' },
-  { value: 'cancelled', label: 'Cancelled' },
-] as const;
+// MOVED (2026-09-08): PublicOrder type + PUBLIC_ORDER_STATUS_OPTIONS moved
+// to PlannerDashboard.tsx along with the "Online Orders" tab itself.
 
 const NAV_ITEMS: Array<{ id: AdminTab; label: string; description: string; icon: ElementType; adminOnly?: boolean }> = [
-  { id: 'public-orders', label: 'Online Orders', description: 'Paid landing-page orders from Razorpay', icon: Smartphone, adminOnly: true },
+  // MOVED (2026-09-08): "Online Orders" relocated to Planner Dashboard's
+  // Incoming Orders tab (a new "Online Orders" sub-tab there) per explicit
+  // request. See PlannerDashboard.tsx's IncomingOrdersTab for the live
+  // version — this tab, PublicOrdersTab and its supporting state were
+  // removed from here.
   { id: 'wallet', label: 'Wallet', description: 'Create prepaid wallets, credit balances and audit usage', icon: WalletCards, adminOnly: true },
   { id: 'promotions', label: 'Promotions', description: 'Create, test, schedule and analyse promotional campaigns', icon: Gift, adminOnly: true },
   { id: 'overview', label: 'Dashboard Overview', description: 'Business KPIs, charts and reports', icon: LayoutDashboard },
@@ -238,9 +234,6 @@ function AdminDashboard() {
   const requestedTab = searchParams.get('tab') as AdminTab | null;
   const allowedNavItems = useMemo(() => NAV_ITEMS.filter((item) => !item.adminOnly || isAdmin), [isAdmin]);
   const activeTab: AdminTab = requestedTab && allowedNavItems.some((item) => item.id === requestedTab) ? requestedTab : 'overview';
-  const [publicOrders, setPublicOrders] = useState<PublicOrder[]>([]);
-  const [publicOrdersLoading, setPublicOrdersLoading] = useState(false);
-  const [publicOrderUpdating, setPublicOrderUpdating] = useState<string | null>(null);
   // EGRESS FIX: default to today only — this dashboard used to load a full
   // rolling week of bills across every branch on every mount, even before the
   // admin touched the date filter. Admin can still widen the range with the
@@ -311,13 +304,19 @@ function AdminDashboard() {
     if (!fromDate || !toDate) return;
     const requestId = ++wasteRequestRef.current;
     setWasteLogsLoading(true);
-    const { data, error } = await supabase
-      .from('branch_waste_logs')
-      .select('id,branch,log_type,item_name,quantity,unit,reason,verified_by,created_at')
-      .gte('created_at', `${fromDate}T00:00:00`)
-      .lte('created_at', `${toDate}T23:59:59`)
-      .order('created_at', { ascending: false })
-      .limit(2000);
+    // BUG FIX (2026-09-08): branch_waste_logs already holds 1000+ rows —
+    // a plain `.limit(2000)` here is silently capped at 1000 by PostgREST's
+    // project-wide response cap (see fetchAllRows in src/lib/supabase.ts),
+    // so a wide-enough range could silently drop older waste entries.
+    const { data, error } = await fetchAllRows<Record<string, unknown>>(
+      'branch_waste_logs',
+      (q) => q
+        .select('id,branch,log_type,item_name,quantity,unit,reason,verified_by,created_at')
+        .gte('created_at', `${fromDate}T00:00:00`)
+        .lte('created_at', `${toDate}T23:59:59`)
+        .order('created_at', { ascending: false }),
+      { maxRows: 10000 },
+    ).then((r) => ({ data: r.data, error: r.error ? { message: r.error } : null }));
     if (wasteRequestRef.current !== requestId) return;
     if (!error && data) {
       setWasteLogs(data.map((d: any) => ({
@@ -634,38 +633,6 @@ function AdminDashboard() {
   useEffect(() => { void fetchRealSalesData(); }, [fetchRealSalesData]);
 
   useEffect(() => { void loadAdminNotifications(); }, [loadAdminNotifications]);
-  const loadPublicOrders = useCallback(async () => {
-    setPublicOrdersLoading(true);
-    const { data, error } = await supabase.rpc('list_public_orders_secure', {
-      p_limit: 250,
-      p_offset: 0,
-      p_include_full_contact: true,
-      p_purpose: 'order_fulfilment',
-    });
-    if (error) {
-      setPublicOrdersLoading(false);
-      throw error;
-    }
-    setPublicOrders(((data ?? []) as PublicOrder[]).filter((order) => !['payment_pending', 'payment_failed'].includes(order.status)));
-    setPublicOrdersLoading(false);
-  }, []);
-
-  const updatePublicOrderStatus = useCallback(async (orderId: string, status: string) => {
-    setPublicOrderUpdating(orderId);
-    const { error } = await supabase.rpc('update_public_order_status_secure', {
-      p_order_id: orderId,
-      p_status: status,
-    });
-    if (error) {
-      setPublicOrderUpdating(null);
-      alert(error.message || 'Unable to update online order status.');
-      return;
-    }
-    await loadPublicOrders();
-    setPublicOrderUpdating(null);
-  }, [loadPublicOrders]);
-
-  useEffect(() => { void loadPublicOrders(); }, [loadPublicOrders]);
   useEffect(() => {
     if (requestedTab === 'items') navigate('/bakery/items', { replace: true });
   }, [navigate, requestedTab]);
@@ -2165,8 +2132,23 @@ function AdminDashboard() {
   );
 
   const [disputeQtyById, setDisputeQtyById] = useState<Record<string, string>>({});
+  // BUG FIX (2026-09-08): "the planner mistakenly sent samosa as 10 Kgs
+  // instead of 10pcs, they raised the dispute but were not able to clear
+  // it" — resolution only ever let the admin correct the QUANTITY; the unit
+  // (and therefore which catalogue item/barcode the stock actually credits)
+  // was permanently stuck at whatever the mis-dispatch used. This catalog
+  // (SNB/VRSNB only — Hosur shares SNB's) + per-row unit selector lets the
+  // admin pick the correct unit, which re-points item_barcode to the right
+  // catalogue entry so confirm_incoming_stock_canonical credits the right
+  // item instead of silently mis-crediting or leaving the dispute stuck.
+  const [disputeUnitById, setDisputeUnitById] = useState<Record<string, 'kg' | 'pcs'>>({});
   const [savingDisputeId, setSavingDisputeId] = useState('');
   const [disputeMessage, setDisputeMessage] = useState('');
+  const { loadCatalog: loadDisputeCatalog, items: catalogItemsByBranch } = useBranchCatalogStore();
+  useEffect(() => {
+    void loadDisputeCatalog('SNB');
+    void loadDisputeCatalog('VRSNB');
+  }, [loadDisputeCatalog]);
   const stockDisputes = useMemo(() => ADMIN_BRANCHES.flatMap(branch =>
     (incoming[branch] || [])
       .filter(item => item.disputed && !item.confirmed)
@@ -2185,7 +2167,34 @@ function AdminDashboard() {
       });
       return changed ? next : prev;
     });
+    setDisputeUnitById(prev => {
+      const next = { ...prev };
+      let changed = false;
+      stockDisputes.forEach(item => {
+        if (next[item.id] === undefined) {
+          next[item.id] = item.unit === 'pcs' ? 'pcs' : 'kg';
+          changed = true;
+        }
+      });
+      return changed ? next : prev;
+    });
   }, [stockDisputes]);
+
+  const normalizeItemNameForCatalogMatch = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, '');
+
+  // Looks up the branch's own catalogue for an item entry matching this
+  // name in the requested unit — same fuzzy-name-match rule
+  // confirm_incoming_stock_canonical itself uses server-side, so a unit
+  // correction resolves to exactly the catalogue item that RPC would find.
+  const findCatalogEntryForUnit = (branch: Branch, itemName: string, unit: 'kg' | 'pcs') => {
+    const catalogBranch = branch === 'Hosur' ? 'SNB' : branch;
+    if (catalogBranch !== 'SNB' && catalogBranch !== 'VRSNB') return null;
+    const targetUom = unit === 'kg' ? 'Kgs' : 'Pcs';
+    const targetName = normalizeItemNameForCatalogMatch(itemName);
+    return (catalogItemsByBranch[catalogBranch] || []).find(
+      entry => entry.active && entry.uom === targetUom && normalizeItemNameForCatalogMatch(entry.name) === targetName,
+    ) || null;
+  };
 
   const resolveStockDispute = async (branch: Branch, incomingId: string) => {
     const item = stockDisputes.find(row => row.branch === branch && row.id === incomingId);
@@ -2195,6 +2204,7 @@ function AdminDashboard() {
       setDisputeMessage('Enter a valid corrected quantity before confirming.');
       return;
     }
+    const correctedUnit = disputeUnitById[incomingId] ?? (item.unit === 'pcs' ? 'pcs' : 'kg');
     setSavingDisputeId(incomingId);
     setDisputeMessage('');
     // AUDIT FIX (2026-09-02): pcs items must stay whole numbers — this used
@@ -2203,14 +2213,32 @@ function AdminDashboard() {
     // saved a fractional piece count into real branch stock. Same bug class
     // fixed at 15+ other input sites (see project_pcs_decimal_fix_gaps /
     // project_planner_audit_round2/3 memories).
-    const correctedQtySafe = item.unit === 'pcs' ? Math.round(correctedQty) : Math.round(correctedQty * 1000) / 1000;
+    const correctedQtySafe = correctedUnit === 'pcs' ? Math.round(correctedQty) : Math.round(correctedQty * 1000) / 1000;
+
+    const updatePayload: Record<string, unknown> = {
+      quantity: correctedQtySafe,
+      disputed: false,
+      dispute_reason: `${item.disputeReason || 'Dispute'} | Resolved by ${adminName}`,
+    };
+    // Unit changed from what the mis-dispatch used — re-point this row at
+    // the correct catalogue item/barcode for that unit, otherwise the
+    // stock still credits under the wrong classification (or the wrong
+    // item entirely, since this catalogue keeps a separate barcode per
+    // unit for the same product name).
+    if (correctedUnit !== item.unit) {
+      const catalogEntry = findCatalogEntryForUnit(branch, item.itemName, correctedUnit);
+      if (!catalogEntry) {
+        setDisputeMessage(`No ${BRANCH_LABELS[branch]} catalogue item named "${item.itemName}" in ${correctedUnit} — add/fix the catalogue item first, then resolve this dispute.`);
+        setSavingDisputeId('');
+        return;
+      }
+      updatePayload.unit = correctedUnit;
+      updatePayload.item_barcode = catalogEntry.barcode;
+    }
+
     const { error } = await supabase
       .from('branch_incoming')
-      .update({
-        quantity: correctedQtySafe,
-        disputed: false,
-        dispute_reason: `${item.disputeReason || 'Dispute'} | Resolved by ${adminName}`,
-      })
+      .update(updatePayload)
       .eq('id', incomingId)
       .eq('branch', branch);
     if (error) {
@@ -2229,7 +2257,7 @@ function AdminDashboard() {
       .filter(n => n.branch === branch && n.type === 'Stock Dispute' && n.status !== 'Resolved' && n.details.includes(item.itemName))
       .forEach(n => updateNotificationStatus(n.id, 'Resolved', adminName));
     await fetchBranchData(branch, false, ['incoming']); // EGRESS FIX: resolving a dispute only touches incoming
-    setDisputeMessage(`${BRANCH_LABELS[branch]} ${item.itemName} confirmed with corrected quantity ${correctedQty} ${item.unit}. Stock synced.`);
+    setDisputeMessage(`${BRANCH_LABELS[branch]} ${item.itemName} confirmed with corrected quantity ${correctedQty} ${correctedUnit}. Stock synced.`);
     setSavingDisputeId('');
   };
 
@@ -2245,13 +2273,14 @@ function AdminDashboard() {
         )}
         {stockDisputes.length === 0 ? <EmptyState label="No incoming stock disputes pending." /> : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[980px] text-sm">
+            <table className="w-full min-w-[1080px] text-sm">
               <thead>
                 <tr className="border-b bg-slate-50 text-left text-xs uppercase text-slate-500">
                   <th className="p-3">Branch</th>
                   <th className="p-3">Item</th>
                   <th className="p-3 text-right">Dispatched</th>
                   <th className="p-3">Correct Qty</th>
+                  <th className="p-3">Correct Unit</th>
                   <th className="p-3">Reason</th>
                   <th className="p-3">Raised By</th>
                   <th className="p-3">Date</th>
@@ -2268,11 +2297,24 @@ function AdminDashboard() {
                       <input
                         type="number"
                         min="0"
-                        step={item.unit === 'kg' ? '0.001' : '1'}
+                        step={(disputeUnitById[item.id] ?? item.unit) === 'kg' ? '0.001' : '1'}
                         value={disputeQtyById[item.id] ?? String(item.quantity)}
                         onChange={event => setDisputeQtyById(prev => ({ ...prev, [item.id]: event.target.value }))}
                         className="h-10 w-28 rounded-2xl border border-slate-200 px-3 text-sm font-black tabular-nums"
                       />
+                    </td>
+                    <td className="p-3">
+                      <select
+                        value={disputeUnitById[item.id] ?? (item.unit === 'pcs' ? 'pcs' : 'kg')}
+                        onChange={event => setDisputeUnitById(prev => ({ ...prev, [item.id]: event.target.value as 'kg' | 'pcs' }))}
+                        className="h-10 w-24 rounded-2xl border border-slate-200 px-2 text-sm font-black"
+                      >
+                        <option value="kg">kg</option>
+                        <option value="pcs">pcs</option>
+                      </select>
+                      {(disputeUnitById[item.id] ?? item.unit) !== item.unit && (
+                        <p className="mt-1 text-[10px] font-bold text-amber-600">Was {item.unit} — will re-link to the {disputeUnitById[item.id]} catalogue item.</p>
+                      )}
                     </td>
                     <td className="p-3 text-slate-600">{item.disputeReason || '-'}</td>
                     <td className="p-3 text-slate-600">{item.disputedBy || '-'}</td>
@@ -2828,41 +2870,10 @@ function AdminDashboard() {
     </div>
   );
 
-  const PublicOrdersTab = (
-    <Panel title="Paid Online Orders" subtitle="Orders appear here only after Razorpay signature verification succeeds"
-      // AUDIT FIX (2026-09-04): publicOrders only ever loads once, on mount
-      // (loadPublicOrders) — no manual refresh anywhere on this tab.
-      action={
-        <button onClick={() => void loadPublicOrders()} disabled={publicOrdersLoading}
-          className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700 hover:bg-slate-50 disabled:opacity-60">
-          <RefreshCw className={cn('size-3.5', publicOrdersLoading && 'animate-spin')} />Refresh
-        </button>
-      }>
-      {publicOrdersLoading ? <p className="p-8 text-center text-sm font-bold text-slate-500">Loading online orders…</p> : publicOrders.length === 0 ? <p className="p-8 text-center text-sm font-bold text-slate-500">No paid online orders yet.</p> : (
-        <div className="space-y-3">{publicOrders.map(order => <article key={order.id} className="rounded-2xl border border-slate-200 p-4">
-          <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="font-black text-slate-950">{order.order_number} · {order.customer_name}</p><p className="text-xs text-slate-500">{order.customer_phone} · {fmtDateTime(order.created_at)}</p></div><div className="text-right"><p className="font-black text-emerald-700">{formatCurrency(order.amount)}</p><Badge tone="green">{order.status}</Badge></div></div>
-          <p className="mt-2 text-sm text-slate-700">{order.customer_address}</p><p className="text-xs text-slate-500">PIN: {order.location_pin}</p>
-          <div className="mt-3 grid gap-2 sm:grid-cols-2">{(order.items || []).map((item, idx) => <div key={idx} className="rounded-xl bg-slate-50 px-3 py-2 text-xs"><span className="font-black">{item.name}</span> × {item.qty}<span className="float-right font-bold">{formatCurrency(item.price * item.qty)}</span></div>)}</div>
-          {order.notes && <p className="mt-2 text-xs text-slate-600">Note: {order.notes}</p>}
-          <div className="mt-4 flex flex-col gap-2 rounded-2xl border border-slate-200 bg-slate-50 p-3 sm:flex-row sm:items-center sm:justify-between">
-            <div><p className="text-[10px] font-black uppercase tracking-wide text-slate-500">Customer tracking status</p><p className="mt-1 text-xs font-bold text-slate-700">Changing this updates the customer tracking page immediately.</p></div>
-            <select
-              value={order.status}
-              disabled={publicOrderUpdating === order.id}
-              onChange={(event) => void updatePublicOrderStatus(order.id, event.target.value)}
-              className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-xs font-black text-slate-800 outline-none disabled:opacity-50"
-            >
-              {PUBLIC_ORDER_STATUS_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-            </select>
-          </div>
-          <p className="mt-2 text-[10px] font-bold text-slate-400">Payment ID: {order.payment_id || '—'} · Tax included: 3%</p>
-        </article>)}</div>
-      )}
-    </Panel>
-  );
+  // MOVED (2026-09-08): PublicOrdersTab ("Online Orders") relocated to
+  // PlannerDashboard.tsx's IncomingOrdersTab — see the note near NAV_ITEMS.
 
   const activeContent: Record<AdminTab, ReactNode> = {
-    'public-orders': PublicOrdersTab,
     wallet: <AdminWalletTab />,
     promotions: <AdminPromotionsTab />,
     overview: OverviewTab,
@@ -2903,6 +2914,19 @@ function AdminDashboard() {
       {!isAdmin && (
         <div className="mb-5 flex items-center gap-3 rounded-3xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
           <Lock className="size-5 shrink-0" /> Admin-only actions are locked for this role. View-only monitoring remains available.
+        </div>
+      )}
+
+      {/* BUG FIX (2026-09-08): "data should be accurate" — adminLedger
+          (useBranchLedger) already sets a real error when its fetch fails
+          (even after its own internal retry), but no caller ever read it —
+          confirmed live on Owner Dashboard's Sales tab this exact hook
+          silently fell back to a drastically understated figure with no
+          indication anything was wrong. Surfacing it here too. */}
+      {adminLedger.error && (
+        <div className="mb-5 flex items-center justify-between gap-3 rounded-3xl border border-red-200 bg-red-50 p-4 text-sm font-semibold text-red-800">
+          <span>Report figures below may be incomplete — the sales ledger failed to load fully ({adminLedger.error}). Click Refresh to reload.</span>
+          <button onClick={() => adminLedger.refresh()} className="shrink-0 rounded-lg bg-red-600 px-3 py-1.5 text-xs font-bold text-white">Refresh</button>
         </div>
       )}
 

@@ -25,7 +25,7 @@ import { useStorePurchaseOrderStore, type StorePurchaseOrder } from '@/bakery/st
 import { useBranchLedger } from '@/hooks/useBranchLedger';
 import { useAuthStore } from '@/stores/authStore';
 import { initNativeNotifications, notifyLocal } from '@/lib/nativeNotifications';
-import { supabase } from '@/lib/supabase';
+import { supabase, fetchAllRows } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/utils';
 import { cn } from '@/lib/utils';
 import OwnerCreditTab from '@/components/admin/OwnerCreditTab';
@@ -754,6 +754,27 @@ function SalesOverviewTab() {
         </button>
       </div>
 
+      {/* BUG FIX (2026-09-08): "data should be accurate — check all
+          dashboards" — confirmed live: on a genuine ledger-fetch failure
+          (e.g. a transient statement timeout under concurrent load —
+          useBranchLedger already retries once internally, but a range
+          switch can still land here if both attempts fail), VRSNB/SNB
+          Branch Performance silently fell back to whatever fraction of
+          the branch's bills happened to already be in the shared, capped
+          in-memory `bills` cache — showing a real but drastically
+          understated number (confirmed: VRSNB showed ₹2,731 instead of
+          the real ₹2,82,753 for a 30-day range) with NO indication
+          anything was wrong. salesLedger.error was already being set by
+          the hook but never read here. Surfacing it now so the owner
+          knows to hit Refresh instead of trusting a silently-wrong figure. */}
+      {salesLedger.error && (
+        <div className="flex items-center gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-800">
+          <AlertTriangle className="size-4 shrink-0" />
+          <span className="flex-1">VRSNB/SNB branch figures below may be incomplete — the sales report failed to load fully ({salesLedger.error}). Hit Refresh to reload.</span>
+          <button onClick={() => salesLedger.refresh()} className="shrink-0 rounded-lg bg-red-600 px-3 py-1.5 text-xs font-bold text-white">Refresh</button>
+        </div>
+      )}
+
       {/* Today cash-in-drawer */}
       {showCafe && (
         <div className="bg-gradient-to-br from-primary/10 to-primary/5 border border-primary/20 rounded-2xl p-4">
@@ -1417,13 +1438,19 @@ function WasteLogsTab() {
   const fetchBranchWaste = useCallback(async () => {
     const requestId = ++branchWasteRequestId.current;
     setBranchWasteLoading(true);
-    const { data, error: err } = await supabase
-      .from('branch_waste_logs')
-      .select('id,branch,log_type,item_name,quantity,unit,reason,created_by_username,created_at')
-      .gte('created_at', `${fromDate}T00:00:00+05:30`)
-      .lte('created_at', `${toDate}T23:59:59+05:30`)
-      .order('created_at', { ascending: false })
-      .limit(2000);
+    // BUG FIX (2026-09-08): branch_waste_logs already holds 1000+ rows —
+    // a plain `.limit(2000)` here is silently capped at 1000 by PostgREST's
+    // project-wide response cap (see fetchAllRows in src/lib/supabase.ts),
+    // so a wide-enough range could silently drop older waste entries.
+    const { data, error: err } = await fetchAllRows<Record<string, unknown>>(
+      'branch_waste_logs',
+      (q) => q
+        .select('id,branch,log_type,item_name,quantity,unit,reason,created_by_username,created_at')
+        .gte('created_at', `${fromDate}T00:00:00+05:30`)
+        .lte('created_at', `${toDate}T23:59:59+05:30`)
+        .order('created_at', { ascending: false }),
+      { maxRows: 10000 },
+    ).then((r) => ({ data: r.data, error: r.error ? { message: r.error } : null }));
     if (requestId !== branchWasteRequestId.current) return;
     if (!err && data) {
       setWasteLogs(data.map((d: any) => ({
@@ -2352,6 +2379,19 @@ function BranchOverviewTab() {
         <button type="button" onClick={() => ownerCsvDownload('owner-branch-overview.csv', branchRows.map(r => ({ Unit: r.unit, Sales: r.sales, NetSales: r.netSales, Purchases: r.purchases, PendingPayments: r.pendingPayments, Alerts: r.stockAlerts, Closure: r.closureStatus })))}><Download className="size-4" />Export</button>
       </OwnerToolbar>
 
+      {/* BUG FIX (2026-09-08): "data should be accurate" — ownerLedger
+          (useBranchLedger) already sets a real error when its fetch fails
+          (even after its own internal retry), but no caller ever read it —
+          confirmed live on this exact hook silently falling back to a
+          drastically understated figure with no indication anything was
+          wrong. Surfacing it here too. */}
+      {ownerLedger.error && (
+        <div className="flex items-center justify-between gap-3 rounded-2xl border border-red-200 bg-red-50 p-4 text-sm font-semibold text-red-800">
+          <span>Branch figures below may be incomplete — the sales ledger failed to load fully ({ownerLedger.error}). Click Refresh to reload.</span>
+          <button onClick={() => ownerLedger.refresh()} className="shrink-0 rounded-lg bg-red-600 px-3 py-1.5 text-xs font-bold text-white">Refresh</button>
+        </div>
+      )}
+
       <section className="owner-metric-grid wide">
         <OwnerMetricCard icon={<IndianRupee className="size-5" />} label="Gross Sales" value={formatCurrency(totals.sales)} sub="Cafe + branches" tone="green" />
         <OwnerMetricCard icon={<TrendingUp className="size-5" />} label="Net Sales" value={formatCurrency(totals.netSales)} sub="After returns" tone="blue" />
@@ -2573,6 +2613,16 @@ function OwnerDailyClosureTab() {
         <button type="button" onClick={() => ownerLedger.refresh()} disabled={ownerLedger.loading} className="inline-flex items-center gap-1.5 disabled:opacity-60"><RefreshCw className={cn('size-4', ownerLedger.loading && 'animate-spin')} />Refresh</button>
         <button type="button" onClick={() => ownerCsvDownload('owner-daily-closure.csv', rows.map(r => ({ Branch: r.branch, Status: r.status, Opening: r.opening, TotalSales: r.grossSales, Cash: r.cash, UPI: r.upi, Card: r.card, Credit: r.credit, Returns: r.returns, NetSales: r.netSales, Expenses: r.expenses, PurchasePayments: r.purchases, BankDeposits: r.bankDeposits, Closing: r.expectedCash, Difference: r.difference, ClosedBy: r.closedBy, ClosedAt: ownerFmtDateTime(r.closedAt), Remarks: r.remarks })))}><FileSpreadsheet className="size-4" />Export</button>
       </OwnerToolbar>
+
+      {/* BUG FIX (2026-09-08): "data should be accurate" — see the same
+          fix on BranchOverviewTab/SalesOverviewTab above; ownerLedger's
+          error was never surfaced here either. */}
+      {ownerLedger.error && (
+        <div className="flex items-center justify-between gap-3 rounded-2xl border border-red-200 bg-red-50 p-4 text-sm font-semibold text-red-800">
+          <span>Closure figures below may be incomplete — the sales ledger failed to load fully ({ownerLedger.error}). Click Refresh to reload.</span>
+          <button onClick={() => ownerLedger.refresh()} className="shrink-0 rounded-lg bg-red-600 px-3 py-1.5 text-xs font-bold text-white">Refresh</button>
+        </div>
+      )}
 
       <section className="owner-metric-grid">
         <OwnerMetricCard icon={<Receipt className="size-5" />} label="Net Sales" value={formatCurrency(totals.net)} tone="green" />
@@ -3934,6 +3984,10 @@ function OwnerEverythingTab() {
       </OwnerToolbar>
 
       {extrasError && <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700">Some data failed to load: {extrasError}</div>}
+      {/* BUG FIX (2026-09-08): "data should be accurate" — see the same
+          fix on BranchOverviewTab/SalesOverviewTab above; ownerLedger's
+          error was never surfaced here either. */}
+      {ownerLedger.error && <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700">Net Sales Today may be incomplete — the sales ledger failed to load fully ({ownerLedger.error}). Click Refresh above to reload.</div>}
 
       <section className="owner-metric-grid">
         <OwnerMetricCard icon={<Receipt className="size-5" />} label="Net Sales Today" value={formatCurrency(totals.netSales)} tone="green" sub="Cafe + SNB + VRSNB + Hosur" />
