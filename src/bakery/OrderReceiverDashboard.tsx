@@ -45,7 +45,7 @@ import { useBranchStore, type StockItem } from "@/branch/branchStore";
 import { StockTab } from "@/branch/tabs/StockTab";
 import { AdvanceCakeOrdersTab, CashierClosureTab } from "@/branch/tabs/BranchBusinessModules";
 import { useBranchOpsStore } from "@/branch/branchOpsStore";
-import { cn } from "@/lib/utils";
+import { cn, roundQty, sanitizeDecimalInput } from "@/lib/utils";
 import type { UserRole } from "@/types";
 import { supabase } from "@/lib/supabase";
 import { useOperationalBranchCatalog } from "@/hooks/useOperationalBranchCatalog";
@@ -2808,7 +2808,7 @@ function StockCountPanel({
                       <p className="font-body font-black text-foreground">{row.itemName}</p>
                       <p className="text-[11px] font-bold text-slate-500">{row.unit}</p>
                     </div>
-                    <span className="font-black tabular-nums">{row.systemQty}</span>
+                    <span className="font-black tabular-nums">{roundQty(row.systemQty)}</span>
                     <input
                       type="number"
                       min="0"
@@ -2816,7 +2816,10 @@ function StockCountPanel({
                       value={counts[row.itemName] ?? ""}
                       onChange={(e) => {
                         touchedCounts.current[row.itemName] = true;
-                        setCounts((prev) => ({ ...prev, [row.itemName]: e.target.value }));
+                        // BUG FIX (2026-09-08): "for Pcs don't allow the decimal" —
+                        // step alone doesn't stop typing "2.5"; strip it as-typed.
+                        const sanitized = sanitizeDecimalInput(e.target.value, row.unit === "kg");
+                        setCounts((prev) => ({ ...prev, [row.itemName]: sanitized }));
                       }}
                       className="h-10 rounded-2xl border border-slate-200 px-3 text-sm font-black tabular-nums focus:outline-none focus:ring-2 focus:ring-amber-200"
                     />

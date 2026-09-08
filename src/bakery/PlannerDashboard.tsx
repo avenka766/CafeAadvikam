@@ -2193,7 +2193,7 @@ function PlanningTab({ orders }: { orders: BakeryOrder[] }) {
                     <p className="text-xs font-bold text-muted-foreground">{item.unit} · {item.category}</p>
                     <div className="mt-2 flex items-center gap-2">
                       <button onClick={() => setQty(item, current - step)} className="size-8 rounded-lg border border-border bg-card font-black text-foreground hover:bg-muted">-</button>
-                      <input type="number" step={item.unit === 'pcs' ? 1 : 0.001} value={current || ''} onChange={e => setQty(item, Number(e.target.value))} placeholder="0" className="h-8 w-full rounded-lg border border-border bg-background text-center text-sm font-black" />
+                      <input type="number" step={item.unit === 'pcs' ? 1 : 0.001} value={current || ''} onChange={e => setQty(item, Number(sanitizeQtyForUnit(e.target.value, item.unit === 'pcs' ? 'pcs' : 'kg')))} placeholder="0" className="h-8 w-full rounded-lg border border-border bg-background text-center text-sm font-black" />
                       <button onClick={() => setQty(item, current + step)} className="size-8 rounded-lg bg-primary font-black text-primary-foreground hover:opacity-90">+</button>
                     </div>
                   </article>
@@ -4782,7 +4782,7 @@ function AdvanceSalesTab() {
                   <option value="kg">kg</option>
                 </select>
                 <input type="number" min="0" step="0.01" value={customItem.price} onChange={e => setCustomItem(c => ({ ...c, price: e.target.value }))} placeholder="Price" className="h-9 rounded-lg border border-border bg-background px-2 text-xs font-bold" />
-                <input type="number" min="0" step={customItem.unit === 'pcs' ? 1 : 0.001} value={customItem.quantity} onChange={e => setCustomItem(c => ({ ...c, quantity: e.target.value }))} placeholder="Qty" className="h-9 rounded-lg border border-border bg-background px-2 text-xs font-bold" />
+                <input type="number" min="0" step={customItem.unit === 'pcs' ? 1 : 0.001} value={customItem.quantity} onChange={e => setCustomItem(c => ({ ...c, quantity: sanitizeQtyForUnit(e.target.value, c.unit) }))} placeholder="Qty" className="h-9 rounded-lg border border-border bg-background px-2 text-xs font-bold" />
               </div>
               <div className="flex items-center gap-2">
                 <button onClick={addCustomItem} className="flex h-8 items-center gap-1 rounded-lg bg-amber-600 px-3 text-[11px] font-black text-white hover:opacity-90"><Plus className="size-3.5" /> Add to cart</button>
@@ -4812,7 +4812,7 @@ function AdvanceSalesTab() {
                           <p className="text-xs font-bold text-muted-foreground">{invoiceMoney(item.price)} / {item.unit} · {item.category}</p>
                           <div className="mt-2 flex items-center gap-2">
                             <button onClick={() => setQty(item, current - step)} className="size-8 rounded-lg border border-border bg-card font-black text-foreground hover:bg-muted">-</button>
-                            <input type="number" step={item.unit === 'pcs' ? 1 : 0.001} value={current || ''} onChange={e => setQty(item, Number(e.target.value))} placeholder="0" className="h-8 w-full rounded-lg border border-border bg-background text-center text-sm font-black" />
+                            <input type="number" step={item.unit === 'pcs' ? 1 : 0.001} value={current || ''} onChange={e => setQty(item, Number(sanitizeQtyForUnit(e.target.value, item.unit === 'pcs' ? 'pcs' : 'kg')))} placeholder="0" className="h-8 w-full rounded-lg border border-border bg-background text-center text-sm font-black" />
                             <button onClick={() => setQty(item, current + step)} className="size-8 rounded-lg bg-primary font-black text-primary-foreground hover:opacity-90">+</button>
                           </div>
                         </article>
@@ -5459,7 +5459,7 @@ function BillingTab() {
                 <option value="kg">kg</option>
               </select>
               <input type="number" min="0" step="0.01" value={customItem.price} onChange={e => setCustomItem(c => ({ ...c, price: e.target.value }))} placeholder="Price" className="h-9 rounded-lg border border-border bg-background px-2 text-xs font-bold" />
-              <input type="number" min="0" step={customItem.unit === 'pcs' ? 1 : 0.001} value={customItem.quantity} onChange={e => setCustomItem(c => ({ ...c, quantity: e.target.value }))} placeholder="Qty" className="h-9 rounded-lg border border-border bg-background px-2 text-xs font-bold" />
+              <input type="number" min="0" step={customItem.unit === 'pcs' ? 1 : 0.001} value={customItem.quantity} onChange={e => setCustomItem(c => ({ ...c, quantity: sanitizeQtyForUnit(e.target.value, c.unit) }))} placeholder="Qty" className="h-9 rounded-lg border border-border bg-background px-2 text-xs font-bold" />
             </div>
             <div className="flex items-center gap-2">
               <button onClick={addCustomItem} className="flex h-8 items-center gap-1 rounded-lg bg-primary px-3 text-[11px] font-black text-primary-foreground hover:opacity-90"><Plus className="size-3.5" /> Add to cart</button>
@@ -5480,7 +5480,7 @@ function BillingTab() {
                     <p className="text-xs font-bold text-muted-foreground">{invoiceMoney(item.price)} / {item.unit} · {item.category}</p>
                     <div className="mt-2 flex items-center gap-2">
                       <button onClick={() => setQty(item, current - step)} className="size-8 rounded-lg border border-border bg-card font-black text-foreground hover:bg-muted">-</button>
-                      <input type="number" step={item.unit === 'pcs' ? 1 : 0.001} value={current || ''} onChange={e => setQty(item, Number(e.target.value))} placeholder="0" className="h-8 w-full rounded-lg border border-border bg-background text-center text-sm font-black" />
+                      <input type="number" step={item.unit === 'pcs' ? 1 : 0.001} value={current || ''} onChange={e => setQty(item, Number(sanitizeQtyForUnit(e.target.value, item.unit === 'pcs' ? 'pcs' : 'kg')))} placeholder="0" className="h-8 w-full rounded-lg border border-border bg-background text-center text-sm font-black" />
                       <button onClick={() => setQty(item, current + step)} className="size-8 rounded-lg bg-primary font-black text-primary-foreground hover:opacity-90">+</button>
                     </div>
                   </article>
@@ -6143,7 +6143,7 @@ function SampleBillTab() {
                 <option value="kg">kg</option>
               </select>
               <input type="number" min="0" step="0.01" value={customItem.price} onChange={e => setCustomItem(c => ({ ...c, price: e.target.value }))} placeholder="Price" className="h-9 rounded-lg border border-amber-300 bg-white px-2 text-xs font-bold" />
-              <input type="number" min="0" step={customItem.unit === 'pcs' ? 1 : 0.001} value={customItem.quantity} onChange={e => setCustomItem(c => ({ ...c, quantity: e.target.value }))} placeholder="Qty" className="h-9 rounded-lg border border-amber-300 bg-white px-2 text-xs font-bold" />
+              <input type="number" min="0" step={customItem.unit === 'pcs' ? 1 : 0.001} value={customItem.quantity} onChange={e => setCustomItem(c => ({ ...c, quantity: sanitizeQtyForUnit(e.target.value, c.unit) }))} placeholder="Qty" className="h-9 rounded-lg border border-amber-300 bg-white px-2 text-xs font-bold" />
             </div>
             <div className="flex items-center gap-2">
               <button onClick={addCustomItem} className="flex h-8 items-center gap-1 rounded-lg bg-amber-500 px-3 text-[11px] font-black text-white hover:opacity-90"><Plus className="size-3.5" /> Add to cart</button>
@@ -6164,7 +6164,7 @@ function SampleBillTab() {
                     <p className="text-xs font-bold text-muted-foreground">{invoiceMoney(item.price)} / {item.unit} · {item.category}</p>
                     <div className="mt-2 flex items-center gap-2">
                       <button onClick={() => setQty(item, current - step)} className="size-8 rounded-lg border border-border bg-card font-black text-foreground hover:bg-muted">-</button>
-                      <input type="number" step={item.unit === 'pcs' ? 1 : 0.001} value={current || ''} onChange={e => setQty(item, Number(e.target.value))} placeholder="0" className="h-8 w-full rounded-lg border border-border bg-background text-center text-sm font-black" />
+                      <input type="number" step={item.unit === 'pcs' ? 1 : 0.001} value={current || ''} onChange={e => setQty(item, Number(sanitizeQtyForUnit(e.target.value, item.unit === 'pcs' ? 'pcs' : 'kg')))} placeholder="0" className="h-8 w-full rounded-lg border border-border bg-background text-center text-sm font-black" />
                       <button onClick={() => setQty(item, current + step)} className="size-8 rounded-lg bg-amber-500 font-black text-white hover:opacity-90">+</button>
                     </div>
                   </article>
