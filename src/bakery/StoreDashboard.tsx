@@ -242,6 +242,15 @@ function AttachmentPreview({ name, dataUrl }: { name?: string; dataUrl?: string 
   );
 }
 
+// AUDIT FIX (2026-09-09): the print helpers below build HTML via
+// document.write with staff/customer-entered free text (item names, recipe
+// material names) interpolated raw — an unescaped `<`/`"` in one of those
+// fields could inject markup/script into the printed document.
+function escapeHtml(value: unknown): string {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
 // ─── Print helper (per-item) ──────────────────────────────────────────────────
 function printItemRecipe(
   order: BakeryOrder,
@@ -257,7 +266,7 @@ function printItemRecipe(
 
   const matsHtml = mats.map(m => `
     <tr>
-      <td style="padding:4px 6px;border-bottom:1px solid #eee;">${m.material}</td>
+      <td style="padding:4px 6px;border-bottom:1px solid #eee;">${escapeHtml(m.material)}</td>
       <td style="padding:4px 6px;border-bottom:1px solid #eee;text-align:right;font-weight:600;">
         ${formatMaterialQuantity(m.quantity, m.unit)}
       </td>
@@ -268,7 +277,7 @@ function printItemRecipe(
     <!DOCTYPE html>
     <html>
     <head>
-      <title>Order #${order.orderNumber} – ${item.itemName}</title>
+      <title>Order #${order.orderNumber} – ${escapeHtml(item.itemName)}</title>
       <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         @page { size: auto; margin: 8mm; }
@@ -285,7 +294,7 @@ function printItemRecipe(
       </style>
     </head>
     <body>
-      <h1>${item.itemName}${(() => {
+      <h1>${escapeHtml(item.itemName)}${(() => {
         // BUG FIX (audit 2026-08-26): this printed baker label used
         // order.targetBranch only — for an item split across branches by
         // a cross-branch Store merge (branchSplit), that's misleading:
@@ -2119,7 +2128,7 @@ function OrdersTab() {
           : [[o.targetBranch ?? '—', item.quantity] as [string, number]];
         return splits.map(([branch, qty]) => `
         <tr>
-          <td style="padding-left:24px">${item.itemName}</td>
+          <td style="padding-left:24px">${escapeHtml(item.itemName)}</td>
           <td>${qty} ${item.dispatchUnit ?? 'pcs'}</td>
           <td>${o.status}</td>
           <td>${branch}</td>

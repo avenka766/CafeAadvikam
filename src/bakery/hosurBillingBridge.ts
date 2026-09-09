@@ -6,6 +6,7 @@
 // (imported, not duplicated) so behavior stays identical to the existing,
 // already-proven billing flow.
 import { supabase } from '@/lib/supabase';
+import { getAppSessionToken } from '@/lib/appSession';
 import {
   BRANCH, cleanPhone, notifyAdmin, buildBillMessage, nextBillNo,
   createWhatsappQrMedia, createWhatsappBillDocument, createWhatsappBillImage, uploadWhatsappMedia,
@@ -78,7 +79,9 @@ async function sendHosurWhatsapp(params: {
     try {
       response = await window.fetch(`${supabaseUrl}/functions/v1/send-hosur-whatsapp`, {
         method: 'POST',
-        headers: { apikey: anonKey, Authorization: `Bearer ${anonKey}`, 'Content-Type': 'application/json' },
+        // SECURITY FIX (2026-09-09): the function now requires a valid staff
+        // session — see send-hosur-whatsapp/index.ts.
+        headers: { apikey: anonKey, Authorization: `Bearer ${anonKey}`, 'Content-Type': 'application/json', 'x-cafe-session': getAppSessionToken() ?? '' },
         body: JSON.stringify({
           phone: normalizedPhone, message: params.body, shopId: params.shopId, billId: params.billId,
           billNo: params.billNo, messageType: params.messageType, billDocument, qrImage: qrMedia,

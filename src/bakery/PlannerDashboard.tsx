@@ -10217,6 +10217,31 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
       setError('This exact batch was already dispatched and invoiced — reopening this popup can\'t send it again. Check Dispatched / Recent Bills for the existing invoice.');
       return;
     }
+    // BUG FIX (2026-09-09): "I added the delivery charge but it is not
+    // showing in the invoice and the amount is not showing" — confirmed live
+    // (SALES/26-27/156, GP THENI): the charge name/amount fields are a
+    // two-step draft — typing into them does nothing until the separate
+    // "Add" button is clicked (addCharge above); the invoice's saved items
+    // had zero charge lines, meaning the draft was typed but never
+    // committed to `charges` state before Send was clicked. Same silent-drop
+    // shape as the other dispatch data-loss bugs fixed this engagement.
+    // Auto-commit a valid pending draft here so nothing typed is ever lost
+    // just because "Add" wasn't clicked before "Send".
+    const pendingChargeName = chargeNameDraft.trim();
+    const pendingChargeAmount = Number(chargeAmountDraft || 0);
+    const hasPendingCharge = !!pendingChargeName && Number.isFinite(pendingChargeAmount) && pendingChargeAmount > 0;
+    const effectiveCharges = hasPendingCharge
+      ? [...charges, { name: pendingChargeName, amount: Math.round(pendingChargeAmount * 100) / 100 }]
+      : charges;
+    if (hasPendingCharge) {
+      setCharges(effectiveCharges);
+      setChargeNameDraft('');
+      setChargeAmountDraft('');
+    }
+    const effectiveChargeLines: DispatchInvoiceItem[] = effectiveCharges.map(c => ({
+      itemName: c.name, unit: 'charge', quantity: 1, unitPrice: c.amount, lineTotal: c.amount,
+    }));
+
     sendingRef.current = true;
     setSending(true);
     setError(null);
@@ -10279,8 +10304,8 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
         // title the checkbox controls) never carried them, so it had nothing
         // to calculate tax from. Attached here too whenever GST is enabled.
         items: (gstInvoiceOffered && gstEnabled
-          ? [...invoiceLines, ...chargeLines].map(l => ({ ...l, hsnCode: gstLineFor(l.itemName).hsnCode, gstPct: Math.max(0, Number(gstLineFor(l.itemName).gstPct) || 0) }))
-          : [...invoiceLines, ...chargeLines]),
+          ? [...invoiceLines, ...effectiveChargeLines].map(l => ({ ...l, hsnCode: gstLineFor(l.itemName).hsnCode, gstPct: Math.max(0, Number(gstLineFor(l.itemName).gstPct) || 0) }))
+          : [...invoiceLines, ...effectiveChargeLines]),
         discountPct,
         dispatchEntryIds: actions.map(a => ({ orderId: a.orderId, dispatchEntryId: a.dispatchEntryId })),
         // FEATURE (2026-09-05): "only if we check the invoice box should the
@@ -10337,7 +10362,7 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
           const outcome = await dispatchReceiveAndBill({
             order: { id: hosurOrderId, orderNumber: hosurOrderNumber ?? '', shopId: hosurShop.id, shopName: hosurShop.name, shopWhatsapp: hosurShop.phone },
             items: billItems,
-            charges,
+            charges: effectiveCharges,
             payment: { paymentType: 'credit', dueDate },
             userName: dispatchedBy,
             requireCounterOpen: false,
@@ -10379,7 +10404,7 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
           // recorded (and what the shop's credit bill actually charges)
           // under the exact same invoice number.
           const gstDiscountMult = 1 - clampedDiscountPct / 100;
-          const gstLines: GstTaxInvoiceLine[] = [...invoiceLines, ...chargeLines].map(l => ({
+          const gstLines: GstTaxInvoiceLine[] = [...invoiceLines, ...effectiveChargeLines].map(l => ({
             itemName: l.itemName,
             hsnCode: gstLineFor(l.itemName).hsnCode,
             qty: l.quantity,

@@ -16,6 +16,7 @@
 // printVrsnbReceiptBill (VRSNB / Hosur), so every invoice in the app carries
 // the same real company details rather than inventing new ones.
 import { supabase, fetchAllRows } from '@/lib/supabase';
+import { getAppSessionToken } from '@/lib/appSession';
 import { printViaIframe } from '@/lib/printViaIframe';
 import type { Branch } from './types';
 import { clampQtyForUnit } from './bakeryStore';
@@ -1437,7 +1438,9 @@ async function sendDispatchInvoiceWhatsapp(
   try {
     response = await window.fetch(`${supabaseUrl}/functions/v1/send-hosur-whatsapp`, {
       method: 'POST',
-      headers: { apikey: anonKey, Authorization: `Bearer ${anonKey}`, 'Content-Type': 'application/json' },
+      // SECURITY FIX (2026-09-09): the function now requires a valid staff
+      // session — see send-hosur-whatsapp/index.ts.
+      headers: { apikey: anonKey, Authorization: `Bearer ${anonKey}`, 'Content-Type': 'application/json', 'x-cafe-session': getAppSessionToken() ?? '' },
       body: JSON.stringify({ phone: normalizedPhone, message, messageType: 'manual', billDocument: pdf, billNo: record.invoiceNo }),
       signal: controller.signal,
     });
