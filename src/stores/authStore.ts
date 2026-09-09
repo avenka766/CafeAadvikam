@@ -159,8 +159,10 @@ export const useAuthStore = create<AuthState>()(
       },
 
       // SEC-11: enforce min password length
+      // AUDIT FIX (2026-09-09): raised from 6 to 8 — matches the server-side
+      // minimum in add_staff_hashed/set_staff_credential_secure.
       addStaff: async (user) => {
-        if (user.password.trim().length < 6) return 'Password must be at least 6 characters';
+        if (user.password.trim().length < 8) return 'Password must be at least 8 characters';
         // C-02 FIX: hash password server-side via RPC; never write plaintext to staff_users directly.
         // The DB RPC add_staff_hashed() runs pgcrypto.crypt() before inserting.
         const { data, error } = await supabase
@@ -186,7 +188,7 @@ export const useAuthStore = create<AuthState>()(
       },
 
       updateStaffPassword: async (userId, newPassword) => {
-        if (newPassword.trim().length < 6) return 'Password must be at least 6 characters';
+        if (newPassword.trim().length < 8) return 'Password must be at least 8 characters';
 
         const primary = await supabase
           .rpc('set_staff_credential_secure', {
