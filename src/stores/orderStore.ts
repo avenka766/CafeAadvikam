@@ -926,13 +926,14 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       .select('id');
 
     if (updateError || !balanceLock || balanceLock.length === 0) {
+      const updateErrorMessage = updateError ? updateError.message : null;
       await supabase.from('orders').delete().eq('id', balanceOrderId);
       set({ orders: prev });
       console.error('[collectBalance] close advance order failed, compensated:', updateError);
       throw new Error(
         !balanceLock || balanceLock.length === 0
           ? 'This order was already updated (possibly by another terminal). Please refresh and check the balance before retrying.'
-          : `Failed to close advance order: ${updateError?.message}`,
+          : `Failed to close advance order: ${updateErrorMessage}`,
       );
     }
   },
