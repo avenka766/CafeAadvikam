@@ -79,7 +79,11 @@ export function PaymentModeEditTab({ branch }: { branch: Branch }) {
       .select('id, bill_no, bill_type, salesperson, biller, total, status, created_at, branch_sale_payments(payment_mode, amount)')
       .eq('branch', branch)
       .order('created_at', { ascending: false })
-      .limit(1000);
+      // AUDIT FIX (2026-09-09): plain `.limit(1000)` on an unbounded,
+      // all-time query silently truncates at PostgREST's 1000-row default
+      // once a branch's bill history grows past it — same class of bug
+      // documented across this codebase. Explicit, generous cap instead.
+      .limit(3000);
 
     if (error) {
       setRows([]);
