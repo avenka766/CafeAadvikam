@@ -1812,7 +1812,10 @@ function OwnerAuditTab() {
           .from('staff_activity_log')
           .select('id, branch, action, detail, staff_name, created_at')
           .order('created_at', { ascending: false })
-          .limit(1000);
+          // AUDIT FIX (2026-09-09): all-branch, all-time query at exactly
+          // PostgREST's 1000-row default cap — silently truncates once the
+          // combined activity log across every branch grows past it.
+          .limit(3000);
         setActivityLog((data || []).map((row: any): OwnerAuditEvent => ({
           id: `activity-${row.id}`,
           branch: row.branch || '-',
@@ -1827,7 +1830,10 @@ function OwnerAuditTab() {
           .from('branch_stock_adjustments')
           .select('id, branch, item_name, old_quantity, new_quantity, delta, reason, adjusted_by, adjusted_at')
           .order('adjusted_at', { ascending: false })
-          .limit(1000);
+          // AUDIT FIX (2026-09-09): all-branch, all-time query at exactly
+          // PostgREST's 1000-row default cap — silently truncates once the
+          // combined stock-adjustment log across every branch grows past it.
+          .limit(3000);
         setStockAdjustmentLog((data || []).map((row: any): OwnerAuditEvent => ({
           id: `stockadj-${row.id}`,
           branch: row.branch || '-',

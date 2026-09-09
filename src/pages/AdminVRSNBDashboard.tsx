@@ -2438,7 +2438,10 @@ function WasteLogsTab({ userName, role }: { userName: string; role: string }) {
       .select("id,log_type,item_name,quantity,unit,reason,verified_by,created_by_username,created_at,checklist,status,edit_reason,edited_by_username,cancellation_reason,cancelled_by_username")
       .eq("branch", BRANCH)
       .order("created_at", { ascending: false })
-      .limit(1000);
+      // AUDIT FIX (2026-09-09): unbounded, all-time query at exactly
+      // PostgREST's 1000-row default cap — silently truncates once this
+      // branch's waste/dump/transfer-out log grows past it.
+      .limit(3000);
     setRowsLoading(false);
     if (!loadError && data) {
       setRows(

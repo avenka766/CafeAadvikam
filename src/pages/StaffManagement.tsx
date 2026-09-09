@@ -281,7 +281,7 @@ export default function StaffManagement() {
                 autofill/autosave — this is an admin typing someone else's
                 new password, not their own login. */}
             <input
-              placeholder="Password (min 6 chars)" type="password" value={newPassword}
+              placeholder="Password (min 8 chars)" type="password" value={newPassword}
               onChange={(e) => setNewPassword(e.target.value)}
               autoComplete="new-password" data-lpignore="true" data-1p-ignore="true" data-bwignore="true"
               className="w-full px-4 py-3 bg-muted/50 border border-border rounded-xl text-sm font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/40 transition-all"
@@ -467,7 +467,7 @@ export default function StaffManagement() {
                       <div className="flex gap-2">
                         <input
                           type="password"
-                          placeholder="Enter new password (min 6 chars)"
+                          placeholder="Enter new password (min 8 chars)"
                           value={newPw}
                           onChange={(e) => setNewPw(e.target.value)}
                           autoComplete="new-password" data-lpignore="true" data-1p-ignore="true" data-bwignore="true"

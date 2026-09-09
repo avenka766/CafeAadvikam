@@ -43,6 +43,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { supabase } from '@/lib/supabase';
+import { getAppSessionToken } from '@/lib/appSession';
 import { useAuthStore } from '@/stores/authStore';
 import { useBranchStore } from '@/branch/branchStore';
 import { useBranchCatalogStore, type BranchCatalogItem } from '@/stores/branchCatalogStore';
@@ -1406,10 +1407,13 @@ export default function HosurDashboard({ hideNav = false }: { hideNav?: boolean 
       try {
         response = await window.fetch(`${supabaseUrl}/functions/v1/send-hosur-whatsapp`, {
           method: 'POST',
+          // SECURITY FIX (2026-09-09): the function now requires a valid
+          // staff session — see send-hosur-whatsapp/index.ts.
           headers: {
             apikey: anonKey,
             Authorization: `Bearer ${anonKey}`,
             'Content-Type': 'application/json',
+            'x-cafe-session': getAppSessionToken() ?? '',
           },
           body: JSON.stringify({
             phone: normalizedPhone,
