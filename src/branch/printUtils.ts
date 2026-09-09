@@ -14,7 +14,12 @@ const roundMoney = (value: number) => Math.round((value + Number.EPSILON) * 100)
 // file used .toFixed(2), always showing paise even when the real accounting
 // (roundMoney above) already settles everything to whole rupees at billing
 // time. Quantity fields (kg weights) are untouched — only money amounts.
-const rupee = (value: number) => String(Math.round(Number(value) || 0));
+// Accepts `number | undefined` — several BranchBillRecord money fields
+// (additionalCharges, walletCashback, refundAmount, the advance-amount
+// bolt-on fields) are optional, and every call site here already relies on
+// `Number(value) || 0` to treat a missing amount as ₹0 rather than passing a
+// guaranteed-defined number in.
+const rupee = (value: number | undefined) => String(Math.round(Number(value) || 0));
 const billRoundOff = (bill: BranchBillRecord) => bill.roundOff ?? roundMoney(
   bill.total - (bill.amountBeforeRoundOff ?? Math.max(0, bill.subtotal + bill.tax - bill.discount)),
 );

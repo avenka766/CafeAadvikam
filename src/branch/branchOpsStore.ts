@@ -1123,7 +1123,7 @@ const mergeOperationRecordsIntoState = (
     );
     if (recovered.length > 0 || deletedIds.size > 0) {
       const recoveredIds = new Set(recovered.map((item) => item.id));
-      (state as unknown as Record<string, unknown[]>)[stateKey as string] = [...recovered, ...current.filter((item) => !recoveredIds.has(item.id) && !deletedIds.has(item.id))]
+      (state as unknown as Record<string, unknown[]>)[stateKey as string] = [...recovered, ...current.filter((item) => !recoveredIds.has(item.id) && !(item.id && deletedIds.has(item.id)))]
         .sort((a, b) => Number(new Date((b as { createdAt?: string }).createdAt || 0)) - Number(new Date((a as { createdAt?: string }).createdAt || 0)))
         .slice(0, 5000);
     }
@@ -2587,7 +2587,16 @@ export const useBranchOpsStore = create<BranchOpsState>()(
 
         let ledgerResult: { creditAdjusted?: number; refundAmount?: number; refundMode?: string; returnNo?: string } | null = null;
         try {
-          let result = requestedRefundMode === 'wallet'
+          // Typed `any` explicitly: `result` is reassigned below across up to
+          // 3 different RPC calls (fallback chain for older DB deployments
+          // missing a newer function) — strict-mode control-flow analysis
+          // otherwise narrows the reassigned variable down to `never` by the
+          // time it's read after the final `if (result.error)` check, a known
+          // TS limitation with discriminated-union response types reassigned
+          // across conditional branches, not a real type issue (the JSON
+          // shape genuinely varies per RPC and was already read via optional
+          // chaining below regardless).
+          let result: any = requestedRefundMode === 'wallet'
             ? await supabase.rpc('process_branch_wallet_return_v1', {
                 p_branch: ret.branch,
                 p_bill_no: ret.originalBillNo,
@@ -2636,7 +2645,14 @@ export const useBranchOpsStore = create<BranchOpsState>()(
             });
           }
           if (result.error) throw result.error;
-          ledgerResult = (result.data ?? null) as typeof ledgerResult;
+          // Cast against the explicit literal type here, not `typeof
+          // ledgerResult` — a self-referential `typeof` on the LHS variable
+          // being assigned resolves against its narrowed type just before
+          // this line (still `null`, its initial value, since this is the
+          // first reassignment), which strict mode's control-flow analysis
+          // then carries forward as `never` for every later read of
+          // `ledgerResult` in this function.
+          ledgerResult = (result.data ?? null) as { creditAdjusted?: number; refundAmount?: number; refundMode?: string; returnNo?: string } | null;
         } catch (rpcErr) {
           console.error('[addReturn] process_branch_return failed; return was not recorded in ledger:', rpcErr);
           throw new Error('Return could not be recorded in Supabase ledger. Please run the branch returns migration and try again.');

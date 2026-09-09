@@ -523,7 +523,7 @@ function BranchAlertsTab({
   cakeDeliveries,
 }: {
   branch: Branch;
-  legacyDeliveries: Array<{ id: string; customerName: string; customerPhone?: string | null; deliveryDate: string; balanceDue: number; subtotal: number; items: Array<{ itemName: string; quantity: number }> }>;
+  legacyDeliveries: Array<{ id: string; customerName: string | null; customerPhone?: string | null; deliveryDate: string | null; balanceDue: number; subtotal: number; items: Array<{ itemName: string; quantity: number }> }>;
   cakeDeliveries: Array<{ id: string; orderNo: string; customerName: string; mobile: string; deliveryDate: string; deliveryTime?: string; cakeKg: string; flavor: string; shape: string; balanceAmount: number; status: string }>;
 }) {
   const hasDeliveries = legacyDeliveries.length + cakeDeliveries.length > 0;
