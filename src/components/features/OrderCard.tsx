@@ -394,7 +394,7 @@ export default function OrderCard({ order, showActions = false, counterOpenedTod
           {(order.parcelCharges ?? 0) > 0 && (
             <div className="flex justify-between text-xs font-body text-amber-600 bg-amber-50 px-2 py-1 rounded-lg border border-amber-200 mb-1">
               <span>📦 Parcel charges</span>
-              <span className="tabular-nums font-bold">+{formatCurrency(order.parcelCharges)}</span>
+              <span className="tabular-nums font-bold">+{formatCurrency(order.parcelCharges ?? 0)}</span>
             </div>
           )}
           <div className="flex justify-between">
