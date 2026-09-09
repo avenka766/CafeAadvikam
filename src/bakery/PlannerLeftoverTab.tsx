@@ -256,47 +256,53 @@ export async function renameAndCorrectClosingStockBalance(params: {
   return { ok: true };
 }
 
+// Combines an item's closingStockItemSlug() with its unit — the leftover
+// ledger tracks a separate running balance per item+unit (see
+// useLeftoverBalanceMap below), so every lookup into that balance map needs
+// both, not just the item name/slug alone.
+export function closingStockBalanceKey(itemSlug: string, unit: LeftoverUnit): string {
+  return `${itemSlug}|${unit}`;
+}
+
 // Lightweight balance lookup for the Dispatch tab's "Dispatch from Leftover"
-// action — keyed by item slug (not slug+unit, since in practice each item
-// only ever carries a balance in one unit at a time).
+// action — keyed by closingStockBalanceKey(itemSlug, unit), NOT by item slug
+// alone.
+//
+// BUG FIX (2026-09-10): "Production Entry shows the same item name in both
+// pcs and kg, and closing data is wrong." A 2026-09-03 fix here already
+// stopped SUMMING a kg delta and a pcs delta for the same item into one
+// meaningless number ("3.2 kg" + "40 pcs" reported as balance 43.2), by
+// tracking a separate running balance per item+unit internally — but it then
+// collapsed those two real per-unit balances back down into a SINGLE
+// slug-keyed entry anyway before returning them, picking whichever unit had
+// the larger absolute balance and silently dropping the OTHER unit's balance
+// from every caller entirely (available-to-dispatch quantities in every
+// Dispatch panel, the Merged Summary "In stock" badge, Owner Dashboard's ₹
+// stock valuation). That's exactly the "staff can and do pick either kg or
+// pcs for the same item on different occasions" case the old comment already
+// called out as real, not rare — an item legitimately holding both a kg
+// balance AND a pcs balance (e.g. loose kg leftover plus a separately
+// packaged/counted batch) had one of its two real totals silently vanish
+// from every screen that reads this map, which is exactly what made
+// "closing data wrong". Now exposes BOTH per-unit entries — every caller
+// already knows the unit of the row it's checking (row.unit /
+// checklistItem.unit), so it asks for the balance in that specific unit
+// instead of an ambiguous "whichever one this map felt like keeping".
 export function useLeftoverBalanceMap(): { balances: Map<string, { itemName: string; unit: LeftoverUnit; balance: number }>; refresh: () => void } {
   const [rows, setRows] = useState<LeftoverLedgerRow[]>([]);
   const refresh = useCallback(() => { void fetchLeftoverLedger().then(({ rows: fetched }) => setRows(fetched)); }, []);
   useEffect(() => { refresh(); }, [refresh]);
   const balances = useMemo(() => {
-    // AUDIT FIX (2026-09-03): this used to add every row's delta into one
-    // number regardless of the row's own unit ("in practice each item only
-    // ever carries a balance in one unit at a time" — an assumption nothing
-    // actually enforces: staff can and do pick either kg or pcs for the
-    // same item on different occasions). A kg delta and a pcs delta for the
-    // same item slug were silently summed into one meaningless figure (e.g.
-    // "3.2 kg" + "40 pcs" reported as balance 43.2) — feeding wrong
-    // available-to-dispatch quantities AND wrong ₹ stock valuation (Owner
-    // Dashboard multiplies this balance by price). Tracked per slug+unit
-    // internally now so the two never get added together; still exposed as
-    // one balance per slug (same external shape every caller already
-    // expects) — picking whichever unit has real, non-trivial activity.
-    // If genuinely both units have real activity for one item (should be
-    // rare — see the sanitize-on-unit-switch fix below, which removes the
-    // main way that happens by accident), the one with the larger absolute
-    // balance wins, so the reported number is at least internally correct
-    // for the unit it names, never a cross-unit sum.
     const perUnit = new Map<string, { itemName: string; unit: LeftoverUnit; balance: number }>();
     rows.forEach((row) => {
-      const key = `${row.itemSlug}|${row.unit}`;
+      const key = closingStockBalanceKey(row.itemSlug, row.unit);
       const current = perUnit.get(key) ?? { itemName: row.itemName, unit: row.unit, balance: 0 };
       current.balance += row.delta;
       current.itemName = row.itemName;
       perUnit.set(key, current);
     });
-    const map = new Map<string, { itemName: string; unit: LeftoverUnit; balance: number }>();
-    for (const [key, entry] of perUnit) {
-      const slug = key.slice(0, key.lastIndexOf('|'));
-      const existing = map.get(slug);
-      if (!existing || Math.abs(entry.balance) > Math.abs(existing.balance)) map.set(slug, entry);
-    }
-    for (const [slug, entry] of map) if (entry.balance <= 0.001) map.delete(slug);
-    return map;
+    for (const [key, entry] of perUnit) if (entry.balance <= 0.001) perUnit.delete(key);
+    return perUnit;
   }, [rows]);
   return { balances, refresh };
 }

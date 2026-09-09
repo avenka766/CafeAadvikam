@@ -387,7 +387,13 @@ export function walkinBillToInvoiceRecord(bill: WalkinBillRow): DispatchInvoiceR
   return {
     id: bill.id,
     invoiceNo: bill.billNo,
-    scope: 'SNB',
+    // BUG FIX (2026-09-10): "Sales tab invoices use Sri Nanjundeshwara
+    // Bakery as the title — should be VRSNB FOODS LLP." This was hardcoded
+    // to 'SNB' purely to pick a letterhead (businessFor()); scope has no
+    // other effect here since a walk-in bill isn't a real dispatch_invoices
+    // row (bakery_walkin_bills has no scope column of its own — this object
+    // is only ever built in-memory, right before printing).
+    scope: 'VRSNB',
     hosurShopId: null, hosurShopName: null, hosurShopPhone: null,
     customerName: bill.customerName || 'Walk-in Customer',
     customerPhone: bill.customerMobile,
@@ -436,7 +442,19 @@ export function renderDispatchInvoiceHtml(record: DispatchInvoiceRecord, mode: '
     ? `${esc(record.hosurShopName || 'Hosur Shop')}${record.hosurShopPhone ? ` ${esc(record.hosurShopPhone)}` : ''}`
     : `${esc(record.scope)} Branch`;
   const addressLine = record.customerName && record.customerAddress ? `<div class="row small"><span>${esc(record.customerAddress)}</span></div>` : '';
-  const totalQty = record.items.reduce((s, i) => s + i.quantity, 0);
+  // BUG FIX (2026-09-10): "other charges getting added with the item list —
+  // should be mentioned separately, and the quantity should not be shown."
+  // A named charge (Delivery Fee, Transportation, ...) is modeled as an item
+  // with unit:'charge', quantity 1 (see BillingTab/DispatchReviewModal) so
+  // every existing subtotal/discount/total calculation just sums lineTotal
+  // without special-casing it — but that meant it also printed as a literal
+  // row in the Sn/Item Name/Qty/Rate/Amount table, with a quantity ("1")
+  // that means nothing for a charge, AND got counted into "Total Qty" at the
+  // bottom of that table (inflating it — e.g. 36 real items + 1 charge
+  // showing as "Total Qty: 37"). Split charge lines out of the item table
+  // entirely; they print in their own section below instead (see chargesHtml).
+  const chargeItems = record.items.filter(i => i.unit === 'charge');
+  const totalQty = record.items.filter(i => i.unit !== 'charge').reduce((s, i) => s + i.quantity, 0);
 
   // BUG FIX (2026-09-05): "even if they check the tax invoice box the GST
   // is not getting calculated for the items" — this invoice (the one whose
@@ -492,7 +510,10 @@ export function renderDispatchInvoiceHtml(record: DispatchInvoiceRecord, mode: '
     }
   }
   const netByKey = new Map(record.items.map(i => [itemKey(i.itemName, i.unit), i]));
-  const rowSourceItems = isReturned ? (record.originalItems ?? record.items) : record.items;
+  // Charge lines never belong in the real-item table (see chargeItems above)
+  // — same exclusion applied to whichever source array (returned invoices
+  // read from originalItems instead of record.items).
+  const rowSourceItems = (isReturned ? (record.originalItems ?? record.items) : record.items).filter(i => i.unit !== 'charge');
   const rows = rowSourceItems.map((i, idx) => {
     const k = itemKey(i.itemName, i.unit);
     const netItem = netByKey.get(k);
@@ -511,6 +532,19 @@ export function renderDispatchInvoiceHtml(record: DispatchInvoiceRecord, mode: '
       <td class="num">${Math.round(netAmount)}</td>
     </tr>`;
   }).join('');
+  // The item table's own Total must now sum only the rows actually printed
+  // in it (charges excluded) — record.subtotal itself still includes
+  // charges (nothing about how it's computed upstream changes), so using it
+  // here directly would show a "Total" the visible item rows don't add up
+  // to. The gap between this and the final Net Bill Amount below is exactly
+  // what chargesHtml prints.
+  const itemsSubtotal = Math.round(rowSourceItems.reduce((s, i) => s + i.lineTotal, 0) * 100) / 100;
+  // Named charges (Delivery Fee, Transportation, ...) print here — a short
+  // Name/Amount list under the real item table, no quantity column, since a
+  // charge was never a physical unit count. See chargeItems above.
+  const chargesHtml = chargeItems.length > 0 ? `
+    <div class="row" style="margin-top:6px"><span style="font-weight:900">Other Charges</span><span></span></div>
+    ${chargeItems.map(c => `<div class="row"><span>${esc(c.itemName)}</span><span>${Math.round(c.lineTotal)}</span></div>`).join('')}` : '';
   const returnNoteHtml = record.returnLog.length > 0 ? `
     <div class="stamp-return">
       ${record.returnLog.map(entry => {
@@ -581,9 +615,10 @@ export function renderDispatchInvoiceHtml(record: DispatchInvoiceRecord, mode: '
       <thead><tr><th>Sn</th><th>Item Name</th>${isGst ? '<th>HSN</th>' : ''}${isReturned ? '<th class="num">Sent</th><th class="num">Returned</th><th class="num">Net</th>' : '<th class="num">Qty</th>'}<th class="num">Rate</th><th class="num">Amount</th></tr></thead>
       <tbody>
         ${rows}
-        <tr class="total-row"><td></td><td>Total</td>${isGst ? '<td></td>' : ''}${isReturned ? `<td></td><td></td><td class="num">${fmtQty(totalQty)}</td>` : `<td class="num">${fmtQty(totalQty)}</td>`}<td></td><td class="num">${Math.round(record.subtotal)}</td></tr>
+        <tr class="total-row"><td></td><td>Total</td>${isGst ? '<td></td>' : ''}${isReturned ? `<td></td><td></td><td class="num">${fmtQty(totalQty)}</td>` : `<td class="num">${fmtQty(totalQty)}</td>`}<td></td><td class="num">${Math.round(itemsSubtotal)}</td></tr>
       </tbody>
     </table>
+    ${chargesHtml}
     ${gstSummaryHtml}
     ${returnNoteHtml}
     <div class="summary">

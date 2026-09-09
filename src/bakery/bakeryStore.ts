@@ -1065,12 +1065,12 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     // instead of the real, fixable problem: this tab's local order list is
     // stale. Force a full resync so the next attempt uses a real, current
     // order id, and say so in plain language instead of surfacing PGRST116.
+    if (fetchErr) {
+      throw new Error(fetchErr.message || 'Dispatch failed because the bakery order could not be loaded.');
+    }
     if (!freshOrder) {
       void get().fetchOrders(false, true);
       throw new Error('This order was updated elsewhere and no longer exists in its previous form — the order list has been refreshed. Please re-open it and try dispatching again.');
-    }
-    if (fetchErr) {
-      throw new Error(fetchErr.message || 'Dispatch failed because the bakery order could not be loaded.');
     }
 
     const existingLog: DispatchEntry[] = (freshOrder.dispatch_log as DispatchEntry[]) || [];

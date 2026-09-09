@@ -515,7 +515,14 @@ export function SnbStockMovementPanel({ mode, branch = "SNB" }: { mode: StockMov
   const unitFor = useCallback((name: string, catalogUom?: string) =>
     stock.find((item) => normal(item.itemName) === normal(name))?.unit
     || (catalogUom === "Kgs" ? "kg" : "pcs"), [stock]);
-  const [lineDraft, setLineDraft] = useState({ itemName: first?.name || "", barcode: first?.barcode, quantity: "", unit: unitFor(first?.name || "", first?.uom) });
+  // Explicit `barcode?: number` annotation: without it, TS infers the type
+  // from `first?.barcode` where `first = catalogItems[0]` — indexed access
+  // isn't itself `| undefined` under this project's tsconfig (noUncheckedIndexedAccess
+  // is off), so `first` types as always-defined and the optional chain
+  // collapses `barcode` to a non-optional `number`, even though a genuinely
+  // empty catalog makes `first` undefined at runtime and later assignments
+  // (e.g. in choose() below, from `catalogItems.find()`, which IS `| undefined`) are real `number | undefined`.
+  const [lineDraft, setLineDraft] = useState<{ itemName: string; barcode?: number; quantity: string; unit: string }>({ itemName: first?.name || "", barcode: first?.barcode, quantity: "", unit: unitFor(first?.name || "", first?.uom) });
   const [lines, setLines] = useState<WasteLine[]>([]);
   const [meta, setMeta] = useState({ reason: "", verifiedBy: userName, confirmed: false });
   // FEATURE (2026-09-08): "when SNB/VRSNB Order transfer out, they should

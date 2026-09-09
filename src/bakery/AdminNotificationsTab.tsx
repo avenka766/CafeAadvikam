@@ -413,7 +413,7 @@ function NotificationDetailModal({
                 <p className="text-[10px] font-body text-blue-600 uppercase font-bold">Item Name</p>
                 <p className="text-sm font-body font-semibold text-foreground">{String(m.name ?? '—')}</p>
               </div>
-              {m.oldName && m.oldName !== m.name && (
+              {Boolean(m.oldName) && m.oldName !== m.name && (
                 <div>
                   <p className="text-[10px] font-body text-blue-600 uppercase font-bold">Previous Name</p>
                   <p className="text-sm font-body text-muted-foreground line-through">{String(m.oldName)}</p>
@@ -507,7 +507,7 @@ function NotificationDetailModal({
                 <p className="text-[10px] font-body text-muted-foreground uppercase font-bold">Action</p>
                 <p className="text-sm font-body font-bold text-foreground capitalize">{action}</p>
               </div>
-              {m.category && (
+              {Boolean(m.category) && (
                 <div>
                   <p className="text-[10px] font-body text-muted-foreground uppercase font-bold">Category</p>
                   <p className="text-sm font-body text-foreground">{String(m.category)}</p>

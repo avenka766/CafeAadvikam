@@ -33,7 +33,7 @@ import HosurShopOrderPanel, { leftoverReasonLabel } from './HosurShopOrderPanel'
 import { dispatchReceiveAndBill, type HosurOrderItemForBilling } from './hosurBillingBridge';
 import PackingCakeOrdersTab from './PackingCakeOrdersTab';
 import { useCakeReadyCount } from './useCakeReadyCount';
-import PlannerLeftoverTab, { PlannerTransferOutTab, useLeftoverBalanceMap, recordLeftoverMovement, kolkataToday, qtyFmt, sanitizeQtyForUnit, type LeftoverUnit, useMergedLeftoverCatalog, useMergedCatalogWithPrice, useBranchOnlyCatalog, ItemSearchPicker, type MergedCatalogItem } from './PlannerLeftoverTab';
+import PlannerLeftoverTab, { PlannerTransferOutTab, useLeftoverBalanceMap, closingStockBalanceKey, recordLeftoverMovement, kolkataToday, qtyFmt, sanitizeQtyForUnit, type LeftoverUnit, useMergedLeftoverCatalog, useMergedCatalogWithPrice, useBranchOnlyCatalog, ItemSearchPicker, type MergedCatalogItem } from './PlannerLeftoverTab';
 import { canonicalItemSlug, closingStockItemSlug, kgToPcs, parseWeightGrams, pcsToKg, resolveItemWeightGrams } from './itemMatcher';
 import { useBranchCatalogStore } from '@/stores/branchCatalogStore';
 import { useRecipeStore } from './recipeStore';
@@ -1903,7 +1903,7 @@ function MergedSummaryTab({ orders }: { orders: BakeryOrder[] }) {
                           </span>
                         )}
                         {(() => {
-                          const stock = closureBalances.get(closingStockItemSlug(row.itemName));
+                          const stock = closureBalances.get(closingStockBalanceKey(closingStockItemSlug(row.itemName), row.unit));
                           return stock
                             ? <span className="rounded-full bg-emerald-100 px-1.5 py-0.5 text-[9px] font-black text-emerald-700">In stock: {qtyFmt(stock.balance)} {stock.unit}</span>
                             : <span className="rounded-full bg-muted px-1.5 py-0.5 text-[9px] font-bold text-muted-foreground">Not in closing stock</span>;
@@ -6054,14 +6054,16 @@ function SampleBillTab() {
       // FEATURE (2026-09-01): "for the items we sale in both new bill and
       // sample bill for both use the same [SALES/26-27/N]" — fetch from the
       // shared Sales sequence instead of letting saveDispatchInvoice fall
-      // back to SNB's own dispatch-invoice numbering (scope stays 'SNB'
-      // below purely to pick the right business letterhead — unrelated to
-      // the invoice number itself now).
+      // back to SNB's own dispatch-invoice numbering (scope below purely
+      // picks the right business letterhead — unrelated to the invoice
+      // number itself now).
+      // BUG FIX (2026-09-10): "Sales tab invoices use Sri Nanjundeshwara
+      // Bakery as the title — should be VRSNB FOODS LLP." Was 'SNB' here.
       const { data: salesNo, error: salesNoError } = await supabase.rpc('next_sales_bill_number');
       if (salesNoError || !salesNo) throw new Error(salesNoError?.message || 'Could not generate the next bill number. Please try again.');
       const items: DispatchInvoiceItem[] = cartLines.map(l => ({ itemName: l.itemName, unit: l.unit, quantity: l.quantity, unitPrice: l.price, lineTotal: Math.round(l.price * l.quantity * 100) / 100 }));
       const record = await saveDispatchInvoice({
-        scope: 'SNB',
+        scope: 'VRSNB',
         invoiceNo: String(salesNo),
         customerName: customerName.trim(),
         customerPhone: customerPhone.trim(),
@@ -6726,7 +6728,11 @@ function HosurShopDispatchPanel({ rows, mode, orders, leftoverBalances, onDispat
   } | null>(null);
   const [underQtyBusy, setUnderQtyBusy] = useState(false);
 
-  const availableFor = (itemName: string) => Math.max(0, leftoverBalances.get(closingStockItemSlug(itemName))?.balance ?? 0);
+  // BUG FIX (2026-09-10): now takes the item's own unit — leftoverBalances
+  // is keyed by slug+unit (see closingStockBalanceKey), not slug alone, so
+  // an item genuinely holding both a kg balance and a pcs balance no longer
+  // silently reports whichever one the map happened to keep.
+  const availableFor = (itemName: string, unit: LeftoverUnit) => Math.max(0, leftoverBalances.get(closingStockBalanceKey(closingStockItemSlug(itemName), unit))?.balance ?? 0);
   // BUG FIX (2026-08-09): "we are unable to remove the orders from the hosur
   // shop... need to remove that item so we can dispatch the rest" — an item
   // that genuinely can't be fulfilled (production issue) had no way to be
@@ -6743,7 +6749,7 @@ function HosurShopDispatchPanel({ rows, mode, orders, leftoverBalances, onDispat
     const draft: Record<string, string> = {};
     for (const item of card.items) {
       const remaining = remainingFor(item);
-      const suggested = Math.round(Math.min(remaining, availableFor(item.itemName)) * 100) / 100;
+      const suggested = Math.round(Math.min(remaining, availableFor(item.itemName, item.unit as LeftoverUnit)) * 100) / 100;
       draft[item.itemName] = String(suggested);
     }
     setQtyDraft(draft);
@@ -6995,7 +7001,7 @@ function HosurShopDispatchPanel({ rows, mode, orders, leftoverBalances, onDispat
               <div className="mt-3 space-y-2">
                 {card.items.map(item => {
                   const remaining = remainingFor(item);
-                  const available = availableFor(item.itemName);
+                  const available = availableFor(item.itemName, item.unit as LeftoverUnit);
                   const val = qtyDraft[item.itemName] ?? '0';
                   const fullySent = item.dispatched >= item.requested - 0.01;
                   const fullyCancelled = !fullySent && remaining <= 0.01;
@@ -7211,7 +7217,7 @@ function BranchFlatDispatchPanel({ branch, rows, orders, leftoverBalances, onDis
     const requested = row.perBranch[branch] ?? 0;
     const alreadySent = branchDispatchedForRow(row, branch, orders);
     const remaining = Math.max(0, Math.round((requested - alreadySent) * 100) / 100);
-    const leftoverBalance = Math.max(0, leftoverBalances.get(closingStockItemSlug(row.itemName))?.balance ?? 0);
+    const leftoverBalance = Math.max(0, leftoverBalances.get(closingStockBalanceKey(closingStockItemSlug(row.itemName), row.unit))?.balance ?? 0);
     const available = computeAvailableForRow(row, leftoverBalance);
     const defaultQty = Math.round(Math.min(remaining, available) * 100) / 100;
     return { row, requested, alreadySent, remaining, available, defaultQty };
@@ -8634,7 +8640,7 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
                 // DispatchChecklistModal's leftoverBalance prop). This is just
                 // a visible confirmation of what's already going to be used,
                 // so nothing has to be manually chosen/applied first.
-                const balance = leftoverBalances.get(closingStockItemSlug(row.itemName));
+                const balance = leftoverBalances.get(closingStockBalanceKey(closingStockItemSlug(row.itemName), row.unit));
                 if (!balance || balance.balance <= 0.001) return null;
                 return (
                   <p className="mt-2 inline-flex items-center gap-1.5 rounded-xl border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-[11px] font-black text-amber-800">
@@ -8715,7 +8721,7 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
           onClose={() => setChecklistItem(null)}
           onDispatch={submitDispatch}
           dispatchedBy={currentUser?.displayName || 'Planner'}
-          leftoverBalance={leftoverBalances.get(closingStockItemSlug(checklistItem.itemName))?.balance ?? 0}
+          leftoverBalance={leftoverBalances.get(closingStockBalanceKey(closingStockItemSlug(checklistItem.itemName), checklistItem.unit))?.balance ?? 0}
         />
       )}
 
@@ -9021,7 +9027,7 @@ function CustomDispatchPanel({ rows, orders, onDispatch, dispatchedBy, leftoverB
     const plannedRequested = row.perBranch.Planned ?? 0;
     const alreadySent = plannedDispatchedForRow(row, orders);
     const remainingPlanned = Math.max(0, plannedRequested - alreadySent);
-    const leftoverBalance = Math.max(0, leftoverBalances.get(closingStockItemSlug(row.itemName))?.balance ?? 0);
+    const leftoverBalance = Math.max(0, leftoverBalances.get(closingStockBalanceKey(closingStockItemSlug(row.itemName), row.unit))?.balance ?? 0);
     const available = computeAvailableForRow(row, leftoverBalance);
     const defaultQty = Math.round(Math.min(remainingPlanned, available) * 100) / 100;
     return { row, plannedRequested, remainingPlanned, available, defaultQty };
@@ -9222,7 +9228,7 @@ function BulkDispatchModal({ branch, rows, orders, onClose, onDispatch, dispatch
     const requested = row.perBranch[branch] ?? 0;
     const alreadySent = branchDispatchedForRow(row, branch, orders);
     const remainingRequested = Math.max(requested - alreadySent, 0);
-    const leftoverBalance = Math.max(0, leftoverBalances.get(closingStockItemSlug(row.itemName))?.balance ?? 0);
+    const leftoverBalance = Math.max(0, leftoverBalances.get(closingStockBalanceKey(closingStockItemSlug(row.itemName), row.unit))?.balance ?? 0);
     const available = computeAvailableForRow(row, leftoverBalance);
     const defaultQty = Math.round(Math.min(remainingRequested, available) * 100) / 100;
     return { row, requested, alreadySent, remaining: remainingRequested, available, defaultQty };

@@ -136,6 +136,27 @@ export function canonicalItemSlug(name: string): string {
 // of being duplicated.
 const WEIGHT_PAREN = /\(\s*\d+(?:\.\d+)?\s*(?:g|gm|gms|kg|ml|l)\s*\)/gi;
 
+// BUG FIX (2026-09-10): a bare, numberless unit qualifier — "(kg)", "(kgs)",
+// "(pcs)", "(pieces)", "(nos)" — is NOT a real item qualifier the way
+// "(200g)" is; it's exactly the disambiguation suffix computeMergedSummary/
+// computeMergedSummaryDisplay themselves append to a DISPLAY name
+// (`${itemName} (${unit})`) whenever the same item is ordered in both kg and
+// pcs (see their "sometimes unable to select an item" fix). Confirmed live:
+// a planner used "Record Extra Produced Item" (free-text capable — see
+// ExtraProducedItemForm) and typed/copied a Production Entry row's own
+// disambiguated label, e.g. "COCONUT BISCUIT (kg)", straight in — which,
+// before this fix, slugged to a BRAND NEW "coconut-biscuit-kg", completely
+// separate from the real item's "coconut-biscuit" slug every dispatch and
+// normal production entry uses. The result: one physical item split across
+// two Closing Stock balances — a false negative on one slug (dispatches with
+// nothing to draw down) and a false positive on the other (production sitting
+// under a slug nothing else ever reads) — exactly the "same item shown in
+// both pcs and kg, closing data wrong" symptom this was investigating.
+// Stripped BEFORE the weight-paren strip above so "Coconut Biscuit (kg)" and
+// "Coconut Biscuit" collapse to the same slug the way "Rusk (250G)" and
+// "Rusk" already do.
+const UNIT_ONLY_PAREN = /\(\s*(?:kgs?|pcs|pieces?|nos)\s*\)/gi;
+
 /**
  * BUG FIX (2026-08-07): the Closing Stock leftover pool used
  * canonicalItemSlug() for matching a dispatched/produced item to its pooled
@@ -152,7 +173,7 @@ const WEIGHT_PAREN = /\(\s*\d+(?:\.\d+)?\s*(?:g|gm|gms|kg|ml|l)\s*\)/gi;
  * parentheses is part of the item's real identity and must stay in the key.
  */
 export function closingStockItemSlug(name: string): string {
-  const withoutWeight = name.replace(WEIGHT_PAREN, '');
+  const withoutWeight = name.replace(WEIGHT_PAREN, '').replace(UNIT_ONLY_PAREN, '');
   return withoutWeight
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
