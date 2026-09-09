@@ -28,6 +28,21 @@ export interface QueuedMutation {
   createdAt: string;
   attempts: number;
   lastError: string | null;
+  // AUDIT FIX (2026-09-09): identity of whoever was actually logged in when
+  // this write was queued — captured once, at enqueue time, never touched
+  // again. A queued entry has no owner check of its own otherwise: on a
+  // shared device (a branch counter, a shared tablet) staff commonly log
+  // out and a DIFFERENT person logs in before the queue gets a chance to
+  // flush on reconnect. Without this, flush() would silently replay Staff
+  // A's queued write under Staff B's now-active session — every gated RPC
+  // this app has (see this session's security work) attributes the write to
+  // whoever's session is live AT REPLAY TIME, not who actually did the
+  // work, which is a real audit-trail integrity gap on top of just being
+  // surprising. Optional so existing IndexedDB entries from before this
+  // field existed still deserialize fine (treated as "no known owner",
+  // never blocked — same as today's behavior for them).
+  staffId?: string | null;
+  staffUsername?: string | null;
 }
 
 // A single shape rather than a discriminated union ({ ok: true } | { ok:
@@ -148,6 +163,14 @@ export const useOfflineQueueStore = create<OfflineQueueState>((set, get) => ({
   // already applied stands as-is; this only guarantees the write itself
   // isn't lost.
   enqueue: async (kind, payload) => {
+    // AUDIT FIX (2026-09-09): capture who's actually logged in right now, so
+    // flush() can refuse to replay this under a DIFFERENT person's session
+    // later. Dynamic import — authStore already doesn't import this module,
+    // so a static import would be safe too, but this keeps the two modules
+    // decoupled the same way the rest of this file is deliberately
+    // store-agnostic (see the file header).
+    const { useAuthStore } = await import('@/stores/authStore');
+    const currentUser = useAuthStore.getState().currentUser;
     const entry: QueuedMutation = {
       id: makeId(),
       kind,
@@ -155,6 +178,8 @@ export const useOfflineQueueStore = create<OfflineQueueState>((set, get) => ({
       createdAt: new Date().toISOString(),
       attempts: 0,
       lastError: null,
+      staffId: currentUser?.id ?? null,
+      staffUsername: currentUser?.username ?? null,
     };
     const next = [...get().pending, entry];
     set({ pending: next });
@@ -181,11 +206,29 @@ export const useOfflineQueueStore = create<OfflineQueueState>((set, get) => ({
     const queue = get().pending;
     if (queue.length === 0) return;
 
+    // AUDIT FIX (2026-09-09): who's actually logged in right now, to compare
+    // against each entry's captured owner below — see enqueue()'s comment.
+    const { useAuthStore } = await import('@/stores/authStore');
+    const activeStaffId = useAuthStore.getState().currentUser?.id ?? null;
+
     set({ flushing: true });
     try {
       const blockedKinds = new Set<string>();
       for (const entry of queue) {
         if (blockedKinds.has(entry.kind)) continue;
+
+        // A queued write with a known owner that doesn't match whoever's
+        // logged in right now is left queued, untouched, rather than
+        // silently replayed under the wrong person's session — same
+        // "stop this kind, don't lose ordering" treatment as a real
+        // failure below, so a later same-kind entry can't jump ahead of it.
+        // No owner recorded (older entry from before this fix, or a kind
+        // enqueued before any user was ever logged in) behaves exactly as
+        // before — nothing blocks it.
+        if (entry.staffId && entry.staffId !== activeStaffId) {
+          blockedKinds.add(entry.kind);
+          continue;
+        }
 
         const handler = replayHandlers.get(entry.kind);
         if (!handler) {
