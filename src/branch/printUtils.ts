@@ -46,14 +46,19 @@ const cashTenderedChangeHtml = (bill: BranchBillRecord, rowClass: string) => {
 // printHtml — Branch reports, Admin SNB/VRSNB printouts, and Planner's
 // cake packing checklist — gets the fix at once instead of one at a time.
 export function printHtml(title: string, body: string) {
+  // AUDIT FIX (2026-09-09): title can carry a staff-typed free-text value
+  // (e.g. a waste-log item name) and lands both in <title> and inside a CSS
+  // content:"..." string — unescaped, a `"` or `</style>` in it could break
+  // out of the CSS block straight into the document <head>.
+  const safeTitle = safeHtml(title);
   printViaIframe(
-    `<!doctype html><html><head><title>${title}</title><style>
+    `<!doctype html><html><head><title>${safeTitle}</title><style>
       @page{size:A4;margin:10mm}
       *{box-sizing:border-box}
       body{margin:0;background:#f8fafc;color:#0f172a;font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:1.45}
       body:before{content:"";position:fixed;inset:0 0 auto 0;height:12px;background:linear-gradient(90deg,#f97316,#059669,#0f172a)}
       main{max-width:980px;margin:0 auto;background:#fff;min-height:100vh;padding:28px;box-shadow:0 18px 50px rgba(15,23,42,.08)}
-      main:before{content:"${title}";display:block;margin:-4px 0 18px;padding:14px 16px;border-radius:24px;background:#0f172a;color:#fff;font-size:20px;font-weight:900;letter-spacing:.02em}
+      main:before{content:"${safeTitle}";display:block;margin:-4px 0 18px;padding:14px 16px;border-radius:24px;background:#0f172a;color:#fff;font-size:20px;font-weight:900;letter-spacing:.02em}
       h1,h2,h3{margin:0 0 10px;color:#0f172a}h1{font-size:24px}h2{font-size:18px}h3{font-size:14px}
       .b{font-weight:900}.c{text-align:center}.right{text-align:right}.muted{color:#64748b}
       .stamp{display:inline-block;border:0;border-radius:999px;background:#fff7ed;color:#c2410c;padding:7px 12px;text-align:center;font-weight:900;margin-bottom:12px;letter-spacing:.08em;text-transform:uppercase}
@@ -142,17 +147,17 @@ function printVrsnbReceiptBill(bill: BranchBillRecord, duplicate = false, target
     <div class="c sub">GST NO: 33AAZFV1266C1ZZ</div>
     <div class="c sub">FSSAI NO: 12425011000098</div>
     <div class="dash"></div>
-    <div>Name: ${customerNameLine}</div>
+    <div>Name: ${safeHtml(customerNameLine)}</div>
     <div class="dash"></div>
     <div class="row"><span>Date: ${dateStr}</span><span class="bold">Pick Up</span></div>
     <div>${timeStr}</div>
-    <div class="row"><span>Cashier: ${bill.biller}</span><span>Bill No.: ${bill.billNo}</span></div>
-    ${returnBill._isReturn ? `<div class="row"><span>Original Bill</span><span>${returnBill._originalBillNo || '-'}</span></div><div>Reason: ${returnBill._returnReason || '-'}</div>` : ''}
+    <div class="row"><span>Cashier: ${safeHtml(bill.biller)}</span><span>Bill No.: ${safeHtml(bill.billNo)}</span></div>
+    ${returnBill._isReturn ? `<div class="row"><span>Original Bill</span><span>${safeHtml(returnBill._originalBillNo || '-')}</span></div><div>Reason: ${safeHtml(returnBill._returnReason || '-')}</div>` : ''}
     <div class="dash"></div>
     <table>
       <thead><tr><th style="text-align:left">Item</th><th class="num">Qty.</th><th class="num">Price</th><th class="num">Amount</th></tr></thead>
       <tbody>
-        ${bill.items.map((i) => `<tr><td>${i.itemName}</td><td class="num">${i.quantity % 1 === 0 ? i.quantity : i.quantity.toFixed(2)}</td><td class="num">${rupee(i.price)}</td><td class="num">${rupee(i.lineTotal)}</td></tr>`).join('')}
+        ${bill.items.map((i) => `<tr><td>${safeHtml(i.itemName)}</td><td class="num">${i.quantity % 1 === 0 ? i.quantity : i.quantity.toFixed(2)}</td><td class="num">${rupee(i.price)}</td><td class="num">${rupee(i.lineTotal)}</td></tr>`).join('')}
         <tr class="total-row"><td colspan="1"></td><td colspan="1" style="font-size:10px">Total Qty: ${totalQty % 1 === 0 ? totalQty : totalQty.toFixed(2)}</td><td style="font-size:10px;text-align:right">Sub Total</td><td class="num">${rupee(bill.subtotal)}</td></tr>
       </tbody>
     </table>
@@ -199,17 +204,17 @@ function printSnbCounterBill(bill: BranchBillRecord, duplicate = false, target?:
     <div class="c small">${business.lines.join('<br/>')}</div>
     <div class="c">GSTIN : ${business.gstin}</div>
     <div class="c doc">TAX INVOICE</div>
-    <div class="row"><span>Bill No : ${bill.billNo}</span><span>Date : ${printedAt.toLocaleDateString('en-GB')}</span></div>
-    ${returnBill._isReturn ? `<div class="row"><span>Original Bill :</span><span>${returnBill._originalBillNo || '-'}</span></div><div class="row"><span>Reason :</span><span>${returnBill._returnReason || '-'}</span></div>` : ''}
-    <div class="row"><span>${bill.invoiceNo}</span><span>Time : ${printedAt.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span></div>
+    <div class="row"><span>Bill No : ${safeHtml(bill.billNo)}</span><span>Date : ${printedAt.toLocaleDateString('en-GB')}</span></div>
+    ${returnBill._isReturn ? `<div class="row"><span>Original Bill :</span><span>${safeHtml(returnBill._originalBillNo || '-')}</span></div><div class="row"><span>Reason :</span><span>${safeHtml(returnBill._returnReason || '-')}</span></div>` : ''}
+    <div class="row"><span>${safeHtml(bill.invoiceNo)}</span><span>Time : ${printedAt.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span></div>
     <table><thead><tr><th>Sn</th><th>Item Name</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">Amount</th></tr></thead><tbody>
-      ${bill.items.map((i, idx) => `<tr><td>${idx + 1}</td><td>${i.itemName}</td><td class="num">${i.quantity.toFixed(i.unit === 'kg' ? 2 : 0)}</td><td class="num">${rupee(i.price)}</td><td class="num">${rupee(i.lineTotal)}</td></tr>`).join('')}
+      ${bill.items.map((i, idx) => `<tr><td>${idx + 1}</td><td>${safeHtml(i.itemName)}</td><td class="num">${i.quantity.toFixed(i.unit === 'kg' ? 2 : 0)}</td><td class="num">${rupee(i.price)}</td><td class="num">${rupee(i.lineTotal)}</td></tr>`).join('')}
       <tr class="total-row"><td></td><td>Total</td><td class="num">${bill.items.reduce((s, i) => s + i.quantity, 0).toFixed(2)}</td><td></td><td class="num">${rupee(bill.subtotal)}</td></tr>
     </tbody></table>
     <div class="summary"><div class="row"><span>${discountLabel(bill)} :</span><span>${rupee(bill.discount)}</span></div><div class="row"><span>Additional Charges :</span><span>${rupee(bill.additionalCharges || 0)}</span></div><div class="row"><span>GST :</span><span>${rupee(bill.tax)}</span></div><div class="row"><span>Amount Before Round-Off :</span><span>${rupee(bill.amountBeforeRoundOff ?? Math.max(0, bill.subtotal + bill.tax - bill.discount))}</span></div><div class="row"><span>Round-Off :</span><span>${billRoundOff(bill) >= 0 ? '+' : ''}${rupee(billRoundOff(bill))}</span></div><div class="row net"><span>Net Bill Amount :</span><span>Rs ${rupee(bill.total)}</span></div>${Number(advanceInfo._advanceAmount || 0) > 0 ? `<div class="row"><span>Advance Amount :</span><span>${rupee(advanceInfo._advanceAmount)}</span></div><div class="row"><span>Balance Paid Now :</span><span>${rupee(Math.max(0, bill.total - Number(advanceInfo._advanceAmount)))}</span></div>` : ''}</div>
     <div class="paybox"><div class="paytitle">Payment Details</div>${paymentRows}${cashTenderedChangeHtml(bill, 'pay')}${bill.walletTransactionId ? `<div class="pay"><span>WALLET BALANCE</span><span>${rupee(bill.walletBalanceRemaining || 0)}</span></div>` : ''}${Number(bill.walletCashback || 0) > 0 ? `<div class="pay"><span>WALLET CASHBACK</span><span>${rupee(bill.walletCashback)}</span></div>` : ''}${Number(bill.refundAmount || 0) > 0 ? `<div class="pay"><span>REFUND ${String(bill.refundMode || '').toUpperCase()}</span><span>-${rupee(bill.refundAmount)}</span></div>` : ''}</div>
-    ${bill.paymentMode === 'credit' ? `<div class="dash"></div><div class="row"><span>Credit Customer</span><span>${bill.creditCustomerName || '-'}</span></div><div class="row"><span>Mobile</span><span>${bill.creditCustomerMobile || '-'}</span></div><div class="row"><span>Due Date</span><span>${bill.creditDueDate || '-'}</span></div><div class="row"><span>Credit Due</span><span>${rupee(bill.balance)}</span></div>` : ''}
-    <div class="c small">Salesperson : ${bill.salesperson}</div>
+    ${bill.paymentMode === 'credit' ? `<div class="dash"></div><div class="row"><span>Credit Customer</span><span>${safeHtml(bill.creditCustomerName || '-')}</span></div><div class="row"><span>Mobile</span><span>${safeHtml(bill.creditCustomerMobile || '-')}</span></div><div class="row"><span>Due Date</span><span>${safeHtml(bill.creditDueDate || '-')}</span></div><div class="row"><span>Credit Due</span><span>${rupee(bill.balance)}</span></div>` : ''}
+    <div class="c small">Salesperson : ${safeHtml(bill.salesperson)}</div>
     <div class="footer">Thank you, Visit Again</div>
     <script>window.onload=()=>window.print()</script>
   </body></html>`;
