@@ -1173,7 +1173,7 @@ export default function AdminSNBDashboard() {
         />
       )}
       {tab === "suppliers" && <SuppliersTab userName={userName} />}
-      {tab === "expenses" && <ExpensesTab userName={userName} {...commonProps} />}
+      {tab === "expenses" && <ExpensesTab {...commonProps} />}
       {tab === "complaints" && <ComplaintsTab userName={userName} />}
       {tab === "waste" && <WasteLogsTab userName={userName} role={role} />}
       {tab === "quotations" && <QuotationsTab userName={userName} />}
@@ -1205,9 +1205,9 @@ export default function AdminSNBDashboard() {
         <SalespersonReportTab {...commonProps} />
       )}
       {tab === "cashier-report" && <CashierReportTab {...commonProps} />}
-      {tab === "cashier-closure" && <CashierClosureTab userName={userName} {...commonProps} />}
+      {tab === "cashier-closure" && <CashierClosureTab {...commonProps} />}
       {tab === "closure" && (
-        <DailyClosureTab userName={userName} {...commonProps} />
+        <DailyClosureTab {...commonProps} />
       )}
       {tab === "reports" && <ReportsTab {...commonProps} />}
       {tab === "audit-stock" && (
@@ -1928,7 +1928,7 @@ function StockTab(props: any) {
   const [minQty, setMinQty] = useState("");
   const [maxQty, setMaxQty] = useState("");
   const categories = useMemo(() => Array.from(new Set(catalogItems.map((item) => item.category || "Uncategorized"))).sort(), [catalogItems]);
-  const units = useMemo(() => Array.from(new Set(props.branchStock.map((item: any) => item.unit || catalogItems.find((catalog) => normal(catalog.name) === normal(item.itemName))?.uom || "pcs"))).sort(), [props.branchStock, catalogItems]);
+  const units = useMemo(() => Array.from(new Set<string>(props.branchStock.map((item: any) => item.unit || catalogItems.find((catalog) => normal(catalog.name) === normal(item.itemName))?.uom || "pcs"))).sort(), [props.branchStock, catalogItems]);
   const enrichedRows = useMemo(() => {
     const query = stockSearch.trim().toLowerCase();
     return props.branchStock
@@ -7718,7 +7718,7 @@ function StockCountClaimsPanel({ userName }: { userName: string }) {
             </div>
             <button
               type="button"
-              onClick={() => void release(claim.stock_group)}
+              onClick={() => void release(claim.stock_group as "stock_1" | "stock_2")}
               disabled={releasingGroup === claim.stock_group}
               className="flex items-center gap-1.5 rounded-xl border border-red-200 bg-white px-3 py-2 text-xs font-black text-red-600 hover:bg-red-50 disabled:opacity-50"
               title="Release this claim so someone else can take it"

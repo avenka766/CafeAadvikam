@@ -1112,15 +1112,15 @@ export default function AdminVRSNBDashboard() {
           setNotice={setNotice}
         />
       )}
-      {tab === "expenses" && <ExpensesTab userName={userName} {...commonProps} />}
+      {tab === "expenses" && <ExpensesTab {...commonProps} />}
       {tab === "complaints" && <ComplaintsTab userName={userName} />}
       {tab === "waste" && <WasteLogsTab userName={userName} role={role} />}
       {tab === "quotations" && <QuotationsTab userName={userName} />}
       {tab === "credit" && <CreditTab fromDate={fromDate} toDate={toDate} viewBranches={viewBranches} />}
       {tab === "cashier-report" && <CashierReportTab {...commonProps} />}
-      {tab === "cashier-closure" && <CashierClosureTab userName={userName} {...commonProps} />}
+      {tab === "cashier-closure" && <CashierClosureTab {...commonProps} />}
       {tab === "closure" && (
-        <DailyClosureTab userName={userName} {...commonProps} />
+        <DailyClosureTab {...commonProps} />
       )}
       {tab === "reports" && <ReportsTab {...commonProps} />}
       {tab === "audit-stock" && (
@@ -1866,7 +1866,7 @@ function StockTab(props: any) {
   const [minQty, setMinQty] = useState("");
   const [maxQty, setMaxQty] = useState("");
   const categories = useMemo(() => Array.from(new Set(catalogItems.map((item) => item.category || "Uncategorized"))).sort(), [catalogItems]);
-  const units = useMemo(() => Array.from(new Set(props.branchStock.map((item: any) => item.unit || catalogItems.find((catalog) => normal(catalog.name) === normal(item.itemName))?.uom || "pcs"))).sort(), [props.branchStock, catalogItems]);
+  const units = useMemo(() => Array.from(new Set<string>(props.branchStock.map((item: any) => item.unit || catalogItems.find((catalog) => normal(catalog.name) === normal(item.itemName))?.uom || "pcs"))).sort(), [props.branchStock, catalogItems]);
   const enrichedRows = useMemo(() => {
     const query = stockSearch.trim().toLowerCase();
     return props.branchStock

@@ -46,7 +46,7 @@ import {
 import { isNativeApp } from '@/lib/platform';
 import { useOperationalBranchCatalog } from '@/hooks/useOperationalBranchCatalog';
 import { useBakeryStore } from '@/bakery/bakeryStore';
-import { useLeftoverBalanceMap, qtyFmt, fetchLeftoverLedger, type LeftoverLedgerRow } from '@/bakery/PlannerLeftoverTab';
+import { useLeftoverBalanceMap, qtyFmt, fetchLeftoverLedger, type LeftoverLedgerRow, type LeftoverUnit } from '@/bakery/PlannerLeftoverTab';
 import { resolveItemWeightGrams, kgToPcs } from '@/bakery/itemMatcher';
 
 // Shared helper for matching a free-text item name against a catalog's name
@@ -587,7 +587,7 @@ function SalesOverviewTab() {
   const dailyRevenueData = useMemo(() => {
     const days = dateRange === 'today' || dateRange === 'yesterday' ? 1
       : dateRange === '7d' ? 7 : dateRange === '15d' ? 15 : 30;
-    const result = [];
+    const result: Array<{ date: string; Cafe: number; VRSNB: number; SNB: number; Hosur: number; Total: number }> = [];
     for (let i = days - 1; i >= 0; i--) {
       const d = new Date();
       if (dateRange === 'yesterday') d.setDate(d.getDate() - 1 - i);
@@ -3659,13 +3659,23 @@ function OwnerPlannerSummaryTab() {
   const [expandedSlug, setExpandedSlug] = useState<string | null>(null);
 
   const stockRows = useMemo(() => {
+    // BUG FIX (2026-09-10): leftoverBalances is now keyed by
+    // closingStockBalanceKey(itemSlug, unit) — see useLeftoverBalanceMap —
+    // not by itemSlug alone, so the map key itself is no longer a real
+    // itemSlug. Recover the plain slug for ledger lookups below rather than
+    // comparing `r.itemSlug` against the combined key (which would never
+    // match and silently emptied every row's "last branch moved" / dispatch
+    // history — the exact same class of bug this whole fix addresses).
     return Array.from(leftoverBalances.entries())
-      .map(([slug, bal]) => {
+      .map(([key, bal]) => {
+        const slug = key.slice(0, key.lastIndexOf('|'));
         // Value the current balance against whichever branch this item most
-        // recently moved for (falls back to SNB if it's never had a
-        // branch-tagged movement, e.g. a manual closing-stock entry only).
+        // recently moved for, scoped to this row's own unit too (a kg
+        // movement and a pcs movement are separate real events — see the
+        // 2026-09-10 fix note above) — falls back to SNB if it's never had a
+        // branch-tagged movement, e.g. a manual closing-stock entry only.
         const lastBranchedMove = ledgerRows
-          .filter(r => r.itemSlug === slug && r.branch)
+          .filter(r => r.itemSlug === slug && r.unit === bal.unit && r.branch)
           .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
         const priced = priceForLedgerQty(lastBranchedMove?.branch ?? null, slug, bal.itemName, bal.balance, bal.unit);
         return { slug, itemName: bal.itemName, unit: priced.unit, balance: priced.qty, price: priced.price, value: priced.price != null ? priced.price * priced.qty : null };
@@ -3679,9 +3689,14 @@ function OwnerPlannerSummaryTab() {
   // Dispatch/transfer history for whichever item is expanded — every
   // outbound movement (dispatch to a branch, Hosur shop dispatch, or a
   // Transfer Out), each priced the same way the item itself is.
-  const dispatchHistoryFor = useCallback((slug: string) => {
+  // BUG FIX (2026-09-10): now takes the row's unit too, not just its slug —
+  // an item can genuinely hold a separate kg balance and pcs balance (see
+  // useLeftoverBalanceMap's 2026-09-10 fix), and mixing both units' dispatch
+  // history together under one expanded row would misreport quantities the
+  // exact same way the balance itself used to.
+  const dispatchHistoryFor = useCallback((slug: string, unit: LeftoverUnit) => {
     return ledgerRows
-      .filter(r => r.itemSlug === slug && r.delta < 0 && (r.reason === 'dispatch' || r.reason === 'transfer_out'))
+      .filter(r => r.itemSlug === slug && r.unit === unit && r.delta < 0 && (r.reason === 'dispatch' || r.reason === 'transfer_out'))
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
       .map(r => {
         const destination = r.shopName
@@ -3794,18 +3809,23 @@ function OwnerPlannerSummaryTab() {
           <thead><tr><th>Item</th><th>Balance</th><th>Est. Value</th><th></th></tr></thead>
           <tbody>
             {stockRows.map(row => {
-              const isOpen = expandedSlug === row.slug;
-              const history = isOpen ? dispatchHistoryFor(row.slug) : [];
+              // BUG FIX (2026-09-10): keyed by slug+unit, not slug alone — an
+              // item can now legitimately produce two rows here (a kg row
+              // and a pcs row), and `row.slug` alone would collide between
+              // them (same React key, and expanding one would toggle both).
+              const rowKey = `${row.slug}|${row.unit}`;
+              const isOpen = expandedSlug === rowKey;
+              const history = isOpen ? dispatchHistoryFor(row.slug, row.unit) : [];
               return (
-                <Fragment key={row.slug}>
-                  <tr className="cursor-pointer hover:bg-muted/40" onClick={() => setExpandedSlug(isOpen ? null : row.slug)}>
+                <Fragment key={rowKey}>
+                  <tr className="cursor-pointer hover:bg-muted/40" onClick={() => setExpandedSlug(isOpen ? null : rowKey)}>
                     <td className="font-semibold">{row.itemName}</td>
                     <td className={cn('font-black', row.balance <= 0 ? 'text-muted-foreground' : 'text-foreground')}>{qtyFmt(row.balance)} {row.unit}</td>
                     <td className="font-black text-emerald-700">{row.value != null ? formatCurrency(row.value) : <span className="text-muted-foreground font-normal">N/A</span>}</td>
                     <td>{isOpen ? <ChevronUp className="size-4 text-muted-foreground" /> : <ChevronDown className="size-4 text-muted-foreground" />}</td>
                   </tr>
                   {isOpen && (
-                    <tr key={`${row.slug}-detail`}>
+                    <tr key={`${rowKey}-detail`}>
                       <td colSpan={4} className="bg-muted/20 p-0">
                         <div className="p-3">
                           <p className="mb-2 text-[11px] font-black uppercase tracking-wide text-muted-foreground">Dispatched / Transferred Out — where this item went</p>

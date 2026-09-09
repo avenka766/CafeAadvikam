@@ -220,7 +220,7 @@ function BillerCreditTab() {
     setSettling(cs.id); setError('');
     const mode = settleModes[cs.id];
     if (!mode) { setError('Select Cash, UPI, or Card'); setSettling(null); return; }
-    const err = await settleCreditSale(cs.branch, cs.id, amt, { mode, collectedBy: currentUser?.username ?? 'Biller', collectedRole: currentUser?.role ?? null });
+    const err = await settleCreditSale(cs.branch, cs.id, amt, { mode, collectedBy: currentUser?.username ?? 'Biller', collectedRole: currentUser?.role ?? undefined });
     setSettling(null);
     if (err) setError(err);
     else setSettleAmts(prev => { const n = { ...prev }; delete n[cs.id]; return n; });
@@ -2775,7 +2775,7 @@ function NewBillPanel() {
           });
           if (kotError) throw new Error(kotError.message);
           await printKotSlip({
-            id: orderId, orderNumber: runningOrder.orderNumber, tableNumber, orderType: 'dine_in',
+            id: orderId, orderNumber: runningOrder.orderNumber, tableNumber: tableNumber ?? undefined, orderType: 'dine_in',
             items: pendingItems as Order['items'], subtotal: 0, discount: 0, discountType: 'flat', discountValue: 0,
             total: 0, status: 'running', paymentType: 'unpaid', createdBy: billedBy,
             createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
@@ -2816,7 +2816,7 @@ function NewBillPanel() {
             const creditErr = await recordCreditSale('Cafe', {
               billNo: `WALLET-Cafe-${result.orderNumber}`, branch: 'Cafe', customerName: selectedWallet.customerName,
               customerPhone: selectedWallet.mobile, items: creditItems, subtotal: Number(result.total),
-              amountPaid: walletAmount, creditAmount: realCreditAmount, dueDate: creditDueDate, soldBy: billedBy, notes: notes || undefined,
+              amountPaid: walletAmount, creditAmount: realCreditAmount, dueDate: creditDueDate, soldBy: billedBy, notes: notes || null,
             });
             // BUG FIX (audit 2026-08-10): finalize_table_bill_wallet_v1 above
             // already committed this order as paid — its wallet+cashback
@@ -2892,7 +2892,7 @@ function NewBillPanel() {
             creditAmount: finalized.total,
             dueDate: creditDueDate,
             soldBy: billedBy,
-            notes: notes || undefined,
+            notes: notes || null,
           });
           // BUG FIX (audit 2026-08-10): same class as the wallet branch
           // above — finalize_table_bill_v1 already marked this order paid
@@ -3002,7 +3002,7 @@ function NewBillPanel() {
           creditAmount: creditTotal,
           dueDate: creditDueDate,
           soldBy: currentUser.displayName || currentUser.username,
-          notes: notes || undefined,
+          notes: notes || null,
         });
 
         // BUG FIX (audit 2026-08-10): submitOrder above already committed
@@ -3159,7 +3159,7 @@ function NewBillPanel() {
             creditAmount: realCreditAmount,
             dueDate: creditDueDate,
             soldBy: billedBy,
-            notes: notes || undefined,
+            notes: notes || null,
           });
           // BUG FIX (audit 2026-08-10): same class as the other wallet+
           // credit-remainder branch above — complete_cafe_wallet_checkout_v1

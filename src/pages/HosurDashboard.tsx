@@ -1941,7 +1941,11 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
           is_active: true,
         }).select('id').single();
         if (error) throw error;
-        shopId = data.id;
+        // `data.id` is always a real string here (the insert above already
+        // threw on any error) — cast explicitly since `data` is untyped
+        // (no generated Database type on this Supabase client), which
+        // otherwise leaves `shopId`'s narrowed type as `string | undefined`.
+        shopId = data.id as string;
         shopIdByPhone.set(cleanPhone(sourceShop.whatsappNumber), shopId);
         shopIdByName.set(normalize(sourceShop.shopName), shopId);
       }

@@ -127,7 +127,7 @@ export default function SalesReport() {
   const qrRevenue = qrOrders.reduce((s, o) => s + o.total, 0);
 
   const sourceChartData = useMemo(() => {
-    const data = [];
+    const data: Array<{ name: string; orders: number; revenue: number }> = [];
     if (staffOrders.length > 0) data.push({ name: 'Staff', orders: staffOrders.length, revenue: staffRevenue });
     if (qrOrders.length > 0) data.push({ name: 'QR', orders: qrOrders.length, revenue: qrRevenue });
     return data;
@@ -200,7 +200,7 @@ export default function SalesReport() {
         cash += o.paymentBreakdown.cash; upi += o.paymentBreakdown.upi; card += o.paymentBreakdown.card;
       }
     });
-    const result = [];
+    const result: Array<{ name: string; value: number }> = [];
     if (cash > 0) result.push({ name: 'Cash', value: cash });
     if (upi > 0) result.push({ name: 'UPI', value: upi });
     if (card > 0) result.push({ name: 'Card', value: card });
