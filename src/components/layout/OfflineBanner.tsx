@@ -22,8 +22,9 @@
 // from — staff need to see exactly what failed and why, and be able to
 // clear a genuinely unrecoverable one so the rest of the queue can proceed.
 import { useEffect, useState } from 'react';
-import { WifiOff, RefreshCw, AlertTriangle, ChevronDown, ChevronUp } from 'lucide-react';
+import { WifiOff, RefreshCw, AlertTriangle, ChevronDown, ChevronUp, UserCog } from 'lucide-react';
 import { useOfflineQueueStore } from '@/lib/offlineQueue';
+import { useAuthStore } from '@/stores/authStore';
 
 // Human-readable labels for the `kind` strings registered via
 // registerReplayHandler across the app — kept here (not in offlineQueue.ts)
@@ -52,6 +53,7 @@ export default function OfflineBanner() {
   const flushing = useOfflineQueueStore((s) => s.flushing);
   const flush = useOfflineQueueStore((s) => s.flush);
   const discard = useOfflineQueueStore((s) => s.discard);
+  const currentUserId = useAuthStore((s) => s.currentUser?.id);
 
   useEffect(() => {
     const goOffline = () => setOffline(true);
@@ -66,11 +68,18 @@ export default function OfflineBanner() {
 
   const pendingCount = pending.length;
   const failed = pending.filter((e) => e.attempts > 0);
+  // AUDIT FIX (2026-09-09): entries queued by a DIFFERENT staff member than
+  // whoever's logged in right now — flush() deliberately leaves these alone
+  // rather than replaying them under the wrong session (see
+  // offlineQueue.ts). Surfaced separately so it doesn't just look like a
+  // stuck sync with no explanation.
+  const waitingForOwner = pending.filter((e) => e.staffId && e.staffId !== currentUserId && e.attempts === 0);
 
   if (!offline && pendingCount === 0) return null;
 
   const syncingWhileOnline = !offline && pendingCount > 0;
   const hasFailure = failed.length > 0;
+  const hasWaitingForOwner = !hasFailure && waitingForOwner.length > 0;
 
   return (
     <div className="fixed top-0 left-0 right-0 z-[9999]">
@@ -78,12 +87,18 @@ export default function OfflineBanner() {
         role="alert"
         aria-live="assertive"
         className="flex items-center justify-center gap-2 px-4 py-2 text-sm font-body font-semibold text-white"
-        style={{ background: hasFailure ? '#B91C1C' : syncingWhileOnline ? '#1D4ED8' : '#854F0B' }}
+        style={{ background: hasFailure ? '#B91C1C' : hasWaitingForOwner ? '#7C3AED' : syncingWhileOnline ? '#1D4ED8' : '#854F0B' }}
       >
         {hasFailure ? (
           <button onClick={() => setExpanded((v) => !v)} className="flex items-center gap-2">
             <AlertTriangle className="size-4 shrink-0" />
             {failed.length} change{failed.length === 1 ? '' : 's'} failed to sync — needs attention
+            {expanded ? <ChevronUp className="size-3.5" /> : <ChevronDown className="size-3.5" />}
+          </button>
+        ) : hasWaitingForOwner ? (
+          <button onClick={() => setExpanded((v) => !v)} className="flex items-center gap-2">
+            <UserCog className="size-4 shrink-0" />
+            {waitingForOwner.length} change{waitingForOwner.length === 1 ? '' : 's'} queued by another staff member — they need to log back in to sync
             {expanded ? <ChevronUp className="size-3.5" /> : <ChevronDown className="size-3.5" />}
           </button>
         ) : syncingWhileOnline ? (
@@ -98,6 +113,24 @@ export default function OfflineBanner() {
           </>
         )}
       </div>
+
+      {hasWaitingForOwner && expanded && (
+        <div className="max-h-[50vh] overflow-y-auto bg-white border-b-2 border-violet-700 shadow-lg">
+          {waitingForOwner.map((entry) => (
+            <div key={entry.id} className="flex items-start justify-between gap-3 border-b border-violet-100 px-4 py-3">
+              <div className="min-w-0">
+                <p className="text-sm font-bold text-slate-900">{KIND_LABELS[entry.kind] || entry.kind}</p>
+                <p className="mt-0.5 text-xs text-violet-700">
+                  Queued by {entry.staffUsername || 'another staff member'} — log back in as them to sync this
+                </p>
+                <p className="mt-0.5 text-[11px] text-slate-500">
+                  Queued {new Date(entry.createdAt).toLocaleString('en-IN')}
+                </p>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       {hasFailure && expanded && (
         <div className="max-h-[50vh] overflow-y-auto bg-white border-b-2 border-red-700 shadow-lg">
