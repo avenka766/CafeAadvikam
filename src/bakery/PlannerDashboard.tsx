@@ -4221,6 +4221,23 @@ function ReportsTab({ orders }: { orders: BakeryOrder[] }) {
     );
 
     drawTable(
+      'Store to Baker vs Baker to Planner (by item)',
+      ['Item', 'Unit', 'Store -> Baker', 'Baker -> Planner', 'Dispatched'],
+      [180, 40, 100, 100, 90],
+      [
+        ...storeBakerPlannerRows.map(r => [
+          r.name.slice(0, 32), r.unit,
+          r.store > 0 ? qtyFmt(r.store) : '-',
+          r.baker > 0 ? qtyFmt(r.baker) : '-',
+          r.dispatched > 0 ? qtyFmt(r.dispatched) : '-',
+        ]),
+        ['TOTAL - pcs', 'pcs', qtyFmt(storeBakerPlannerTotals.storePcs), qtyFmt(storeBakerPlannerTotals.bakerPcs), qtyFmt(storeBakerPlannerTotals.dispPcs)],
+        ['TOTAL - kg', 'kg', qtyFmt(storeBakerPlannerTotals.storeKg), qtyFmt(storeBakerPlannerTotals.bakerKg), qtyFmt(storeBakerPlannerTotals.dispKg)],
+      ],
+      'Nothing sent to the baker, produced, or dispatched in this range.',
+    );
+
+    drawTable(
       'Merged Orders Summary',
       ['Item', 'Unit', ...DISPLAY_BUCKETS, 'Total'],
       [140, 35, ...DISPLAY_BUCKETS.map(() => 60), 60],
