@@ -34,7 +34,7 @@ import { dispatchReceiveAndBill, type HosurOrderItemForBilling } from './hosurBi
 import PackingCakeOrdersTab from './PackingCakeOrdersTab';
 import { useCakeReadyCount } from './useCakeReadyCount';
 import PlannerLeftoverTab, { PlannerTransferOutTab, useLeftoverBalanceMap, closingStockBalanceKey, recordLeftoverMovement, kolkataToday, qtyFmt, sanitizeQtyForUnit, type LeftoverUnit, useMergedLeftoverCatalog, useMergedCatalogWithPrice, useBranchOnlyCatalog, ItemSearchPicker, type MergedCatalogItem } from './PlannerLeftoverTab';
-import { canonicalItemSlug, closingStockItemSlug, kgToPcs, parseWeightGrams, pcsToKg, resolveItemWeightGrams } from './itemMatcher';
+import { canonicalItemSlug, closingStockItemSlug, kgToPcs, parseWeightGrams, pcsToKg, resolveItemWeightGrams, VRSNB_DEFAULT_PACKET_GRAMS, vrsnbPacketGrams, pcsToKgForItem, kgToPcsForItem } from './itemMatcher';
 import { useBranchCatalogStore } from '@/stores/branchCatalogStore';
 import { useRecipeStore } from './recipeStore';
 import { useBranchStore } from '@/branch/branchStore';
@@ -186,7 +186,20 @@ export function computeMergedSummary(orders: BakeryOrder[]): MergedRow[] {
     const bucket: MergeBucket = bucketFor(order);
     for (const item of order.items) {
       const unit = item.dispatchUnit === 'pcs' ? 'pcs' : 'kg';
-      const key = `${item.itemName.trim().toLowerCase()}__${unit}`;
+      // BUG FIX (2026-09-10): keyed by the raw lowercased name before, so
+      // free-typed variants of ONE physical item — "Banana Cake" vs "BANANA
+      // CAKE" vs "Banana Cake (kg)", "Anjur sweets" vs "Anjur sweet" — each
+      // became their own merged row. That scattered one item's requested +
+      // produced totals across 2-3 rows and made the Reports tab show
+      // nonsense like "Planned 4.7 / Produced 0.09 / -98% Under-producing".
+      // Key by the same canonical identity the Closing Stock pool uses
+      // (closingStockItemSlug: strips a (kg)/(pcs)/weight suffix, case- and
+      // plural-folds, but KEEPS a real qualifier like "(Half)"), so every
+      // spelling of one item collapses to a single row. `unit` stays in the
+      // key untouched — pcs and kg rows remain separate, which
+      // autoSplitForItem / the Packing pcs<->kg round-trip still depend on.
+      const nameKey = closingStockItemSlug(item.itemName) || item.itemName.trim().toLowerCase();
+      const key = `${nameKey}__${unit}`;
       const existing = rows.get(key);
       // FEATURE (2026-08-26): "merge across branches too" — same fix as
       // computeMergedSummaryDisplay above: an item with branchSplit came
@@ -205,7 +218,10 @@ export function computeMergedSummary(orders: BakeryOrder[]): MergedRow[] {
         const perBranch: Partial<Record<MergeBucket, number>> = {};
         for (const [splitBucket, splitQty] of splits) perBranch[splitBucket] = (perBranch[splitBucket] || 0) + splitQty;
         rows.set(key, {
-          itemName: item.itemName,
+          // Drop a unit suffix the branch/planner typed into the name itself
+          // ("Banana Cake (kg)") so it can't survive into the display as
+          // "Banana Cake (kg) (kg)" once the dedup pass below adds its own.
+          itemName: stripUnitDisambiguation(item.itemName) || item.itemName,
           unit,
           totalRequested: totalQty,
           perBranch,
@@ -232,7 +248,8 @@ export function computeMergedSummary(orders: BakeryOrder[]): MergedRow[] {
   }
   for (const row of rows.values()) {
     const key = row.itemName.trim().toLowerCase();
-    if ((nameCounts.get(key) ?? 0) > 1) {
+    // Don't double up when the name already carries this unit as a suffix.
+    if ((nameCounts.get(key) ?? 0) > 1 && !new RegExp(`\\(\\s*${row.unit}s?\\s*\\)\\s*$`, 'i').test(row.itemName)) {
       row.itemName = `${row.itemName} (${row.unit})`;
     }
   }
@@ -275,7 +292,12 @@ function mergeGroupToken(token: string): string {
 // canonicalItemSlug uses, so "Garlic nippat (200g)" and "GARLIC NIPPAT"
 // still merge, but "X (Diwali Pack)" and "X (Family Pack)" never would.
 function mergeGroupKey(name: string): string {
-  const withoutParenWeight = name.replace(/\(\s*\d+(?:\.\d+)?\s*(?:g|gm|gms|kg|ml|l)\s*\)/gi, '');
+  const withoutParenWeight = name
+    .replace(/\(\s*\d+(?:\.\d+)?\s*(?:g|gm|gms|kg|ml|l)\s*\)/gi, '')
+    // BUG FIX (2026-09-10): also drop a bare "(kg)"/"(pcs)"/"(nos)" the planner
+    // typed into a free-text name (matches closingStockItemSlug's UNIT_ONLY_PAREN)
+    // — otherwise "Banana Cake (kg)" splits off from "Banana Cake" here too.
+    .replace(/\(\s*(?:kgs?|pcs|pieces?|nos)\s*\)/gi, '');
   // FIX (2026-08-09 / #280): "Beetroot Muruku" (SNB) vs "Beetroot Muruku
   // 200gm" (VRSNB) used to land as two separate Merged Summary rows — the
   // weight-stripping above only caught a PARENTHESIZED suffix. Branches also
@@ -461,6 +483,19 @@ export interface ProductionRow extends MergedRow {
   itemStatus: 'not_started' | 'pending' | 'completed';
 }
 
+// True if an order is on/after the nightly Production/Dispatch cutoff (see
+// PRODUCTION_CUTOFF_KEY). Gated on the send-to-Store moment (storeConfirmedAt);
+// Planner-created "Planned" batches have no storeConfirmedAt so they fall back
+// to createdAt. cutoffMs === null (no roll yet) ⇒ everything passes.
+export function passesProductionCutoff(
+  o: Pick<BakeryOrder, 'storeConfirmedAt' | 'createdAt'>,
+  cutoffMs: number | null,
+): boolean {
+  if (cutoffMs == null) return true;
+  const ts = new Date(o.storeConfirmedAt ?? o.createdAt).getTime();
+  return Number.isFinite(ts) ? ts >= cutoffMs : true;
+}
+
 // Builds merged rows (same shape as computeMergedSummary) but enriched with the
 // planner's per-item production status, read from each contributing order's
 // producedItems[].status (no schema change needed — reuses the existing jsonb field).
@@ -471,20 +506,69 @@ export function computeProductionRows(orders: BakeryOrder[]): ProductionRow[] {
     let preparedTotal = 0;
     let anyRecorded = false;
     let allCompleted = contributing.length > 0;
+    // BUG FIX (2026-09-10): matched by sameItem() (case + trailing "(kg)"/
+    // "(pcs)" only) before, which no longer lines up with computeMergedSummary's
+    // now-canonical grouping key — e.g. a row grouped as "anjur-sweet" would
+    // fail to match an order line literally named "Anjur sweets" (plural), so
+    // its production never counted and the Reports tab showed ~-98%. Match on
+    // the SAME closingStockItemSlug identity the merge used, and sum EVERY
+    // matching line in the order (an order can carry two spellings of one item).
+    const rowSlug = closingStockItemSlug(row.itemName) || row.itemName.trim().toLowerCase();
     for (const order of contributing) {
-      const item = order.items.find(i => sameItem(i.itemName, row.itemName));
-      const prod = item ? order.producedItems?.find(p => p.itemId === item.itemId) : undefined;
-      if (prod) {
+      const matchingItems = order.items.filter(
+        i => (closingStockItemSlug(i.itemName) || i.itemName.trim().toLowerCase()) === rowSlug,
+      );
+      if (matchingItems.length === 0) { allCompleted = false; continue; }
+      let orderHadProd = false;
+      for (const item of matchingItems) {
+        const prod = order.producedItems?.find(p => p.itemId === item.itemId);
+        if (!prod) continue;
         anyRecorded = true;
+        orderHadProd = true;
         preparedTotal += prod.quantityPrepared;
         if (prod.status !== 'completed') allCompleted = false;
-      } else {
-        allCompleted = false;
       }
+      if (!orderHadProd) allCompleted = false;
     }
     const itemStatus: ProductionRow['itemStatus'] = allCompleted ? 'completed' : anyRecorded ? 'pending' : 'not_started';
     return { ...row, category: categoryForItem(row.itemName), preparedTotal, itemStatus };
   });
+}
+
+// ── VRSNB pcs → kg for the Production Entry tab ──────────────────────────────
+// FEATURE (2026-09-10): the planner wants VRSNB packet items shown AND entered
+// in kg here. computeMergedSummary / computeProductionRows / autoSplitForItem
+// stay per-unit (a VRSNB cookie row is unit:'pcs') — the conversion is purely
+// presentation + one kg→pcs step on the typed value in doSave. One
+// computeMergedSummary row = one item identity + one unit (keyed by
+// closingStockItemSlug(name)__unit), so the packet weight is consistent across
+// its contributing orders; take it from the first matching pcs line.
+function productionRowPacketGrams(row: ProductionRow, orders: BakeryOrder[]): number | null {
+  const slug = closingStockItemSlug(row.itemName) || row.itemName.trim().toLowerCase();
+  for (const id of row.contributingOrderIds) {
+    const it = orders.find(o => o.id === id)?.items.find(
+      i => (closingStockItemSlug(i.itemName) || i.itemName.trim().toLowerCase()) === slug && i.dispatchUnit === 'pcs',
+    );
+    if (it) return vrsnbPacketGrams(it);
+  }
+  return null;
+}
+// A per-unit pcs row that at least one VRSNB order contributes to → show/enter kg.
+function productionRowShowsKg(row: ProductionRow): boolean {
+  return row.unit === 'pcs' && (row.perBranch.VRSNB ?? 0) > 0;
+}
+interface ProductionRowDisplay { unit: LeftoverUnit; ordered: number; produced: number; grams: number | null; }
+function productionRowDisplay(row: ProductionRow, orders: BakeryOrder[]): ProductionRowDisplay {
+  if (!productionRowShowsKg(row)) {
+    return { unit: row.unit as LeftoverUnit, ordered: row.totalRequested, produced: row.preparedTotal, grams: null };
+  }
+  const g = productionRowPacketGrams(row, orders) ?? VRSNB_DEFAULT_PACKET_GRAMS;
+  return {
+    unit: 'kg',
+    ordered: pcsToKg(row.itemName, row.totalRequested, g) ?? row.totalRequested,
+    produced: pcsToKg(row.itemName, row.preparedTotal, g) ?? row.preparedTotal,
+    grams: g,
+  };
 }
 
 // Largest-remainder proportional split: the shares always sum to EXACTLY
@@ -778,10 +862,25 @@ export default function PlannerDashboard({ embedded = false }: { embedded?: bool
   const [dispatchVisited, setDispatchVisited] = useState(false);
   useEffect(() => { if (tab === 'dispatch') setDispatchVisited(true); }, [tab]);
 
+  // Nightly Production/Dispatch "clean slate" cutoff (see PRODUCTION_CUTOFF_KEY).
+  const [productionCutoff, setProductionCutoffState] = useState<string | null>(null);
+  const productionCutoffMs = useMemo(
+    () => (productionCutoff ? new Date(productionCutoff).getTime() : null),
+    [productionCutoff],
+  );
+
   useEffect(() => {
     fetchOrders().catch(() => {});
+    void getProductionCutoff().then(setProductionCutoffState).catch(() => {});
     const unsubscribe = subscribe();
-    const refreshOnVisible = () => { if (!document.hidden) fetchOrders(true).catch(() => {}); };
+    // Re-read the cutoff too, so a client left open past 23:00 IST picks up
+    // the nightly roll without a reload.
+    const refreshOnVisible = () => {
+      if (!document.hidden) {
+        fetchOrders(true).catch(() => {});
+        void getProductionCutoff().then(setProductionCutoffState).catch(() => {});
+      }
+    };
     document.addEventListener('visibilitychange', refreshOnVisible);
     // Realtime handles normal order changes. This bounded, infrequent poll
     // is only a recovery path for a dropped websocket connection that
@@ -789,7 +888,12 @@ export default function PlannerDashboard({ embedded = false }: { embedded?: bool
     // alone doesn't catch that case — restored 2026-08-18, matching the
     // same fix already applied to BranchDashboard.tsx for the identical
     // reason).
-    const id = setInterval(() => { if (!document.hidden) fetchOrders(true).catch(() => {}); }, 15 * 60_000);
+    const id = setInterval(() => {
+      if (!document.hidden) {
+        fetchOrders(true).catch(() => {});
+        void getProductionCutoff().then(setProductionCutoffState).catch(() => {});
+      }
+    }, 15 * 60_000);
     return () => { unsubscribe(); document.removeEventListener('visibilitychange', refreshOnVisible); clearInterval(id); };
   }, [fetchOrders, subscribe]);
 
@@ -826,9 +930,17 @@ export default function PlannerDashboard({ embedded = false }: { embedded?: bool
   // was never meant to block Planner/Baker, who already have full access
   // the instant an order reaches 'store_confirmed'. Back to the 2026-08-10
   // gate exactly as it was.
-  const productionSourceOrders = useMemo(
+  // Uncut set — the historical predicate. Feeds Dispatch's read-only
+  // "Dispatched" sub-tab + exports so the report stays complete.
+  const productionSourceOrdersAll = useMemo(
     () => orders.filter(o => ['store_confirmed', 'produced', 'dispatched'].includes(o.status) || (o.status === 'pending' && bucketFor(o) === 'Planned')),
     [orders],
+  );
+  // Cut set — the nightly 11 PM clean slate. Feeds the Production Entry tab and
+  // the Dispatch → "To Dispatch" list only.
+  const productionSourceOrders = useMemo(
+    () => productionSourceOrdersAll.filter(o => passesProductionCutoff(o, productionCutoffMs)),
+    [productionSourceOrdersAll, productionCutoffMs],
   );
   const activeLeftovers    = useMemo(() => orders.filter(o => (o.leftoverStatus ?? 'pending') === 'pending' && o.status === 'dispatched'), [orders]);
   const doneOrders         = useMemo(() => orders.filter(o => o.leftoverStatus === 'done'), [orders]);
@@ -938,10 +1050,10 @@ export default function PlannerDashboard({ embedded = false }: { embedded?: bool
             {tab === 'sent' && <SentOrdersTab orders={sentOrders} />}
             {tab === 'merged' && <MergedSummaryTab orders={mergeableOrders} />}
             {tab === 'planning' && <PlanningTab orders={orders} />}
-            {tab === 'production' && <ProductionEntryTab orders={productionSourceOrders} />}
+            {tab === 'production' && <ProductionEntryTab orders={productionSourceOrders} productionCutoff={productionCutoff} />}
             {dispatchVisited && (
               <div style={{ display: tab === 'dispatch' ? 'block' : 'none' }}>
-                <DispatchTab orders={productionSourceOrders} allOrders={orders} />
+                <DispatchTab orders={productionSourceOrders} allOrders={productionSourceOrdersAll} productionCutoff={productionCutoff} />
               </div>
             )}
             {tab === 'hosur' && <HosurUnifiedSection embedded={embedded} />}
@@ -1158,6 +1270,20 @@ function OnlineOrdersPanel() {
   );
 }
 
+// FEATURE (2026-09-10): show VRSNB packet (pcs) items in kg on the Incoming
+// Orders read view + export. Every other case is byte-identical to before
+// (`dispatchUnit === 'pcs' ? originalPcs ?? quantity : quantity` + `dispatchUnit || 'kg'`).
+// The edit form is deliberately left in pcs — branch-native and lossless.
+function incomingDisplayQty(order: BakeryOrder, item: BakeryOrderItem): { qty: number; unit: 'pcs' | 'kg' } {
+  if (order.targetBranch === 'VRSNB' && item.dispatchUnit === 'pcs') {
+    return { qty: pcsToKgForItem(item, item.originalPcs ?? item.quantity), unit: 'kg' };
+  }
+  return {
+    qty: item.dispatchUnit === 'pcs' ? (item.originalPcs ?? item.quantity) : item.quantity,
+    unit: item.dispatchUnit || 'kg',
+  };
+}
+
 function IncomingOrdersTab({ orders, onAdd }: { orders: BakeryOrder[]; onAdd: ReturnType<typeof useBakeryStore.getState>['submitOrder'] }) {
   // FEATURE (2026-09-08): "Incoming Orders tab: create a new sub tab called
   // Online Orders" — a lightweight local sub-tab strip (this component's
@@ -1241,12 +1367,13 @@ function IncomingOrdersTab({ orders, onAdd }: { orders: BakeryOrder[]; onAdd: Re
                 { header: 'Qty', key: 'qty' },
                 { header: 'Unit', key: 'unit' },
               ],
-              rows: orders.flatMap(o => o.items.map(item => ({
-                orderNumber: o.orderNumber, branch: o.targetBranch, status: o.status,
-                item: item.itemName,
-                qty: item.dispatchUnit === 'pcs' ? item.originalPcs ?? item.quantity : item.quantity,
-                unit: item.dispatchUnit || 'kg',
-              }))),
+              rows: orders.flatMap(o => o.items.map(item => {
+                const d = incomingDisplayQty(o, item);
+                return {
+                  orderNumber: o.orderNumber, branch: o.targetBranch, status: o.status,
+                  item: item.itemName, qty: d.qty, unit: d.unit,
+                };
+              })),
             })}
           />
           <button onClick={() => setShowAdd(v => !v)} className="flex items-center gap-1.5 rounded-xl bg-foreground px-3 py-2 text-xs font-bold text-white hover:opacity-90">
@@ -1359,9 +1486,10 @@ function DayGroupedOrderList({ orders, badgeLabel, badgeTone, editable = false }
                     <span className={cn('rounded-full px-2 py-1 text-[10px] font-black', tone)}>{label}</span>
                   </div>
                   <ul className="mt-2 space-y-1 text-xs font-semibold text-muted-foreground">
-                    {order.items.map((item, i) => (
-                      <li key={i}>{item.itemName} — {item.dispatchUnit === 'pcs' ? item.originalPcs ?? item.quantity : item.quantity} {item.dispatchUnit || 'kg'}</li>
-                    ))}
+                    {order.items.map((item, i) => {
+                      const d = incomingDisplayQty(order, item);
+                      return <li key={i}>{item.itemName} — {d.qty} {d.unit}</li>;
+                    })}
                   </ul>
                 </div>
               );
@@ -1499,9 +1627,10 @@ function EditableIncomingOrderCard({ order, bucket, label, tone, hosurShopName }
 
       {!editing ? (
         <ul className="mt-2 space-y-1 text-xs font-semibold text-muted-foreground">
-          {order.items.map((item, i) => (
-            <li key={i}>{item.itemName} — {item.dispatchUnit === 'pcs' ? item.originalPcs ?? item.quantity : item.quantity} {item.dispatchUnit || 'kg'}</li>
-          ))}
+          {order.items.map((item, i) => {
+            const d = incomingDisplayQty(order, item);
+            return <li key={i}>{item.itemName} — {d.qty} {d.unit}</li>;
+          })}
         </ul>
       ) : (
         <div className="mt-3 space-y-2 rounded-xl border border-border bg-white p-3">
@@ -2286,7 +2415,7 @@ function groupOrdersByStoreDate(orders: BakeryOrder[]): DateGroup[] {
 // gets its own collapsible group with its own merged rows, so an item still
 // pending from an earlier date stays visible under that date instead of
 // getting folded into today's total.
-function ProductionEntryTab({ orders }: { orders: BakeryOrder[] }) {
+function ProductionEntryTab({ orders, productionCutoff }: { orders: BakeryOrder[]; productionCutoff?: string | null }) {
   const [search, setSearch] = useState('');
   // FEATURE (2026-08-24): "date-wise grouping should be removed, add new
   // quantity to old" — computeProductionRows already sums by item across
@@ -2311,11 +2440,19 @@ function ProductionEntryTab({ orders }: { orders: BakeryOrder[] }) {
             onClick={() => exportToExcel({
               filename: 'production-entry', sheetName: 'Production', title: 'Planner — Production Entry',
               columns: [{ header: 'Category', key: 'category' }, { header: 'Item', key: 'item' }, { header: 'Ordered Qty', key: 'ordered' }, { header: 'Produced So Far', key: 'produced' }, { header: 'Unit', key: 'unit' }, { header: 'Status', key: 'status' }],
-              rows: rows.map(row => ({ category: row.category, item: row.itemName, ordered: row.totalRequested, produced: row.preparedTotal, unit: row.unit, status: row.itemStatus })),
+              rows: rows.map(row => {
+                const d = productionRowDisplay(row, orders);
+                return { category: row.category, item: row.itemName, ordered: d.ordered, produced: d.produced, unit: d.unit, status: row.itemStatus };
+              }),
             })}
           />
         </div>
       </div>
+      {productionCutoff && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-700">
+          Fresh since {new Date(productionCutoff).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })} — only orders sent to Store after the nightly 11 PM reset show here. Older orders stay in Reports and Dispatched history.
+        </div>
+      )}
       <ExtraProducedItemForm />
       {rows.length === 0 && <EmptyState text="No items waiting on production entry." />}
       {rows.length > 0 && (
@@ -2529,7 +2666,19 @@ function ProductionEntryDateGroup({ label, orders, rows, search, defaultOpen }: 
     // in row.preparedTotal, so subtract it instead of re-quoting the full
     // row total (which would double-count what's already been produced).
     const remainingRequested = Math.max(0, Math.round((row.totalRequested - row.preparedTotal) * 100) / 100);
-    const enteredQty = qty[row.itemName] ? Number(qty[row.itemName]) : (status === 'completed' ? remainingRequested : 0);
+    // VRSNB packet rows are shown AND typed in kg; convert the typed value back
+    // to whole packets here so autoSplitForItem, recordProduction and the
+    // Closing Stock ledger below all stay in row.unit ('pcs') — byte-identical
+    // to the pre-kg-display behaviour. The "Completed, nothing typed → fill
+    // remaining" default already speaks row.unit and is left alone.
+    const showsKg = productionRowShowsKg(row);
+    const packetG = showsKg ? (productionRowPacketGrams(row, orders) ?? VRSNB_DEFAULT_PACKET_GRAMS) : null;
+    const typedRaw = qty[row.itemName] ? Number(qty[row.itemName]) : null;
+    const enteredQty = typedRaw != null
+      ? (showsKg
+          ? kgToPcsForItem({ itemId: row.itemName, itemName: row.itemName, weightGrams: packetG! }, typedRaw)
+          : typedRaw)
+      : (status === 'completed' ? remainingRequested : 0);
     // BUG FIX (audit item #13): this already silently blocked a zero/
     // negative quantity from actually being written (the underlying data
     // was never at risk), but did so with zero feedback — clicking Save
@@ -2630,15 +2779,19 @@ function ProductionEntryDateGroup({ label, orders, rows, search, defaultOpen }: 
                 {items.map(row => {
                   const sources = sourcesFor(row);
                   const sourcesOpen = expandedSources === row.itemName;
+                  const disp = productionRowDisplay(row, orders);
                   return (
                     <div key={row.itemName} className="rounded-2xl border border-border bg-card p-3 shadow-sm">
                       <div className="flex items-center justify-between gap-3">
                         <div className="min-w-0 flex-1">
                           <p className="truncate text-sm font-black text-foreground">{row.itemName}</p>
                           <p className="text-xs font-bold text-muted-foreground">
-                            Ordered {row.totalRequested} {row.unit}{row.preparedTotal > 0 ? ` · Produced so far ${row.preparedTotal} ${row.unit}` : ''}
+                            Ordered {disp.ordered} {disp.unit}{row.preparedTotal > 0 ? ` · Produced so far ${disp.produced} ${disp.unit}` : ''}
                             {row.itemStatus === 'pending' && <span className="ml-1 rounded-full bg-amber-100 px-1.5 py-0.5 text-amber-700">More to come</span>}
                           </p>
+                          {disp.grams != null && (
+                            <p className="text-[10px] font-bold text-muted-foreground/80">Enter in kg — saved as packets of ~{disp.grams} g</p>
+                          )}
                           <button
                             type="button"
                             onClick={() => setExpandedSources(v => v === row.itemName ? null : row.itemName)}
@@ -2647,7 +2800,7 @@ function ProductionEntryDateGroup({ label, orders, rows, search, defaultOpen }: 
                             {sourcesOpen ? 'Hide' : 'Show'} sources ({sources.length} order{sources.length === 1 ? '' : 's'})
                           </button>
                         </div>
-                        <input type="number" min={0} step={row.unit === 'pcs' ? 1 : 0.001} placeholder="Qty produced" value={qty[row.itemName] ?? ''} onChange={e => setQty(v => ({ ...v, [row.itemName]: sanitizeQtyForUnit(e.target.value, row.unit) }))}
+                        <input type="number" min={0} step={disp.unit === 'pcs' ? 1 : 0.001} placeholder={`Qty produced (${disp.unit})`} value={qty[row.itemName] ?? ''} onChange={e => setQty(v => ({ ...v, [row.itemName]: sanitizeQtyForUnit(e.target.value, disp.unit) }))}
                           className="w-28 rounded-lg border border-border bg-background px-2 py-1.5 text-right text-xs font-bold" />
                         <button onClick={() => setAskItem(row)} disabled={saving === row.itemName || !qty[row.itemName]}
                           className="flex items-center gap-1.5 rounded-xl cafe-gradient px-4 py-2 text-xs font-bold text-white shadow-teal disabled:opacity-40">
@@ -2664,7 +2817,7 @@ function ProductionEntryDateGroup({ label, orders, rows, search, defaultOpen }: 
                                 </span>
                                 <span className="text-muted-foreground">Order #{s.orderNumber}</span>
                               </span>
-                              <span className="text-foreground">{s.requested} {row.unit}</span>
+                              <span className="text-foreground">{disp.grams != null ? (pcsToKg(row.itemName, s.requested, disp.grams) ?? s.requested) : s.requested} {disp.unit}</span>
                             </div>
                           ))}
                         </div>
@@ -2682,7 +2835,7 @@ function ProductionEntryDateGroup({ label, orders, rows, search, defaultOpen }: 
       {askItem && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
           <div className="w-full max-w-sm rounded-2xl bg-white p-5 shadow-xl">
-            <p className="text-sm font-black text-foreground">"{askItem.itemName}" — {qty[askItem.itemName]} {askItem.unit} entered</p>
+            <p className="text-sm font-black text-foreground">"{askItem.itemName}" — {qty[askItem.itemName]} {productionRowDisplay(askItem, orders).unit} entered</p>
             <p className="mt-1 text-xs font-semibold text-muted-foreground">Is the baker completely done with this item, or still baking more?</p>
             <div className="mt-4 flex justify-end gap-2">
               <button disabled={saving === askItem.itemName} onClick={() => setAskItem(null)} className="rounded-xl bg-muted px-4 py-2 text-xs font-bold text-muted-foreground hover:bg-slate-200 disabled:opacity-50">Cancel</button>
@@ -2702,7 +2855,7 @@ function ProductionEntryDateGroup({ label, orders, rows, search, defaultOpen }: 
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
           <div className="w-full max-w-sm rounded-2xl bg-white p-5 shadow-xl">
             <p className="text-sm font-black text-foreground">Confirm: mark "{confirmItem.itemName}" as Completed?</p>
-            <p className="mt-1 text-xs font-semibold text-muted-foreground">This sends {qty[confirmItem.itemName] || confirmItem.totalRequested} {confirmItem.unit} to Dispatch and removes it from Production Entry. This can't be undone from here.</p>
+            <p className="mt-1 text-xs font-semibold text-muted-foreground">This sends {qty[confirmItem.itemName] || productionRowDisplay(confirmItem, orders).ordered} {productionRowDisplay(confirmItem, orders).unit} to Dispatch and removes it from Production Entry. This can't be undone from here.</p>
             <div className="mt-4 flex justify-end gap-2">
               <button disabled={saving === confirmItem.itemName} onClick={() => setConfirmItem(null)} className="rounded-xl bg-muted px-4 py-2 text-xs font-bold text-muted-foreground hover:bg-slate-200 disabled:opacity-50">Go back</button>
               <button disabled={saving === confirmItem.itemName} onClick={() => doSave(confirmItem, 'completed')} className="flex items-center gap-1.5 rounded-xl bg-teal-600 px-4 py-2 text-xs font-bold text-white hover:bg-teal-700 disabled:opacity-50">
@@ -3460,9 +3613,25 @@ interface ReportVarianceRow {
   status: 'Not Started' | 'Under-producing' | 'On Target' | 'Over-producing';
 }
 
-function computeReportRows(orders: BakeryOrder[], dateFrom: string, dateTo: string, reportsCutoff: string | null): ReportVarianceRow[] {
+function computeReportRows(orders: BakeryOrder[], dateFrom: string, dateTo: string, reportsCutoff: string | null, producedByLedger?: Map<string, number>): ReportVarianceRow[] {
   const production = computeProductionRows(orders);
   return production.map(row => {
+    // Match dispatch-log entries on the same canonical identity the merged row
+    // was grouped by (see computeProductionRows) — sameItem() alone missed
+    // plural/spelling variants and undercounted Dispatched.
+    const rowSlug = closingStockItemSlug(row.itemName) || row.itemName.trim().toLowerCase();
+    // BUG FIX (2026-09-10): "Produced" used to re-sum each order's own
+    // produced_items[].quantityPrepared. But a single production entry is
+    // SPLIT proportionally across every waiting order for that item (often
+    // spanning many days), so a narrow date window only catches the sliver
+    // of the entry that landed on orders confirmed inside the window —
+    // e.g. entering 160 pcs of Bread on Sep 9 showed as "21" when the
+    // window was Sep 9 only. The Closing Stock production ledger
+    // (planner_leftover_ledger, reason='production_carryover') stores the
+    // clean per-item, per-business-date total the planner actually typed —
+    // use that when available, fall back to the per-order sum otherwise
+    // (covers 'pending' saves, which never write a ledger row).
+    const produced = producedByLedger?.get(`${rowSlug}|${row.unit}`) ?? row.preparedTotal;
     // AUDIT FIX (2026-09-02): this only relied on `orders` already being
     // order-level date-filtered — but dispatches for one order can span
     // multiple days (a normal partial-dispatch pattern), so an item
@@ -3475,18 +3644,19 @@ function computeReportRows(orders: BakeryOrder[], dateFrom: string, dateTo: stri
     // reports) was missed.
     const dispatched = orders.filter(o => row.contributingOrderIds.includes(o.id))
       .reduce((s, o) => s + (o.dispatchLog || []).filter(d => {
-        if (!sameItem(d.itemName, row.itemName) || d.isExtra) return false;
+        if ((closingStockItemSlug(d.itemName) || d.itemName.trim().toLowerCase()) !== rowSlug || d.isExtra) return false;
         const key = kolkataDateKey(d.dispatchedAt);
         return key >= dateFrom && key <= dateTo && (!reportsCutoff || key >= reportsCutoff);
       }).reduce((s2, d) => s2 + d.quantity, 0), 0);
-    const prodVariancePct = row.totalRequested > 0 ? Math.round(((row.preparedTotal - row.totalRequested) / row.totalRequested) * 1000) / 10 : 0;
-    const dispatchVariancePct = row.preparedTotal > 0 ? Math.round(((dispatched - row.preparedTotal) / row.preparedTotal) * 1000) / 10 : 0;
+    const prodVariancePct = row.totalRequested > 0 ? Math.round(((produced - row.totalRequested) / row.totalRequested) * 1000) / 10 : 0;
+    const dispatchVariancePct = produced > 0 ? Math.round(((dispatched - produced) / produced) * 1000) / 10 : 0;
     const status: ReportVarianceRow['status'] =
-      row.preparedTotal === 0 ? 'Not Started'
+      produced === 0 ? 'Not Started'
       : prodVariancePct < -REPORT_VARIANCE_BAND ? 'Under-producing'
       : prodVariancePct > REPORT_VARIANCE_BAND ? 'Over-producing'
       : 'On Target';
-    return { itemName: row.itemName, unit: row.unit, category: row.category, requested: row.totalRequested, produced: row.preparedTotal, dispatched, prodVariancePct, dispatchVariancePct, status };
+    const r3 = (n: number) => Math.round(n * 1000) / 1000;
+    return { itemName: row.itemName, unit: row.unit, category: row.category, requested: r3(row.totalRequested), produced: r3(produced), dispatched: r3(dispatched), prodVariancePct, dispatchVariancePct, status };
   }).sort((a, b) => a.prodVariancePct - b.prodVariancePct);
 }
 
@@ -3510,6 +3680,20 @@ async function getReportsCutoff(): Promise<string | null> {
 }
 async function setReportsCutoff(dateKey: string): Promise<void> {
   await supabase.from('app_state').upsert({ key: REPORTS_CUTOFF_KEY, value: { cutoff: dateKey }, updated_at: new Date().toISOString() });
+}
+
+// FEATURE (2026-09-10): nightly 11 PM "clean slate" for the Production Entry
+// tab and the Dispatch → "To Dispatch" list. A pg_cron job
+// (roll_planner_production_cutoff, '30 17 * * *' = 23:00 IST) advances this
+// app_state key to now(); the two working lists then only show orders sent to
+// Store after it. NOT applied to Reports, the Dispatch "Dispatched" sub-tab,
+// dispatch_log or requested-qty history — those stay complete. Null key
+// (no roll yet) = show everything.
+const PRODUCTION_CUTOFF_KEY = 'planner_production_cutoff';
+async function getProductionCutoff(): Promise<string | null> {
+  const { data } = await supabase.from('app_state').select('value').eq('key', PRODUCTION_CUTOFF_KEY).maybeSingle();
+  const cutoff = (data?.value as { cutoff?: string } | null)?.cutoff;
+  return cutoff ?? null;
 }
 
 function ReportsTab({ orders }: { orders: BakeryOrder[] }) {
@@ -3555,8 +3739,36 @@ function ReportsTab({ orders }: { orders: BakeryOrder[] }) {
   const placedOrders = useMemo(() => ordersInRange, [ordersInRange]);
   const producedSource = useMemo(() => ordersInRange.filter(o => ['store_confirmed', 'produced', 'dispatched'].includes(o.status)), [ordersInRange]);
 
+  // Clean per-item production totals from the Closing Stock ledger for the
+  // window — the report's "Produced" column reads these instead of re-summing
+  // the per-order proportional split (see computeReportRows). Keyed
+  // `${closingStockItemSlug(name)}|${unit}`.
+  const [producedByLedger, setProducedByLedger] = useState<Map<string, number>>(new Map());
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const effectiveFrom = reportsCutoff && reportsCutoff > dateFrom ? reportsCutoff : dateFrom;
+      const { data } = await supabase
+        .from('planner_leftover_ledger')
+        .select('item_slug, unit, delta')
+        .eq('reason', 'production_carryover')
+        .gte('business_date', effectiveFrom)
+        .lte('business_date', dateTo);
+      if (cancelled) return;
+      const map = new Map<string, number>();
+      for (const r of (data ?? []) as { item_slug: string; unit: string; delta: number }[]) {
+        // Re-canonicalise the stored slug so it lines up with the report row's
+        // closingStockItemSlug(itemName) key even for older non-canonical rows.
+        const key = `${closingStockItemSlug(String(r.item_slug)) || String(r.item_slug)}|${String(r.unit)}`;
+        map.set(key, Math.round(((map.get(key) ?? 0) + Number(r.delta ?? 0)) * 1000) / 1000);
+      }
+      setProducedByLedger(map);
+    })();
+    return () => { cancelled = true; };
+  }, [dateFrom, dateTo, reportsCutoff, refreshTick]);
+
   const merged = useMemo(() => computeMergedSummary(producedSource), [producedSource]);
-  const varianceRows = useMemo(() => computeReportRows(producedSource, dateFrom, dateTo, reportsCutoff), [producedSource, dateFrom, dateTo, reportsCutoff]);
+  const varianceRows = useMemo(() => computeReportRows(producedSource, dateFrom, dateTo, reportsCutoff, producedByLedger), [producedSource, dateFrom, dateTo, reportsCutoff, producedByLedger]);
   const underRows = useMemo(() => varianceRows.filter(r => r.status === 'Under-producing'), [varianceRows]);
   const overRows = useMemo(() => varianceRows.filter(r => r.status === 'Over-producing'), [varianceRows]);
   const notStartedRows = useMemo(() => varianceRows.filter(r => r.status === 'Not Started'), [varianceRows]);
@@ -4075,7 +4287,9 @@ function ReportsTab({ orders }: { orders: BakeryOrder[] }) {
               <tbody>
                 {varianceRows.map(r => (
                   <tr key={`${r.itemName}-${r.unit}`} className="border-t border-border">
-                    <td className="px-4 py-2 font-bold text-foreground">{r.itemName} <span className="text-muted-foreground">({r.unit})</span></td>
+                    {/* strip any "(kg)"/"(pcs)" the merge appended for disambiguation —
+                        the (unit) span next to it is the single source of truth here */}
+                    <td className="px-4 py-2 font-bold text-foreground">{r.itemName.replace(/\s*\((?:kgs?|pcs|pieces?|nos)\)\s*$/i, '')} <span className="text-muted-foreground">({r.unit})</span></td>
                     <td className="px-4 py-2 text-right text-muted-foreground">{r.requested}</td>
                     <td className="px-4 py-2 text-right text-muted-foreground">{r.produced}</td>
                     <td className="px-4 py-2 text-right text-muted-foreground">{r.dispatched}</td>
@@ -7616,7 +7830,7 @@ function plannedDispatchedForRow(row: ProductionRow, orders: BakeryOrder[]): num
 // dispatch line (computeProductionRows already does this per date-bucket) —
 // only the cross-date merge is removed, so yesterday's still-pending items
 // stay under "Yesterday" instead of silently folding into "Today".
-function DispatchTab({ orders, allOrders }: { orders: BakeryOrder[]; allOrders: BakeryOrder[] }) {
+function DispatchTab({ orders, allOrders, productionCutoff }: { orders: BakeryOrder[]; allOrders: BakeryOrder[]; productionCutoff?: string | null }) {
   // FEATURE (2026-09-06): "In dispatch tab: create a new sub tab called
   // Return — search the invoice number, show items+qty, let them edit the
   // return qty, save should send items back to stock and the updated bill on
@@ -7695,8 +7909,13 @@ function DispatchTab({ orders, allOrders }: { orders: BakeryOrder[]; allOrders: 
         <DispatchReturnPanel />
       ) : (
         <>
-          {orders.length === 0 && <EmptyState text="Nothing waiting on dispatch." />}
-          {orders.length > 0 && (
+          {productionCutoff && (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-700">
+              "To Dispatch" is fresh since {new Date(productionCutoff).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })} — only orders sent to Store after the nightly 11 PM reset show there. The Dispatched sub-tab and Reports still show everything.
+            </div>
+          )}
+          {allOrders.length === 0 && <EmptyState text="Nothing waiting on dispatch." />}
+          {allOrders.length > 0 && (
             <DispatchDateGroup dateKey="all" label="Pending Dispatch" orders={orders} allOrders={allOrders} search={search} defaultOpen />
           )}
         </>
@@ -8241,7 +8460,7 @@ function EditDispatchInvoiceModal({ invoice, onClose, onSaved }: {
   );
 }
 
-function DispatchDateGroup({ label, orders, search, defaultOpen }: {
+function DispatchDateGroup({ label, orders, allOrders, search, defaultOpen }: {
   dateKey: string; label: string; orders: BakeryOrder[]; allOrders: BakeryOrder[]; search: string; defaultOpen: boolean;
 }) {
   // Anything not dated "Today" is a past date with items still awaiting
@@ -8254,6 +8473,11 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
   // — Dispatch now lists every item that's been ordered at all, even before
   // any production has been recorded for it, per owner's explicit request.
   const rows = useMemo(() => computeProductionRows(orders), [orders]);
+  // FEATURE (2026-09-10): `orders` here is the nightly-cut set (feeds the "To
+  // Dispatch" active queue + every dispatch action). `allOrders` is the uncut
+  // set — the "Dispatched" sub-tab and the Planned "Dispatched" list read from
+  // it so dispatch history stays complete after the 11 PM reset.
+  const allRows = useMemo(() => computeProductionRows(allOrders), [allOrders]);
   const [subTab, setSubTab] = useState<'active' | 'completed' | 'planned'>('active');
   const [checklistItem, setChecklistItem] = useState<ProductionRow | null>(null);
   // 'All' shows every item like before. Picking a branch filters to only items
@@ -8288,6 +8512,23 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
       sum += (order.dispatchLog || []).filter(d => sameItem(d.itemName, row.itemName) && !d.isExtra).reduce((s, d) => s + d.quantity, 0);
     }
     return sum;
+  };
+  // Uncut counterpart — for the "Dispatched" sub-tab only.
+  const dispatchedQtyForItemAll = (row: ProductionRow) => {
+    let sum = 0;
+    for (const order of allOrders) {
+      if (!row.contributingOrderIds.includes(order.id)) continue;
+      sum += (order.dispatchLog || []).filter(d => sameItem(d.itemName, row.itemName) && !d.isExtra).reduce((s, d) => s + d.quantity, 0);
+    }
+    return sum;
+  };
+  const fullyDispatchedAll = (row: ProductionRow) => {
+    if (branchFilter === 'Custom') return false;
+    if (branchFilter !== 'All') {
+      const requested = row.perBranch[branchFilter] ?? 0;
+      return requested > 0 && branchDispatchedForRow(row, branchFilter, allOrders) >= requested - 0.01;
+    }
+    return row.totalRequested > 0 && dispatchedQtyForItemAll(row) >= row.totalRequested - 0.01;
   };
 
   const filtered = rows
@@ -8325,7 +8566,12 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
   };
   const activeRows = filtered.filter(r => !fullyDispatched(r))
     .sort((a, b) => (dispatchedQtyForItem(b) > 0 ? 1 : 0) - (dispatchedQtyForItem(a) > 0 ? 1 : 0));
-  const completedRows = filtered.filter(r => fullyDispatched(r));
+  // "Dispatched" sub-tab reads the UNCUT set so the nightly 11 PM reset never
+  // hides dispatch history — same search + branch filters as `filtered`.
+  const completedRows = allRows
+    .filter(r => r.itemName.toLowerCase().includes(search.trim().toLowerCase()))
+    .filter(r => branchFilter === 'All' || branchFilter === 'Custom' || branchFilter in r.perBranch)
+    .filter(fullyDispatchedAll);
   const shown = subTab === 'active' ? activeRows : completedRows;
   // FEATURE: "Hosur and Custom(Planned) need date-wise orders, VRSNB and
   // SNB should NOT" — Custom(Planned) already renders through its own,
@@ -8400,9 +8646,10 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
   // whose planned quantity has already been fully sold/sent, so Custom
   // (Planned) can show a Dispatched view the same way every other branch
   // filter already does.
+  // "Dispatched" view of Custom (Planned) — uncut set, same reason as completedRows.
   const plannedCompletedRows = useMemo(
-    () => rows.filter(r => (r.perBranch.Planned ?? 0) > 0 && plannedDispatchedForRow(r, orders) >= (r.perBranch.Planned ?? 0) - 0.01),
-    [rows, orders],
+    () => allRows.filter(r => (r.perBranch.Planned ?? 0) > 0 && plannedDispatchedForRow(r, allOrders) >= (r.perBranch.Planned ?? 0) - 0.01),
+    [allRows, allOrders],
   );
 
   const toggleSelect = (itemName: string) => setSelected(prev => {
@@ -8546,7 +8793,7 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
           ) : (
             <div className="space-y-2">
               {plannedCompletedRows.map(row => {
-                const dispatchedQty = plannedDispatchedForRow(row, orders);
+                const dispatchedQty = plannedDispatchedForRow(row, allOrders);
                 return (
                   <div key={row.itemName} className="rounded-2xl border border-border bg-white p-3 shadow-sm">
                     <p className="text-sm font-black text-foreground">{row.itemName}</p>
@@ -8629,7 +8876,7 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
       {group.label && <p className="pt-1 text-[11px] font-black uppercase tracking-wide text-muted-foreground">{group.label}</p>}
       <div className="space-y-2">
         {group.rows.map(row => {
-          const dispatched = dispatchedQtyForItem(row);
+          const dispatched = subTab === 'completed' ? dispatchedQtyForItemAll(row) : dispatchedQtyForItem(row);
           const canSelect = subTab === 'active' && branchFilter !== 'All';
           // FEATURE (2026-08-25): "no date-wise split... show days-pending
           // instead" — since removing the date grouping, this is the
@@ -8687,7 +8934,7 @@ function DispatchDateGroup({ label, orders, search, defaultOpen }: {
                   really requested it — so a combined item shows its full picture. */}
               <div className="mt-2 flex flex-wrap gap-2 text-[11px] font-bold text-muted-foreground">
                 {BRANCHES.filter(b => row.perBranch[b]).map(b => {
-                  const bDispatched = branchDispatchedForRow(row, b, orders);
+                  const bDispatched = branchDispatchedForRow(row, b, subTab === 'completed' ? allOrders : orders);
                   const bDone = (row.perBranch[b] ?? 0) > 0 && bDispatched >= (row.perBranch[b] ?? 0) - 0.01;
                   return (
                     <span key={b} className={cn('rounded-lg px-2 py-1', b === branchFilter ? 'bg-teal-100 text-teal-700' : 'bg-muted/40', bDone && 'line-through opacity-60')}>

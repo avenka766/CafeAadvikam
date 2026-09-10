@@ -6,7 +6,7 @@
 //      e.g. "Banana chips (200g)" → slug "banana-chips" → found in RECIPE_DEFINITIONS
 
 import { RECIPE_DEFINITIONS } from './recipeDefinitions';
-import { BAKERY_ITEMS } from './types';
+import { BAKERY_ITEMS, type BakeryOrderItem } from './types';
 import { VRSNB_ITEMS } from '@/branch/vrsnbItems';
 
 // ── Weight parsing ─────────────────────────────────────────────────────────────
@@ -90,6 +90,45 @@ export function resolveItemWeightGrams(itemId: string, itemName: string): number
 export function kgToPcs(kg: number, weightGrams: number): number | null {
   if (kg <= 0 || weightGrams <= 0) return null;
   return Math.floor((kg * 1000) / weightGrams);
+}
+
+// ── VRSNB pcs → kg for the Planner's Incoming Orders + Production Entry ────────
+// FEATURE (2026-09-10): the Planner wants every VRSNB packet (pcs) item shown —
+// and its production entered — in kg on those two tabs. Unlike the strict
+// "never guess a conversion" rule the display fold (computeMergedSummaryDisplay)
+// follows, here the planner explicitly asked for a fallback: any VRSNB pcs item
+// with no discoverable packet weight is treated as VRSNB_DEFAULT_PACKET_GRAMS.
+// Dispatch stays per-unit and is untouched.
+
+/** Assumed packet weight for a VRSNB pcs item that carries no real weight. */
+export const VRSNB_DEFAULT_PACKET_GRAMS = 200;
+
+type WeightedItem = Pick<BakeryOrderItem, 'itemId' | 'itemName' | 'weightGrams'>;
+
+/** Best-known packet weight in grams: stored value → name → catalogue → default. */
+export function vrsnbPacketGrams(item: WeightedItem): number {
+  return item.weightGrams
+    ?? parseWeightGrams(item.itemName)
+    ?? resolveItemWeightGrams(item.itemId, item.itemName)
+    ?? VRSNB_DEFAULT_PACKET_GRAMS;
+}
+
+/** pcs → kg for display, using vrsnbPacketGrams (always resolves, never null). */
+export function pcsToKgForItem(item: WeightedItem, pcs: number): number {
+  if (pcs <= 0) return 0;
+  return Math.round((pcs * vrsnbPacketGrams(item) / 1000) * 1000) / 1000;
+}
+
+/**
+ * kg → whole packets for Production Entry. ROUNDS to nearest packet — the
+ * planner is reporting how much was made, so 2.05 kg of a 200 g item is 10
+ * packets + scale noise, not 10.25. (kgToPcs() FLOORS on purpose for Packing,
+ * where you must never dispatch more packets than were physically handed over —
+ * that function is deliberately left alone.)
+ */
+export function kgToPcsForItem(item: WeightedItem, kg: number): number {
+  if (kg <= 0) return 0;
+  return Math.max(0, Math.round((kg * 1000) / vrsnbPacketGrams(item)));
 }
 
 // ── Recipe key matching ────────────────────────────────────────────────────────
