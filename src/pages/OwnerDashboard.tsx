@@ -3815,7 +3815,7 @@ function OwnerPlannerSummaryTab() {
               // them (same React key, and expanding one would toggle both).
               const rowKey = `${row.slug}|${row.unit}`;
               const isOpen = expandedSlug === rowKey;
-              const history = isOpen ? dispatchHistoryFor(row.slug, row.unit) : [];
+              const history = isOpen ? dispatchHistoryFor(row.slug, row.unit as LeftoverUnit) : [];
               return (
                 <Fragment key={rowKey}>
                   <tr className="cursor-pointer hover:bg-muted/40" onClick={() => setExpandedSlug(isOpen ? null : rowKey)}>
