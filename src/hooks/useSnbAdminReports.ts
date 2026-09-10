@@ -10,6 +10,8 @@ export type SnbCounterCalculatedRow = {
   opening_cash: number | string | null;
   bill_count: number | string | null;
   gross_sales: number | string | null;
+  /** Σ bill.total — post discount/promo/wallet/round-off; matches the Dashboard Overview's "Gross Sales". */
+  billed_total: number | string | null;
   discounts: number | string | null;
   cash_sales: number | string | null;
   upi_sales: number | string | null;
@@ -461,7 +463,7 @@ export function useSnbAdminReports(fromDate: string, toDate: string) {
     setData(EMPTY);
     const range = { fromDate, toDate };
     const results = await Promise.allSettled([
-      fetchPaged("snb_counter_calculated_totals", { ...range, dateColumn: "business_date", orderColumn: "business_date", columns: "counter_session_id,business_date,cashier_user_id,cashier_username,opening_cash,bill_count,gross_sales,discounts,cash_sales,upi_sales,card_sales,credit_sales,credit_collected,credit_cash_collected,credit_upi_collected,credit_card_collected,credit_bank_collected,advance_collected,advance_cash_collected,returns,cash_refunds,net_sales,expected_cash_before_outflows" }),
+      fetchPaged("snb_counter_calculated_totals", { ...range, dateColumn: "business_date", orderColumn: "business_date", columns: "counter_session_id,business_date,cashier_user_id,cashier_username,opening_cash,bill_count,gross_sales,billed_total,discounts,cash_sales,upi_sales,card_sales,credit_sales,credit_collected,credit_cash_collected,credit_upi_collected,credit_card_collected,credit_bank_collected,advance_collected,advance_cash_collected,returns,cash_refunds,net_sales,expected_cash_before_outflows" }),
       fetchPaged("branch_counter_sessions", { ...range, dateColumn: "business_date", orderColumn: "opened_at", branchColumn: "branch", columns: "id,branch,business_date,cashier_user_id,cashier_username,cashier_display_name,opening_cash,opened_at,status,gross_sales,discounts,returns,net_sales,cash_sales,upi_sales,card_sales,credit_sales,credit_collected,advance_collected,refunds,expenses,supplier_payments,bank_deposits,expected_cash,counted_cash,difference,bill_count,notes,closed_at,closed_by_username,credit_cash_collected,credit_upi_collected,credit_card_collected,credit_bank_collected,advance_cash_collected,advance_upi_collected,advance_card_collected,cash_refunds,opening_denominations,closing_denominations" }),
       fetchPaged("snb_daily_counter_summary", { ...range, dateColumn: "business_date", orderColumn: "business_date", columns: "business_date,closed_counter_count,open_counter_count,gross_sales,discounts,returns,net_sales,cash_sales,upi_sales,card_sales,credit_sales,credit_collected,advance_collected,expected_cash,counted_cash,difference" }),
       fetchPaged("snb_cashier_bill_report", { ...range, dateColumn: "created_at", orderColumn: "created_at", columns: "id,bill_no,created_at,cashier_user_id,cashier_username,counter_session_id,total,discount,balance,status" }),
