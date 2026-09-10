@@ -8582,9 +8582,12 @@ function DispatchDateGroup({ label, orders, allOrders, search, defaultOpen }: {
   // group (no visible change for them).
   const rowDateGroups = useMemo(() => {
     if (branchFilter !== 'Hosur') return [{ dateKey: 'all', label: '', rows: shown }];
+    // Completed view reads the uncut order set (see hosurPanelRowsAll) so the
+    // date-grouping can still resolve a pre-cutoff order's own date.
+    const dateSource = subTab === 'completed' ? allOrders : orders;
     const groups = new Map<string, ProductionRow[]>();
     for (const row of shown) {
-      const contributing = orders.filter(o => row.contributingOrderIds.includes(o.id));
+      const contributing = dateSource.filter(o => row.contributingOrderIds.includes(o.id));
       const oldest = contributing.length > 0
         ? contributing.reduce((min, o) => o.createdAt < min ? o.createdAt : min, contributing[0].createdAt)
         : null;
@@ -8600,7 +8603,7 @@ function DispatchDateGroup({ label, orders, allOrders, search, defaultOpen }: {
         dateKey, rows,
         label: dateKey === 'unknown-date' ? 'Date unknown' : dateKey === todayKey ? 'Today' : new Date(dateKey).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }),
       }));
-  }, [shown, orders, branchFilter]);
+  }, [shown, orders, allOrders, subTab, branchFilter]);
   // BUG FIX (2026-08-07): search-independent version of activeRows, for the
   // VRSNB/SNB flat dispatch panel only. That panel keeps its own
   // quantity/selection state keyed by item name and re-seeds it whenever its
@@ -8635,6 +8638,12 @@ function DispatchDateGroup({ label, orders, allOrders, search, defaultOpen }: {
   // correctly bucketing into completed. Checking key presence instead of
   // truthiness fixes this at the root, matching the same fix just above.
   const hosurPanelRows = rows.filter(r => 'Hosur' in r.perBranch);
+  // "Dispatched" (completed) sub-tab must read the UNCUT set — the nightly
+  // 11 PM production cutoff trims `rows`/`orders` down to only what was sent
+  // to Store after the reset, which is correct for "To Dispatch" but would
+  // wipe every earlier order out of the Hosur dispatched history (By Shop
+  // builds its cards from these rows + orders). Mirror completedRows.
+  const hosurPanelRowsAll = allRows.filter(r => 'Hosur' in r.perBranch);
   // Items with a "Planned" (Planning-tab) component still awaiting a
   // branch + quantity decision at dispatch time.
   const plannedRows = useMemo(
@@ -8829,9 +8838,9 @@ function DispatchDateGroup({ label, orders, allOrders, search, defaultOpen }: {
         // completion (every item on that specific shop's order fully sent),
         // not by whether some unrelated shop still needs more of an item.
         <HosurShopDispatchPanel
-          rows={hosurPanelRows}
+          rows={subTab === 'completed' ? hosurPanelRowsAll : hosurPanelRows}
           mode={subTab === 'completed' ? 'completed' : 'active'}
-          orders={orders}
+          orders={subTab === 'completed' ? allOrders : orders}
           leftoverBalances={leftoverBalances}
           onDispatch={submitDispatch}
           dispatchedBy={currentUser?.displayName || currentUser?.username || 'Planner'}
@@ -8943,7 +8952,7 @@ function DispatchDateGroup({ label, orders, allOrders, search, defaultOpen }: {
                   );
                 })}
               </div>
-              {branchFilter === 'Hosur' && <HosurShopBreakdown row={row} orders={orders} />}
+              {branchFilter === 'Hosur' && <HosurShopBreakdown row={row} orders={subTab === 'completed' ? allOrders : orders} />}
             </div>
           );
         })}
