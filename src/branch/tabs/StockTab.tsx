@@ -635,6 +635,41 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
     await fetchBranchData(branch, false, ['incoming']); // EGRESS FIX: raising a dispute only touches incoming
   };
 
+  // Merged incoming row: Planner's dispatch step split one delivery of an item
+  // into several branch_incoming rows, which the UI shows as ONE row. Disputing
+  // that row must raise ONE dispute for the whole group (one admin notification,
+  // one row in the admin's dispute queue) — not one per underlying batch. The
+  // group RPC marks every batch disputed and splits the reported received qty
+  // across them, so the admin sees a single "dispatched X / received Y" line.
+  const raiseIncomingDisputeGroup = async (entries: IncomingStock[], receivedQty: number, reasonText: string) => {
+    if (entries.length === 1) return raiseIncomingDispute(entries[0], receivedQty, reasonText);
+    setDisputeError('');
+    const raisedBy = currentUser?.displayName || currentUser?.username || 'Branch User';
+    const dispatchedTotal = entries.reduce((sum, e) => sum + e.quantity, 0);
+    const { error } = await supabase.rpc('raise_branch_incoming_dispute_group_secure', {
+      p_incoming_ids: entries.map((e) => e.id),
+      p_received_quantity: receivedQty,
+      p_reason: reasonText.trim() || 'Received quantity does not match the dispatched/expected quantity',
+    });
+    if (error) {
+      setDisputeError(error.message);
+      return;
+    }
+    setDisputedIncoming((prev) => {
+      const next = { ...prev };
+      for (const e of entries) next[e.id] = true;
+      return next;
+    });
+    addNotification({
+      branch,
+      type: 'Stock Dispute',
+      title: 'Incoming stock mismatch raised',
+      details: `${entries[0].itemName} · Dispatched ${formatQtyLabel(dispatchedTotal, entries[0].itemName, entries[0].unit)} · Received ${formatQtyLabel(receivedQty, entries[0].itemName, entries[0].unit)} · ${entries.length} batches`,
+      raisedBy,
+    });
+    await fetchBranchData(branch, false, ['incoming']); // EGRESS FIX: raising a dispute only touches incoming
+  };
+
   // Return sends this incoming stock back to Packing: it appears as a
   // pending request in Planner's Transfer In queue (Daily Closure ▸ Disputes
   // & Returns), and syncs into closing stock once Planner confirms it.
@@ -832,16 +867,13 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
                           onCancel={() => setOpenForm(null)}
                           onSubmit={async ({ quantity, reason }) => {
                             if (openForm === 'dispute') {
-                              // Proportionally attribute a disputed received-quantity
-                              // across the underlying batches by their own share of
-                              // the merged total — a single (un-merged) row has one
-                              // entry with share 1, so this is identical to the old
-                              // per-row behavior in the common case.
+                              // ONE dispute for the whole merged row — the group RPC
+                              // marks every underlying batch disputed and splits the
+                              // reported received qty across them, so the admin sees
+                              // a single dispute (not one per batch). A single
+                              // (un-merged) row falls through to the plain RPC.
                               const enteredQty = quantity ?? totalQuantity;
-                              for (const e of entries) {
-                                const share = totalQuantity > 0 ? e.quantity / totalQuantity : 1 / entries.length;
-                                await raiseIncomingDispute(e, Math.round(enteredQty * share * 1000) / 1000, reason);
-                              }
+                              await raiseIncomingDisputeGroup(entries, Math.round(enteredQty * 1000) / 1000, reason);
                             } else {
                               for (const e of entries) await requestReturn(e, reason);
                             }
