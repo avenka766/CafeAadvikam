@@ -2211,7 +2211,7 @@ function SnbSplitStockCountPanel({
 }: {
   branchStock: StockItem[];
   userName: string;
-  itemMaster: { name: string; uom: string }[];
+  itemMaster: { name: string; uom: string; category?: string }[];
 }) {
   const branch = "SNB" as const;
   const { submitStockCountReport } = useBranchOpsStore();
@@ -2232,6 +2232,12 @@ function SnbSplitStockCountPanel({
   const [counts, setCounts] = useState<Record<string, string>>({});
   const [countedItems, setCountedItems] = useState<Record<string, boolean>>({});
   const [calculatorRow, setCalculatorRow] = useState<{ itemName: string; unit: string } | null>(null);
+  // FEATURE (2026-09-10): once a stock group is claimed, show its item
+  // categories as chips at the top so a long group can be counted one
+  // category at a time. "All" (default) shows every item in the group;
+  // group-level stats and the "mark done" completeness check always run
+  // against the full group, never the filtered view.
+  const [activeCategory, setActiveCategory] = useState<string>("All");
   const [notice, setNotice] = useState("");
   const [noticeTone, setNoticeTone] = useState<"success" | "error">("success");
   const [markingDone, setMarkingDone] = useState(false);
@@ -2276,9 +2282,29 @@ function SnbSplitStockCountPanel({
       .map((item) => {
         const stockItem = stockMap.get(item.name);
         const unit = stockItem?.unit ?? (item.uom === "Kgs" ? "kg" : "pcs");
-        return { itemName: item.name, unit, systemQty: Number(stockItem?.quantity ?? 0) };
+        return {
+          itemName: item.name,
+          unit,
+          systemQty: Number(stockItem?.quantity ?? 0),
+          category: (item.category ?? "").trim() || "Uncategorised",
+        };
       });
   }, [myClaim, groupMap, branchStock, itemMaster]);
+
+  // Categories present in THIS claimed group only (so a chip never shows for
+  // a category that has no items here).
+  const categoryOptions = useMemo(
+    () => ["All", ...Array.from(new Set(rows.map((r) => r.category))).sort((a, b) => a.localeCompare(b))],
+    [rows],
+  );
+  // Keep the filter valid if the claimed group changes under us.
+  useEffect(() => {
+    if (activeCategory !== "All" && !categoryOptions.includes(activeCategory)) setActiveCategory("All");
+  }, [categoryOptions, activeCategory]);
+  const visibleRows = useMemo(
+    () => (activeCategory === "All" ? rows : rows.filter((r) => r.category === activeCategory)),
+    [rows, activeCategory],
+  );
 
   useEffect(() => {
     if (!myClaim) return;
@@ -2531,6 +2557,30 @@ function SnbSplitStockCountPanel({
         </div>
       </div>
 
+      {categoryOptions.length > 2 && (
+        <div className="flex flex-wrap gap-2 rounded-3xl border border-border bg-white p-3 shadow-soft">
+          {categoryOptions.map((cat) => {
+            const total = cat === "All" ? rows.length : rows.filter((r) => r.category === cat).length;
+            const pending = (cat === "All" ? rows : rows.filter((r) => r.category === cat)).filter((r) => !countedItems[r.itemName]).length;
+            return (
+              <button
+                key={cat}
+                type="button"
+                onClick={() => setActiveCategory(cat)}
+                className={cn(
+                  "rounded-full border px-3 py-1.5 text-xs font-body font-black transition",
+                  activeCategory === cat
+                    ? "border-emerald-600 bg-emerald-600 text-white"
+                    : "border-border bg-background text-muted-foreground hover:border-emerald-400 hover:text-foreground",
+                )}
+              >
+                {cat} <span className="tabular-nums opacity-80">({total}{pending > 0 ? ` · ${pending} left` : ""})</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       <div className="overflow-hidden rounded-3xl border border-border bg-white shadow-soft">
         <div className="overflow-x-auto">
           <div className="min-w-[520px]">
@@ -2538,7 +2588,12 @@ function SnbSplitStockCountPanel({
               <span>Item</span><span>System</span><span>Physical</span><span>Diff</span>
             </div>
             <div className="max-h-[65vh] overflow-y-auto divide-y divide-border/60">
-              {rows.map((row) => {
+              {visibleRows.length === 0 && (
+                <div className="px-4 py-8 text-center text-sm font-body font-bold text-muted-foreground">
+                  No items in {activeCategory === "All" ? "this group" : `"${activeCategory}"`}.
+                </div>
+              )}
+              {visibleRows.map((row) => {
                 const hasConfirmedCount = Boolean(countedItems[row.itemName]);
                 const physical = Number(counts[row.itemName] || 0);
                 const diff = hasConfirmedCount ? Math.round((physical - row.systemQty) * 1000) / 1000 : null;
@@ -2546,7 +2601,10 @@ function SnbSplitStockCountPanel({
                   <div key={row.itemName} className="grid grid-cols-[minmax(180px,1fr)_90px_120px_100px] items-center gap-3 px-4 py-2.5 text-sm">
                     <div>
                       <p className="font-body font-black text-foreground">{row.itemName}</p>
-                      <p className="text-[11px] font-bold text-slate-500">{row.unit}</p>
+                      <p className="text-[11px] font-bold text-slate-500">
+                        {row.unit}
+                        {activeCategory === "All" && row.category !== "Uncategorised" && <span className="text-slate-400"> · {row.category}</span>}
+                      </p>
                     </div>
                     <span className="font-black tabular-nums">{row.systemQty}</span>
                     <button
