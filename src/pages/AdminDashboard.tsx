@@ -252,7 +252,7 @@ function AdminDashboard() {
   const { orders, polling, startPolling, stopPolling, loadOrders, ordersLoading } = useOrderStore(
     useShallow(s => ({ orders: s.orders, polling: s.polling, startPolling: s.startPolling, stopPolling: s.stopPolling, loadOrders: s.loadOrders, ordersLoading: s.loading }))
   );
-  const { stock, sales, incoming, creditSales, stockMismatches, fetchBranchData, fetchStockMismatches, confirmIncoming } = useBranchStore();
+  const { stock, sales, incoming, creditSales, stockMismatches, fetchBranchData, fetchStockMismatches } = useBranchStore();
   const { bills, returns, purchasePayments, cashMovements, bankDeposits, cashierClosures, stockVarianceRecords, auditLogs, notifications, updateNotificationStatus, complaints, updateComplaintStatus, fetchBillsInRange } = useBranchOpsStore();
   // The in-memory `bills` array is capped for performance (see
   // branchOpsStore's hydration limit). Whenever the selected report range
@@ -2160,13 +2160,66 @@ function AdminDashboard() {
       .map(item => ({ ...item, branch })),
   ).sort((a, b) => new Date(b.disputedAt || b.receivedAt).getTime() - new Date(a.disputedAt || a.receivedAt).getTime()), [incoming]);
 
+  // BUG FIX (2026-09-11): "if I raise the dispute for 20kgs the admin gets
+  // multiple dispute by splitting the kgs". Planner's dispatch step fragments
+  // one delivery of an item into several branch_incoming rows; the branch UI
+  // merges them into one row and (now) raises ONE grouped dispute, but the
+  // admin still saw one queue row per underlying batch. Collapse the batches
+  // back into a single dispute here — same key the branch's StockTab uses —
+  // so the admin corrects one quantity for the whole item.
+  type StockDisputeGroup = {
+    key: string;
+    branch: Branch;
+    itemName: string;
+    unit: string;
+    advanceOrderNo: string | null;
+    rows: (typeof stockDisputes)[number][];
+    dispatchedTotal: number;
+    receivedTotal: number;
+    disputeReason: string | null;
+    disputedBy: string | null;
+    disputedAt: string | null;
+    receivedAt: string;
+  };
+  const stockDisputeGroups = useMemo<StockDisputeGroup[]>(() => {
+    const norm = (v: string) => v.toLowerCase().replace(/[^a-z0-9]+/g, '');
+    const map = new Map<string, StockDisputeGroup>();
+    for (const row of stockDisputes) {
+      const key = `${row.branch}|${norm(row.itemName)}|${row.unit}|${row.advanceOrderNo ?? ''}`;
+      const existing = map.get(key);
+      const received = row.disputedReceivedQuantity ?? row.quantity;
+      if (existing) {
+        existing.rows.push(row);
+        existing.dispatchedTotal += row.quantity;
+        existing.receivedTotal += received;
+        if (new Date(row.disputedAt || row.receivedAt) > new Date(existing.disputedAt || existing.receivedAt)) {
+          existing.disputedAt = row.disputedAt ?? existing.disputedAt;
+          existing.receivedAt = row.receivedAt;
+        }
+      } else {
+        map.set(key, {
+          key, branch: row.branch, itemName: row.itemName, unit: row.unit,
+          advanceOrderNo: row.advanceOrderNo ?? null, rows: [row],
+          dispatchedTotal: row.quantity, receivedTotal: received,
+          disputeReason: row.disputeReason ?? null, disputedBy: row.disputedBy ?? null,
+          disputedAt: row.disputedAt ?? null, receivedAt: row.receivedAt,
+        });
+      }
+    }
+    return Array.from(map.values()).sort(
+      (a, b) => new Date(b.disputedAt || b.receivedAt).getTime() - new Date(a.disputedAt || a.receivedAt).getTime(),
+    );
+  }, [stockDisputes]);
+
   useEffect(() => {
     setDisputeQtyById(prev => {
       const next = { ...prev };
       let changed = false;
-      stockDisputes.forEach(item => {
-        if (next[item.id] === undefined) {
-          next[item.id] = String(item.quantity);
+      stockDisputeGroups.forEach(g => {
+        // Default the correction to what the branch says they actually received
+        // (the whole merged total), not the dispatched figure.
+        if (next[g.key] === undefined) {
+          next[g.key] = String(g.receivedTotal);
           changed = true;
         }
       });
@@ -2175,15 +2228,15 @@ function AdminDashboard() {
     setDisputeUnitById(prev => {
       const next = { ...prev };
       let changed = false;
-      stockDisputes.forEach(item => {
-        if (next[item.id] === undefined) {
-          next[item.id] = item.unit === 'pcs' ? 'pcs' : 'kg';
+      stockDisputeGroups.forEach(g => {
+        if (next[g.key] === undefined) {
+          next[g.key] = g.unit === 'pcs' ? 'pcs' : 'kg';
           changed = true;
         }
       });
       return changed ? next : prev;
     });
-  }, [stockDisputes]);
+  }, [stockDisputeGroups]);
 
   const normalizeItemNameForCatalogMatch = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, '');
 
@@ -2201,68 +2254,89 @@ function AdminDashboard() {
     ) || null;
   };
 
-  const resolveStockDispute = async (branch: Branch, incomingId: string) => {
-    const item = stockDisputes.find(row => row.branch === branch && row.id === incomingId);
-    if (!item) return;
-    const correctedQty = Number(disputeQtyById[incomingId] ?? item.quantity);
+  // BUG FIX (2026-09-11): the admin's resolution used to update the quantity
+  // AND immediately confirmIncoming() — syncing straight into branch stock, so
+  // the branch never saw the admin's corrected figure. Now the admin only
+  // corrects + clears the dispute; the row drops back into the branch's own
+  // Incoming list and the branch's confirm is the single thing that syncs
+  // stock. Also resolves the whole merged group (all fragmented batches for
+  // one item) in one action instead of one row at a time.
+  const resolveStockDisputeGroup = async (group: StockDisputeGroup) => {
+    const { branch, key, rows } = group;
+    const correctedQty = Number(disputeQtyById[key] ?? group.receivedTotal);
     if (!Number.isFinite(correctedQty) || correctedQty < 0) {
-      setDisputeMessage('Enter a valid corrected quantity before confirming.');
+      setDisputeMessage('Enter a valid corrected quantity before sending it back.');
       return;
     }
-    const correctedUnit = disputeUnitById[incomingId] ?? (item.unit === 'pcs' ? 'pcs' : 'kg');
-    setSavingDisputeId(incomingId);
+    const correctedUnit = disputeUnitById[key] ?? (group.unit === 'pcs' ? 'pcs' : 'kg');
+    setSavingDisputeId(key);
     setDisputeMessage('');
-    // AUDIT FIX (2026-09-02): pcs items must stay whole numbers — this used
-    // the same kg-precision rounding (Math.round(x*1000)/1000) regardless
-    // of unit, so a typo/partial correction like "45.5" for a pcs item
-    // saved a fractional piece count into real branch stock. Same bug class
-    // fixed at 15+ other input sites (see project_pcs_decimal_fix_gaps /
-    // project_planner_audit_round2/3 memories).
-    const correctedQtySafe = correctedUnit === 'pcs' ? Math.round(correctedQty) : Math.round(correctedQty * 1000) / 1000;
+    // pcs items stay whole numbers (see project_pcs_decimal_fix_gaps).
+    const roundQ = (n: number) => (correctedUnit === 'pcs' ? Math.round(n) : Math.round(n * 1000) / 1000);
+    const correctedTotal = roundQ(correctedQty);
 
-    const updatePayload: Record<string, unknown> = {
-      quantity: correctedQtySafe,
-      disputed: false,
-      dispute_reason: `${item.disputeReason || 'Dispute'} | Resolved by ${adminName}`,
-    };
-    // Unit changed from what the mis-dispatch used — re-point this row at
-    // the correct catalogue item/barcode for that unit, otherwise the
-    // stock still credits under the wrong classification (or the wrong
-    // item entirely, since this catalogue keeps a separate barcode per
-    // unit for the same product name).
-    if (correctedUnit !== item.unit) {
-      const catalogEntry = findCatalogEntryForUnit(branch, item.itemName, correctedUnit);
+    // Split the corrected total back across the merged batches, weighted by
+    // each batch's dispatched quantity; the last batch absorbs the rounding
+    // remainder so the parts sum to exactly correctedTotal (mirrors the group
+    // dispute RPC on the branch side).
+    const shares: number[] = [];
+    let running = 0;
+    rows.forEach((r, i) => {
+      let share: number;
+      if (i === rows.length - 1) {
+        share = roundQ(correctedTotal - running);
+      } else if (group.dispatchedTotal > 0) {
+        share = roundQ((correctedTotal * r.quantity) / group.dispatchedTotal);
+      } else {
+        share = roundQ(correctedTotal / rows.length);
+      }
+      running += share;
+      shares.push(share);
+    });
+
+    // Unit changed from what the mis-dispatch used — re-point every batch at
+    // the correct catalogue item/barcode for that unit so the branch's confirm
+    // credits the right item.
+    let unitPatch: Record<string, unknown> = {};
+    if (correctedUnit !== group.unit) {
+      const catalogEntry = findCatalogEntryForUnit(branch, group.itemName, correctedUnit);
       if (!catalogEntry) {
-        setDisputeMessage(`No ${BRANCH_LABELS[branch]} catalogue item named "${item.itemName}" in ${correctedUnit} — add/fix the catalogue item first, then resolve this dispute.`);
+        setDisputeMessage(`No ${BRANCH_LABELS[branch]} catalogue item named "${group.itemName}" in ${correctedUnit} — add/fix the catalogue item first, then resolve this dispute.`);
         setSavingDisputeId('');
         return;
       }
-      updatePayload.unit = correctedUnit;
-      updatePayload.item_barcode = catalogEntry.barcode;
+      unitPatch = { unit: correctedUnit, item_barcode: catalogEntry.barcode };
     }
 
-    const { error } = await supabase
-      .from('branch_incoming')
-      .update(updatePayload)
-      .eq('id', incomingId)
-      .eq('branch', branch);
-    if (error) {
-      setDisputeMessage(`Could not update disputed stock: ${error.message}`);
-      setSavingDisputeId('');
-      return;
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      const { error } = await supabase
+        .from('branch_incoming')
+        .update({
+          quantity: shares[i],
+          disputed: false,
+          dispute_reason: `${r.disputeReason || 'Dispute'} | Admin set ${correctedTotal} ${correctedUnit} total — sent back to ${BRANCH_LABELS[branch]} for confirmation (${adminName})`,
+          ...unitPatch,
+        })
+        .eq('id', r.id)
+        .eq('branch', branch);
+      if (error) {
+        setDisputeMessage(`Could not update disputed stock: ${error.message}`);
+        setSavingDisputeId('');
+        await fetchBranchData(branch, false, ['incoming']);
+        return;
+      }
     }
+
+    // Deliberately NOT calling confirmIncoming — clearing the dispute drops the
+    // row back into the branch's Incoming list as a normal actionable row. The
+    // branch reviews the corrected quantity and confirms; only that confirm
+    // syncs it into branch stock.
     await fetchBranchData(branch, false, ['incoming']); // EGRESS FIX: resolving a dispute only touches incoming
-    const confirmError = await confirmIncoming(branch, incomingId);
-    if (confirmError) {
-      setDisputeMessage(confirmError);
-      setSavingDisputeId('');
-      return;
-    }
     notifications
-      .filter(n => n.branch === branch && n.type === 'Stock Dispute' && n.status !== 'Resolved' && n.details.includes(item.itemName))
+      .filter(n => n.branch === branch && n.type === 'Stock Dispute' && n.status !== 'Resolved' && n.details.includes(group.itemName))
       .forEach(n => updateNotificationStatus(n.id, 'Resolved', adminName));
-    await fetchBranchData(branch, false, ['incoming']); // EGRESS FIX: resolving a dispute only touches incoming
-    setDisputeMessage(`${BRANCH_LABELS[branch]} ${item.itemName} confirmed with corrected quantity ${correctedQty} ${correctedUnit}. Stock synced.`);
+    setDisputeMessage(`${BRANCH_LABELS[branch]} ${group.itemName}: corrected to ${correctedTotal} ${correctedUnit} and sent back to ${BRANCH_LABELS[branch]} — they confirm it to sync stock.`);
     setSavingDisputeId('');
   };
 
@@ -2270,13 +2344,13 @@ function AdminDashboard() {
     <div className="space-y-5">
       <Panel
         title="Incoming Stock Disputes"
-        subtitle="Admin approval is required before disputed incoming stock can sync to branch stock."
-        action={<Badge tone={stockDisputes.length > 0 ? 'amber' : 'green'}>{stockDisputes.length} pending</Badge>}
+        subtitle="Correct the quantity and send it back — the branch confirms the corrected figure, and that confirm is what syncs it into branch stock."
+        action={<Badge tone={stockDisputeGroups.length > 0 ? 'amber' : 'green'}>{stockDisputeGroups.length} pending</Badge>}
       >
         {disputeMessage && (
           <p className="mb-3 rounded-2xl bg-blue-50 px-3 py-2 text-sm font-black text-blue-700">{disputeMessage}</p>
         )}
-        {stockDisputes.length === 0 ? <EmptyState label="No incoming stock disputes pending." /> : (
+        {stockDisputeGroups.length === 0 ? <EmptyState label="No incoming stock disputes pending." /> : (
           <div className="overflow-x-auto">
             <table className="w-full min-w-[1080px] text-sm">
               <thead>
@@ -2293,45 +2367,52 @@ function AdminDashboard() {
                 </tr>
               </thead>
               <tbody className="divide-y">
-                {stockDisputes.map(item => (
-                  <tr key={`${item.branch}-${item.id}`} className="hover:bg-slate-50">
-                    <td className="p-3"><BranchPill branch={item.branch} /></td>
-                    <td className="p-3 font-black">{item.itemName}</td>
-                    <td className="p-3 text-right font-black tabular-nums">{item.quantity} {item.unit}</td>
+                {stockDisputeGroups.map(group => (
+                  <tr key={group.key} className="hover:bg-slate-50">
+                    <td className="p-3"><BranchPill branch={group.branch} /></td>
+                    <td className="p-3 font-black">
+                      {group.itemName}
+                      {group.rows.length > 1 && (
+                        <span className="ml-2 rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-black text-slate-500">
+                          {group.rows.length} batches merged
+                        </span>
+                      )}
+                    </td>
+                    <td className="p-3 text-right font-black tabular-nums">{group.dispatchedTotal} {group.unit}</td>
                     <td className="p-3">
                       <input
                         type="number"
                         min="0"
-                        step={(disputeUnitById[item.id] ?? item.unit) === 'kg' ? '0.001' : '1'}
-                        value={disputeQtyById[item.id] ?? String(item.quantity)}
-                        onChange={event => setDisputeQtyById(prev => ({ ...prev, [item.id]: event.target.value }))}
+                        step={(disputeUnitById[group.key] ?? group.unit) === 'kg' ? '0.001' : '1'}
+                        value={disputeQtyById[group.key] ?? String(group.receivedTotal)}
+                        onChange={event => setDisputeQtyById(prev => ({ ...prev, [group.key]: event.target.value }))}
                         className="h-10 w-28 rounded-2xl border border-slate-200 px-3 text-sm font-black tabular-nums"
                       />
                     </td>
                     <td className="p-3">
                       <select
-                        value={disputeUnitById[item.id] ?? (item.unit === 'pcs' ? 'pcs' : 'kg')}
-                        onChange={event => setDisputeUnitById(prev => ({ ...prev, [item.id]: event.target.value as 'kg' | 'pcs' }))}
+                        value={disputeUnitById[group.key] ?? (group.unit === 'pcs' ? 'pcs' : 'kg')}
+                        onChange={event => setDisputeUnitById(prev => ({ ...prev, [group.key]: event.target.value as 'kg' | 'pcs' }))}
                         className="h-10 w-24 rounded-2xl border border-slate-200 px-2 text-sm font-black"
                       >
                         <option value="kg">kg</option>
                         <option value="pcs">pcs</option>
                       </select>
-                      {(disputeUnitById[item.id] ?? item.unit) !== item.unit && (
-                        <p className="mt-1 text-[10px] font-bold text-amber-600">Was {item.unit} — will re-link to the {disputeUnitById[item.id]} catalogue item.</p>
+                      {(disputeUnitById[group.key] ?? group.unit) !== group.unit && (
+                        <p className="mt-1 text-[10px] font-bold text-amber-600">Was {group.unit} — will re-link to the {disputeUnitById[group.key]} catalogue item.</p>
                       )}
                     </td>
-                    <td className="p-3 text-slate-600">{item.disputeReason || '-'}</td>
-                    <td className="p-3 text-slate-600">{item.disputedBy || '-'}</td>
-                    <td className="p-3 text-slate-500">{fmtDateTime(item.disputedAt || item.receivedAt)}</td>
+                    <td className="p-3 text-slate-600">{group.disputeReason || '-'}</td>
+                    <td className="p-3 text-slate-600">{group.disputedBy || '-'}</td>
+                    <td className="p-3 text-slate-500">{fmtDateTime(group.disputedAt || group.receivedAt)}</td>
                     <td className="p-3 text-right">
                       <button
                         type="button"
-                        disabled={savingDisputeId === item.id}
-                        onClick={() => void resolveStockDispute(item.branch, item.id)}
+                        disabled={savingDisputeId === group.key}
+                        onClick={() => void resolveStockDisputeGroup(group)}
                         className="rounded-2xl bg-orange-500 px-4 py-2 text-xs font-black text-white shadow-lg shadow-orange-200 disabled:opacity-50"
                       >
-                        {savingDisputeId === item.id ? 'Saving...' : 'Confirm & Sync'}
+                        {savingDisputeId === group.key ? 'Saving...' : 'Send back to branch'}
                       </button>
                     </td>
                   </tr>

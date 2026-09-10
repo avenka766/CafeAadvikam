@@ -4012,8 +4012,15 @@ function CashierReportTab(props: any) {
     const map = new Map<string, any>();
     props.dbReports.counterTotals.forEach((entry: any) => {
       const name = entry.cashier_username || "Legacy / Unattributed";
-      const row = map.get(name) || { name, grossSales: 0, returns: 0, netSales: 0, bills: 0, cash: 0, upi: 0, card: 0, credit: 0, creditCollected: 0, advance: 0, sessions: 0 };
-      row.grossSales += asNumber(entry.gross_sales);
+      const row = map.get(name) || { name, grossSales: 0, discount: 0, returns: 0, netSales: 0, bills: 0, cash: 0, upi: 0, card: 0, credit: 0, creditCollected: 0, advance: 0, sessions: 0 };
+      // `billed_total` = Σ bill.total (post discount/promo/wallet/round-off) —
+      // the same figure the Dashboard Overview shows as "Gross Sales", so the
+      // two tabs reconcile. `gross_sales` on the view is a PRE-discount number
+      // (Σ subtotal + discount − round_off); we surface the discount separately
+      // instead. Fall back to gross_sales only for older rows with no
+      // billed_total (view predates this column).
+      row.grossSales += asNumber(entry.billed_total) || asNumber(entry.gross_sales);
+      row.discount += asNumber(entry.discounts);
       row.returns += asNumber(entry.returns);
       row.netSales += asNumber(entry.net_sales);
       row.bills += asNumber(entry.bill_count);
@@ -4026,12 +4033,15 @@ function CashierReportTab(props: any) {
       row.sessions += 1;
       map.set(name, row);
     });
-    // Total Amount = every rupee this cashier was accountable for handling in the
-    // period — cash/UPI/card counter sales plus credit collections and advance
-    // money received, so it's a true "money passed through this cashier" figure
-    // rather than just net sales (which already excludes credit/advance flows).
+    // Total Amount = paid-for sales for this cashier = Net Sales − Credit Sales
+    // (the part billed on credit that is NOT yet paid). Everything else — cash,
+    // UPI, card, advance already received on cake orders — is realised money, so
+    // it's just net minus the outstanding credit balance booked in the period.
+    // (Not cash+upi+card+creditCollected+advance: that undercounts advance-final
+    // cake bills whose advance was paid on an earlier day and never lands in
+    // this session's payment rows.)
     return Array.from(map.values())
-      .map((row: any) => ({ ...row, totalAmount: row.cash + row.upi + row.card + row.creditCollected + row.advance }))
+      .map((row: any) => ({ ...row, totalAmount: Math.max(0, row.netSales - row.credit) }))
       .sort((a: any, b: any) => b.netSales - a.netSales);
   }, [props.dbReports.counterTotals]);
 
@@ -4049,15 +4059,16 @@ function CashierReportTab(props: any) {
         <Kpi label="Top Cashier" value={best ? best.name : "-"} sub={best ? money(best.netSales) : undefined} icon={<BarChart3 className="size-5" />} tone="amber" />
       </div>
       {props.dbReports.error && <div className="rounded-2xl bg-amber-50 p-3 text-xs font-bold text-amber-800 ring-1 ring-amber-100">Some database reports could not load: {props.dbReports.error}</div>}
-      <Panel title="Cashier Accountability Report" icon={<BarChart3 className="size-4" />} action={<div className="flex flex-wrap gap-2"><button disabled={db.loading} className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200 disabled:opacity-50")} onClick={() => void db.refresh()}><RefreshCcw className={cn("size-4", db.loading && "animate-spin")} /> Refresh</button><button className={cn(btnCls, "bg-slate-950 text-white")} onClick={() => csvDownload("SNB_Cashier_Report.xls", rows.map((row: any) => ({ CashierLogin: row.name, Sessions: row.sessions, GrossSales: row.grossSales, Returns: row.returns, NetSales: row.netSales, Bills: row.bills, Cash: row.cash, UPI: row.upi, Card: row.card, CreditSales: row.credit, CreditCollected: row.creditCollected, AdvanceCollected: row.advance, TotalAmount: row.totalAmount })))}><Download className="size-4" /> Excel</button></div>}>
+      <Panel title="Cashier Accountability Report" icon={<BarChart3 className="size-4" />} action={<div className="flex flex-wrap gap-2"><button disabled={db.loading} className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200 disabled:opacity-50")} onClick={() => void db.refresh()}><RefreshCcw className={cn("size-4", db.loading && "animate-spin")} /> Refresh</button><button className={cn(btnCls, "bg-slate-950 text-white")} onClick={() => csvDownload("SNB_Cashier_Report.xls", rows.map((row: any) => ({ CashierLogin: row.name, Sessions: row.sessions, GrossSales: row.grossSales, Discount: row.discount, Returns: row.returns, NetSales: row.netSales, Bills: row.bills, Cash: row.cash, UPI: row.upi, Card: row.card, CreditSales: row.credit, CreditCollected: row.creditCollected, AdvanceCollected: row.advance, TotalAmount: row.totalAmount })))}><Download className="size-4" /> Excel</button></div>}>
         <DataTable
-          headers={["Rank", "Cashier Login", "Sessions", "Gross", "Returns", "Net", "Bills", "Cash", "UPI", "Card", "Credit Sales", "Credit Collected", "Advance", "Total Amount"]}
-          rows={rows.map((row: any, index: number) => [`#${index + 1}`, row.name, row.sessions || "-", money(row.grossSales), money(row.returns), <span key="net" className="font-black text-emerald-700">{money(row.netSales)}</span>, row.bills, money(row.cash), money(row.upi), money(row.card), money(row.credit), money(row.creditCollected), money(row.advance), <span key="total" className="font-black text-purple-700">{money(row.totalAmount)}</span>])}
+          headers={["Rank", "Cashier Login", "Sessions", "Gross", "Discount", "Returns", "Net", "Bills", "Cash", "UPI", "Card", "Credit Sales", "Credit Collected", "Advance", "Total Amount"]}
+          rows={rows.map((row: any, index: number) => [`#${index + 1}`, row.name, row.sessions || "-", money(row.grossSales), money(row.discount), money(row.returns), <span key="net" className="font-black text-emerald-700">{money(row.netSales)}</span>, row.bills, money(row.cash), money(row.upi), money(row.card), money(row.credit), money(row.creditCollected), money(row.advance), <span key="total" className="font-black text-purple-700">{money(row.totalAmount)}</span>])}
           empty="No cashier sales data found for the selected date range."
           footer={rows.length > 0 ? [
             "Total", `${rows.length} Cashier${rows.length === 1 ? "" : "s"}`,
             rows.reduce((s: number, r: any) => s + (r.sessions || 0), 0),
             money(rows.reduce((s: number, r: any) => s + r.grossSales, 0)),
+            money(rows.reduce((s: number, r: any) => s + r.discount, 0)),
             money(rows.reduce((s: number, r: any) => s + r.returns, 0)),
             money(totalNet),
             totalBills,
