@@ -8046,8 +8046,20 @@ function EditDispatchInvoiceModal({ invoice, onClose, onSaved }: {
     const key = nextKeyRef.current++;
     setLines(prev => [...prev, { key, itemName: '', unit: 'kg', quantity: 0, unitPrice: 0, lineTotal: 0, isExtra: true }]);
   };
+  // BUG FIX (2026-09-10): a named charge line (unit === 'charge' — e.g. a
+  // Delivery Fee) has no meaningful quantity; its amount lives in unitPrice
+  // with quantity pinned to 1. Editing its amount goes through this so
+  // quantity can never drift to 0 (which the save filter below silently
+  // dropped the whole line for — the exact bug that wiped GP THENI's
+  // Delivery Fee off SALES/26-27/156).
+  const setChargeAmount = (key: number, value: string) =>
+    updateLine(key, { unitPrice: Math.max(0, Number(value) || 0), quantity: 1 });
 
-  const subtotal = lines.reduce((s, l) => s + Math.round(l.quantity * l.unitPrice * 100) / 100, 0);
+  const lineAmount = (l: EditableInvoiceLine) =>
+    l.unit === 'charge'
+      ? Math.round((Number(l.unitPrice) || 0) * 100) / 100
+      : Math.round(l.quantity * l.unitPrice * 100) / 100;
+  const subtotal = lines.reduce((s, l) => s + lineAmount(l), 0);
   // BUG FIX (audit item #12): discountPct's own onChange already clamps to
   // 0-100 on input, but this recomputes defensively anyway (belt-and-
   // suspenders against any other path that could set it) — and total was
@@ -8061,7 +8073,10 @@ function EditDispatchInvoiceModal({ invoice, onClose, onSaved }: {
     if (savingInFlightRef.current) return;
     setError(null);
     setWarning(null);
-    const cleaned = lines.filter(l => l.itemName.trim() && l.quantity > 0);
+    // Charge lines (Delivery Fee etc.) are kept regardless of quantity —
+    // they carry their amount in unitPrice with quantity pinned to 1, and
+    // must never be dropped by a quantity check meant for real items.
+    const cleaned = lines.filter(l => l.itemName.trim() && (l.unit === 'charge' || l.quantity > 0));
     if (cleaned.length === 0) { setError('Add at least one item with a name and quantity above 0.'); return; }
     // BUG FIX (audit): the original bill-creation flow (DispatchReviewModal)
     // refuses to confirm while any item has no real price ("NO PRICE — enter
@@ -8128,7 +8143,27 @@ function EditDispatchInvoiceModal({ invoice, onClose, onSaved }: {
         </p>
 
         <div className="mt-3 space-y-2">
-          {lines.map(l => (
+          {lines.map(l => l.unit === 'charge' ? (
+            // BUG FIX (2026-09-10): a named charge has no quantity or kg/pcs
+            // unit — render just a name + an Amount field. Before this, it
+            // was shown as a normal item row (Qty / kg-pcs dropdown / Price),
+            // and zeroing its "Qty" to change the amount silently dropped the
+            // whole line on save (see the `cleaned` filter and setChargeAmount).
+            <div key={l.key} className="grid gap-2 sm:grid-cols-[1fr_7rem_auto]">
+              <input
+                value={l.itemName} onChange={e => updateLine(l.key, { itemName: e.target.value })}
+                placeholder="Charge name (e.g. Delivery Fee)" className="rounded-lg border border-border px-2.5 py-1.5 text-xs font-bold"
+              />
+              <input
+                value={l.unitPrice || ''} onChange={e => setChargeAmount(l.key, e.target.value)}
+                type="number" min={0} placeholder="Amount ₹" className="rounded-lg border border-border px-2 py-1.5 text-right text-xs font-bold"
+              />
+              <button type="button" onClick={() => removeLine(l.key)} title="Remove this charge from the bill" className="flex items-center justify-center gap-1 rounded-lg border border-red-300 bg-red-50 px-2 py-1.5 text-[11px] font-black text-red-700 hover:bg-red-100">
+                <Trash2 className="size-3.5" />
+              </button>
+              <span className="col-span-full -mt-1 text-[10px] font-black uppercase text-slate-500">Charge — no quantity, shown separately on the bill</span>
+            </div>
+          ) : (
             <div key={l.key} className="grid gap-2 sm:grid-cols-[1fr_5rem_4.5rem_5rem_auto]">
               <input
                 value={l.itemName} onChange={e => updateLine(l.key, { itemName: e.target.value })}

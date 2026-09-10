@@ -832,9 +832,17 @@ export async function updateDispatchInvoice(params: {
   // movement could silently disagree on how much left the shelf. Clamp here
   // too, at the single choke point every edit funnels through, same as the
   // real stock write already does.
+  // BUG FIX (2026-09-10): a charge line (unit === 'charge' — a Delivery Fee
+  // etc.) carries its amount in unitPrice with quantity conceptually pinned
+  // to 1. Filtering it on `quantity > 0` meant that if any caller ever sent
+  // it with quantity 0 (the Edit Bill modal did exactly this when a planner
+  // zeroed the fake "Qty" box trying to change the amount), the whole charge
+  // was silently dropped from the bill — confirmed live on SALES/26-27/156.
+  // Keep charge lines on name + non-negative amount alone, and always
+  // normalise their quantity back to 1.
   const cleanedUpdatedItems = params.updatedItems
-    .filter(i => i.itemName.trim() && i.quantity > 0 && i.unitPrice >= 0)
-    .map(i => ({ ...i, itemName: i.itemName.trim(), quantity: i.unit === 'charge' ? i.quantity : clampQtyForUnit(i.quantity, i.unit === 'kg' ? 'kg' : 'pcs') }));
+    .filter(i => i.itemName.trim() && i.unitPrice >= 0 && (i.unit === 'charge' || i.quantity > 0))
+    .map(i => ({ ...i, itemName: i.itemName.trim(), quantity: i.unit === 'charge' ? 1 : clampQtyForUnit(i.quantity, i.unit === 'kg' ? 'kg' : 'pcs') }));
   if (cleanedUpdatedItems.length === 0) {
     return { error: 'A bill needs at least one item with a name, quantity above 0 and a valid price — cancel the whole bill instead if it should no longer exist.' };
   }
@@ -985,12 +993,17 @@ export async function updateDispatchInvoice(params: {
   //    as any freshly-created bill.
   const finalItems: DispatchInvoiceItem[] = cleanedUpdatedItems.map(i => {
     const k = key(i);
+    // A charge line's amount is its unitPrice (quantity is always 1); a real
+    // item's is quantity × unitPrice.
+    const lineTotal = i.unit === 'charge'
+      ? Math.round((Number(i.unitPrice) || 0) * 100) / 100
+      : Math.round(i.quantity * i.unitPrice * 100) / 100;
     return {
       itemName: i.itemName,
       unit: i.unit,
       quantity: i.quantity,
       unitPrice: i.unitPrice,
-      lineTotal: Math.round(i.quantity * i.unitPrice * 100) / 100,
+      lineTotal,
       isExtra: addedKeys.includes(k) ? true : (originalByKey.get(k)?.isExtra ?? i.isExtra ?? false),
     };
   });
