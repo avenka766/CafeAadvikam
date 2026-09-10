@@ -55,12 +55,18 @@ const PRINT_TRIGGER = '<script>window.onload=function(){if(window.__printed)retu
 
 function triggerPrintWithFallback(target: Window) {
   const flagged = target as unknown as { __printed?: boolean };
-  // Immediate attempt — still inside the original click's call stack, which
-  // some browsers require for a print dialog. document.write()+close() above
-  // are synchronous, so the receipt text is already in the DOM here.
-  try { target.focus(); target.print(); } catch { /* fall through to the timed retry */ }
-  // If the inline onload trigger runs (CSP permits it) it sets __printed and
-  // this is a no-op. If it was blocked, this is the only thing that prints.
+  // Immediate attempt — still inside the original click's call stack (the
+  // document.write()+close() above are synchronous, so the receipt text is
+  // already in the DOM), and CSP-independent, so this is the primary path.
+  // On success mark __printed so the inline <script> onload trigger inside
+  // the document skips its own window.print() — otherwise the dialog opens
+  // TWICE (once here, once from that script).
+  try {
+    target.focus();
+    target.print();
+    flagged.__printed = true;
+    return;
+  } catch { /* immediate call threw — fall back to the inline script + a timed retry below */ }
   window.setTimeout(() => {
     if (flagged.__printed) return;
     flagged.__printed = true;
