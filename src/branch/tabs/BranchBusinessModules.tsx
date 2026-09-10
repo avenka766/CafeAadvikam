@@ -1996,6 +1996,19 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
   const [ledgerLoading, setLedgerLoading] = useState(false);
   const [counterSnapshot, setCounterSnapshot] = useState<CounterClosureSnapshot>({ advanceCash:0, advanceUpi:0, advanceCard:0, advanceBank:0, advanceInitial:0, advanceBalance:0, advanceTotal:0, paymentCount:0 });
   const [dbCounterSession, setDbCounterSession] = useState<null | { id: string; openingCash: number; openedAt: string; cashier: string; cashierUserId: string; cashierDisplayName?: string; denominations?: Record<string,string> }>(null);
+  // AUTO-RECONCILE (2026-09-10): this device's bill list is capped at the
+  // most-recent ~300 branch_operation_records for the WHOLE branch (an egress
+  // cap in branchOpsStore). On a busy day - or after a mid-day page reload -
+  // counterTodayBills can be missing the morning's bills, which silently
+  // understated the closure's Cash / UPI / bill count and produced a large
+  // fake positive "Difference". These are the true per-session totals read
+  // straight from the persisted bill/payment rows; used below whenever they
+  // exceed what this device can see. The closure RPC applies the same
+  // correction server-side as a backstop.
+  const [authTotals, setAuthTotals] = useState<null | {
+    cashTotal: number; upiTotal: number; cardTotal: number;
+    billCount: number; grossSales: number; discounts: number;
+  }>(null);
   const user = currentUser?.username || currentUser?.displayName || 'Cashier';
   const isSnbOrder = source === 'snb-order' && branch === 'SNB';
   const denominations = [500,200,100,50,20,10,5,2,1];
@@ -2151,6 +2164,30 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
   const useClosedLedgerForLiveTotals: boolean = false;
   const closureLedger = useClosedLedgerForLiveTotals ? ledgerToday : null;
   const activeSessionId = branchCounterOpenRecord?.counterSessionId;
+
+  useEffect(() => {
+    let alive = true;
+    if (!activeSessionId) { setAuthTotals(null); return; }
+    const run = async () => {
+      const { data, error } = await supabase.rpc('get_branch_counter_session_totals_secure', { p_session_id: activeSessionId });
+      if (!alive) return;
+      if (error || !data || typeof data !== 'object') { setAuthTotals(null); return; }
+      const r = data as Record<string, unknown>;
+      setAuthTotals({
+        cashTotal: Number(r.cashTotal || 0),
+        upiTotal: Number(r.upiTotal || 0),
+        cardTotal: Number(r.cardTotal || 0),
+        billCount: Number(r.billCount || 0),
+        grossSales: Number(r.grossSales || 0),
+        discounts: Number(r.discounts || 0),
+      });
+    };
+    void run();
+    const onVisible = () => { if (!document.hidden) void run(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => { alive = false; document.removeEventListener('visibilitychange', onVisible); };
+  }, [activeSessionId]);
+
   const belongsToCashier = (cashierUserId?: string, cashierName?: string) => currentUser?.id
     ? (cashierUserId ? cashierUserId === currentUser.id : cashierName === user)
     : cashierName === user;
@@ -2170,7 +2207,12 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
   const todayAdvancePayments = hasActiveCounter ? cashMovements.filter((m) => m.branch === branch && today(m.dateTime) && inCurrentSession(m.dateTime) && m.enteredBy === user && m.direction === 'in' && (m.purpose === 'Cake advance received' || m.purpose === 'Advance balance collection')) : [];
 
   const grossBillSales = counterTodayBills.reduce((sum, bill) => sum + bill.total, 0);
-  const grossSalesBeforeDiscount = counterTodayBills.reduce((sum, bill) => sum + bill.subtotal + bill.tax, 0);
+  const deviceGrossSalesBeforeDiscount = counterTodayBills.reduce((sum, bill) => sum + bill.subtotal + bill.tax, 0);
+  // Reconciled against the server's per-session gross (see authTotals note) so a
+  // partial bill list on this device can't understate reported sales.
+  const grossSalesBeforeDiscount = authTotals && !isSnbOrder
+    ? Math.max(deviceGrossSalesBeforeDiscount, authTotals.grossSales)
+    : deviceGrossSalesBeforeDiscount;
   const advanceCollectedToday = isSnbOrder
     ? counterSnapshot.advanceTotal
     : closureLedger
@@ -2196,14 +2238,28 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
   const advanceDigital = isSnbOrder ? counterSnapshot.advanceUpi + counterSnapshot.advanceCard + counterSnapshot.advanceBank : todayAdvancePayments.filter((m) => m.paymentMode !== 'cash').reduce((s, m) => s + m.amount, 0);
   // Payment totals shown in closure are NET collections after refunds.
   // The ledger RPC also stores net totals, so no second subtraction is applied in ledger mode.
-  const cash = closureLedger ? num(closureLedger.cash_total) : normalCash + creditCollectionCash + advanceCash - refundCash;
-  const upi = closureLedger ? num(closureLedger.upi_total) : normalUpi + creditCollectionUpi + advanceUpi - refundUpi;
-  const card = closureLedger ? num(closureLedger.card_total) : normalCard + creditCollectionCard + advanceCard - refundCard;
+  const deviceCash = closureLedger ? num(closureLedger.cash_total) : normalCash + creditCollectionCash + advanceCash - refundCash;
+  const deviceUpi = closureLedger ? num(closureLedger.upi_total) : normalUpi + creditCollectionUpi + advanceUpi - refundUpi;
+  const deviceCard = closureLedger ? num(closureLedger.card_total) : normalCard + creditCollectionCard + advanceCard - refundCard;
+  const deviceBillCount = closureLedger ? num(closureLedger.bill_count) : counterTodayBills.length;
+  // See the authTotals note above: when the server's per-session totals exceed
+  // what this device can see, this device is holding a partial bill list -
+  // trust the server figures (never dip below the device's own count).
+  const closureFiguresUnderstated = Boolean(authTotals) && !isSnbOrder && (
+    (authTotals!.cashTotal - deviceCash > 1)
+    || (authTotals!.upiTotal - deviceUpi > 1)
+    || (authTotals!.billCount - deviceBillCount > 0)
+  );
+  const cash = authTotals && !isSnbOrder ? Math.max(deviceCash, authTotals.cashTotal) : deviceCash;
+  const upi = authTotals && !isSnbOrder ? Math.max(deviceUpi, authTotals.upiTotal) : deviceUpi;
+  const card = authTotals && !isSnbOrder ? Math.max(deviceCard, authTotals.cardTotal) : deviceCard;
+  const effectiveBillCount = authTotals && !isSnbOrder ? Math.max(deviceBillCount, authTotals.billCount) : deviceBillCount;
   const advancePaid = isSnbOrder ? counterSnapshot.advanceInitial : closureLedger ? num(closureLedger.advance_collected) : todayAdvancePayments.filter((m) => m.purpose === 'Cake advance received').reduce((s, m) => s + m.amount, 0);
   const advanceFull = isSnbOrder ? counterSnapshot.advanceBalance : closureLedger ? num(closureLedger.advance_balance_collected) : todayAdvancePayments.filter((m) => m.purpose === 'Advance balance collection').reduce((s, m) => s + m.amount, 0);
   const splitTotal = counterTodayBills.filter((b) => b.paymentMode === 'split').reduce((s, b) => s + b.total, 0);
   const refunds = todayReturns.reduce((s, r) => s + r.total, 0);
-  const discounts = closureLedger ? num(closureLedger.discounts) : counterTodayBills.reduce((s, b) => s + b.discount, 0);
+  const deviceDiscounts = closureLedger ? num(closureLedger.discounts) : counterTodayBills.reduce((s, b) => s + b.discount, 0);
+  const discounts = authTotals && !isSnbOrder ? Math.max(deviceDiscounts, authTotals.discounts) : deviceDiscounts;
   const totalSales = closureLedger
     ? Math.max(
         0,
@@ -2287,7 +2343,7 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
       purchase_payments: supplierPaymentTotal,
       discounts,
       tax_total: closureLedger ? num(closureLedger.tax_total) : counterTodayBills.reduce((s, b) => s + b.tax, 0),
-      bill_count: closureLedger ? num(closureLedger.bill_count) : counterTodayBills.length,
+      bill_count: effectiveBillCount,
       duplicate_prints: duplicate,
       expected_cash: expected,
       actual_cash: countedCash,
@@ -2370,7 +2426,7 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
           expected_cash: expected,
           counted_cash: countedCash,
           difference: diff,
-          bill_count: counterTodayBills.length,
+          bill_count: effectiveBillCount,
           closing_denominations: closurePayload.closing_denominations,
           closed_at: new Date().toISOString(),
           closed_by_user_id: currentUser?.id || null,
@@ -2399,7 +2455,7 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
         }
       }
     }
-    addCashierClosure({ branch, cashier: auditActor, cashierUserId: currentUser?.id, counterSessionId: activeSessionId, grossSales: grossSalesBeforeDiscount, netSales, openingCash: Number(opening || 0), closingCash: countedCash, expectedCash: expected, difference: diff, cash, upi, actualUpi, upiDifference, upiNotes: upiAuditNotes.trim(), card, returns: refunds, discounts, billsCount: counterTodayBills.length, duplicateBills: duplicate, creditSales: creditSalesTotal, creditCollections: creditCollectionTotal, notes });
+    addCashierClosure({ branch, cashier: auditActor, cashierUserId: currentUser?.id, counterSessionId: activeSessionId, grossSales: grossSalesBeforeDiscount, netSales, openingCash: Number(opening || 0), closingCash: countedCash, expectedCash: expected, difference: diff, cash, upi, actualUpi, upiDifference, upiNotes: upiAuditNotes.trim(), card, returns: refunds, discounts, billsCount: effectiveBillCount, duplicateBills: duplicate, creditSales: creditSalesTotal, creditCollections: creditCollectionTotal, notes });
     closeCounter(branch, todayIso(), auditActor, currentUser?.id);
     setDbCounterSession(null);
     addNotification({ branch, type: 'closure', title: `${isSnbOrder ? 'SNB Order' : branch} cashier counter closed`, details: `${auditActor} closed the counter. Collection ${money(totalCollection)}; cash difference ${money(diff)}; UPI difference ${money(upiDifference)}.`, raisedBy: auditActor });
@@ -2481,7 +2537,27 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
     // fresh opening slip.
     const alreadyOpen = inserted.alreadyOpen === true;
     const staleFromPreviousDay = inserted.staleFromPreviousDay === true;
-    if (staleFromPreviousDay) {
+    // FEATURE (2026-09-10): open_branch_counter_session_secure now auto-closes
+    // a previous-day session that was never closed and opens a fresh one for
+    // today, returning `autoClosedStale` with that old session's details.
+    // (`staleFromPreviousDay` is kept below only as a defensive fallback for
+    // an older RPC build.)
+    const autoClosedStale = inserted.autoClosedStale && typeof inserted.autoClosedStale === 'object'
+      ? inserted.autoClosedStale as { business_date?: string; opening_cash?: number }
+      : null;
+    if (autoClosedStale) {
+      const oldDateLabel = autoClosedStale.business_date
+        ? new Date(`${String(autoClosedStale.business_date)}T00:00:00`).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
+        : 'a previous day';
+      setOpenSavedMessage(`This cashier's counter from ${oldDateLabel} was never closed — it has now been auto-closed by the system (its cash was NOT reconciled; check it under Admin ▸ Cashier Sessions). Today's counter is open with opening cash ${money(record.openingCash)}.`);
+      printCounterOpenSlip({
+        branch,
+        cashier: record.cashier,
+        openingCash: record.openingCash,
+        denominations: openingDenominations,
+        openedAt: String(inserted.opened_at),
+      });
+    } else if (staleFromPreviousDay) {
       const staleDateLabel = inserted.business_date
         ? new Date(`${String(inserted.business_date)}T00:00:00`).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
         : 'a previous day';
@@ -2515,7 +2591,7 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
     cash, upi, card,
     creditSales: creditSalesTotal, creditCollected: creditCollectionTotal,
     expected, counted: countedCash, difference: diff,
-    billsCount: counterTodayBills.length,
+    billsCount: effectiveBillCount,
     closedAt: new Date().toISOString(),
     closingDenominations: closeDenominations,
   });
@@ -2531,7 +2607,7 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
     advanceInitial: advancePaid, advanceBalance: advanceFull,
     advanceCash, advanceUpi, advanceCard, advanceBank,
     advancePaymentCount: isSnbOrder ? counterSnapshot.paymentCount : todayAdvancePayments.length,
-    billsCount: counterTodayBills.length, cancelledCount: todayReturns.length,
+    billsCount: effectiveBillCount, cancelledCount: todayReturns.length,
     cash, upi, card, splitTotal,
     actualUpi, upiDifference, upiNotes: upiAuditNotes,
     creditSales: creditSalesTotal, creditCollected: creditCollectionTotal,
@@ -2712,13 +2788,22 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
         {savedMessage && <p className={cn('mt-3 rounded-xl px-3 py-2 text-sm font-black', savedMessage.includes('closure saved') || savedMessage.includes('Cashier closure saved') ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700')}>{savedMessage}</p>}
       </div>
 
+      {closureFiguresUnderstated && (
+        <div className="rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm font-bold text-amber-900">
+          This device is only showing <span className="font-black">{deviceBillCount}</span> bill(s) / {money(deviceCash)} cash for this counter,
+          but the server has <span className="font-black">{authTotals?.billCount}</span> bill(s) / {money(authTotals?.cashTotal || 0)} cash and {money(authTotals?.upiTotal || 0)} UPI.
+          The full server figures are being used in the closure below, so your Expected Cash and Difference are correct even though this
+          device could not load every bill.
+        </div>
+      )}
+
       {!isCashierView && (
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
           <Kpi label="Total Sales" value={money(totalSales)} icon={<IndianRupee/>} tone="green"/>
           <Kpi label="Total Collection" value={money(totalCollection)} icon={<WalletCards/>} tone="blue"/>
           <Kpi label="Advance Collected" value={money(advanceCollectedToday)} icon={<WalletCards/>} tone="amber"/>
           <Kpi label="Credit Collected" value={money(creditCollectionTotal)} icon={<UserRound/>} tone="blue"/>
-          <Kpi label="Bills Closed" value={counterTodayBills.length} icon={<Receipt/>} tone="slate"/>
+          <Kpi label="Bills Closed" value={effectiveBillCount} icon={<Receipt/>} tone="slate"/>
           <Kpi label="Cancelled" value={todayReturns.length} icon={<XCircle/>} tone="red"/>
         </div>
       )}

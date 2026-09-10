@@ -977,7 +977,7 @@ export default function BranchBillingProTab({
       if (currentUser?.id) {
         const { data: sessionRow, error: sessionError } = await supabase
           .from('branch_counter_sessions')
-          .select('id,cashier_user_id,cashier_username,opened_at')
+          .select('id,cashier_user_id,cashier_username,opened_at,business_date')
           .eq('branch', branch)
           .eq('cashier_user_id', currentUser.id)
           .eq('status', 'open')
@@ -986,9 +986,21 @@ export default function BranchBillingProTab({
           .maybeSingle();
         const missingSessionTable = Boolean(sessionError && /branch_counter_sessions|does not exist|schema cache/i.test(sessionError.message || ''));
         if (sessionError && !missingSessionTable) throw new Error(`Could not verify cashier counter: ${sessionError.message}`);
-        if (sessionRow?.id) counterSessionId = String(sessionRow.id);
+        // BUG FIX (2026-09-10): a session left open from a previous day would
+        // still be picked up here, so today's bills got attached to
+        // yesterday's session — silently corrupting every per-cashier report
+        // (the report aggregates ALL bills on a session id regardless of the
+        // bill's own date). Refuse a stale session; the cashier must re-open
+        // the counter, which auto-closes yesterday's and starts a clean one
+        // (see open_branch_counter_session_secure).
+        const sessionIsToday = Boolean(sessionRow?.business_date) && String(sessionRow!.business_date) === businessDate();
+        if (sessionRow?.id && sessionIsToday) counterSessionId = String(sessionRow.id);
         if (!counterSessionId && !missingSessionTable) {
-          throw new Error(`No open counter found for ${userName}. Open this cashier's counter before billing.`);
+          throw new Error(
+            sessionRow?.id
+              ? `${userName}'s counter is still open from ${sessionRow.business_date} and was never closed. Go to Daily Closure, CLOSE that counter (reconcile its cash), then OPEN today's counter before billing.`
+              : `No open counter found for ${userName}. Open this cashier's counter before billing.`,
+          );
         }
       }
       const checkoutSplit = { cash: roundMoney(Number(split.cash || 0)), upi: roundMoney(Number(split.upi || 0)), card: roundMoney(Number(split.card || 0)) };
