@@ -3774,6 +3774,104 @@ function ReportsTab({ orders }: { orders: BakeryOrder[] }) {
   const notStartedRows = useMemo(() => varianceRows.filter(r => r.status === 'Not Started'), [varianceRows]);
   const onTargetRows = useMemo(() => varianceRows.filter(r => r.status === 'On Target'), [varianceRows]);
 
+  // FEATURE (2026-09-11): per-item "Store → Baker vs Baker → Planner". For the
+  // window, one row per item (kg and pcs kept as separate rows) showing:
+  //  • Store → Baker   = qty of that finished item the Store handed to the
+  //    baker — summed from `items` on orders whose storeConfirmedAt /
+  //    productionReleasedAt falls in the window.
+  //  • Baker → Planner = production output for that item = the
+  //    production_carryover ledger total for the same window (clean per-item;
+  //    NOT per-order producedItems, which autoSplitForItem fragments across
+  //    many days' orders).
+  //  • Dispatched      = what the planner dispatched for that item in the
+  //    window (by each dispatch entry's own date).
+  // A row shows if ANY of the three is > 0, so "sent but no output" and
+  // "dispatched but no output" both stay visible.
+  const r3n = (n: number) => Math.round(n * 1000) / 1000;
+  const stripUnitParen = (s: string) => s.replace(/\s*\((?:kgs?|pcs|pieces?|nos)\)\s*$/i, '').trim();
+
+  const [bakerLedgerRows, setBakerLedgerRows] = useState<{ key: string; name: string; unit: 'kg' | 'pcs'; qty: number }[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const effectiveFrom = reportsCutoff && reportsCutoff > dateFrom ? reportsCutoff : dateFrom;
+      const { data } = await supabase
+        .from('planner_leftover_ledger')
+        .select('item_slug, item_name, unit, delta')
+        .eq('reason', 'production_carryover')
+        .gte('business_date', effectiveFrom)
+        .lte('business_date', dateTo);
+      if (cancelled) return;
+      const m = new Map<string, { key: string; name: string; unit: 'kg' | 'pcs'; qty: number }>();
+      for (const r of (data ?? []) as { item_slug: string; item_name: string | null; unit: string; delta: number }[]) {
+        const unit: 'kg' | 'pcs' = r.unit === 'pcs' ? 'pcs' : 'kg';
+        const slug = closingStockItemSlug(String(r.item_slug)) || String(r.item_slug);
+        const key = `${slug}|${unit}`;
+        const e = m.get(key) ?? { key, name: stripUnitParen(String(r.item_name || r.item_slug || '')), unit, qty: 0 };
+        if (!e.name && r.item_name) e.name = stripUnitParen(String(r.item_name));
+        e.qty = r3n(e.qty + (Number(r.delta) || 0));
+        m.set(key, e);
+      }
+      setBakerLedgerRows(Array.from(m.values()));
+    })();
+    return () => { cancelled = true; };
+  }, [dateFrom, dateTo, reportsCutoff, refreshTick]);
+
+  const storeBakerPlannerRows = useMemo(() => {
+    type Row = { key: string; name: string; unit: 'kg' | 'pcs'; store: number; baker: number; dispatched: number };
+    const m = new Map<string, Row>();
+    const ensure = (key: string, name: string, unit: 'kg' | 'pcs') => {
+      let e = m.get(key);
+      if (!e) { e = { key, name, unit, store: 0, baker: 0, dispatched: 0 }; m.set(key, e); }
+      else if (!e.name && name) e.name = name;
+      return e;
+    };
+    const inWindow = (iso: string) => {
+      if (!iso) return false;
+      const k = kolkataDateKey(iso);
+      return k >= dateFrom && k <= dateTo && (!reportsCutoff || k >= reportsCutoff);
+    };
+    // Store → Baker
+    for (const o of orders) {
+      if (!inWindow(o.productionReleasedAt || o.storeConfirmedAt || '')) continue;
+      for (const it of o.items ?? []) {
+        const unit: 'kg' | 'pcs' = it.dispatchUnit === 'pcs' ? 'pcs' : 'kg';
+        const slug = closingStockItemSlug(it.itemName) || it.itemName.trim().toLowerCase();
+        const q = Number(unit === 'pcs' ? (it.originalPcs ?? it.quantity) : it.quantity) || 0;
+        ensure(`${slug}|${unit}`, stripUnitParen(it.itemName), unit).store += q;
+      }
+    }
+    // Baker → Planner
+    for (const b of bakerLedgerRows) ensure(b.key, b.name, b.unit).baker += b.qty;
+    // Planner dispatched
+    for (const o of orders) {
+      for (const d of o.dispatchLog ?? []) {
+        if (!inWindow(d.dispatchedAt)) continue;
+        const unit: 'kg' | 'pcs' = d.unit === 'pcs' ? 'pcs' : 'kg';
+        const slug = closingStockItemSlug(d.itemName) || d.itemName.trim().toLowerCase();
+        ensure(`${slug}|${unit}`, stripUnitParen(d.itemName), unit).dispatched += Number(d.quantity) || 0;
+      }
+    }
+    return Array.from(m.values())
+      .map(e => ({ ...e, store: r3n(e.store), baker: r3n(e.baker), dispatched: r3n(e.dispatched) }))
+      .filter(e => e.store > 0.0001 || e.baker > 0.0001 || e.dispatched > 0.0001)
+      .sort((a, b) => a.name.localeCompare(b.name) || a.unit.localeCompare(b.unit));
+  }, [orders, bakerLedgerRows, dateFrom, dateTo, reportsCutoff]);
+
+  const storeBakerPlannerTotals = useMemo(() => {
+    const t = { storeKg: 0, storePcs: 0, bakerKg: 0, bakerPcs: 0, dispKg: 0, dispPcs: 0, items: storeBakerPlannerRows.length };
+    for (const r of storeBakerPlannerRows) {
+      if (r.unit === 'pcs') { t.storePcs += r.store; t.bakerPcs += r.baker; t.dispPcs += r.dispatched; }
+      else { t.storeKg += r.store; t.bakerKg += r.baker; t.dispKg += r.dispatched; }
+    }
+    return {
+      items: t.items,
+      storeKg: r3n(t.storeKg), storePcs: r3n(t.storePcs),
+      bakerKg: r3n(t.bakerKg), bakerPcs: r3n(t.bakerPcs),
+      dispKg: r3n(t.dispKg), dispPcs: r3n(t.dispPcs),
+    };
+  }, [storeBakerPlannerRows]);
+
   const chartData = useMemo(() => varianceRows
     .filter(r => r.status === 'Under-producing' || r.status === 'Over-producing')
     .slice(0, 12)
@@ -4011,6 +4109,10 @@ function ReportsTab({ orders }: { orders: BakeryOrder[] }) {
       Requested: r.requested, Produced: r.produced, Dispatched: r.dispatched,
       'Production Variance %': r.prodVariancePct, 'Dispatch Variance %': r.dispatchVariancePct, Status: r.status,
     })), 'Production & Dispatch', 'No data');
+    addSheet(storeBakerPlannerRows.map(r => ({
+      Item: r.name, Unit: r.unit,
+      'Store -> Baker': r.store, 'Baker -> Planner': r.baker, 'Planner Dispatched': r.dispatched,
+    })), 'Store-Baker-Planner', 'Nothing sent / produced / dispatched in this range');
     addSheet(extraDispatchRows.map(r => ({
       Item: r.itemName, Quantity: r.quantity, Unit: r.unit, Branch: r.branch,
       Shop: r.shopName || '', 'Order #': r.orderNumber, 'Dispatched By': r.dispatchedBy,
@@ -4226,6 +4328,55 @@ function ReportsTab({ orders }: { orders: BakeryOrder[] }) {
             <p className="font-display text-xl font-bold tabular-nums">{k.value}</p>
           </div>
         ))}
+      </div>
+
+      {/* FEATURE (2026-09-11): Store → Baker vs Baker → Planner — per-item.
+          See the storeBakerPlannerRows memo. One row per item/unit; kept
+          visible if the store sent it, the baker produced it, OR the planner
+          dispatched it in the window. */}
+      <div className="overflow-hidden rounded-2xl border border-border bg-white shadow-sm">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-muted/40 px-4 py-3">
+          <p className="text-sm font-black text-foreground">Store → Baker vs Baker → Planner ({rangeLabel})</p>
+          <span className="text-xs font-bold text-muted-foreground">{storeBakerPlannerRows.length} item{storeBakerPlannerRows.length === 1 ? '' : 's'}</span>
+        </div>
+        {storeBakerPlannerRows.length === 0 ? (
+          <div className="p-4"><EmptyState text="Nothing sent to the baker, produced, or dispatched in this range." /></div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-muted/20 text-left text-xs font-black uppercase text-muted-foreground">
+                <tr>
+                  <th className="px-4 py-2">Item</th>
+                  <th className="px-4 py-2 text-right">Store → Baker</th>
+                  <th className="px-4 py-2 text-right">Baker → Planner</th>
+                  <th className="px-4 py-2 text-right">Planner dispatched</th>
+                </tr>
+              </thead>
+              <tbody>
+                {storeBakerPlannerRows.map(r => (
+                  <tr key={r.key} className="border-t border-border">
+                    <td className="px-4 py-2 font-bold text-foreground">{r.name} <span className="text-muted-foreground">({r.unit})</span></td>
+                    <td className="px-4 py-2 text-right text-muted-foreground">{r.store > 0 ? qtyFmt(r.store) : '—'}</td>
+                    <td className={cn('px-4 py-2 text-right font-bold', r.baker > 0 ? 'text-foreground' : 'text-muted-foreground')}>{r.baker > 0 ? qtyFmt(r.baker) : '—'}</td>
+                    <td className="px-4 py-2 text-right text-muted-foreground">{r.dispatched > 0 ? qtyFmt(r.dispatched) : '—'}</td>
+                  </tr>
+                ))}
+                <tr className="border-t-2 border-border bg-muted/30 font-black text-foreground">
+                  <td className="px-4 py-2">Total — pcs</td>
+                  <td className="px-4 py-2 text-right">{qtyFmt(storeBakerPlannerTotals.storePcs)}</td>
+                  <td className="px-4 py-2 text-right">{qtyFmt(storeBakerPlannerTotals.bakerPcs)}</td>
+                  <td className="px-4 py-2 text-right">{qtyFmt(storeBakerPlannerTotals.dispPcs)}</td>
+                </tr>
+                <tr className="bg-muted/30 font-black text-foreground">
+                  <td className="px-4 py-2">Total — kg</td>
+                  <td className="px-4 py-2 text-right">{qtyFmt(storeBakerPlannerTotals.storeKg)}</td>
+                  <td className="px-4 py-2 text-right">{qtyFmt(storeBakerPlannerTotals.bakerKg)}</td>
+                  <td className="px-4 py-2 text-right">{qtyFmt(storeBakerPlannerTotals.dispKg)}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
       {/* FEATURE (2026-08-10): Cake Orders summary — see comment above
