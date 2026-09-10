@@ -40,6 +40,34 @@ const cashTenderedChangeHtml = (bill: BranchBillRecord, rowClass: string) => {
   return `<div class="${rowClass}"><span>Cash Tendered</span><span>&#x20B9;${rupee(tendered)}</span></div><div class="${rowClass}"><span>Change Returned</span><span>&#x20B9;${rupee(change)}</span></div>`;
 };
 
+// BUG FIX (2026-09-10): branch bill + counter-slip printing went down at
+// both SNB and VRSNB after the page CSP dropped 'unsafe-inline' from
+// script-src. Every slip/bill built in this file triggers its own print
+// with an inline window.onload=window.print() script written
+// into a hidden iframe (or popup) — and a document.write iframe INHERITS the
+// parent page's CSP, so that inline script was silently blocked and no
+// dialog ever appeared. The inline trigger is kept (it's the reliable path
+// when CSP allows it), but it now sets window.__printed, and every write
+// site calls triggerPrintWithFallback() so a parent-side window.print()
+// still fires if the inline script was blocked. Same proven pattern as
+// src/lib/printViaIframe.ts.
+const PRINT_TRIGGER = '<script>window.onload=function(){if(window.__printed)return;window.__printed=true;try{window.print()}catch(e){}};</script>';
+
+function triggerPrintWithFallback(target: Window) {
+  const flagged = target as unknown as { __printed?: boolean };
+  // Immediate attempt — still inside the original click's call stack, which
+  // some browsers require for a print dialog. document.write()+close() above
+  // are synchronous, so the receipt text is already in the DOM here.
+  try { target.focus(); target.print(); } catch { /* fall through to the timed retry */ }
+  // If the inline onload trigger runs (CSP permits it) it sets __printed and
+  // this is a no-op. If it was blocked, this is the only thing that prints.
+  window.setTimeout(() => {
+    if (flagged.__printed) return;
+    flagged.__printed = true;
+    try { target.focus(); target.print(); } catch { /* nothing more we can do */ }
+  }, 700);
+}
+
 // ─── Generic HTML print helper ─────────────────────────────────────────────────
 // BUG FIX ("Planner dashboard print... nothing happens", also affects the
 // Cake Dispatch "Print Checklist" button): this used window.open('', '_blank',
@@ -180,11 +208,11 @@ function printVrsnbReceiptBill(bill: BranchBillRecord, duplicate = false, target
     ${Number(bill.refundAmount || 0) > 0 ? `<div class="row bold"><span>Refunded via ${String(bill.refundMode || '').toUpperCase()}</span><span>&#x20B9;${rupee(bill.refundAmount)}</span></div>` : ''}
     <div class="dash"></div>
     <div class="footer">Thank You &amp; Visit Again...!!!</div>
-    <script>window.onload=()=>window.print()</script>
+    ${PRINT_TRIGGER}
   </body></html>`;
 
   const win = target ?? window.open('', '_blank', 'width=420,height=680');
-  if (win) { win.document.open(); win.document.write(html); win.document.close(); }
+  if (win) { win.document.open(); win.document.write(html); win.document.close(); triggerPrintWithFallback(win); }
 }
 
 // ─── Full-format counter bill (SNB style / tax invoice) ───────────────────────
@@ -221,10 +249,10 @@ function printSnbCounterBill(bill: BranchBillRecord, duplicate = false, target?:
     ${bill.paymentMode === 'credit' ? `<div class="dash"></div><div class="row"><span>Credit Customer</span><span>${safeHtml(bill.creditCustomerName || '-')}</span></div><div class="row"><span>Mobile</span><span>${safeHtml(bill.creditCustomerMobile || '-')}</span></div><div class="row"><span>Due Date</span><span>${safeHtml(bill.creditDueDate || '-')}</span></div><div class="row"><span>Credit Due</span><span>${rupee(bill.balance)}</span></div>` : ''}
     <div class="c small">Salesperson : ${safeHtml(bill.salesperson)}</div>
     <div class="footer">Thank you, Visit Again</div>
-    <script>window.onload=()=>window.print()</script>
+    ${PRINT_TRIGGER}
   </body></html>`;
   const win = target ?? window.open('', '_blank', 'width=420,height=680');
-  if (win) { win.document.open(); win.document.write(html); win.document.close(); }
+  if (win) { win.document.open(); win.document.write(html); win.document.close(); triggerPrintWithFallback(win); }
 }
 
 // ─── Branch Cashier Closure print — same layout/style as the Biller (DailyClosure) print ──
@@ -321,12 +349,13 @@ export function printAccountingVoucher(input: AccountingVoucherPrintInput) {
     <div class="spacer"></div>
     <section class="signatures"><div class="signature">Created By: ${safeHtml(input.createdBy)}</div><div class="signature">Checked By</div><div class="signature">Approved By</div><div class="signature">Received By</div></section>
     <section class="words"><div>Paid INR ${safeHtml(amountInIndianWords(amount))}</div><div>${safeHtml(inr(amount))}</div></section>
-  </main><script>window.onload=()=>window.print()</script></body></html>`;
+  </main>${PRINT_TRIGGER}</body></html>`;
   const win = window.open('', '_blank', 'width=920,height=900');
   if (!win) return;
   win.document.open();
   win.document.write(html);
   win.document.close();
+  triggerPrintWithFallback(win);
 }
 
 export type BranchCashierClosurePrintInput = {
@@ -556,7 +585,7 @@ export function printBranchCashierClosure(
       <section class="section"><h2>Closed Bills</h2><table><thead><tr><th>Bill</th><th>Time</th><th>Customer</th><th>Payment</th><th class="right">Paid</th><th>Cashier</th></tr></thead><tbody>${billRowsHtml}</tbody></table></section>
       <div class="footer"><div class="sign">Cashier Signature</div><div class="sign">Manager Signature</div></div>
     </main>
-    <script>window.onload=()=>window.print()</script>
+    ${PRINT_TRIGGER}
     </body></html>`;
   // BUG FIX: `silent` used to route this report through printThermalHtml —
   // a hidden 1px iframe with no printer-selection dialog, purpose-built for
@@ -575,6 +604,7 @@ export function printBranchCashierClosure(
   if (!win) return;
   win.document.write(html);
   win.document.close();
+  triggerPrintWithFallback(win);
 }
 
 
@@ -605,6 +635,7 @@ function printThermalHtml(html: string) {
   target.document.open();
   target.document.write(html);
   target.document.close();
+  triggerPrintWithFallback(target);
 }
 
 const THERMAL_SLIP_STYLE = `
@@ -645,7 +676,7 @@ export function printCounterOpenSlip(input: {
     ${denomRows ? `<div class="dash"></div>${denomRows}` : ''}
     <div class="dash"></div>
     <div class="foot">Verify the float above before starting billing.</div>
-    <script>window.onload=()=>window.print()</script>
+    ${PRINT_TRIGGER}
   </body></html>`;
   printThermalHtml(html);
 }
@@ -697,7 +728,7 @@ export function printCounterCloseSlip(input: {
     ${denomRows ? `<div class="dash"></div><div class="row bold"><span>Closing Cash Denominations</span><span></span></div>${denomRows}` : ''}
     <div class="dash"></div>
     <div class="foot">Counter closed. Signature: ____________________</div>
-    <script>window.onload=()=>window.print()</script>
+    ${PRINT_TRIGGER}
   </body></html>`;
   printThermalHtml(html);
 }
