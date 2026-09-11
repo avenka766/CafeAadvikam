@@ -223,11 +223,18 @@ export async function saveDispatchInvoice(input: {
   // same [SALES/26-27/N] numbering" — Sample Bill reuses this function
   // purely for its ready-made invoice-record/reprint infrastructure, but
   // its invoice number needs to come from the shared Sales sequence
-  // (next_sales_bill_number), not this branch's own dispatch sequence
-  // (nextDispatchInvoiceNo(scope)). Optional so every other caller (the
-  // real Dispatch tab flow) keeps generating its own branch-scoped number
-  // exactly as before.
+  // (next_sales_bill_number), not this branch's own dispatch sequence.
+  // Prefer `numberScope` (generates atomically inside the same save —
+  // pass 'Hosur' to route to the shared SALES/26-27/N sequence while
+  // `scope` stays 'SNB'/'VRSNB' purely for the letterhead). `invoiceNo` is
+  // still accepted for a caller that already has a real, already-saved
+  // number (e.g. reusing one from elsewhere) — but do NOT fetch a fresh
+  // number yourself before calling this function; that recreates the
+  // exact "number burned, insert fails, no row" gap this was built to
+  // close (see project_dispatch_invoice_number_gap_bug memory — confirmed
+  // live on SALES/26-27/73, /74).
   invoiceNo?: string;
+  numberScope?: DispatchInvoiceScope;
   // See DispatchInvoiceRecord.isGstInvoice — defaults false (plain "INVOICE").
   isGstInvoice?: boolean;
   gstSupplyType?: 'intra' | 'inter';
@@ -245,36 +252,48 @@ export async function saveDispatchInvoice(input: {
   const preRound = subtotal - discountAmount;
   const total = Math.round(preRound);
   const roundOff = Math.round((total - preRound) * 100) / 100;
-  const invoiceNo = input.invoiceNo || await nextDispatchInvoiceNo(input.scope);
   const status = input.status ?? 'paid';
 
-  const { data, error } = await supabase.from('dispatch_invoices').insert({
-    invoice_no: invoiceNo,
-    scope: input.scope,
-    hosur_shop_id: input.hosurShopId ?? null,
-    hosur_shop_name: input.hosurShopName ?? null,
-    hosur_shop_phone: input.hosurShopPhone ?? null,
-    customer_name: input.customerName ?? null,
-    customer_phone: input.customerPhone ?? null,
-    customer_address: input.customerAddress ?? null,
-    dispatched_by: input.dispatchedBy,
-    items: input.items,
-    subtotal,
-    discount_pct: safeDiscountPct,
-    discount_amount: discountAmount,
-    round_off: roundOff,
-    total,
-    dispatch_entry_ids: input.dispatchEntryIds ?? [],
-    status,
-    paid_at: status === 'paid' ? new Date().toISOString() : null,
-    notes: input.notes ?? null,
-    is_gst_invoice: input.isGstInvoice ?? false,
-    gst_supply_type: input.gstSupplyType ?? 'intra',
-  }).select('id, created_at, paid_at').single();
+  // BUG FIX (2026-09-11): "TO/26-27/66 unable to see bill its missing" — this
+  // used to call nextDispatchInvoiceNo() (its own committed transaction,
+  // burning the sequence number) and then a SEPARATE .insert() — the real
+  // goods dispatch already happened before either step (see the caller,
+  // DispatchReviewModal.confirm), so any failure on the insert alone
+  // (network blip, tab closed, a bad field) left a permanently burned
+  // invoice number with NO invoice row and no paper trail for goods that
+  // genuinely went out. Confirmed live on TO/26-27/66. One RPC call now does
+  // the number generation (when input.invoiceNo isn't already supplied by
+  // the caller) AND the insert in a single transaction — a failed insert
+  // rolls the number back too, instead of silently skipping it.
+  const { data, error } = await supabase.rpc('save_dispatch_invoice_secure', {
+    p_scope: input.scope,
+    p_hosur_shop_id: input.hosurShopId ?? null,
+    p_hosur_shop_name: input.hosurShopName ?? null,
+    p_hosur_shop_phone: input.hosurShopPhone ?? null,
+    p_customer_name: input.customerName ?? null,
+    p_customer_phone: input.customerPhone ?? null,
+    p_customer_address: input.customerAddress ?? null,
+    p_dispatched_by: input.dispatchedBy,
+    p_items: input.items,
+    p_subtotal: subtotal,
+    p_discount_pct: safeDiscountPct,
+    p_discount_amount: discountAmount,
+    p_round_off: roundOff,
+    p_total: total,
+    p_dispatch_entry_ids: input.dispatchEntryIds ?? [],
+    p_status: status,
+    p_notes: input.notes ?? null,
+    p_is_gst_invoice: input.isGstInvoice ?? false,
+    p_gst_supply_type: input.gstSupplyType ?? 'intra',
+    p_invoice_no: input.invoiceNo ?? null,
+    p_number_scope: input.numberScope ?? null,
+  }).single();
   if (error) throw error;
+  const row = data as { id: string; invoice_no: string; created_at: string; paid_at: string | null };
+  const invoiceNo = row.invoice_no;
 
   return {
-    id: data.id as string,
+    id: row.id,
     invoiceNo,
     scope: input.scope,
     hosurShopId: input.hosurShopId ?? null,
@@ -291,9 +310,9 @@ export async function saveDispatchInvoice(input: {
     roundOff,
     total,
     status,
-    paidAt: (data.paid_at as string | null) ?? null,
+    paidAt: row.paid_at ?? null,
     notes: input.notes ?? null,
-    createdAt: data.created_at as string,
+    createdAt: row.created_at,
     dispatchEntryIds: input.dispatchEntryIds ?? [],
     isGstInvoice: input.isGstInvoice ?? false,
     gstSupplyType: input.gstSupplyType ?? 'intra',
@@ -376,6 +395,46 @@ export function mapWalkinBill(d: Record<string, unknown>): WalkinBillRow {
     cancelledAt: (d.cancelled_at as string | null) ?? null,
     cancelledReason: (d.cancelled_reason as string | null) ?? null,
   };
+}
+
+// BUG FIX (2026-09-11): "SALES/26-27/73 and /74 missing" — New Bill's own
+// saveBill (PlannerDashboard.tsx BillingTab) used to call next_sales_bill_number()
+// (its own committed RPC, burning the number) and then a SEPARATE
+// bakery_walkin_bills insert — the exact same gap shape as
+// save_dispatch_invoice_secure was built to close, just for this table
+// instead. #73/#74 had zero recoverable trace (a walk-in bill isn't linked
+// to any order/dispatch_log, unlike a branch dispatch) — could not be
+// backfilled, only explained. This RPC does the number + insert atomically.
+export async function saveWalkinBillSecure(input: {
+  items: WalkinBillItem[];
+  subtotal: number;
+  discountType: 'none' | 'percent' | 'amount';
+  discountValue: number;
+  discountAmount: number;
+  total: number;
+  paymentMode: string;
+  cashierName: string | null;
+  customerName: string | null;
+  customerMobile: string | null;
+  isGstInvoice?: boolean;
+  gstSupplyType?: 'intra' | 'inter';
+}): Promise<WalkinBillRow> {
+  const { data, error } = await supabase.rpc('save_walkin_bill_secure', {
+    p_items: input.items,
+    p_subtotal: input.subtotal,
+    p_discount_type: input.discountType,
+    p_discount_value: input.discountValue,
+    p_discount_amount: input.discountAmount,
+    p_total: input.total,
+    p_payment_mode: input.paymentMode,
+    p_cashier_name: input.cashierName,
+    p_customer_name: input.customerName,
+    p_customer_mobile: input.customerMobile,
+    p_is_gst_invoice: input.isGstInvoice ?? false,
+    p_gst_supply_type: input.gstSupplyType ?? 'intra',
+  }).single();
+  if (error) throw error;
+  return mapWalkinBill(data as Record<string, unknown>);
 }
 
 // WORKFLOW CHANGE (2026-08-09): "All bills in this dashboard should use a

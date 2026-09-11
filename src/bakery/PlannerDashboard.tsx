@@ -34,7 +34,7 @@ import { dispatchReceiveAndBill, type HosurOrderItemForBilling } from './hosurBi
 import PackingCakeOrdersTab from './PackingCakeOrdersTab';
 import { useCakeReadyCount } from './useCakeReadyCount';
 import PlannerLeftoverTab, { PlannerTransferOutTab, useLeftoverBalanceMap, closingStockBalanceKey, recordLeftoverMovement, kolkataToday, qtyFmt, sanitizeQtyForUnit, type LeftoverUnit, useMergedLeftoverCatalog, useMergedCatalogWithPrice, useBranchOnlyCatalog, ItemSearchPicker, type MergedCatalogItem } from './PlannerLeftoverTab';
-import { canonicalItemSlug, closingStockItemSlug, kgToPcs, parseWeightGrams, pcsToKg, resolveItemWeightGrams, VRSNB_DEFAULT_PACKET_GRAMS, vrsnbPacketGrams, pcsToKgForItem, kgToPcsForItem } from './itemMatcher';
+import { canonicalItemSlug, closingStockItemSlug, kgToPcs, parseWeightGrams, pcsToKg, resolveItemWeightGrams, VRSNB_DEFAULT_PACKET_GRAMS, pcsToKgForItem, kgToPcsForItem } from './itemMatcher';
 import { useBranchCatalogStore } from '@/stores/branchCatalogStore';
 import { useRecipeStore } from './recipeStore';
 import { useBranchStore } from '@/branch/branchStore';
@@ -42,7 +42,7 @@ import { useNotificationStore } from '@/bakery/notificationStore';
 import { printWasteLogBatch } from '@/pages/AdminSNBDashboard';
 import {
   businessFor, defaultDiscountPct, saveDispatchInvoice, printDispatchInvoice, listDispatchInvoices, markDispatchInvoicePaid, updateDispatchInvoice, cancelDispatchInvoice,
-  mapWalkinBill, walkinBillToInvoiceRecord, returnDispatchInvoiceItems, recordFromRow,
+  mapWalkinBill, walkinBillToInvoiceRecord, returnDispatchInvoiceItems, recordFromRow, saveWalkinBillSecure,
   saveAdvanceSale, settleAdvanceSale, cancelAdvanceSale, listAdvanceSales, advanceSaleToInvoiceRecord,
   type DispatchInvoiceRecord, type DispatchInvoiceItem, type WalkinBillRow, type WalkinBillItem, type AdvanceSaleRecord, type AdvanceSaleItem,
 } from './dispatchInvoice';
@@ -535,40 +535,60 @@ export function computeProductionRows(orders: BakeryOrder[]): ProductionRow[] {
   });
 }
 
-// ── VRSNB pcs → kg for the Production Entry tab ──────────────────────────────
-// FEATURE (2026-09-10): the planner wants VRSNB packet items shown AND entered
-// in kg here. computeMergedSummary / computeProductionRows / autoSplitForItem
-// stay per-unit (a VRSNB cookie row is unit:'pcs') — the conversion is purely
-// presentation + one kg→pcs step on the typed value in doSave. One
-// computeMergedSummary row = one item identity + one unit (keyed by
-// closingStockItemSlug(name)__unit), so the packet weight is consistent across
-// its contributing orders; take it from the first matching pcs line.
-function productionRowPacketGrams(row: ProductionRow, orders: BakeryOrder[]): number | null {
+// ── pcs → kg for the Production Entry tab ─────────────────────────────────
+// FEATURE (2026-09-10): the planner wants some packaged pcs items shown AND
+// entered in kg here. computeMergedSummary / computeProductionRows /
+// autoSplitForItem stay per-unit (a packaged item's row is unit:'pcs') — the
+// conversion is purely presentation + one kg→pcs step on the typed value in
+// doSave.
+//
+// BUG FIX (2026-09-11): "For few pcs items its converting into Kgs... And
+// this item should have converted into kg but its in pcs Moong Dal Salt" —
+// the original trigger was `row.perBranch.VRSNB > 0`, i.e. "did VRSNB order
+// ANY of this item" — a property of who ordered it, not what the item is.
+// Since a row is the MERGED cross-branch total, one small VRSNB pcs order of
+// a genuinely piece-counted item (Bun, Bread, Puff, Samosa, Rusk, Donut...)
+// wrongly flipped the WHOLE row — SNB's/Hosur's much bigger pcs share
+// included — into kg. And an item VRSNB never orders (Moong Dal Salt,
+// SNB-only) never flipped, even though it's produced by weight. Replaced
+// with an explicit, planner-curated table (production_pcs_unit_overrides) —
+// see project_production_entry_pcs_kg_trigger_bug memory for the full Excel
+// round-trip that classified ~113 items. An item with NO row in the table
+// (a genuinely new item, not seen in the classification pass) defaults to
+// pcs — never silently guesses kg again.
+type ProductionUnitOverride = { unit: 'kg' | 'pcs'; weightGrams: number | null };
+function productionRowPacketGrams(row: ProductionRow, overrides: Map<string, ProductionUnitOverride>): number | null {
   const slug = closingStockItemSlug(row.itemName) || row.itemName.trim().toLowerCase();
-  for (const id of row.contributingOrderIds) {
-    const it = orders.find(o => o.id === id)?.items.find(
-      i => (closingStockItemSlug(i.itemName) || i.itemName.trim().toLowerCase()) === slug && i.dispatchUnit === 'pcs',
-    );
-    if (it) return vrsnbPacketGrams(it);
-  }
-  return null;
+  return overrides.get(slug)?.weightGrams ?? null;
 }
-// A per-unit pcs row that at least one VRSNB order contributes to → show/enter kg.
-function productionRowShowsKg(row: ProductionRow): boolean {
-  return row.unit === 'pcs' && (row.perBranch.VRSNB ?? 0) > 0;
+function productionRowShowsKg(row: ProductionRow, overrides: Map<string, ProductionUnitOverride>): boolean {
+  if (row.unit !== 'pcs') return false;
+  const slug = closingStockItemSlug(row.itemName) || row.itemName.trim().toLowerCase();
+  return overrides.get(slug)?.unit === 'kg';
 }
 interface ProductionRowDisplay { unit: LeftoverUnit; ordered: number; produced: number; grams: number | null; }
-function productionRowDisplay(row: ProductionRow, orders: BakeryOrder[]): ProductionRowDisplay {
-  if (!productionRowShowsKg(row)) {
+function productionRowDisplay(row: ProductionRow, overrides: Map<string, ProductionUnitOverride>): ProductionRowDisplay {
+  if (!productionRowShowsKg(row, overrides)) {
     return { unit: row.unit as LeftoverUnit, ordered: row.totalRequested, produced: row.preparedTotal, grams: null };
   }
-  const g = productionRowPacketGrams(row, orders) ?? VRSNB_DEFAULT_PACKET_GRAMS;
+  const g = productionRowPacketGrams(row, overrides) ?? VRSNB_DEFAULT_PACKET_GRAMS;
   return {
     unit: 'kg',
     ordered: pcsToKg(row.itemName, row.totalRequested, g) ?? row.totalRequested,
     produced: pcsToKg(row.itemName, row.preparedTotal, g) ?? row.preparedTotal,
     grams: g,
   };
+}
+// Fetches production_pcs_unit_overrides once and hands back a slug-keyed map.
+// Shared by ProductionEntryTab (source of the prop) and anywhere else that
+// needs the same classification (e.g. Reports' pcs→kg annotation).
+async function fetchProductionUnitOverrides(): Promise<Map<string, ProductionUnitOverride>> {
+  const { data } = await supabase.from('production_pcs_unit_overrides').select('item_slug, unit, weight_grams');
+  const map = new Map<string, ProductionUnitOverride>();
+  for (const r of (data ?? []) as { item_slug: string; unit: string; weight_grams: number | null }[]) {
+    map.set(r.item_slug, { unit: r.unit === 'kg' ? 'kg' : 'pcs', weightGrams: r.weight_grams != null ? Number(r.weight_grams) : null });
+  }
+  return map;
 }
 
 // Largest-remainder proportional split: the shares always sum to EXACTLY
@@ -2424,6 +2444,11 @@ function ProductionEntryTab({ orders, productionCutoff }: { orders: BakeryOrder[
   // orders (no partition) makes "old + new" quantities combine naturally.
   const rows = useMemo(() => computeProductionRows(orders).filter(r => r.itemStatus !== 'completed'), [orders]);
   const totalPending = rows.length;
+  // BUG FIX (2026-09-11): drives productionRowShowsKg/productionRowDisplay —
+  // see the block above computeProductionRows for the full story. Fetched
+  // once here and threaded down instead of re-fetching per row group.
+  const [unitOverrides, setUnitOverrides] = useState<Map<string, ProductionUnitOverride>>(new Map());
+  useEffect(() => { void fetchProductionUnitOverrides().then(setUnitOverrides); }, []);
 
   return (
     <div className="space-y-4">
@@ -2441,7 +2466,7 @@ function ProductionEntryTab({ orders, productionCutoff }: { orders: BakeryOrder[
               filename: 'production-entry', sheetName: 'Production', title: 'Planner — Production Entry',
               columns: [{ header: 'Category', key: 'category' }, { header: 'Item', key: 'item' }, { header: 'Ordered Qty', key: 'ordered' }, { header: 'Produced So Far', key: 'produced' }, { header: 'Unit', key: 'unit' }, { header: 'Status', key: 'status' }],
               rows: rows.map(row => {
-                const d = productionRowDisplay(row, orders);
+                const d = productionRowDisplay(row, unitOverrides);
                 return { category: row.category, item: row.itemName, ordered: d.ordered, produced: d.produced, unit: d.unit, status: row.itemStatus };
               }),
             })}
@@ -2456,7 +2481,7 @@ function ProductionEntryTab({ orders, productionCutoff }: { orders: BakeryOrder[
       <ExtraProducedItemForm />
       {rows.length === 0 && <EmptyState text="No items waiting on production entry." />}
       {rows.length > 0 && (
-        <ProductionEntryDateGroup dateKey="all" label="Pending Production" orders={orders} rows={rows} search={search} defaultOpen />
+        <ProductionEntryDateGroup dateKey="all" label="Pending Production" orders={orders} rows={rows} search={search} defaultOpen unitOverrides={unitOverrides} />
       )}
     </div>
   );
@@ -2588,8 +2613,9 @@ function ExtraProducedItemForm() {
 
 // One collapsible calendar-day group — owns its own qty/save/confirm state so
 // the exact same item name pending on two different dates never collides.
-function ProductionEntryDateGroup({ label, orders, rows, search, defaultOpen }: {
+function ProductionEntryDateGroup({ label, orders, rows, search, defaultOpen, unitOverrides }: {
   dateKey: string; label: string; orders: BakeryOrder[]; rows: ProductionRow[]; search: string; defaultOpen: boolean;
+  unitOverrides: Map<string, ProductionUnitOverride>;
 }) {
   // Anything not dated "Today" is a past date still carrying pending items —
   // flag it so it doesn't get mistaken for (or buried under) today's work.
@@ -2671,8 +2697,8 @@ function ProductionEntryDateGroup({ label, orders, rows, search, defaultOpen }: 
     // Closing Stock ledger below all stay in row.unit ('pcs') — byte-identical
     // to the pre-kg-display behaviour. The "Completed, nothing typed → fill
     // remaining" default already speaks row.unit and is left alone.
-    const showsKg = productionRowShowsKg(row);
-    const packetG = showsKg ? (productionRowPacketGrams(row, orders) ?? VRSNB_DEFAULT_PACKET_GRAMS) : null;
+    const showsKg = productionRowShowsKg(row, unitOverrides);
+    const packetG = showsKg ? (productionRowPacketGrams(row, unitOverrides) ?? VRSNB_DEFAULT_PACKET_GRAMS) : null;
     const typedRaw = qty[row.itemName] ? Number(qty[row.itemName]) : null;
     const enteredQty = typedRaw != null
       ? (showsKg
@@ -2779,7 +2805,7 @@ function ProductionEntryDateGroup({ label, orders, rows, search, defaultOpen }: 
                 {items.map(row => {
                   const sources = sourcesFor(row);
                   const sourcesOpen = expandedSources === row.itemName;
-                  const disp = productionRowDisplay(row, orders);
+                  const disp = productionRowDisplay(row, unitOverrides);
                   return (
                     <div key={row.itemName} className="rounded-2xl border border-border bg-card p-3 shadow-sm">
                       <div className="flex items-center justify-between gap-3">
@@ -2835,7 +2861,7 @@ function ProductionEntryDateGroup({ label, orders, rows, search, defaultOpen }: 
       {askItem && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
           <div className="w-full max-w-sm rounded-2xl bg-white p-5 shadow-xl">
-            <p className="text-sm font-black text-foreground">"{askItem.itemName}" — {qty[askItem.itemName]} {productionRowDisplay(askItem, orders).unit} entered</p>
+            <p className="text-sm font-black text-foreground">"{askItem.itemName}" — {qty[askItem.itemName]} {productionRowDisplay(askItem, unitOverrides).unit} entered</p>
             <p className="mt-1 text-xs font-semibold text-muted-foreground">Is the baker completely done with this item, or still baking more?</p>
             <div className="mt-4 flex justify-end gap-2">
               <button disabled={saving === askItem.itemName} onClick={() => setAskItem(null)} className="rounded-xl bg-muted px-4 py-2 text-xs font-bold text-muted-foreground hover:bg-slate-200 disabled:opacity-50">Cancel</button>
@@ -2855,7 +2881,7 @@ function ProductionEntryDateGroup({ label, orders, rows, search, defaultOpen }: 
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
           <div className="w-full max-w-sm rounded-2xl bg-white p-5 shadow-xl">
             <p className="text-sm font-black text-foreground">Confirm: mark "{confirmItem.itemName}" as Completed?</p>
-            <p className="mt-1 text-xs font-semibold text-muted-foreground">This sends {qty[confirmItem.itemName] || productionRowDisplay(confirmItem, orders).ordered} {productionRowDisplay(confirmItem, orders).unit} to Dispatch and removes it from Production Entry. This can't be undone from here.</p>
+            <p className="mt-1 text-xs font-semibold text-muted-foreground">This sends {qty[confirmItem.itemName] || productionRowDisplay(confirmItem, unitOverrides).ordered} {productionRowDisplay(confirmItem, unitOverrides).unit} to Dispatch and removes it from Production Entry. This can't be undone from here.</p>
             <div className="mt-4 flex justify-end gap-2">
               <button disabled={saving === confirmItem.itemName} onClick={() => setConfirmItem(null)} className="rounded-xl bg-muted px-4 py-2 text-xs font-bold text-muted-foreground hover:bg-slate-200 disabled:opacity-50">Go back</button>
               <button disabled={saving === confirmItem.itemName} onClick={() => doSave(confirmItem, 'completed')} className="flex items-center gap-1.5 rounded-xl bg-teal-600 px-4 py-2 text-xs font-bold text-white hover:bg-teal-700 disabled:opacity-50">
@@ -3817,12 +3843,22 @@ function ReportsTab({ orders }: { orders: BakeryOrder[] }) {
     return () => { cancelled = true; };
   }, [dateFrom, dateTo, reportsCutoff, refreshTick]);
 
+  // FEATURE (2026-09-11): "when dispatch it will be sent back in pcs but you
+  // need to calculate and note it in the report like 10 pcs sent its weight
+  // is 2 kg" — reuses the same planner-curated production_pcs_unit_overrides
+  // table Production Entry now reads (see the block above computeProductionRows).
+  // Dispatch/Store/Baker figures stay pcs-denominated (unchanged — this is
+  // display-only), but a pcs row for an item classified 'kg' there also
+  // shows its weight equivalent.
+  const [reportUnitOverrides, setReportUnitOverrides] = useState<Map<string, ProductionUnitOverride>>(new Map());
+  useEffect(() => { void fetchProductionUnitOverrides().then(setReportUnitOverrides); }, []);
+
   const storeBakerPlannerRows = useMemo(() => {
-    type Row = { key: string; name: string; unit: 'kg' | 'pcs'; store: number; baker: number; dispatched: number };
+    type Row = { key: string; slug: string; name: string; unit: 'kg' | 'pcs'; store: number; baker: number; dispatched: number };
     const m = new Map<string, Row>();
-    const ensure = (key: string, name: string, unit: 'kg' | 'pcs') => {
+    const ensure = (key: string, slug: string, name: string, unit: 'kg' | 'pcs') => {
       let e = m.get(key);
-      if (!e) { e = { key, name, unit, store: 0, baker: 0, dispatched: 0 }; m.set(key, e); }
+      if (!e) { e = { key, slug, name, unit, store: 0, baker: 0, dispatched: 0 }; m.set(key, e); }
       else if (!e.name && name) e.name = name;
       return e;
     };
@@ -3838,25 +3874,38 @@ function ReportsTab({ orders }: { orders: BakeryOrder[] }) {
         const unit: 'kg' | 'pcs' = it.dispatchUnit === 'pcs' ? 'pcs' : 'kg';
         const slug = closingStockItemSlug(it.itemName) || it.itemName.trim().toLowerCase();
         const q = Number(unit === 'pcs' ? (it.originalPcs ?? it.quantity) : it.quantity) || 0;
-        ensure(`${slug}|${unit}`, stripUnitParen(it.itemName), unit).store += q;
+        ensure(`${slug}|${unit}`, slug, stripUnitParen(it.itemName), unit).store += q;
       }
     }
     // Baker → Planner
-    for (const b of bakerLedgerRows) ensure(b.key, b.name, b.unit).baker += b.qty;
+    for (const b of bakerLedgerRows) {
+      const slug = b.key.split('|')[0] ?? b.key;
+      ensure(b.key, slug, b.name, b.unit).baker += b.qty;
+    }
     // Planner dispatched
     for (const o of orders) {
       for (const d of o.dispatchLog ?? []) {
         if (!inWindow(d.dispatchedAt)) continue;
         const unit: 'kg' | 'pcs' = d.unit === 'pcs' ? 'pcs' : 'kg';
         const slug = closingStockItemSlug(d.itemName) || d.itemName.trim().toLowerCase();
-        ensure(`${slug}|${unit}`, stripUnitParen(d.itemName), unit).dispatched += Number(d.quantity) || 0;
+        ensure(`${slug}|${unit}`, slug, stripUnitParen(d.itemName), unit).dispatched += Number(d.quantity) || 0;
       }
     }
     return Array.from(m.values())
-      .map(e => ({ ...e, store: r3n(e.store), baker: r3n(e.baker), dispatched: r3n(e.dispatched) }))
+      .map(e => {
+        const store = r3n(e.store), baker = r3n(e.baker), dispatched = r3n(e.dispatched);
+        const ov = e.unit === 'pcs' ? reportUnitOverrides.get(e.slug) : undefined;
+        const kgEach = ov?.unit === 'kg' && ov.weightGrams ? ov.weightGrams / 1000 : null;
+        return {
+          ...e, store, baker, dispatched,
+          storeKgEq: kgEach != null ? r3n(store * kgEach) : null,
+          bakerKgEq: kgEach != null ? r3n(baker * kgEach) : null,
+          dispatchedKgEq: kgEach != null ? r3n(dispatched * kgEach) : null,
+        };
+      })
       .filter(e => e.store > 0.0001 || e.baker > 0.0001 || e.dispatched > 0.0001)
       .sort((a, b) => a.name.localeCompare(b.name) || a.unit.localeCompare(b.unit));
-  }, [orders, bakerLedgerRows, dateFrom, dateTo, reportsCutoff]);
+  }, [orders, bakerLedgerRows, dateFrom, dateTo, reportsCutoff, reportUnitOverrides]);
 
   const storeBakerPlannerTotals = useMemo(() => {
     const t = { storeKg: 0, storePcs: 0, bakerKg: 0, bakerPcs: 0, dispKg: 0, dispPcs: 0, items: storeBakerPlannerRows.length };
@@ -4111,7 +4160,9 @@ function ReportsTab({ orders }: { orders: BakeryOrder[] }) {
     })), 'Production & Dispatch', 'No data');
     addSheet(storeBakerPlannerRows.map(r => ({
       Item: r.name, Unit: r.unit,
-      'Store -> Baker': r.store, 'Baker -> Planner': r.baker, 'Planner Dispatched': r.dispatched,
+      'Store -> Baker': r.store, 'Store -> Baker (kg equiv)': r.storeKgEq ?? '',
+      'Baker -> Planner': r.baker, 'Baker -> Planner (kg equiv)': r.bakerKgEq ?? '',
+      'Planner Dispatched': r.dispatched, 'Planner Dispatched (kg equiv)': r.dispatchedKgEq ?? '',
     })), 'Store-Baker-Planner', 'Nothing sent / produced / dispatched in this range');
     addSheet(extraDispatchRows.map(r => ({
       Item: r.itemName, Quantity: r.quantity, Unit: r.unit, Branch: r.branch,
@@ -4227,9 +4278,9 @@ function ReportsTab({ orders }: { orders: BakeryOrder[] }) {
       [
         ...storeBakerPlannerRows.map(r => [
           r.name.slice(0, 32), r.unit,
-          r.store > 0 ? qtyFmt(r.store) : '-',
-          r.baker > 0 ? qtyFmt(r.baker) : '-',
-          r.dispatched > 0 ? qtyFmt(r.dispatched) : '-',
+          r.store > 0 ? `${qtyFmt(r.store)}${r.storeKgEq != null ? ` (~${qtyFmt(r.storeKgEq)}kg)` : ''}` : '-',
+          r.baker > 0 ? `${qtyFmt(r.baker)}${r.bakerKgEq != null ? ` (~${qtyFmt(r.bakerKgEq)}kg)` : ''}` : '-',
+          r.dispatched > 0 ? `${qtyFmt(r.dispatched)}${r.dispatchedKgEq != null ? ` (~${qtyFmt(r.dispatchedKgEq)}kg)` : ''}` : '-',
         ]),
         ['TOTAL - pcs', 'pcs', qtyFmt(storeBakerPlannerTotals.storePcs), qtyFmt(storeBakerPlannerTotals.bakerPcs), qtyFmt(storeBakerPlannerTotals.dispPcs)],
         ['TOTAL - kg', 'kg', qtyFmt(storeBakerPlannerTotals.storeKg), qtyFmt(storeBakerPlannerTotals.bakerKg), qtyFmt(storeBakerPlannerTotals.dispKg)],
@@ -4373,9 +4424,18 @@ function ReportsTab({ orders }: { orders: BakeryOrder[] }) {
                 {storeBakerPlannerRows.map(r => (
                   <tr key={r.key} className="border-t border-border">
                     <td className="px-4 py-2 font-bold text-foreground">{r.name} <span className="text-muted-foreground">({r.unit})</span></td>
-                    <td className="px-4 py-2 text-right text-muted-foreground">{r.store > 0 ? qtyFmt(r.store) : '—'}</td>
-                    <td className={cn('px-4 py-2 text-right font-bold', r.baker > 0 ? 'text-foreground' : 'text-muted-foreground')}>{r.baker > 0 ? qtyFmt(r.baker) : '—'}</td>
-                    <td className="px-4 py-2 text-right text-muted-foreground">{r.dispatched > 0 ? qtyFmt(r.dispatched) : '—'}</td>
+                    <td className="px-4 py-2 text-right text-muted-foreground">
+                      {r.store > 0 ? qtyFmt(r.store) : '—'}
+                      {r.storeKgEq != null && <span className="block text-[10px] font-bold text-amber-700">≈ {qtyFmt(r.storeKgEq)} kg</span>}
+                    </td>
+                    <td className={cn('px-4 py-2 text-right font-bold', r.baker > 0 ? 'text-foreground' : 'text-muted-foreground')}>
+                      {r.baker > 0 ? qtyFmt(r.baker) : '—'}
+                      {r.bakerKgEq != null && <span className="block text-[10px] font-bold text-amber-700">≈ {qtyFmt(r.bakerKgEq)} kg</span>}
+                    </td>
+                    <td className="px-4 py-2 text-right text-muted-foreground">
+                      {r.dispatched > 0 ? qtyFmt(r.dispatched) : '—'}
+                      {r.dispatchedKgEq != null && <span className="block text-[10px] font-bold text-amber-700">≈ {qtyFmt(r.dispatchedKgEq)} kg</span>}
+                    </td>
                   </tr>
                 ))}
                 <tr className="border-t-2 border-border bg-muted/30 font-black text-foreground">
@@ -5620,14 +5680,17 @@ function BillingTab() {
       }
       setSaving(true); setError('');
       // FEATURE (2026-09-01): "for the items we sale in both new bill and
-      // sample bill for both use the same [SALES/26-27/N]" — replaces the
-      // old random WB-{date}-{random} number with the same shared, atomic,
-      // FY-based Sales sequence SampleBillTab now also draws from (see
-      // next_sales_bill_number), so New Bill and Sample Bill together form
-      // one continuous, gap-free numbering series.
-      const { data: salesNo, error: salesNoError } = await supabase.rpc('next_sales_bill_number');
-      if (salesNoError || !salesNo) throw new Error(salesNoError?.message || 'Could not generate the next bill number. Please try again.');
-      const billNo = String(salesNo);
+      // sample bill for both use the same [SALES/26-27/N]" — shared, atomic,
+      // FY-based Sales sequence SampleBillTab also draws from, so New Bill
+      // and Sample Bill together form one continuous, gap-free numbering
+      // series.
+      // BUG FIX (2026-09-11): "SALES/26-27/73 and /74 missing" — this used to
+      // call next_sales_bill_number() as its own separate, already-committed
+      // RPC and THEN a separate .insert() — any failure on the insert alone
+      // left the number permanently burned with no bill row anywhere (a
+      // walk-in bill has no order/dispatch_log trace to recover from, unlike
+      // a branch dispatch). saveWalkinBillSecure now does the number
+      // generation and the insert in one transaction.
       // BUG FIX (2026-09-05): "even if they check the tax invoice box the
       // GST is not getting calculated for the items" — see the matching fix
       // in DispatchReviewModal.confirm() for the full explanation.
@@ -5635,18 +5698,17 @@ function BillingTab() {
         ...cartLines.map(l => ({ itemName: l.itemName, unit: l.unit, price: l.price, quantity: l.quantity, lineTotal: Math.round(l.price * l.quantity * 100) / 100, ...(gstEnabled ? { hsnCode: gstLineFor(l.itemName).hsnCode, gstPct: Math.max(0, Number(gstLineFor(l.itemName).gstPct) || 0) } : {}) })),
         ...charges.map(c => ({ itemName: c.name, unit: 'charge', price: Number(c.amount) || 0, quantity: 1, lineTotal: Math.round((Number(c.amount) || 0) * 100) / 100 })),
       ];
-      const { data, error: insertError } = await supabase.from('bakery_walkin_bills').insert({
-        bill_no: billNo, items, subtotal, discount_type: discountType, discount_value: Number(discountValue) || 0,
-        discount_amount: discountAmount, total, payment_mode: paymentMode, cashier_name: currentUser?.displayName || 'Planner',
-        customer_name: customerName.trim() || 'Walk-in Customer', customer_mobile: customerMobile.trim() || null,
+      const bill = await saveWalkinBillSecure({
+        items, subtotal, discountType, discountValue: Number(discountValue) || 0,
+        discountAmount, total, paymentMode, cashierName: currentUser?.displayName || 'Planner',
+        customerName: customerName.trim() || 'Walk-in Customer', customerMobile: customerMobile.trim() || null,
         // FEATURE (2026-09-05): only checking the GST Tax Invoice box below
         // should make this bill's own printed copy title itself "TAX
         // INVOICE" — see DispatchInvoiceRecord.isGstInvoice.
-        is_gst_invoice: gstEnabled,
-        gst_supply_type: gstSupplyType,
-      }).select().single();
-      if (insertError || !data) throw new Error('Failed to save the bill — please try again.');
-      const bill = mapWalkinBill(data as Record<string, unknown>);
+        isGstInvoice: gstEnabled,
+        gstSupplyType,
+      });
+      const billNo = bill.billNo;
       // BUG FIX (2026-08-09): "regular walk-in bills should also deduct
       // stock and show as 'walk in bill' in reports" — this bill used to
       // save purely as a money record with no link at all to the Closing
@@ -6434,19 +6496,23 @@ function SampleBillTab() {
       }
       setSaving(true); setError('');
       // FEATURE (2026-09-01): "for the items we sale in both new bill and
-      // sample bill for both use the same [SALES/26-27/N]" — fetch from the
-      // shared Sales sequence instead of letting saveDispatchInvoice fall
-      // back to SNB's own dispatch-invoice numbering (scope below purely
-      // picks the right business letterhead — unrelated to the invoice
-      // number itself now).
+      // sample bill for both use the same [SALES/26-27/N]" — draws from the
+      // shared Sales sequence instead of SNB/VRSNB's own dispatch-invoice
+      // numbering (scope below purely picks the right business letterhead —
+      // unrelated to the invoice number itself).
       // BUG FIX (2026-09-10): "Sales tab invoices use Sri Nanjundeshwara
       // Bakery as the title — should be VRSNB FOODS LLP." Was 'SNB' here.
-      const { data: salesNo, error: salesNoError } = await supabase.rpc('next_sales_bill_number');
-      if (salesNoError || !salesNo) throw new Error(salesNoError?.message || 'Could not generate the next bill number. Please try again.');
+      // BUG FIX (2026-09-11): "SALES/26-27/73 and /74 missing" — this used to
+      // fetch the number via a separate next_sales_bill_number() RPC call and
+      // THEN call saveDispatchInvoice with it — any failure on the save
+      // alone left the number burned with no invoice row and no recoverable
+      // trace. numberScope: 'Hosur' routes saveDispatchInvoice's own atomic
+      // RPC to the shared SALES sequence, in the same transaction as the
+      // insert, while scope stays 'VRSNB' for the letterhead.
       const items: DispatchInvoiceItem[] = cartLines.map(l => ({ itemName: l.itemName, unit: l.unit, quantity: l.quantity, unitPrice: l.price, lineTotal: Math.round(l.price * l.quantity * 100) / 100 }));
       const record = await saveDispatchInvoice({
         scope: 'VRSNB',
-        invoiceNo: String(salesNo),
+        numberScope: 'Hosur',
         customerName: customerName.trim(),
         customerPhone: customerPhone.trim(),
         customerAddress: customerAddress.trim() || null,
@@ -10741,19 +10807,18 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
       // marker above / the comment near branchFilter==='Custom' elsewhere in
       // this file), which would otherwise fall back to SNB/VRSNB's own
       // shared 'TO/26-27/N' dispatch sequence inside saveDispatchInvoice.
-      // Fetch from the same shared Sales sequence New Bill/Sample Bill/Hosur
-      // already draw from instead, exactly like SampleBillTab's saveBill()
-      // does — scope stays 'SNB' purely to pick the right business
-      // letterhead, unrelated to the invoice number itself.
-      let customSaleInvoiceNo: string | undefined;
-      if (customer) {
-        const { data: salesNo, error: salesNoError } = await supabase.rpc('next_sales_bill_number');
-        if (salesNoError || !salesNo) throw new Error(salesNoError?.message || 'Could not generate the next bill number. Please try again.');
-        customSaleInvoiceNo = String(salesNo);
-      }
+      // Draws from the same shared Sales sequence New Bill/Sample Bill/Hosur
+      // already draw from instead — scope stays 'SNB'/'VRSNB' purely to pick
+      // the right business letterhead, unrelated to the invoice number.
+      // BUG FIX (2026-09-11): "SALES/26-27/73 and /74 missing" — this used to
+      // fetch the number via a separate next_sales_bill_number() RPC call and
+      // THEN call saveDispatchInvoice with it — any failure on the save
+      // alone left the number burned with no invoice row. numberScope
+      // routes saveDispatchInvoice's own atomic RPC to the shared SALES
+      // sequence in the same transaction as the insert.
       const record = await saveDispatchInvoice({
         scope,
-        invoiceNo: customSaleInvoiceNo,
+        numberScope: customer ? 'Hosur' : undefined,
         hosurShopId: hosurShop?.id ?? null,
         hosurShopName: hosurShop?.name ?? null,
         hosurShopPhone: hosurShop?.phone ?? null,
