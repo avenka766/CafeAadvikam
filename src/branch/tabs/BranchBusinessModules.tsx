@@ -1995,7 +1995,14 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
   const [openSavedMessage, setOpenSavedMessage] = useState('');
   const [ledgerLoading, setLedgerLoading] = useState(false);
   const [counterSnapshot, setCounterSnapshot] = useState<CounterClosureSnapshot>({ advanceCash:0, advanceUpi:0, advanceCard:0, advanceBank:0, advanceInitial:0, advanceBalance:0, advanceTotal:0, paymentCount:0 });
-  const [dbCounterSession, setDbCounterSession] = useState<null | { id: string; openingCash: number; openedAt: string; cashier: string; cashierUserId: string; cashierDisplayName?: string; denominations?: Record<string,string> }>(null);
+  // BUG FIX (2026-09-11): "cashier unable to open the counter" — added
+  // staleFromPreviousDay/businessDate so the UI can tell a genuinely-open
+  // TODAY session (must stay blocked) apart from a stale prior-day one that
+  // was never closed (the server's own open_branch_counter_session_secure
+  // RPC already auto-closes-and-reopens for exactly this case — see
+  // confirmCounterOpen below — but the button was unconditionally disabled
+  // whenever ANY open session existed, so that RPC path was unreachable).
+  const [dbCounterSession, setDbCounterSession] = useState<null | { id: string; openingCash: number; openedAt: string; cashier: string; cashierUserId: string; cashierDisplayName?: string; denominations?: Record<string,string>; staleFromPreviousDay?: boolean; businessDate?: string }>(null);
   // AUTO-RECONCILE (2026-09-10): this device's bill list is capped at the
   // most-recent ~300 branch_operation_records for the WHOLE branch (an egress
   // cap in branchOpsStore). On a busy day - or after a mid-day page reload -
@@ -2042,6 +2049,12 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
     openedAt: dbCounterSession.openedAt,
     active: true,
   } : undefined), [branch, dbCounterSession, localCounterOpenRecord]);
+  // BUG FIX (2026-09-11): only a session opened for TODAY should block a new
+  // open — a stale prior-day one (localCounterOpenRecord is never stale, it's
+  // only ever set right after a successful open-just-now) should let the
+  // cashier click through, which re-runs open_branch_counter_session_secure
+  // and lets ITS OWN auto-close-and-reopen logic handle it server-side.
+  const isStaleOpenSession = !localCounterOpenRecord && Boolean(dbCounterSession?.staleFromPreviousDay);
   const branchClosureRecord = cashierClosures.find((record) => record.branch === branch
     && today(record.createdAt)
     && (currentUser?.id ? record.cashierUserId === currentUser.id : record.cashier === user));
@@ -2067,6 +2080,10 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
       cashierUserId: String(row.cashier_user_id),
       cashierDisplayName: String(row.cashier_display_name || row.cashier_username || user),
       denominations: (row.opening_denominations && typeof row.opening_denominations === 'object' ? row.opening_denominations : {}) as Record<string,string>,
+      // get_my_branch_counter_session_secure already computes this server-side
+      // (business_date <> today in IST) — see the BUG FIX note on dbCounterSession above.
+      staleFromPreviousDay: row.staleFromPreviousDay === true,
+      businessDate: row.business_date != null ? String(row.business_date) : undefined,
     };
     setDbCounterSession(mapped);
     return mapped;
@@ -2473,7 +2490,15 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
   };
 
   const confirmCounterOpen = async () => {
-    if (branchCounterOpenRecord) {
+    // BUG FIX (2026-09-11): "cashier unable to open the counter" — this used
+    // to block on ANY open session, including a stale one left open from a
+    // previous business day (confirmed live: a VRSNB counter opened
+    // 2026-09-08 was still 'open' on 2026-09-11, blocking today's cashier
+    // entirely). open_branch_counter_session_secure below already
+    // auto-closes a stale prior-day session and opens a fresh one in one
+    // call (see the autoClosedStale handling further down) — only a
+    // same-day-already-open session should actually block a re-open.
+    if (branchCounterOpenRecord && !isStaleOpenSession) {
       setOpenSavedMessage('This cashier counter is already open. Close it before opening again.');
       return;
     }
@@ -2518,6 +2543,8 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
       cashierUserId: String(inserted.cashier_user_id),
       cashierDisplayName: String(inserted.cashier_display_name || inserted.cashier_username || user),
       denominations: openingDenominations,
+      staleFromPreviousDay: false,
+      businessDate: todayIso(),
     });
     setOpening(String(record.openingCash));
     setCounterSnapshot({ advanceCash:0, advanceUpi:0, advanceCard:0, advanceBank:0, advanceInitial:0, advanceBalance:0, advanceTotal:0, paymentCount:0 });
@@ -2756,20 +2783,35 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
           <div>
             <p className="text-[10px] font-black uppercase tracking-[0.18em] text-muted-foreground">{BRANCH_LABELS[branch]} counter open</p>
             <h2 className="font-display text-xl font-black text-foreground">Start Cashier Counter</h2>
-            <p className="mt-1 text-xs font-bold text-muted-foreground">{branchCounterOpenRecord ? `Opened by ${branchCounterOpenRecord.cashier} with ${money(branchCounterOpenRecord.openingCash)}. Close the counter before starting another opening.` : isSnbOrder ? 'Open the counter before taking any SNB Order advance order or collecting payment.' : 'Open the counter before billing or advance collection.'}</p>
+            <p className="mt-1 text-xs font-bold text-muted-foreground">
+              {isStaleOpenSession
+                ? `Left open from ${dbCounterSession?.businessDate ? new Date(`${dbCounterSession.businessDate}T00:00:00`).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }) : 'a previous day'} by ${branchCounterOpenRecord?.cashier} — never closed. Click below to auto-close it and open today's counter.`
+                : branchCounterOpenRecord ? `Opened by ${branchCounterOpenRecord.cashier} with ${money(branchCounterOpenRecord.openingCash)}. Close the counter before starting another opening.`
+                : isSnbOrder ? 'Open the counter before taking any SNB Order advance order or collecting payment.' : 'Open the counter before billing or advance collection.'}
+            </p>
           </div>
-          <span className={cn('rounded-full px-3 py-1 text-xs font-black border', branchCounterOpenRecord ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-amber-50 text-amber-800 border-amber-200')}>{branchCounterOpenRecord ? 'OPENED' : 'NOT OPENED'}</span>
+          <span className={cn('rounded-full px-3 py-1 text-xs font-black border', isStaleOpenSession ? 'bg-amber-50 text-amber-800 border-amber-200' : branchCounterOpenRecord ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-amber-50 text-amber-800 border-amber-200')}>{isStaleOpenSession ? 'STALE — NOT CLOSED' : branchCounterOpenRecord ? 'OPENED' : 'NOT OPENED'}</span>
         </div>
+        {/* BUG FIX (2026-09-11): "cashier unable to open the counter" — a
+            counter left open from a previous business day used to disable
+            this entire panel forever (the button + these inputs), with no
+            way to reach the auto-close-and-reopen path the RPC already
+            supports. Only a same-day-already-open session should lock these. */}
+        {isStaleOpenSession && (
+          <p className="mt-3 rounded-xl bg-amber-50 px-3 py-2 text-xs font-bold text-amber-800">
+            That old session's cash was never reconciled — it'll be auto-closed as unreconciled (visible under Admin ▸ Cashier Sessions) the moment you open today's counter below.
+          </p>
+        )}
         <div className="mt-4 grid gap-3 xl:grid-cols-[260px_minmax(0,1fr)_180px]">
           <div>
             <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Cashier Name (on duty)</label>
-            <input value={openCashier} onChange={(e)=>setOpenCashier(e.target.value)} disabled={Boolean(branchCounterOpenRecord)} placeholder="Enter your name" className="mt-1 w-full rounded-xl border border-border bg-background px-3 py-3 text-sm font-black focus:outline-none focus:ring-2 focus:ring-primary/30 disabled:bg-slate-100 disabled:text-slate-500" />
+            <input value={openCashier} onChange={(e)=>setOpenCashier(e.target.value)} disabled={Boolean(branchCounterOpenRecord) && !isStaleOpenSession} placeholder="Enter your name" className="mt-1 w-full rounded-xl border border-border bg-background px-3 py-3 text-sm font-black focus:outline-none focus:ring-2 focus:ring-primary/30 disabled:bg-slate-100 disabled:text-slate-500" />
           </div>
           <div className="grid grid-cols-3 gap-2 sm:grid-cols-5 lg:grid-cols-9">
             {denominations.map((denom) => (
               <label key={denom} className="rounded-2xl border border-border bg-background p-2">
                 <span className="block text-[10px] font-black text-muted-foreground">Rs {denom}</span>
-                <input type="number" min="0" value={openDenominations[denom] || ''} onChange={(e)=>setOpenDenominations(prev=>({...prev,[denom]:e.target.value}))} disabled={Boolean(branchCounterOpenRecord)} className="mt-1 w-full rounded-xl border border-border bg-card px-2 py-2 text-sm font-black tabular-nums focus:outline-none focus:ring-2 focus:ring-primary/30 disabled:bg-slate-100 disabled:text-slate-400" />
+                <input type="number" min="0" value={openDenominations[denom] || ''} onChange={(e)=>setOpenDenominations(prev=>({...prev,[denom]:e.target.value}))} disabled={Boolean(branchCounterOpenRecord) && !isStaleOpenSession} className="mt-1 w-full rounded-xl border border-border bg-card px-2 py-2 text-sm font-black tabular-nums focus:outline-none focus:ring-2 focus:ring-primary/30 disabled:bg-slate-100 disabled:text-slate-400" />
               </label>
             ))}
           </div>
@@ -2778,8 +2820,8 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
               <p className="text-[10px] font-black uppercase text-white/60">Opening total</p>
               <p className="text-xl font-black tabular-nums">{money(openTotal)}</p>
             </div>
-            <button onClick={() => { void confirmCounterOpen(); }} disabled={Boolean(branchCounterOpenRecord)} className="rounded-2xl bg-orange-500 px-4 py-3 text-sm font-black text-white shadow-lg shadow-orange-200 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:shadow-none">
-              {branchCounterOpenRecord ? 'Counter Already Open' : 'Confirm Counter Open'}
+            <button onClick={() => { void confirmCounterOpen(); }} disabled={Boolean(branchCounterOpenRecord) && !isStaleOpenSession} className="rounded-2xl bg-orange-500 px-4 py-3 text-sm font-black text-white shadow-lg shadow-orange-200 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:shadow-none">
+              {isStaleOpenSession ? 'Close Previous Day & Open Today' : branchCounterOpenRecord ? 'Counter Already Open' : 'Confirm Counter Open'}
             </button>
           </div>
         </div>
