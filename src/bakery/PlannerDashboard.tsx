@@ -6370,6 +6370,34 @@ function EditWalkinBillModal({ bill, onClose, onSaved }: {
   const savingInFlightRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
 
+  // FEATURE (2026-09-12): "When we click on edit bill also the check box
+  // should be there — once we check the box the gst bill should come and
+  // also dont forget to add that amount in that bill" — the New Bill cart's
+  // GST checkbox (BillingTab, gstPct declared there) had no equivalent here
+  // at all, so a bill couldn't be turned into a GST invoice (or have its GST
+  // details corrected) after the fact. Same one-overall-rate design as New
+  // Bill; pre-filled from whatever this bill already carries (a bill that
+  // was already a GST invoice keeps its rate/HSN/supply type when reopened).
+  const firstGstLine = bill.items.find(i => i.unit !== 'charge' && i.gstPct != null);
+  const [gstEnabled, setGstEnabled] = useState(bill.isGstInvoice);
+  const [gstBuyerName, setGstBuyerName] = useState('');
+  const [gstBuyerGstin, setGstBuyerGstin] = useState('');
+  const [gstBuyerAddress, setGstBuyerAddress] = useState('');
+  const [gstBuyerStateName, setGstBuyerStateName] = useState('Tamil Nadu');
+  const [gstBuyerStateCode, setGstBuyerStateCode] = useState('33');
+  const [gstSupplyType, setGstSupplyType] = useState<'intra' | 'inter'>(bill.gstSupplyType || 'intra');
+  const [gstPct, setGstPct] = useState(firstGstLine?.gstPct != null ? String(firstGstLine.gstPct) : '5');
+  const [gstHsnCode, setGstHsnCode] = useState(firstGstLine?.hsnCode || '');
+  const [gstInvoiceResult, setGstInvoiceResult] = useState<{ invoiceNo: string; html: string } | null>(null);
+  const [gstGenerating, setGstGenerating] = useState(false);
+  const [gstError, setGstError] = useState('');
+  // Two-phase like DispatchReviewModal: form, then a "saved" result screen
+  // with print buttons (this is a modal — unlike BillingTab's own panel,
+  // which stays on-screen after saveBill, here the form itself needs to stay
+  // open long enough to show the freshly-(re)generated GST invoice's print
+  // button before closing).
+  const [savedBill, setSavedBill] = useState<WalkinBillRow | null>(null);
+
   const updateLine = (key: number, patch: Partial<EditableWalkinLine>) =>
     setLines(prev => prev.map(l => l.key === key ? { ...l, ...patch } : l));
   const removeLine = (key: number) => setLines(prev => prev.filter(l => l.key !== key));
@@ -6392,9 +6420,18 @@ function EditWalkinBillModal({ bill, onClose, onSaved }: {
   const save = async () => {
     if (savingInFlightRef.current) return;
     setError(null);
+    // REDESIGN (2026-09-12): same one-overall-rate GST as New Bill — see the
+    // note above gstEnabled's declaration — applied identically to every
+    // line so it can double as the `lines` input to buildGstTaxInvoiceHtml
+    // below AND as what a later plain-bill reprint (printWalkinBill) reads
+    // to decide whether/how to show its own "Includes GST" line.
     const cleaned: WalkinBillItem[] = lines
       .filter(l => l.itemName.trim() && l.quantity > 0 && l.price >= 0)
-      .map(l => ({ itemName: l.itemName.trim(), unit: l.unit, quantity: l.quantity, price: l.price, lineTotal: Math.round(l.price * l.quantity * 100) / 100 }));
+      .map(l => ({
+        itemName: l.itemName.trim(), unit: l.unit, quantity: l.quantity, price: l.price,
+        lineTotal: Math.round(l.price * l.quantity * 100) / 100,
+        ...(gstEnabled ? { hsnCode: gstHsnCode.trim(), gstPct: Math.max(0, Number(gstPct) || 0) } : {}),
+      }));
     if (cleaned.length === 0) { setError('Add at least one item with a name, quantity above 0 and a valid price.'); return; }
     savingInFlightRef.current = true;
     setSaving(true);
@@ -6432,14 +6469,67 @@ function EditWalkinBillModal({ bill, onClose, onSaved }: {
         : Math.round(Math.min(newSubtotal, Math.max(0, Number(discountValue) || 0)) * 100) / 100;
       const newTotal = Math.max(0, Math.round((newSubtotal - newDiscountAmount) * 100) / 100);
 
+      // BUG FIX (2026-09-12): this update never touched is_gst_invoice/
+      // gst_supply_type at all — checking the GST box here had no lasting
+      // effect: the row stayed non-GST in the DB, so a later reprint from
+      // Recent Bills (printWalkinBill) would still show a plain "INVOICE"
+      // with no GST breakdown, regardless of what was just checked/entered.
       const { error: updateError } = await supabase.from('bakery_walkin_bills').update({
         items: cleaned, subtotal: newSubtotal, discount_type: discountType,
         discount_value: Number(discountValue) || 0, discount_amount: newDiscountAmount, total: newTotal,
         payment_mode: paymentMode, customer_name: customerName.trim() || 'Walk-in Customer',
         customer_mobile: customerMobile.trim() || null,
+        is_gst_invoice: gstEnabled, gst_supply_type: gstSupplyType,
       }).eq('id', bill.id);
       if (updateError) throw updateError;
-      onSaved();
+
+      const updatedBill: WalkinBillRow = {
+        ...bill, items: cleaned, subtotal: newSubtotal, discountType, discountValue: Number(discountValue) || 0,
+        discountAmount: newDiscountAmount, total: newTotal, paymentMode,
+        customerName: customerName.trim() || 'Walk-in Customer', customerMobile: customerMobile.trim() || null,
+        isGstInvoice: gstEnabled, gstSupplyType,
+      };
+
+      // FEATURE (2026-09-12): "once we check the box the gst bill should
+      // come and also dont forget to add that amount in that bill" — same
+      // buildGstTaxInvoiceHtml generation New Bill's saveBill runs, using
+      // this same edited items/total (never disagrees with what was just
+      // saved). Its own try/catch: the edit above already succeeded and
+      // must stand regardless of whether this works.
+      setGstInvoiceResult(null);
+      if (gstEnabled) {
+        setGstGenerating(true);
+        setGstError('');
+        try {
+          const invoiceDate = new Date().toISOString().slice(0, 10);
+          const discountMult = newSubtotal > 0 ? newTotal / newSubtotal : 1;
+          const gstLines: GstTaxInvoiceLine[] = cleaned.map(l => ({
+            itemName: l.itemName,
+            hsnCode: gstHsnCode.trim(),
+            qty: l.quantity,
+            uom: l.unit === 'pcs' ? 'Nos' : l.unit === 'kg' ? 'Kg' : l.unit,
+            rate: Math.round(l.price * discountMult * 100) / 100,
+            gstPct: Math.max(0, Number(gstPct) || 0),
+          }));
+          const buyer = {
+            name: gstBuyerName.trim() || updatedBill.customerName || 'Walk-in Customer',
+            address: gstBuyerAddress, gstin: gstBuyerGstin, stateName: gstBuyerStateName, stateCode: gstBuyerStateCode,
+          };
+          const { html } = buildGstTaxInvoiceHtml({
+            buyer, consignee: buyer,
+            invoiceNo: bill.billNo, invoiceDate,
+            supplyType: gstSupplyType,
+            lines: gstLines,
+            preparedBy: currentUser?.displayName || currentUser?.username || 'Planner',
+          });
+          setGstInvoiceResult({ invoiceNo: bill.billNo, html });
+        } catch (gstErr) {
+          setGstError(gstErr instanceof Error ? gstErr.message : 'Could not generate the GST tax invoice.');
+        } finally {
+          setGstGenerating(false);
+        }
+      }
+      setSavedBill(updatedBill);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save changes — please try again.');
     } finally {
@@ -6447,6 +6537,41 @@ function EditWalkinBillModal({ bill, onClose, onSaved }: {
       savingInFlightRef.current = false;
     }
   };
+
+  if (savedBill) {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+        <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white p-5 shadow-xl">
+          <p className="text-sm font-black text-teal-700">Bill {savedBill.billNo} updated — {invoiceMoney(savedBill.total)}.</p>
+          <div className="mt-3 flex flex-wrap gap-1.5">
+            <button onClick={() => printWalkinBill(savedBill, 'thermal')} className="flex items-center gap-1.5 rounded-lg bg-teal-600 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-teal-700">
+              <Printer className="size-3.5" /> Thermal
+            </button>
+            <button onClick={() => printWalkinBill(savedBill, 'a4')} className="flex items-center gap-1.5 rounded-lg bg-teal-600 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-teal-700">
+              <Printer className="size-3.5" /> A4
+            </button>
+          </div>
+          {gstGenerating && (
+            <p className="mt-2 flex items-center gap-1.5 text-[11px] font-bold text-purple-700"><Loader2 className="size-3.5 animate-spin" /> Generating the GST Tax Invoice…</p>
+          )}
+          {!gstGenerating && gstInvoiceResult && (
+            <div className="mt-2 flex flex-wrap items-center gap-1.5">
+              <span className="text-[11px] font-bold text-purple-800">GST Tax Invoice {gstInvoiceResult.invoiceNo} ready:</span>
+              <button onClick={() => printHtml(gstInvoiceResult.invoiceNo, gstInvoiceResult.html)} className="flex items-center gap-1.5 rounded-lg bg-purple-600 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-purple-700">
+                <Printer className="size-3.5" /> Print
+              </button>
+            </div>
+          )}
+          {!gstGenerating && gstError && (
+            <p className="mt-2 text-[11px] font-bold text-red-700">Bill saved, but the GST Tax Invoice could not be generated: {gstError}</p>
+          )}
+          <div className="mt-4 flex justify-end">
+            <button onClick={onSaved} className="rounded-xl bg-foreground px-4 py-2 text-xs font-bold text-white">Done</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
@@ -6507,6 +6632,30 @@ function EditWalkinBillModal({ bill, onClose, onSaved }: {
           </div>
           {discountType !== 'none' && (
             <input type="number" value={discountValue} onChange={e => setDiscountValue(e.target.value)} placeholder={discountType === 'percent' ? 'e.g. 10' : 'e.g. 50'} className="w-full rounded-lg border border-border bg-background px-2 py-1.5 text-sm font-bold" />
+          )}
+        </div>
+
+        {/* FEATURE (2026-09-12): same GST Tax Invoice checkbox as New Bill —
+            see the note above gstEnabled's declaration. */}
+        <div className="mt-3 space-y-2 rounded-xl border border-dashed border-purple-300 bg-purple-50 p-3">
+          <label className="flex items-center gap-2 text-[11px] font-black uppercase tracking-wide text-purple-800">
+            <input type="checkbox" checked={gstEnabled} onChange={e => setGstEnabled(e.target.checked)} className="size-4" />
+            Also generate a GST Tax Invoice (same format as Invoice tab)
+          </label>
+          {gstEnabled && (
+            <div className="grid grid-cols-2 gap-2">
+              <input value={gstBuyerName} onChange={e => setGstBuyerName(e.target.value)} placeholder={`Buyer name (blank = ${customerName.trim() || 'Walk-in Customer'})`} className="col-span-2 h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
+              <input value={gstBuyerGstin} onChange={e => setGstBuyerGstin(e.target.value.toUpperCase())} placeholder="Buyer GSTIN (optional)" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
+              <input value={gstBuyerAddress} onChange={e => setGstBuyerAddress(e.target.value)} placeholder="Buyer address" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
+              <input value={gstBuyerStateName} onChange={e => setGstBuyerStateName(e.target.value)} placeholder="State Name" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
+              <input value={gstBuyerStateCode} onChange={e => setGstBuyerStateCode(e.target.value)} placeholder="State Code" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
+              <input type="number" min={0} max={100} value={gstPct} onChange={e => setGstPct(e.target.value)} placeholder="GST % (overall, applies to every item)" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
+              <input value={gstHsnCode} onChange={e => setGstHsnCode(e.target.value)} placeholder="HSN/SAC code (overall)" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
+              <select value={gstSupplyType} onChange={e => setGstSupplyType(e.target.value as 'intra' | 'inter')} className="col-span-2 h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold">
+                <option value="intra">Same State (CGST + SGST)</option>
+                <option value="inter">Different State (IGST)</option>
+              </select>
+            </div>
           )}
         </div>
 
