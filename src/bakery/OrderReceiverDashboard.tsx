@@ -816,7 +816,15 @@ function SharedAdvanceOrdersPanel({ branch }: { branch: Branch }) {
         const items = Array.isArray(row.items) ? row.items as Array<Record<string, unknown>> : [];
         return {
           id: String(row.id),
-          reference: `ADV-${String(row.id).slice(0, 8).toUpperCase()}`,
+          // BUG FIX (2026-09-12): "the advance order number is not showing
+          // for the orders that come in" — branch_advance_orders had no
+          // order_no column at all, so this always fell back to a truncated
+          // UUID instead of the real "SNB-ADV-N" number the cashier actually
+          // gave the customer (that number only ever lived on the FIRST
+          // advance payment row, which this query never joined). The RPC now
+          // returns order_no directly — fall back to the UUID only for
+          // pre-fix historical rows the backfill couldn't resolve.
+          reference: row.order_no ? String(row.order_no) : `ADV-${String(row.id).slice(0, 8).toUpperCase()}`,
           customer: String(row.customer_name || "Walk-in"),
           items: items.map((item) => `${String(item.itemName || item.item_name || "Item")} × ${Number(item.quantity || 0)}`).join(", ") || "-",
           total: Number(row.subtotal || 0),

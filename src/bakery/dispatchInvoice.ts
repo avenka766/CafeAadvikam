@@ -875,6 +875,14 @@ export async function updateDispatchInvoice(params: {
   updatedItems: DispatchInvoiceItem[];
   updatedDiscountPct: number;
   editedBy: string;
+  // FEATURE (2026-09-12): "when we click on edit bill also the check box
+  // should be there" — same fix EditWalkinBillModal got for bakery_walkin_bills;
+  // this is the equivalent for dispatch_invoices (SNB/VRSNB/Hosur/Cake/Custom
+  // edits — see EditDispatchInvoiceModal). Omitted (existing callers that
+  // never touch GST) keeps the invoice's current isGstInvoice/gstSupplyType
+  // exactly as before.
+  isGstInvoice?: boolean;
+  gstSupplyType?: 'intra' | 'inter';
 }): Promise<{ ok: true; record: DispatchInvoiceRecord; stockSynced: boolean; hosurWhatsapp?: { ok: boolean; billNo?: string; whatsappStatus?: 'sent' | 'failed'; whatsappError?: string | null; message?: string } } | { error: string }> {
   const { data: invRow, error: invErr } = await supabase.from('dispatch_invoices').select('*').eq('id', params.invoiceId).single();
   if (invErr || !invRow) return { error: invErr?.message || 'Invoice not found — it may have been removed.' };
@@ -1050,6 +1058,12 @@ export async function updateDispatchInvoice(params: {
   // 4. Recompute the invoice's own numbers from the final edited item list —
   //    identical formula to saveDispatchInvoice, so a reprint looks the same
   //    as any freshly-created bill.
+  // BUG FIX (2026-09-12): this used to rebuild each item field-by-field with
+  // no hsnCode/gstPct — even editing an ALREADY-GST invoice's quantity/price
+  // silently stripped its per-item GST fields on save, since finalItems
+  // (not cleanedUpdatedItems, which does still carry them via `...i`) is
+  // what actually gets written to the row below. Carried through explicitly
+  // now.
   const finalItems: DispatchInvoiceItem[] = cleanedUpdatedItems.map(i => {
     const k = key(i);
     // A charge line's amount is its unitPrice (quantity is always 1); a real
@@ -1064,10 +1078,14 @@ export async function updateDispatchInvoice(params: {
       unitPrice: i.unitPrice,
       lineTotal,
       isExtra: addedKeys.includes(k) ? true : (originalByKey.get(k)?.isExtra ?? i.isExtra ?? false),
+      ...(i.hsnCode !== undefined ? { hsnCode: i.hsnCode } : {}),
+      ...(i.gstPct !== undefined ? { gstPct: i.gstPct } : {}),
     };
   });
   // AUDIT FIX (2026-09-02): same clamp as saveDispatchInvoice — see its comment.
   const safeUpdatedDiscountPct = Math.min(100, Math.max(0, params.updatedDiscountPct || 0));
+  const finalIsGstInvoice = params.isGstInvoice ?? original.isGstInvoice;
+  const finalGstSupplyType = params.gstSupplyType ?? original.gstSupplyType;
   const subtotal = Math.round(finalItems.reduce((s, i) => s + i.lineTotal, 0) * 100) / 100;
   const discountAmount = Math.round(subtotal * (safeUpdatedDiscountPct / 100) * 100) / 100;
   const preRound = subtotal - discountAmount;
@@ -1100,6 +1118,8 @@ export async function updateDispatchInvoice(params: {
     total,
     dispatch_entry_ids: finalDispatchEntryIds,
     notes: finalNotes,
+    is_gst_invoice: finalIsGstInvoice,
+    gst_supply_type: finalGstSupplyType,
   }).eq('id', params.invoiceId);
   if (updateErr) return { error: updateErr.message || 'Failed to save the edited bill.' };
 
@@ -1172,6 +1192,8 @@ export async function updateDispatchInvoice(params: {
       subtotal, discountPct: safeUpdatedDiscountPct, discountAmount, roundOff, total,
       dispatchEntryIds: finalDispatchEntryIds,
       notes: finalNotes,
+      isGstInvoice: finalIsGstInvoice,
+      gstSupplyType: finalGstSupplyType,
     },
   };
 }

@@ -8820,6 +8820,30 @@ function EditDispatchInvoiceModal({ invoice, onClose, onSaved }: {
   const [error, setError] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
 
+  // FEATURE (2026-09-12): "when we click on edit bill also the check box
+  // should be there once we check the box the gst bill should come" — this
+  // is the dispatch_invoices equivalent of EditWalkinBillModal's own GST
+  // panel (bakery_walkin_bills), for SNB/VRSNB/Hosur/Cake/Custom edits. Same
+  // one-overall-rate design, pre-filled from whatever this invoice already
+  // carries.
+  const firstGstLine = invoice.items.find(i => i.unit !== 'charge' && i.gstPct != null);
+  const [gstEnabled, setGstEnabled] = useState(invoice.isGstInvoice);
+  const [gstBuyerName, setGstBuyerName] = useState('');
+  const [gstBuyerGstin, setGstBuyerGstin] = useState('');
+  const [gstBuyerAddress, setGstBuyerAddress] = useState('');
+  const [gstBuyerStateName, setGstBuyerStateName] = useState('Tamil Nadu');
+  const [gstBuyerStateCode, setGstBuyerStateCode] = useState('33');
+  const [gstSupplyType, setGstSupplyType] = useState<'intra' | 'inter'>(invoice.gstSupplyType || 'intra');
+  const [gstPct, setGstPct] = useState(firstGstLine?.gstPct != null ? String(firstGstLine.gstPct) : '5');
+  const [gstHsnCode, setGstHsnCode] = useState(firstGstLine?.hsnCode || '');
+  const [gstInvoiceResult, setGstInvoiceResult] = useState<{ invoiceNo: string; html: string } | null>(null);
+  const [gstGenerating, setGstGenerating] = useState(false);
+  const [gstError, setGstError] = useState('');
+  // Two-phase like EditWalkinBillModal — the modal itself needs to stay open
+  // after a successful save so a freshly-(re)generated GST invoice can
+  // actually be printed, instead of closing immediately via onSaved().
+  const [savedRecord, setSavedRecord] = useState<DispatchInvoiceRecord | null>(null);
+
   const updateLine = (key: number, patch: Partial<EditableInvoiceLine>) =>
     setLines(prev => prev.map(l => l.key === key ? { ...l, ...patch } : l));
   const removeLine = (key: number) => setLines(prev => prev.filter(l => l.key !== key));
@@ -8872,9 +8896,17 @@ function EditDispatchInvoiceModal({ invoice, onClose, onSaved }: {
     savingInFlightRef.current = true;
     setSaving(true);
     try {
+      // REDESIGN (2026-09-12): one flat GST%/HSN for the whole invoice (not
+      // per line) — see the note above gstEnabled's declaration. Strips any
+      // OLD per-line hsnCode/gstPct first (so unchecking GST actually clears
+      // them) before re-adding the current overall values when enabled.
+      const cleanedForSave = cleaned.map(({ key: _key, hsnCode: _oldHsn, gstPct: _oldGst, ...rest }) => ({
+        ...rest,
+        ...(gstEnabled ? { hsnCode: gstHsnCode.trim(), gstPct: Math.max(0, Number(gstPct) || 0) } : {}),
+      }));
       const result = await updateDispatchInvoice({
         invoiceId: invoice.id,
-        updatedItems: cleaned.map(({ key: _key, ...rest }) => rest),
+        updatedItems: cleanedForSave,
         // BUG FIX: the input's own onChange clamps discountPct to 0-100,
         // but only when it actually fires — if the invoice's original,
         // stored discountPct was already out of range (e.g. from before
@@ -8883,6 +8915,8 @@ function EditDispatchInvoiceModal({ invoice, onClose, onSaved }: {
         // still reach here. Use the already-computed clamped value instead.
         updatedDiscountPct: clampedDiscountPct,
         editedBy: currentUser?.displayName || currentUser?.username || 'Planner',
+        isGstInvoice: gstEnabled,
+        gstSupplyType,
       });
       if ('error' in result) { setError(result.error); return; }
       // FEATURE (2026-09-03): surface whether the shop's WhatsApp bill was
@@ -8898,12 +8932,46 @@ function EditDispatchInvoiceModal({ invoice, onClose, onSaved }: {
             : `Bill corrected, but the shop's WhatsApp bill could not be resynced: ${result.hosurWhatsapp.message}`
         );
       }
-      if (notes.length > 0) {
-        setWarning(`Saved. ${notes.join(' ')}`);
-        setTimeout(onSaved, 1600);
-      } else {
-        onSaved();
+      if (notes.length > 0) setWarning(notes.join(' '));
+
+      // FEATURE (2026-09-12): "once we check the box the gst bill should
+      // come" — same buildGstTaxInvoiceHtml generation every other GST flow
+      // runs, using this exact edited invoice's own items/total.
+      setGstInvoiceResult(null);
+      if (gstEnabled) {
+        setGstGenerating(true);
+        setGstError('');
+        try {
+          const invoiceDate = new Date().toISOString().slice(0, 10);
+          const discountMult = result.record.subtotal > 0 ? result.record.total / result.record.subtotal : 1;
+          const gstLines: GstTaxInvoiceLine[] = result.record.items.map(l => ({
+            itemName: l.itemName, hsnCode: gstHsnCode.trim(), qty: l.quantity,
+            uom: l.unit === 'pcs' ? 'Nos' : l.unit === 'kg' ? 'Kg' : l.unit,
+            rate: Math.round(l.unitPrice * discountMult * 100) / 100,
+            gstPct: Math.max(0, Number(gstPct) || 0),
+          }));
+          const buyer = {
+            name: gstBuyerName.trim() || invoice.customerName || invoice.hosurShopName || `${invoice.scope} Branch`,
+            address: gstBuyerAddress, gstin: gstBuyerGstin, stateName: gstBuyerStateName, stateCode: gstBuyerStateCode,
+          };
+          const { html } = buildGstTaxInvoiceHtml({
+            buyer, consignee: buyer,
+            invoiceNo: invoice.invoiceNo, invoiceDate,
+            supplyType: gstSupplyType,
+            lines: gstLines,
+            preparedBy: currentUser?.displayName || currentUser?.username || 'Planner',
+          });
+          setGstInvoiceResult({ invoiceNo: invoice.invoiceNo, html });
+        } catch (gstErr) {
+          setGstError(gstErr instanceof Error ? gstErr.message : 'Could not generate the GST tax invoice.');
+        } finally {
+          setGstGenerating(false);
+        }
       }
+      // Modal stays open (two-phase, mirroring EditWalkinBillModal) — closing
+      // immediately via onSaved() would give no chance to print the freshly
+      // (re)generated GST invoice.
+      setSavedRecord(result.record);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save changes — please try again.');
     } finally {
@@ -8911,6 +8979,42 @@ function EditDispatchInvoiceModal({ invoice, onClose, onSaved }: {
       savingInFlightRef.current = false;
     }
   };
+
+  if (savedRecord) {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+        <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white p-5 shadow-xl">
+          <p className="text-sm font-black text-teal-700">Bill {savedRecord.invoiceNo} updated — Rs. {Math.round(savedRecord.total)}.</p>
+          {warning && <p className="mt-1 text-[11px] font-bold text-amber-700">{warning}</p>}
+          <div className="mt-3 flex flex-wrap gap-1.5">
+            <button onClick={() => printDispatchInvoice(savedRecord, 'thermal')} className="flex items-center gap-1.5 rounded-lg bg-teal-600 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-teal-700">
+              <Printer className="size-3.5" /> Invoice (Thermal)
+            </button>
+            <button onClick={() => printDispatchInvoice(savedRecord, 'a4')} className="flex items-center gap-1.5 rounded-lg bg-teal-600 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-teal-700">
+              <Printer className="size-3.5" /> Invoice (A4)
+            </button>
+          </div>
+          {gstGenerating && (
+            <p className="mt-2 flex items-center gap-1.5 text-[11px] font-bold text-purple-700"><Loader2 className="size-3.5 animate-spin" /> Generating the GST Tax Invoice…</p>
+          )}
+          {!gstGenerating && gstInvoiceResult && (
+            <div className="mt-2 flex flex-wrap items-center gap-1.5">
+              <span className="text-[11px] font-bold text-purple-800">GST Tax Invoice {gstInvoiceResult.invoiceNo} ready:</span>
+              <button onClick={() => printHtml(gstInvoiceResult.invoiceNo, gstInvoiceResult.html)} className="flex items-center gap-1.5 rounded-lg bg-purple-600 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-purple-700">
+                <Printer className="size-3.5" /> Print
+              </button>
+            </div>
+          )}
+          {!gstGenerating && gstError && (
+            <p className="mt-2 text-[11px] font-bold text-red-700">Bill saved, but the GST Tax Invoice could not be generated: {gstError}</p>
+          )}
+          <div className="mt-4 flex justify-end">
+            <button onClick={onSaved} className="rounded-xl bg-foreground px-4 py-2 text-xs font-bold text-white">Done</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
@@ -9006,6 +9110,30 @@ function EditDispatchInvoiceModal({ invoice, onClose, onSaved }: {
             Subtotal Rs. {Math.round(subtotal)} &nbsp;·&nbsp; Discount Rs. {Math.round(discountAmount)} &nbsp;·&nbsp;
             <span className="text-sm font-black text-foreground"> Total Rs. {Math.round(total)}</span>
           </div>
+        </div>
+
+        {/* FEATURE (2026-09-12): same GST Tax Invoice checkbox as every other
+            bill/invoice flow — see the note above gstEnabled's declaration. */}
+        <div className="mt-3 space-y-2 rounded-xl border border-dashed border-purple-300 bg-purple-50 p-3">
+          <label className="flex items-center gap-2 text-[11px] font-black uppercase tracking-wide text-purple-800">
+            <input type="checkbox" checked={gstEnabled} onChange={e => setGstEnabled(e.target.checked)} className="size-4" />
+            Also generate a GST Tax Invoice (same format as Invoice tab)
+          </label>
+          {gstEnabled && (
+            <div className="grid grid-cols-2 gap-2">
+              <input value={gstBuyerName} onChange={e => setGstBuyerName(e.target.value)} placeholder={`Buyer name (blank = ${invoice.customerName || invoice.hosurShopName || `${invoice.scope} Branch`})`} className="col-span-2 h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
+              <input value={gstBuyerGstin} onChange={e => setGstBuyerGstin(e.target.value.toUpperCase())} placeholder="Buyer GSTIN (optional)" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
+              <input value={gstBuyerAddress} onChange={e => setGstBuyerAddress(e.target.value)} placeholder="Buyer address" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
+              <input value={gstBuyerStateName} onChange={e => setGstBuyerStateName(e.target.value)} placeholder="State Name" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
+              <input value={gstBuyerStateCode} onChange={e => setGstBuyerStateCode(e.target.value)} placeholder="State Code" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
+              <input type="number" min={0} max={100} value={gstPct} onChange={e => setGstPct(e.target.value)} placeholder="GST % (overall, applies to every item)" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
+              <input value={gstHsnCode} onChange={e => setGstHsnCode(e.target.value)} placeholder="HSN/SAC code (overall)" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
+              <select value={gstSupplyType} onChange={e => setGstSupplyType(e.target.value as 'intra' | 'inter')} className="col-span-2 h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold">
+                <option value="intra">Same State (CGST + SGST)</option>
+                <option value="inter">Different State (IGST)</option>
+              </select>
+            </div>
+          )}
         </div>
 
         {error && <p className="mt-2 text-[11px] font-bold text-red-700">{error}</p>}
@@ -11183,6 +11311,26 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
       // Marked done only now, on real success — a failed attempt above must
       // still be retryable with the same batch (see the check at the top).
       if (batchSignature) confirmedDispatchBatchSignatures.add(batchSignature);
+
+      // FEATURE (2026-09-12): "For the stock/incoming tab > incoming: for
+      // the items it should show the TO invoice number also" (SNB Order
+      // dashboard). branch_incoming rows are written by submitDispatch
+      // (onDispatch above) BEFORE the invoice number even exists — this
+      // invoice is only minted afterward, right here. Best-effort backfill:
+      // the dispatch + invoice have already both succeeded and must stand
+      // regardless of whether this tagging works. Only SNB/VRSNB ever write
+      // real branch_incoming rows (Hosur doesn't use that table; a Custom
+      // sale explicitly skips it — see submitDispatch's isCustomSale guard).
+      if ((scope === 'SNB' || scope === 'VRSNB') && !customer) {
+        const dispatchIds = actions.map(a => a.dispatchEntryId);
+        if (dispatchIds.length > 0) {
+          const { error: incomingTagError } = await supabase
+            .from('branch_incoming')
+            .update({ invoice_no: record.invoiceNo })
+            .in('dispatch_id', dispatchIds);
+          if (incomingTagError) console.error('[DispatchReviewModal] Failed to tag branch_incoming with invoice number:', incomingTagError.message);
+        }
+      }
 
       // FEATURE (2026-09-02): "already the hosur sales are billed in full
       // credit — cant we directly dispatch and bill and send the whatsapp
