@@ -520,35 +520,36 @@ export function renderDispatchInvoiceHtml(record: DispatchInvoiceRecord, mode: '
   // title the checkbox actually controls) never computed or showed any tax
   // at all; the real CGST/SGST/IGST math only ever lived on a completely
   // separate "GST Tax Invoice" print button the client may never open.
-  // Treats each line's rate as tax-INCLUSIVE (extracts tax from within the
-  // already-charged, post-discount amount) rather than adding tax on top —
-  // record.total (what's actually billed/collected in the credit ledger)
-  // must stay exactly what it already is; GST here is a compliance
-  // breakdown of that same amount, not a second, larger total.
+  //
+  // REDESIGN (2026-09-12): "the client is not satisfied with the gst bill —
+  // they want the same [document], same details as the sales tab invoice
+  // bill, and the gst should not be on each item, it should be on the
+  // overall [bill], and the gst amount is not calculated correctly." Two
+  // real bugs, both fixed by computing tax ONCE on the whole bill instead of
+  // per line:
+  //  1. The old per-line calc rebuilt a "charged amount" via `discountMult =
+  //     1 - (record.discountPct || 0) / 100` — discountPct is only ever set
+  //     for a PERCENT-type discount (see walkinBillToInvoiceRecord), so a
+  //     flat-₹ discount left discountMult at 1 (no discount applied) and the
+  //     printed GST figure was computed on the wrong, pre-discount amount.
+  //  2. Per-item HSN/GST% inputs (one per cart line) produced a confusing
+  //     multi-row "GST Summary" grouped by rate — the client wants ONE flat
+  //     rate for the whole bill instead.
+  // BillingTab/DispatchReviewModal now write the SAME gstPct/hsnCode onto
+  // every line at save time (see their own comments) — take the first
+  // non-charge line's values as "the" bill-level rate/HSN, and tax the
+  // bill's own final `total` directly (already reflects every discount type
+  // + charges) — structurally can't disagree with the Net Bill Amount shown
+  // right below it, whatever the discount type.
   const isGst = record.isGstInvoice;
-  const discountMult = 1 - (record.discountPct || 0) / 100;
-  const gstLineCalc = isGst ? record.items.map((i) => {
-    const gstPct = Math.max(0, Number(i.gstPct) || 0);
-    const chargedAmount = Math.round(i.lineTotal * discountMult * 100) / 100;
-    const taxableValue = gstPct > 0 ? Math.round((chargedAmount / (1 + gstPct / 100)) * 100) / 100 : chargedAmount;
-    const taxAmount = Math.round((chargedAmount - taxableValue) * 100) / 100;
-    const cgstAmt = record.gstSupplyType === 'intra' ? Math.round((taxAmount / 2) * 100) / 100 : 0;
-    const sgstAmt = record.gstSupplyType === 'intra' ? Math.round((taxAmount - cgstAmt) * 100) / 100 : 0;
-    const igstAmt = record.gstSupplyType === 'inter' ? taxAmount : 0;
-    return { hsnCode: (i.hsnCode || '').trim(), gstPct, taxableValue, cgstAmt, sgstAmt, igstAmt, taxAmount };
-  }) : [];
-  const gstByRate = new Map<number, { taxableValue: number; cgstAmt: number; sgstAmt: number; igstAmt: number; hsnCodes: Set<string> }>();
-  gstLineCalc.forEach((l) => {
-    const row = gstByRate.get(l.gstPct) ?? { taxableValue: 0, cgstAmt: 0, sgstAmt: 0, igstAmt: 0, hsnCodes: new Set<string>() };
-    row.taxableValue += l.taxableValue; row.cgstAmt += l.cgstAmt; row.sgstAmt += l.sgstAmt; row.igstAmt += l.igstAmt;
-    if (l.hsnCode) row.hsnCodes.add(l.hsnCode);
-    gstByRate.set(l.gstPct, row);
-  });
-  const gstSummaryRows = Array.from(gstByRate.entries()).sort(([a], [b]) => a - b).map(([gstPct, row]) => ({
-    gstPct, taxableValue: row.taxableValue, cgstAmt: row.cgstAmt, sgstAmt: row.sgstAmt, igstAmt: row.igstAmt,
-    hsnCode: row.hsnCodes.size === 1 ? Array.from(row.hsnCodes)[0] : row.hsnCodes.size > 1 ? 'Multiple' : '-',
-  }));
-  const totalTax = Math.round(gstLineCalc.reduce((s, l) => s + l.taxAmount, 0) * 100) / 100;
+  const gstPct = isGst ? Math.max(0, Number(record.items.find(i => i.unit !== 'charge')?.gstPct) || 0) : 0;
+  const gstHsnCode = isGst ? (record.items.find(i => i.unit !== 'charge')?.hsnCode || '').trim() : '';
+  const chargedAmount = Math.round(record.total * 100) / 100;
+  const taxableValue = isGst && gstPct > 0 ? Math.round((chargedAmount / (1 + gstPct / 100)) * 100) / 100 : chargedAmount;
+  const totalTax = isGst && gstPct > 0 ? Math.round((chargedAmount - taxableValue) * 100) / 100 : 0;
+  const cgstAmt = isGst && record.gstSupplyType === 'intra' ? Math.round((totalTax / 2) * 100) / 100 : 0;
+  const sgstAmt = isGst && record.gstSupplyType === 'intra' ? Math.round((totalTax - cgstAmt) * 100) / 100 : 0;
+  const igstAmt = isGst && record.gstSupplyType === 'inter' ? totalTax : 0;
 
   // FEATURE (2026-09-06): "the invoice should clearly show the return items
   // and quantity and already sent items" — when this invoice has ever been
@@ -583,7 +584,6 @@ export function renderDispatchInvoiceHtml(record: DispatchInvoiceRecord, mode: '
     <tr>
       <td>${idx + 1}</td>
       <td>${esc(i.itemName)}</td>
-      ${isGst ? `<td class="c">${esc(i.hsnCode || '—')}</td>` : ''}
       ${isReturned
         ? `<td class="num">${fmtQty(i.quantity)}</td><td class="num">${returnedQty > 0 ? fmtQty(returnedQty) : '-'}</td><td class="num">${fmtQty(netQty)}</td>`
         : `<td class="num">${fmtQty(i.quantity)}</td>`}
@@ -612,26 +612,26 @@ export function renderDispatchInvoiceHtml(record: DispatchInvoiceRecord, mode: '
       }).join('')}
     </div>` : '';
 
-  const gstSummaryHtml = isGst && gstSummaryRows.length > 0 ? `
+  // ONE row for the whole bill (not per item/rate) — matches the client's
+  // explicit ask; see the REDESIGN comment above gstPct.
+  const gstSummaryHtml = isGst && gstPct > 0 ? `
     <table>
       <thead><tr>
-        <th>HSN</th><th class="num">Taxable Value</th>
+        ${gstHsnCode ? '<th>HSN</th>' : ''}<th class="num">Taxable Value</th>
         ${record.gstSupplyType === 'intra'
-          ? '<th class="num">CGST</th><th class="num">SGST</th>'
-          : '<th class="num">IGST</th>'}
+          ? `<th class="num">CGST @ ${(gstPct / 2).toFixed(2)}%</th><th class="num">SGST @ ${(gstPct / 2).toFixed(2)}%</th>`
+          : `<th class="num">IGST @ ${gstPct.toFixed(2)}%</th>`}
         <th class="num">Tax Amt</th>
       </tr></thead>
       <tbody>
-        ${gstSummaryRows.map((r) => `
         <tr>
-          <td>${esc(r.hsnCode)} (${r.gstPct}%)</td>
-          <td class="num">${Math.round(r.taxableValue)}</td>
+          ${gstHsnCode ? `<td>${esc(gstHsnCode)}</td>` : ''}
+          <td class="num">${Math.round(taxableValue)}</td>
           ${record.gstSupplyType === 'intra'
-            ? `<td class="num">${Math.round(r.cgstAmt)}</td><td class="num">${Math.round(r.sgstAmt)}</td>`
-            : `<td class="num">${Math.round(r.igstAmt)}</td>`}
-          <td class="num">${Math.round(r.cgstAmt + r.sgstAmt + r.igstAmt)}</td>
-        </tr>`).join('')}
-        <tr class="total-row"><td colspan="${record.gstSupplyType === 'intra' ? 4 : 3}">Total Tax (included above)</td><td class="num">${Math.round(totalTax)}</td></tr>
+            ? `<td class="num">${Math.round(cgstAmt)}</td><td class="num">${Math.round(sgstAmt)}</td>`
+            : `<td class="num">${Math.round(igstAmt)}</td>`}
+          <td class="num">${Math.round(totalTax)}</td>
+        </tr>
       </tbody>
     </table>` : '';
 
@@ -671,10 +671,10 @@ export function renderDispatchInvoiceHtml(record: DispatchInvoiceRecord, mode: '
     ${record.deliveryDate ? `<div class="row"><span>Delivery : ${esc(new Date(record.deliveryDate).toLocaleDateString('en-GB'))}${record.deliveryTime ? ` ${esc(record.deliveryTime)}` : ''}</span><span></span></div>` : ''}
     <div class="dash"></div>
     <table>
-      <thead><tr><th>Sn</th><th>Item Name</th>${isGst ? '<th>HSN</th>' : ''}${isReturned ? '<th class="num">Sent</th><th class="num">Returned</th><th class="num">Net</th>' : '<th class="num">Qty</th>'}<th class="num">Rate</th><th class="num">Amount</th></tr></thead>
+      <thead><tr><th>Sn</th><th>Item Name</th>${isReturned ? '<th class="num">Sent</th><th class="num">Returned</th><th class="num">Net</th>' : '<th class="num">Qty</th>'}<th class="num">Rate</th><th class="num">Amount</th></tr></thead>
       <tbody>
         ${rows}
-        <tr class="total-row"><td></td><td>Total</td>${isGst ? '<td></td>' : ''}${isReturned ? `<td></td><td></td><td class="num">${fmtQty(totalQty)}</td>` : `<td class="num">${fmtQty(totalQty)}</td>`}<td></td><td class="num">${Math.round(itemsSubtotal)}</td></tr>
+        <tr class="total-row"><td></td><td>Total</td>${isReturned ? `<td></td><td></td><td class="num">${fmtQty(totalQty)}</td>` : `<td class="num">${fmtQty(totalQty)}</td>`}<td></td><td class="num">${Math.round(itemsSubtotal)}</td></tr>
       </tbody>
     </table>
     ${chargesHtml}
@@ -683,7 +683,7 @@ export function renderDispatchInvoiceHtml(record: DispatchInvoiceRecord, mode: '
     <div class="summary">
       <div class="row"><span>Discount${record.discountPct ? ` (${record.discountPct}%)` : ''} :</span><span>${Math.round(record.discountAmount)}</span></div>
       <div class="row"><span>Round-Off :</span><span>${record.roundOff >= 0 ? '+' : ''}${Math.round(record.roundOff)}</span></div>
-      ${isGst ? `<div class="row"><span>Includes GST :</span><span>Rs ${Math.round(totalTax)}</span></div>` : ''}
+      ${isGst && gstPct > 0 ? `<div class="row"><span>Includes GST @ ${gstPct}% :</span><span>Rs ${Math.round(totalTax)}</span></div>` : ''}
       <div class="row net"><span>Net Bill Amount :</span><span>Rs ${Math.round(record.total)}</span></div>
       ${record.advanceAmount != null ? `
       <div class="row"><span>Advance Paid :</span><span>- Rs ${Math.round(record.advanceAmount)}</span></div>

@@ -336,7 +336,10 @@ function mergeGroupKey(name: string): string {
 // VRSNB catalogue items that don't spell it out — and show one row per item.
 // If a pcs entry's weight genuinely can't be resolved, it's kept as its own
 // row rather than guessed at, so a bad conversion never silently appears.
-export function computeMergedSummaryDisplay(orders: BakeryOrder[]): MergedRow[] {
+export function computeMergedSummaryDisplay(
+  orders: BakeryOrder[],
+  overrides: Map<string, ProductionUnitOverride> = new Map(),
+): MergedRow[] {
   interface RawEntry {
     itemId: string;
     itemName: string;
@@ -353,8 +356,15 @@ export function computeMergedSummaryDisplay(orders: BakeryOrder[]): MergedRow[] 
     const bucket: MergeBucket = bucketFor(order);
     for (const item of order.items) {
       const unit = item.dispatchUnit === 'pcs' ? 'pcs' : 'kg';
+      // BUG FIX (2026-09-12): prefer the same production_pcs_unit_overrides
+      // classification Production Entry uses (see resolveProductionOverride)
+      // before falling back to the old name/weight-guess chain — otherwise an
+      // item explicitly classified kg (e.g. Garlic Nippat) with no resolvable
+      // weight in its order-line name/id still fell through as an unmerged
+      // pcs row here, even though Production Entry correctly merged it.
       const grams = unit === 'pcs'
-        ? (item.weightGrams ?? parseWeightGrams(item.itemName) ?? resolveItemWeightGrams(item.itemId, item.itemName))
+        ? (resolveProductionOverride(item.itemName, overrides)?.weightGrams
+          ?? item.weightGrams ?? parseWeightGrams(item.itemName) ?? resolveItemWeightGrams(item.itemId, item.itemName))
         : null;
       const key = mergeGroupKey(item.itemName) || item.itemName.trim().toLowerCase();
       const list = groups.get(key) ?? [];
@@ -557,14 +567,31 @@ export function computeProductionRows(orders: BakeryOrder[]): ProductionRow[] {
 // (a genuinely new item, not seen in the classification pass) defaults to
 // pcs — never silently guesses kg again.
 type ProductionUnitOverride = { unit: 'kg' | 'pcs'; weightGrams: number | null };
+// BUG FIX (2026-09-12): "Kara Boondhi 250gms" / "Bombay Mixture 250gms"
+// showed pcs when classified kg — the SAME item gets ordered under slightly
+// different names (with vs without a bare, non-parenthesized weight like
+// "250gms" tacked on with no parens — closingStockItemSlug only strips a
+// PARENTHESIZED weight, e.g. "(250G)", by design, since elsewhere a weight
+// suffix legitimately distinguishes different catalogue items). That made
+// "Kara Boondhi 250gms" slug to `kara-boondhi-250gm`, a miss against the
+// classified `kara-boondhi` row. Falls back to the same name with a bare
+// trailing weight stripped before giving up — a "genuinely new item" still
+// safely defaults to pcs (see below), this only recovers a same-item variant.
+function resolveProductionOverride(itemName: string, overrides: Map<string, ProductionUnitOverride>): ProductionUnitOverride | undefined {
+  const exactSlug = closingStockItemSlug(itemName) || itemName.trim().toLowerCase();
+  const exact = overrides.get(exactSlug);
+  if (exact) return exact;
+  const bareWeightStripped = itemName.replace(/\s*\d+(\.\d+)?\s*(g|gm|gms|kg)\s*$/i, '').trim();
+  if (bareWeightStripped === itemName.trim()) return undefined;
+  const baseSlug = closingStockItemSlug(bareWeightStripped) || bareWeightStripped.toLowerCase();
+  return overrides.get(baseSlug);
+}
 function productionRowPacketGrams(row: ProductionRow, overrides: Map<string, ProductionUnitOverride>): number | null {
-  const slug = closingStockItemSlug(row.itemName) || row.itemName.trim().toLowerCase();
-  return overrides.get(slug)?.weightGrams ?? null;
+  return resolveProductionOverride(row.itemName, overrides)?.weightGrams ?? null;
 }
 function productionRowShowsKg(row: ProductionRow, overrides: Map<string, ProductionUnitOverride>): boolean {
   if (row.unit !== 'pcs') return false;
-  const slug = closingStockItemSlug(row.itemName) || row.itemName.trim().toLowerCase();
-  return overrides.get(slug)?.unit === 'kg';
+  return resolveProductionOverride(row.itemName, overrides)?.unit === 'kg';
 }
 interface ProductionRowDisplay { unit: LeftoverUnit; ordered: number; produced: number; grams: number | null; }
 function productionRowDisplay(row: ProductionRow, overrides: Map<string, ProductionUnitOverride>): ProductionRowDisplay {
@@ -589,6 +616,80 @@ async function fetchProductionUnitOverrides(): Promise<Map<string, ProductionUni
     map.set(r.item_slug, { unit: r.unit === 'kg' ? 'kg' : 'pcs', weightGrams: r.weight_grams != null ? Number(r.weight_grams) : null });
   }
   return map;
+}
+
+// FEATURE (2026-09-12): "Both are same items but in production entry tab why
+// is it showing as different items with pcs and kg ... its all considered as
+// one only when we dispatch only it need to map who placed and to whom" —
+// computeProductionRows (like computeMergedSummary) deliberately stays
+// per-unit: its preparedTotal math sums each contributing order's
+// quantityPrepared with NO unit conversion (matched by slug only), so merging
+// a kg-native row with a pcs row there would corrupt produced-quantity
+// tracking (see the design note above computeProductionRows). This is a pure
+// DISPLAY-layer wrapper on top of the untouched per-unit ProductionRow[]: it
+// folds a kg-native row together with any pcs row(s) of the same item
+// classified 'kg' (production_pcs_unit_overrides) into one card, while
+// keeping every underlying ProductionRow intact — doSave still writes each
+// one individually, only the typed quantity gets split across them.
+export interface ProductionDisplayGroup {
+  key: string;
+  itemName: string;
+  category: string;
+  unit: 'kg' | 'pcs';
+  ordered: number;
+  produced: number;
+  itemStatus: 'not_started' | 'pending' | 'completed';
+  grams: number | null;
+  rows: ProductionRow[];
+}
+function buildProductionDisplayGroups(rows: ProductionRow[], overrides: Map<string, ProductionUnitOverride>): ProductionDisplayGroup[] {
+  const singleGroup = (row: ProductionRow): ProductionDisplayGroup => {
+    const disp = productionRowDisplay(row, overrides);
+    return { key: row.itemName, itemName: row.itemName, category: row.category, unit: disp.unit as 'kg' | 'pcs', ordered: disp.ordered, produced: disp.produced, itemStatus: row.itemStatus, grams: disp.grams, rows: [row] };
+  };
+  const bySlug = new Map<string, ProductionRow[]>();
+  for (const row of rows) {
+    const slug = closingStockItemSlug(row.itemName) || row.itemName.trim().toLowerCase();
+    const list = bySlug.get(slug) ?? [];
+    list.push(row);
+    bySlug.set(slug, list);
+  }
+  const groups: ProductionDisplayGroup[] = [];
+  for (const list of bySlug.values()) {
+    const kgNative = list.filter(r => r.unit === 'kg');
+    const pcsAsKg = list.filter(r => r.unit === 'pcs' && productionRowShowsKg(r, overrides));
+    const pcsPlain = list.filter(r => r.unit === 'pcs' && !productionRowShowsKg(r, overrides));
+    const combinable = [...kgNative, ...pcsAsKg];
+    if (combinable.length >= 2) {
+      let ordered = 0, produced = 0;
+      let anyStarted = false, allCompleted = true;
+      let grams: number | null = null;
+      for (const r of combinable) {
+        const disp = productionRowDisplay(r, overrides);
+        ordered += disp.ordered;
+        produced += disp.produced;
+        if (disp.grams != null) grams = disp.grams;
+        if (r.itemStatus !== 'not_started') anyStarted = true;
+        if (r.itemStatus !== 'completed') allCompleted = false;
+      }
+      const nameSource = kgNative[0] ?? combinable[0];
+      groups.push({
+        key: `merged:${closingStockItemSlug(nameSource.itemName) || nameSource.itemName}`,
+        itemName: cleanItemDisplayName(nameSource.itemName),
+        category: nameSource.category,
+        unit: 'kg',
+        ordered: Math.round(ordered * 1000) / 1000,
+        produced: Math.round(produced * 1000) / 1000,
+        itemStatus: allCompleted ? 'completed' : (anyStarted ? 'pending' : 'not_started'),
+        grams,
+        rows: combinable,
+      });
+    } else {
+      for (const r of combinable) groups.push(singleGroup(r));
+    }
+    for (const r of pcsPlain) groups.push(singleGroup(r));
+  }
+  return groups.sort((a, b) => b.ordered - a.ordered);
 }
 
 // Largest-remainder proportional split: the shares always sum to EXACTLY
@@ -1743,7 +1844,9 @@ function SentOrdersTab({ orders }: { orders: BakeryOrder[] }) {
 
 // One collapsible "sent date" entry — expands to show only items sent to store that day.
 function SentDayGroup({ dayKey, label, orders, open, onToggle }: { dayKey: string; label: string; orders: BakeryOrder[]; open: boolean; onToggle: () => void }) {
-  const merged = useMemo(() => computeMergedSummaryDisplay(orders), [orders]);
+  const [unitOverrides, setUnitOverrides] = useState<Map<string, ProductionUnitOverride>>(new Map());
+  useEffect(() => { void fetchProductionUnitOverrides().then(setUnitOverrides); }, []);
+  const merged = useMemo(() => computeMergedSummaryDisplay(orders, unitOverrides), [orders, unitOverrides]);
 
   return (
     <div className="overflow-hidden rounded-2xl border border-border bg-white shadow-sm">
@@ -1806,7 +1909,9 @@ function SentDayGroup({ dayKey, label, orders, open, onToggle }: { dayKey: strin
 // ─── Tab: Merged Summary ────────────────────────────────────────────────────
 function MergedSummaryTab({ orders }: { orders: BakeryOrder[] }) {
   const { mergeOrdersForStore, updateOrderItems } = useBakeryStore();
-  const merged = useMemo(() => computeMergedSummaryDisplay(orders), [orders]);
+  const [unitOverrides, setUnitOverrides] = useState<Map<string, ProductionUnitOverride>>(new Map());
+  useEffect(() => { void fetchProductionUnitOverrides().then(setUnitOverrides); }, []);
+  const merged = useMemo(() => computeMergedSummaryDisplay(orders, unitOverrides), [orders, unitOverrides]);
   // FEATURE (2026-08-24): "no closure-stock indicator" — reuses the same
   // Closing Stock ledger balance/slug matching Extra Produced Item and the
   // Closing Stock tab already use, so "in stock" here means the same thing
@@ -2627,8 +2732,8 @@ function ProductionEntryDateGroup({ label, orders, rows, search, defaultOpen, un
   const [saving, setSaving] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   // Single unified flow: Save -> ask Completed/Pending -> if Completed, ask again to confirm.
-  const [askItem, setAskItem] = useState<ProductionRow | null>(null);
-  const [confirmItem, setConfirmItem] = useState<ProductionRow | null>(null);
+  const [askItem, setAskItem] = useState<ProductionDisplayGroup | null>(null);
+  const [confirmItem, setConfirmItem] = useState<ProductionDisplayGroup | null>(null);
   // BUG FIX (planner confusion): a merged item row hides which branch's
   // order(s) actually contributed to it within this date. Expanding "Sources"
   // shows every contributing order's branch/plan bucket and its own requested
@@ -2643,15 +2748,32 @@ function ProductionEntryDateGroup({ label, orders, rows, search, defaultOpen, un
       const requested = item ? (item.dispatchUnit === 'pcs' && item.originalPcs != null ? item.originalPcs : item.quantity) : 0;
       return { orderId: o.id, orderNumber: o.orderNumber, bucket: bucketFor(o), requested };
     });
+  // Same sources list as above but converted into the display GROUP's own
+  // unit (kg, when this row was folded into a merged kg card) so a source's
+  // "requested" figure always matches what the card itself is showing.
+  const sourcesForGroup = (group: ProductionDisplayGroup) => group.rows.flatMap(row => {
+    const disp = productionRowDisplay(row, unitOverrides);
+    return sourcesFor(row).map(s => ({
+      ...s,
+      requested: disp.grams != null ? (pcsToKg(row.itemName, s.requested, disp.grams) ?? s.requested) : s.requested,
+    }));
+  });
 
-  const filtered = useMemo(() => rows.filter(r => r.itemName.toLowerCase().includes(search.trim().toLowerCase())), [rows, search]);
+  const displayGroups = useMemo(() => buildProductionDisplayGroups(rows, unitOverrides), [rows, unitOverrides]);
+  const filtered = useMemo(() => displayGroups.filter(g => g.itemName.toLowerCase().includes(search.trim().toLowerCase())), [displayGroups, search]);
   const grouped = useMemo(() => {
-    const map = new Map<string, ProductionRow[]>();
+    const map = new Map<string, ProductionDisplayGroup[]>();
     for (const r of filtered) { if (!map.has(r.category)) map.set(r.category, []); map.get(r.category)!.push(r); }
     return CATEGORY_ORDER.filter(c => map.has(c)).map(c => [c, map.get(c)!] as const);
   }, [filtered]);
 
-  const doSave = async (row: ProductionRow, status: 'pending' | 'completed') => {
+  // BUG FIX (2026-09-12): `enteredQtyOverride` lets a merged display-group
+  // save call this per-row, in row.unit, instead of always reading the
+  // group's own typed value out of `qty` (which is keyed by the GROUP's key,
+  // not this row's itemName, once two rows share a card — see doSaveGroup
+  // below). Omitted (the single-row, non-merged path) it behaves exactly as
+  // before: reads qty[row.itemName].
+  const doSave = async (row: ProductionRow, status: 'pending' | 'completed', enteredQtyOverride?: number) => {
     // BUG FIX: the modal buttons that call this had no disabled-while-saving
     // guard, so a fast double-click/double-tap could invoke doSave twice
     // concurrently for the same row before the first call's DB writes land —
@@ -2699,9 +2821,9 @@ function ProductionEntryDateGroup({ label, orders, rows, search, defaultOpen, un
     // remaining" default already speaks row.unit and is left alone.
     const showsKg = productionRowShowsKg(row, unitOverrides);
     const packetG = showsKg ? (productionRowPacketGrams(row, unitOverrides) ?? VRSNB_DEFAULT_PACKET_GRAMS) : null;
-    const typedRaw = qty[row.itemName] ? Number(qty[row.itemName]) : null;
+    const typedRaw = enteredQtyOverride != null ? enteredQtyOverride : (qty[row.itemName] ? Number(qty[row.itemName]) : null);
     const enteredQty = typedRaw != null
-      ? (showsKg
+      ? (showsKg && enteredQtyOverride == null
           ? kgToPcsForItem({ itemId: row.itemName, itemName: row.itemName, weightGrams: packetG! }, typedRaw)
           : typedRaw)
       : (status === 'completed' ? remainingRequested : 0);
@@ -2776,6 +2898,60 @@ function ProductionEntryDateGroup({ label, orders, rows, search, defaultOpen, un
     }
   };
 
+  // Entry point for a merged display card (kg-native row + pcs-classified-as-
+  // kg row(s) of the same item, see buildProductionDisplayGroups). Splits the
+  // ONE typed kg value across the group's underlying rows proportionally to
+  // each row's own remaining (ordered − produced, in kg-equivalent) share,
+  // converts each row's share back to that row's OWN native unit, then runs
+  // it through the existing, untouched per-row doSave — so locked-order
+  // exclusion, autoSplitForItem, recordProduction and the Closing Stock
+  // ledger write all behave exactly as they did before merging existed. A
+  // single-row group (nothing to merge) is just doSave with one extra
+  // pass-through.
+  const doSaveGroup = async (group: ProductionDisplayGroup, status: 'pending' | 'completed') => {
+    if (saving === group.key) return;
+    const typedRaw = qty[group.key] ? Number(qty[group.key]) : null;
+    const remainingGroup = Math.max(0, Math.round((group.ordered - group.produced) * 1000) / 1000);
+    const totalKg = typedRaw != null ? typedRaw : (status === 'completed' ? remainingGroup : 0);
+    if (totalKg <= 0) { setSaveError('Enter a quantity greater than zero before saving.'); return; }
+    if (group.rows.length === 1) {
+      // Nothing merged — group.key IS this row's own itemName (see
+      // singleGroup), so let doSave read+convert qty[row.itemName] itself
+      // exactly as the pre-merge code path always did. Passing typedRaw as
+      // an override here would skip doSave's own kg→pcs conversion for a
+      // single classified-kg row with no kg-native sibling.
+      await doSave(group.rows[0], status);
+      return;
+    }
+    setSaving(group.key);
+    setSaveError(null);
+    try {
+      const capacities = group.rows.map(r => {
+        const disp = productionRowDisplay(r, unitOverrides);
+        return Math.max(0, Math.round((disp.ordered - disp.produced) * 1000) / 1000);
+      });
+      const totalCapacity = capacities.reduce((a, b) => a + b, 0);
+      let remaining = totalKg;
+      for (let i = 0; i < group.rows.length; i++) {
+        const row = group.rows[i];
+        const isLast = i === group.rows.length - 1;
+        const shareKg = isLast ? remaining : (totalCapacity > 0 ? Math.round((totalKg * (capacities[i] / totalCapacity)) * 1000) / 1000 : 0);
+        remaining = Math.round((remaining - shareKg) * 1000) / 1000;
+        if (shareKg <= 0) continue;
+        const rowNativeQty = row.unit === 'kg'
+          ? shareKg
+          : kgToPcsForItem({ itemId: row.itemName, itemName: row.itemName, weightGrams: productionRowPacketGrams(row, unitOverrides) ?? VRSNB_DEFAULT_PACKET_GRAMS }, shareKg);
+        if (rowNativeQty <= 0) continue;
+        await doSave(row, status, rowNativeQty);
+      }
+      setQty(v => ({ ...v, [group.key]: '' }));
+    } finally {
+      setSaving(null);
+      setAskItem(null);
+      setConfirmItem(null);
+    }
+  };
+
   // While actively searching, hide date groups with no matches so the search
   // reads as global even though rendering stays date-scoped underneath.
   if (search.trim() && filtered.length === 0) return null;
@@ -2786,8 +2962,8 @@ function ProductionEntryDateGroup({ label, orders, rows, search, defaultOpen, un
         <div className="flex items-center gap-2">
           <CalendarDays className="size-4 text-muted-foreground" />
           <span className="text-sm font-black text-foreground">{label}</span>
-          <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-bold text-muted-foreground">{rows.length} item{rows.length === 1 ? '' : 's'}</span>
-          {isPastDate && rows.length > 0 && (
+          <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-bold text-muted-foreground">{displayGroups.length} item{displayGroups.length === 1 ? '' : 's'}</span>
+          {isPastDate && displayGroups.length > 0 && (
             <span className="flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-black text-red-700">
               <AlertTriangle className="size-3" /> Past date — still pending
             </span>
@@ -2797,53 +2973,52 @@ function ProductionEntryDateGroup({ label, orders, rows, search, defaultOpen, un
       </button>
       {open && (
         <div className="space-y-4 border-t border-border p-3">
-          {rows.length === 0 && <EmptyState text="Nothing pending for this date." />}
+          {displayGroups.length === 0 && <EmptyState text="Nothing pending for this date." />}
           {grouped.map(([category, items]) => (
             <div key={category}>
               <p className="mb-2 text-xs font-black uppercase tracking-wide text-muted-foreground">{category} ({items.length})</p>
               <div className="space-y-2">
-                {items.map(row => {
-                  const sources = sourcesFor(row);
-                  const sourcesOpen = expandedSources === row.itemName;
-                  const disp = productionRowDisplay(row, unitOverrides);
+                {items.map(group => {
+                  const sources = sourcesForGroup(group);
+                  const sourcesOpen = expandedSources === group.key;
                   return (
-                    <div key={row.itemName} className="rounded-2xl border border-border bg-card p-3 shadow-sm">
+                    <div key={group.key} className="rounded-2xl border border-border bg-card p-3 shadow-sm">
                       <div className="flex items-center justify-between gap-3">
                         <div className="min-w-0 flex-1">
-                          <p className="truncate text-sm font-black text-foreground">{row.itemName}</p>
+                          <p className="truncate text-sm font-black text-foreground">{group.itemName}</p>
                           <p className="text-xs font-bold text-muted-foreground">
-                            Ordered {disp.ordered} {disp.unit}{row.preparedTotal > 0 ? ` · Produced so far ${disp.produced} ${disp.unit}` : ''}
-                            {row.itemStatus === 'pending' && <span className="ml-1 rounded-full bg-amber-100 px-1.5 py-0.5 text-amber-700">More to come</span>}
+                            Ordered {group.ordered} {group.unit}{group.produced > 0 ? ` · Produced so far ${group.produced} ${group.unit}` : ''}
+                            {group.itemStatus === 'pending' && <span className="ml-1 rounded-full bg-amber-100 px-1.5 py-0.5 text-amber-700">More to come</span>}
                           </p>
-                          {disp.grams != null && (
-                            <p className="text-[10px] font-bold text-muted-foreground/80">Enter in kg — saved as packets of ~{disp.grams} g</p>
+                          {group.grams != null && (
+                            <p className="text-[10px] font-bold text-muted-foreground/80">Enter in kg — saved as packets of ~{group.grams} g</p>
                           )}
                           <button
                             type="button"
-                            onClick={() => setExpandedSources(v => v === row.itemName ? null : row.itemName)}
+                            onClick={() => setExpandedSources(v => v === group.key ? null : group.key)}
                             className="mt-1 text-[10px] font-black uppercase tracking-wide text-primary hover:underline"
                           >
                             {sourcesOpen ? 'Hide' : 'Show'} sources ({sources.length} order{sources.length === 1 ? '' : 's'})
                           </button>
                         </div>
-                        <input type="number" min={0} step={disp.unit === 'pcs' ? 1 : 0.001} placeholder={`Qty produced (${disp.unit})`} value={qty[row.itemName] ?? ''} onChange={e => setQty(v => ({ ...v, [row.itemName]: sanitizeQtyForUnit(e.target.value, disp.unit) }))}
+                        <input type="number" min={0} step={group.unit === 'pcs' ? 1 : 0.001} placeholder={`Qty produced (${group.unit})`} value={qty[group.key] ?? ''} onChange={e => setQty(v => ({ ...v, [group.key]: sanitizeQtyForUnit(e.target.value, group.unit) }))}
                           className="w-28 rounded-lg border border-border bg-background px-2 py-1.5 text-right text-xs font-bold" />
-                        <button onClick={() => setAskItem(row)} disabled={saving === row.itemName || !qty[row.itemName]}
+                        <button onClick={() => setAskItem(group)} disabled={saving === group.key || !qty[group.key]}
                           className="flex items-center gap-1.5 rounded-xl cafe-gradient px-4 py-2 text-xs font-bold text-white shadow-teal disabled:opacity-40">
-                          {saving === row.itemName ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />} Save
+                          {saving === group.key ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />} Save
                         </button>
                       </div>
                       {sourcesOpen && (
                         <div className="mt-2.5 space-y-1 border-t border-border pt-2.5">
-                          {sources.map(s => (
-                            <div key={s.orderId} className="flex items-center justify-between gap-2 rounded-lg bg-muted/40 px-2.5 py-1.5 text-[11px] font-bold">
+                          {sources.map((s, idx) => (
+                            <div key={`${s.orderId}-${idx}`} className="flex items-center justify-between gap-2 rounded-lg bg-muted/40 px-2.5 py-1.5 text-[11px] font-bold">
                               <span className="flex items-center gap-1.5">
                                 <span className={cn('rounded-full px-1.5 py-0.5 text-[10px] font-black', BRANCH_META[s.bucket].bg, BRANCH_META[s.bucket].text)}>
                                   {BRANCH_META[s.bucket].icon} {s.bucket === 'Planned' ? 'Planned' : s.bucket}
                                 </span>
                                 <span className="text-muted-foreground">Order #{s.orderNumber}</span>
                               </span>
-                              <span className="text-foreground">{disp.grams != null ? (pcsToKg(row.itemName, s.requested, disp.grams) ?? s.requested) : s.requested} {disp.unit}</span>
+                              <span className="text-foreground">{s.requested} {group.unit}</span>
                             </div>
                           ))}
                         </div>
@@ -2861,14 +3036,14 @@ function ProductionEntryDateGroup({ label, orders, rows, search, defaultOpen, un
       {askItem && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
           <div className="w-full max-w-sm rounded-2xl bg-white p-5 shadow-xl">
-            <p className="text-sm font-black text-foreground">"{askItem.itemName}" — {qty[askItem.itemName]} {productionRowDisplay(askItem, unitOverrides).unit} entered</p>
+            <p className="text-sm font-black text-foreground">"{askItem.itemName}" — {qty[askItem.key]} {askItem.unit} entered</p>
             <p className="mt-1 text-xs font-semibold text-muted-foreground">Is the baker completely done with this item, or still baking more?</p>
             <div className="mt-4 flex justify-end gap-2">
-              <button disabled={saving === askItem.itemName} onClick={() => setAskItem(null)} className="rounded-xl bg-muted px-4 py-2 text-xs font-bold text-muted-foreground hover:bg-slate-200 disabled:opacity-50">Cancel</button>
-              <button disabled={saving === askItem.itemName} onClick={() => { doSave(askItem, 'pending'); }} className="flex items-center gap-1.5 rounded-xl bg-amber-500 px-4 py-2 text-xs font-bold text-white hover:bg-amber-600 disabled:opacity-50">
-                {saving === askItem.itemName ? <Loader2 className="size-3.5 animate-spin" /> : <Clock3 className="size-3.5" />} Pending — more coming
+              <button disabled={saving === askItem.key} onClick={() => setAskItem(null)} className="rounded-xl bg-muted px-4 py-2 text-xs font-bold text-muted-foreground hover:bg-slate-200 disabled:opacity-50">Cancel</button>
+              <button disabled={saving === askItem.key} onClick={() => { doSaveGroup(askItem, 'pending'); }} className="flex items-center gap-1.5 rounded-xl bg-amber-500 px-4 py-2 text-xs font-bold text-white hover:bg-amber-600 disabled:opacity-50">
+                {saving === askItem.key ? <Loader2 className="size-3.5 animate-spin" /> : <Clock3 className="size-3.5" />} Pending — more coming
               </button>
-              <button disabled={saving === askItem.itemName} onClick={() => { setConfirmItem(askItem); setAskItem(null); }} className="flex items-center gap-1.5 rounded-xl bg-teal-600 px-4 py-2 text-xs font-bold text-white hover:bg-teal-700 disabled:opacity-50">
+              <button disabled={saving === askItem.key} onClick={() => { setConfirmItem(askItem); setAskItem(null); }} className="flex items-center gap-1.5 rounded-xl bg-teal-600 px-4 py-2 text-xs font-bold text-white hover:bg-teal-700 disabled:opacity-50">
                 <CheckCircle2 className="size-3.5" /> Completed
               </button>
             </div>
@@ -2881,11 +3056,11 @@ function ProductionEntryDateGroup({ label, orders, rows, search, defaultOpen, un
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
           <div className="w-full max-w-sm rounded-2xl bg-white p-5 shadow-xl">
             <p className="text-sm font-black text-foreground">Confirm: mark "{confirmItem.itemName}" as Completed?</p>
-            <p className="mt-1 text-xs font-semibold text-muted-foreground">This sends {qty[confirmItem.itemName] || productionRowDisplay(confirmItem, unitOverrides).ordered} {productionRowDisplay(confirmItem, unitOverrides).unit} to Dispatch and removes it from Production Entry. This can't be undone from here.</p>
+            <p className="mt-1 text-xs font-semibold text-muted-foreground">This sends {qty[confirmItem.key] || confirmItem.ordered} {confirmItem.unit} to Dispatch and removes it from Production Entry. This can't be undone from here.</p>
             <div className="mt-4 flex justify-end gap-2">
-              <button disabled={saving === confirmItem.itemName} onClick={() => setConfirmItem(null)} className="rounded-xl bg-muted px-4 py-2 text-xs font-bold text-muted-foreground hover:bg-slate-200 disabled:opacity-50">Go back</button>
-              <button disabled={saving === confirmItem.itemName} onClick={() => doSave(confirmItem, 'completed')} className="flex items-center gap-1.5 rounded-xl bg-teal-600 px-4 py-2 text-xs font-bold text-white hover:bg-teal-700 disabled:opacity-50">
-                {saving === confirmItem.itemName && <Loader2 className="size-3.5 animate-spin" />} Yes, Confirm Completed
+              <button disabled={saving === confirmItem.key} onClick={() => setConfirmItem(null)} className="rounded-xl bg-muted px-4 py-2 text-xs font-bold text-muted-foreground hover:bg-slate-200 disabled:opacity-50">Go back</button>
+              <button disabled={saving === confirmItem.key} onClick={() => doSaveGroup(confirmItem, 'completed')} className="flex items-center gap-1.5 rounded-xl bg-teal-600 px-4 py-2 text-xs font-bold text-white hover:bg-teal-700 disabled:opacity-50">
+                {saving === confirmItem.key && <Loader2 className="size-3.5 animate-spin" />} Yes, Confirm Completed
               </button>
             </div>
           </div>
@@ -3793,7 +3968,19 @@ function ReportsTab({ orders }: { orders: BakeryOrder[] }) {
     return () => { cancelled = true; };
   }, [dateFrom, dateTo, reportsCutoff, refreshTick]);
 
-  const merged = useMemo(() => computeMergedSummary(producedSource), [producedSource]);
+  // FEATURE (2026-09-11): "when dispatch it will be sent back in pcs but you
+  // need to calculate and note it in the report like 10 pcs sent its weight
+  // is 2 kg" — reuses the same planner-curated production_pcs_unit_overrides
+  // table Production Entry now reads (see the block above computeProductionRows).
+  // Dispatch/Store/Baker figures stay pcs-denominated (unchanged — this is
+  // display-only), but a pcs row for an item classified 'kg' there also
+  // shows its weight equivalent. Also (2026-09-12) drives the Merged Orders
+  // Summary table below so same-item pcs/kg variants merge into one row here
+  // exactly like Production Entry does.
+  const [reportUnitOverrides, setReportUnitOverrides] = useState<Map<string, ProductionUnitOverride>>(new Map());
+  useEffect(() => { void fetchProductionUnitOverrides().then(setReportUnitOverrides); }, []);
+
+  const merged = useMemo(() => computeMergedSummaryDisplay(producedSource, reportUnitOverrides), [producedSource, reportUnitOverrides]);
   const varianceRows = useMemo(() => computeReportRows(producedSource, dateFrom, dateTo, reportsCutoff, producedByLedger), [producedSource, dateFrom, dateTo, reportsCutoff, producedByLedger]);
   const underRows = useMemo(() => varianceRows.filter(r => r.status === 'Under-producing'), [varianceRows]);
   const overRows = useMemo(() => varianceRows.filter(r => r.status === 'Over-producing'), [varianceRows]);
@@ -3843,16 +4030,6 @@ function ReportsTab({ orders }: { orders: BakeryOrder[] }) {
     return () => { cancelled = true; };
   }, [dateFrom, dateTo, reportsCutoff, refreshTick]);
 
-  // FEATURE (2026-09-11): "when dispatch it will be sent back in pcs but you
-  // need to calculate and note it in the report like 10 pcs sent its weight
-  // is 2 kg" — reuses the same planner-curated production_pcs_unit_overrides
-  // table Production Entry now reads (see the block above computeProductionRows).
-  // Dispatch/Store/Baker figures stay pcs-denominated (unchanged — this is
-  // display-only), but a pcs row for an item classified 'kg' there also
-  // shows its weight equivalent.
-  const [reportUnitOverrides, setReportUnitOverrides] = useState<Map<string, ProductionUnitOverride>>(new Map());
-  useEffect(() => { void fetchProductionUnitOverrides().then(setReportUnitOverrides); }, []);
-
   const storeBakerPlannerRows = useMemo(() => {
     type Row = { key: string; slug: string; name: string; unit: 'kg' | 'pcs'; store: number; baker: number; dispatched: number };
     const m = new Map<string, Row>();
@@ -3894,7 +4071,7 @@ function ReportsTab({ orders }: { orders: BakeryOrder[] }) {
     return Array.from(m.values())
       .map(e => {
         const store = r3n(e.store), baker = r3n(e.baker), dispatched = r3n(e.dispatched);
-        const ov = e.unit === 'pcs' ? reportUnitOverrides.get(e.slug) : undefined;
+        const ov = e.unit === 'pcs' ? resolveProductionOverride(e.name, reportUnitOverrides) : undefined;
         const kgEach = ov?.unit === 'kg' && ov.weightGrams ? ov.weightGrams / 1000 : null;
         return {
           ...e, store, baker, dispatched,
@@ -5535,6 +5712,22 @@ function BillingTab() {
   // Sales tab's own Invoice sub-tab, so it's guaranteed to be the same
   // document. Optional, on top of the normal walk-in bill saved below (which
   // still records the sale/stock deduction exactly as before either way).
+  // REDESIGN (2026-09-12): "not satisfied with the gst bill — gst should not
+  // be on each item it should be on overall, and the gst amount is not
+  // calculated correctly" — one flat GST%/HSN for the WHOLE bill instead of a
+  // per-cart-line HSN/GST% input, applied identically to every line so
+  // there's exactly one rate/one GST Summary row on the printed invoice.
+  // FOLLOW-UP (2026-09-12, same day): "I want all the details that are in
+  // sales tab > invoice into the check box bill ... I already shared the
+  // invoice output bill same format" — the client's actual reference was the
+  // full formal Tax Invoice (buyer/consignee blocks, HSN/SAC, GST Summary,
+  // amount in words, bank details, declaration, signatory — same
+  // buildGstTaxInvoiceHtml the Sales tab's own "Invoice" sub-tab uses), not
+  // the plain walk-in-bill receipt. Restored that as this checkbox's output
+  // (buyer detail fields below feed it) — the earlier same-session redesign
+  // had dropped it entirely; only the "one overall rate, not per item" +
+  // "fix the calc" parts of that redesign were actually wanted. See
+  // project_gst_checkbox_overall_fix memory for the full history.
   const [gstEnabled, setGstEnabled] = useState(false);
   const [gstBuyerName, setGstBuyerName] = useState('');
   const [gstBuyerGstin, setGstBuyerGstin] = useState('');
@@ -5542,10 +5735,8 @@ function BillingTab() {
   const [gstBuyerStateName, setGstBuyerStateName] = useState('Tamil Nadu');
   const [gstBuyerStateCode, setGstBuyerStateCode] = useState('33');
   const [gstSupplyType, setGstSupplyType] = useState<'intra' | 'inter'>('intra');
-  const [gstLineDetails, setGstLineDetails] = useState<Record<string, { hsnCode: string; gstPct: string }>>({});
-  const gstLineFor = (itemName: string) => gstLineDetails[itemName] ?? { hsnCode: '', gstPct: '5' };
-  const patchGstLine = (itemName: string, patch: Partial<{ hsnCode: string; gstPct: string }>) =>
-    setGstLineDetails(v => ({ ...v, [itemName]: { ...gstLineFor(itemName), ...patch } }));
+  const [gstPct, setGstPct] = useState('5');
+  const [gstHsnCode, setGstHsnCode] = useState('');
   const [gstInvoiceResult, setGstInvoiceResult] = useState<{ invoiceNo: string; html: string } | null>(null);
   const [gstGenerating, setGstGenerating] = useState(false);
   const [gstError, setGstError] = useState('');
@@ -5652,7 +5843,7 @@ function BillingTab() {
     // if the very next customer's bill re-checks the GST box, wrongly
     // taxing a same-state sale as inter-state (or vice versa).
     setGstBuyerStateName('Tamil Nadu'); setGstBuyerStateCode('33'); setGstSupplyType('intra');
-    setGstLineDetails({}); setGstError('');
+    setGstPct('5'); setGstHsnCode(''); setGstError('');
     // gstInvoiceResult is deliberately NOT cleared here — it should stay
     // visible (with its print button) in the "bill saved" panel below,
     // exactly like `lastBill` itself already does across a resetCart() call.
@@ -5691,11 +5882,12 @@ function BillingTab() {
       // walk-in bill has no order/dispatch_log trace to recover from, unlike
       // a branch dispatch). saveWalkinBillSecure now does the number
       // generation and the insert in one transaction.
-      // BUG FIX (2026-09-05): "even if they check the tax invoice box the
-      // GST is not getting calculated for the items" — see the matching fix
-      // in DispatchReviewModal.confirm() for the full explanation.
+      // REDESIGN (2026-09-12): one flat GST%/HSN for the whole bill (not per
+      // line) — see the note above gstPct's declaration. Applied identically
+      // to every cart line so renderDispatchInvoiceHtml's "take the first
+      // line's rate" lookup is trivially the same value everywhere.
       const items: WalkinBillItem[] = [
-        ...cartLines.map(l => ({ itemName: l.itemName, unit: l.unit, price: l.price, quantity: l.quantity, lineTotal: Math.round(l.price * l.quantity * 100) / 100, ...(gstEnabled ? { hsnCode: gstLineFor(l.itemName).hsnCode, gstPct: Math.max(0, Number(gstLineFor(l.itemName).gstPct) || 0) } : {}) })),
+        ...cartLines.map(l => ({ itemName: l.itemName, unit: l.unit, price: l.price, quantity: l.quantity, lineTotal: Math.round(l.price * l.quantity * 100) / 100, ...(gstEnabled ? { hsnCode: gstHsnCode.trim(), gstPct: Math.max(0, Number(gstPct) || 0) } : {}) })),
         ...charges.map(c => ({ itemName: c.name, unit: 'charge', price: Number(c.amount) || 0, quantity: 1, lineTotal: Math.round((Number(c.amount) || 0) * 100) / 100 })),
       ];
       const bill = await saveWalkinBillSecure({
@@ -5737,13 +5929,13 @@ function BillingTab() {
       }
       setLastBill(bill);
 
-      // FEATURE (2026-09-03): optional GST Tax Invoice — see gstEnabled
-      // above. Uses this same bill's already-confirmed cart lines/charges,
-      // so it can never disagree with the walk-in bill just saved. Its own
-      // try/catch: the bill above has already succeeded and must stand
-      // regardless of whether this works. Cleared unconditionally first so a
-      // non-GST bill never leaves a previous bill's stale GST invoice/print
-      // button showing in the "bill saved" panel below.
+      // FEATURE (2026-09-03, restored 2026-09-12): optional GST Tax Invoice
+      // — see gstEnabled above. Uses this same bill's already-confirmed cart
+      // lines/charges, so it can never disagree with the walk-in bill just
+      // saved. Its own try/catch: the bill above has already succeeded and
+      // must stand regardless of whether this works. Cleared unconditionally
+      // first so a non-GST bill never leaves a previous bill's stale GST
+      // invoice/print button showing in the "bill saved" panel below.
       setGstInvoiceResult(null);
       if (gstEnabled) {
         setGstGenerating(true);
@@ -5766,13 +5958,17 @@ function BillingTab() {
           // discounted by (total/subtotal) keeps it correct for both
           // discount types (%, or a flat ₹ amount) with no other change.
           const discountMult = subtotal > 0 ? total / subtotal : 1;
+          // REDESIGN (2026-09-12): one flat gstPct/gstHsnCode for every line
+          // (see the note above gstPct's declaration) instead of a per-item
+          // lookup — every `items` entry already carries this same value
+          // (see its construction above), so this is just a straight map.
           const gstLines: GstTaxInvoiceLine[] = items.map(l => ({
             itemName: l.itemName,
-            hsnCode: gstLineFor(l.itemName).hsnCode,
+            hsnCode: gstHsnCode.trim(),
             qty: l.quantity,
             uom: l.unit === 'pcs' ? 'Nos' : l.unit === 'kg' ? 'Kg' : l.unit,
             rate: Math.round(l.price * discountMult * 100) / 100,
-            gstPct: Math.max(0, Number(gstLineFor(l.itemName).gstPct) || 0),
+            gstPct: Math.max(0, Number(gstPct) || 0),
           }));
           const buyer = {
             name: gstBuyerName.trim() || customerName.trim() || 'Walk-in Customer',
@@ -5998,47 +6194,30 @@ function BillingTab() {
           </div>
 
           {/* FEATURE (2026-09-03): "For Sales tab in cart add this check box
-              with all the details" — same GST Tax Invoice option as the Hosur
-              dispatch popup, same underlying builder as the Sales tab's own
-              Invoice sub-tab. */}
+              with all the details" — same GST Tax Invoice option as the
+              Hosur dispatch popup, same underlying builder as the Sales
+              tab's own Invoice sub-tab. REDESIGN (2026-09-12): one flat GST%/
+              HSN for the WHOLE bill instead of a per-item entry — see the
+              note above gstPct's declaration. */}
           <div className="space-y-2 rounded-xl border border-dashed border-purple-300 bg-purple-50 p-3">
             <label className="flex items-center gap-2 text-[11px] font-black uppercase tracking-wide text-purple-800">
               <input type="checkbox" checked={gstEnabled} onChange={e => setGstEnabled(e.target.checked)} className="size-4" />
               Also generate a GST Tax Invoice (same format as Invoice tab)
             </label>
             {gstEnabled && (
-              <>
-                <div className="grid grid-cols-2 gap-2">
-                  <input value={gstBuyerName} onChange={e => setGstBuyerName(e.target.value)} placeholder={`Buyer name (blank = ${customerName.trim() || 'Walk-in Customer'})`} className="col-span-2 h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
-                  <input value={gstBuyerGstin} onChange={e => setGstBuyerGstin(e.target.value.toUpperCase())} placeholder="Buyer GSTIN (optional)" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
-                  <input value={gstBuyerAddress} onChange={e => setGstBuyerAddress(e.target.value)} placeholder="Buyer address" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
-                  <input value={gstBuyerStateName} onChange={e => setGstBuyerStateName(e.target.value)} placeholder="State Name" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
-                  <input value={gstBuyerStateCode} onChange={e => setGstBuyerStateCode(e.target.value)} placeholder="State Code" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
-                  <select value={gstSupplyType} onChange={e => setGstSupplyType(e.target.value as 'intra' | 'inter')} className="col-span-2 h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold">
-                    <option value="intra">Same State (CGST + SGST)</option>
-                    <option value="inter">Different State (IGST)</option>
-                  </select>
-                </div>
-                {cartLines.length > 0 && (
-                  <>
-                    <p className="text-[10px] font-bold text-purple-700">HSN code and GST % per item — required for a valid tax invoice:</p>
-                    <div className="space-y-1.5">
-                      {/* AUDIT FIX (2026-09-03): charges (e.g. Transportation)
-                          used to be silently taxed at the default 5% with a
-                          blank HSN on the printed invoice, with no way to see
-                          or correct that before printing — they're now real
-                          rows in this same editor, same as any item. */}
-                      {[...cartLines.map(l => l.itemName), ...charges.map(c => c.name)].map(name => (
-                        <div key={name} className="grid grid-cols-[1fr_6rem_4rem] items-center gap-1.5">
-                          <span className="truncate text-[11px] font-bold text-foreground">{name}</span>
-                          <input value={gstLineFor(name).hsnCode} onChange={e => patchGstLine(name, { hsnCode: e.target.value })} placeholder="HSN code" className="h-8 rounded-lg border border-purple-300 bg-white px-2 text-[11px] font-bold" />
-                          <input type="number" min={0} max={100} value={gstLineFor(name).gstPct} onChange={e => patchGstLine(name, { gstPct: e.target.value })} placeholder="GST %" className="h-8 rounded-lg border border-purple-300 bg-white px-2 text-[11px] font-bold" />
-                        </div>
-                      ))}
-                    </div>
-                  </>
-                )}
-              </>
+              <div className="grid grid-cols-2 gap-2">
+                <input value={gstBuyerName} onChange={e => setGstBuyerName(e.target.value)} placeholder={`Buyer name (blank = ${customerName.trim() || 'Walk-in Customer'})`} className="col-span-2 h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
+                <input value={gstBuyerGstin} onChange={e => setGstBuyerGstin(e.target.value.toUpperCase())} placeholder="Buyer GSTIN (optional)" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
+                <input value={gstBuyerAddress} onChange={e => setGstBuyerAddress(e.target.value)} placeholder="Buyer address" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
+                <input value={gstBuyerStateName} onChange={e => setGstBuyerStateName(e.target.value)} placeholder="State Name" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
+                <input value={gstBuyerStateCode} onChange={e => setGstBuyerStateCode(e.target.value)} placeholder="State Code" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
+                <input type="number" min={0} max={100} value={gstPct} onChange={e => setGstPct(e.target.value)} placeholder="GST % (overall, applies to every item)" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
+                <input value={gstHsnCode} onChange={e => setGstHsnCode(e.target.value)} placeholder="HSN/SAC code (overall)" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
+                <select value={gstSupplyType} onChange={e => setGstSupplyType(e.target.value as 'intra' | 'inter')} className="col-span-2 h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold">
+                  <option value="intra">Same State (CGST + SGST)</option>
+                  <option value="inter">Different State (IGST)</option>
+                </select>
+              </div>
             )}
           </div>
 
@@ -10569,18 +10748,27 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
   // order in that popup there should be a check box icon if they check that
   // box then the gst field should come up... they should get the same
   // invoice as it is in the sales invoice tab. and also show all the
-  // required fields." — optional, on top of the normal dispatch invoice +
-  // auto credit-bill above (neither is replaced): when checked, an
+  // required fields." — AUDIT FIX (2026-09-05): "For Hosur and custom
+  // (Planned) I need check box" — this was only ever offered for Hosur
+  // (`!!customer` added below). Optional, on top of the normal dispatch
+  // invoice + auto credit-bill above (neither is replaced): when checked, an
   // additional proper GST Tax Invoice is generated using this exact batch's
   // items/prices/quantities, via the same buildGstTaxInvoiceHtml the Sales
   // tab's own Invoice sub-tab uses (gstTaxInvoice.ts) — so it can never
   // disagree with what was actually dispatched, and is guaranteed to be the
   // same document, not a second hand-maintained copy.
-  // AUDIT FIX (2026-09-05): "For Hosur and custom (Planned) I need check
-  // box" — this was only ever offered for Hosur (`!!customer` added below).
-  // The buyer-name line further down used `hosurShop!.name` with a
-  // non-null assertion — genuinely undefined for a Custom sale, since
-  // hosurShop and customer are mutually exclusive — fixed alongside this.
+  // REDESIGN (2026-09-12): "gst should not be on each item it should be on
+  // overall, and the gst amount is not calculated correctly" — one flat
+  // GST%/HSN for the WHOLE batch instead of a per-item HSN/GST% input.
+  // FOLLOW-UP (2026-09-12, same day): "I want all the details that are in
+  // sales tab > invoice into the check box bill ... I already shared the
+  // invoice output bill same format" — confirmed the client's reference was
+  // this full formal Tax Invoice (buyer/consignee, HSN/SAC, GST Summary,
+  // amount in words, bank details, declaration, signatory), not the plain
+  // dispatch-invoice receipt — restored generating it below (an earlier pass
+  // the same day had dropped it entirely; only "one overall rate, not per
+  // item" + "fix the calc" were actually wanted). See
+  // project_gst_checkbox_overall_fix memory for the full history.
   const gstInvoiceOffered = (scope === 'Hosur' && !!hosurShop) || !!customer;
   const [gstEnabled, setGstEnabled] = useState(false);
   const [gstBuyerGstin, setGstBuyerGstin] = useState('');
@@ -10590,10 +10778,8 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
   const [gstBuyerStateName, setGstBuyerStateName] = useState('Tamil Nadu');
   const [gstBuyerStateCode, setGstBuyerStateCode] = useState('33');
   const [gstSupplyType, setGstSupplyType] = useState<'intra' | 'inter'>('intra');
-  const [gstLineDetails, setGstLineDetails] = useState<Record<string, { hsnCode: string; gstPct: string }>>({});
-  const gstLineFor = (itemName: string) => gstLineDetails[itemName] ?? { hsnCode: '', gstPct: '5' };
-  const patchGstLine = (itemName: string, patch: Partial<{ hsnCode: string; gstPct: string }>) =>
-    setGstLineDetails(v => ({ ...v, [itemName]: { ...gstLineFor(itemName), ...patch } }));
+  const [gstPct, setGstPct] = useState('5');
+  const [gstHsnCode, setGstHsnCode] = useState('');
   const [gstInvoiceResult, setGstInvoiceResult] = useState<{ invoiceNo: string; html: string } | null>(null);
   const [gstGenerating, setGstGenerating] = useState(false);
   const [gstError, setGstError] = useState<string | null>(null);
@@ -10826,15 +11012,12 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
         customerPhone: customer?.phone ?? null,
         customerAddress: customer?.address ?? null,
         dispatchedBy,
-        // BUG FIX (2026-09-05): "even if they check the tax invoice box the
-        // GST is not getting calculated for the items" — hsnCode/gstPct were
-        // only ever attached to the SEPARATE gstLines array built below for
-        // the standalone "GST Tax Invoice" document; this invoice's own
-        // items (what renderDispatchInvoiceHtml actually prints, and whose
-        // title the checkbox controls) never carried them, so it had nothing
-        // to calculate tax from. Attached here too whenever GST is enabled.
+        // REDESIGN (2026-09-12): one flat GST%/HSN for the whole batch (not
+        // per line) — see the note above gstPct's declaration. Applied
+        // identically to every line so renderDispatchInvoiceHtml's "take the
+        // first line's rate" lookup is trivially the same value everywhere.
         items: (gstInvoiceOffered && gstEnabled
-          ? [...invoiceLines, ...effectiveChargeLines].map(l => ({ ...l, hsnCode: gstLineFor(l.itemName).hsnCode, gstPct: Math.max(0, Number(gstLineFor(l.itemName).gstPct) || 0) }))
+          ? [...invoiceLines, ...effectiveChargeLines].map(l => ({ ...l, hsnCode: gstHsnCode.trim(), gstPct: Math.max(0, Number(gstPct) || 0) }))
           : [...invoiceLines, ...effectiveChargeLines]),
         discountPct,
         dispatchEntryIds: actions.map(a => ({ orderId: a.orderId, dispatchEntryId: a.dispatchEntryId })),
@@ -10909,12 +11092,13 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
         }
       }
 
-      // FEATURE (2026-09-03): optional GST Tax Invoice — see gstInvoiceOffered
-      // above. Uses this same batch's already-confirmed items/prices/
-      // discount/charges (invoiceLines/chargeLines), so it can never disagree
-      // with the dispatch invoice or the credit bill just created above. Its
-      // own try/catch: the dispatch, invoice, and credit bill have already
-      // succeeded and must stand regardless of whether this works.
+      // FEATURE (2026-09-03, restored 2026-09-12): optional GST Tax Invoice
+      // — see gstInvoiceOffered above. Uses this same batch's already-
+      // confirmed items/prices/discount/charges (invoiceLines/chargeLines),
+      // so it can never disagree with the dispatch invoice or the credit
+      // bill just created above. Its own try/catch: the dispatch, invoice,
+      // and credit bill have already succeeded and must stand regardless of
+      // whether this works.
       if (gstInvoiceOffered && gstEnabled) {
         setGstGenerating(true);
         setGstError(null);
@@ -10934,13 +11118,16 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
           // recorded (and what the shop's credit bill actually charges)
           // under the exact same invoice number.
           const gstDiscountMult = 1 - clampedDiscountPct / 100;
+          // REDESIGN (2026-09-12): one flat gstPct/gstHsnCode for every line
+          // (see the note above gstPct's declaration) instead of a per-item
+          // lookup.
           const gstLines: GstTaxInvoiceLine[] = [...invoiceLines, ...effectiveChargeLines].map(l => ({
             itemName: l.itemName,
-            hsnCode: gstLineFor(l.itemName).hsnCode,
+            hsnCode: gstHsnCode.trim(),
             qty: l.quantity,
             uom: l.unit === 'pcs' ? 'Nos' : l.unit === 'kg' ? 'Kg' : l.unit,
             rate: Math.round(l.unitPrice * gstDiscountMult * 100) / 100,
-            gstPct: Math.max(0, Number(gstLineFor(l.itemName).gstPct) || 0),
+            gstPct: Math.max(0, Number(gstPct) || 0),
           }));
           // AUDIT FIX (2026-09-05): was `hosurShop!.name` — a non-null
           // assertion that's genuinely null for a Custom sale (hosurShop
@@ -11086,33 +11273,18 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
                   Also generate a GST Tax Invoice (same format as Sales tab → Invoice)
                 </label>
                 {gstEnabled && (
-                  <>
-                    <div className="grid gap-2 sm:grid-cols-2">
-                      <input value={gstBuyerGstin} onChange={e => setGstBuyerGstin(e.target.value.toUpperCase())} placeholder="Buyer GSTIN (optional)" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
-                      <input value={gstBuyerAddress} onChange={e => setGstBuyerAddress(e.target.value)} placeholder="Buyer address" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
-                      <input value={gstBuyerStateName} onChange={e => setGstBuyerStateName(e.target.value)} placeholder="State Name" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
-                      <input value={gstBuyerStateCode} onChange={e => setGstBuyerStateCode(e.target.value)} placeholder="State Code" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
-                      <select value={gstSupplyType} onChange={e => setGstSupplyType(e.target.value as 'intra' | 'inter')} className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold sm:col-span-2">
-                        <option value="intra">Same State (CGST + SGST)</option>
-                        <option value="inter">Different State (IGST)</option>
-                      </select>
-                    </div>
-                    <p className="text-[10px] font-bold text-purple-700">HSN code and GST % per item — required for a valid tax invoice:</p>
-                    <div className="space-y-1.5">
-                      {/* AUDIT FIX (2026-09-03): charges (e.g. delivery fee)
-                          used to be silently taxed at the default 5% with a
-                          blank HSN on the printed invoice, with no way to see
-                          or correct that before printing — now real rows
-                          here too, same as any item. */}
-                      {[...displayItems.map(d => d.itemName), ...charges.map(c => c.name)].map(name => (
-                        <div key={name} className="grid grid-cols-[1fr_7rem_5rem] items-center gap-1.5">
-                          <span className="truncate text-[11px] font-bold text-foreground">{name}</span>
-                          <input value={gstLineFor(name).hsnCode} onChange={e => patchGstLine(name, { hsnCode: e.target.value })} placeholder="HSN code" className="h-8 rounded-lg border border-purple-300 bg-white px-2 text-[11px] font-bold" />
-                          <input type="number" min={0} max={100} value={gstLineFor(name).gstPct} onChange={e => patchGstLine(name, { gstPct: e.target.value })} placeholder="GST %" className="h-8 rounded-lg border border-purple-300 bg-white px-2 text-[11px] font-bold" />
-                        </div>
-                      ))}
-                    </div>
-                  </>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <input value={gstBuyerGstin} onChange={e => setGstBuyerGstin(e.target.value.toUpperCase())} placeholder="Buyer GSTIN (optional)" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
+                    <input value={gstBuyerAddress} onChange={e => setGstBuyerAddress(e.target.value)} placeholder="Buyer address" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
+                    <input value={gstBuyerStateName} onChange={e => setGstBuyerStateName(e.target.value)} placeholder="State Name" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
+                    <input value={gstBuyerStateCode} onChange={e => setGstBuyerStateCode(e.target.value)} placeholder="State Code" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
+                    <input type="number" min={0} max={100} value={gstPct} onChange={e => setGstPct(e.target.value)} placeholder="GST % (overall, applies to every item)" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
+                    <input value={gstHsnCode} onChange={e => setGstHsnCode(e.target.value)} placeholder="HSN/SAC code (overall)" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
+                    <select value={gstSupplyType} onChange={e => setGstSupplyType(e.target.value as 'intra' | 'inter')} className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold sm:col-span-2">
+                      <option value="intra">Same State (CGST + SGST)</option>
+                      <option value="inter">Different State (IGST)</option>
+                    </select>
+                  </div>
                 )}
               </div>
             )}
