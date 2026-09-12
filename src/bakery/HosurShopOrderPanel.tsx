@@ -32,6 +32,8 @@ import { exportToExcel } from '@/lib/exportExcel';
 import { printViaIframe } from '@/lib/printViaIframe';
 import { dispatchReceiveAndBill } from './hosurBillingBridge';
 import { saveDispatchInvoice } from './dispatchInvoice';
+import { buildGstTaxInvoiceHtml, type GstTaxInvoiceLine } from './gstTaxInvoice';
+import { printHtml } from '@/branch/printUtils';
 import { getPackingCounterStatus } from './packingCounter';
 import { notifyAdmin } from '@/pages/HosurDashboard';
 import { buildHosurOrderTag, buildHosurItemId, checkRecentDuplicateHosurOrder } from './hosurOrderShared';
@@ -608,6 +610,27 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
   };
   const removeCharge = (orderId: string, idx: number) =>
     setCharges(v => ({ ...v, [orderId]: (v[orderId] ?? []).filter((_, i) => i !== idx) }));
+
+  // FEATURE (2026-09-12): "gst checkbox is coming for sales bill but it is
+  // not coming for hosur and custom(planned) bills" — this dispatch/bill
+  // flow (the one actually wired into Hosur's nav since the 2026-08-07
+  // workflow change; Planner Dashboard's OWN Hosur dispatch panel is a
+  // separate, still-code-present path that already had a GST checkbox) never
+  // had GST support at all. Same one-overall-rate design as New Bill/Custom
+  // dispatch: one gstPct/gstHsnCode for the whole order, not per line.
+  // Keyed by orderId, same Record pattern as every other per-order draft
+  // state above (paymentType, charges, etc.).
+  const [gstEnabled, setGstEnabled] = useState<Record<string, boolean>>({});
+  const [gstBuyerGstin, setGstBuyerGstin] = useState<Record<string, string>>({});
+  const [gstBuyerAddress, setGstBuyerAddress] = useState<Record<string, string>>({});
+  const [gstBuyerStateName, setGstBuyerStateName] = useState<Record<string, string>>({});
+  const [gstBuyerStateCode, setGstBuyerStateCode] = useState<Record<string, string>>({});
+  const [gstSupplyType, setGstSupplyType] = useState<Record<string, 'intra' | 'inter'>>({});
+  const [gstPct, setGstPct] = useState<Record<string, string>>({});
+  const [gstHsnCode, setGstHsnCode] = useState<Record<string, string>>({});
+  const [gstInvoiceResult, setGstInvoiceResult] = useState<Record<string, { invoiceNo: string; html: string }>>({});
+  const [gstGenerating, setGstGenerating] = useState<Record<string, boolean>>({});
+  const [gstErrorMap, setGstErrorMap] = useState<Record<string, string>>({});
   const chargesTotalFor = (orderId: string) =>
     Math.round((charges[orderId] ?? []).reduce((sum, c) => sum + c.amount, 0) * 100) / 100;
   const [busy, setBusy] = useState<string | null>(null);
@@ -816,17 +839,29 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
       // dispatch + bill that's otherwise ready to go.
       let mintedInvoiceNo: string | undefined;
       let mintedInvoiceId: string | undefined;
+      // FEATURE (2026-09-12): one flat GST%/HSN for the whole order (not per
+      // line) — see the note above gstEnabled's declaration.
+      const orderGstOn = gstEnabled[order.id] === true;
+      const orderGstPct = Math.max(0, Number(gstPct[order.id]) || 0);
+      const orderGstHsn = (gstHsnCode[order.id] || '').trim();
+      const orderGstSupplyType = gstSupplyType[order.id] || 'intra';
+      const invoiceItems = [
+        ...billItems.map(i => ({
+          itemName: i.itemName, unit: i.unit, quantity: i.receivedQuantity, unitPrice: i.unitPrice,
+          lineTotal: Math.round(i.receivedQuantity * i.unitPrice * 100) / 100,
+          ...(orderGstOn ? { hsnCode: orderGstHsn, gstPct: orderGstPct } : {}),
+        })),
+        ...orderChargesToBill.map(c => ({ itemName: c.name, unit: 'charge', quantity: 1, unitPrice: c.amount, lineTotal: c.amount })),
+      ];
       try {
-        const invoiceItems = [
-          ...billItems.map(i => ({ itemName: i.itemName, unit: i.unit, quantity: i.receivedQuantity, unitPrice: i.unitPrice, lineTotal: Math.round(i.receivedQuantity * i.unitPrice * 100) / 100 })),
-          ...orderChargesToBill.map(c => ({ itemName: c.name, unit: 'charge', quantity: 1, unitPrice: c.amount, lineTotal: c.amount })),
-        ];
         const invoiceRecord = await saveDispatchInvoice({
           scope: 'Hosur',
           hosurShopId: order.shopId, hosurShopName: order.shopName, hosurShopPhone: order.shopWhatsapp,
           dispatchedBy: currentUser?.displayName || 'Planner',
           items: invoiceItems,
           discountPct: 0,
+          isGstInvoice: orderGstOn,
+          gstSupplyType: orderGstSupplyType,
         });
         mintedInvoiceNo = invoiceRecord.invoiceNo;
         mintedInvoiceId = invoiceRecord.id;
@@ -877,6 +912,42 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
           ...orderChargesToBill.map(c => ({ itemName: c.name, unit: 'charge', quantity: 1, unitPrice: c.amount })),
         ],
       }}));
+
+      // FEATURE (2026-09-12): optional GST Tax Invoice — see gstEnabled
+      // above. Uses this exact order's already-confirmed items/charges, so
+      // it can never disagree with the dispatch invoice/bill just created.
+      // Own try/catch: the dispatch, invoice, and bill above have already
+      // succeeded and must stand regardless of whether this works.
+      setGstInvoiceResult(v => { const next = { ...v }; delete next[order.id]; return next; });
+      if (orderGstOn) {
+        setGstGenerating(v => ({ ...v, [order.id]: true }));
+        setGstErrorMap(v => { const next = { ...v }; delete next[order.id]; return next; });
+        try {
+          const invoiceDate = new Date().toISOString().slice(0, 10);
+          const gstLines: GstTaxInvoiceLine[] = invoiceItems.map(l => ({
+            itemName: l.itemName, hsnCode: orderGstHsn, qty: l.quantity,
+            uom: l.unit === 'pcs' ? 'Nos' : l.unit === 'kg' ? 'Kg' : l.unit,
+            rate: l.unitPrice, gstPct: orderGstPct,
+          }));
+          const buyer = {
+            name: order.shopName, address: gstBuyerAddress[order.id] || '', gstin: gstBuyerGstin[order.id] || '',
+            stateName: gstBuyerStateName[order.id] || 'Tamil Nadu', stateCode: gstBuyerStateCode[order.id] || '33',
+          };
+          const { html } = buildGstTaxInvoiceHtml({
+            buyer, consignee: buyer,
+            invoiceNo: outcome.billNo, invoiceDate,
+            supplyType: orderGstSupplyType,
+            lines: gstLines,
+            preparedBy: currentUser?.displayName || currentUser?.username || 'Planner',
+          });
+          setGstInvoiceResult(v => ({ ...v, [order.id]: { invoiceNo: outcome.billNo, html } }));
+        } catch (gstErr) {
+          setGstErrorMap(v => ({ ...v, [order.id]: gstErr instanceof Error ? gstErr.message : 'Could not generate the GST tax invoice.' }));
+        } finally {
+          setGstGenerating(v => ({ ...v, [order.id]: false }));
+        }
+      }
+
       // Charges are order-specific and one-shot — clear the draft once
       // they've actually been billed so reopening this card (or billing a
       // different order) doesn't carry them over.
@@ -1244,6 +1315,31 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
                   </div>
                 </div>
 
+                {/* FEATURE (2026-09-12): "gst checkbox is coming for sales
+                    bill but it is not coming for hosur ... bills" — same
+                    one-overall-rate GST Tax Invoice option as New Bill/
+                    Custom dispatch, generated from this exact order's items. */}
+                <div className="space-y-2 rounded-xl border border-dashed border-purple-300 bg-purple-50 p-2.5">
+                  <label className="flex items-center gap-2 text-[11px] font-black uppercase tracking-wide text-purple-800">
+                    <input type="checkbox" checked={gstEnabled[order.id] === true} onChange={e => setGstEnabled(v => ({ ...v, [order.id]: e.target.checked }))} className="size-4" />
+                    Also generate a GST Tax Invoice (same format as Invoice tab)
+                  </label>
+                  {gstEnabled[order.id] === true && (
+                    <div className="grid grid-cols-2 gap-2">
+                      <input value={gstBuyerGstin[order.id] ?? ''} onChange={e => setGstBuyerGstin(v => ({ ...v, [order.id]: e.target.value.toUpperCase() }))} placeholder="Buyer GSTIN (optional)" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
+                      <input value={gstBuyerAddress[order.id] ?? ''} onChange={e => setGstBuyerAddress(v => ({ ...v, [order.id]: e.target.value }))} placeholder="Buyer address" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
+                      <input value={gstBuyerStateName[order.id] ?? ''} onChange={e => setGstBuyerStateName(v => ({ ...v, [order.id]: e.target.value }))} placeholder="State Name" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
+                      <input value={gstBuyerStateCode[order.id] ?? ''} onChange={e => setGstBuyerStateCode(v => ({ ...v, [order.id]: e.target.value }))} placeholder="State Code" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
+                      <input type="number" min={0} max={100} value={gstPct[order.id] ?? '5'} onChange={e => setGstPct(v => ({ ...v, [order.id]: e.target.value }))} placeholder="GST % (overall)" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
+                      <input value={gstHsnCode[order.id] ?? ''} onChange={e => setGstHsnCode(v => ({ ...v, [order.id]: e.target.value }))} placeholder="HSN/SAC code (overall)" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
+                      <select value={gstSupplyType[order.id] ?? 'intra'} onChange={e => setGstSupplyType(v => ({ ...v, [order.id]: e.target.value as 'intra' | 'inter' }))} className="col-span-2 h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold">
+                        <option value="intra">Same State (CGST + SGST)</option>
+                        <option value="inter">Different State (IGST)</option>
+                      </select>
+                    </div>
+                  )}
+                </div>
+
                 {(() => {
                   const mode = paymentMode[order.id] ?? 'cash';
                   const modeLabel = PAYMENT_MODES.find(m => m.key === mode)?.label ?? 'Cash';
@@ -1346,6 +1442,20 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
                             <button onClick={() => printPhysicalBill(lastBillSnapshot[order.id])} className="flex items-center gap-1.5 rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-bold text-foreground hover:bg-muted">
                               <Printer className="size-3.5" /> Print Physical Bill
                             </button>
+                          )}
+                          {gstGenerating[order.id] && (
+                            <p className="flex items-center gap-1.5 text-[11px] font-bold text-purple-700"><Loader2 className="size-3.5 animate-spin" /> Generating the GST Tax Invoice…</p>
+                          )}
+                          {!gstGenerating[order.id] && gstInvoiceResult[order.id] && (
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <span className="text-[11px] font-bold text-purple-800">GST Tax Invoice {gstInvoiceResult[order.id].invoiceNo} ready:</span>
+                              <button onClick={() => printHtml(gstInvoiceResult[order.id].invoiceNo, gstInvoiceResult[order.id].html)} className="flex items-center gap-1.5 rounded-lg bg-purple-600 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-purple-700">
+                                <Printer className="size-3.5" /> Print
+                              </button>
+                            </div>
+                          )}
+                          {!gstGenerating[order.id] && gstErrorMap[order.id] && (
+                            <p className="text-[11px] font-bold text-red-700">Bill saved, but the GST Tax Invoice could not be generated: {gstErrorMap[order.id]}</p>
                           )}
                         </div>
                       )}
