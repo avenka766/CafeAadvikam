@@ -183,6 +183,11 @@ export interface IncomingStock {
    *  an advance order, so the SNB/VRSNB Order Dashboard's Stock/Incoming tab
    *  can show it next to the item — null for a regular (non-advance) item. */
   advanceOrderNo?: string | null;
+  /** TO/26-27/N dispatch invoice number this item was dispatched under —
+   *  backfilled by DispatchReviewModal right after the invoice is minted
+   *  (submitDispatch itself runs before the invoice number exists). Null for
+   *  older pre-fix rows and for the rare sync-recovery path. */
+  invoiceNo?: string | null;
 }
 
 export interface StockMismatch {
@@ -418,6 +423,7 @@ function computeBranchRealtimeChange(state: BranchState, branch: Branch, table: 
         returnRequestedBy: row.return_requested_by == null ? null : String(row.return_requested_by),
         transferInReturnId: row.transfer_in_return_id == null ? null : String(row.transfer_in_return_id),
         advanceOrderNo: row.advance_order_no == null ? null : String(row.advance_order_no),
+        invoiceNo: row.invoice_no == null ? null : String(row.invoice_no),
       };
       return { incoming: { ...state.incoming, [branch]: [next, ...current.filter((item) => item.id !== id)].slice(0, 500) } };
     }
@@ -919,7 +925,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         // EGRESS FIX (2026-09-01): shrunk 1000 -> 300 — real observed max for
         // "today's incoming" across all 3 branches is ~67 rows.
         wantIncoming ? supabase.from('branch_incoming')
-          .select('id,item_barcode,item_name,quantity,unit,received_at,dispatched_by,confirmed,disputed,dispute_reason,disputed_by,disputed_at,disputed_received_quantity,return_requested,return_requested_at,return_requested_by,transfer_in_return_id,advance_order_no')
+          .select('id,item_barcode,item_name,quantity,unit,received_at,dispatched_by,confirmed,disputed,dispute_reason,disputed_by,disputed_at,disputed_received_quantity,return_requested,return_requested_at,return_requested_by,transfer_in_return_id,advance_order_no,invoice_no')
           .eq('branch', branch)
           .gte('received_at', startOfToday)
           .order('received_at', { ascending: false }).limit(300) : SKIP,
@@ -971,7 +977,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         // pull those regardless of date too (small cap — this should normally
         // be empty or tiny).
         wantIncoming ? supabase.from('branch_incoming')
-          .select('id,item_barcode,item_name,quantity,unit,received_at,dispatched_by,confirmed,disputed,dispute_reason,disputed_by,disputed_at,disputed_received_quantity,return_requested,return_requested_at,return_requested_by,transfer_in_return_id,advance_order_no')
+          .select('id,item_barcode,item_name,quantity,unit,received_at,dispatched_by,confirmed,disputed,dispute_reason,disputed_by,disputed_at,disputed_received_quantity,return_requested,return_requested_at,return_requested_by,transfer_in_return_id,advance_order_no,invoice_no')
           .eq('branch', branch)
           .eq('confirmed', false)
           .order('received_at', { ascending: false })
@@ -1060,6 +1066,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
             returnRequestedBy: d.return_requested_by ?? null,
             transferInReturnId: d.transfer_in_return_id ?? null,
             advanceOrderNo: d.advance_order_no ?? null,
+            invoiceNo: d.invoice_no ?? null,
           }));
         }
 
