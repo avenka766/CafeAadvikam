@@ -576,7 +576,12 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
   // are left un-grouped below — they already carry their own per-row history/
   // status and shouldn't be silently folded into a fresh confirm/dispute/
   // return action.
-  interface IncomingGroup { key: string; itemName: string; unit: 'pcs' | 'kg'; advanceOrderNo: string | null; entries: IncomingStock[]; totalQuantity: number; receivedAt: string; dispatchedBy: string; }
+  // FEATURE (2026-09-12): "For the stock/incoming tab > incoming: for the
+  // items it should show the TO invoice number also" — same merged-comma
+  // pattern dispatchedBy already uses, since one grouped row can span
+  // several dispatch batches (and therefore, in principle, more than one
+  // invoice) merged together.
+  interface IncomingGroup { key: string; itemName: string; unit: 'pcs' | 'kg'; advanceOrderNo: string | null; invoiceNos: string; entries: IncomingStock[]; totalQuantity: number; receivedAt: string; dispatchedBy: string; }
   const actionableIncoming = todayIncoming.filter((inc) => !(disputedIncoming[inc.id] || inc.disputed) && !inc.returnRequested);
   const lockedIncoming = todayIncoming.filter((inc) => (disputedIncoming[inc.id] || inc.disputed) || inc.returnRequested);
   const groupMap = new Map<string, IncomingGroup>();
@@ -588,8 +593,9 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
       existing.totalQuantity += inc.quantity;
       if (new Date(inc.receivedAt) > new Date(existing.receivedAt)) existing.receivedAt = inc.receivedAt;
       if (!existing.dispatchedBy.split(', ').includes(inc.dispatchedBy)) existing.dispatchedBy = `${existing.dispatchedBy}, ${inc.dispatchedBy}`;
+      if (inc.invoiceNo && !existing.invoiceNos.split(', ').includes(inc.invoiceNo)) existing.invoiceNos = existing.invoiceNos ? `${existing.invoiceNos}, ${inc.invoiceNo}` : inc.invoiceNo;
     } else {
-      groupMap.set(key, { key, itemName: inc.itemName, unit: inc.unit, advanceOrderNo: inc.advanceOrderNo ?? null, entries: [inc], totalQuantity: inc.quantity, receivedAt: inc.receivedAt, dispatchedBy: inc.dispatchedBy });
+      groupMap.set(key, { key, itemName: inc.itemName, unit: inc.unit, advanceOrderNo: inc.advanceOrderNo ?? null, invoiceNos: inc.invoiceNo ?? '', entries: [inc], totalQuantity: inc.quantity, receivedAt: inc.receivedAt, dispatchedBy: inc.dispatchedBy });
     }
   }
   type IncomingRow = { kind: 'group'; group: IncomingGroup } | { kind: 'single'; inc: IncomingStock };
@@ -792,6 +798,7 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
                 const itemName = row.kind === 'group' ? row.group.itemName : row.inc.itemName;
                 const unit = row.kind === 'group' ? row.group.unit : row.inc.unit;
                 const advanceOrderNo = row.kind === 'group' ? row.group.advanceOrderNo : (row.inc.advanceOrderNo ?? null);
+                const invoiceNos = row.kind === 'group' ? row.group.invoiceNos : (row.inc.invoiceNo ?? '');
                 const totalQuantity = row.kind === 'group' ? row.group.totalQuantity : row.inc.quantity;
                 const receivedAt = row.kind === 'group' ? row.group.receivedAt : row.inc.receivedAt;
                 const dispatchedBy = row.kind === 'group' ? row.group.dispatchedBy : row.inc.dispatchedBy;
@@ -819,6 +826,11 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
                           {advanceOrderNo && (
                             <span className="inline-flex shrink-0 items-center rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-black text-violet-700" title="From an advance order">
                               {advanceOrderNo}
+                            </span>
+                          )}
+                          {invoiceNos && (
+                            <span className="inline-flex shrink-0 items-center rounded-full bg-teal-100 px-2 py-0.5 text-[10px] font-black text-teal-700" title="Dispatch invoice number">
+                              {invoiceNos}
                             </span>
                           )}
                         </p>

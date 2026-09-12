@@ -862,12 +862,6 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch', c
     const attachmentName = orderType === 'cake' ? cake.attachmentName : custom.attachmentName;
     const attachmentDataUrl = orderType === 'cake' ? cake.attachmentDataUrl : custom.attachmentDataUrl;
     let orderNo: string;
-    try {
-      orderNo = await nextBranchAdvanceOrderNumberAtomic(branch);
-    } catch (numberError) {
-      setError(numberError instanceof Error ? numberError.message : 'Unable to allocate an advance order number.');
-      return;
-    }
     let stockReserved = false;
     if (isSnbOrder) {
       const receiverItems = sourceLines.map((line) => ({
@@ -891,8 +885,17 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch', c
         orderType === 'cake' ? `${cake.creamType} - ${selectedCakeType?.name || ''} - ${cake.flavor} - ${cake.shape} - ${cake.designType}` : '',
         orderType === 'cake' ? cake.designNotes : orderType === 'custom' ? custom.notes : 'Existing SNB stock advance order',
       ].filter(Boolean).join(' | ');
-      const { error: receiverError } = await supabase.rpc('create_snb_order_advance_order_secure_v2', {
-        p_order_no: orderNo,
+      // BUG FIX (2026-09-12): "SNB-ADV-316 missing, SNB-ADV-317 behaved
+      // oddly" — this used to pre-generate the order number via its own
+      // separate nextBranchAdvanceOrderNumberAtomic() RPC call BEFORE this
+      // one, so a failure here (or just never reaching this call) permanently
+      // burned the number with no order behind it. The number is now
+      // generated INSIDE create_snb_order_advance_order_secure_v2 itself
+      // (same transaction as the order's own insert — see
+      // create_branch_advance_order_reserved), and handed back in the
+      // response instead of being decided client-side beforehand.
+      const { data: receiverData, error: receiverError } = await supabase.rpc('create_snb_order_advance_order_secure_v2', {
+        p_order_no: null,
         p_customer_name: common.customerName.trim(),
         p_items: receiverItems,
         p_subtotal: orderValue,
@@ -909,9 +912,21 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch', c
         setError(`Advance order was not saved: ${receiverError.message}`);
         return;
       }
+      const returnedOrderNo = (receiverData as Record<string, unknown> | null)?.orderNo;
+      if (!returnedOrderNo || typeof returnedOrderNo !== 'string') {
+        setError('Advance order was saved, but no order number was returned — refresh and check the Advance Orders list before retrying.');
+        return;
+      }
+      orderNo = returnedOrderNo;
       stockReserved = orderType === 'store';
       await fetchBranchData(branch, false, ['stock', 'advance']); // EGRESS FIX: new advance order + (for store type) a stock reservation
     } else {
+      try {
+        orderNo = await nextBranchAdvanceOrderNumberAtomic(branch);
+      } catch (numberError) {
+        setError(numberError instanceof Error ? numberError.message : 'Unable to allocate an advance order number.');
+        return;
+      }
       if (orderType === 'store') {
         const stockError = await reserveStoreLines(orderNo, sourceLines);
         if (stockError) {
@@ -970,6 +985,29 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch', c
       advanceCreditDueDate: common.paymentMode === 'credit' ? (advanceCreditDueDate || undefined) : undefined,
       createdBy: auditActor, collectionSource: isSnbOrder ? 'SNB Order collected' : undefined, skipLocalCashMovement: isSnbOrder,
     });
+    // FEATURE (2026-09-12): "even if its store item also it should have gone
+    // to planner dashboard: advance orders tab and then only if they would
+    // have dispatch then only... they should be able to complete the final
+    // bill even if they have paid the full amount also." "Send to
+    // Store"/"Send to Cake Master" used to be an OPTIONAL manual button — an
+    // order that never got sent had no gate at all (see needsDispatchSync's
+    // fail-closed rewrite below), so a cashier could complete/bill it
+    // immediately with Planner never even seeing it. Now sent automatically,
+    // for every order type including 'store' (existing branch stock), so
+    // every advance order is unconditionally visible to Planner and gated
+    // behind a real Dispatch confirmation before Final Bill unlocks. Errors
+    // here must NOT undo the order/payment already saved above — surfaced as
+    // a banner instead; the still-present manual "Send to Store" button
+    // below serves as the retry path, and Final Bill stays correctly locked
+    // in the meantime (fail-closed).
+    let sendToPlannerError: string | null = null;
+    try {
+      if (orderType === 'cake') await sendCakeToStoreDashboard(order);
+      else await sendToStoreDashboard(order, sourceLines);
+      markAdvanceSentToStore(order.id);
+    } catch (sendError) {
+      sendToPlannerError = `Order ${order.orderNo} saved, but could not be sent to the Planner dashboard automatically: ${sendError instanceof Error ? sendError.message : 'unknown error'}. Use "Send to Store" on this order below to retry — Final Bill stays locked until that succeeds.`;
+    }
     // Print slip - show "PAID IN FULL" stamp when fully paid. Never stamp
     // that on a credit order though - "fully paid" there just means the
     // whole order value is owed on credit, not actually collected, and the
@@ -986,7 +1024,10 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch', c
     setAdvanceCreditDueDate('');
     setStoreFullyPaid(false); setCustomFullyPaid(false);
     setStoreLines([]); setCustomLines([]); setCustom({ itemName:'', quantity:'1', unit:'pcs', price:'', notes:'', attachmentName:'', attachmentDataUrl:'' }); setCake({ cakeKg:'', creamType:'Butter Cream', cakeTypeId:'butter-birthday', flavor:'', shape:'', designType:'Normal', drawingWork:false, photoWork:false, messageOnCake:'', designNotes:'', attachmentName:'', attachmentDataUrl:'', topperCharge:'', toyCharges:'' });
-    setError('');
+    // Surface a send-to-Planner failure instead of silently wiping it — the
+    // order/payment already succeeded and must not be lost, but staff need
+    // to know Planner wasn't notified so they know to use the retry button.
+    setError(sendToPlannerError || '');
   };
   const manageAdvanceOrder = async (
     order: CakeAdvanceOrder,
@@ -1479,7 +1520,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch', c
       </div>
     }>
       {pipelineView === 'active' ? (
-        <div className="space-y-3">{activeOrders.length === 0 ? <p className="rounded-2xl bg-slate-50 p-6 text-center font-bold text-slate-500">No active advance orders.</p> : activeOrders.map(o=>{ const lines = o.items && o.items.length > 0 ? o.items : [{ itemName: o.flavor, quantity: Number(o.cakeKg || 0), unit: o.shape === 'Kgs' ? 'kg' as const : 'pcs' as const, price: o.orderValue / Math.max(Number(o.cakeKg || 1), 1), tax:0, discount:0, lineTotal:o.orderValue }]; const isCollecting = collectingId === o.id; return <div key={o.id} className="rounded-3xl border p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-lg font-black">{o.orderNo}{o.slipNumber ? ` - Slip ${o.slipNumber}` : ''} - {o.customerName}</p><p className="text-sm font-bold text-slate-500">{o.mobile} - {lines.map((line)=>`${line.itemName} ${line.quantity} ${line.unit}`).join(', ')} - Delivery {o.deliveryDate} {o.deliveryTime}</p>{(o.creamType || o.cakeTypeName || o.designType) && <p className="mt-1 text-xs font-black text-fuchsia-700">{[o.creamType, o.cakeTypeName, o.flavor, o.designType].filter(Boolean).join(' - ')}{o.designCharge ? ` - Design +${money(o.designCharge)}` : ''}</p>}{o.attachmentName && <p className="mt-1 text-xs font-black text-emerald-700">Attachment: {o.attachmentName}</p>}</div><span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-black text-amber-700">{o.storeStatus || o.status}</span></div><div className="mt-3 grid gap-2 sm:grid-cols-4"><Kpi label="Order" value={money(o.orderValue)} icon={<Receipt className="size-4"/>}/><Kpi label={o.paymentMode === 'credit' ? 'Advance (Credit)' : 'Advance'} value={money(o.advanceAmount)} icon={<Banknote className="size-4"/>} tone={o.paymentMode === 'credit' ? 'amber' : 'green'}/><Kpi label="Balance" value={money(o.balanceAmount)} icon={<IndianRupee className="size-4"/>} tone="amber"/><div className="flex flex-col justify-center gap-2">{!o.sentToStoreAt && <SoftButton onClick={async()=>{setSendingToStore(o.id); try { if ((o.orderType || 'cake') === 'cake') await sendCakeToStoreDashboard(o); else await sendToStoreDashboard(o, lines); markAdvanceSentToStore(o.id); } catch (sendError) { setError(sendError instanceof Error ? sendError.message : 'Failed to send order to store.'); } finally { setSendingToStore(null); }}} disabled={sendingToStore===o.id}><Store className="size-4"/>{sendingToStore===o.id?'Sending...':((o.orderType || 'cake') === 'cake' ? 'Send to Cake Master' : 'Send to Store')}</SoftButton>}{(() => { const needsDispatchSync = !!o.sentToStoreAt && o.storeStatus !== 'dispatched'; return o.balanceAmount > 0 ? (<><SoftButton onClick={()=>setCollectingId(isCollecting ? null : o.id)}><IndianRupee className="size-4"/>Collect Remaining ({money(o.balanceAmount)})</SoftButton>{isCollecting && <div className="mt-2 space-y-2 rounded-2xl bg-slate-50 p-3"><Select value={collectMode} onChange={e=>setCollectMode(e.target.value as typeof collectMode)} className="text-xs"><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option><option value="split">Split</option><option value="credit">Credit</option></Select><PrimaryButton onClick={()=>setClosingOrder({ order: o, payMode: collectMode })} disabled={needsDispatchSync} className="w-full text-xs">Confirm & Print Final Bill</PrimaryButton>{needsDispatchSync && <p className="mt-1 text-[11px] font-bold text-amber-600">Waiting for packing to dispatch - stock must sync to this branch first.</p>}</div>}</>) : (<><PrimaryButton onClick={()=>setClosingOrder({ order: o, payMode: o.paymentMode })} disabled={needsDispatchSync} className="w-full text-xs"><Printer className="size-4"/>Complete & Print Final Bill</PrimaryButton>{needsDispatchSync && <p className="mt-1 text-[11px] font-bold text-amber-600">Waiting for packing to dispatch - stock must sync to this branch first.</p>}</>); })()}<div className="grid grid-cols-2 gap-2"><SoftButton onClick={()=>setManagingOrder({ order:o, action:'edit' })} disabled={!!o.storeStatus && o.storeStatus !== 'store'}><Pencil className="size-4"/>Edit</SoftButton><SoftButton onClick={()=>setManagingOrder({ order:o, action:'cancel' })} disabled={!!o.storeStatus && o.storeStatus !== 'store'} className="text-red-600"><XCircle className="size-4"/>Cancel</SoftButton></div>{!!o.storeStatus && o.storeStatus !== 'store' && <p className="text-[10px] font-bold text-slate-500">Locked after acceptance.</p>}</div></div>{o.sentToStoreAt && <div className="mt-3 flex flex-wrap items-center gap-1 rounded-2xl bg-slate-50 p-2 text-xs font-black">{(()=>{ const stageOrder = ['store','baking','packing','dispatched'] as const; const reachedIdx = o.storeStatus ? stageOrder.indexOf(o.storeStatus) : -1; return stageOrder.map((stage, idx, arr)=>{ const done = idx <= reachedIdx; const labels = { store:'Store', baking:'Baking', packing:'Packing', dispatched:'Dispatched' }; return <span key={stage} className="inline-flex items-center gap-1"><span className={cn('rounded-xl px-2 py-1', done ? 'bg-emerald-600 text-white' : 'bg-slate-200 text-slate-500')}>{labels[stage]}</span>{idx < arr.length - 1 && <span className="text-slate-300">-</span>}</span>; }); })()}<span className="ml-auto text-slate-500">{o.storeStatusHistory && o.storeStatusHistory.length > 0 ? (o.storeAcceptedBy && `${o.storeStatus} by ${o.storeAcceptedBy} - ${new Date(o.storeStatusHistory.at(-1)!.at).toLocaleString('en-IN', { hour:'2-digit', minute:'2-digit' })}`) : `Sent to store ${new Date(o.sentToStoreAt).toLocaleString('en-IN', { hour:'2-digit', minute:'2-digit' })} - awaiting store`}</span></div>}</div>; })}</div>
+        <div className="space-y-3">{activeOrders.length === 0 ? <p className="rounded-2xl bg-slate-50 p-6 text-center font-bold text-slate-500">No active advance orders.</p> : activeOrders.map(o=>{ const lines = o.items && o.items.length > 0 ? o.items : [{ itemName: o.flavor, quantity: Number(o.cakeKg || 0), unit: o.shape === 'Kgs' ? 'kg' as const : 'pcs' as const, price: o.orderValue / Math.max(Number(o.cakeKg || 1), 1), tax:0, discount:0, lineTotal:o.orderValue }]; const isCollecting = collectingId === o.id; return <div key={o.id} className="rounded-3xl border p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-lg font-black">{o.orderNo}{o.slipNumber ? ` - Slip ${o.slipNumber}` : ''} - {o.customerName}</p><p className="text-sm font-bold text-slate-500">{o.mobile} - {lines.map((line)=>`${line.itemName} ${line.quantity} ${line.unit}`).join(', ')} - Delivery {o.deliveryDate} {o.deliveryTime}</p>{(o.creamType || o.cakeTypeName || o.designType) && <p className="mt-1 text-xs font-black text-fuchsia-700">{[o.creamType, o.cakeTypeName, o.flavor, o.designType].filter(Boolean).join(' - ')}{o.designCharge ? ` - Design +${money(o.designCharge)}` : ''}</p>}{o.attachmentName && <p className="mt-1 text-xs font-black text-emerald-700">Attachment: {o.attachmentName}</p>}</div><span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-black text-amber-700">{o.storeStatus || o.status}</span></div><div className="mt-3 grid gap-2 sm:grid-cols-4"><Kpi label="Order" value={money(o.orderValue)} icon={<Receipt className="size-4"/>}/><Kpi label={o.paymentMode === 'credit' ? 'Advance (Credit)' : 'Advance'} value={money(o.advanceAmount)} icon={<Banknote className="size-4"/>} tone={o.paymentMode === 'credit' ? 'amber' : 'green'}/><Kpi label="Balance" value={money(o.balanceAmount)} icon={<IndianRupee className="size-4"/>} tone="amber"/><div className="flex flex-col justify-center gap-2">{!o.sentToStoreAt && <SoftButton onClick={async()=>{setSendingToStore(o.id); try { if ((o.orderType || 'cake') === 'cake') await sendCakeToStoreDashboard(o); else await sendToStoreDashboard(o, lines); markAdvanceSentToStore(o.id); } catch (sendError) { setError(sendError instanceof Error ? sendError.message : 'Failed to send order to store.'); } finally { setSendingToStore(null); }}} disabled={sendingToStore===o.id}><Store className="size-4"/>{sendingToStore===o.id?'Sending...':((o.orderType || 'cake') === 'cake' ? 'Send to Cake Master' : 'Send to Store')}</SoftButton>}{(() => { const needsDispatchSync = o.storeStatus !== 'dispatched'; return o.balanceAmount > 0 ? (<><SoftButton onClick={()=>setCollectingId(isCollecting ? null : o.id)}><IndianRupee className="size-4"/>Collect Remaining ({money(o.balanceAmount)})</SoftButton>{isCollecting && <div className="mt-2 space-y-2 rounded-2xl bg-slate-50 p-3"><Select value={collectMode} onChange={e=>setCollectMode(e.target.value as typeof collectMode)} className="text-xs"><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option><option value="split">Split</option><option value="credit">Credit</option></Select><PrimaryButton onClick={()=>setClosingOrder({ order: o, payMode: collectMode })} disabled={needsDispatchSync} className="w-full text-xs">Confirm & Print Final Bill</PrimaryButton>{needsDispatchSync && <p className="mt-1 text-[11px] font-bold text-amber-600">Waiting for packing to dispatch - stock must sync to this branch first.</p>}</div>}</>) : (<><PrimaryButton onClick={()=>setClosingOrder({ order: o, payMode: o.paymentMode })} disabled={needsDispatchSync} className="w-full text-xs"><Printer className="size-4"/>Complete & Print Final Bill</PrimaryButton>{needsDispatchSync && <p className="mt-1 text-[11px] font-bold text-amber-600">Waiting for packing to dispatch - stock must sync to this branch first.</p>}</>); })()}<div className="grid grid-cols-2 gap-2"><SoftButton onClick={()=>setManagingOrder({ order:o, action:'edit' })} disabled={!!o.storeStatus && o.storeStatus !== 'store'}><Pencil className="size-4"/>Edit</SoftButton><SoftButton onClick={()=>setManagingOrder({ order:o, action:'cancel' })} disabled={!!o.storeStatus && o.storeStatus !== 'store'} className="text-red-600"><XCircle className="size-4"/>Cancel</SoftButton></div>{!!o.storeStatus && o.storeStatus !== 'store' && <p className="text-[10px] font-bold text-slate-500">Locked after acceptance.</p>}</div></div>{o.sentToStoreAt && <div className="mt-3 flex flex-wrap items-center gap-1 rounded-2xl bg-slate-50 p-2 text-xs font-black">{(()=>{ const stageOrder = ['store','baking','packing','dispatched'] as const; const reachedIdx = o.storeStatus ? stageOrder.indexOf(o.storeStatus) : -1; return stageOrder.map((stage, idx, arr)=>{ const done = idx <= reachedIdx; const labels = { store:'Store', baking:'Baking', packing:'Packing', dispatched:'Dispatched' }; return <span key={stage} className="inline-flex items-center gap-1"><span className={cn('rounded-xl px-2 py-1', done ? 'bg-emerald-600 text-white' : 'bg-slate-200 text-slate-500')}>{labels[stage]}</span>{idx < arr.length - 1 && <span className="text-slate-300">-</span>}</span>; }); })()}<span className="ml-auto text-slate-500">{o.storeStatusHistory && o.storeStatusHistory.length > 0 ? (o.storeAcceptedBy && `${o.storeStatus} by ${o.storeAcceptedBy} - ${new Date(o.storeStatusHistory.at(-1)!.at).toLocaleString('en-IN', { hour:'2-digit', minute:'2-digit' })}`) : `Sent to store ${new Date(o.sentToStoreAt).toLocaleString('en-IN', { hour:'2-digit', minute:'2-digit' })} - awaiting store`}</span></div>}</div>; })}</div>
       ) : pipelineView === 'history' ? (
         <div className="overflow-x-auto rounded-2xl border border-slate-200"><table className="w-full min-w-[720px] text-sm"><thead><tr className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500"><th className="p-3">Order No</th><th className="p-3">Slip No</th><th className="p-3">Customer</th><th className="p-3">Cake / Delivery</th><th className="p-3 text-right">Order Value</th><th className="p-3 text-right">Paid</th></tr></thead><tbody>{historyOrders.length === 0 ? <tr><td colSpan={6} className="p-6 text-center font-bold text-slate-500">No completed orders yet.</td></tr> : historyOrders.map(o=><tr key={o.id} className="border-t"><td className="p-3 font-black">{o.orderNo}</td><td className="p-3 font-bold">{o.slipNumber || '-'}</td><td className="p-3"><p className="font-bold">{o.customerName}</p><p className="text-xs text-slate-500">{o.mobile}</p></td><td className="p-3"><p>{[o.creamType, o.cakeTypeName, o.flavor].filter(Boolean).join(' - ') || o.deliveryDate}</p><p className="text-xs text-slate-500">Delivery {o.deliveryDate} {o.deliveryTime || ''}</p></td><td className="p-3 text-right font-black">
               {o.originalOrderValue !== undefined && Math.abs(o.originalOrderValue - o.orderValue) > 0.01 ? (
