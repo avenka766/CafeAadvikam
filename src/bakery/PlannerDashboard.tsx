@@ -11175,10 +11175,28 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
   const catalogNamesForMismatchCheck = (scope === 'SNB' || scope === 'VRSNB') && !customer
     ? (catalogItems[scope] ?? []).map(i => i.name)
     : [];
+  // BUG FIX (2026-09-13, found before deploy): closestRecipeMatch's "exact"
+  // check goes through canonicalItemSlug, which deliberately treats
+  // "harmless singular/plural differences" as the same item (see its doc
+  // comment in itemMatcher.ts) — correct for Recipe Management's stock-
+  // deduction lookup, but wrong for THIS feature: the user's own worked
+  // example is exactly a plural mismatch ("BUN" in SNB's list vs a planner
+  // typing "BUNS"), and canonicalItemSlug("BUNS") === canonicalItemSlug("BUN")
+  // silently reported it as 'exact', defeating the whole check. Only a
+  // literal (trim+lowercase) match — the same comparison priceFor already
+  // uses — counts as "exact" here; everything else is a real mismatch, still
+  // using closestRecipeMatch purely for its Levenshtein "did you mean"
+  // suggestion (even when closestRecipeMatch itself calls that suggestion
+  // 'exact').
   const catalogMismatches = catalogNamesForMismatchCheck.length > 0
     ? displayItems
-        .map(d => ({ itemName: d.itemName, result: closestRecipeMatch(d.itemName, catalogNamesForMismatchCheck) }))
-        .filter((x): x is { itemName: string; result: NonNullable<ReturnType<typeof closestRecipeMatch>> } => !!x.result && x.result.status !== 'exact')
+        .filter(d => !catalogNamesForMismatchCheck.some(name => normalizeItemName(name) === normalizeItemName(d.itemName)))
+        .map(d => {
+          const loose = closestRecipeMatch(d.itemName, catalogNamesForMismatchCheck);
+          const result = loose && loose.status === 'exact' ? { ...loose, status: 'mismatch' as const } : loose;
+          return { itemName: d.itemName, result };
+        })
+        .filter((x): x is { itemName: string; result: NonNullable<ReturnType<typeof closestRecipeMatch>> } => !!x.result)
     : [];
   // Charges are folded into the same subtotal/discount/total math as the
   // real items (rather than kept discount-exempt) so this preview always
