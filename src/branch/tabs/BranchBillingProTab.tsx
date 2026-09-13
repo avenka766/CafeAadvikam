@@ -1124,15 +1124,36 @@ export default function BranchBillingProTab({
       // balances against the core bill. The cashier's real entered amounts
       // are preserved everywhere else -- printed bill, `split` state, and
       // the header's tendered total via the extra-charges call below.
+      // BUG FIX (2026-09-13): "packing charges not added to Cashier report /
+      // Credit bills / Daily Closure — this money is not added anywhere."
+      // The trim below correctly kept the CORE checkout RPC's payment ledger
+      // balanced, but the trimmed-out amount (the charge, actually collected
+      // from the customer right now) was simply discarded — nothing ever
+      // told add_branch_bill_extra_charges_secure how much of the charge was
+      // really paid just now vs. genuinely left on credit, so it always
+      // added the FULL charge to `balance` (even when it had already been
+      // collected in cash) and never wrote a matching branch_sale_payments
+      // row at all — meaning cash_sales/upi_sales/card_sales (what Cashier
+      // Report and Daily Closure's expected-cash actually sum) permanently
+      // excluded every packing/delivery charge, and a credit sale's charge
+      // portion could be BOTH collected in cash AND still shown as owed.
+      // Track exactly which mode(s) absorbed the trim so the RPC can insert
+      // the missing payment row(s) and only put the genuinely-uncollected
+      // remainder on credit.
       let chargeRemainderToTrim = extraChargesValue;
+      const chargeCollectedByMode: Record<string, number> = {};
       const corePaymentRows = paymentRows
         .map((row) => {
           if (chargeRemainderToTrim <= 0) return row;
           const trim = Math.min(row.amount, chargeRemainderToTrim);
           chargeRemainderToTrim = roundMoney(chargeRemainderToTrim - trim);
+          if (trim > 0) chargeCollectedByMode[row.mode] = roundMoney((chargeCollectedByMode[row.mode] ?? 0) + trim);
           return { ...row, amount: roundMoney(row.amount - trim) };
         })
         .filter((row) => row.amount > 0);
+      const chargePaymentsForRpc = Object.entries(chargeCollectedByMode)
+        .filter(([, amount]) => amount > 0)
+        .map(([mode, amount]) => ({ mode, amount }));
 
       const idempotencyKey = checkoutIdempotencyRef.current
         ?? `branch-checkout:${branch}:${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`}`;
@@ -1318,6 +1339,15 @@ export default function BranchBillingProTab({
           p_bill_id: saved.id,
           p_packing_charge: packingChargeValue,
           p_delivery_charge: deliveryChargeValue,
+          // BUG FIX (2026-09-13): see chargePaymentsForRpc's own comment
+          // above — tells the RPC exactly which mode(s) the charge was
+          // really collected in right now, and whether that collection
+          // counts as a normal sale or a credit-upfront payment, so it can
+          // insert the matching branch_sale_payments row(s) (what Cashier
+          // Report/Daily Closure actually sum) instead of only bumping the
+          // bill header's own display total.
+          p_charge_payments: chargePaymentsForRpc,
+          p_charge_payment_purpose: paymentMode === 'credit' ? 'credit_upfront' : 'bill_collection',
           p_notes: null,
         }).then(({ error: chargesError }) => {
           if (chargesError) {
