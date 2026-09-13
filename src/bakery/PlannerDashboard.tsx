@@ -35,6 +35,7 @@ import PackingCakeOrdersTab from './PackingCakeOrdersTab';
 import { useCakeReadyCount } from './useCakeReadyCount';
 import PlannerLeftoverTab, { PlannerTransferOutTab, useLeftoverBalanceMap, closingStockBalanceKey, recordLeftoverMovement, kolkataToday, qtyFmt, sanitizeQtyForUnit, type LeftoverUnit, useMergedLeftoverCatalog, useMergedCatalogWithPrice, useBranchOnlyCatalog, ItemSearchPicker, type MergedCatalogItem } from './PlannerLeftoverTab';
 import { canonicalItemSlug, closingStockItemSlug, kgToPcs, parseWeightGrams, pcsToKg, resolveItemWeightGrams, VRSNB_DEFAULT_PACKET_GRAMS, pcsToKgForItem, kgToPcsForItem } from './itemMatcher';
+import { closestRecipeMatch } from './recipeNameMatch';
 import { useBranchCatalogStore } from '@/stores/branchCatalogStore';
 import { useRecipeStore } from './recipeStore';
 import { useBranchStore } from '@/branch/branchStore';
@@ -11158,6 +11159,27 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
     return { itemName: d.itemName, unit: d.unit, quantity: d.quantity, unitPrice, lineTotal: Math.round(d.quantity * unitPrice * 100) / 100 };
   });
   const missingPriceItems = displayItems.filter(d => priceFor(d.itemName) === null);
+  // FEATURE (2026-09-13): "if the planner tries to send items that are not
+  // in SNB items then... throw a message stating the item is not in SNB
+  // items so it can't be sent due to mismatch, contact SNB branch manager"
+  // — e.g. dispatching "BUNS" when the branch's real catalog item is "BUN".
+  // Only a real SNB/VRSNB branch dispatch carries this risk: a Custom sale
+  // deliberately draws from the COMBINED SNB+VRSNB catalog (see priceFor
+  // above), so "which one branch's list" doesn't apply, and Hosur has no
+  // catalog of this shape at all (its prices come from hosur_shop_price_lists,
+  // a per-shop list the shop itself maintains). Reuses closestRecipeMatch
+  // (already used elsewhere for the identical "typo vs genuinely new item"
+  // question against Recipe Management) against this branch's own real item
+  // names — 'mismatch' means a probable typo with a suggestion, 'missing'
+  // means nothing close exists at all.
+  const catalogNamesForMismatchCheck = (scope === 'SNB' || scope === 'VRSNB') && !customer
+    ? (catalogItems[scope] ?? []).map(i => i.name)
+    : [];
+  const catalogMismatches = catalogNamesForMismatchCheck.length > 0
+    ? displayItems
+        .map(d => ({ itemName: d.itemName, result: closestRecipeMatch(d.itemName, catalogNamesForMismatchCheck) }))
+        .filter((x): x is { itemName: string; result: NonNullable<ReturnType<typeof closestRecipeMatch>> } => !!x.result && x.result.status !== 'exact')
+    : [];
   // Charges are folded into the same subtotal/discount/total math as the
   // real items (rather than kept discount-exempt) so this preview always
   // matches exactly what saveDispatchInvoice below actually computes and
@@ -11198,6 +11220,18 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
 
   const confirm = async () => {
     if (sendingRef.current) return;
+    // FEATURE (2026-09-13): checked before missingPriceItems on purpose — an
+    // item that isn't in this branch's list at all shouldn't be "fixable" by
+    // just typing a price into the override box below (that would silently
+    // create a phantom item at the branch's counter); it needs the name
+    // corrected or the branch's item master updated, not a manual price.
+    if (catalogMismatches.length > 0) {
+      const lines = catalogMismatches.map(x => x.result.status === 'mismatch'
+        ? `"${x.itemName}" — not in ${scope}'s item list (did you mean "${x.result.match}"?)`
+        : `"${x.itemName}" — not in ${scope}'s item list`);
+      setError(`Can't send — the following item${catalogMismatches.length > 1 ? 's' : ''} don't match ${scope}'s item list due to a name mismatch. Fix the name or contact the ${scope} branch manager:\n${lines.join('\n')}`);
+      return;
+    }
     if (missingPriceItems.length > 0) {
       setError(`Enter a price for: ${missingPriceItems.map(i => i.itemName).join(', ')} before dispatching.`);
       return;
@@ -11490,6 +11524,28 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
               </div>
             )}
 
+            {/* FEATURE (2026-09-13): "throw a message stating the particular
+                item is not in the SNB items so it can't be sent due to
+                mismatch, please contact SNB branch manager ... few times the
+                planner will send multiple items so show a clear message
+                which item" — a persistent banner (not just the error toast
+                on Send) so every mismatched item is visible while reviewing,
+                with a suggestion when it looks like a plausible typo. */}
+            {catalogMismatches.length > 0 && (
+              <div className="mt-3 rounded-xl border-2 border-red-300 bg-red-50 p-3">
+                <p className="text-[11px] font-black text-red-900">
+                  {catalogMismatches.length} item{catalogMismatches.length > 1 ? 's are' : ' is'} not in {scope}'s item list — can't be sent due to a name mismatch. Please contact the {scope} branch manager:
+                </p>
+                <ul className="mt-1 space-y-0.5">
+                  {catalogMismatches.map(x => (
+                    <li key={x.itemName} className="text-[11px] font-bold text-red-800">
+                      "{x.itemName}"{x.result.status === 'mismatch' ? ` — did you mean "${x.result.match}"?` : ' — no similar item found'}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
             <div className="mt-3 overflow-x-auto rounded-xl border border-border">
               <table className="w-full text-xs">
                 <thead className="bg-muted/40 text-left font-black uppercase text-muted-foreground">
@@ -11505,12 +11561,17 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
                   {displayItems.map((d, idx) => {
                     const price = priceFor(d.itemName);
                     const missing = price === null;
+                    const mismatch = catalogMismatches.find(x => x.itemName === d.itemName);
                     return (
-                      <tr key={d.itemName} className={cn('border-t border-border', missing && 'bg-red-50')}>
+                      <tr key={d.itemName} className={cn('border-t border-border', mismatch ? 'bg-red-100' : missing && 'bg-red-50')}>
                         <td className="px-3 py-2 text-right text-muted-foreground">{idx + 1}</td>
                         <td className="px-3 py-2 font-bold text-foreground">
                           {d.itemName}
-                          {missing && <span className="ml-1.5 rounded-full bg-red-100 px-1.5 py-0.5 text-[9px] font-black text-red-700">NO PRICE — enter below</span>}
+                          {mismatch ? (
+                            <span className="ml-1.5 rounded-full bg-red-200 px-1.5 py-0.5 text-[9px] font-black text-red-900">
+                              NOT IN {scope} ITEMS{mismatch.result.status === 'mismatch' ? ` — try "${mismatch.result.match}"?` : ''}
+                            </span>
+                          ) : missing && <span className="ml-1.5 rounded-full bg-red-100 px-1.5 py-0.5 text-[9px] font-black text-red-700">NO PRICE — enter below</span>}
                         </td>
                         <td className="px-3 py-2 text-right text-muted-foreground">{d.quantity} {d.unit}</td>
                         <td className="px-3 py-2 text-right">
