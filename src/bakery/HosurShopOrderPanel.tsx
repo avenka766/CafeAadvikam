@@ -671,8 +671,26 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
   // dropped out of `selected` — the planner would reasonably assume the
   // whole batch billed. Track real outcomes and show a summary instead.
   const [bulkSummary, setBulkSummary] = useState<{ succeeded: number; failed: { shopName: string; message: string }[] } | null>(null);
+  // BUG FIX (2026-09-14): confirmed live root cause of a ₹63,104 duplicate-
+  // billing incident — this had no lower bound excluding an order that was
+  // already fully billed. "Fully dispatched" (dispatchedQuantity >= quantity)
+  // stays true forever once an order is complete, so an already-billed order
+  // never left this list (or the "Select all N fully-dispatched" button just
+  // below, which selects everything in it) — it just kept reappearing
+  // indefinitely. On 2026-09-13, selecting-all and running Bulk Bill re-billed
+  // 43 orders that had already been billed (some as far back as Sept 3),
+  // silently doubling their credit. dispatchReceiveAndBill (hosurBillingBridge.ts)
+  // now refuses that call server-side too, but exclude it from this list at
+  // the source as well so it's never offered in the first place: an order only
+  // belongs here if at least one item still has real UNBILLED stock
+  // (dispatchedQuantity strictly ahead of what's already been received/billed).
   const fullyDispatchedOrders = useMemo(
-    () => filteredOrders.filter(o => items.filter(i => i.orderId === o.id).every(i => i.dispatchedQuantity >= i.quantity - 0.01)),
+    () => filteredOrders.filter(o => {
+      const orderItems = items.filter(i => i.orderId === o.id);
+      return orderItems.length > 0
+        && orderItems.every(i => i.dispatchedQuantity >= i.quantity - 0.01)
+        && orderItems.some(i => i.dispatchedQuantity > i.receivedQuantity + 0.009);
+    }),
     [filteredOrders, items],
   );
   const toggleSelected = (orderId: string) => setSelected(v => {

@@ -189,6 +189,35 @@ export async function dispatchReceiveAndBill(params: {
     }
   }
 
+  // BUG FIX (2026-09-14): confirmed live — a stale "still needs billing" entry
+  // (e.g. re-selected in Bulk Bill, or this called a second time before the
+  // order's own status caught up) re-ran this whole function for an order
+  // that had already been billed, with `items` unchanged since the last
+  // bill. The "already confirmed — merge" branch below has no way to tell
+  // "this batch is new stock" apart from "this is a stale repeat" — it just
+  // concatenates whatever `items` says on top of everything already billed,
+  // so a repeat call silently re-bills the same goods again. Root-caused a
+  // 2026-09-13 incident: a stale bulk-bill pass re-billed 43 already-billed
+  // orders across 15 Hosur shops, ₹63,104 of duplicate credit (corrected via
+  // hosur_bill_adjustments — see project_hosur_duplicate_rebill memory).
+  // Guard here, before step 1 overwrites received_quantity with this call's
+  // figures: if every item's incoming receivedQuantity is no greater than
+  // what's already recorded as received (i.e. nothing new actually went out
+  // since the last bill) and there are no new charges, refuse outright
+  // instead of silently doubling the bill. A genuine new batch always shows
+  // a real increase (dispatchedQuantity only ever grows), so this never
+  // blocks legitimate multi-batch billing.
+  if (items.length > 0 && charges.length === 0) {
+    const { data: currentItemRows, error: currentItemsError } = await supabase
+      .from('hosur_order_items').select('id, received_quantity').in('id', items.map(i => i.id));
+    if (currentItemsError) throw currentItemsError;
+    const currentReceivedById = new Map((currentItemRows ?? []).map(r => [r.id, Number(r.received_quantity ?? 0)]));
+    const hasAnyNewQuantity = items.some(i => i.receivedQuantity > (currentReceivedById.get(i.id) ?? 0) + 0.009);
+    if (!hasAnyNewQuantity) {
+      throw new Error(`${order.shopName}'s order has nothing new to bill — it looks like it was already billed for this quantity. If new stock was just dispatched, refresh the page and try again.`);
+    }
+  }
+
   // 1. Mark items received == what was dispatched (Planner is both sender and
   //    confirmer now, so there is no separate physical receiving step).
   for (const item of items) {
