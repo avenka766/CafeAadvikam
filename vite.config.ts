@@ -39,7 +39,25 @@ export default defineConfig({
           if (!id.includes("node_modules")) return undefined;
           if (id.includes("@supabase")) return "supabase-vendor";
           if (id.includes("recharts") || id.includes("chart.js")) return "charts-vendor";
-          if (id.includes("jspdf") || id.includes("qrcode")) return "document-vendor";
+          // BUG FIX (2026-09-14): `dijkstrajs` is qrcode's own dependency
+          // (used internally for QR segment-mode optimization,
+          // `dijkstra.find_path(...)` in qrcode/lib/core/segments.js) but its
+          // module id lives under its own node_modules folder, not under
+          // "qrcode" — so it fell through to the generic `vendor` bucket
+          // below, landing in a DIFFERENT chunk than the qrcode code that
+          // `require()`s it. Splitting a CJS module from the sibling CJS
+          // module it requires across two separate Rollup chunks breaks the
+          // cross-chunk CJS interop binding, so `dijkstra` (the imported
+          // object) came back `undefined` in production and every single
+          // WhatsApp bill/QR generation (createWhatsappQrMedia /
+          // createWhatsappBillDocument, called for every Hosur — and any
+          // other — dispatch bill) threw "Cannot read properties of
+          // undefined (reading 'find_path')" and silently failed to send.
+          // Confirmed live: every hosur_whatsapp_logs 'bill' send failed
+          // with this exact error from 2026-09-04 through 2026-09-14 (283
+          // failures, zero successes) — this had been broken in production
+          // for 10 days. Keep dijkstrajs in the same chunk as qrcode/jspdf.
+          if (id.includes("jspdf") || id.includes("qrcode") || id.includes("dijkstrajs")) return "document-vendor";
           if (id.includes("framer-motion")) return "motion-vendor";
           if (id.includes("@radix-ui") || id.includes("cmdk") || id.includes("vaul")) return "ui-vendor";
           return "vendor";
