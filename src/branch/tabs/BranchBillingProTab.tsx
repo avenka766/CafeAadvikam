@@ -1334,9 +1334,23 @@ export default function BranchBillingProTab({
       // already committed above) - failures here are surfaced via setError
       // but the bill itself stays valid.
       if (extraChargesValue > 0) {
+        // BUG FIX (2026-09-14): confirmed live — `saved.id` is a LOCAL-only
+        // id (useBranchOpsStore's `addBill`/`uid("bill")`, e.g.
+        // "bill-1757834521234-a3f9x2"), never the real branch_bill_headers
+        // UUID. Every single call to this RPC has been sending that fake
+        // string as `p_bill_id` (a `uuid`-typed parameter) — Postgres
+        // rejects it outright with "invalid input syntax for type uuid"
+        // before the function body ever runs, so this has failed 100% of
+        // the time since the feature existed (confirmed: zero
+        // branch_bill_items rows named 'Packing Charge'/'Delivery Charge'
+        // exist anywhere in the database, old or new). The fire-and-forget
+        // `.then()` below only sets a local, easy-to-miss error banner, so
+        // this went unnoticed rather than blocking anything. The real id is
+        // `result.billId`, returned by the checkout RPC just above (already
+        // used for the cashier-attribution backfill a few lines up).
         void supabase.rpc('add_branch_bill_extra_charges_secure', {
           p_branch: branch,
-          p_bill_id: saved.id,
+          p_bill_id: result.billId,
           p_packing_charge: packingChargeValue,
           p_delivery_charge: deliveryChargeValue,
           // BUG FIX (2026-09-13): see chargePaymentsForRpc's own comment
