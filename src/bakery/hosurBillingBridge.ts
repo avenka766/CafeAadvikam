@@ -140,6 +140,26 @@ export function computePaymentSplit(total: number, payment: PaymentCapture): { p
   return { paid, credit, status };
 }
 
+/**
+ * BUG FIX (2026-09-14): the money-losing half of the 2026-09-13 duplicate-
+ * bill incident (see project_hosur_duplicate_rebill memory) — pulled out as
+ * its own pure function so it has direct regression coverage instead of only
+ * being reachable through the full dispatchReceiveAndBill call (which needs
+ * a live Supabase session and a counter/order/bill round-trip to exercise).
+ * `currentReceivedById` is what's already recorded as billed in
+ * `hosur_order_items.received_quantity` for each item, keyed by item id;
+ * `items` is what THIS call is about to bill. True only if at least one item
+ * shows a real increase — dispatchedQuantity only ever grows, so a genuine
+ * new batch always clears this, and a stale repeat of an already-billed
+ * order never does.
+ */
+export function hasUnbilledQuantity(
+  items: { id: string; receivedQuantity: number }[],
+  currentReceivedById: Map<string, number>,
+): boolean {
+  return items.some(i => i.receivedQuantity > (currentReceivedById.get(i.id) ?? 0) + 0.009);
+}
+
 // FEATURE (2026-09-02): "give the option to enter the charges field — a
 // field to enter the charge name and a field to enter the amount" — an
 // ad-hoc named charge (delivery fee, packing charge, etc.) added on top of
@@ -212,8 +232,7 @@ export async function dispatchReceiveAndBill(params: {
       .from('hosur_order_items').select('id, received_quantity').in('id', items.map(i => i.id));
     if (currentItemsError) throw currentItemsError;
     const currentReceivedById = new Map((currentItemRows ?? []).map(r => [r.id, Number(r.received_quantity ?? 0)]));
-    const hasAnyNewQuantity = items.some(i => i.receivedQuantity > (currentReceivedById.get(i.id) ?? 0) + 0.009);
-    if (!hasAnyNewQuantity) {
+    if (!hasUnbilledQuantity(items, currentReceivedById)) {
       throw new Error(`${order.shopName}'s order has nothing new to bill — it looks like it was already billed for this quantity. If new stock was just dispatched, refresh the page and try again.`);
     }
   }

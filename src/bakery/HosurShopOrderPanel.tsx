@@ -66,6 +66,25 @@ function mapItem(r: Record<string, unknown>): HosurOrderItem {
   return { id: r.id as string, orderId: r.order_id as string, itemName: String(r.item_name ?? ''), unit: r.unit === 'kg' ? 'kg' : 'pcs', quantity: Number(r.quantity ?? 0), unitPrice: Number(r.unit_price ?? 0), lineTotal: Number(r.line_total ?? 0), dispatchedQuantity: Number(r.dispatched_quantity ?? 0), receivedQuantity: Number(r.received_quantity ?? 0), cancelledQuantity: Number(r.cancelled_quantity ?? 0) };
 }
 
+/**
+ * BUG FIX (2026-09-14): the UI half of the 2026-09-13 duplicate-bill
+ * incident (see project_hosur_duplicate_rebill memory) — pulled out as its
+ * own pure function so it has direct regression coverage independent of the
+ * component's own state/rendering. An order belongs in the Bulk Bill /
+ * "Select all fully-dispatched" list only if every item has actually been
+ * sent (dispatchedQuantity covers what was ordered) AND at least one item
+ * still has real stock that hasn't been billed yet (dispatchedQuantity
+ * strictly ahead of receivedQuantity). Before this fix the second half
+ * didn't exist, so an order that was already fully billed — where
+ * dispatchedQuantity == receivedQuantity forever after — never left this
+ * list and stayed selectable indefinitely.
+ */
+export function isOrderBillable(orderItems: Pick<HosurOrderItem, 'dispatchedQuantity' | 'quantity' | 'receivedQuantity'>[]): boolean {
+  return orderItems.length > 0
+    && orderItems.every(i => i.dispatchedQuantity >= i.quantity - 0.01)
+    && orderItems.some(i => i.dispatchedQuantity > i.receivedQuantity + 0.009);
+}
+
 export default function HosurShopOrderPanel({ section: controlledSection, onPendingCountChange }: { section?: 'place' | 'dispatch'; onPendingCountChange?: (n: number) => void } = {}) {
   const currentUser = useAuthStore(s => s.currentUser);
   const [shops, setShops] = useState<HosurShop[]>([]);
@@ -685,12 +704,7 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
   // belongs here if at least one item still has real UNBILLED stock
   // (dispatchedQuantity strictly ahead of what's already been received/billed).
   const fullyDispatchedOrders = useMemo(
-    () => filteredOrders.filter(o => {
-      const orderItems = items.filter(i => i.orderId === o.id);
-      return orderItems.length > 0
-        && orderItems.every(i => i.dispatchedQuantity >= i.quantity - 0.01)
-        && orderItems.some(i => i.dispatchedQuantity > i.receivedQuantity + 0.009);
-    }),
+    () => filteredOrders.filter(o => isOrderBillable(items.filter(i => i.orderId === o.id))),
     [filteredOrders, items],
   );
   const toggleSelected = (orderId: string) => setSelected(v => {
