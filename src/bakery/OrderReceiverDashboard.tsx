@@ -2223,6 +2223,19 @@ function SnbSplitStockCountPanel({
 }) {
   const branch = "SNB" as const;
   const { submitStockCountReport } = useBranchOpsStore();
+  // BUG FIX (2026-09-14): "system stock is not showing correctly even if the
+  // stock is there" — this screen only ever consumed whatever `stock[branch]`
+  // already happened to hold from some OTHER tab's earlier fetch (or the
+  // empty initial state, if none had run yet this session) and relied purely
+  // on the branch_stock realtime subscription (change-events only, no
+  // backfill) to keep it current. Every other real consumer of stock in this
+  // codebase explicitly fetches fresh stock on its own mount (see the
+  // "EGRESS FIX" fetchBranchData(..., ['stock']) calls throughout
+  // branchStore.ts/AdminSNBDashboard.tsx/etc.) — this was the one screen
+  // whose entire job is comparing system stock against physical reality that
+  // never did, so a stale (or never-populated) snapshot silently showed 0 for
+  // any item the current session hadn't already touched.
+  useEffect(() => { void useBranchStore.getState().fetchBranchData(branch, false, ['stock']); }, [branch]);
   const businessDate = useMemo(() => stockCountBusinessDate(), []);
   const [groupMap, setGroupMap] = useState<Map<string, StockGroup> | null>(null);
   // AUDIT CONTROL (2026-09-08): "Stock 1"/"Stock 2" is no longer a fixed
@@ -2704,6 +2717,12 @@ function StockCountPanel({
 }) {
   const { submitStockCountReport } = useBranchOpsStore();
   const { items: itemMaster } = useOperationalBranchCatalog(branch);
+  // BUG FIX (2026-09-14): see the matching fix + comment in
+  // SnbSplitStockCountPanel above — this screen never forced a fresh stock
+  // fetch of its own, so `branchStock` could be a stale or never-populated
+  // snapshot, silently showing System Qty 0 for any item the session hadn't
+  // already fetched stock for elsewhere.
+  useEffect(() => { void useBranchStore.getState().fetchBranchData(branch, false, ['stock']); }, [branch]);
   const [counts, setCounts] = useState<Record<string, string>>({});
   const touchedCounts = useRef<Record<string, boolean>>({});
   const [notice, setNotice] = useState("");
