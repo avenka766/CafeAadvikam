@@ -10970,6 +10970,37 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
   const [hosurPrices, setHosurPrices] = useState<Record<string, number>>({});
   const [loadingPrices, setLoadingPrices] = useState(scope !== 'Hosur');
   const [priceOverrides, setPriceOverrides] = useState<Record<string, string>>({});
+  // FEATURE (2026-09-14): "when we try to dispatch an item that is not in
+  // the branch item list it shows the error as expected but there is no way
+  // that we can change that name" — the mismatch check (2026-09-13) could
+  // only block and tell the planner to contact the branch manager; fixing a
+  // typo meant cancelling out, going back to wherever the item was entered,
+  // and re-doing the whole dispatch. Keyed by the ORIGINAL raw item name
+  // (trim+lowercase, matching every other name-keyed map in this modal) so a
+  // rename survives displayItems/catalogMismatches recomputing after it's
+  // applied. Only renames THIS dispatch batch's item name (what gets sent to
+  // the branch and invoiced) — never touches the underlying order data.
+  const [itemNameOverrides, setItemNameOverrides] = useState<Record<string, string>>({});
+  const [renamingItem, setRenamingItem] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState('');
+  const applyItemNameOverride = (originalName: string, newName: string) => {
+    const trimmed = newName.trim();
+    if (!trimmed) return;
+    setItemNameOverrides(v => ({ ...v, [originalName.trim().toLowerCase()]: trimmed }));
+    setRenamingItem(null);
+    setRenameDraft('');
+  };
+  // actions is a prop built by the caller — apply any accepted rename here,
+  // once, so everything downstream (displayItems, the catalog-mismatch
+  // check, pricing, AND the actual dispatch/invoice on Confirm) sees the
+  // corrected name consistently instead of just the display list.
+  const effectiveActions = useMemo(
+    () => actions.map(a => {
+      const override = itemNameOverrides[a.itemName.trim().toLowerCase()];
+      return override ? { ...a, itemName: override } : a;
+    }),
+    [actions, itemNameOverrides],
+  );
   const [discountPct, setDiscountPct] = useState(customer ? 0 : defaultDiscountPct(scope));
   const [sending, setSending] = useState(false);
   // BUG FIX (2026-08-19): "same invoice shows multiple times after
@@ -11094,7 +11125,7 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
   // checklist/invoice should show one combined line for it.
   const displayItems = useMemo(() => {
     const byName = new Map<string, { itemName: string; unit: string; quantity: number }>();
-    for (const a of actions) {
+    for (const a of effectiveActions) {
       // BUG FIX: "Bun showing twice, quantities split across two rows" —
       // this map was keyed by the raw, case-sensitive itemName. Two
       // contributing orders with the same logical item but different
@@ -11125,7 +11156,7 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
     // re-alphabetizing right at this final display step, undoing that fix
     // entirely without it being visible anywhere upstream.
     return Array.from(byName.values());
-  }, [actions]);
+  }, [effectiveActions]);
 
   const priceFor = (itemName: string): number | null => {
     const override = priceOverrides[itemName];
@@ -11292,7 +11323,7 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
     setSending(true);
     setError(null);
     try {
-      for (const a of actions) {
+      for (const a of effectiveActions) {
         // BUG FIX: "for pcs item never allow decimal points" — proportional
         // splitting (across contributing orders, or across branches for a
         // merged item) can produce a fractional result like 11.64 pcs,
@@ -11552,12 +11583,21 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
             {catalogMismatches.length > 0 && (
               <div className="mt-3 rounded-xl border-2 border-red-300 bg-red-50 p-3">
                 <p className="text-[11px] font-black text-red-900">
-                  {catalogMismatches.length} item{catalogMismatches.length > 1 ? 's are' : ' is'} not in {scope}'s item list — can't be sent due to a name mismatch. Please contact the {scope} branch manager:
+                  {catalogMismatches.length} item{catalogMismatches.length > 1 ? 's are' : ' is'} not in {scope}'s item list — can't be sent due to a name mismatch. Fix the name below, or contact the {scope} branch manager:
                 </p>
-                <ul className="mt-1 space-y-0.5">
+                <ul className="mt-1 space-y-1">
                   {catalogMismatches.map(x => (
-                    <li key={x.itemName} className="text-[11px] font-bold text-red-800">
-                      "{x.itemName}"{x.result.status === 'mismatch' ? ` — did you mean "${x.result.match}"?` : ' — no similar item found'}
+                    <li key={x.itemName} className="flex flex-wrap items-center gap-1.5 text-[11px] font-bold text-red-800">
+                      <span>"{x.itemName}"{x.result.status === 'mismatch' ? ` — did you mean "${x.result.match}"?` : ' — no similar item found'}</span>
+                      {x.result.status === 'mismatch' && x.result.match && (
+                        <button
+                          type="button"
+                          onClick={() => applyItemNameOverride(x.itemName, x.result.match as string)}
+                          className="rounded-full bg-red-700 px-2 py-0.5 text-[10px] font-black text-white hover:bg-red-800"
+                        >
+                          Use "{x.result.match}"
+                        </button>
+                      )}
                     </li>
                   ))}
                 </ul>
@@ -11585,9 +11625,30 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
                         <td className="px-3 py-2 text-right text-muted-foreground">{idx + 1}</td>
                         <td className="px-3 py-2 font-bold text-foreground">
                           {d.itemName}
-                          {mismatch ? (
-                            <span className="ml-1.5 rounded-full bg-red-200 px-1.5 py-0.5 text-[9px] font-black text-red-900">
+                          {mismatch && renamingItem === d.itemName ? (
+                            <div className="mt-1 flex flex-wrap items-center gap-1">
+                              <input
+                                autoFocus
+                                value={renameDraft}
+                                onChange={e => setRenameDraft(e.target.value)}
+                                onKeyDown={e => { if (e.key === 'Enter') applyItemNameOverride(d.itemName, renameDraft); if (e.key === 'Escape') { setRenamingItem(null); setRenameDraft(''); } }}
+                                placeholder={`Real ${scope} item name`}
+                                className="min-w-[160px] rounded-lg border border-red-300 bg-white px-2 py-1 text-[11px] font-semibold"
+                              />
+                              <button type="button" onClick={() => applyItemNameOverride(d.itemName, renameDraft)} className="rounded-lg bg-red-700 px-2 py-1 text-[10px] font-black text-white hover:bg-red-800">Save</button>
+                              <button type="button" onClick={() => { setRenamingItem(null); setRenameDraft(''); }} className="rounded-lg border border-red-300 px-2 py-1 text-[10px] font-black text-red-700">Cancel</button>
+                            </div>
+                          ) : mismatch ? (
+                            <span className="ml-1.5 inline-flex items-center gap-1 rounded-full bg-red-200 px-1.5 py-0.5 text-[9px] font-black text-red-900">
                               NOT IN {scope} ITEMS{mismatch.result.status === 'mismatch' ? ` — try "${mismatch.result.match}"?` : ''}
+                              <button
+                                type="button"
+                                onClick={() => { setRenamingItem(d.itemName); setRenameDraft(mismatch.result.match ?? d.itemName); }}
+                                className="ml-0.5 rounded-full bg-red-900 px-1.5 py-0.5 text-white hover:bg-red-950"
+                                title="Fix this item's name"
+                              >
+                                Fix name
+                              </button>
                             </span>
                           ) : missing && <span className="ml-1.5 rounded-full bg-red-100 px-1.5 py-0.5 text-[9px] font-black text-red-700">NO PRICE — enter below</span>}
                         </td>
