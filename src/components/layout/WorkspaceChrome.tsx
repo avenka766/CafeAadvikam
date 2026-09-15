@@ -249,8 +249,15 @@ export function navForRole(role?: string): NavItem[] {
         // same page — but this sidebar array is a completely separate nav
         // list from Planner's own in-page tab bar, so the old link kept
         // showing here even after the in-page tab was removed. Removed.
-        { label: 'Closing Stock', path: '/bakery/planner?tab=leftover-stock', icon: <Scale className="size-4" />, group: 'Stock' },
-        // BUG FIX: this sidebar nav is a completely separate list from
+        // TAB MERGE (2026-09-15): the in-page ?tab=leftover-stock page itself
+        // was relabeled "Reports" and now combines Reports + Closing Stock +
+        // Packing & Dispatch + Disputes & Returns (see
+        // PlannerReportsAndClosingStockTab in PlannerDashboard.tsx) — the OLD
+        // standalone 'Reports' sidebar link a few lines down pointed at
+        // ?tab=reports, which still resolves (kept for old bookmarks) but is
+        // now the exact same page as this one, so that duplicate entry was
+        // removed rather than leaving two sidebar links to one destination.
+        { label: 'Reports', path: '/bakery/planner?tab=leftover-stock', icon: <BarChart3 className="size-4" />, group: 'Reports' },
         // PlannerDashboard.tsx's own in-page NAV_ITEMS array — adding a tab
         // there (or renaming one) never touches this file, so both went
         // stale here even after being changed in-page. Added the missing
@@ -263,7 +270,12 @@ export function navForRole(role?: string): NavItem[] {
         // End-of-day financial close-out.
         { label: 'Daily Closure', path: '/bakery/planner?tab=closure', icon: <Calendar className="size-4" />, group: 'Reports' },
         { label: 'Invoice', path: '/bakery/planner?tab=invoice', icon: <Receipt className="size-4" />, group: 'Reports' },
-        { label: 'Reports', path: '/bakery/planner?tab=reports', icon: <BarChart3 className="size-4" />, group: 'Reports' },
+        // BUG FIX (2026-09-15, same-day correction): this was the actual
+        // duplicate 'Reports' entry (pointed at the old ?tab=reports alias) —
+        // the comment above on the ?tab=leftover-stock entry SAID this one
+        // was removed, but the removal was never actually done, so both
+        // stayed in the sidebar. Confirmed via screenshot showing 2 "Reports"
+        // rows under the Reports group. Now actually deleted.
       ];
     case 'cake_master':
       return [
