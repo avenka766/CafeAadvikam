@@ -12,9 +12,8 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   Search, Plus, Minus, PackageCheck, History, FileSpreadsheet, Printer,
-  Loader2, AlertTriangle, CheckCircle2, CalendarDays, Scale, X, RefreshCw, Truck, Cake,
+  Loader2, AlertTriangle, CheckCircle2, CalendarDays, Scale, X, RefreshCw, Truck, Cake, Trash2,
 } from 'lucide-react';
-import * as XLSX from 'xlsx';
 import jsPDF from 'jspdf';
 import { cn } from '@/lib/utils';
 import { supabase } from '@/lib/supabase';
@@ -23,6 +22,7 @@ import { useBranchCatalogStore } from '@/stores/branchCatalogStore';
 import { closingStockItemSlug, resolveItemWeightGrams, kgToPcs } from './itemMatcher';
 import { BRANCHES } from './types';
 import type { Branch } from './types';
+import { generateExcelReport, generatePdfReport, type ExcelSectionSpec, type PdfSectionSpec } from './reportExport';
 
 export type LeftoverUnit = 'kg' | 'pcs';
 export type LeftoverReason = 'closing_stock' | 'production_carryover' | 'dispatch' | 'adjustment' | 'transfer_out' | 'return';
@@ -449,7 +449,14 @@ export function ItemSearchPicker({ value, onChange, onSelect, items, placeholder
   );
 }
 
-export default function PlannerLeftoverTab() {
+export default function PlannerLeftoverTab({ onExportDataChange }: {
+  // FEATURE (2026-09-15): lets the merged Reports tab's top-level "Export
+  // All" button fold this section's current Excel/PDF data into one
+  // combined file — reported up on every change via useEffect below rather
+  // than re-fetched, since this tab is always mounted (CSS-hidden, not
+  // unmounted) whenever the combined tab is open.
+  onExportDataChange?: (data: { excel: ExcelSectionSpec; pdf: PdfSectionSpec }) => void;
+} = {}) {
   const { currentUser } = useAuthStore();
   const staffName = currentUser?.displayName || currentUser?.username || 'Planner Staff';
   const catalog = useMergedLeftoverCatalog();
@@ -616,6 +623,40 @@ export default function PlannerLeftoverTab() {
     }
   };
 
+  // FEATURE (2026-09-15): "add Delete button for Current Leftover Balance
+  // section for the items" — Write-off above only ever removes a PARTIAL
+  // amount (and is hidden once a row is already a backorder); there was no
+  // one-click way to drop a row entirely. Reuses the exact same corrective
+  // mechanism "Edit" already uses (rename_and_correct_closing_stock_balance_secure
+  // with the SAME item name/unit, target quantity 0) rather than a raw
+  // DELETE — records one ordinary 'adjustment' ledger entry for the full
+  // remaining balance, same audit trail every other correction here leaves,
+  // and the row naturally drops out of `balances` once it nets to ~0 (see
+  // that computed list's own >0.001 filter) — no separate "hide this row"
+  // state needed.
+  const [deletingKey, setDeletingKey] = useState<string | null>(null);
+  const deleteSavingRef = useRef(false);
+  const deleteBalanceRow = async (row: { itemSlug: string; itemName: string; unit: LeftoverUnit; balance: number }) => {
+    if (deleteSavingRef.current) return;
+    const key = `${row.itemSlug}|${row.unit}`;
+    deleteSavingRef.current = true;
+    setDeletingKey(key);
+    setError('');
+    try {
+      const result = await renameAndCorrectClosingStockBalance({
+        oldItemSlug: row.itemSlug, oldUnit: row.unit,
+        newItemName: row.itemName, newUnit: row.unit, targetQuantity: 0,
+        editedBy: staffName,
+      });
+      if ('error' in result) { setError(result.error); return; }
+      setMessage(`${row.itemName}: removed from Current Leftover Balance.`);
+      void refresh();
+    } finally {
+      setDeletingKey(null);
+      deleteSavingRef.current = false;
+    }
+  };
+
   // ── Edit a Closing Stock entry (item/qty/unit) ───────────────────────────
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
@@ -754,166 +795,113 @@ export default function PlannerLeftoverTab() {
     extraDispatched: sum.extraDispatched + (row.unit === 'kg' ? row.extraDispatched : 0),
   }), { produced: 0, added: 0, dispatched: 0, extraProduced: 0, extraDispatched: 0 }), [reportRows]);
 
-  const exportExcel = () => {
-    const wb = XLSX.utils.book_new();
-    const addSheet = (data: Record<string, unknown>[], name: string, fallback: string) => {
-      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(data.length ? data : [{ Note: fallback }]), name.slice(0, 31));
-    };
-    addSheet([
-      { Metric: 'Business Date', Value: dateLabel(reportDate) },
-      { Metric: 'Items with activity', Value: reportRows.length },
-      { Metric: 'Items currently in leftover pool', Value: balances.length },
-    ], 'Summary', 'No data');
-    addSheet(reportRows.map((row) => ({
-      Item: row.itemName, Unit: row.unit,
-      Opening: row.opening,
-      'Produced Today': row.produced,
-      'Of Which Extra (Not Ordered)': row.extraProduced,
-      'Added (Closing Stock Entry) Today': row.closingStockEntry,
-      'Dispatched Today': row.dispatched,
-      'Of Which Extra (Not Ordered) ': row.extraDispatched,
-      ...Object.fromEntries(BRANCHES.map((b) => [`Dispatched to ${b}`, row.dispatchByBranch[b] || 0])),
-      'Dispatched By Hosur Shop': Object.entries(row.dispatchByShop).map(([shop, q]) => `${shop}: ${q}`).join(', ') || '-',
-      'Transferred Out': row.transferredOut,
-      'Transfer Out Reason(s)': row.transferOutReasons.join('; ') || '-',
-      Adjusted: row.adjusted,
-      'Adjustment Reason(s)': row.adjustReasons.join('; ') || '-',
-      Closing: row.closing,
-    })), 'Daily Reconciliation', 'No leftover activity on this date');
-    addSheet(reportMovements.map((row) => ({
-      Time: new Date(row.createdAt).toLocaleString('en-IN'), Item: row.itemName, Unit: row.unit,
-      Quantity: row.delta, Type: reasonLabel(row.reason),
-      'Extra / Non-Requested': row.isExtra ? 'Yes' : 'No',
-      Branch: row.branch || '-', 'Hosur Shop': row.shopName || '-',
-      'Order #': row.orderNumber ?? '-', 'Recorded By': row.recordedBy, Notes: row.notes || '-',
-    })), 'Movement Log', 'No movements on this date');
-    addSheet(balances.map((row) => ({ Item: row.itemName, Unit: row.unit, 'Current Balance': row.balance })), 'Current Balance (All Items)', 'No leftover stock currently held');
-    XLSX.writeFile(wb, `planner-closing-stock-${reportDate}.xlsx`);
-  };
-
-  const exportPdf = () => {
-    const doc = new jsPDF({ unit: 'pt', format: 'a4' });
-    const pageWidth = doc.internal.pageSize.getWidth();
-    const marginX = 40;
-    let y = 48;
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(18); doc.setTextColor(20);
-    doc.text('Cafe Aadvikam — Closing Stock / Leftover Report', marginX, y);
-    y += 18;
-    doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(100);
-    doc.text(`Business Date: ${dateLabel(reportDate)}  ·  Generated: ${new Date().toLocaleString('en-IN')}`, marginX, y);
-    doc.setTextColor(0); y += 26;
-
-    const ensureRoom = (needed: number) => { if (y + needed > 780) { doc.addPage(); y = 50; } };
-
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(12);
-    doc.text('Summary', marginX, y); y += 10;
-    const kpis: [string, string][] = [
-      ['Items With Activity', String(reportRows.length)],
-      ['Produced Today (Kg total)', qtyFmt(reportTotals.produced)],
-      ['Manually Added Today (Kg total)', qtyFmt(reportTotals.added)],
-      ['Dispatched From Leftover (Kg total)', qtyFmt(reportTotals.dispatched)],
-      ['Extra Produced (Kg, not ordered)', qtyFmt(reportTotals.extraProduced)],
-      ['Extra Dispatched (Kg, not ordered)', qtyFmt(reportTotals.extraDispatched)],
-      ['Items Currently In Pool', String(balances.length)],
-    ];
-    const kpiColWidth = (pageWidth - marginX * 2) / 2;
-    kpis.forEach(([label, value], i) => {
-      const col = i % 2; const row = Math.floor(i / 2);
-      const x = marginX + col * kpiColWidth;
-      const yy = y + 16 + row * 36;
-      doc.setDrawColor(210); doc.rect(x, yy - 14, kpiColWidth - 8, 32);
-      doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(120);
-      doc.text(label, x + 6, yy - 3);
-      doc.setFont('helvetica', 'bold'); doc.setFontSize(13); doc.setTextColor(0);
-      doc.text(value, x + 6, yy + 12);
-    });
-    y += 16 + Math.ceil(kpis.length / 2) * 36 + 14;
-
-    const drawTable = (title: string, headers: string[], colWidths: number[], dataRows: string[][], emptyText: string) => {
-      ensureRoom(40);
-      doc.setFont('helvetica', 'bold'); doc.setFontSize(12); doc.setTextColor(0);
-      doc.text(title, marginX, y); y += 14;
-      const totalWidth = colWidths.reduce((a, b) => a + b, 0);
-      const drawHeader = () => {
-        doc.setFillColor(238, 238, 238); doc.setDrawColor(220);
-        doc.rect(marginX, y - 10, totalWidth, 16, 'F');
-        doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(40);
-        let x = marginX;
-        headers.forEach((h, i) => { doc.text(h, x + 4, y); x += colWidths[i]; });
-        y += 12;
-      };
-      drawHeader();
-      doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5); doc.setTextColor(30);
-      for (const cells of dataRows) {
-        if (y > 770) { doc.addPage(); y = 50; drawHeader(); doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5); doc.setTextColor(30); }
-        let x = marginX;
-        cells.forEach((c, i) => { doc.text(c, x + 4, y); x += colWidths[i]; });
-        doc.setDrawColor(235); doc.line(marginX, y + 4, marginX + totalWidth, y + 4);
-        y += 14;
-      }
-      if (dataRows.length === 0) { doc.setFont('helvetica', 'italic'); doc.setFontSize(9); doc.setTextColor(120); doc.text(emptyText, marginX, y); y += 14; doc.setTextColor(0); }
-      y += 12;
-    };
-
-    drawTable(
-      'Daily Reconciliation',
-      ['Item', 'Unit', 'Opening', 'Produced', 'Extra Prod.', 'Added', 'Dispatched', 'Extra Disp.', 'Transfer Out', 'Adjusted', 'Closing'],
-      [82, 24, 38, 42, 40, 38, 44, 40, 46, 38, 40],
-      reportRows.map((row) => [row.itemName.slice(0, 16), row.unit, qtyFmt(row.opening), qtyFmt(row.produced), row.extraProduced > 0 ? qtyFmt(row.extraProduced) : '-', qtyFmt(row.closingStockEntry), qtyFmt(row.dispatched), row.extraDispatched > 0 ? qtyFmt(row.extraDispatched) : '-', row.transferredOut > 0 ? qtyFmt(row.transferredOut) : '-', qtyFmt(row.adjusted), qtyFmt(row.closing)]),
-      'No leftover activity recorded for this date.',
-    );
-
-    // FEATURE (2026-08-09): "reports/closing stock exports must show reasons
-    // clearly so the owner can immediately understand what stock was sent
-    // where or misused and why" — the columns above only fit a quantity,
-    // so every transfer-out's actual reason gets its own table underneath.
+  // Built once per data change, shared by this tab's own Excel/PDF buttons
+  // AND reported upward (below) for the top-level "Export All" button — see
+  // reportExport.ts for why this replaced the old hand-rolled jsPDF code.
+  const closingStockExportSpecs = useMemo((): { excel: ExcelSectionSpec; pdf: PdfSectionSpec } => {
     const transferOutDetail = reportRows.filter((row) => row.transferredOut > 0.001 && row.transferOutReasons.length > 0);
-    if (transferOutDetail.length > 0) {
-      drawTable(
-        'Transfer Out — Reasons',
-        ['Item', 'Qty', 'Reason(s)'],
-        [140, 60, 300],
-        transferOutDetail.map((row) => [row.itemName.slice(0, 26), `${qtyFmt(row.transferredOut)} ${row.unit}`, row.transferOutReasons.join('; ').slice(0, 80)]),
-        'No transfers out on this date.',
-      );
-    }
-
-    // FEATURE (2026-08-09 / #279): same treatment for write-offs/corrections
-    // — the Daily Reconciliation table above only has room for the net
-    // adjustment quantity, so the actual reason gets its own detail table.
     const adjustDetail = reportRows.filter((row) => row.adjusted !== 0 && row.adjustReasons.length > 0);
-    if (adjustDetail.length > 0) {
-      drawTable(
-        'Adjustments / Write-offs — Reasons',
-        ['Item', 'Qty', 'Reason(s)'],
-        [140, 60, 300],
-        adjustDetail.map((row) => [row.itemName.slice(0, 26), `${qtyFmt(row.adjusted)} ${row.unit}`, row.adjustReasons.join('; ').slice(0, 80)]),
-        'No adjustments on this date.',
-      );
-    }
+    return {
+      excel: {
+        prefix: 'Closing Stock',
+        sheets: [
+          { name: 'Summary', fallback: 'No data', rows: [
+            { Metric: 'Business Date', Value: dateLabel(reportDate) },
+            { Metric: 'Items with activity', Value: reportRows.length },
+            { Metric: 'Items currently in leftover pool', Value: balances.length },
+          ] },
+          { name: 'Daily Reconciliation', fallback: 'No leftover activity on this date', rows: reportRows.map((row) => ({
+            Item: row.itemName, Unit: row.unit,
+            Opening: row.opening,
+            'Produced Today': row.produced,
+            'Of Which Extra (Not Ordered)': row.extraProduced,
+            'Added (Closing Stock Entry) Today': row.closingStockEntry,
+            'Dispatched Today': row.dispatched,
+            'Of Which Extra (Not Ordered) ': row.extraDispatched,
+            ...Object.fromEntries(BRANCHES.map((b) => [`Dispatched to ${b}`, row.dispatchByBranch[b] || 0])),
+            'Dispatched By Hosur Shop': Object.entries(row.dispatchByShop).map(([shop, q]) => `${shop}: ${q}`).join(', ') || '-',
+            'Transferred Out': row.transferredOut,
+            'Transfer Out Reason(s)': row.transferOutReasons.join('; ') || '-',
+            Adjusted: row.adjusted,
+            'Adjustment Reason(s)': row.adjustReasons.join('; ') || '-',
+            Closing: row.closing,
+          })) },
+          { name: 'Movement Log', fallback: 'No movements on this date', rows: reportMovements.map((row) => ({
+            Time: new Date(row.createdAt).toLocaleString('en-IN'), Item: row.itemName, Unit: row.unit,
+            Quantity: row.delta, Type: reasonLabel(row.reason),
+            'Extra / Non-Requested': row.isExtra ? 'Yes' : 'No',
+            Branch: row.branch || '-', 'Hosur Shop': row.shopName || '-',
+            'Order #': row.orderNumber ?? '-', 'Recorded By': row.recordedBy, Notes: row.notes || '-',
+          })) },
+          { name: 'Current Balance (All Items)', fallback: 'No leftover stock currently held', rows: balances.map((row) => ({ Item: row.itemName, Unit: row.unit, 'Current Balance': row.balance })) },
+        ],
+      },
+      pdf: {
+        title: 'Closing Stock / Leftover',
+        subtitle: `Business date: ${dateLabel(reportDate)}`,
+        kpiCols: 2,
+        kpis: [
+          ['Items With Activity', String(reportRows.length)],
+          ['Produced Today (Kg total)', qtyFmt(reportTotals.produced)],
+          ['Manually Added Today (Kg total)', qtyFmt(reportTotals.added)],
+          ['Dispatched From Leftover (Kg total)', qtyFmt(reportTotals.dispatched)],
+          ['Extra Produced (Kg, not ordered)', qtyFmt(reportTotals.extraProduced)],
+          ['Extra Dispatched (Kg, not ordered)', qtyFmt(reportTotals.extraDispatched)],
+          ['Items Currently In Pool', String(balances.length)],
+        ],
+        tables: [
+          {
+            title: 'Daily Reconciliation',
+            headers: ['Item', 'Unit', 'Opening', 'Produced', 'Extra Prod.', 'Added', 'Dispatched', 'Extra Disp.', 'Transfer Out', 'Adjusted', 'Closing'],
+            colWidths: [82, 24, 38, 42, 40, 38, 44, 40, 46, 38, 40],
+            rows: reportRows.map((row) => [row.itemName.slice(0, 16), row.unit, qtyFmt(row.opening), qtyFmt(row.produced), row.extraProduced > 0 ? qtyFmt(row.extraProduced) : '-', qtyFmt(row.closingStockEntry), qtyFmt(row.dispatched), row.extraDispatched > 0 ? qtyFmt(row.extraDispatched) : '-', row.transferredOut > 0 ? qtyFmt(row.transferredOut) : '-', qtyFmt(row.adjusted), qtyFmt(row.closing)]),
+            emptyText: 'No leftover activity recorded for this date.',
+          },
+          // FEATURE (2026-08-09): "reports/closing stock exports must show
+          // reasons clearly" — the Daily Reconciliation table only fits a
+          // quantity, so transfer-out / write-off reasons get their own
+          // detail tables, included only when there's something to show.
+          ...(transferOutDetail.length > 0 ? [{
+            title: 'Transfer Out — Reasons',
+            headers: ['Item', 'Qty', 'Reason(s)'],
+            colWidths: [140, 60, 300],
+            rows: transferOutDetail.map((row) => [row.itemName.slice(0, 26), `${qtyFmt(row.transferredOut)} ${row.unit}`, row.transferOutReasons.join('; ').slice(0, 80)]),
+            emptyText: 'No transfers out on this date.',
+          }] : []),
+          ...(adjustDetail.length > 0 ? [{
+            title: 'Adjustments / Write-offs — Reasons',
+            headers: ['Item', 'Qty', 'Reason(s)'],
+            colWidths: [140, 60, 300],
+            rows: adjustDetail.map((row) => [row.itemName.slice(0, 26), `${qtyFmt(row.adjusted)} ${row.unit}`, row.adjustReasons.join('; ').slice(0, 80)]),
+            emptyText: 'No adjustments on this date.',
+          }] : []),
+          {
+            title: 'Movement Log',
+            headers: ['Time', 'Item', 'Qty', 'Type', 'Extra', 'Branch', 'Hosur Shop', 'Order #', 'By'],
+            colWidths: [55, 95, 42, 58, 34, 42, 65, 40, 65],
+            rows: reportMovements.map((row) => [
+              new Date(row.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
+              row.itemName.slice(0, 16), `${row.delta > 0 ? '+' : ''}${qtyFmt(row.delta)}${row.unit}`,
+              reasonLabel(row.reason), row.isExtra ? 'Yes' : '-', row.branch || '-', row.shopName || '-', row.orderNumber ? String(row.orderNumber) : '-', row.recordedBy.slice(0, 14),
+            ]),
+            emptyText: 'No movements on this date.',
+          },
+          {
+            title: 'Current Leftover Balance (All Items)',
+            headers: ['Item', 'Unit', 'Balance'],
+            colWidths: [300, 60, 100],
+            rows: balances.map((row) => [row.itemName.slice(0, 48), row.unit, qtyFmt(row.balance)]),
+            emptyText: 'No leftover stock currently held.',
+          },
+        ],
+      },
+    };
+  }, [reportRows, reportMovements, balances, reportDate, reportTotals]);
 
-    drawTable(
-      'Movement Log',
-      ['Time', 'Item', 'Qty', 'Type', 'Extra', 'Branch', 'Hosur Shop', 'Order #', 'By'],
-      [55, 95, 42, 58, 34, 42, 65, 40, 65],
-      reportMovements.map((row) => [
-        new Date(row.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
-        row.itemName.slice(0, 16), `${row.delta > 0 ? '+' : ''}${qtyFmt(row.delta)}${row.unit}`,
-        reasonLabel(row.reason), row.isExtra ? 'Yes' : '-', row.branch || '-', row.shopName || '-', row.orderNumber ? String(row.orderNumber) : '-', row.recordedBy.slice(0, 14),
-      ]),
-      'No movements on this date.',
-    );
+  useEffect(() => { onExportDataChange?.(closingStockExportSpecs); }, [closingStockExportSpecs, onExportDataChange]);
 
-    drawTable(
-      'Current Leftover Balance (All Items)',
-      ['Item', 'Unit', 'Balance'],
-      [300, 60, 100],
-      balances.map((row) => [row.itemName.slice(0, 48), row.unit, qtyFmt(row.balance)]),
-      'No leftover stock currently held.',
-    );
-
-    doc.save(`planner-closing-stock-${reportDate}.pdf`);
-  };
+  const exportExcel = () => generateExcelReport({ filename: `planner-closing-stock-${reportDate}.xlsx`, sections: [closingStockExportSpecs.excel] });
+  const exportPdf = () => generatePdfReport({ filename: `planner-closing-stock-${reportDate}.pdf`, docTitle: 'Closing Stock / Leftover Report', docSubtitle: `Business date: ${dateLabel(reportDate)}`, sections: [closingStockExportSpecs.pdf] });
 
   if (loading) return <div className="flex min-h-[55vh] items-center justify-center"><Loader2 className="size-7 animate-spin text-teal-600" /></div>;
 
@@ -1034,6 +1022,13 @@ export default function PlannerLeftoverTab() {
                           {!isBackorder && (
                             <button onClick={() => setAdjustingSlug(key)} className="inline-flex items-center gap-1 rounded-lg bg-red-50 px-2 py-1 text-[10px] font-black text-red-700"><Minus className="size-3" />Write-off</button>
                           )}
+                          <button
+                            onClick={() => { if (window.confirm(`Delete "${row.itemName}" (${qtyFmt(row.balance)} ${row.unit}) from Current Leftover Balance? This records a correction to zero it out — full history stays in the Daily Report / Movement Log.`)) void deleteBalanceRow(row); }}
+                            disabled={deletingKey === key}
+                            className="inline-flex items-center gap-1 rounded-lg bg-red-600 px-2 py-1 text-[10px] font-black text-white disabled:opacity-50"
+                          >
+                            {deletingKey === key ? <Loader2 className="size-3 animate-spin" /> : <Trash2 className="size-3" />}Delete
+                          </button>
                         </div>
                       )}
                     </td>

@@ -14,6 +14,7 @@ import {
   Store, CreditCard, MessageCircle, Bell, CalendarDays,
   Search, Printer, Receipt, ListPlus, BarChart3, FileText, Minus, IndianRupee,
   ShoppingCart, Percent, Trash2, Scale, PackageMinus, Pencil, RotateCcw,
+  Undo2, ClipboardCheck,
 } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import * as XLSX from 'xlsx';
@@ -26,7 +27,7 @@ import { BRANCHES, BAKERY_ITEMS } from './types';
 import { printHtml } from '@/branch/printUtils';
 import { printViaIframe } from '@/lib/printViaIframe';
 import PackingTransferInTab from './PackingTransferInTab';
-import PackingDailyClosureTab from './PackingDailyClosureTab';
+import PackingDailyClosureTab, { usePackingDispatchSummary, StatCard, DisputesAndReturnsPanel } from './PackingDailyClosureTab';
 import { exportToExcel } from '@/lib/exportExcel';
 import HosurDashboard from '@/pages/HosurDashboard';
 import HosurShopOrderPanel, { leftoverReasonLabel } from './HosurShopOrderPanel';
@@ -40,6 +41,7 @@ import { useBranchCatalogStore } from '@/stores/branchCatalogStore';
 import { useRecipeStore } from './recipeStore';
 import { useBranchStore } from '@/branch/branchStore';
 import { useNotificationStore } from '@/bakery/notificationStore';
+import { generateExcelReport, generatePdfReport, type ExcelSectionSpec, type PdfSectionSpec } from './reportExport';
 import { printWasteLogBatch } from '@/pages/AdminSNBDashboard';
 import {
   businessFor, defaultDiscountPct, saveDispatchInvoice, printDispatchInvoice, listDispatchInvoices, markDispatchInvoicePaid, updateDispatchInvoice, cancelDispatchInvoice,
@@ -51,7 +53,7 @@ import { useMenuStore } from '@/stores/menuStore';
 import { isNativeApp } from '@/lib/platform';
 import NativeNav from '@/components/layout/NativeNav';
 import { supabase } from '@/lib/supabase';
-import { getPackingCounterStatus } from './packingCounter';
+import { getPackingCounterStatus, packingBusinessDateToday } from './packingCounter';
 import {
   GST_INVOICE_SELLER_DEFAULT, GST_INVOICE_BANK_DEFAULT, buildGstTaxInvoiceHtml, getNextGstInvoiceNumber, financialYearForDate,
   type GstTaxInvoiceLine,
@@ -65,6 +67,12 @@ import {
 // list rendered as a panel inside it. The 'done' key is kept in the type
 // (but no longer in TABS/nav) purely so any stale bookmarked URL still
 // resolves instead of erroring.
+// TAB MERGE (2026-09-15): 'reports' folded into 'leftover-stock' (now labeled
+// "Reports", holding Reports + Closing Stock + Packing & Dispatch +
+// Disputes & Returns as sub-sections — see PlannerReportsAndClosingStockTab)
+// — the 'reports' key is kept in the type (not in TABS/nav) purely so a
+// stale bookmarked URL still resolves instead of erroring, same reasoning as
+// 'done' below.
 type PlannerTab = 'incoming' | 'sent' | 'merged' | 'planning' | 'production' | 'dispatch' | 'hosur' | 'cake' | 'advance' | 'transfer-in' | 'transfer-out' | 'closure' | 'leftover-stock' | 'invoice' | 'reports' | 'billing' | 'waste' | 'done';
 const TABS: { key: PlannerTab; label: string; icon: React.ReactNode }[] = [
   { key: 'incoming',    label: 'Incoming Orders',  icon: <ClipboardList className="size-4" /> },
@@ -85,10 +93,9 @@ const TABS: { key: PlannerTab; label: string; icon: React.ReactNode }[] = [
   { key: 'transfer-out', label: 'Transfer Out',    icon: <PackageMinus className="size-4" /> },
   { key: 'waste',       label: 'Dump / Damage',    icon: <Trash2 className="size-4" /> },
   { key: 'closure',     label: 'Daily Closure',    icon: <Calendar className="size-4" /> },
-  { key: 'leftover-stock', label: 'Closing Stock', icon: <Scale className="size-4" /> },
+  { key: 'leftover-stock', label: 'Reports',       icon: <BarChart3 className="size-4" /> },
   { key: 'invoice',     label: 'Invoice',          icon: <Receipt className="size-4" /> },
   { key: 'billing',     label: 'Sales',             icon: <ShoppingCart className="size-4" /> },
-  { key: 'reports',     label: 'Reports',          icon: <BarChart3 className="size-4" /> },
 ];
 
 // 'Planned' is a synthetic bucket alongside the three real branches — proactive
@@ -1185,15 +1192,11 @@ export default function PlannerDashboard({ embedded = false }: { embedded?: bool
             {tab === 'transfer-out' && <PlannerTransferOutTab />}
             {tab === 'waste' && <PlannerWasteLogsTab />}
             {tab === 'closure' && <PackingDailyClosureTab />}
-            {tab === 'leftover-stock' && (
-              <div className="space-y-6">
-                <PlannerLeftoverTab />
-                <LeftoverDoneTab active={activeLeftovers} done={doneOrders} />
-              </div>
+            {(tab === 'leftover-stock' || tab === 'reports') && (
+              <PlannerReportsAndClosingStockTab orders={orders} activeLeftovers={activeLeftovers} doneOrders={doneOrders} />
             )}
             {tab === 'invoice' && <InvoiceTab orders={orders} />}
             {tab === 'billing' && <BillingWalkinTab />}
-            {tab === 'reports' && <ReportsTab orders={orders} />}
           </>
         )}
       </main>
@@ -3862,13 +3865,6 @@ function computeReportRows(orders: BakeryOrder[], dateFrom: string, dateTo: stri
   }).sort((a, b) => a.prodVariancePct - b.prodVariancePct);
 }
 
-const REPORT_STATUS_COLOR: Record<ReportVarianceRow['status'], string> = {
-  'Not Started':    'bg-muted text-muted-foreground',
-  'Under-producing': 'bg-red-100 text-red-700',
-  'On Target':       'bg-teal-100 text-teal-700',
-  'Over-producing':  'bg-blue-100 text-blue-700',
-};
-
 // "Start Fresh" cutoff for Reports — same non-destructive pattern as the
 // Closing Stock cutoff in PlannerLeftoverTab: instead of deleting historical
 // orders/leftover-pool rows (which would destroy the audit trail), we store a
@@ -3898,9 +3894,21 @@ async function getProductionCutoff(): Promise<string | null> {
   return cutoff ?? null;
 }
 
-function ReportsTab({ orders }: { orders: BakeryOrder[] }) {
-  const [quickRange, setQuickRange] = useState<'today' | '7d' | '30d' | 'custom'>('7d');
-  const [dateFrom, setDateFrom] = useState(() => { const d = new Date(); d.setDate(d.getDate() - 6); return kolkataDateKey(d.toISOString()); });
+function ReportsTab({ orders, onExportDataChange }: {
+  orders: BakeryOrder[];
+  // FEATURE (2026-09-15): lets the merged Reports tab's top-level "Export
+  // All" button fold this section's current data into the combined file —
+  // reported up on every change since ReportsTab stays mounted (CSS-hidden)
+  // whenever the combined tab is open.
+  onExportDataChange?: (data: { excel: ExcelSectionSpec; pdf: PdfSectionSpec }) => void;
+}) {
+  // FEATURE (2026-09-15): "The reports sub tab date should always default be
+  // on Today" — was '7d' (a rolling week), which meant every fresh visit
+  // to Reports (and every combined Export All) silently included 6 days of
+  // history the planner hadn't asked to see. Today is still one tap away
+  // from 7d/30d/custom via the quick-range pills below.
+  const [quickRange, setQuickRange] = useState<'today' | '7d' | '30d' | 'custom'>('today');
+  const [dateFrom, setDateFrom] = useState(() => kolkataDateKey(new Date().toISOString()));
   const [dateTo, setDateTo] = useState(() => kolkataDateKey(new Date().toISOString()));
   // Start Fresh control removed (2026-08-07) per request — reportsCutoff is
   // still loaded read-only so any cutoff set previously keeps clamping the
@@ -4305,209 +4313,140 @@ function ReportsTab({ orders }: { orders: BakeryOrder[] }) {
     ? new Date(`${dateFrom}T00:00:00`).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
     : `${new Date(`${dateFrom}T00:00:00`).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })} – ${new Date(`${dateTo}T00:00:00`).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}`;
 
-  const exportExcelReport = () => {
-    const wb = XLSX.utils.book_new();
-    const addSheet = (rows: Record<string, unknown>[], name: string, fallback: string) => {
-      const data = rows.length > 0 ? rows : [{ Note: fallback }];
-      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(data), name.slice(0, 31));
-    };
-    addSheet([
-      { Metric: 'Period', Value: rangeLabel },
-      { Metric: 'Orders Placed', Value: placedOrders.length },
-      { Metric: 'Items Tracked', Value: varianceRows.length },
-      { Metric: 'Under-producing Items', Value: underRows.length },
-      { Metric: 'On-Target Items', Value: onTargetRows.length },
-      { Metric: 'Over-producing Items', Value: overRows.length },
-      { Metric: 'Not Started Items', Value: notStartedRows.length },
-    ], 'Summary', 'No data');
-    addSheet(placedOrders.map(o => ({
-      'Order #': o.orderNumber, Branch: bucketFor(o), Status: o.status,
-      'Placed On': new Date(o.createdAt).toLocaleString('en-IN'),
-      'Sent to Production': o.storeConfirmedAt ? new Date(o.storeConfirmedAt).toLocaleString('en-IN') : 'Not yet sent',
-      'Items': o.items.map(i => `${i.itemName} x${i.dispatchUnit === 'pcs' ? (i.originalPcs ?? i.quantity) : i.quantity}${i.dispatchUnit || 'kg'}`).join(', '),
-    })), 'Orders Placed', 'No orders in this range');
-    addSheet(merged.map(row => ({
-      Item: row.itemName, Unit: row.unit,
-      ...Object.fromEntries(DISPLAY_BUCKETS.map(b => [b, row.perBranch[b] ?? ''])),
-      Total: row.totalRequested,
-    })), 'Merged Summary', 'No data');
-    addSheet(varianceRows.map(r => ({
-      Category: r.category, Item: r.itemName, Unit: r.unit,
-      Requested: r.requested, Produced: r.produced, Dispatched: r.dispatched,
-      'Production Variance %': r.prodVariancePct, 'Dispatch Variance %': r.dispatchVariancePct, Status: r.status,
-    })), 'Production & Dispatch', 'No data');
-    addSheet(storeBakerPlannerRows.map(r => ({
-      Item: r.name, Unit: r.unit,
-      'Store -> Baker': r.store, 'Store -> Baker (kg equiv)': r.storeKgEq ?? '',
-      'Baker -> Planner': r.baker, 'Baker -> Planner (kg equiv)': r.bakerKgEq ?? '',
-      'Planner Dispatched': r.dispatched, 'Planner Dispatched (kg equiv)': r.dispatchedKgEq ?? '',
-    })), 'Store-Baker-Planner', 'Nothing sent / produced / dispatched in this range');
-    addSheet(extraDispatchRows.map(r => ({
-      Item: r.itemName, Quantity: r.quantity, Unit: r.unit, Branch: r.branch,
-      Shop: r.shopName || '', 'Order #': r.orderNumber, 'Dispatched By': r.dispatchedBy,
-      Date: new Date(r.dispatchedAt).toLocaleString('en-IN'),
-      'How This Was Added': 'Sent via the "Dispatch an extra item" form — an item the branch/shop never ordered (or more of it than was ordered).',
-    })), 'Extra Non-Requested Items', 'No extra/non-requested dispatches in this range');
-    addSheet(hosurShopSummary.flatMap(s => s.items.map(it => ({
-      Shop: s.shopName, Item: it.itemName, Quantity: it.quantity, Unit: it.unit,
-    }))), 'Hosur Dispatch By Shop', 'No Hosur dispatches in this range');
-    addSheet(hosurLeftovers.map(l => ({
-      Item: l.itemName, Unit: l.unit, Quantity: l.quantity, 'Unit Price': l.unitPrice,
-      Shop: l.sourceShopName || '', Reason: leftoverReasonLabel(l.reason),
-      Status: l.status === 'available' ? 'Still in pool' : 'Resolved / sent',
-      Date: new Date(l.createdAt).toLocaleString('en-IN'),
-    })), 'Hosur Leftover Pool', 'No leftover activity in this range');
-    addSheet(hosurAdjustments.map(a => ({
-      Item: a.itemName, Unit: a.unit, Quantity: a.quantity, 'Adjustment (₹)': a.adjustmentAmount,
-      Reason: a.reason || '', Date: new Date(a.createdAt).toLocaleString('en-IN'),
-    })), 'Hosur Bill Adjustments', 'No cancellations in this range');
-    XLSX.writeFile(wb, `planner-report-${dateFrom}_to_${dateTo}.xlsx`);
-  };
-
-  const exportPdfReport = () => {
-    const doc = new jsPDF({ unit: 'pt', format: 'a4' });
-    const pageWidth = doc.internal.pageSize.getWidth();
-    const marginX = 40;
-    let y = 48;
-
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(18); doc.setTextColor(20);
-    doc.text('Cafe Aadvikam — Planner Report', marginX, y);
-    y += 18;
-    doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(100);
-    doc.text(`Period: ${rangeLabel}  ·  Generated: ${new Date().toLocaleString('en-IN')}`, marginX, y);
-    doc.setTextColor(0);
-    y += 26;
-
-    // Ensures there's room for the next block, adding a fresh page (with its
-    // own margin) if not — every section below routes through this so long
-    // reports (Orders Placed, Merged Summary) paginate cleanly.
-    const ensureRoom = (needed: number) => {
-      if (y + needed > 780) { doc.addPage(); y = 50; }
-    };
-
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(12);
-    doc.text('Summary', marginX, y); y += 10;
-    const kpis: [string, string][] = [
-      ['Orders Placed', String(placedOrders.length)],
-      ['Items Tracked', String(varianceRows.length)],
-      ['Under-producing', String(underRows.length)],
-      ['On Target', String(onTargetRows.length)],
-      ['Over-producing', String(overRows.length)],
-      ['Not Started', String(notStartedRows.length)],
-      ['Hosur Leftover (pool)', String(hosurLeftoverAvailable.length)],
-      ['Hosur Cancelled Value', `Rs.${hosurCancelledValue}`],
-      ['Extra / Non-Requested Sent', String(extraDispatchRows.length)],
-      ['Hosur Shops Dispatched To', String(hosurShopSummary.length)],
-    ];
-    const kpiColWidth = (pageWidth - marginX * 2) / 3;
-    kpis.forEach(([label, value], i) => {
-      const col = i % 3; const row = Math.floor(i / 3);
-      const x = marginX + col * kpiColWidth;
-      const yy = y + 16 + row * 36;
-      doc.setDrawColor(210); doc.rect(x, yy - 14, kpiColWidth - 8, 32);
-      doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(120);
-      doc.text(label, x + 6, yy - 3);
-      doc.setFont('helvetica', 'bold'); doc.setFontSize(13); doc.setTextColor(0);
-      doc.text(value, x + 6, yy + 12);
-    });
-    y += 16 + Math.ceil(kpis.length / 3) * 36 + 14;
-
-    // Reusable bordered table with header repeated on every page it spans —
-    // used for all four detail sections below so pagination only has to be
-    // written once.
-    const drawTable = (title: string, headers: string[], colWidths: number[], rows: string[][], emptyText: string) => {
-      ensureRoom(40);
-      doc.setFont('helvetica', 'bold'); doc.setFontSize(12); doc.setTextColor(0);
-      doc.text(title, marginX, y); y += 14;
-      const totalWidth = colWidths.reduce((a, b) => a + b, 0);
-      const drawHeader = () => {
-        doc.setFillColor(238, 238, 238); doc.setDrawColor(220);
-        doc.rect(marginX, y - 10, totalWidth, 16, 'F');
-        doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(40);
-        let x = marginX;
-        headers.forEach((h, i) => { doc.text(h, x + 4, y); x += colWidths[i]; });
-        y += 12;
-      };
-      drawHeader();
-      doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5); doc.setTextColor(30);
-      for (const cells of rows) {
-        if (y > 770) { doc.addPage(); y = 50; drawHeader(); doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5); doc.setTextColor(30); }
-        let x = marginX;
-        cells.forEach((c, i) => { doc.text(c, x + 4, y); x += colWidths[i]; });
-        doc.setDrawColor(235); doc.line(marginX, y + 4, marginX + totalWidth, y + 4);
-        y += 14;
-      }
-      if (rows.length === 0) { doc.setFont('helvetica', 'italic'); doc.setFontSize(9); doc.setTextColor(120); doc.text(emptyText, marginX, y); y += 14; doc.setTextColor(0); }
-      y += 12;
-    };
-
-    drawTable(
-      'Production & Dispatch Variance',
-      ['Item', 'Unit', 'Req', 'Prod', 'Disp', 'Var %', 'Status'],
-      [155, 35, 55, 55, 55, 55, 100],
-      varianceRows.map(r => [r.itemName.slice(0, 28), r.unit, String(r.requested), String(r.produced), String(r.dispatched), `${r.prodVariancePct > 0 ? '+' : ''}${r.prodVariancePct}%`, r.status]),
-      'No items in this range.',
-    );
-
-    drawTable(
-      'Store to Baker vs Baker to Planner (by item)',
-      ['Item', 'Unit', 'Store -> Baker', 'Baker -> Planner', 'Dispatched'],
-      [180, 40, 100, 100, 90],
-      [
-        ...storeBakerPlannerRows.map(r => [
-          r.name.slice(0, 32), r.unit,
-          r.store > 0 ? `${qtyFmt(r.store)}${r.storeKgEq != null ? ` (~${qtyFmt(r.storeKgEq)}kg)` : ''}` : '-',
-          r.baker > 0 ? `${qtyFmt(r.baker)}${r.bakerKgEq != null ? ` (~${qtyFmt(r.bakerKgEq)}kg)` : ''}` : '-',
-          r.dispatched > 0 ? `${qtyFmt(r.dispatched)}${r.dispatchedKgEq != null ? ` (~${qtyFmt(r.dispatchedKgEq)}kg)` : ''}` : '-',
-        ]),
-        ['TOTAL - pcs', 'pcs', qtyFmt(storeBakerPlannerTotals.storePcs), qtyFmt(storeBakerPlannerTotals.bakerPcs), qtyFmt(storeBakerPlannerTotals.dispPcs)],
-        ['TOTAL - kg', 'kg', qtyFmt(storeBakerPlannerTotals.storeKg), qtyFmt(storeBakerPlannerTotals.bakerKg), qtyFmt(storeBakerPlannerTotals.dispKg)],
+  // Built once per data change, shared by this tab's own Excel/PDF buttons
+  // AND reported upward (below) for the top-level "Export All" button — see
+  // reportExport.ts for why this replaced the old hand-rolled jsPDF code.
+  const reportsExportSpecs = useMemo((): { excel: ExcelSectionSpec; pdf: PdfSectionSpec } => ({
+    excel: {
+      prefix: 'Reports',
+      sheets: [
+        // FEATURE (2026-09-15): "Removed the Reports - Summary sheet on all
+        // the excel" — dropped (was redundant with the KPI cards already
+        // shown on-screen and in the PDF, which keeps its own Summary KPIs).
+        { name: 'Orders Placed', fallback: 'No orders in this range', rows: placedOrders.map(o => ({
+          'Order #': o.orderNumber, Branch: bucketFor(o), Status: o.status,
+          'Placed On': new Date(o.createdAt).toLocaleString('en-IN'),
+          'Sent to Production': o.storeConfirmedAt ? new Date(o.storeConfirmedAt).toLocaleString('en-IN') : 'Not yet sent',
+          'Items': o.items.map(i => `${i.itemName} x${i.dispatchUnit === 'pcs' ? (i.originalPcs ?? i.quantity) : i.quantity}${i.dispatchUnit || 'kg'}`).join(', '),
+        })) },
+        { name: 'Merged Summary', fallback: 'No data', rows: merged.map(row => ({
+          Item: row.itemName, Unit: row.unit,
+          ...Object.fromEntries(DISPLAY_BUCKETS.map(b => [b, row.perBranch[b] ?? ''])),
+          Total: row.totalRequested,
+        })) },
+        // FEATURE (2026-09-15): "Remove Production Variance %, Dispatch
+        // Variance %, Status" — kept Requested/Produced/Dispatched only, the
+        // raw numbers the owner asked to see without the derived columns.
+        { name: 'Production & Dispatch', fallback: 'No data', rows: varianceRows.map(r => ({
+          Category: r.category, Item: r.itemName, Unit: r.unit,
+          Requested: r.requested, Produced: r.produced, Dispatched: r.dispatched,
+        })) },
+        // FEATURE (2026-09-15): "show the kgs in the pcs by ()" — folds each
+        // "(kg equiv)" column into its main quantity column as "10 (~2kg)"
+        // instead of a separate column, matching how the PDF table already
+        // formats this same data.
+        { name: 'Store-Baker-Planner', fallback: 'Nothing sent / produced / dispatched in this range', rows: storeBakerPlannerRows.map(r => ({
+          Item: r.name, Unit: r.unit,
+          'Store -> Baker': r.store > 0 ? `${r.store}${r.storeKgEq != null ? ` (~${qtyFmt(r.storeKgEq)}kg)` : ''}` : '-',
+          'Baker -> Planner': r.baker > 0 ? `${r.baker}${r.bakerKgEq != null ? ` (~${qtyFmt(r.bakerKgEq)}kg)` : ''}` : '-',
+          'Planner Dispatched': r.dispatched > 0 ? `${r.dispatched}${r.dispatchedKgEq != null ? ` (~${qtyFmt(r.dispatchedKgEq)}kg)` : ''}` : '-',
+        })) },
+        // FEATURE (2026-09-15): "remove How This Was Added" — the column was
+        // a fixed constant string on every row, not per-row data.
+        { name: 'Extra Non-Requested Items', fallback: 'No extra/non-requested dispatches in this range', rows: extraDispatchRows.map(r => ({
+          Item: r.itemName, Quantity: r.quantity, Unit: r.unit, Branch: r.branch,
+          Shop: r.shopName || '', 'Order #': r.orderNumber, 'Dispatched By': r.dispatchedBy,
+          Date: new Date(r.dispatchedAt).toLocaleString('en-IN'),
+        })) },
+        { name: 'Hosur Dispatch By Shop', fallback: 'No Hosur dispatches in this range', rows: hosurShopSummary.flatMap(s => s.items.map(it => ({
+          Shop: s.shopName, Item: it.itemName, Quantity: it.quantity, Unit: it.unit,
+        }))) },
+        // FEATURE (2026-09-15): "Remove Reports - Hosur Leftover Pool sheet,
+        // Reports - Hosur Bill Adjustment sheet" — both dropped.
       ],
-      'Nothing sent to the baker, produced, or dispatched in this range.',
-    );
+    },
+    pdf: {
+      title: 'Reports',
+      subtitle: `Period: ${rangeLabel}`,
+      kpis: [
+        ['Orders Placed', String(placedOrders.length)],
+        ['Items Tracked', String(varianceRows.length)],
+        ['Under-producing', String(underRows.length)],
+        ['On Target', String(onTargetRows.length)],
+        ['Over-producing', String(overRows.length)],
+        ['Not Started', String(notStartedRows.length)],
+        ['Hosur Leftover (pool)', String(hosurLeftoverAvailable.length)],
+        ['Hosur Cancelled Value', `Rs.${hosurCancelledValue}`],
+        ['Extra / Non-Requested Sent', String(extraDispatchRows.length)],
+        ['Hosur Shops Dispatched To', String(hosurShopSummary.length)],
+      ],
+      tables: [
+        {
+          title: 'Production & Dispatch Variance',
+          headers: ['Item', 'Unit', 'Req', 'Prod', 'Disp', 'Var %', 'Status'],
+          colWidths: [155, 35, 55, 55, 55, 55, 100],
+          rows: varianceRows.map(r => [r.itemName.slice(0, 28), r.unit, String(r.requested), String(r.produced), String(r.dispatched), `${r.prodVariancePct > 0 ? '+' : ''}${r.prodVariancePct}%`, r.status]),
+          emptyText: 'No items in this range.',
+        },
+        {
+          title: 'Store to Baker vs Baker to Planner (by item)',
+          headers: ['Item', 'Unit', 'Store -> Baker', 'Baker -> Planner', 'Dispatched'],
+          colWidths: [180, 40, 100, 100, 90],
+          rows: [
+            ...storeBakerPlannerRows.map(r => [
+              r.name.slice(0, 32), r.unit,
+              r.store > 0 ? `${qtyFmt(r.store)}${r.storeKgEq != null ? ` (~${qtyFmt(r.storeKgEq)}kg)` : ''}` : '-',
+              r.baker > 0 ? `${qtyFmt(r.baker)}${r.bakerKgEq != null ? ` (~${qtyFmt(r.bakerKgEq)}kg)` : ''}` : '-',
+              r.dispatched > 0 ? `${qtyFmt(r.dispatched)}${r.dispatchedKgEq != null ? ` (~${qtyFmt(r.dispatchedKgEq)}kg)` : ''}` : '-',
+            ]),
+            ['TOTAL - pcs', 'pcs', qtyFmt(storeBakerPlannerTotals.storePcs), qtyFmt(storeBakerPlannerTotals.bakerPcs), qtyFmt(storeBakerPlannerTotals.dispPcs)],
+            ['TOTAL - kg', 'kg', qtyFmt(storeBakerPlannerTotals.storeKg), qtyFmt(storeBakerPlannerTotals.bakerKg), qtyFmt(storeBakerPlannerTotals.dispKg)],
+          ],
+          emptyText: 'Nothing sent to the baker, produced, or dispatched in this range.',
+        },
+        {
+          title: 'Merged Orders Summary',
+          headers: ['Item', 'Unit', ...DISPLAY_BUCKETS, 'Total'],
+          colWidths: [140, 35, ...DISPLAY_BUCKETS.map(() => 60), 60],
+          rows: merged.map(row => [row.itemName.slice(0, 24), row.unit, ...DISPLAY_BUCKETS.map(b => String(row.perBranch[b] ?? '-')), String(row.totalRequested)]),
+          emptyText: 'No orders merged in this range.',
+        },
+        {
+          title: 'Orders Placed',
+          headers: ['Order #', 'Branch', 'Status', 'Placed On', 'Items'],
+          colWidths: [70, 55, 75, 105, 205],
+          rows: placedOrders.map(o => [String(o.orderNumber), bucketFor(o), o.status.replace('_', ' '), new Date(o.createdAt).toLocaleDateString('en-IN'), o.items.map(i => i.itemName).join(', ').slice(0, 60)]),
+          emptyText: 'No orders placed in this range.',
+        },
+        {
+          title: 'Hosur Leftover & Cancellations',
+          headers: ['Item', 'Unit', 'Qty', 'Shop', 'Reason', 'Status'],
+          colWidths: [140, 35, 45, 110, 130, 90],
+          rows: hosurLeftovers.map(l => [l.itemName.slice(0, 22), l.unit, String(l.quantity), (l.sourceShopName || '-').slice(0, 18), leftoverReasonLabel(l.reason), l.status === 'available' ? 'In pool' : 'Resolved']),
+          emptyText: 'No leftover or cancellation activity in this range.',
+        },
+        {
+          title: 'Extra / Non-Requested Items Dispatched',
+          headers: ['Item', 'Qty', 'Unit', 'Branch', 'Shop', 'Order #', 'By', 'Date'],
+          colWidths: [110, 40, 35, 55, 90, 55, 70, 90],
+          rows: extraDispatchRows.map(r => [r.itemName.slice(0, 20), String(r.quantity), r.unit, r.branch, (r.shopName || '-').slice(0, 16), String(r.orderNumber), r.dispatchedBy.slice(0, 12), new Date(r.dispatchedAt).toLocaleDateString('en-IN')]),
+          emptyText: 'No extra/non-requested dispatches in this range.',
+        },
+        {
+          title: 'Hosur Dispatch by Shop',
+          headers: ['Shop', 'Item', 'Quantity', 'Unit'],
+          colWidths: [150, 210, 90, 95],
+          rows: hosurShopSummary.flatMap(s => s.items.map(it => [s.shopName.slice(0, 26), it.itemName.slice(0, 38), String(it.quantity), it.unit])),
+          emptyText: 'No Hosur dispatches in this range.',
+        },
+      ],
+    },
+  }), [rangeLabel, placedOrders, varianceRows, underRows, onTargetRows, overRows, notStartedRows, merged, storeBakerPlannerRows, storeBakerPlannerTotals, extraDispatchRows, hosurShopSummary, hosurLeftovers, hosurAdjustments, hosurLeftoverAvailable, hosurCancelledValue, dateFrom, dateTo]);
 
-    drawTable(
-      'Merged Orders Summary',
-      ['Item', 'Unit', ...DISPLAY_BUCKETS, 'Total'],
-      [140, 35, ...DISPLAY_BUCKETS.map(() => 60), 60],
-      merged.map(row => [row.itemName.slice(0, 24), row.unit, ...DISPLAY_BUCKETS.map(b => String(row.perBranch[b] ?? '-')), String(row.totalRequested)]),
-      'No orders merged in this range.',
-    );
+  useEffect(() => { onExportDataChange?.(reportsExportSpecs); }, [reportsExportSpecs, onExportDataChange]);
 
-    drawTable(
-      'Orders Placed',
-      ['Order #', 'Branch', 'Status', 'Placed On', 'Items'],
-      [70, 55, 75, 105, 205],
-      placedOrders.map(o => [String(o.orderNumber), bucketFor(o), o.status.replace('_', ' '), new Date(o.createdAt).toLocaleDateString('en-IN'), o.items.map(i => i.itemName).join(', ').slice(0, 60)]),
-      'No orders placed in this range.',
-    );
-
-    drawTable(
-      'Hosur Leftover & Cancellations',
-      ['Item', 'Unit', 'Qty', 'Shop', 'Reason', 'Status'],
-      [140, 35, 45, 110, 130, 90],
-      hosurLeftovers.map(l => [l.itemName.slice(0, 22), l.unit, String(l.quantity), (l.sourceShopName || '-').slice(0, 18), leftoverReasonLabel(l.reason), l.status === 'available' ? 'In pool' : 'Resolved']),
-      'No leftover or cancellation activity in this range.',
-    );
-
-    drawTable(
-      'Extra / Non-Requested Items Dispatched',
-      ['Item', 'Qty', 'Unit', 'Branch', 'Shop', 'Order #', 'By', 'Date'],
-      [110, 40, 35, 55, 90, 55, 70, 90],
-      extraDispatchRows.map(r => [r.itemName.slice(0, 20), String(r.quantity), r.unit, r.branch, (r.shopName || '-').slice(0, 16), String(r.orderNumber), r.dispatchedBy.slice(0, 12), new Date(r.dispatchedAt).toLocaleDateString('en-IN')]),
-      'No extra/non-requested dispatches in this range.',
-    );
-
-    drawTable(
-      'Hosur Dispatch by Shop',
-      ['Shop', 'Item', 'Quantity', 'Unit'],
-      [150, 210, 90, 95],
-      hosurShopSummary.flatMap(s => s.items.map(it => [s.shopName.slice(0, 26), it.itemName.slice(0, 38), String(it.quantity), it.unit])),
-      'No Hosur dispatches in this range.',
-    );
-
-    doc.save(`planner-report-${dateFrom}_to_${dateTo}.pdf`);
-  };
+  const exportExcelReport = () => generateExcelReport({ filename: `planner-report-${dateFrom}_to_${dateTo}.xlsx`, sections: [reportsExportSpecs.excel] });
+  const exportPdfReport = () => generatePdfReport({ filename: `planner-report-${dateFrom}_to_${dateTo}.pdf`, docTitle: 'Planner Report', docSubtitle: `Period: ${rangeLabel}`, sections: [reportsExportSpecs.pdf] });
 
   return (
     <div className="space-y-4">
@@ -4686,8 +4625,6 @@ function ReportsTab({ orders }: { orders: BakeryOrder[] }) {
                   <th className="px-4 py-2 text-right">Requested</th>
                   <th className="px-4 py-2 text-right">Produced</th>
                   <th className="px-4 py-2 text-right">Dispatched</th>
-                  <th className="px-4 py-2 text-right">Variance</th>
-                  <th className="px-4 py-2 text-right">Status</th>
                 </tr>
               </thead>
               <tbody>
@@ -4699,8 +4636,6 @@ function ReportsTab({ orders }: { orders: BakeryOrder[] }) {
                     <td className="px-4 py-2 text-right text-muted-foreground">{r.requested}</td>
                     <td className="px-4 py-2 text-right text-muted-foreground">{r.produced}</td>
                     <td className="px-4 py-2 text-right text-muted-foreground">{r.dispatched}</td>
-                    <td className={cn('px-4 py-2 text-right font-bold', r.prodVariancePct < 0 ? 'text-red-600' : r.prodVariancePct > 0 ? 'text-blue-600' : 'text-teal-600')}>{r.prodVariancePct > 0 ? '+' : ''}{r.prodVariancePct}%</td>
-                    <td className="px-4 py-2 text-right"><span className={cn('rounded-full px-2 py-0.5 text-[10px] font-black', REPORT_STATUS_COLOR[r.status])}>{r.status}</span></td>
                   </tr>
                 ))}
               </tbody>
@@ -4843,6 +4778,264 @@ function ReportsTab({ orders }: { orders: BakeryOrder[] }) {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+// ─── Tab: Packing & Dispatch summary (Reports & Closing Stock) ──────────────
+// FEATURE (2026-09-15): pulled out of PackingDailyClosureTab's own
+// 'operations' section (which used to live inside Daily Closure) — reuses
+// usePackingDispatchSummary (same file, exported) so the numbers here are
+// byte-identical to what that tab's own Cashier Closure record saves, just
+// with its own date picker instead of sharing Daily Closure's.
+function PackingDispatchSummaryPanel({ onExportDataChange }: {
+  // FEATURE (2026-09-15): lets the merged Reports tab's top-level "Export
+  // All" button fold this section's current data into the combined file —
+  // reported up on every change since this panel stays mounted (CSS-hidden,
+  // inside the Reports section) whenever the combined tab is open.
+  onExportDataChange?: (data: { excel: ExcelSectionSpec; pdf: PdfSectionSpec }) => void;
+} = {}) {
+  const orders = useBakeryStore(s => s.orders);
+  const [date, setDate] = useState(packingBusinessDateToday());
+  const { packedOrders, dispatchedOrderIds, pendingOrders, branchSummary, itemSummary, leftoverRows, dispatchedKg, dispatchedPcs, leftoverKg } = usePackingDispatchSummary(orders, date);
+
+  // Built once per data change, shared by this panel's own Excel/PDF
+  // buttons AND reported upward (below) for the top-level "Export All"
+  // button — see reportExport.ts for why this replaced hand-rolled jsPDF.
+  const dispatchExportSpecs = useMemo((): { excel: ExcelSectionSpec; pdf: PdfSectionSpec } => ({
+    excel: {
+      prefix: 'Packing & Dispatch',
+      sheets: [
+        { name: 'Summary', fallback: 'No data', rows: [
+          { Metric: 'Date', Value: date },
+          { Metric: 'Packed Orders', Value: packedOrders.length },
+          { Metric: 'Dispatched Orders', Value: dispatchedOrderIds.size },
+          { Metric: 'Pending Orders', Value: pendingOrders },
+          { Metric: 'Dispatch KG', Value: dispatchedKg },
+          { Metric: 'Dispatch Pcs', Value: dispatchedPcs },
+          { Metric: 'Leftover KG', Value: leftoverKg },
+        ] },
+        { name: 'Item-wise Dispatch', fallback: 'No dispatches on this date', rows: itemSummary.map(row => ({
+          Item: row.itemName, KG: row.kg, Pcs: row.pcs, Entries: row.entries, Branches: row.branches.join(', '),
+        })) },
+        { name: 'Branch Dispatch', fallback: 'No data', rows: BRANCHES.map(branch => ({
+          Branch: branch, Orders: branchSummary[branch].orders, KG: branchSummary[branch].kg, Pcs: branchSummary[branch].pcs,
+        })) },
+        { name: 'Leftover / Undispatched', fallback: 'No leftover items', rows: leftoverRows.map(row => ({
+          Item: row.itemName, 'Order #': row.orderNumber, 'Remaining (kg)': row.remaining,
+        })) },
+      ],
+    },
+    pdf: {
+      title: 'Packing & Dispatch',
+      subtitle: `Business date: ${date}`,
+      kpis: [
+        ['Packed Orders', String(packedOrders.length)],
+        ['Dispatched Orders', String(dispatchedOrderIds.size)],
+        ['Pending Orders', String(pendingOrders)],
+        ['Dispatch KG', qtyFmt(dispatchedKg)],
+        ['Dispatch Pcs', qtyFmt(dispatchedPcs)],
+        ['Leftover KG', qtyFmt(leftoverKg)],
+      ],
+      tables: [
+        {
+          title: 'Item-wise Dispatch',
+          headers: ['Item', 'KG', 'Pcs', 'Entries', 'Branches'],
+          colWidths: [160, 60, 60, 55, 195],
+          rows: itemSummary.map(row => [row.itemName.slice(0, 30), qtyFmt(row.kg), qtyFmt(row.pcs), String(row.entries), row.branches.join(', ').slice(0, 40)]),
+          emptyText: 'No dispatches on this date.',
+        },
+        {
+          title: 'Branch Dispatch',
+          headers: ['Branch', 'Orders', 'KG', 'Pcs'],
+          colWidths: [150, 100, 100, 100],
+          rows: BRANCHES.map(branch => [branch, String(branchSummary[branch].orders), qtyFmt(branchSummary[branch].kg), qtyFmt(branchSummary[branch].pcs)]),
+          emptyText: 'No data.',
+        },
+        {
+          title: 'Leftover / Undispatched',
+          headers: ['Item', 'Order #', 'Remaining (kg)'],
+          colWidths: [220, 100, 130],
+          rows: leftoverRows.map(row => [row.itemName.slice(0, 40), String(row.orderNumber), qtyFmt(row.remaining)]),
+          emptyText: 'No leftover items.',
+        },
+      ],
+    },
+  }), [date, packedOrders, dispatchedOrderIds, pendingOrders, branchSummary, itemSummary, leftoverRows, dispatchedKg, dispatchedPcs, leftoverKg]);
+
+  useEffect(() => { onExportDataChange?.(dispatchExportSpecs); }, [dispatchExportSpecs, onExportDataChange]);
+
+  const exportExcel = () => generateExcelReport({ filename: `planner-packing-dispatch-${date}.xlsx`, sections: [dispatchExportSpecs.excel] });
+  const exportPdf = () => generatePdfReport({ filename: `planner-packing-dispatch-${date}.pdf`, docTitle: 'Packing & Dispatch', docSubtitle: `Business date: ${date}`, sections: [dispatchExportSpecs.pdf] });
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h3 className="font-display text-lg font-black">Packing &amp; Dispatch</h3>
+          <p className="text-xs text-muted-foreground">Item-wise and branch-wise dispatch for one business date, plus anything still undispatched.</p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center gap-1.5 rounded-xl border bg-background px-3 py-2"><CalendarDays className="size-4 text-muted-foreground" /><input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="bg-transparent text-sm font-bold" /></div>
+          <button onClick={exportExcel} className="flex items-center gap-1.5 rounded-xl border border-teal-200 bg-teal-50 px-3 py-2 text-xs font-bold text-teal-700 hover:bg-teal-100">
+            <FileSpreadsheet className="size-4" /> Excel
+          </button>
+          <button onClick={exportPdf} className="flex items-center gap-1.5 rounded-xl border border-slate-300 bg-slate-50 px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-100">
+            <FileText className="size-4" /> PDF
+          </button>
+        </div>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
+        <StatCard label="Packed Orders" value={packedOrders.length} helper="Sent to packing today" icon={<PackageCheck className="size-5" />} tone="blue" />
+        <StatCard label="Dispatched Orders" value={dispatchedOrderIds.size} helper="Completed dispatch" icon={<Truck className="size-5" />} tone="emerald" />
+        <StatCard label="Pending Orders" value={pendingOrders} helper="Still waiting in packing" icon={<ClipboardCheck className="size-5" />} tone="amber" />
+        <StatCard label="Dispatch KG" value={qtyFmt(dispatchedKg)} helper="Weight-based items" icon={<Send className="size-5" />} tone="emerald" />
+        <StatCard label="Dispatch Pcs" value={qtyFmt(dispatchedPcs)} helper="Piece-based items" icon={<Send className="size-5" />} tone="blue" />
+        <StatCard label="Leftover" value={`${qtyFmt(leftoverKg)} kg`} helper={`${leftoverRows.length} item balances`} icon={<AlertTriangle className="size-5" />} tone={leftoverRows.length ? 'red' : 'slate'} />
+      </div>
+      <div className="grid gap-4 xl:grid-cols-[1.2fr_.8fr]">
+        <div className="overflow-hidden rounded-2xl border bg-card">
+          <div className="border-b bg-muted/30 px-4 py-3"><h3 className="font-black">Item-wise Dispatch</h3><p className="text-xs text-muted-foreground">All dispatch entries for the selected business date</p></div>
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead className="bg-muted/50 text-[10px] font-black uppercase tracking-wide text-muted-foreground"><tr><th className="px-4 py-3 text-left">Item</th><th className="px-4 py-3 text-right">KG</th><th className="px-4 py-3 text-right">Pcs</th><th className="px-4 py-3 text-right">Entries</th><th className="px-4 py-3 text-left">Branches</th></tr></thead>
+              <tbody className="divide-y">
+                {itemSummary.length ? itemSummary.map(row => (
+                  <tr key={row.itemName}><td className="px-4 py-3 font-black">{row.itemName}</td><td className="px-4 py-3 text-right">{qtyFmt(row.kg)}</td><td className="px-4 py-3 text-right">{qtyFmt(row.pcs)}</td><td className="px-4 py-3 text-right">{row.entries}</td><td className="px-4 py-3">{row.branches.join(', ')}</td></tr>
+                )) : <tr><td colSpan={5} className="px-4 py-10 text-center text-muted-foreground">No dispatches on this date.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div className="space-y-4">
+          <div className="rounded-2xl border bg-card p-4">
+            <h3 className="font-black">Branch Dispatch</h3>
+            <div className="mt-3 space-y-2">
+              {BRANCHES.map(branch => (
+                <div key={branch} className="rounded-xl border p-3">
+                  <div className="flex items-center justify-between">
+                    <div><p className="font-black">{branch}</p><p className="text-xs text-muted-foreground">{branchSummary[branch].orders} orders</p></div>
+                    <div className="text-right text-sm font-black"><p>{qtyFmt(branchSummary[branch].kg)} kg</p><p>{qtyFmt(branchSummary[branch].pcs)} pcs</p></div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="rounded-2xl border bg-card p-4">
+            <h3 className="font-black">Leftover / Undispatched</h3>
+            <div className="mt-3 max-h-72 space-y-2 overflow-y-auto">
+              {leftoverRows.length ? leftoverRows.slice(0, 30).map((row, index) => (
+                <div key={`${row.orderNumber}-${row.itemName}-${index}`} className="flex items-center justify-between rounded-xl bg-red-50 px-3 py-2 text-sm">
+                  <div><p className="font-bold">{row.itemName}</p><p className="text-[10px] text-red-600">Order #{row.orderNumber}</p></div>
+                  <b className="text-red-700">{qtyFmt(row.remaining)} kg</b>
+                </div>
+              )) : <p className="py-8 text-center text-sm text-muted-foreground">No leftover items.</p>}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Tab: Reports & Closing Stock (combined, shareable) ─────────────────────
+// FEATURE (2026-09-15): "I need closing stock tab and Reports tab and Daily
+// closure tab > packing & dispatch and Dispute & Returns sub tabs into one
+// complete tab... share a complete data and details to Owner and Manager" —
+// replaces the separate 'reports' top-level tab and folds Packing & Dispatch
+// + Disputes & Returns out of Daily Closure (which keeps only its own
+// cash-critical Cashier Closure + Closure History — see
+// PackingDailyClosureTab.tsx). Every section below reuses its EXISTING
+// component/logic unchanged (ReportsTab, PlannerLeftoverTab, LeftoverDoneTab,
+// PackingDispatchSummaryPanel, DisputesAndReturnsPanel) — this is purely a
+// new shared shell around them, not a rewrite of any of their data or
+// actions, so nothing about how they work day-to-day changes.
+//
+// SAME-DAY CORRECTION (2026-09-15): "combine the Packing & Dispatch sub tab
+// into Reports only" — Packing & Dispatch is no longer its own sub-tab
+// button; PackingDispatchSummaryPanel now renders as a section inside
+// "Reports" itself, right under ReportsTab. That leaves 3 sub-tabs.
+type CombinedReportSection = 'reports' | 'closing-stock' | 'disputes';
+const COMBINED_REPORT_SECTIONS: { key: CombinedReportSection; label: string; icon: JSX.Element }[] = [
+  { key: 'reports', label: 'Reports', icon: <BarChart3 className="size-4" /> },
+  { key: 'closing-stock', label: 'Closing Stock', icon: <Scale className="size-4" /> },
+  { key: 'disputes', label: 'Disputes & Returns', icon: <Undo2 className="size-4" /> },
+];
+
+type SectionExportData = { excel: ExcelSectionSpec; pdf: PdfSectionSpec } | null;
+
+function PlannerReportsAndClosingStockTab({ orders, activeLeftovers, doneOrders }: {
+  orders: BakeryOrder[]; activeLeftovers: BakeryOrder[]; doneOrders: BakeryOrder[];
+}) {
+  const [section, setSection] = useState<CombinedReportSection>('reports');
+
+  // FEATURE (2026-09-15): "top level Excel and PDF of all the sub tabs into
+  // one combined" — every section below stays mounted (CSS-hidden, not
+  // unmounted) so each one keeps reporting its current data up here via
+  // these callbacks even while a different sub-tab is showing; the "Export
+  // All" buttons just combine whatever's currently been reported.
+  const [reportsData, setReportsData] = useState<SectionExportData>(null);
+  const [dispatchData, setDispatchData] = useState<SectionExportData>(null);
+  const [closingStockData, setClosingStockData] = useState<SectionExportData>(null);
+  const [disputesData, setDisputesData] = useState<SectionExportData>(null);
+  const onReportsExport = useCallback((d: { excel: ExcelSectionSpec; pdf: PdfSectionSpec }) => setReportsData(d), []);
+  const onDispatchExport = useCallback((d: { excel: ExcelSectionSpec; pdf: PdfSectionSpec }) => setDispatchData(d), []);
+  const onClosingStockExport = useCallback((d: { excel: ExcelSectionSpec; pdf: PdfSectionSpec }) => setClosingStockData(d), []);
+  const onDisputesExport = useCallback((d: { excel: ExcelSectionSpec; pdf: PdfSectionSpec }) => setDisputesData(d), []);
+
+  const allSections = [reportsData, dispatchData, closingStockData, disputesData].filter((d): d is NonNullable<SectionExportData> => d != null);
+  const today = kolkataToday();
+
+  const exportAllExcel = () => generateExcelReport({ filename: `planner-combined-report-${today}.xlsx`, sections: allSections.map(s => s.excel) });
+  const exportAllPdf = () => generatePdfReport({
+    filename: `planner-combined-report-${today}.pdf`,
+    docTitle: 'Combined Planner Report',
+    docSubtitle: 'Reports, Closing Stock, Packing & Dispatch and Disputes & Returns — everything in one file for the Owner/Manager.',
+    sections: allSections.map(s => s.pdf),
+  });
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex gap-2 overflow-x-auto pb-1">
+          {COMBINED_REPORT_SECTIONS.map(s => (
+            <button
+              key={s.key}
+              onClick={() => setSection(s.key)}
+              className={cn('inline-flex shrink-0 items-center gap-2 rounded-xl border px-4 py-2.5 text-xs font-black', section === s.key ? 'border-teal-700 bg-teal-700 text-white' : 'bg-card')}
+            >
+              {s.icon}{s.label}
+            </button>
+          ))}
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-[10px] font-black uppercase tracking-wide text-muted-foreground">Export everything:</span>
+          <button onClick={exportAllExcel} disabled={allSections.length === 0} className="flex items-center gap-1.5 rounded-xl border border-teal-700 bg-teal-700 px-3 py-2 text-xs font-black text-white hover:bg-teal-800 disabled:cursor-wait disabled:opacity-60">
+            <FileSpreadsheet className="size-4" /> Excel (All)
+          </button>
+          <button onClick={exportAllPdf} disabled={allSections.length === 0} className="flex items-center gap-1.5 rounded-xl bg-slate-950 px-3 py-2 text-xs font-black text-white hover:bg-slate-800 disabled:cursor-wait disabled:opacity-60">
+            <FileText className="size-4" /> PDF (All)
+          </button>
+        </div>
+      </div>
+      {/* Kept mounted (CSS-hidden) rather than unmounted on tab switch — same
+          reasoning as Dispatch's own date-group visibility toggle elsewhere
+          in this file: several of these sections (Closing Stock's Add form,
+          Reports' date range) hold real in-progress typing that shouldn't be
+          discarded just because someone glanced at another section — and the
+          "Export All" buttons above need every section's data available
+          regardless of which one is currently showing. */}
+      <div style={{ display: section === 'reports' ? 'block' : 'none' }} className="space-y-8">
+        <ReportsTab orders={orders} onExportDataChange={onReportsExport} />
+        <div className="border-t pt-6">
+          <PackingDispatchSummaryPanel onExportDataChange={onDispatchExport} />
+        </div>
+      </div>
+      <div style={{ display: section === 'closing-stock' ? 'block' : 'none' }} className="space-y-6">
+        <PlannerLeftoverTab onExportDataChange={onClosingStockExport} />
+        <LeftoverDoneTab active={activeLeftovers} done={doneOrders} />
+      </div>
+      <div style={{ display: section === 'disputes' ? 'block' : 'none' }}><DisputesAndReturnsPanel onExportDataChange={onDisputesExport} /></div>
     </div>
   );
 }
