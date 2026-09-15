@@ -753,7 +753,28 @@ export default function PlannerLeftoverTab({ onExportDataChange }: {
       map.set(key, current);
       return current;
     };
+    // FEATURE (2026-09-15): "Opening should be closing stock of that item...
+    // as we cleared the closing stock make the opening as 0" — the
+    // 2026-09-15 bulk clear (196 additive 'adjustment' rows zeroing every
+    // balance, see project_closing_stock_clear_delete_and_reports_merge_20260915)
+    // is dated on its own business_date, so it used to land in THAT date's
+    // "Adjusted" column (or, in an earlier attempt, get folded into
+    // "Opening" — which still left a nonzero Opening on items that also had
+    // real same-day activity before the clear ran). User confirmed the
+    // simpler rule they actually want: for any item the clear touched,
+    // Opening on that date is just 0, full stop — they're manually
+    // re-counting and re-entering physical stock the next morning anyway,
+    // so today's Closing doesn't need to reconcile against pre-clear
+    // history. Display-only, this Daily Report table only — the underlying
+    // ledger rows, Movement Log, Current Leftover Balance, Reports tab, and
+    // every export elsewhere are untouched.
+    const isBulkClearRow = (row: LeftoverLedgerRow) => row.reason === 'adjustment' && row.recordedBy.includes('bulk clear');
+    const bulkClearedKeys = new Set<string>();
     rows.forEach((row) => {
+      if (isBulkClearRow(row) && row.businessDate === reportDate) {
+        bulkClearedKeys.add(`${row.itemSlug}|${row.unit}`);
+        return;
+      }
       if (row.businessDate < reportDate) {
         ensure(row).opening += row.delta;
       } else if (row.businessDate === reportDate) {
@@ -779,6 +800,7 @@ export default function PlannerLeftoverTab({ onExportDataChange }: {
         }
       }
     });
+    bulkClearedKeys.forEach((key) => { const entry = map.get(key); if (entry) entry.opening = 0; });
     return Array.from(map.values())
       .map((entry) => ({ ...entry, closing: entry.opening + entry.produced + entry.closingStockEntry - entry.dispatched - entry.transferredOut + entry.adjusted }))
       .filter((entry) => Math.abs(entry.opening) > 0.001 || Math.abs(entry.produced) > 0.001 || Math.abs(entry.closingStockEntry) > 0.001 || Math.abs(entry.dispatched) > 0.001 || Math.abs(entry.transferredOut) > 0.001 || Math.abs(entry.adjusted) > 0.001)

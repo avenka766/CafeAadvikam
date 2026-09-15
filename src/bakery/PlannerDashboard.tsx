@@ -2582,11 +2582,9 @@ function ProductionEntryTab({ orders, productionCutoff }: { orders: BakeryOrder[
           />
         </div>
       </div>
-      {productionCutoff && (
-        <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-700">
-          Fresh since {new Date(productionCutoff).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })} — only orders sent to Store after the nightly 11 PM reset show here. Older orders stay in Reports and Dispatched history.
-        </div>
-      )}
+      <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-700">
+        This list clears every night at 11 PM — items here won't carry over to tomorrow. Reports and Dispatched history still keep everything.
+      </div>
       <ExtraProducedItemForm />
       {rows.length === 0 && <EmptyState text="No items waiting on production entry." />}
       {rows.length > 0 && (
@@ -8665,11 +8663,9 @@ function DispatchTab({ orders, allOrders, productionCutoff }: { orders: BakeryOr
         <DispatchReturnPanel />
       ) : (
         <>
-          {productionCutoff && (
-            <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-700">
-              "To Dispatch" is fresh since {new Date(productionCutoff).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })} — only orders sent to Store after the nightly 11 PM reset show there. The Dispatched sub-tab and Reports still show everything.
-            </div>
-          )}
+          <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-700">
+            "To Dispatch" clears every night at 11 PM — items here won't carry over to tomorrow. The Dispatched sub-tab and Reports still keep everything.
+          </div>
           {allOrders.length === 0 && <EmptyState text="Nothing waiting on dispatch." />}
           {allOrders.length > 0 && (
             <DispatchDateGroup dateKey="all" label="Pending Dispatch" orders={orders} allOrders={allOrders} search={search} defaultOpen />
