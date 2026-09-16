@@ -5228,6 +5228,11 @@ function StockAuditTab({
     field: "difference",
     direction: "desc",
   });
+  // BUG FIX (2026-09-17): window.confirm() here never actually resolves in
+  // some embedded/kiosk browser contexts (native dialogs suppressed) --
+  // "Confirm & Save" looked completely dead with no error and no feedback.
+  // An in-app confirmation works everywhere a native dialog might not.
+  const [confirmingReportId, setConfirmingReportId] = useState<string | null>(null);
   const [refreshingReports, setRefreshingReports] = useState(false);
   const refreshStockAudit = async () => {
     setRefreshingReports(true);
@@ -5389,16 +5394,14 @@ function StockAuditTab({
       setNotice(`${report.reportNo} is already ${report.status}.`);
       return;
     }
-    const ok = window.confirm(
-      `Confirm ${report.reportNo} and update VRSNB stock to the physical counted quantities?`,
-    );
-    if (!ok) return;
+    setConfirmingReportId(null);
     setSavingId(reportId);
     try {
-      const { error: rpcError } = await supabase.rpc("confirm_branch_stock_count_report", {
+      const { data: rpcData, error: rpcError } = await supabase.rpc("confirm_branch_stock_count_report", {
         p_report_id: report.id,
         p_confirmed_by: userName,
       });
+      let skipped: Array<{ itemName: string; reason: string }> = [];
       if (rpcError) {
         const missingRpc =
           /confirm_branch_stock_count_report|could not find the function|does not exist|schema cache|not found/i.test(
@@ -5418,10 +5421,25 @@ function StockAuditTab({
             return;
           }
         }
+      } else {
+        // BUG FIX (2026-09-17): the RPC now applies every line independently and
+        // reports back any items it couldn't touch (e.g. physical count below
+        // stock still reserved for a pending order) instead of failing the whole
+        // report — surface those so admin knows exactly what still needs a look.
+        skipped = Array.isArray((rpcData as { skipped?: unknown })?.skipped)
+          ? ((rpcData as { skipped: Array<{ itemName: string; reason: string }> }).skipped)
+          : [];
       }
       confirmStockCountReport(report.id, userName);
       await fetchBranchData(BRANCH, false, ['stock']); // EGRESS FIX: stock count confirmation only touches stock
-      setNotice(`${report.reportNo} confirmed. VRSNB stock updated and variance sent to Owner/Admin.`);
+      if (skipped.length > 0) {
+        const names = skipped.map((s) => s.itemName).join(", ");
+        setNotice(
+          `${report.reportNo} confirmed. VRSNB stock updated for all other items, but skipped ${skipped.length} item(s) still reserved for a pending order: ${names}. Resolve those reservations first, then re-count and re-submit just those items.`,
+        );
+      } else {
+        setNotice(`${report.reportNo} confirmed. VRSNB stock updated and variance sent to Owner/Admin.`);
+      }
     } finally {
       setSavingId("");
     }
@@ -5460,8 +5478,26 @@ function StockAuditTab({
     }
   };
 
+  const confirmingReport = confirmingReportId ? reports.find((row) => row.id === confirmingReportId) : null;
+
   return (
     <div className="space-y-4">
+      {confirmingReport && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-xl">
+            <h3 className="text-sm font-black">Confirm {confirmingReport.reportNo}?</h3>
+            <p className="mt-1 text-xs font-semibold text-slate-500">
+              This will update VRSNB stock to the physical counted quantities. This can't be undone from here.
+            </p>
+            <div className="mt-4 flex justify-end gap-2">
+              <button type="button" onClick={() => setConfirmingReportId(null)} className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")}>Cancel</button>
+              <button type="button" onClick={() => void confirmReport(confirmingReport.id)} className={cn(btnCls, "bg-orange-500 text-white shadow-lg shadow-orange-200")}>
+                Confirm & Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
         <Kpi label="Pending Reports" value={pending.length} icon={<ClipboardCheck className="size-4" />} tone="amber" />
         <Kpi label="Total Reports" value={reports.length} icon={<PackageCheck className="size-4" />} tone="blue" />
@@ -5499,7 +5535,7 @@ function StockAuditTab({
                 <button
                   type="button"
                   disabled={savingId === report.id || Boolean(savingLine)}
-                  onClick={() => confirmReport(report.id)}
+                  onClick={() => setConfirmingReportId(report.id)}
                   className={cn(btnCls, "bg-orange-500 text-white shadow-lg shadow-orange-200 disabled:opacity-50")}
                 >
                   {savingId === report.id ? "Saving..." : "Confirm & Save"}
