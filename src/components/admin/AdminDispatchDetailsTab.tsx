@@ -18,7 +18,7 @@ import {
   ChevronDown, FileSpreadsheet, FileDown, Printer, IndianRupee, Receipt,
   Truck, Cake as CakeIcon, ShoppingBag, Loader2, Filter, Search,
 } from 'lucide-react';
-import { supabase } from '@/lib/supabase';
+import { supabase, fetchAllRows } from '@/lib/supabase';
 import { formatCurrency, cn } from '@/lib/utils';
 import {
   listDispatchInvoices, printDispatchInvoice, mapWalkinBill, walkinBillToInvoiceRecord,
@@ -149,12 +149,18 @@ export default function AdminDispatchDetailsTab() {
     try {
       const fromIso = `${fromDate}T00:00:00+05:30`;
       const toIso = new Date(new Date(`${toDate}T00:00:00+05:30`).getTime() + 86_400_000).toISOString();
+      // BUG FIX (2026-09-16): both were unbounded/meaninglessly-limited
+      // queries (`.limit(2000)`/`.limit(5000)` don't override PostgREST's
+      // hard 1000-row response cap — see fetchAllRows's comment in
+      // lib/supabase.ts) — hosur_bills in particular had no date bound at
+      // all, so payment-status lookups could silently miss bills once the
+      // all-time count passed 1000. Paginated with fetchAllRows.
       const [invoiceRows, salesRes, hosurBillsRes] = await Promise.all([
         listDispatchInvoices({ fromDate: fromIso, toDate: toIso }),
-        supabase.from('bakery_walkin_bills').select('*').gte('created_at', fromIso).lt('created_at', toIso).order('created_at', { ascending: false }).limit(2000),
-        supabase.from('hosur_bills').select('invoice_no, status').not('invoice_no', 'is', null).limit(5000),
+        fetchAllRows<Record<string, unknown>>('bakery_walkin_bills', (q) => q.select('*').gte('created_at', fromIso).lt('created_at', toIso).order('created_at', { ascending: false })),
+        fetchAllRows<{ invoice_no: string | null; status: string }>('hosur_bills', (q) => q.select('invoice_no, status').not('invoice_no', 'is', null)),
       ]);
-      if (salesRes.error) throw salesRes.error;
+      if (salesRes.error) throw new Error(salesRes.error);
       // FEATURE (2026-09-06): "recorded in the report and admin dispatch
       // details tab also — that invoice number cancelled" — this used to
       // filter cancelled invoices/bills out entirely, so a cancellation was
