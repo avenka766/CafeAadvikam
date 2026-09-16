@@ -4,7 +4,7 @@ import { Cake, Loader2, Package, Send, AlertTriangle, RefreshCcw, Receipt, Print
 import { cn } from '@/lib/utils';
 import { useAuthStore } from '@/stores/authStore';
 import { supabase, fetchAllRows } from '@/lib/supabase';
-import { ensureCakeDispatchIncoming } from '@/branch/cakeDispatchSync';
+import { ensureCakeDispatchIncoming, cakeIncomingDispatchId } from '@/branch/cakeDispatchSync';
 import { printHtml } from '@/branch/printUtils';
 import { printViaIframe } from '@/lib/printViaIframe';
 import { saveDispatchInvoice, printDispatchInvoice, recordFromRow as recordFromDispatchInvoiceRow, type DispatchInvoiceRecord, type DispatchInvoiceItem, type DispatchInvoiceScope } from './dispatchInvoice';
@@ -844,6 +844,26 @@ function CakeDispatchReviewModal({ orders, dispatchedBy, onClose, onDone }: {
         });
         createdInvoicesRef.current.set(branch, record);
         records.push(record);
+        // BUG FIX (2026-09-16): "for the second one there is no TO or ADV
+        // number" — ensureCakeDispatchIncoming (called via performCakeDispatch
+        // above) writes each cake's branch_incoming row BEFORE this invoice
+        // even exists, and unlike the regular (non-cake) dispatch flow in
+        // PlannerDashboard.tsx's DispatchReviewModal, nothing ever backfilled
+        // the invoice number back onto it afterward — every cake's Stock/
+        // Incoming row was permanently missing its Cake/26-27/N badge.
+        // Same best-effort pattern as that regular-dispatch backfill: the
+        // dispatch + invoice have already both succeeded and must stand
+        // regardless of whether this tagging works. (branch === 'Planner'
+        // is already skipped by the `continue` above — no branch_incoming
+        // row exists for those, so nothing to tag.)
+        {
+          const dispatchIds = group.map(o => cakeIncomingDispatchId(o.id));
+          const { error: incomingTagError } = await supabase
+            .from('branch_incoming')
+            .update({ invoice_no: record.invoiceNo })
+            .in('dispatch_id', dispatchIds);
+          if (incomingTagError) console.error('[CakeDispatchReview] Failed to tag branch_incoming with invoice number:', incomingTagError.message);
+        }
       }
       setResults(records);
       onDone();
