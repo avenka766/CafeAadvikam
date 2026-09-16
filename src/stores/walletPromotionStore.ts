@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { supabase } from '@/lib/supabase';
+import { supabase, fetchAllRows } from '@/lib/supabase';
 import type { Branch } from '@/branch/types';
 import type {
   PromotionCampaign,
@@ -261,12 +261,16 @@ export const useWalletPromotionStore = create<WalletPromotionState>((set, get) =
     if (get().loadingWallets) return;
     if (!force && get().walletsLoadedAt && Date.now() - get().walletsLoadedAt! < 30_000) return;
     set({ loadingWallets: true, error: '' });
+    // BUG FIX (2026-09-16): `.limit(2000)`/`.limit(3000)` do NOT override
+    // PostgREST's hard 1000-row response cap (see fetchAllRows's comment in
+    // lib/supabase.ts) — the transaction summary in particular grows per
+    // wallet transaction and can exceed it. Paginated.
     const [{ data: walletRows, error: walletError }, { data: transactionRows, error: transactionError }] = await Promise.all([
-      supabase.from('wallet_customer_summary').select('*').order('updated_at', { ascending: false }).limit(2000),
-      supabase.from('wallet_transaction_summary').select('*').order('created_at', { ascending: false }).limit(3000),
+      fetchAllRows<Record<string, unknown>>('wallet_customer_summary', (q) => q.select('*').order('updated_at', { ascending: false })),
+      fetchAllRows<Record<string, unknown>>('wallet_transaction_summary', (q) => q.select('*').order('created_at', { ascending: false })),
     ]);
     if (walletError) {
-      set({ loadingWallets: false, error: /wallet_customer_summary|schema cache|does not exist/i.test(walletError.message) ? 'Wallet database migration is not installed yet.' : walletError.message });
+      set({ loadingWallets: false, error: /wallet_customer_summary|schema cache|does not exist/i.test(walletError) ? 'Wallet database migration is not installed yet.' : walletError });
       return;
     }
     set({
