@@ -85,6 +85,13 @@ export async function ensureCakeDispatchIncoming(order: CakeDispatchSource, acto
   if (incomingLookupError) throw new Error(`Incoming stock lookup failed: ${incomingLookupError.message}`);
 
   if (!existingIncoming) {
+    // BUG FIX (2026-09-16): "This need to show the ADV number SNB-ADV-337...
+    // but it is showing the Cake/26-27/40" — every cake reaching this
+    // function is advance-order-linked (source_order_id is required above,
+    // and order.order_no is validated against that exact advance order's
+    // own record_no just above), so order.order_no IS the real SNB-ADV-N /
+    // VRSNB-ADV-N number — this insert just never carried it over onto the
+    // branch_incoming row, unlike every other dispatch path in this app.
     const { error: incomingError } = await supabase.from('branch_incoming').insert({
       dispatch_id: dispatchId,
       branch: order.branch,
@@ -95,6 +102,7 @@ export async function ensureCakeDispatchIncoming(order: CakeDispatchSource, acto
       received_at: order.updated_at || now,
       dispatched_by: actor,
       confirmed: false,
+      advance_order_no: order.order_no,
     });
     if (incomingError && incomingError.code !== '23505') {
       throw new Error(`Incoming stock could not be created: ${incomingError.message}`);
