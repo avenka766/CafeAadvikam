@@ -564,43 +564,24 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
   // Items dispatched days ago that were never confirmed must still be actionable.
   const todayIncoming = branchIncoming.filter((inc) => !inc.confirmed);
 
-  // FEATURE (2026-09-06): "same item is coming multiple time with different
-  // weight — I dont want like that, it should come as one" — Planner's own
-  // dispatch step splits a single dispatch across whichever bakery_orders
-  // contributed to it, so the SAME item dispatched in one action can land as
-  // several separate branch_incoming rows here (e.g. 10.15kg + 3kg for the
-  // same item, same moment, same dispatcher). Group the still-actionable rows
-  // by item+unit+advance-order-tag (keep an advance-order-linked delivery
-  // distinct from a regular one — its badge carries real meaning) and show
-  // ONE row with the summed quantity. Rows already disputed/return-requested
-  // are left un-grouped below — they already carry their own per-row history/
-  // status and shouldn't be silently folded into a fresh confirm/dispute/
-  // return action.
-  // FEATURE (2026-09-12): "For the stock/incoming tab > incoming: for the
-  // items it should show the TO invoice number also" — same merged-comma
-  // pattern dispatchedBy already uses, since one grouped row can span
-  // several dispatch batches (and therefore, in principle, more than one
-  // invoice) merged together.
+  // FEATURE (2026-09-06, REVERTED 2026-09-16): "same item is coming multiple
+  // time with different weight — I dont want like that, it should come as
+  // one" originally grouped same-item incoming rows together. 2026-09-16
+  // correction narrowed that to only merge rows sharing the same dispatch
+  // invoice (see git history for that intermediate version) — but the
+  // explicit follow-up feedback was that even a genuine same-invoice split
+  // ("BIRTHDAY FLAVOURS TO/26-27/151 · 4 batches merged") still isn't
+  // wanted: "they want it separately." No grouping at all now — every
+  // branch_incoming row is its own line, always. `IncomingGroup`/`groupMap`
+  // removed entirely; `IncomingRow` kept as a `{kind:'single'}`-only union
+  // so the render code below (which already branches on `row.kind`) didn't
+  // need touching.
   interface IncomingGroup { key: string; itemName: string; unit: 'pcs' | 'kg'; advanceOrderNo: string | null; invoiceNos: string; entries: IncomingStock[]; totalQuantity: number; receivedAt: string; dispatchedBy: string; }
   const actionableIncoming = todayIncoming.filter((inc) => !(disputedIncoming[inc.id] || inc.disputed) && !inc.returnRequested);
   const lockedIncoming = todayIncoming.filter((inc) => (disputedIncoming[inc.id] || inc.disputed) || inc.returnRequested);
-  const groupMap = new Map<string, IncomingGroup>();
-  for (const inc of actionableIncoming) {
-    const key = `${normalizeItemName(inc.itemName)}|${inc.unit}|${inc.advanceOrderNo ?? ''}`;
-    const existing = groupMap.get(key);
-    if (existing) {
-      existing.entries.push(inc);
-      existing.totalQuantity += inc.quantity;
-      if (new Date(inc.receivedAt) > new Date(existing.receivedAt)) existing.receivedAt = inc.receivedAt;
-      if (!existing.dispatchedBy.split(', ').includes(inc.dispatchedBy)) existing.dispatchedBy = `${existing.dispatchedBy}, ${inc.dispatchedBy}`;
-      if (inc.invoiceNo && !existing.invoiceNos.split(', ').includes(inc.invoiceNo)) existing.invoiceNos = existing.invoiceNos ? `${existing.invoiceNos}, ${inc.invoiceNo}` : inc.invoiceNo;
-    } else {
-      groupMap.set(key, { key, itemName: inc.itemName, unit: inc.unit, advanceOrderNo: inc.advanceOrderNo ?? null, invoiceNos: inc.invoiceNo ?? '', entries: [inc], totalQuantity: inc.quantity, receivedAt: inc.receivedAt, dispatchedBy: inc.dispatchedBy });
-    }
-  }
   type IncomingRow = { kind: 'group'; group: IncomingGroup } | { kind: 'single'; inc: IncomingStock };
   const incomingRows: IncomingRow[] = [
-    ...Array.from(groupMap.values()).map((group): IncomingRow => ({ kind: 'group', group })),
+    ...actionableIncoming.map((inc): IncomingRow => ({ kind: 'single', inc })),
     ...lockedIncoming.map((inc): IncomingRow => ({ kind: 'single', inc })),
   ].sort((a, b) => new Date(b.kind === 'group' ? b.group.receivedAt : b.inc.receivedAt).getTime() - new Date(a.kind === 'group' ? a.group.receivedAt : a.inc.receivedAt).getTime());
 
@@ -828,17 +809,26 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
                               {advanceOrderNo}
                             </span>
                           )}
-                          {invoiceNos && (
+                          {/* BUG FIX (2026-09-16): "this should not be shown
+                              for Adv orders [Cake/26-27/39]... if adv orders
+                              other then cake order should also show the TO
+                              number along with ADV number" — only the
+                              Cake/26-27/N badge is redundant once the ADV
+                              badge is already shown (the cake's own advance
+                              order IS the tracking reference); a regular
+                              TO/26-27/N invoice on an advance-order item is
+                              still shown alongside its ADV badge as before. */}
+                          {invoiceNos && !(advanceOrderNo && invoiceNos.startsWith('Cake/')) && (
                             <span className="inline-flex shrink-0 items-center rounded-full bg-teal-100 px-2 py-0.5 text-[10px] font-black text-teal-700" title="Dispatch invoice number">
                               {invoiceNos}
                             </span>
                           )}
                         </p>
-                        {/* FEATURE (2026-09-06): entries.length > 1 means Planner's own
-                            dispatch split this into several branch_incoming rows for the
-                            same delivery — noted here so it's clear the summed total isn't
-                            a mistake, without cluttering the common (un-split) case. */}
-                        <p className="text-xs text-muted-foreground">{fmt(receivedAt)} · {dispatchedBy}{entries.length > 1 ? ` · ${entries.length} batches merged` : ''}</p>
+                        {/* BUG FIX (2026-09-16): grouping removed entirely
+                            (see above) — `entries` is now always exactly one
+                            row, so the old "N batches merged" suffix here
+                            could never render again. Dropped. */}
+                        <p className="text-xs text-muted-foreground">{fmt(receivedAt)} · {dispatchedBy}</p>
                       </div>
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
