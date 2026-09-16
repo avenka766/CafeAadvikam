@@ -991,9 +991,21 @@ const MASTER_DATA_TYPES = new Set(['salesperson', 'supplier', 'cashier_profile']
 // capped to 2 round trips and bounded to the last 24 months as a hard safety
 // net regardless of how large the table grows. Master-data types (see
 // MASTER_DATA_TYPES above) are exempt from the date bound.
+// BUG FIX (2026-09-17): pageSize was 2500, but PostgREST's server-side
+// db-max-rows cap on this project is 1000 -- a .range(0, 2499) request never
+// actually returns more than 1000 rows no matter what's asked for. The loop
+// below decides "no more pages" by checking `page.length < pageSize`, so
+// with pageSize=2500 that was true after the very FIRST request every
+// single time, silently truncating this entire 24-month history to whatever
+// the first 1000 rows happened to be -- for any branch with >1000 sparse
+// records in 24 months (expenses/POs/credit sales/audit log/etc. combined),
+// everything older than that was dropped with no error, every load. Setting
+// pageSize to the real achievable page size (1000) makes the loop's own
+// termination check correct again, while maxRows stays at exactly 2 real
+// round trips (1000 x 2) to preserve the timeout fix above untouched.
 async function loadSparseOperationHistory(branch: Branch | null) {
-  const pageSize = 2500;
-  const maxRows = 5000;
+  const pageSize = 1000;
+  const maxRows = 2000;
   const cutoff = new Date();
   cutoff.setMonth(cutoff.getMonth() - 24);
   const historyTypes = SPARSE_OPERATION_HISTORY_TYPES.filter((t) => !MASTER_DATA_TYPES.has(t));
