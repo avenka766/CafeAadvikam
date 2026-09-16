@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Cake, Loader2, Package, Send, AlertTriangle, RefreshCcw, Receipt, Printer, RotateCcw, X, CheckCircle2, Truck, FileText, Percent, ClipboardList } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuthStore } from '@/stores/authStore';
-import { supabase } from '@/lib/supabase';
+import { supabase, fetchAllRows } from '@/lib/supabase';
 import { ensureCakeDispatchIncoming } from '@/branch/cakeDispatchSync';
 import { printHtml } from '@/branch/printUtils';
 import { printViaIframe } from '@/lib/printViaIframe';
@@ -203,21 +203,22 @@ export default function PackingCakeOrdersTab({ mode = 'packing' }: { mode?: 'pac
 
   const load = useCallback(async () => {
     setLoading(true);
-    let query = supabase
-      .from('cake_master_orders')
-      .select('id,branch,order_no,source_order_id,slip_number,customer_name,delivery_date,delivery_time,cake_kg,prepared_quantity,flavor,shape,cream_type,message_on_cake,design_notes,updated_at,created_at,status,correction_reason,correction_requested_by,correction_requested_at,dispatched_by,dispatched_at,order_value,advance_amount,balance_amount')
-      .order('delivery_date', { ascending: true })
-      // EGRESS FIX (2026-08-15): this had no cap and no date filter at all —
-      // by design it's cross-branch/cross-status (planner mode especially),
-      // so a date/branch filter isn't right here, but nothing should ever
-      // fetch unbounded. 2000 is far above current volume with room to grow.
-      .limit(2000);
-    if (mode !== 'planner') {
-      query = query.in('status', ['Ready for Packing', 'Packed', 'Correction Required']);
-    }
-    const { data, error: err } = await query;
+    // BUG FIX (2026-09-16): `.limit(2000)` does NOT override PostgREST's
+    // hard 1000-row response cap (see fetchAllRows's comment in
+    // lib/supabase.ts) — planner mode in particular has no date filter at
+    // all (by design, cross-branch/cross-status), so it will silently
+    // truncate once cake order history passes 1000. Paginated.
+    const { data, error: err } = await fetchAllRows<any>('cake_master_orders', (q) => {
+      let query = q
+        .select('id,branch,order_no,source_order_id,slip_number,customer_name,delivery_date,delivery_time,cake_kg,prepared_quantity,flavor,shape,cream_type,message_on_cake,design_notes,updated_at,created_at,status,correction_reason,correction_requested_by,correction_requested_at,dispatched_by,dispatched_at,order_value,advance_amount,balance_amount')
+        .order('delivery_date', { ascending: true });
+      if (mode !== 'planner') {
+        query = query.in('status', ['Ready for Packing', 'Packed', 'Correction Required']);
+      }
+      return query;
+    });
     setLoading(false);
-    if (err) { setError(err.message); return; }
+    if (err) { setError(err); return; }
     setError('');
     setOrders((data || []) as CakeOrderRow[]);
   }, [mode]);

@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { supabase } from '@/lib/supabase';
+import { supabase, fetchAllRows } from '@/lib/supabase';
 import { makeSingletonSubscriber } from '@/lib/realtimeChannel';
 import { getCached, setCached } from '@/lib/localCache';
 import type { BakeryOrder, BakeryOrderItem, PreparedItem, DispatchEntry, WorkflowStatus, Branch } from './types';
@@ -354,14 +354,19 @@ export async function fetchBakeryOrdersInRange(options: {
   useCompletionDate?: boolean;
 }): Promise<BakeryOrder[]> {
   const { fromIso, toIso, statuses, targetBranch, useCompletionDate } = options;
-  let query = supabase.from('bakery_orders').select(BAKERY_ORDER_COLUMNS);
-  if (statuses && statuses.length > 0) query = query.in('status', statuses);
-  if (targetBranch) query = query.eq('target_branch', targetBranch);
-  query = useCompletionDate
-    ? query.or(`and(sent_to_packing_at.gte.${fromIso},sent_to_packing_at.lte.${toIso}),and(sent_to_packing_at.is.null,created_at.gte.${fromIso},created_at.lte.${toIso})`)
-    : query.gte('created_at', fromIso).lte('created_at', toIso);
-  const { data, error } = await query.order('created_at', { ascending: false }).limit(5000);
-  if (error) throw error;
+  // BUG FIX (2026-09-16): `.limit(5000)` does NOT override PostgREST's hard
+  // 1000-row response cap (see fetchAllRows's comment in lib/supabase.ts) —
+  // an arbitrary report range can exceed 1000 orders. Paginated.
+  const { data, error } = await fetchAllRows<Record<string, unknown>>('bakery_orders', (q) => {
+    let query = q.select(BAKERY_ORDER_COLUMNS);
+    if (statuses && statuses.length > 0) query = query.in('status', statuses);
+    if (targetBranch) query = query.eq('target_branch', targetBranch);
+    query = useCompletionDate
+      ? query.or(`and(sent_to_packing_at.gte.${fromIso},sent_to_packing_at.lte.${toIso}),and(sent_to_packing_at.is.null,created_at.gte.${fromIso},created_at.lte.${toIso})`)
+      : query.gte('created_at', fromIso).lte('created_at', toIso);
+    return query.order('created_at', { ascending: false });
+  });
+  if (error) throw new Error(error);
   return (data ?? []).map((d) => rowToOrder(d as Record<string, unknown>));
 }
 

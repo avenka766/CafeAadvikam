@@ -2,7 +2,7 @@
 // Purchase order management — raised when store stock goes below threshold.
 
 import { create } from 'zustand';
-import { supabase } from '@/lib/supabase';
+import { supabase, fetchAllRows } from '@/lib/supabase';
 import type { Branch } from '@/branch/types';
 
 export type POStatus = 'draft' | 'sent' | 'received' | 'cancelled';
@@ -66,12 +66,14 @@ export const usePurchaseOrderStore = create<POState>((set, get) => ({
     if (get().loading) return;
     set({ loading: true });
     try {
-      const { data, error } = await supabase
-        .from('purchase_orders')
+      // BUG FIX (2026-09-16): unbounded `.select()` on a table that grows
+      // per purchase order — PostgREST silently caps at 1000 rows with no
+      // error (see fetchAllRows's comment in lib/supabase.ts).
+      const { data, error } = await fetchAllRows<Record<string, unknown>>('purchase_orders', (q) => q
         .select('id, order_number, supplier_id, supplier_name, branch, items, status, notes, created_by, created_at, sent_at, received_at, cancelled_at')
-        .order('created_at', { ascending: false });
+        .order('created_at', { ascending: false }));
       if (!error && data) {
-        set({ orders: data.map(r => mapRow(r as Record<string, unknown>)), loaded: true });
+        set({ orders: data.map(r => mapRow(r)), loaded: true });
       }
     } finally {
       set({ loading: false });

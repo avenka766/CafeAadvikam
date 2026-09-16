@@ -52,7 +52,7 @@ import {
 import { useMenuStore } from '@/stores/menuStore';
 import { isNativeApp } from '@/lib/platform';
 import NativeNav from '@/components/layout/NativeNav';
-import { supabase } from '@/lib/supabase';
+import { supabase, fetchAllRows } from '@/lib/supabase';
 import { getPackingCounterStatus, packingBusinessDateToday } from './packingCounter';
 import {
   GST_INVOICE_SELLER_DEFAULT, GST_INVOICE_BANK_DEFAULT, buildGstTaxInvoiceHtml, getNextGstInvoiceNumber, financialYearForDate,
@@ -1259,9 +1259,11 @@ function useHosurShopNames(orders: BakeryOrder[]): Map<string, string> {
     let cancelled = false;
     if (hosurIds.length === 0) { setByOrderId(new Map()); return; }
     (async () => {
-      const { data } = await supabase.from('hosur_orders').select('id, shop_name').in('id', hosurIds);
+      // BUG FIX (2026-09-16): `hosurIds` can grow past 1000 as order history
+      // accumulates, same as the Jos Bakery Theni dispatch bug — paginated.
+      const { data } = await fetchAllRows<Record<string, unknown>>('hosur_orders', (q) => q.select('id, shop_name').in('id', hosurIds));
       if (cancelled) return;
-      const shopNameById = new Map(((data ?? []) as Record<string, unknown>[]).map(r => [r.id as string, String(r.shop_name ?? 'Unknown shop')]));
+      const shopNameById = new Map((data ?? []).map(r => [r.id as string, String(r.shop_name ?? 'Unknown shop')]));
       const result = new Map<string, string>();
       for (const o of orders) {
         const ids = extractHosurOrderIds(o.notes);
@@ -3436,9 +3438,11 @@ function InvoiceTab({ orders }: { orders: BakeryOrder[] }) {
     let cancelled = false;
     if (hosurTargetOrderIdsForDate.length === 0) { setHosurShopNameById(new Map()); return; }
     (async () => {
-      const { data } = await supabase.from('hosur_orders').select('id, shop_name').in('id', hosurTargetOrderIdsForDate);
+      // BUG FIX (2026-09-16): same unpaginated-`.in()` cap risk as the Jos
+      // Bakery Theni dispatch bug — paginated.
+      const { data } = await fetchAllRows<Record<string, unknown>>('hosur_orders', (q) => q.select('id, shop_name').in('id', hosurTargetOrderIdsForDate));
       if (cancelled) return;
-      setHosurShopNameById(new Map(((data ?? []) as Record<string, unknown>[]).map(o => [o.id as string, String(o.shop_name ?? 'Unknown shop')])));
+      setHosurShopNameById(new Map((data ?? []).map(o => [o.id as string, String(o.shop_name ?? 'Unknown shop')])));
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the
@@ -4193,9 +4197,11 @@ function ReportsTab({ orders, onExportDataChange }: {
     let cancelled = false;
     if (hosurTargetOrderIds.length === 0) { setHosurShopNameById(new Map()); return; }
     (async () => {
-      const { data } = await supabase.from('hosur_orders').select('id, shop_name').in('id', hosurTargetOrderIds);
+      // BUG FIX (2026-09-16): same unpaginated-`.in()` cap risk as the Jos
+      // Bakery Theni dispatch bug — paginated.
+      const { data } = await fetchAllRows<Record<string, unknown>>('hosur_orders', (q) => q.select('id, shop_name').in('id', hosurTargetOrderIds));
       if (cancelled) return;
-      setHosurShopNameById(new Map(((data ?? []) as Record<string, unknown>[]).map(o => [o.id as string, String(o.shop_name ?? 'Unknown shop')])));
+      setHosurShopNameById(new Map((data ?? []).map(o => [o.id as string, String(o.shop_name ?? 'Unknown shop')])));
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the
@@ -7353,9 +7359,13 @@ function HosurShopBreakdown({ row, orders }: { row: ProductionRow; orders: Baker
     let cancelled = false;
     if (hosurOrderIds.length === 0) { setShops([]); return; }
     (async () => {
+      // BUG FIX (2026-09-16): same unpaginated-`.in()` cap bug as
+      // useHosurShopOrders just above (see that fix's comment) — this
+      // sibling component runs the identical two-query pattern against the
+      // same fast-growing tables and was never covered by that fix.
       const [{ data: ordersData, error: ordersErr }, { data: itemsData, error: itemsErr }] = await Promise.all([
-        supabase.from('hosur_orders').select('id, shop_name').in('id', hosurOrderIds),
-        supabase.from('hosur_order_items').select('order_id, item_name, quantity, dispatched_quantity').in('order_id', hosurOrderIds),
+        fetchAllRows<Record<string, unknown>>('hosur_orders', (q) => q.select('id, shop_name').in('id', hosurOrderIds).order('id')),
+        fetchAllRows<Record<string, unknown>>('hosur_order_items', (q) => q.select('order_id, item_name, quantity, dispatched_quantity').in('order_id', hosurOrderIds).order('order_id')),
       ]);
       if (cancelled) return;
       // AUDIT FIX (2026-09-03): neither error was ever checked — a transient
@@ -7463,9 +7473,23 @@ function useHosurShopOrders(rows: ProductionRow[], orders: BakeryOrder[]) {
     let cancelled = false;
     if (hosurOrderIds.length === 0) { setShopOrders([]); return; }
     (async () => {
+      // BUG FIX (2026-09-16): "dispatched to Jos bakery theni... not visible
+      // in the hosur dispatched [tab]" — these were plain `.in(...)` queries
+      // with no pagination, silently capped at PostgREST's 1000-row response
+      // limit (same bug class as the 2026-09-08 fix on listDispatchInvoices/
+      // useCafeOrderSales — see fetchAllRows's own comment in lib/supabase.ts).
+      // Confirmed live: with the Hosur order history now past ~230 order ids,
+      // hosur_order_items' true match count was 1,050 rows for a 233-id
+      // `.in()` — Supabase returned exactly 1000 with no error, silently
+      // dropping whichever orders' items happened to fall in the truncated
+      // tail (that day it was Jos Bakery Theni + mathampatti). Since neither
+      // query is ordered, which shop(s) go missing is arbitrary and shifts
+      // day to day as more Hosur history accumulates — paginating with
+      // fetchAllRows (already used elsewhere for this exact cap) fixes it
+      // for good instead of just for today's specific shops.
       const [{ data: ordersData, error: ordersErr }, { data: itemsData, error: itemsErr }] = await Promise.all([
-        supabase.from('hosur_orders').select('id, order_number, shop_name, shop_id, created_at').in('id', hosurOrderIds),
-        supabase.from('hosur_order_items').select('order_id, item_name, unit, quantity, dispatched_quantity, cancelled_quantity, cancellation_reason').in('order_id', hosurOrderIds),
+        fetchAllRows<Record<string, unknown>>('hosur_orders', (q) => q.select('id, order_number, shop_name, shop_id, created_at').in('id', hosurOrderIds).order('id')),
+        fetchAllRows<Record<string, unknown>>('hosur_order_items', (q) => q.select('order_id, item_name, unit, quantity, dispatched_quantity, cancelled_quantity, cancellation_reason').in('order_id', hosurOrderIds).order('order_id')),
       ]);
       if (cancelled) return;
       // AUDIT FIX (2026-09-03): neither error was ever checked — a transient

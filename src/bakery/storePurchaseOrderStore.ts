@@ -9,7 +9,7 @@
 // feature used by the Branch and Order Receiver dashboards. This store talks
 // to its own `store_purchase_orders` table so the two features never collide.
 import { create } from 'zustand';
-import { supabase } from '@/lib/supabase';
+import { supabase, fetchAllRows } from '@/lib/supabase';
 import { useAuthStore } from '@/stores/authStore';
 
 export interface StorePOLineItem {
@@ -158,15 +158,19 @@ export const useStorePurchaseOrderStore = create<StorePOState>((set, get) => ({
         const result = await supabase.rpc('list_store_purchase_orders_secure');
         data = result.data as Record<string, unknown>[] | null;
         error = result.error;
+        // BUG FIX (2026-09-16): both this fallback and the non-admin branch
+        // below were plain unbounded `.select()` calls — PostgREST silently
+        // caps at 1000 rows with no error (see fetchAllRows's comment in
+        // lib/supabase.ts).
         if (isMissingRpcError(error)) {
-          const fallback = await supabase.from('store_purchase_orders').select(PO_SELECT).order('created_at', { ascending: false });
-          data = fallback.data as Record<string, unknown>[] | null;
-          error = fallback.error;
+          const fallback = await fetchAllRows<Record<string, unknown>>('store_purchase_orders', (q) => q.select(PO_SELECT).order('created_at', { ascending: false }));
+          data = fallback.data;
+          error = fallback.error ? { message: fallback.error } : null;
         }
       } else {
-        const result = await supabase.from('store_purchase_orders').select(PO_SELECT).order('created_at', { ascending: false });
-        data = result.data as Record<string, unknown>[] | null;
-        error = result.error;
+        const result = await fetchAllRows<Record<string, unknown>>('store_purchase_orders', (q) => q.select(PO_SELECT).order('created_at', { ascending: false }));
+        data = result.data;
+        error = result.error ? { message: result.error } : null;
       }
 
       if (error) throw error;

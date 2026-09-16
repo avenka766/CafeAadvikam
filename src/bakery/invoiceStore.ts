@@ -2,7 +2,7 @@
 // Store invoice management - tracks supplier deliveries, syncs stock, notifies admin.
 
 import { create } from 'zustand';
-import { supabase } from '@/lib/supabase';
+import { supabase, fetchAllRows } from '@/lib/supabase';
 import { useAuthStore } from '@/stores/authStore';
 
 export interface InvoiceLineItem {
@@ -191,21 +191,25 @@ export const useInvoiceStore = create<InvoiceState>((set, get) => ({
         data = result.data as Record<string, unknown>[] | null;
         error = result.error;
 
+        // BUG FIX (2026-09-16): both this fallback and the non-admin branch
+        // below were plain unbounded `.select()` calls on a table that grows
+        // per purchase invoice — PostgREST silently caps that at 1000 rows
+        // with no error (see fetchAllRows's own comment in lib/supabase.ts,
+        // and the Jos Bakery Theni dispatch-visibility bug this was found
+        // alongside). Paginated with fetchAllRows.
         if (isMissingRpcError(error)) {
-          const fallback = await supabase
-            .from('store_invoices')
+          const fallback = await fetchAllRows<Record<string, unknown>>('store_invoices', (q) => q
             .select('id, invoice_number, supplier_id, supplier_name, supplier_address, delivery_date, line_items, grand_total, status, purchase_status, notes, synced_to_stock, created_at, reviewed_at, review_note, edited_at, edit_count, supplier_invoice_number, supplier_invoice_date, vehicle_number, po_number, po_date, source_po_id')
-            .order('created_at', { ascending: false });
-          data = fallback.data as Record<string, unknown>[] | null;
-          error = fallback.error;
+            .order('created_at', { ascending: false }));
+          data = fallback.data;
+          error = fallback.error ? { message: fallback.error } : null;
         }
       } else {
-        const result = await supabase
-          .from('store_invoices')
+        const result = await fetchAllRows<Record<string, unknown>>('store_invoices', (q) => q
           .select('id, invoice_number, supplier_id, supplier_name, supplier_address, delivery_date, line_items, grand_total, status, purchase_status, notes, synced_to_stock, created_at, reviewed_at, review_note, edited_at, edit_count, supplier_invoice_number, supplier_invoice_date, vehicle_number, po_number, po_date, source_po_id')
-          .order('created_at', { ascending: false });
-        data = result.data as Record<string, unknown>[] | null;
-        error = result.error;
+          .order('created_at', { ascending: false }));
+        data = result.data;
+        error = result.error ? { message: result.error } : null;
       }
 
       if (error) throw error;

@@ -47,7 +47,7 @@ import { AdvanceCakeOrdersTab, CashierClosureTab } from "@/branch/tabs/BranchBus
 import { useBranchOpsStore } from "@/branch/branchOpsStore";
 import { cn, roundQty, sanitizeDecimalInput } from "@/lib/utils";
 import type { UserRole } from "@/types";
-import { supabase } from "@/lib/supabase";
+import { supabase, fetchAllRows } from "@/lib/supabase";
 import { useOperationalBranchCatalog } from "@/hooks/useOperationalBranchCatalog";
 import {
   claimStockCountGroup,
@@ -800,17 +800,19 @@ function SharedAdvanceOrdersPanel({ branch }: { branch: Branch }) {
     setLoading(true);
     setError("");
     try {
+      // BUG FIX (2026-09-16): `.limit(1000)` sits exactly at PostgREST's hard
+      // response cap — already silently broken the moment this branch's
+      // advance-order operation log passes 1000 rows (see fetchAllRows's
+      // comment in lib/supabase.ts). Paginated.
       const [advanceResult, operationResult] = await Promise.all([
         supabase.rpc("get_branch_receiver_advance_orders", { p_branch: branch }),
-        supabase
-          .from("branch_operation_records")
+        fetchAllRows<Record<string, unknown>>("branch_operation_records", (q) => q
           .select("id,record_no,amount,status,payload,created_at")
           .eq("branch", branch)
           .eq("record_type", "advance_order")
-          .order("created_at", { ascending: false })
-          .limit(1000),
+          .order("created_at", { ascending: false })),
       ]);
-      if (advanceResult.error && operationResult.error) throw advanceResult.error || operationResult.error;
+      if (advanceResult.error && operationResult.error) throw advanceResult.error || new Error(operationResult.error);
       const directRows: SharedAdvanceRow[] = (advanceResult.error ? [] : Array.isArray(advanceResult.data) ? advanceResult.data : []).map((raw) => {
         const row = raw as Record<string, unknown>;
         const items = Array.isArray(row.items) ? row.items as Array<Record<string, unknown>> : [];
@@ -3032,14 +3034,19 @@ export default function OrderReceiverDashboard() {
         // meant this table's entire early history was re-downloaded every 10
         // minutes). Newest-first + a recent date bound now matches the 250
         // most-recent orders fetched above.
-        supabase.from("hosur_order_items").select("id, order_id, item_name, unit, quantity, unit_price, line_total, dispatched_quantity, received_quantity")
+        // BUG FIX (2026-09-16): `.limit(3000)` does NOT override PostgREST's
+        // hard 1000-row response cap (see fetchAllRows's comment in
+        // lib/supabase.ts) — confirmed this exact table already exceeds
+        // 1000 rows for far narrower windows elsewhere in this app.
+        fetchAllRows<Record<string, unknown>>("hosur_order_items", (q) => q
+          .select("id, order_id, item_name, unit, quantity, unit_price, line_total, dispatched_quantity, received_quantity")
           .gte('created_at', new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString())
-          .order("created_at", { ascending: false }).limit(3000),
+          .order("created_at", { ascending: false })),
       ]);
       if (shopsRes.error) throw shopsRes.error;
       if (pricesRes.error) throw pricesRes.error;
       if (ordersRes.error) throw ordersRes.error;
-      if (itemsRes.error) throw itemsRes.error;
+      if (itemsRes.error) throw new Error(itemsRes.error);
       setHosurShops((shopsRes.data ?? []).map(mapHosurShop));
       setHosurPrices((pricesRes.data ?? []).map(mapHosurPrice));
       setHosurOrders((ordersRes.data ?? []).map(mapHosurOrder));
