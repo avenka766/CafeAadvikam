@@ -15,7 +15,7 @@ import { jsPDF } from "jspdf";
 import { cn, roundQty, sanitizeDecimalInput } from "@/lib/utils";
 import { useBranchLedger } from "@/hooks/useBranchLedger";
 import { asNumber, useSnbAdminReports, useSnbCashSummary } from "@/hooks/useSnbAdminReports";
-import { supabase } from "@/lib/supabase";
+import { supabase, fetchAllRows } from "@/lib/supabase";
 import { useAuthStore } from "@/stores/authStore";
 import { useBranchStore, type BranchDataScope } from "@/branch/branchStore";
 import AdvanceClosingReportTab from "@/components/admin/AdvanceClosingReportTab";
@@ -2812,15 +2812,14 @@ function WasteLogsTab({ userName, role }: { userName: string; role: string }) {
   const canManageWaste = ["admin_snb", "admin", "owner"].includes(role);
   const loadRows = async () => {
     setRowsLoading(true);
-    const { data, error: loadError } = await supabase
-      .from("branch_waste_logs")
+    // BUG FIX (2026-09-16): the AUDIT FIX below correctly diagnosed the
+    // 1000-row cap but "fixed" it by raising `.limit()` to 3000, which
+    // doesn't work — PostgREST's cap isn't overridable by a bigger client
+    // limit (see fetchAllRows's comment in lib/supabase.ts). Paginated.
+    const { data, error: loadError } = await fetchAllRows<any>("branch_waste_logs", (q) => q
       .select("id,log_type,item_name,quantity,unit,reason,verified_by,created_by_username,created_at,checklist,status,edit_reason,edited_by_username,cancellation_reason,cancelled_by_username")
       .eq("branch", BRANCH)
-      .order("created_at", { ascending: false })
-      // AUDIT FIX (2026-09-09): unbounded, all-time query at exactly
-      // PostgREST's 1000-row default cap — silently truncates once this
-      // branch's waste/dump/transfer-out log grows past it.
-      .limit(3000);
+      .order("created_at", { ascending: false }));
     setRowsLoading(false);
     if (!loadError && data) {
       setRows(

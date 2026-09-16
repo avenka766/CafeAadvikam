@@ -14,7 +14,7 @@ import { cn, roundQty, sanitizeDecimalInput } from "@/lib/utils";
 import { useBranchLedger } from "@/hooks/useBranchLedger";
 import { useCafeOrderSales } from "@/hooks/useCafeOrderSales";
 import { useCafeOrderRows } from "@/hooks/useCafeOrderRows";
-import { supabase } from "@/lib/supabase";
+import { supabase, fetchAllRows } from "@/lib/supabase";
 import { useAuthStore } from "@/stores/authStore";
 import { useBranchStore, type CreditSale, type BranchDataScope } from "@/branch/branchStore";
 import {
@@ -2433,15 +2433,14 @@ function WasteLogsTab({ userName, role }: { userName: string; role: string }) {
   const canManageWaste = ["admin_vrsnb", "admin", "owner"].includes(role);
   const loadRows = async () => {
     setRowsLoading(true);
-    const { data, error: loadError } = await supabase
-      .from("branch_waste_logs")
+    // BUG FIX (2026-09-16): the AUDIT FIX below correctly diagnosed the
+    // 1000-row cap but "fixed" it by raising `.limit()` to 3000, which
+    // doesn't work — PostgREST's cap isn't overridable by a bigger client
+    // limit (see fetchAllRows's comment in lib/supabase.ts). Paginated.
+    const { data, error: loadError } = await fetchAllRows<any>("branch_waste_logs", (q) => q
       .select("id,log_type,item_name,quantity,unit,reason,verified_by,created_by_username,created_at,checklist,status,edit_reason,edited_by_username,cancellation_reason,cancelled_by_username")
       .eq("branch", BRANCH)
-      .order("created_at", { ascending: false })
-      // AUDIT FIX (2026-09-09): unbounded, all-time query at exactly
-      // PostgREST's 1000-row default cap — silently truncates once this
-      // branch's waste/dump/transfer-out log grows past it.
-      .limit(3000);
+      .order("created_at", { ascending: false }));
     setRowsLoading(false);
     if (!loadError && data) {
       setRows(
@@ -3146,8 +3145,14 @@ function PurchaseReturnsTab({ userName, branchStock, manualUpdateStock, fetchBra
   const selected = eligible.find((purchase) => purchase.id === purchaseId);
 
   const loadHistory = useCallback(async () => {
-    const { data, error: loadError } = await supabase.from("branch_stock_adjustments").select("id,item_name,old_quantity,new_quantity,delta,reference_id,notes,adjusted_by,adjusted_at").eq("branch", BRANCH).eq("reason", "Purchase Return").order("adjusted_at", { ascending: false }).limit(1000);
-    if (loadError) setError(loadError.message);
+    // BUG FIX (2026-09-16): `.limit(1000)` sits exactly at PostgREST's hard
+    // response cap — already silently broken the moment this branch's
+    // purchase-return history passes 1000 rows (see fetchAllRows's comment
+    // in lib/supabase.ts). Paginated.
+    const { data, error: loadError } = await fetchAllRows<any>("branch_stock_adjustments", (q) => q
+      .select("id,item_name,old_quantity,new_quantity,delta,reference_id,notes,adjusted_by,adjusted_at")
+      .eq("branch", BRANCH).eq("reason", "Purchase Return").order("adjusted_at", { ascending: false }));
+    if (loadError) setError(loadError);
     else setHistory((data || []) as PurchaseReturnHistoryRow[]);
   }, []);
   useEffect(() => { void loadHistory(); }, [loadHistory]);

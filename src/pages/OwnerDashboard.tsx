@@ -282,8 +282,10 @@ function useHosurSalesSummary(fromKey: string, toKey: string): HosurSalesSummary
     let alive = true;
     (async () => {
       setLoading(true);
-      const { data, error } = await supabase
-        .from('hosur_bills')
+      // BUG FIX (2026-09-16): unbounded date-range query, no `.limit()` at
+      // all — PostgREST silently caps at 1000 rows with no error (see
+      // fetchAllRows's comment in lib/supabase.ts). Paginated.
+      const { data, error: errorMsg } = await fetchAllRows<Record<string, unknown>>('hosur_bills', (q) => q
         .select('id, shop_name, subtotal, paid_amount, credit_amount, payment_mode, confirmed_at, status')
         .not('confirmed_at', 'is', null)
         .neq('status', 'cancelled')
@@ -292,10 +294,10 @@ function useHosurSalesSummary(fromKey: string, toKey: string): HosurSalesSummary
         // hours versus the owner's local IST date picker — see the same
         // fix already applied in fetchStoreInvoiceLines below (+05:30).
         .gte('confirmed_at', `${fromKey}T00:00:00+05:30`)
-        .lte('confirmed_at', `${toKey}T23:59:59.999+05:30`);
+        .lte('confirmed_at', `${toKey}T23:59:59.999+05:30`));
       if (!alive) return;
-      if (error) {
-        console.error('Hosur sales fetch failed', error);
+      if (errorMsg) {
+        console.error('Hosur sales fetch failed', errorMsg);
         setBills([]); setItemQty(0); setLoading(false);
         return;
       }
@@ -311,7 +313,7 @@ function useHosurSalesSummary(fromKey: string, toKey: string): HosurSalesSummary
       }));
       setBills(mapped);
       if (mapped.length) {
-        const { data: itemRows } = await supabase.from('hosur_bill_items').select('bill_id, quantity').in('bill_id', mapped.map(b => b.id));
+        const { data: itemRows } = await fetchAllRows<Record<string, unknown>>('hosur_bill_items', (q) => q.select('bill_id, quantity').in('bill_id', mapped.map(b => b.id)));
         if (!alive) return;
         setItemQty((itemRows || []).reduce((sum, r) => sum + Number((r as { quantity?: number }).quantity || 0), 0));
       } else {
@@ -1808,14 +1810,17 @@ function OwnerAuditTab() {
     setAuditLoading(true);
     await Promise.all([
       (async () => {
-        const { data } = await supabase
-          .from('staff_activity_log')
+        // BUG FIX (2026-09-16): the AUDIT FIX below correctly diagnosed the
+        // 1000-row cap but "fixed" it by raising `.limit()` to 3000, which
+        // doesn't work — PostgREST's cap isn't overridable by a bigger
+        // client limit (see fetchAllRows's comment in lib/supabase.ts).
+        // Paginated with fetchAllRows instead.
+        const { data } = await fetchAllRows<any>('staff_activity_log', (q) => q
           .select('id, branch, action, detail, staff_name, created_at')
-          .order('created_at', { ascending: false })
           // AUDIT FIX (2026-09-09): all-branch, all-time query at exactly
           // PostgREST's 1000-row default cap — silently truncates once the
           // combined activity log across every branch grows past it.
-          .limit(3000);
+          .order('created_at', { ascending: false }));
         setActivityLog((data || []).map((row: any): OwnerAuditEvent => ({
           id: `activity-${row.id}`,
           branch: row.branch || '-',
@@ -1826,14 +1831,15 @@ function OwnerAuditTab() {
         })));
       })(),
       (async () => {
-        const { data } = await supabase
-          .from('branch_stock_adjustments')
+        // BUG FIX (2026-09-16): same false "fix" as staff_activity_log
+        // above — raising `.limit()` past 1000 doesn't override PostgREST's
+        // hard cap. Paginated with fetchAllRows.
+        const { data } = await fetchAllRows<any>('branch_stock_adjustments', (q) => q
           .select('id, branch, item_name, old_quantity, new_quantity, delta, reason, adjusted_by, adjusted_at')
-          .order('adjusted_at', { ascending: false })
           // AUDIT FIX (2026-09-09): all-branch, all-time query at exactly
           // PostgREST's 1000-row default cap — silently truncates once the
           // combined stock-adjustment log across every branch grows past it.
-          .limit(3000);
+          .order('adjusted_at', { ascending: false }));
         setStockAdjustmentLog((data || []).map((row: any): OwnerAuditEvent => ({
           id: `stockadj-${row.id}`,
           branch: row.branch || '-',
@@ -2890,12 +2896,14 @@ function OwnerPurchasesTab() {
   // capped defensively.
   const fetchStoreInvoiceLines = useCallback(async () => {
     const requestId = ++storeInvoicesRequestId.current;
-    const { data } = await supabase.from('store_invoices')
+    // BUG FIX (2026-09-16): `.limit(2000)` does NOT override PostgREST's
+    // hard 1000-row response cap (see fetchAllRows's comment in
+    // lib/supabase.ts) — a wide owner-picked range can exceed it. Paginated.
+    const { data } = await fetchAllRows<Record<string, unknown>>('store_invoices', (q) => q
       .select('id, line_items, paid_amount, grand_total, supplier_name, invoice_number, delivery_date, created_at, payment_method, purchase_status, status, synced_to_stock, stock_sync_status, remarks, notes')
       .gte('created_at', `${fromDate}T00:00:00+05:30`)
       .lte('created_at', `${toDate}T23:59:59+05:30`)
-      .order('created_at', { ascending: false })
-      .limit(2000);
+      .order('created_at', { ascending: false }));
     if (requestId !== storeInvoicesRequestId.current || !data) return;
     const rows: OwnerStorePurchaseLine[] = (data as Array<Record<string, unknown>>).flatMap((invoice) => {
       const lineItems = (invoice.line_items as Array<Record<string, unknown>> | null) || [];
@@ -3502,14 +3510,22 @@ const EMPTY_EVERYTHING_EXTRAS: OwnerEverythingExtras = {
 async function fetchOwnerEverythingExtras(): Promise<{ data: OwnerEverythingExtras; error: string | null }> {
   const todayStr = ownerDateInput();
   try {
+    // BUG FIX (2026-09-16): "make sure this issue won't occur in future" —
+    // these 4 were plain, unbounded `.select()` calls against tables that
+    // grow every transaction (see the Jos Bakery Theni dispatch-visibility
+    // bug in PlannerDashboard.tsx's useHosurShopOrders for the original
+    // discovery). planner_leftover_ledger alone already holds 1,600+ rows —
+    // this was silently undercounting hosurOutstandingCredit,
+    // leftoverActiveItems, pendingBakeryOrders etc. on the Owner home screen
+    // right now, not just a future risk. Paginated with fetchAllRows.
     const [
       hosurBillsRes, leftoverRes, bakeryOrdersRes, hosurOrdersRes, advancesRes, notifRes,
       complaintsRes, kitchenWasteRes, branchWasteRes, varianceRes,
     ] = await Promise.all([
-      supabase.from('hosur_bills').select('credit_amount, due_date').gt('credit_amount', 0),
-      supabase.from('planner_leftover_ledger').select('item_name, unit, delta'),
-      supabase.from('bakery_orders').select('status'),
-      supabase.from('hosur_orders').select('status'),
+      fetchAllRows<{ credit_amount: number; due_date: string | null }>('hosur_bills', (q) => q.select('credit_amount, due_date').gt('credit_amount', 0)),
+      fetchAllRows<{ item_name: string; unit: string; delta: number }>('planner_leftover_ledger', (q) => q.select('item_name, unit, delta')),
+      fetchAllRows<{ status: string }>('bakery_orders', (q) => q.select('status')),
+      fetchAllRows<{ status: string }>('hosur_orders', (q) => q.select('status')),
       supabase.from('salary_advances').select('amount').eq('cleared', false),
       supabase.from('admin_notifications').select('id, type, title, body, created_at').order('created_at', { ascending: false }).limit(8),
       supabase.from('branch_complaint_tickets').select('id, branch, subject, priority, status, created_at').not('status', 'in', '("Resolved","Closed")').order('created_at', { ascending: false }).limit(10),
@@ -3518,8 +3534,11 @@ async function fetchOwnerEverythingExtras(): Promise<{ data: OwnerEverythingExtr
       supabase.from('branch_waste_logs').select('id, created_at').gte('created_at', `${todayStr}T00:00:00+05:30`).lte('created_at', `${todayStr}T23:59:59+05:30`),
       supabase.from('branch_stock_variance_records').select('id, difference, created_at').gte('created_at', `${todayStr}T00:00:00+05:30`).lte('created_at', `${todayStr}T23:59:59+05:30`),
     ]);
+    // fetchAllRows returns a plain string|null error; the still-unpaginated
+    // queries below (small/bounded tables) return a PostgrestError|null —
+    // normalize both shapes before reading a message off whichever fired.
     const firstError = hosurBillsRes.error || leftoverRes.error || bakeryOrdersRes.error || hosurOrdersRes.error || advancesRes.error || notifRes.error;
-    if (firstError) return { data: EMPTY_EVERYTHING_EXTRAS, error: firstError.message };
+    if (firstError) return { data: EMPTY_EVERYTHING_EXTRAS, error: typeof firstError === 'string' ? firstError : firstError.message };
     // Complaints/waste/variance are treated as best-effort (never let a
     // missing/renamed table on an older deployment blank out the rest of
     // the Everything screen — they simply show as 0/empty instead).

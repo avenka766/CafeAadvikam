@@ -42,7 +42,7 @@ import {
   X,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { supabase } from '@/lib/supabase';
+import { supabase, fetchAllRows } from '@/lib/supabase';
 import { getAppSessionToken } from '@/lib/appSession';
 import { useAuthStore } from '@/stores/authStore';
 import { useBranchStore } from '@/branch/branchStore';
@@ -1144,14 +1144,21 @@ export default function HosurDashboard({ hideNav = false }: { hideNav?: boolean 
         // table passed 10k rows), and this whole `refresh()` re-runs after
         // every single mutation on this dashboard. Newest-first + a date
         // window matching the 250 recent orders fetched above fixes both.
-        supabase.from('hosur_order_items').select('id, order_id, item_name, unit, quantity, unit_price, line_total, dispatched_quantity, received_quantity')
+        // BUG FIX (2026-09-16): "make sure this issue won't occur in
+        // future" — `.limit(8000)` does NOT override PostgREST's hard
+        // 1000-row response cap (see fetchAllRows's comment in
+        // lib/supabase.ts); a query already found to exceed 1000 rows for
+        // just a 233-order subset (the Jos Bakery Theni dispatch bug) was
+        // silently losing whichever items fell past row 1000 of this same
+        // 60-day window. Paginated with fetchAllRows.
+        fetchAllRows<Record<string, unknown>>('hosur_order_items', (q) => q.select('id, order_id, item_name, unit, quantity, unit_price, line_total, dispatched_quantity, received_quantity')
           .gte('created_at', new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString())
-          .order('created_at', { ascending: false }).limit(8000),
+          .order('created_at', { ascending: false })),
         supabase.from('hosur_bills').select('id, bill_no, invoice_no, order_id, shop_id, shop_name, shop_whatsapp, subtotal, paid_amount, credit_amount, payment_type, payment_mode, due_date, status, confirmed_by, confirmed_at, created_at, whatsapp_status').order('created_at', { ascending: false }).limit(250),
         // EGRESS FIX: same fix as hosur_order_items above.
-        supabase.from('hosur_bill_items').select('id, bill_id, item_name, unit, quantity, unit_price, line_total')
+        fetchAllRows<Record<string, unknown>>('hosur_bill_items', (q) => q.select('id, bill_id, item_name, unit, quantity, unit_price, line_total')
           .gte('created_at', new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString())
-          .order('created_at', { ascending: false }).limit(8000),
+          .order('created_at', { ascending: false })),
         // FIX (MD Bug #21): now that branch_credit_sales has a credit_type column
         // (added by migration 20260613_0004_hosur_credit_type.sql), fetch all rows.
         // The HosurCreditTab already shows wholesale (shop-supply) and retail separately
@@ -1165,10 +1172,14 @@ export default function HosurDashboard({ hideNav = false }: { hideNav?: boolean 
         supabase.from('admin_notifications').select('id, type, title, body, ref_id, ref_label, is_read, created_at').eq('recipient_role', 'branch_hosur').or('type.ilike.%hosur%,title.ilike.%hosur%,body.ilike.%hosur%,ref_label.ilike.%hosur%').order('created_at', { ascending: false }).limit(100),
       ]);
 
+      // orderItemsRes/billItemsRes now come from fetchAllRows, whose `error`
+      // is a plain string rather than a PostgrestError — normalize both
+      // shapes before reading a message off whichever one fired.
       const firstError = [shopsRes, pricesRes, ordersRes, orderItemsRes, billsRes, billItemsRes, creditsRes, paymentsRes, logsRes, remindersRes, disputesRes]
         .find((res) => res.error)?.error;
       if (firstError) {
-        setError(`Hosur tables are not ready yet: ${firstError.message}. Apply the included Supabase migration first.`);
+        const firstErrorMessage = typeof firstError === 'string' ? firstError : firstError.message;
+        setError(`Hosur tables are not ready yet: ${firstErrorMessage}. Apply the included Supabase migration first.`);
       }
 
       setShops((shopsRes.data ?? []).map(mapShop));
@@ -3049,11 +3060,17 @@ function ReportsTab({ shops, bills, billItems, credits, logs, reminders, dispute
     void (async () => {
       const fromTs = `${from}T00:00:00+05:30`;
       const toTs = `${to}T23:59:59.999+05:30`;
-      const { data: billRows, error: billErr } = await supabase.from('hosur_bills')
+      // BUG FIX (2026-09-16): `.limit(5000)` does NOT override PostgREST's
+      // hard 1000-row response cap (see fetchAllRows's comment in
+      // lib/supabase.ts) — a wide user-picked range on a busy shop can
+      // easily exceed 1000 bills, and the per-chunk items query below had
+      // no limit override at all, so a single 300-bill chunk with >1000
+      // combined line items silently lost the rest too. Both paginated with
+      // fetchAllRows.
+      const { data: billRows, error: billErr } = await fetchAllRows<Record<string, unknown>>('hosur_bills', (q) => q
         .select('id, bill_no, invoice_no, order_id, shop_id, shop_name, shop_whatsapp, subtotal, paid_amount, credit_amount, payment_type, payment_mode, due_date, status, confirmed_by, confirmed_at, created_at, whatsapp_status')
         .or(`and(confirmed_at.gte.${fromTs},confirmed_at.lte.${toTs}),and(confirmed_at.is.null,created_at.gte.${fromTs},created_at.lte.${toTs})`)
-        .order('created_at', { ascending: false })
-        .limit(5000);
+        .order('created_at', { ascending: false }));
       if (cancelled) return;
       if (billErr || !billRows) { setRangeFetchLoading(false); return; }
       const mappedBills = billRows.map(mapBill);
@@ -3062,9 +3079,9 @@ function ReportsTab({ shops, bills, billItems, credits, logs, reminders, dispute
       const CHUNK = 300;
       for (let i = 0; i < ids.length; i += CHUNK) {
         const chunk = ids.slice(i, i + CHUNK);
-        const { data: itemRows, error: itemErr } = await supabase.from('hosur_bill_items')
+        const { data: itemRows, error: itemErr } = await fetchAllRows<Record<string, unknown>>('hosur_bill_items', (q) => q
           .select('id, bill_id, item_name, unit, quantity, unit_price, line_total')
-          .in('bill_id', chunk);
+          .in('bill_id', chunk));
         if (cancelled) return;
         if (itemErr || !itemRows) continue;
         itemRows.map(mapBillItem).forEach((item) => {
