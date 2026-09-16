@@ -1,6 +1,6 @@
 // src/branch/branchStore.ts
 import { create } from 'zustand';
-import { supabase } from '@/lib/supabase';
+import { supabase, fetchAllRows } from '@/lib/supabase';
 import type { Branch } from './types';
 import { BAKERY_ITEMS } from '@/bakery/types';
 import { useBranchCatalogStore } from '@/stores/branchCatalogStore';
@@ -1150,15 +1150,17 @@ export const useBranchStore = create<BranchState>((set, get) => ({
   // always-on branch dashboard, so it can never leak into the frequent
   // fetchBranchData path above.
   fetchBranchSalesRange: async (branch, fromDateISO, toDateISO) => {
-    const { data, error } = await supabase
-      .from('branch_sales')
+    // BUG FIX (2026-09-16): `.limit(10000)` does NOT override PostgREST's
+    // hard 1000-row response cap (see fetchAllRows's comment in
+    // lib/supabase.ts) — a per-item sales table over an owner-picked report
+    // range can easily exceed 1000 rows. Paginated with fetchAllRows.
+    const { data, error } = await fetchAllRows<any>('branch_sales', (q) => q
       .select('id,item_barcode,item_name,quantity_sold,sold_at,sold_by,branch,payment_method,unit_price,bill_no')
       .eq('branch', branch)
       .gte('sold_at', fromDateISO)
       .lte('sold_at', toDateISO)
-      .order('sold_at', { ascending: false })
-      .limit(10000);
-    if (error) { console.error('[fetchBranchSalesRange]', error.message); return []; }
+      .order('sold_at', { ascending: false }));
+    if (error) { console.error('[fetchBranchSalesRange]', error); return []; }
     return (data || []).map((d): SaleRecord => ({
       id:            d.id,
       itemBarcode:   d.item_barcode != null ? Number(d.item_barcode) : undefined,
@@ -2065,17 +2067,16 @@ export const useBranchStore = create<BranchState>((set, get) => ({
   // ── Credit sales ────────────────────────────────────────────────────────────
 
   fetchCreditSales: async (branch) => {
-    // EGRESS FIX: safety cap — this previously had no limit at all, so a
-    // branch's entire lifetime credit-sales history was re-downloaded every
-    // time this ran. Unsettled/pending credit (the part that actually matters
-    // operationally) is always well within this cap in practice.
-    const { data, error } = await supabase
-      .from('branch_credit_sales')
+    // BUG FIX (2026-09-16): `.limit(3000)` does NOT override PostgREST's
+    // hard 1000-row response cap (see fetchAllRows's comment in
+    // lib/supabase.ts) — this is a branch's entire lifetime credit-sales
+    // history with no status filter, not just the unsettled/pending subset,
+    // so it can genuinely exceed 1000 over time. Paginated.
+    const { data, error } = await fetchAllRows<any>('branch_credit_sales', (q) => q
       .select('id, branch, source, source_id, customer_ref, customer_name, customer_phone, items, subtotal, amount_paid, credit_amount, sold_by, created_at, due_date, settled_at, status, notes, bill_no, discount_amount')
       .eq('branch', branch)
-      .order('created_at', { ascending: false })
-      .limit(3000);
-    if (error) { console.error('[fetchCreditSales]', error.message); return; }
+      .order('created_at', { ascending: false }));
+    if (error) { console.error('[fetchCreditSales]', error); return; }
     set((s) => {
       const creditSales = { ...s.creditSales };
       creditSales[branch] = (data || [])
@@ -2106,14 +2107,13 @@ export const useBranchStore = create<BranchState>((set, get) => ({
   },
 
   fetchCreditPayments: async (branch) => {
-    // EGRESS FIX: same safety cap as fetchCreditSales above — was unbounded.
-    const { data, error } = await supabase
-      .from('branch_credit_payments')
+    // BUG FIX (2026-09-16): same unbounded-lifetime-history risk as
+    // fetchCreditSales above — paginated with fetchAllRows.
+    const { data, error } = await fetchAllRows<any>('branch_credit_payments', (q) => q
       .select('id, credit_sale_id, branch, bill_no, amount, payment_mode, reference, remarks, collected_by, collected_role, created_at')
       .eq('branch', branch)
-      .order('created_at', { ascending: false })
-      .limit(3000);
-    if (error) { console.error('[fetchCreditPayments]', error.message); return; }
+      .order('created_at', { ascending: false }));
+    if (error) { console.error('[fetchCreditPayments]', error); return; }
     set((s) => {
       const creditPayments = { ...s.creditPayments };
       creditPayments[branch] = (data || [])
