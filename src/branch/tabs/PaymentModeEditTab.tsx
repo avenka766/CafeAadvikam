@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CheckCircle2, CreditCard, Lock, Search, X } from 'lucide-react';
-import { supabase } from '@/lib/supabase';
+import { supabase, fetchAllRows } from '@/lib/supabase';
 import { cn } from '@/lib/utils';
 import { useAuthStore } from '@/stores/authStore';
 import { money, useBranchOpsStore } from '../branchOpsStore';
@@ -74,22 +74,20 @@ export function PaymentModeEditTab({ branch }: { branch: Branch }) {
   const loadRows = useCallback(async () => {
     setLoading(true);
     setMessage('');
-    const { data, error } = await supabase
-      .from('branch_bill_headers')
+    // BUG FIX (2026-09-16): the AUDIT FIX below correctly diagnosed the
+    // 1000-row cap but "fixed" it by raising `.limit()` to 3000, which
+    // doesn't work — PostgREST's cap isn't overridable by a bigger client
+    // limit (see fetchAllRows's comment in lib/supabase.ts). Paginated.
+    const { data, error } = await fetchAllRows<any>('branch_bill_headers', (q) => q
       .select('id, bill_no, bill_type, salesperson, biller, total, status, created_at, branch_sale_payments(payment_mode, amount)')
       .eq('branch', branch)
-      .order('created_at', { ascending: false })
-      // AUDIT FIX (2026-09-09): plain `.limit(1000)` on an unbounded,
-      // all-time query silently truncates at PostgREST's 1000-row default
-      // once a branch's bill history grows past it — same class of bug
-      // documented across this codebase. Explicit, generous cap instead.
-      .limit(3000);
+      .order('created_at', { ascending: false }));
 
     if (error) {
       setRows([]);
-      setMessage(/branch_bill_headers|does not exist|schema cache/i.test(error.message)
+      setMessage(/branch_bill_headers|does not exist|schema cache/i.test(error)
         ? 'The Supabase branch bill ledger is not installed, so payment modes cannot be edited safely.'
-        : `Could not load bill history: ${error.message}`);
+        : `Could not load bill history: ${error}`);
       setLoading(false);
       return;
     }
