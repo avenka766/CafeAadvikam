@@ -10,7 +10,7 @@
 // and the Sales tab's own "New Bill" cart (BillingTab) can opt in to
 // generating the EXACT same document via one shared function instead of a
 // second, separately-maintained copy that could drift out of sync.
-import { supabase } from '@/lib/supabase';
+import { supabase, fetchAllRows } from '@/lib/supabase';
 
 export const GST_INVOICE_SELLER_DEFAULT = {
   name: 'VRSNB FOODS LLP',
@@ -383,4 +383,121 @@ export function buildGstTaxInvoiceHtml(p: BuildGstTaxInvoiceParams): BuiltGstTax
 
   void roundOff; // computed for parity with GstInvoiceTab's own display; not printed in the HTML itself (matches the original template, which shows it only in its on-screen totals box, not the print)
   return { html, totalAmount, beforeTaxValue, totalGst };
+}
+
+// FEATURE (2026-09-17): "add the ... Invoice bills to the export in a
+// different sheet" + "Recent Bills ... show them the complete bills" —
+// GstInvoiceTab used to only mint a number and print, with zero stored
+// record. save_gst_tax_invoice_secure() mints (or accepts a manual override,
+// same as before) and inserts atomically in one transaction, same fix
+// pattern as save_walkin_bill_secure/save_dispatch_invoice_secure.
+export interface GstTaxInvoiceRecord {
+  id: string;
+  invoiceNo: string;
+  invoiceDate: string;
+  buyerName: string;
+  buyerGstin: string | null;
+  buyerAddress: string | null;
+  buyerStateName: string | null;
+  buyerStateCode: string | null;
+  consigneeName: string | null;
+  consigneeAddress: string | null;
+  consigneeGstin: string | null;
+  items: GstTaxInvoiceLine[];
+  taxableValue: number;
+  cgstAmount: number;
+  sgstAmount: number;
+  igstAmount: number;
+  roundOff: number;
+  total: number;
+  supplyType: 'intra' | 'inter';
+  referenceNo: string | null;
+  referenceDate: string | null;
+  remarks: string | null;
+  createdBy: string | null;
+  createdAt: string;
+}
+
+function mapGstTaxInvoice(row: Record<string, unknown>): GstTaxInvoiceRecord {
+  return {
+    id: row.id as string,
+    invoiceNo: row.invoice_no as string,
+    invoiceDate: row.invoice_date as string,
+    buyerName: row.buyer_name as string,
+    buyerGstin: (row.buyer_gstin as string | null) ?? null,
+    buyerAddress: (row.buyer_address as string | null) ?? null,
+    buyerStateName: (row.buyer_state_name as string | null) ?? null,
+    buyerStateCode: (row.buyer_state_code as string | null) ?? null,
+    consigneeName: (row.consignee_name as string | null) ?? null,
+    consigneeAddress: (row.consignee_address as string | null) ?? null,
+    consigneeGstin: (row.consignee_gstin as string | null) ?? null,
+    items: Array.isArray(row.items) ? (row.items as GstTaxInvoiceLine[]) : [],
+    taxableValue: Number(row.taxable_value ?? 0),
+    cgstAmount: Number(row.cgst_amount ?? 0),
+    sgstAmount: Number(row.sgst_amount ?? 0),
+    igstAmount: Number(row.igst_amount ?? 0),
+    roundOff: Number(row.round_off ?? 0),
+    total: Number(row.total ?? 0),
+    supplyType: (row.supply_type as 'intra' | 'inter' | null) ?? 'intra',
+    referenceNo: (row.reference_no as string | null) ?? null,
+    referenceDate: (row.reference_date as string | null) ?? null,
+    remarks: (row.remarks as string | null) ?? null,
+    createdBy: (row.created_by as string | null) ?? null,
+    createdAt: row.created_at as string,
+  };
+}
+
+export async function saveGstTaxInvoiceSecure(input: {
+  manualInvoiceNo?: string | null;
+  invoiceDate: string;
+  buyer: GstPartyDetails;
+  consignee?: GstPartyDetails;
+  items: GstTaxInvoiceLine[];
+  taxableValue: number;
+  cgstAmount: number;
+  sgstAmount: number;
+  igstAmount: number;
+  roundOff: number;
+  total: number;
+  supplyType: 'intra' | 'inter';
+  referenceNo?: string | null;
+  referenceDate?: string | null;
+  remarks?: string | null;
+  createdBy: string;
+}): Promise<GstTaxInvoiceRecord> {
+  const { data, error } = await supabase.rpc('save_gst_tax_invoice_secure', {
+    p_manual_invoice_no: input.manualInvoiceNo?.trim() || null,
+    p_invoice_date: input.invoiceDate,
+    p_buyer_name: input.buyer.name,
+    p_buyer_gstin: input.buyer.gstin || null,
+    p_buyer_address: input.buyer.address || null,
+    p_buyer_state_name: input.buyer.stateName || null,
+    p_buyer_state_code: input.buyer.stateCode || null,
+    p_consignee_name: input.consignee?.name || null,
+    p_consignee_address: input.consignee?.address || null,
+    p_consignee_gstin: input.consignee?.gstin || null,
+    p_items: input.items,
+    p_taxable_value: input.taxableValue,
+    p_cgst_amount: input.cgstAmount,
+    p_sgst_amount: input.sgstAmount,
+    p_igst_amount: input.igstAmount,
+    p_round_off: input.roundOff,
+    p_total: input.total,
+    p_supply_type: input.supplyType,
+    p_reference_no: input.referenceNo || null,
+    p_reference_date: input.referenceDate || null,
+    p_remarks: input.remarks || null,
+    p_created_by: input.createdBy,
+  });
+  if (error) throw new Error(error.message);
+  return mapGstTaxInvoice(data as Record<string, unknown>);
+}
+
+export async function listGstTaxInvoices(opts: { fromDate: string; toDate: string }): Promise<GstTaxInvoiceRecord[]> {
+  const { data, error } = await fetchAllRows<Record<string, unknown>>(
+    'gst_tax_invoices',
+    (q) => q.select('*').gte('created_at', opts.fromDate).lt('created_at', opts.toDate).order('created_at', { ascending: false }),
+  );
+  if (error) throw new Error(error);
+  return (data ?? []).map(mapGstTaxInvoice);
 }

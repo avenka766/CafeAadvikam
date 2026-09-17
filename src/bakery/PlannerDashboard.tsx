@@ -55,8 +55,9 @@ import NativeNav from '@/components/layout/NativeNav';
 import { supabase, fetchAllRows } from '@/lib/supabase';
 import { getPackingCounterStatus, packingBusinessDateToday } from './packingCounter';
 import {
-  GST_INVOICE_SELLER_DEFAULT, GST_INVOICE_BANK_DEFAULT, buildGstTaxInvoiceHtml, getNextGstInvoiceNumber, financialYearForDate,
-  type GstTaxInvoiceLine,
+  GST_INVOICE_SELLER_DEFAULT, GST_INVOICE_BANK_DEFAULT, buildGstTaxInvoiceHtml, financialYearForDate,
+  saveGstTaxInvoiceSecure, listGstTaxInvoices,
+  type GstTaxInvoiceLine, type GstTaxInvoiceRecord,
 } from './gstTaxInvoice';
 
 // TAB MERGE (2026-08-06): the old standalone 'done' tab ("Leftover / Done" —
@@ -5202,6 +5203,33 @@ function GstInvoiceTab() {
     }));
   }, [computedLines]);
 
+  // FEATURE (2026-09-17): "add the ... Invoice bills to the export" + "Recent
+  // Bills ... show them the complete bills" — this used to only mint a
+  // number (next_gst_invoice_number()) and print, with zero stored record
+  // anywhere, so there was nothing to list or export. saveGstTaxInvoiceSecure
+  // mints (or honors a manual override, same as before) AND inserts a real
+  // row atomically — same one-transaction fix pattern as
+  // save_walkin_bill_secure. Recent Invoices below reads that table back.
+  const [recentInvoices, setRecentInvoices] = useState<GstTaxInvoiceRecord[]>([]);
+  const [loadingRecentInvoices, setLoadingRecentInvoices] = useState(true);
+  const [recentInvoiceFromDate, setRecentInvoiceFromDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [recentInvoiceToDate, setRecentInvoiceToDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const loadRecentInvoices = useCallback(async () => {
+    setLoadingRecentInvoices(true);
+    try {
+      const fromIso = new Date(`${recentInvoiceFromDate}T00:00:00`).toISOString();
+      const toIso = new Date(new Date(`${recentInvoiceToDate}T00:00:00`).getTime() + 24 * 60 * 60 * 1000).toISOString();
+      const rows = await listGstTaxInvoices({ fromDate: fromIso, toDate: toIso });
+      setRecentInvoices(rows);
+    } catch (err) {
+      console.error('[GstInvoiceTab] Failed to load recent invoices:', err);
+      setRecentInvoices([]);
+    } finally {
+      setLoadingRecentInvoices(false);
+    }
+  }, [recentInvoiceFromDate, recentInvoiceToDate]);
+  useEffect(() => { void loadRecentInvoices(); }, [loadRecentInvoices]);
+
   const generateInvoice = async () => {
     setError('');
     const validLines = computedLines.filter(l => l.itemName.trim() && l.qty > 0);
@@ -5210,6 +5238,10 @@ function GstInvoiceTab() {
 
     setGenerating(true);
     try {
+      const consignee = consigneeSameAsBuyer
+        ? { name: buyerName, address: buyerAddress, gstin: buyerGstin, stateName: buyerStateName, stateCode: buyerStateCode }
+        : { name: consigneeName, address: consigneeAddress, gstin: consigneeGstin, stateName: consigneeStateName, stateCode: consigneeStateCode };
+
       // FEATURE (2026-09-01): "invoice number should start like date, month
       // [superseded by user's own follow-up] ... follow the same format in
       // the invoice attached — starting year and next year eg 26-27/
@@ -5221,16 +5253,28 @@ function GstInvoiceTab() {
       // repeat even with multiple staff generating invoices at once — a
       // real GST-compliance requirement, not just cosmetic uniqueness.
       // Manual override (typing a value into Invoice No) still wins.
-      const finalInvoiceNo = invoiceNo.trim() || await getNextGstInvoiceNumber(invoiceDate);
-      const consignee = consigneeSameAsBuyer
-        ? { name: buyerName, address: buyerAddress, gstin: buyerGstin, stateName: buyerStateName, stateCode: buyerStateCode }
-        : { name: consigneeName, address: consigneeAddress, gstin: consigneeGstin, stateName: consigneeStateName, stateCode: consigneeStateCode };
+      const saved = await saveGstTaxInvoiceSecure({
+        manualInvoiceNo: invoiceNo,
+        invoiceDate,
+        buyer: { name: buyerName, address: buyerAddress, gstin: buyerGstin, stateName: buyerStateName, stateCode: buyerStateCode },
+        consignee,
+        items: validLines.map(l => ({ itemName: l.itemName, hsnCode: l.hsnCode, qty: l.qty, uom: l.uom, rate: l.rate, gstPct: l.gstPct })),
+        taxableValue: beforeTaxValue,
+        cgstAmount: totalCgst,
+        sgstAmount: totalSgst,
+        igstAmount: totalIgst,
+        roundOff,
+        total: totalAmount,
+        supplyType,
+        referenceNo, referenceDate, remarks,
+        createdBy: currentUser?.displayName || currentUser?.username || 'Planner',
+      });
 
       const { html } = buildGstTaxInvoiceHtml({
         seller: { name: sellerName, addressLines: sellerAddress.split('\n'), contact: sellerContact, gstin: sellerGstin, stateName: sellerStateName, stateCode: sellerStateCode },
         buyer: { name: buyerName, address: buyerAddress, gstin: buyerGstin, stateName: buyerStateName, stateCode: buyerStateCode },
         consignee,
-        invoiceNo: finalInvoiceNo,
+        invoiceNo: saved.invoiceNo,
         invoiceDate,
         referenceNo, referenceDate, remarks,
         deliveryNote, modeOfPayment, otherReferences,
@@ -5240,7 +5284,8 @@ function GstInvoiceTab() {
         bank: { accountNo: bankAccountNo, accountName: bankAccountName, bankName, branchName: bankBranch, ifscCode: bankIfsc },
         preparedBy: currentUser?.displayName || currentUser?.username || 'Planner',
       });
-      printHtml(finalInvoiceNo, html);
+      printHtml(saved.invoiceNo, html);
+      void loadRecentInvoices();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not generate the next invoice number. Please try again.');
     } finally {
@@ -5400,6 +5445,69 @@ function GstInvoiceTab() {
       <button onClick={() => void generateInvoice()} disabled={generating} className="flex w-full items-center justify-center gap-2 rounded-xl bg-purple-600 py-3 text-sm font-black text-white hover:bg-purple-700 disabled:opacity-60">
         {generating ? <Loader2 className="size-4 animate-spin" /> : <Printer className="size-4" />} {generating ? 'Generating…' : 'Generate & Print Tax Invoice (A4)'}
       </button>
+
+      <div className="overflow-hidden rounded-2xl border border-border bg-white shadow-sm">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-muted/40 px-4 py-3">
+          <p className="text-sm font-black text-foreground">Recent Invoices</p>
+          <div className="flex flex-wrap items-center gap-2">
+            <input type="date" value={recentInvoiceFromDate} onChange={(e) => setRecentInvoiceFromDate(e.target.value)} className="h-8 rounded-lg border border-border bg-card px-2 text-xs font-bold" />
+            <span className="text-xs font-bold text-muted-foreground">to</span>
+            <input type="date" value={recentInvoiceToDate} onChange={(e) => setRecentInvoiceToDate(e.target.value)} className="h-8 rounded-lg border border-border bg-card px-2 text-xs font-bold" />
+            <button
+              type="button"
+              title="Refresh recent invoices"
+              onClick={() => void loadRecentInvoices()}
+              disabled={loadingRecentInvoices}
+              className="flex items-center gap-1.5 rounded-xl border border-border bg-card px-3 py-1.5 text-xs font-bold text-muted-foreground hover:bg-muted disabled:cursor-wait disabled:opacity-60"
+            >
+              <RefreshCw className={cn('size-3.5', loadingRecentInvoices && 'animate-spin')} /> Refresh
+            </button>
+          </div>
+        </div>
+        {loadingRecentInvoices ? (
+          <div className="flex justify-center py-8"><Loader2 className="size-5 animate-spin text-muted-foreground" /></div>
+        ) : recentInvoices.length === 0 ? (
+          <div className="p-4"><EmptyState text="No GST tax invoices in this date range." /></div>
+        ) : (
+          <div className="max-h-96 divide-y divide-border overflow-y-auto">
+            {recentInvoices.map(inv => (
+              <div key={inv.id} className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5">
+                <div className="min-w-0">
+                  <p className="text-xs font-black text-foreground">#{inv.invoiceNo}</p>
+                  <p className="text-[11px] font-bold text-muted-foreground">{new Date(inv.createdAt).toLocaleString('en-IN')} · {inv.buyerName} · {inv.items.length} item{inv.items.length === 1 ? '' : 's'}</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-black text-foreground">{invoiceMoney(inv.total)}</span>
+                  <button
+                    onClick={() => {
+                      const buyer = { name: inv.buyerName, address: inv.buyerAddress || '', gstin: inv.buyerGstin || '', stateName: inv.buyerStateName || '', stateCode: inv.buyerStateCode || '' };
+                      const { html } = buildGstTaxInvoiceHtml({
+                        seller: GST_INVOICE_SELLER_DEFAULT,
+                        buyer,
+                        consignee: inv.consigneeName ? { name: inv.consigneeName, address: inv.consigneeAddress || '', gstin: inv.consigneeGstin || '', stateName: inv.buyerStateName || '', stateCode: inv.buyerStateCode || '' } : buyer,
+                        invoiceNo: inv.invoiceNo,
+                        invoiceDate: inv.invoiceDate,
+                        referenceNo: inv.referenceNo || undefined,
+                        referenceDate: inv.referenceDate || undefined,
+                        remarks: inv.remarks || undefined,
+                        supplyType: inv.supplyType,
+                        lines: inv.items,
+                        bank: GST_INVOICE_BANK_DEFAULT,
+                        preparedBy: inv.createdBy || 'Planner',
+                      });
+                      printHtml(inv.invoiceNo, html);
+                    }}
+                    className="rounded-lg border border-border bg-card p-1.5 text-muted-foreground hover:bg-muted"
+                    title="Reprint"
+                  >
+                    <Printer className="size-3.5" />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -5476,26 +5584,27 @@ function SalesExcelExport() {
       if (fetchError) { setError(fetchError); return; }
       const bills = (data ?? []).map(mapWalkinBill);
 
-      const itemMap = new Map<string, { itemName: string; unit: string; quantity: number; amount: number }>();
-      for (const bill of bills) {
-        if (bill.status === 'cancelled') continue;
-        for (const line of bill.items) {
-          if (line.unit === 'charge') continue;
-          const key = `${line.itemName}::${line.unit}`;
-          const entry = itemMap.get(key) ?? { itemName: line.itemName, unit: line.unit, quantity: 0, amount: 0 };
-          entry.quantity += line.quantity;
-          entry.amount += line.lineTotal;
-          itemMap.set(key, entry);
-        }
-      }
-      const itemRows = Array.from(itemMap.values())
-        .sort((a, b) => b.amount - a.amount)
-        .map((r) => ({
-          Item: r.itemName,
-          Unit: r.unit,
-          Quantity: Math.round(r.quantity * 1000) / 1000,
-          Amount: Math.round(r.amount * 100) / 100,
-        }));
+      // BUG FIX (2026-09-17): "item wise sales dont not have any details like
+      // invoice number and date and total amount" — this used to pre-sum
+      // every item across all bills into one row, with no way to trace a
+      // quantity/amount back to which bill it came from. Now one row per
+      // item PER bill (bills already come pre-sorted newest-first from the
+      // query above, so this stays in that same order) carrying that bill's
+      // Invoice No, Date and grand Total alongside the item's own qty/amount.
+      const itemRows = bills
+        .filter((bill) => bill.status !== 'cancelled')
+        .flatMap((bill) => bill.items
+          .filter((line) => line.unit !== 'charge')
+          .map((line) => ({
+            'Invoice No': bill.billNo,
+            Date: new Date(bill.createdAt).toLocaleString('en-IN'),
+            Item: line.itemName,
+            Unit: line.unit,
+            Quantity: Math.round(line.quantity * 1000) / 1000,
+            Rate: line.quantity > 0 ? Math.round((line.lineTotal / line.quantity) * 100) / 100 : 0,
+            Amount: Math.round(line.lineTotal * 100) / 100,
+            'Bill Total': bill.total,
+          })));
 
       const detailRows = bills.map((bill) => ({
         'Invoice No': bill.billNo,
@@ -5511,6 +5620,46 @@ function SalesExcelExport() {
         ...(bill.status === 'cancelled' ? { 'Cancelled Reason': bill.cancelledReason || '' } : {}),
       }));
 
+      // FEATURE (2026-09-17): "add the Advance Sales ... bills to the export
+      // in a different sheet" — listAdvanceSales is already paginated
+      // (fetchAllRows under the hood, see dispatchInvoice.ts), so this
+      // covers every advance sale in range regardless of count, not just a
+      // capped page. No status filter passed = advance + paid + cancelled
+      // all included, same "keep cancelled but tag it" convention as above.
+      const advanceSales = await listAdvanceSales({ fromDate: fromIso, toDate: toIso });
+      const advanceRows = advanceSales.map((sale) => ({
+        'Invoice No': `${sale.status === 'paid' ? 'BILL' : 'ADV'}/${sale.fySeq}`,
+        Date: new Date(sale.createdAt).toLocaleString('en-IN'),
+        'Customer Name': sale.customerName || 'Walk-in Customer',
+        Mobile: sale.customerPhone || '',
+        'Delivery Date': sale.deliveryDate ? new Date(sale.deliveryDate).toLocaleDateString('en-IN') : '',
+        Items: sale.items.length,
+        Total: sale.total,
+        'Advance Collected': sale.advanceAmount,
+        Balance: sale.balanceAmount,
+        'Advance Payment Mode': sale.advancePaymentMode || '',
+        'Final Payment Mode': sale.finalPaymentMode || '',
+        Status: sale.status === 'cancelled' ? 'Cancelled' : sale.status === 'paid' ? 'Paid in Full' : 'Advance (Pending)',
+        ...(sale.status === 'cancelled' ? { 'Cancelled Reason': sale.cancelledReason || '' } : {}),
+      }));
+
+      // FEATURE (2026-09-17): "add the ... Invoice bills to the export" —
+      // now that GstInvoiceTab actually saves a row per invoice (see
+      // saveGstTaxInvoiceSecure), this is real stored data, not a gap.
+      const gstInvoices = await listGstTaxInvoices({ fromDate: fromIso, toDate: toIso });
+      const invoiceRows = gstInvoices.map((inv) => ({
+        'Invoice No': inv.invoiceNo,
+        Date: new Date(inv.createdAt).toLocaleString('en-IN'),
+        'Buyer Name': inv.buyerName,
+        GSTIN: inv.buyerGstin || '',
+        Items: inv.items.length,
+        'Taxable Value': inv.taxableValue,
+        CGST: inv.cgstAmount,
+        SGST: inv.sgstAmount,
+        IGST: inv.igstAmount,
+        Total: inv.total,
+      }));
+
       generateExcelReport({
         filename: `Sales_${fromDate}_to_${toDate}.xlsx`,
         sections: [{
@@ -5518,6 +5667,8 @@ function SalesExcelExport() {
           sheets: [
             { name: 'Item-wise Sales', rows: itemRows, fallback: 'No sales in this date range.' },
             { name: 'Sales Details', rows: detailRows, fallback: 'No sales in this date range.' },
+            { name: 'Advance Sales', rows: advanceRows, fallback: 'No advance sales in this date range.' },
+            { name: 'Invoice', rows: invoiceRows, fallback: 'No GST tax invoices in this date range.' },
           ],
         }],
       });
@@ -6078,6 +6229,13 @@ function BillingTab() {
   const [lastBill, setLastBill] = useState<WalkinBillRow | null>(null);
   const [recent, setRecent] = useState<WalkinBillRow[]>([]);
   const [loadingRecent, setLoadingRecent] = useState(true);
+  // BUG FIX (2026-09-17): "unable to see the complete bill in the Recent
+  // Bills" — this used to be a flat `.limit(30)` with no date range at all,
+  // so once more than 30 bills existed there was no way to find or reprint
+  // an older one. Now a From/To range (default: today) that fetches every
+  // matching bill via fetchAllRows, not just the newest 30.
+  const [recentFromDate, setRecentFromDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [recentToDate, setRecentToDate] = useState(() => new Date().toISOString().slice(0, 10));
   // FEATURE (2026-09-03): "need the option to edit the bills."
   const [editingBill, setEditingBill] = useState<WalkinBillRow | null>(null);
 
@@ -6117,10 +6275,15 @@ function BillingTab() {
 
   const loadRecent = useCallback(async () => {
     setLoadingRecent(true);
-    const { data, error: fetchError } = await supabase.from('bakery_walkin_bills').select('*').order('created_at', { ascending: false }).limit(30);
-    if (!fetchError && data) setRecent((data as Record<string, unknown>[]).map(mapWalkinBill));
+    const fromIso = new Date(`${recentFromDate}T00:00:00`).toISOString();
+    const toIso = new Date(new Date(`${recentToDate}T00:00:00`).getTime() + 24 * 60 * 60 * 1000).toISOString();
+    const { data, error: fetchError } = await fetchAllRows<Record<string, unknown>>(
+      'bakery_walkin_bills',
+      (q) => q.select('*').gte('created_at', fromIso).lt('created_at', toIso).order('created_at', { ascending: false }),
+    );
+    if (!fetchError && data) setRecent(data.map(mapWalkinBill));
     setLoadingRecent(false);
-  }, []);
+  }, [recentFromDate, recentToDate]);
   useEffect(() => { loadRecent().catch(() => {}); }, [loadRecent]);
 
   // FEATURE (2026-08-23): shared, robust dedup — see the comment on
@@ -6606,22 +6769,27 @@ function BillingTab() {
       </div>
 
       <div className="overflow-hidden rounded-2xl border border-border bg-white shadow-sm">
-        <div className="flex items-center justify-between border-b border-border bg-muted/40 px-4 py-3">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-muted/40 px-4 py-3">
           <p className="text-sm font-black text-foreground">Recent Bills</p>
-          <button
-            type="button"
-            title="Refresh recent bills"
-            onClick={() => void loadRecent()}
-            disabled={loadingRecent}
-            className="flex items-center gap-1.5 rounded-xl border border-border bg-card px-3 py-1.5 text-xs font-bold text-muted-foreground hover:bg-muted disabled:cursor-wait disabled:opacity-60"
-          >
-            <RefreshCw className={cn('size-3.5', loadingRecent && 'animate-spin')} /> Refresh
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <input type="date" value={recentFromDate} onChange={(e) => setRecentFromDate(e.target.value)} className="h-8 rounded-lg border border-border bg-card px-2 text-xs font-bold" />
+            <span className="text-xs font-bold text-muted-foreground">to</span>
+            <input type="date" value={recentToDate} onChange={(e) => setRecentToDate(e.target.value)} className="h-8 rounded-lg border border-border bg-card px-2 text-xs font-bold" />
+            <button
+              type="button"
+              title="Refresh recent bills"
+              onClick={() => void loadRecent()}
+              disabled={loadingRecent}
+              className="flex items-center gap-1.5 rounded-xl border border-border bg-card px-3 py-1.5 text-xs font-bold text-muted-foreground hover:bg-muted disabled:cursor-wait disabled:opacity-60"
+            >
+              <RefreshCw className={cn('size-3.5', loadingRecent && 'animate-spin')} /> Refresh
+            </button>
+          </div>
         </div>
         {loadingRecent ? (
           <div className="flex justify-center py-8"><Loader2 className="size-5 animate-spin text-muted-foreground" /></div>
         ) : recent.length === 0 ? (
-          <div className="p-4"><EmptyState text="No walk-in bills yet." /></div>
+          <div className="p-4"><EmptyState text="No walk-in bills in this date range." /></div>
         ) : (
           <div className="max-h-96 divide-y divide-border overflow-y-auto">
             {recent.map(bill => (
