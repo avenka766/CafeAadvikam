@@ -5428,17 +5428,137 @@ function BillingWalkinTab() {
               balance and print the final bill later." */}
           <button onClick={() => setSub('advance')} className={cn('rounded-xl px-3 py-1.5 text-xs font-bold', sub === 'advance' ? 'bg-amber-600 text-white shadow-sm' : 'bg-amber-100 text-amber-700')}>Advance Sales</button>
         </div>
-        <button
-          type="button"
-          onClick={() => setShowPrinterSetup(true)}
-          title="Printer setup (route walk-in receipts to your thermal printer)"
-          aria-label="Printer setup"
-          className="inline-flex size-8 items-center justify-center rounded-xl border border-border bg-card text-muted-foreground transition-colors hover:bg-muted"
-        >
-          <Printer className="size-3.5" />
-        </button>
+        <div className="flex items-center gap-2">
+          <SalesExcelExport />
+          <button
+            type="button"
+            onClick={() => setShowPrinterSetup(true)}
+            title="Printer setup (route walk-in receipts to your thermal printer)"
+            aria-label="Printer setup"
+            className="inline-flex size-8 items-center justify-center rounded-xl border border-border bg-card text-muted-foreground transition-colors hover:bg-muted"
+          >
+            <Printer className="size-3.5" />
+          </button>
+        </div>
       </div>
       {sub === 'new' ? <BillingTab /> : sub === 'sample' ? <SampleBillTab /> : sub === 'invoice' ? <GstInvoiceTab /> : <AdvanceSalesTab />}
+    </div>
+  );
+}
+
+// FEATURE (2026-09-17): "For sales tab: Need the Excel report of all the
+// sales one with Item wise sales and one sheet with sales details like
+// invoice number and name, mobile, amount" — covers every bakery_walkin_bills
+// row (New Bill + Sample Bill share this table and the SALES/26-27 numbering
+// series, see saveWalkinBillSecure above), a date range picker (default:
+// today), two sheets. Cancelled bills are kept in the Sales Details sheet
+// (tagged, not hidden — same convention as AdminDispatchDetailsTab) but
+// excluded from the Item-wise Sales totals since the goods came back to
+// stock, not a real sale.
+function SalesExcelExport() {
+  const today = new Date().toISOString().slice(0, 10);
+  const [fromDate, setFromDate] = useState(today);
+  const [toDate, setToDate] = useState(today);
+  const [open, setOpen] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [error, setError] = useState('');
+
+  const runExport = async () => {
+    setExporting(true);
+    setError('');
+    try {
+      const fromIso = new Date(`${fromDate}T00:00:00`).toISOString();
+      const toIso = new Date(new Date(`${toDate}T00:00:00`).getTime() + 24 * 60 * 60 * 1000).toISOString();
+      const { data, error: fetchError } = await fetchAllRows<Record<string, unknown>>(
+        'bakery_walkin_bills',
+        (q) => q.select('*').gte('created_at', fromIso).lt('created_at', toIso).order('created_at', { ascending: false }),
+      );
+      if (fetchError) { setError(fetchError); return; }
+      const bills = (data ?? []).map(mapWalkinBill);
+
+      const itemMap = new Map<string, { itemName: string; unit: string; quantity: number; amount: number }>();
+      for (const bill of bills) {
+        if (bill.status === 'cancelled') continue;
+        for (const line of bill.items) {
+          if (line.unit === 'charge') continue;
+          const key = `${line.itemName}::${line.unit}`;
+          const entry = itemMap.get(key) ?? { itemName: line.itemName, unit: line.unit, quantity: 0, amount: 0 };
+          entry.quantity += line.quantity;
+          entry.amount += line.lineTotal;
+          itemMap.set(key, entry);
+        }
+      }
+      const itemRows = Array.from(itemMap.values())
+        .sort((a, b) => b.amount - a.amount)
+        .map((r) => ({
+          Item: r.itemName,
+          Unit: r.unit,
+          Quantity: Math.round(r.quantity * 1000) / 1000,
+          Amount: Math.round(r.amount * 100) / 100,
+        }));
+
+      const detailRows = bills.map((bill) => ({
+        'Invoice No': bill.billNo,
+        Date: new Date(bill.createdAt).toLocaleString('en-IN'),
+        'Customer Name': bill.customerName || 'Walk-in Customer',
+        Mobile: bill.customerMobile || '',
+        'Payment Mode': bill.paymentMode,
+        Items: bill.items.filter((l) => l.unit !== 'charge').length,
+        Subtotal: bill.subtotal,
+        Discount: bill.discountAmount,
+        Total: bill.total,
+        Status: bill.status === 'cancelled' ? 'Cancelled' : 'Active',
+        ...(bill.status === 'cancelled' ? { 'Cancelled Reason': bill.cancelledReason || '' } : {}),
+      }));
+
+      generateExcelReport({
+        filename: `Sales_${fromDate}_to_${toDate}.xlsx`,
+        sections: [{
+          prefix: 'Sales',
+          sheets: [
+            { name: 'Item-wise Sales', rows: itemRows, fallback: 'No sales in this date range.' },
+            { name: 'Sales Details', rows: detailRows, fallback: 'No sales in this date range.' },
+          ],
+        }],
+      });
+      setOpen(false);
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        title="Export sales to Excel"
+        className="inline-flex h-8 items-center gap-1.5 rounded-xl bg-emerald-600 px-3 text-xs font-bold text-white shadow-sm transition-colors hover:bg-emerald-700"
+      >
+        <FileSpreadsheet className="size-3.5" /> Excel
+      </button>
+      {open && (
+        <div className="absolute right-0 top-10 z-20 w-64 rounded-2xl border border-border bg-card p-3 shadow-xl">
+          <p className="mb-2 text-xs font-black text-foreground">Export Sales to Excel</p>
+          <div className="space-y-2">
+            <label className="block text-[11px] font-bold text-muted-foreground">
+              From
+              <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} className="mt-0.5 h-9 w-full rounded-lg border border-border bg-background px-2 text-xs font-bold" />
+            </label>
+            <label className="block text-[11px] font-bold text-muted-foreground">
+              To
+              <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} className="mt-0.5 h-9 w-full rounded-lg border border-border bg-background px-2 text-xs font-bold" />
+            </label>
+          </div>
+          {error && <p className="mt-2 text-[11px] font-bold text-red-600">{error}</p>}
+          <div className="mt-3 flex justify-end gap-2">
+            <button type="button" onClick={() => setOpen(false)} className="rounded-lg bg-muted px-2.5 py-1.5 text-[11px] font-bold text-muted-foreground">Cancel</button>
+            <button type="button" onClick={() => void runExport()} disabled={exporting} className="rounded-lg bg-emerald-600 px-2.5 py-1.5 text-[11px] font-bold text-white disabled:opacity-50">
+              {exporting ? 'Exporting…' : 'Download'}
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
