@@ -177,7 +177,22 @@ function useStableDispatchIds() {
 // so identity (used for disambiguating *rows*) never leaks into matching
 // (used for finding the real order data a row represents).
 const stripUnitDisambiguation = (name: string) => name.replace(/\s*\((?:kg|pcs)\)\s*$/i, '').trim();
-const sameItem = (a: string, b: string) => stripUnitDisambiguation(a).trim().toLowerCase() === stripUnitDisambiguation(b).trim().toLowerCase();
+// BUG FIX (2026-09-19): "unable to dispatch Rusk to VRSNB — 'nothing owed on
+// any linked order right now'" (while the row itself said ordered 8 / sent 0).
+// computeMergedSummary/computeProductionRows group rows by closingStockItemSlug
+// (strips a "(250g)" weight suffix, plurals, case), so Hosur's "Rusk (250G)" and
+// VRSNB's plain "Rusk" land in ONE row named after whichever came first — but
+// this comparison only stripped a (kg)/(pcs) suffix, so the row's name
+// "Rusk (250G)" never matched VRSNB's real order line "Rusk", the order lookup
+// came back empty, and a perfectly dispatchable item was reported as already
+// sent. Match on the same slug identity the rows are grouped by (the old exact
+// comparison stays as a superset so nothing that matched before stops matching).
+const sameItem = (a: string, b: string) => {
+  const exact = stripUnitDisambiguation(a).trim().toLowerCase() === stripUnitDisambiguation(b).trim().toLowerCase();
+  if (exact) return true;
+  const slugA = closingStockItemSlug(a);
+  return slugA !== '' && slugA === closingStockItemSlug(b);
+};
 
 export function computeMergedSummary(orders: BakeryOrder[]): MergedRow[] {
   const rows = new Map<string, MergedRow>();
