@@ -641,6 +641,22 @@ async function fetchProductionUnitOverrides(): Promise<Map<string, ProductionUni
   }
   return map;
 }
+// Shared, briefly-cached copy for components that render once PER ORDER (the
+// Incoming/Sent cards) — a plain per-component fetch would run one query per
+// card. Empty until loaded, which safely means "show as ordered (pcs)".
+let unitOverridesCache: { at: number; promise: Promise<Map<string, ProductionUnitOverride>> } | null = null;
+function useProductionUnitOverrides(): Map<string, ProductionUnitOverride> {
+  const [overrides, setOverrides] = useState<Map<string, ProductionUnitOverride>>(() => new Map());
+  useEffect(() => {
+    let live = true;
+    if (!unitOverridesCache || Date.now() - unitOverridesCache.at > 5 * 60_000) {
+      unitOverridesCache = { at: Date.now(), promise: fetchProductionUnitOverrides() };
+    }
+    void unitOverridesCache.promise.then((m) => { if (live) setOverrides(m); });
+    return () => { live = false; };
+  }, []);
+  return overrides;
+}
 
 // FEATURE (2026-09-12): "Both are same items but in production entry tab why
 // is it showing as different items with pcs and kg ... its all considered as
@@ -1417,9 +1433,24 @@ function OnlineOrdersPanel() {
 // Orders read view + export. Every other case is byte-identical to before
 // (`dispatchUnit === 'pcs' ? originalPcs ?? quantity : quantity` + `dispatchUnit || 'kg'`).
 // The edit form is deliberately left in pcs — branch-native and lossless.
-function incomingDisplayQty(order: BakeryOrder, item: BakeryOrderItem): { qty: number; unit: 'pcs' | 'kg' } {
+//
+// BUG FIX (2026-09-20): "VRSNB order placed in pcs but showing kgs — I already
+// provided the excel which items to convert to kgs and which to keep pcs". This
+// used to convert EVERY VRSNB pcs item to kg at a guessed 200 g/piece (Cova Bun
+// 5 pcs -> "1 kg", Veg Puff, Samosa, Baby bun ...), never consulting the
+// planner's own classification (production_pcs_unit_overrides — the filled-in
+// Excel, 49 kg / 64 pcs). Now the SAME table Production Entry / Merged Summary /
+// Reports use decides: convert only items classified kg, using THEIR weight per
+// piece; anything classified pcs — or not in the table at all — shows exactly as
+// ordered (never silently guesses kg).
+function incomingDisplayQty(order: BakeryOrder, item: BakeryOrderItem, overrides: Map<string, ProductionUnitOverride>): { qty: number; unit: 'pcs' | 'kg' } {
   if (order.targetBranch === 'VRSNB' && item.dispatchUnit === 'pcs') {
-    return { qty: pcsToKgForItem(item, item.originalPcs ?? item.quantity), unit: 'kg' };
+    const override = resolveProductionOverride(item.itemName, overrides);
+    if (override?.unit === 'kg') {
+      const pcs = item.originalPcs ?? item.quantity;
+      const grams = override.weightGrams ?? item.weightGrams ?? VRSNB_DEFAULT_PACKET_GRAMS;
+      return { qty: pcsToKg(item.itemName, pcs, grams) ?? pcs, unit: 'kg' };
+    }
   }
   return {
     qty: item.dispatchUnit === 'pcs' ? (item.originalPcs ?? item.quantity) : item.quantity,
@@ -1428,6 +1459,7 @@ function incomingDisplayQty(order: BakeryOrder, item: BakeryOrderItem): { qty: n
 }
 
 function IncomingOrdersTab({ orders, onAdd }: { orders: BakeryOrder[]; onAdd: ReturnType<typeof useBakeryStore.getState>['submitOrder'] }) {
+  const unitOverrides = useProductionUnitOverrides();
   // FEATURE (2026-09-08): "Incoming Orders tab: create a new sub tab called
   // Online Orders" — a lightweight local sub-tab strip (this component's
   // own state, not the parent's shared `tab` query param) since Online
@@ -1511,7 +1543,7 @@ function IncomingOrdersTab({ orders, onAdd }: { orders: BakeryOrder[]; onAdd: Re
                 { header: 'Unit', key: 'unit' },
               ],
               rows: orders.flatMap(o => o.items.map(item => {
-                const d = incomingDisplayQty(o, item);
+                const d = incomingDisplayQty(o, item, unitOverrides);
                 return {
                   orderNumber: o.orderNumber, branch: o.targetBranch, status: o.status,
                   item: item.itemName, qty: d.qty, unit: d.unit,
@@ -1583,6 +1615,7 @@ function IncomingOrdersTab({ orders, onAdd }: { orders: BakeryOrder[]; onAdd: Re
 // EditableIncomingOrderCard's inline edit form.
 function DayGroupedOrderList({ orders, badgeLabel, badgeTone, editable = false }: { orders: BakeryOrder[]; badgeLabel: string | ((o: BakeryOrder) => string); badgeTone: string | ((o: BakeryOrder) => string); editable?: boolean }) {
   const hosurShopNameByOrderId = useHosurShopNames(orders);
+  const unitOverrides = useProductionUnitOverrides();
   const groups = useMemo(() => {
     const map = new Map<string, { label: string; orders: BakeryOrder[] }>();
     for (const order of orders) {
@@ -1619,7 +1652,7 @@ function DayGroupedOrderList({ orders, badgeLabel, badgeTone, editable = false }
               const tone = typeof badgeTone === 'function' ? badgeTone(order) : badgeTone;
               const bucket = bucketFor(order);
               return editable ? (
-                <EditableIncomingOrderCard key={order.id} order={order} bucket={bucket} label={label} tone={tone} hosurShopName={hosurShopNameByOrderId.get(order.id)} />
+                <EditableIncomingOrderCard key={order.id} order={order} bucket={bucket} label={label} tone={tone} hosurShopName={hosurShopNameByOrderId.get(order.id)} unitOverrides={unitOverrides} />
               ) : (
                 <div key={order.id} className={cn('rounded-2xl border p-4 shadow-sm', BRANCH_META[bucket].bg)}>
                   <div className="flex items-center justify-between">
@@ -1630,7 +1663,7 @@ function DayGroupedOrderList({ orders, badgeLabel, badgeTone, editable = false }
                   </div>
                   <ul className="mt-2 space-y-1 text-xs font-semibold text-muted-foreground">
                     {order.items.map((item, i) => {
-                      const d = incomingDisplayQty(order, item);
+                      const d = incomingDisplayQty(order, item, unitOverrides);
                       return <li key={i}>{item.itemName} — {d.qty} {d.unit}</li>;
                     })}
                   </ul>
@@ -1669,8 +1702,8 @@ function draftFromItem(item: BakeryOrderItem): EditableItemDraft {
 // per the planner's explicit ask to edit "name, quantity, unit etc." Only
 // ever rendered for status==='pending' orders (see DayGroupedOrderList),
 // matching updateOrderItems' own guard in bakeryStore.
-function EditableIncomingOrderCard({ order, bucket, label, tone, hosurShopName }: {
-  order: BakeryOrder; bucket: keyof typeof BRANCH_META; label: string; tone: string; hosurShopName?: string;
+function EditableIncomingOrderCard({ order, bucket, label, tone, hosurShopName, unitOverrides }: {
+  order: BakeryOrder; bucket: keyof typeof BRANCH_META; label: string; tone: string; hosurShopName?: string; unitOverrides: Map<string, ProductionUnitOverride>;
 }) {
   const { updateOrderItems } = useBakeryStore();
   const [editing, setEditing] = useState(false);
@@ -1771,7 +1804,7 @@ function EditableIncomingOrderCard({ order, bucket, label, tone, hosurShopName }
       {!editing ? (
         <ul className="mt-2 space-y-1 text-xs font-semibold text-muted-foreground">
           {order.items.map((item, i) => {
-            const d = incomingDisplayQty(order, item);
+            const d = incomingDisplayQty(order, item, unitOverrides);
             return <li key={i}>{item.itemName} — {d.qty} {d.unit}</li>;
           })}
         </ul>
