@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import { cn, formatCurrency } from '@/lib/utils';
-import { supabase } from '@/lib/supabase';
+import { supabase, fetchAllRows } from '@/lib/supabase';
 import { businessDate } from '@/lib/businessDate';
 import { useScrollLock } from '@/hooks/useScrollLock';
 import LoadingSkeleton from '@/components/ui/LoadingSkeleton';
@@ -197,9 +197,19 @@ async function fetchEmployees(): Promise<Employee[]> {
   return (data || []).map(dbRowToEmployee);
 }
 
+// BUG FIX (2026-09-20): "the attendance that was added is gone for many of the
+// employees" — attendance is ONE ROW PER EMPLOYEE PER DAY (~105 employees x up to
+// 31 days = 3,000+ rows a month; Sept 2026 already had 1,645). This was a plain
+// query, and PostgREST silently caps any response at 1,000 rows with no error,
+// so ~650 rows (whole employees, whichever the server returned last) simply never
+// reached the screen and looked deleted. The data was never lost. Paged with
+// fetchAllRows; ordered so page boundaries are deterministic.
 async function fetchAttendance(year: number, month: number): Promise<MonthAttendance> {
-  const { data, error } = await supabase.from('attendance').select('employee_id, day, present, half, woff, absent, bf, lunch, dinner').eq('year', year).eq('month', month);
-  if (error) throw error;
+  const { data, error } = await fetchAllRows<Record<string, unknown>>(
+    'attendance',
+    (q) => q.select('employee_id, day, present, half, woff, absent, bf, lunch, dinner').eq('year', year).eq('month', month).order('employee_id', { ascending: true }).order('day', { ascending: true }),
+  );
+  if (error) throw new Error(error);
   const result: MonthAttendance = {};
   for (const row of (data || [])) {
     const k = ak(row.employee_id as string, row.day as number);
@@ -211,6 +221,11 @@ async function fetchAttendance(year: number, month: number): Promise<MonthAttend
 async function upsertAttendance(employeeId: string, year: number, month: number, day: number, val: DayAttendance) {
   const { error } = await supabase.from('attendance').upsert({ employee_id: employeeId, year, month, day, present: val.present, half: val.half, woff: val.woff, absent: val.absent, bf: val.bf, lunch: val.lunch, dinner: val.dinner }, { onConflict: 'employee_id,year,month,day' });
   if (error) console.error('Attendance upsert failed:', error.message);
+}
+
+async function upsertMeals(employeeId: string, year: number, month: number, day: number, val: DayAttendance) {
+  const { error } = await supabase.from('attendance').upsert({ employee_id: employeeId, year, month, day, bf: val.bf, lunch: val.lunch, dinner: val.dinner }, { onConflict: 'employee_id,year,month,day' });
+  if (error) console.error('Attendance meal upsert failed:', error.message);
 }
 
 async function fetchDeductionDecisions(year: number, month: number): Promise<DeductionDecisions> {
@@ -1936,10 +1951,27 @@ export default function AttendanceSalary() {
     return () => document.removeEventListener('mousedown', fn);
   }, []);
 
+  const attRef = useRef(att);
+  attRef.current = att;
+
   const updateAtt = useCallback((empId: string, day: number, val: DayAttendance) => {
     const k = ak(empId, day);
-    setAtt(prev => ({ ...prev, [k]: val }));
-    upsertAttendance(empId, activeMonth.year, activeMonth.month, day, val);
+    const prev = attRef.current[k];
+    setAtt(p => ({ ...p, [k]: val }));
+    // BUG FIX (2026-09-20): a food (bf/lunch/dinner) tick used to upsert the
+    // WHOLE day row from whatever the screen held for that day — if that day's
+    // row hadn't been loaded (see fetchAttendance's row-cap fix), the screen held
+    // a blank and the write silently reset the employee's real attendance
+    // status to "blank". When only the meal flags changed, write ONLY the meal
+    // columns so a food deduction can never touch attendance status.
+    const statusUnchanged =
+      (prev?.present ?? false) === val.present && (prev?.half ?? false) === val.half &&
+      (prev?.woff ?? false) === val.woff && (prev?.absent ?? false) === val.absent;
+    if (statusUnchanged) {
+      void upsertMeals(empId, activeMonth.year, activeMonth.month, day, val);
+    } else {
+      upsertAttendance(empId, activeMonth.year, activeMonth.month, day, val);
+    }
   }, [activeMonth.year, activeMonth.month]);
 
   const updateDecision = useCallback((empId: string, d: DeductionDecision) => {

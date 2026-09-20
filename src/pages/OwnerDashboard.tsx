@@ -1048,7 +1048,14 @@ function AttendanceSalaryTab() {
     setLoading(true); setFetchError(null);
     Promise.all([
       supabase.from('employees').select('id, name, branch, department, gross_salary, salary_advance, uniform_deduction, other_deduction'),
-      supabase.from('attendance').select('employee_id, day, present, half, woff, bf, lunch, dinner').eq('year', payrollYear).eq('month', payrollMonth),
+      // BUG FIX (2026-09-20): attendance is one row per employee per day (1,645
+      // rows for Sept 2026) — a plain query is silently capped at 1,000 rows by
+      // PostgREST, which understated payroll here for every employee whose rows
+      // fell past the cut-off. Paged with fetchAllRows.
+      fetchAllRows<Record<string, unknown>>(
+        'attendance',
+        (q) => q.select('employee_id, day, present, half, woff, bf, lunch, dinner').eq('year', payrollYear).eq('month', payrollMonth).order('employee_id', { ascending: true }).order('day', { ascending: true }),
+      ).then((r) => ({ data: r.data, error: r.error ? { message: r.error } : null })),
       supabase.from('deduction_decisions').select('employee_id, deduct_advance, deduct_other, deduct_uniform, deduct_esi, deduct_pf').eq('year', payrollYear).eq('month', payrollMonth),
     ]).then(([employeesRes, attendanceRes, decisionsRes]) => {
       const data = employeesRes.data;
