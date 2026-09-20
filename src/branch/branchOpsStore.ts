@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { PersistStorage, StorageValue } from "zustand/middleware";
-import { supabase } from "@/lib/supabase";
+import { supabase, fetchAllRows } from "@/lib/supabase";
 import { useOfflineQueueStore, registerReplayHandler } from "@/lib/offlineQueue";
 import type { Branch } from "./types";
 
@@ -3382,16 +3382,27 @@ export const useBranchOpsStore = create<BranchOpsState>()(
         // Direct, uncapped query for a specific range — used by admin/owner
         // report screens so a wide date range can never come back clipped by
         // the general hydration limit used on normal app load.
-        let q = supabase
-          .from("branch_operation_records")
-          .select("record_type, record_id, payload, created_at")
-          .in("record_type", ["bill", "advance_final_bill"])
-          .gte("created_at", `${startDate}T00:00:00`)
-          .lte("created_at", `${endDate}T23:59:59`);
-        if (branch) q = q.eq("branch", branch);
-        const { data, error } = await q;
+        // BUG FIX (2026-09-20): despite the "uncapped" comment above this was a
+        // plain query, so PostgREST's silent 1,000-row response cap clipped it —
+        // SNB alone bills hundreds of records a day, so any report range past a
+        // couple of days came back incomplete with no error. Now genuinely
+        // paged (fetchAllRows); created_at + record_id keep page edges stable.
+        const { data, error } = await fetchAllRows<{ record_type: string; record_id: string; payload: unknown; created_at: string }>(
+          "branch_operation_records",
+          (query) => {
+            let q = query
+              .select("record_type, record_id, payload, created_at")
+              .in("record_type", ["bill", "advance_final_bill"])
+              .gte("created_at", `${startDate}T00:00:00`)
+              .lte("created_at", `${endDate}T23:59:59`)
+              .order("created_at", { ascending: true })
+              .order("record_id", { ascending: true });
+            if (branch) q = q.eq("branch", branch);
+            return q;
+          },
+        );
         if (error) {
-          console.error("[branchOpsStore] fetchBillsInRange failed:", error.message);
+          console.error("[branchOpsStore] fetchBillsInRange failed:", error);
           return;
         }
         const fetched = (data || [])
