@@ -11871,6 +11871,14 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
     sendingRef.current = true;
     setSending(true);
     setError(null);
+    // BUG FIX (2026-09-20): "dispatched bread 80 — reached the SNB dashboard but
+    // the invoice isn't in SNB > Dispatched". Dispatch is two steps: (1) each item
+    // is written to its order + the branch's incoming list, (2) the invoice is
+    // saved. When the database timed out on step 2, the catch below only showed
+    // the raw error text — nothing said the items had ALREADY been sent, so the
+    // popup got closed and the batch was left with no invoice. Track which step
+    // failed so the message can say so and tell the planner the safe next move.
+    let itemsAlreadySent = false;
     try {
       for (const a of effectiveActions) {
         // BUG FIX: "for pcs item never allow decimal points" — proportional
@@ -11895,6 +11903,7 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
           ...(a.isExtra ? { isExtra: true } : {}),
           ...(customer ? { isCustomSale: true, customerName: customer.name } : {}),
         });
+        itemsAlreadySent = true;
       }
       // FEATURE (2026-09-03): "Custom(Planned) order dispatch invoice number
       // should also continue the SALES/26-27/N sequence" — Custom(Planned)
@@ -12078,7 +12087,10 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
         }
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to dispatch.');
+      const reason = err instanceof Error ? err.message : 'Failed to dispatch.';
+      setError(itemsAlreadySent
+        ? `Items were already sent to ${scope}, but the invoice could not be saved (${reason}). Keep this window open and press Confirm Dispatch again — nothing is sent twice, it only saves the invoice.`
+        : reason);
     } finally {
       sendingRef.current = false;
       setSending(false);
