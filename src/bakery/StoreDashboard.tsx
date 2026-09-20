@@ -10,7 +10,7 @@ import {
   History, WalletCards, Download, FileText, Calendar, ClipboardList, Clock,
 } from 'lucide-react';
 import { Layers } from 'lucide-react';
-import { supabase } from '@/lib/supabase';
+import { supabase, fetchAllRows } from '@/lib/supabase';
 import { useBakeryStore } from './bakeryStore';
 import { BAKERY_ITEMS } from './types';
 import { useRecipeStore } from './recipeStore';
@@ -1326,12 +1326,17 @@ function InlineDeductionsView() {
     // this "today's deductions" view was the one place still trusting it,
     // risking the wrong day's data on a misconfigured device.
     const { from, to } = dayWindow(inputDate(new Date()));
-    const { data, error } = await supabase
-      .from('store_material_deductions')
-      .select('id, order_number, material_name, quantity_deducted, unit, stock_before, stock_after, deducted_by, deducted_at')
-      .gte('deducted_at', from)
-      .lte('deducted_at', to)
-      .order('deducted_at', { ascending: false });
+    // Paged (2026-09-20): a busy day already reached 978 rows here, one step
+    // from PostgREST's silent 1,000-row cap.
+    const { data, error } = await fetchAllRows<Record<string, unknown>>(
+      'store_material_deductions',
+      (q) => q
+        .select('id, order_number, material_name, quantity_deducted, unit, stock_before, stock_after, deducted_by, deducted_at')
+        .gte('deducted_at', from)
+        .lte('deducted_at', to)
+        .order('deducted_at', { ascending: false })
+        .order('id', { ascending: true }),
+    );
     if (!error && data) {
       setRows(data.map((r: Record<string, unknown>) => ({
         id:               r.id as string,
@@ -2936,19 +2941,26 @@ function StoreDailyClosureTab() {
     const { from, to } = dayWindow(date);
     setLoading(true);
     try {
+      // Paged (2026-09-20) — same 1,000-row-cap reasoning as the report above.
       const [autoRes, customRes] = await Promise.all([
-        supabase
-          .from('store_material_deductions')
-          .select('id, order_number, material_name, quantity_deducted, unit, stock_before, stock_after, deducted_by')
-          .gte('deducted_at', from)
-          .lte('deducted_at', to)
-          .order('deducted_at', { ascending: false }),
-        supabase
-          .from('store_custom_deductions')
-          .select('id, item_name, quantity, unit, reason, deducted_by')
-          .gte('created_at', from)
-          .lte('created_at', to)
-          .order('created_at', { ascending: false }),
+        fetchAllRows<Record<string, unknown>>(
+          'store_material_deductions',
+          (q) => q
+            .select('id, order_number, material_name, quantity_deducted, unit, stock_before, stock_after, deducted_by')
+            .gte('deducted_at', from)
+            .lte('deducted_at', to)
+            .order('deducted_at', { ascending: false })
+            .order('id', { ascending: true }),
+        ),
+        fetchAllRows<Record<string, unknown>>(
+          'store_custom_deductions',
+          (q) => q
+            .select('id, item_name, quantity, unit, reason, deducted_by')
+            .gte('created_at', from)
+            .lte('created_at', to)
+            .order('created_at', { ascending: false })
+            .order('id', { ascending: true }),
+        ),
       ]);
 
       setAutoRows((autoRes.data ?? []).map((r: Record<string, unknown>) => ({

@@ -25,7 +25,7 @@
 // business logic, data fetching, or handler behaviour was changed below.
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { Store, Search, X, ShoppingCart, Send, Loader2, Plus, Truck, CheckCircle2, AlertTriangle, Printer, PackageX, RotateCcw, ChevronDown, RefreshCw } from 'lucide-react';
-import { supabase } from '@/lib/supabase';
+import { supabase, fetchAllRows } from '@/lib/supabase';
 import { useAuthStore } from '@/stores/authStore';
 import { cn } from '@/lib/utils';
 import { exportToExcel } from '@/lib/exportExcel';
@@ -101,7 +101,14 @@ export default function HosurShopOrderPanel({ section: controlledSection, onPend
       supabase.from('hosur_shops').select('id, shop_name, whatsapp_number, address, is_active, discount_percent').order('shop_name'),
       supabase.from('hosur_shop_price_lists').select('id, shop_id, item_name, item_unit, unit_price, is_active').eq('is_active', true),
       supabase.from('hosur_orders').select('id, order_number, shop_id, shop_name, shop_whatsapp, status, subtotal, created_at').order('created_at', { ascending: false }).limit(200),
-      supabase.from('hosur_order_items').select('id, order_id, item_name, unit, quantity, unit_price, line_total, dispatched_quantity, received_quantity'),
+      // BUG FIX (2026-09-20): this loaded EVERY hosur_order_items row with no
+      // filter — 1,353 rows and growing — so PostgREST's silent 1,000-row cap
+      // dropped ~350 of them, leaving some of the 200 orders above with missing
+      // (or no) line items and no error. Paged with fetchAllRows.
+      fetchAllRows<Record<string, unknown>>(
+        'hosur_order_items',
+        (q) => q.select('id, order_id, item_name, unit, quantity, unit_price, line_total, dispatched_quantity, received_quantity').order('id', { ascending: true }),
+      ).then((r) => ({ data: r.data, error: r.error ? { message: r.error } : null })),
     ]);
     // BUG FIX: none of these 4 results' `.error` were ever checked — a
     // failed fetch (RLS/network hiccup) rendered as an indistinguishable

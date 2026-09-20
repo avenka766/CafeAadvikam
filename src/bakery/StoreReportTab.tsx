@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType, 
 import * as XLSX from '@/lib/safeSpreadsheet';
 import { Calendar, Download, FileText, Info, Loader2, MinusCircle, Package, Receipt, RefreshCw, ChevronDown, ChevronUp, LayoutGrid } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { supabase } from '@/lib/supabase';
+import { supabase, fetchAllRows } from '@/lib/supabase';
 import { useInvoiceStore } from './invoiceStore';
 import { matForItem } from './materialCalc';
 import type { ProductionCategory } from './productionRouting';
@@ -149,19 +149,30 @@ export default function StoreReportTab() {
     const seq = ++requestSeqRef.current;
     setLoading(true);
     try {
+      // BUG FIX (2026-09-20): these are one row per material per order — Aug 2026
+      // alone had 4,394 material + 2,895 custom deduction rows, so any report
+      // range beyond a few days silently lost everything past PostgREST's
+      // 1,000-row cap (no error, just an under-reported total). Paged with
+      // fetchAllRows; `id` tiebreak keeps page boundaries deterministic.
       const [materialRes, customRes] = await Promise.all([
-        supabase
-          .from('store_material_deductions')
-          .select('id, order_id, order_number, material_name, quantity_deducted, unit, stock_before, stock_after, deducted_by, deducted_at')
-          .gte('deducted_at', range.from)
-          .lte('deducted_at', range.to)
-          .order('deducted_at', { ascending: false }),
-        supabase
-          .from('store_custom_deductions')
-          .select('id, item_name, quantity, unit, reason, deducted_by, created_at')
-          .gte('created_at', range.from)
-          .lte('created_at', range.to)
-          .order('created_at', { ascending: false }),
+        fetchAllRows<Record<string, unknown>>(
+          'store_material_deductions',
+          (q) => q
+            .select('id, order_id, order_number, material_name, quantity_deducted, unit, stock_before, stock_after, deducted_by, deducted_at')
+            .gte('deducted_at', range.from)
+            .lte('deducted_at', range.to)
+            .order('deducted_at', { ascending: false })
+            .order('id', { ascending: true }),
+        ).then((r) => ({ data: r.data, error: r.error ? { message: r.error } : null })),
+        fetchAllRows<Record<string, unknown>>(
+          'store_custom_deductions',
+          (q) => q
+            .select('id, item_name, quantity, unit, reason, deducted_by, created_at')
+            .gte('created_at', range.from)
+            .lte('created_at', range.to)
+            .order('created_at', { ascending: false })
+            .order('id', { ascending: true }),
+        ).then((r) => ({ data: r.data, error: r.error ? { message: r.error } : null })),
       ]);
 
       if (seq !== requestSeqRef.current) return; // a newer request has already started — don't apply a stale result
