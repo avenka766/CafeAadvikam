@@ -159,11 +159,42 @@ export async function fetchAllRows<T = Record<string, unknown>>(
   table: string,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   build: (query: any) => any,
-  options: { pageSize?: number; maxRows?: number } = {},
+  options: { pageSize?: number; maxRows?: number; cursorColumn?: string } = {},
 ): Promise<{ data: T[]; error: string | null }> {
   const pageSize = options.pageSize ?? 1000;
   const maxRows = options.maxRows ?? 50000;
   const rows: T[] = [];
+  // BUG FIX: "switch tabs / log in, see the error" — deep OFFSET pagination
+  // (the .range() loop below) forces Postgres to generate and discard every
+  // row before the current page on EVERY request, and re-sort the whole
+  // remainder each time. Confirmed live against branch_operation_records: a
+  // wide-date-range, no-branch-filter fetch (e.g. an Owner "All Time" report)
+  // matches well over half the table, so no index arrangement helps — a
+  // request 30+ pages deep (~30,000 rows in) took 5+ seconds and tripped the
+  // statement timeout, firing the red "data may be incomplete" banner. When
+  // `cursorColumn` is given, page by keyset instead: each request only asks
+  // for rows strictly past the last row already fetched (`lt(cursorColumn,
+  // cursor)`, relying on the caller's own `.order(cursorColumn, {ascending:
+  // false})`), which Postgres can always satisfy with a fast, bounded index
+  // scan no matter how deep the page is — no OFFSET, nothing to discard.
+  // Opt-in only (existing call sites keep the old, proven .range() behavior
+  // unless they pass this) so this can't regress anything not explicitly
+  // switched over.
+  if (options.cursorColumn) {
+    const cursorColumn = options.cursorColumn;
+    let cursor: unknown = null;
+    for (let i = 0; i < maxRows / pageSize; i++) {
+      let query = build(supabase.from(table));
+      if (cursor !== null) query = query.lt(cursorColumn, cursor);
+      const { data, error } = await query.limit(pageSize);
+      if (error) return { data: rows, error: error.message };
+      const page = (data ?? []) as T[];
+      rows.push(...page);
+      if (page.length < pageSize) break;
+      cursor = (page[page.length - 1] as Record<string, unknown>)[cursorColumn];
+    }
+    return { data: rows, error: null };
+  }
   for (let from = 0; from < maxRows; from += pageSize) {
     const query = build(supabase.from(table));
     const { data, error } = await query.range(from, from + pageSize - 1);
