@@ -530,6 +530,36 @@ export function passesProductionCutoff(
   return Number.isFinite(ts) ? ts >= cutoffMs : true;
 }
 
+// BUG FIX (2026-09-24): "unable to send the Advance order SNB-ADV-348 — I
+// entered the production but also I was not able to dispatch it." Confirmed
+// live: order #1613 (SNB-ADV-348) requested 200 pcs OPPAT, only 99 pcs was
+// ever dispatched (from reserved stock at order creation), 73 more pcs was
+// produced same day — 101 pcs still genuinely owed to a real customer with a
+// real advance payment (₹2,000) and a delivery date that has since passed.
+// The nightly 11pm cutoff (passesProductionCutoff, by design for the general
+// daily production grind — see its own comment) has silently excluded this
+// order from Production Entry / "To Dispatch" for 5 straight nights since,
+// with no way for the planner to ever find or finish it again. An advance
+// order's delivery commitment doesn't expire at midnight the way a plain
+// day's baking list does — exempt it from the cutoff for as long as it still
+// has undelivered quantity. One already fully dispatched still correctly
+// rolls off (there's nothing left to do), so this only affects genuinely
+// incomplete ones.
+export function advanceOrderStillOwesDispatch(o: Pick<BakeryOrder, 'items' | 'dispatchLog'>): boolean {
+  const dispatchedByItem = new Map<string, number>();
+  for (const d of o.dispatchLog || []) {
+    if (d.isExtra) continue;
+    const key = d.itemName.trim().toLowerCase();
+    dispatchedByItem.set(key, (dispatchedByItem.get(key) ?? 0) + d.quantity);
+  }
+  return o.items.some(item => {
+    const key = item.itemName.trim().toLowerCase();
+    const requested = item.dispatchUnit === 'pcs' && item.originalPcs != null ? item.originalPcs : item.quantity;
+    const dispatched = dispatchedByItem.get(key) ?? 0;
+    return requested - dispatched > 0.01;
+  });
+}
+
 // Builds merged rows (same shape as computeMergedSummary) but enriched with the
 // planner's per-item production status, read from each contributing order's
 // producedItems[].status (no schema change needed — reuses the existing jsonb field).
@@ -1100,7 +1130,9 @@ export default function PlannerDashboard({ embedded = false }: { embedded?: bool
   // Cut set — the nightly 11 PM clean slate. Feeds the Production Entry tab and
   // the Dispatch → "To Dispatch" list only.
   const productionSourceOrders = useMemo(
-    () => productionSourceOrdersAll.filter(o => passesProductionCutoff(o, productionCutoffMs)),
+    () => productionSourceOrdersAll.filter(o =>
+      passesProductionCutoff(o, productionCutoffMs)
+      || (isAdvanceOrderTagged(o.notes) && advanceOrderStillOwesDispatch(o))),
     [productionSourceOrdersAll, productionCutoffMs],
   );
   const activeLeftovers    = useMemo(() => orders.filter(o => (o.leftoverStatus ?? 'pending') === 'pending' && o.status === 'dispatched'), [orders]);
