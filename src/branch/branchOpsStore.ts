@@ -3387,6 +3387,19 @@ export const useBranchOpsStore = create<BranchOpsState>()(
         // SNB alone bills hundreds of records a day, so any report range past a
         // couple of days came back incomplete with no error. Now genuinely
         // paged (fetchAllRows); created_at + record_id keep page edges stable.
+        // NOTE: "switch tabs / log in, see the error" was traced to THIS
+        // query — a wide date range with no branch filter (Admin/Owner's
+        // "All Time" overview) matches over half of branch_operation_records,
+        // and a deep .range() page took 5+ seconds, tripping the statement
+        // timeout. A keyset (cursor) rewrite was tried and rejected: Postgres
+        // won't push the two-column (created_at, record_id) OR-based cursor
+        // condition into an index bound the way it does a plain inequality —
+        // confirmed live, one variant measured SLOWER (7.3s) than the
+        // original. Fixed at the call sites instead (see AdminDashboard.tsx
+        // and OwnerDashboard.tsx): loop per-branch like AdminVRSNBDashboard
+        // already did, rather than one unscoped all-branch call — a
+        // branch-scoped deep page is ~390ms even at the same offset, so nothing
+        // needed to change here.
         const { data, error } = await fetchAllRows<{ record_type: string; record_id: string; payload: unknown; created_at: string }>(
           "branch_operation_records",
           (query) => {
