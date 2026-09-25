@@ -37,6 +37,13 @@ type BillPayment = {
 const editableModes: EditableMode[] = ['cash', 'upi', 'card'];
 const roundMoney = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100;
 
+const PAYMENT_EDIT_DATE_PRESETS = [
+  { label: '7 Days', days: 6 },
+  { label: '30 Days', days: 29 },
+  { label: '90 Days', days: 89 },
+  { label: 'All Time', days: 3650 },
+] as const;
+
 function allocationFromRow(row: PaymentRow) {
   const allocation = { cash: 0, upi: 0, card: 0 };
   for (const payment of row.branch_sale_payments || []) {
@@ -70,10 +77,19 @@ export function PaymentModeEditTab({ branch }: { branch: Branch }) {
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(true);
   const [convertingRow, setConvertingRow] = useState<BillPayment | null>(null);
+  // BUG FIX: "Payment edit mode the data is not loading properly its taking
+  // long time to show" — loadRows used to fetch EVERY bill this branch has
+  // ever had (no date filter at all), joined with its payments, on every
+  // open of this tab. A branch with a few hundred/thousand historical bills
+  // made this genuinely slow. Default to a recent window (fast, covers the
+  // realistic "fix today's/this week's mis-entered payment mode" use case);
+  // widen with the presets below for older corrections.
+  const [rangeDays, setRangeDays] = useState<number>(6);
 
   const loadRows = useCallback(async () => {
     setLoading(true);
     setMessage('');
+    const from = new Date(); from.setDate(from.getDate() - rangeDays); from.setHours(0, 0, 0, 0);
     // BUG FIX (2026-09-16): the AUDIT FIX below correctly diagnosed the
     // 1000-row cap but "fixed" it by raising `.limit()` to 3000, which
     // doesn't work — PostgREST's cap isn't overridable by a bigger client
@@ -81,6 +97,7 @@ export function PaymentModeEditTab({ branch }: { branch: Branch }) {
     const { data, error } = await fetchAllRows<any>('branch_bill_headers', (q) => q
       .select('id, bill_no, bill_type, salesperson, biller, total, status, created_at, branch_sale_payments(payment_mode, amount)')
       .eq('branch', branch)
+      .gte('created_at', from.toISOString())
       .order('created_at', { ascending: false }));
 
     if (error) {
@@ -115,7 +132,7 @@ export function PaymentModeEditTab({ branch }: { branch: Branch }) {
       card: row.allocation.card ? String(row.allocation.card) : '',
     }])));
     setLoading(false);
-  }, [branch]);
+  }, [branch, rangeDays]);
 
   useEffect(() => { void loadRows(); }, [loadRows]);
 
@@ -193,7 +210,19 @@ export function PaymentModeEditTab({ branch }: { branch: Branch }) {
           <div className="rounded-xl bg-blue-50 p-2 text-blue-700"><CreditCard className="size-5" /></div>
           <div><h2 className="text-base font-black text-slate-950 sm:text-lg">Payment Mode Edit</h2><p className="text-[11px] font-bold text-slate-500">Cash, UPI, Card and split allocations can be corrected; bill items and amount remain locked.</p></div>
         </div>
-        <div className="relative min-w-[220px] flex-1 sm:max-w-sm"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={isVRSNB ? 'Search bill or cashier' : 'Search bill, salesperson or cashier'} className="h-9 w-full rounded-xl border-2 border-slate-200 bg-slate-50 pl-9 pr-3 text-sm font-bold outline-none focus:border-blue-400" /></div>
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap gap-1.5">
+            {PAYMENT_EDIT_DATE_PRESETS.map((preset) => (
+              <button key={preset.label} type="button" onClick={() => setRangeDays(preset.days)}
+                className={cn('rounded-full border px-3 py-1 text-xs font-black transition', rangeDays === preset.days
+                  ? 'border-slate-950 bg-slate-950 text-white shadow-sm'
+                  : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-100')}>
+                {preset.label}
+              </button>
+            ))}
+          </div>
+          <div className="relative min-w-[220px] flex-1 sm:max-w-sm"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={isVRSNB ? 'Search bill or cashier' : 'Search bill, salesperson or cashier'} className="h-9 w-full rounded-xl border-2 border-slate-200 bg-slate-50 pl-9 pr-3 text-sm font-bold outline-none focus:border-blue-400" /></div>
+        </div>
       </div>
       {message && <p className={cn('mx-3 mt-2 shrink-0 rounded-xl px-3 py-2 text-sm font-black', message.includes('updated') ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-800')}>{message}</p>}
       <div className="min-h-0 flex-1 overflow-auto p-2">

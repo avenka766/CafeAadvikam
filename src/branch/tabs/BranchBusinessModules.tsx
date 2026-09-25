@@ -17,7 +17,7 @@ import { useBranchStore, type CreditSale, type SaleRecord, type StockItem } from
 import type { Branch } from '../types';
 import { BRANCH_LABELS } from '../types';
 import {
-  money, nextBranchAdvanceOrderNumberAtomic, useBranchOpsStore,
+  money, useBranchOpsStore,
   type BranchBillItem, type BranchBillRecord,
   type CakeAdvanceOrder, type PurchaseOrderRecord,
 } from '../branchOpsStore';
@@ -726,32 +726,6 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch', c
   const advanceTargetAmount = Number(common.advanceAmount || 0);
   const advanceSplitValid = common.paymentMode !== 'split' || advanceTargetAmount <= 0 || Math.abs(advanceSplitTotal - advanceTargetAmount) <= 0.01;
   const advanceCreditValid = common.paymentMode !== 'credit' || advanceTargetAmount <= 0 || !!advanceCreditDueDate;
-  const reserveStoreLines = async (orderNo: string, lines: BranchBillItem[]) => {
-    const { error: reservationError } = await supabase.rpc('reserve_branch_stock_items', {
-      p_branch: branch,
-      p_source_type: 'branch_advance_order_number',
-      p_source_id: orderNo,
-      p_items: lines.map((line) => ({
-        itemName: line.itemName,
-        barcode: line.barcode,
-        quantity: line.quantity,
-        isCustom: false,
-      })),
-      p_created_by: staff,
-    });
-    if (reservationError) return reservationError.message || 'Unable to reserve stock.';
-    await fetchBranchData(branch, false, ['stock']); // EGRESS FIX: reservation only touches reserved_quantity on stock
-    return '';
-  };
-  const releaseStoreReservation = async (orderNo: string) => {
-    await supabase.rpc('release_branch_stock_reservation', {
-      p_branch: branch,
-      p_source_type: 'branch_advance_order_number',
-      p_source_id: orderNo,
-      p_released_by: staff,
-    });
-    await fetchBranchData(branch, false, ['stock']); // EGRESS FIX: release only touches reserved_quantity on stock
-  };
   const sendToStoreDashboard = async (order: CakeAdvanceOrder, lines: BranchBillItem[]) => {
     if (branch === 'Cafe') throw new Error('Cafe advance orders cannot be sent to the bakery branch workflow.');
     const bakeryItems: BakeryOrderItem[] = lines.map((line, idx) => ({
@@ -921,45 +895,49 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch', c
       stockReserved = orderType === 'store';
       await fetchBranchData(branch, false, ['stock', 'advance']); // EGRESS FIX: new advance order + (for store type) a stock reservation
     } else {
-      try {
-        orderNo = await nextBranchAdvanceOrderNumberAtomic(branch);
-      } catch (numberError) {
-        setError(numberError instanceof Error ? numberError.message : 'Unable to allocate an advance order number.');
+      // BUG FIX: this used to mint the order number via its own separate
+      // nextBranchAdvanceOrderNumberAtomic() RPC call, then make 1-2 MORE
+      // separate RPC calls (stock reservation, payment recording) that can
+      // legitimately fail for business reasons (insufficient stock, invalid
+      // split, missing due date) -- any such failure burned the number
+      // permanently with nothing behind it (confirmed root cause of missing
+      // SNB-ADV-N numbers). mint_branch_advance_order_atomic wraps all three
+      // steps in one DB transaction -- a reservation/payment failure now
+      // rolls back the mint too, so no number is ever burned.
+      const { data: mintData, error: mintError } = await supabase.rpc('mint_branch_advance_order_atomic', {
+        p_branch: branch,
+        p_order_type: orderType,
+        p_reservation_items: orderType === 'store' ? sourceLines.map((line) => ({
+          itemName: line.itemName,
+          barcode: line.barcode,
+          quantity: line.quantity,
+          isCustom: false,
+        })) : [],
+        p_advance_amount: adv,
+        p_order_total: orderValue,
+        p_payment_mode: common.paymentMode,
+        p_collected_by: staff,
+        p_remarks: `${orderType} advance order - ${common.customerName.trim()}`,
+        p_payment_splits: paymentSplitLines.length > 0 ? paymentSplitLines : null,
+        p_customer_name: common.customerName.trim() || null,
+        p_customer_phone: common.mobile.trim() || null,
+        p_payment_items: sourceLines,
+        p_due_date: common.paymentMode === 'credit' ? (advanceCreditDueDate || null) : null,
+      });
+      if (mintError) {
+        setError(/mint_branch_advance_order_atomic|could not find the function|schema cache/i.test(mintError.message)
+          ? 'Advance order RPC is not installed. Run the mint_branch_advance_order_atomic migration before collecting an advance.'
+          : `Advance order was not saved: ${mintError.message}`);
         return;
       }
-      if (orderType === 'store') {
-        const stockError = await reserveStoreLines(orderNo, sourceLines);
-        if (stockError) {
-          setError(`Advance order was not saved because stock could not be reserved: ${stockError}`);
-          return;
-        }
-        stockReserved = true;
+      const returnedOrderNo = (mintData as Record<string, unknown> | null)?.orderNo;
+      if (!returnedOrderNo || typeof returnedOrderNo !== 'string') {
+        setError('Advance order was saved, but no order number was returned — refresh and check the Advance Orders list before retrying.');
+        return;
       }
-      if (adv > 0) {
-        const { error: paymentError } = await supabase.rpc('record_branch_advance_payment', {
-          p_branch: branch,
-          p_order_no: orderNo,
-          p_bill_no: orderNo,
-          p_payment_stage: 'advance',
-          p_payment_mode: common.paymentMode,
-          p_amount: adv,
-          p_order_total: orderValue,
-          p_collected_by: staff,
-          p_remarks: `${orderType} advance order - ${common.customerName.trim()}`,
-          p_payment_splits: paymentSplitLines.length > 0 ? paymentSplitLines : null,
-          p_customer_name: common.customerName.trim() || null,
-          p_customer_phone: common.mobile.trim() || null,
-          p_items: sourceLines,
-          p_due_date: common.paymentMode === 'credit' ? (advanceCreditDueDate || null) : null,
-        });
-        if (paymentError) {
-          if (stockReserved) await releaseStoreReservation(orderNo);
-          setError(/record_branch_advance_payment|could not find the function|schema cache/i.test(paymentError.message)
-            ? 'Advance payment RPC is not installed. Run 20260621_branch_advance_payment_rpc.sql before collecting an advance.'
-            : `Advance order was not saved: ${paymentError.message}`);
-          return;
-        }
-      }
+      orderNo = returnedOrderNo;
+      stockReserved = orderType === 'store';
+      if (orderType === 'store') await fetchBranchData(branch, false, ['stock']); // EGRESS FIX: reservation only touches reserved_quantity on stock
     }
     const order = addAdvanceCakeOrder({
       orderNo,
