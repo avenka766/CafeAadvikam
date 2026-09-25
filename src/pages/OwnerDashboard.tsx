@@ -61,6 +61,21 @@ const COLORS = ['#2D7D6F', '#C5973E', '#5BA3C9', '#E07B5B', '#8B5CF6', '#EC4899'
 const OWNER_FULL_BRANCHES: Branch[] = ['Cafe', 'SNB', 'VRSNB', 'Hosur'];
 const OWNER_OPERATING_UNITS = ['Cafe', 'SNB Branch', 'VRSNB Branch', 'Hosur Branch', 'Bakery Production', 'Store', 'Packing / Dispatch'] as const;
 
+// PERF FIX: "switch tabs / log in, see the error" — every Owner tab that
+// mounts fetches all 4 branches via fetchBranchData at once (each up to 7
+// sub-queries), so a cold Owner Dashboard load could fire ~28 concurrent
+// Supabase requests. fetchBranchData already throttles how OFTEN a given
+// branch re-fetches, but nothing spread out the very first fetch across
+// branches — this does, without changing what loads or how fresh it is,
+// just smoothing the peak concurrent DB load that was pushing borderline
+// queries (see project_data_error_banner_root_cause memory) over the edge.
+function fetchBranchDataStaggered(fetchBranchData: (branch: Branch) => void, branches: Branch[] = OWNER_FULL_BRANCHES) {
+  branches.forEach((branch, index) => {
+    if (index === 0) { fetchBranchData(branch); return; }
+    setTimeout(() => fetchBranchData(branch), index * 200);
+  });
+}
+
 type OwnerDatePreset = 'today' | 'yesterday' | '7d' | '15d' | '30d' | 'month';
 
 type OwnerAlertTone = 'danger' | 'warning' | 'neutral' | 'success';
@@ -301,19 +316,50 @@ function useHosurSalesSummary(fromKey: string, toKey: string): HosurSalesSummary
         setBills([]); setItemQty(0); setLoading(false);
         return;
       }
+      // FEATURE: "The owner should see the walk in sales also in Hosur
+      // sales" — the SALES/26-27/N number series isn't Hosur-exclusive
+      // (Planner's own walk-in Sales tab draws the same sequence, see the
+      // matching fix on Admin's Hosur Sales tab) — fold confirmed walk-in
+      // bills in here too so every Owner view built on this hook (Sales
+      // Overview, Daily Closure, Everything) shows the same real total.
+      const { data: walkinData, error: walkinError } = await fetchAllRows<Record<string, unknown>>('bakery_walkin_bills', (q) => q
+        .select('id, bill_no, total, payment_mode, cashier_name, status, customer_name, created_at')
+        .eq('status', 'active')
+        .ilike('bill_no', 'SALES/%')
+        .gte('created_at', `${fromKey}T00:00:00+05:30`)
+        .lte('created_at', `${toKey}T23:59:59.999+05:30`));
+      if (!alive) return;
+      if (walkinError) console.error('Hosur walk-in sales fetch failed', walkinError);
       const rows = (data || []) as Array<Record<string, unknown>>;
-      const mapped: HosurBillRow[] = rows.map(r => ({
-        id: String(r.id),
-        shopName: String(r.shop_name || 'Unknown shop'),
-        revenue: moneyNumber(r.subtotal as number),
-        paid: moneyNumber(r.paid_amount as number),
-        credit: moneyNumber(r.credit_amount as number),
-        paymentMode: (r.payment_mode as string) || null,
-        confirmedAt: (r.confirmed_at as string) || null,
-      }));
+      const walkinRows = (walkinData || []) as Array<Record<string, unknown>>;
+      const mapped: HosurBillRow[] = [
+        ...rows.map(r => ({
+          id: String(r.id),
+          shopName: String(r.shop_name || 'Unknown shop'),
+          revenue: moneyNumber(r.subtotal as number),
+          paid: moneyNumber(r.paid_amount as number),
+          credit: moneyNumber(r.credit_amount as number),
+          paymentMode: (r.payment_mode as string) || null,
+          confirmedAt: (r.confirmed_at as string) || null,
+        })),
+        ...walkinRows.map(w => {
+          const total = moneyNumber(w.total as number);
+          const isCredit = String(w.payment_mode || '').toLowerCase() === 'credit';
+          return {
+            id: String(w.id),
+            shopName: `Walk-in: ${String(w.customer_name || w.cashier_name || 'Unknown')}`,
+            revenue: total,
+            paid: isCredit ? 0 : total,
+            credit: isCredit ? total : 0,
+            paymentMode: (w.payment_mode as string) || null,
+            confirmedAt: (w.created_at as string) || null,
+          };
+        }),
+      ];
       setBills(mapped);
-      if (mapped.length) {
-        const { data: itemRows } = await fetchAllRows<Record<string, unknown>>('hosur_bill_items', (q) => q.select('bill_id, quantity').in('bill_id', mapped.map(b => b.id)));
+      if (rows.length) {
+        const hosurIds = rows.map(r => String(r.id));
+        const { data: itemRows } = await fetchAllRows<Record<string, unknown>>('hosur_bill_items', (q) => q.select('bill_id, quantity').in('bill_id', hosurIds));
         if (!alive) return;
         setItemQty((itemRows || []).reduce((sum, r) => sum + Number((r as { quantity?: number }).quantity || 0), 0));
       } else {
@@ -480,7 +526,7 @@ function SalesOverviewTab() {
   const stopPolling = useOrderStore(s => s.stopPolling);
   const { sales, fetchBranchData } = useBranchStore();
   const { bills, returns } = useBranchOpsStore();
-  const [dateRange, setDateRange] = useState<'today' | 'yesterday' | '7d' | '15d' | '30d'>('7d');
+  const [dateRange, setDateRange] = useState<'today' | 'yesterday' | '7d' | '15d' | '30d' | 'month' | 'all'>('7d');
   const [branchFilter, setBranchFilter] = useState<Branch | 'all'>('all');
 
   useEffect(() => { startPolling(60); return () => stopPolling(); }, [startPolling, stopPolling]);
@@ -492,6 +538,15 @@ function SalesOverviewTab() {
     if (dateRange === 'yesterday') { d.setDate(d.getDate() - 1); d.setHours(0, 0, 0, 0); return d; }
     if (dateRange === '7d') { d.setDate(d.getDate() - 7); return d; }
     if (dateRange === '15d') { d.setDate(d.getDate() - 14); return d; }
+    // FEATURE: "when we checks the monthly sales the amount is not showing
+    // correctly" — a rolling 30-day window doesn't match a calendar month
+    // (straddles two months depending on what day it's checked), which is
+    // what "monthly sales" actually means to the owner. 'month' now gives
+    // the real calendar month to date; 'all' is an explicit, on-demand
+    // widen for "show all the sales" (same pattern as the Admin dashboard's
+    // All Time preset — never the default, so no egress regression).
+    if (dateRange === 'month') { d.setDate(1); d.setHours(0, 0, 0, 0); return d; }
+    if (dateRange === 'all') { d.setFullYear(d.getFullYear() - 10); d.setHours(0, 0, 0, 0); return d; }
     d.setDate(d.getDate() - 30); return d;
   }, [dateRange]);
 
@@ -572,6 +627,31 @@ function SalesOverviewTab() {
     });
     return branches;
   }, [bills, returns, cutoff, cutoffEnd, salesLedger, hosurSales]);
+
+  // FEATURE: "the advance amount is also not showing in the total it should
+  // clearly show the sales amount, advance amount, credit amount" — Total
+  // Revenue already correctly includes an advance order's money once it's
+  // billed (finalize_branch_advance_order writes a normal branch_bill_headers
+  // row), but the owner had no separate visibility into how much of that
+  // money is advances-in-hand vs. settled sales vs. still-outstanding credit.
+  // Sourced from the same branch_daily_closure_ledger view Total Revenue
+  // already trusts (advance_collected/advance_balance_collected/
+  // credit_billed/credit_collected columns) — Hosur's own ledger is always
+  // empty (see the BUG FIX comment above), so its credit comes from
+  // hosurSales.credit instead, matching how Hosur revenue is sourced too.
+  const advanceCreditTotals = useMemo(() => {
+    const relevantBranches = branchFilter === 'all' ? (['VRSNB', 'SNB'] as const) : branchFilter === 'Cafe' || branchFilter === 'Hosur' ? [] : [branchFilter];
+    let advanceCollected = 0, creditBilled = 0, creditCollected = 0;
+    relevantBranches.forEach((b) => {
+      salesLedger.closureRows.filter(row => row.branch === b).forEach(row => {
+        advanceCollected += salesLedger.toNumber(row.advance_collected) + salesLedger.toNumber(row.advance_balance_collected);
+        creditBilled += salesLedger.toNumber(row.credit_billed);
+        creditCollected += salesLedger.toNumber(row.credit_collected);
+      });
+    });
+    if (branchFilter === 'all' || branchFilter === 'Hosur') creditBilled += hosurSales.credit;
+    return { advanceCollected, creditBilled, creditOutstanding: Math.max(0, creditBilled - creditCollected) };
+  }, [salesLedger, hosurSales, branchFilter]);
 
   const totalBakeryRevenue = Object.values(branchSales).reduce((a, v) => a + v.revenue, 0);
   const totalBakeryQty     = Object.values(branchSales).reduce((a, v) => a + v.qty, 0);
@@ -717,6 +797,8 @@ function SalesOverviewTab() {
     { label: '7 Days',   value: '7d' },
     { label: '15 Days',  value: '15d' },
     { label: '30 Days',  value: '30d' },
+    { label: 'This Month', value: 'month' },
+    { label: 'All Time',   value: 'all' },
   ];
 
   const showCafe     = branchFilter === 'all' || branchFilter === 'Cafe';
@@ -805,6 +887,8 @@ function SalesOverviewTab() {
         {showCafe && <KPI icon={<Store       className="size-4" />} label="Cafe Revenue"    value={formatCurrency(cafeRevenue)}   sub={`${cafeCount} orders`}       color="bg-emerald-50 text-emerald-700" />}
         {showBranches && <KPI icon={<ShoppingBag className="size-4" />} label="Bakery Revenue" value={formatCurrency(selectedBakeryRevenue)} sub={`${selectedBakeryQty} items`} color="bg-amber-50 text-amber-700" />}
         {showCafe && <KPI icon={<TrendingUp className="size-4" />} label="Avg Order Value" value={formatCurrency(avgOrderValue)} sub="Cafe only" color="bg-blue-50 text-blue-700" />}
+        {showBranches && <KPI icon={<IndianRupee className="size-4" />} label="Advance Collected" value={formatCurrency(advanceCreditTotals.advanceCollected)} sub="Included in Total Revenue once billed" color="bg-sky-50 text-sky-700" />}
+        {showBranches && <KPI icon={<IndianRupee className="size-4" />} label="Credit Outstanding" value={formatCurrency(advanceCreditTotals.creditOutstanding)} sub={`${formatCurrency(advanceCreditTotals.creditBilled)} billed on credit`} color="bg-rose-50 text-rose-700" />}
       </div>
 
       {/* Branch Performance */}
@@ -1860,7 +1944,7 @@ function OwnerAuditTab() {
     setAuditLoading(false);
   }, []);
 
-  useEffect(() => { OWNER_FULL_BRANCHES.forEach(b => fetchBranchData(b)); }, [fetchBranchData]);
+  useEffect(() => { fetchBranchDataStaggered(fetchBranchData); }, [fetchBranchData]);
 
   useEffect(() => { void loadAuditData(); }, [loadAuditData]);
 
@@ -2130,7 +2214,7 @@ function BranchOverviewTab() {
   }, []);
 
   useEffect(() => { startPolling(60); return () => stopPolling(); }, [startPolling, stopPolling]);
-  useEffect(() => { OWNER_FULL_BRANCHES.forEach(branch => fetchBranchData(branch)); }, [fetchBranchData]);
+  useEffect(() => { fetchBranchDataStaggered(fetchBranchData); }, [fetchBranchData]);
   useEffect(() => { void fetchStockMismatches(); }, [fetchStockMismatches]);
 
   const from = useMemo(() => ownerPresetStart(preset), [preset]);
@@ -2147,8 +2231,17 @@ function BranchOverviewTab() {
   // The in-memory `bills` array is capped for performance. Fetch the exact
   // selected preset range directly (across all branches) so this owner
   // overview is never silently clipped by that cap.
+  // BUG FIX: "switch tabs / log in, see the error" — a single unscoped call
+  // (no branch) makes Postgres scan branch_operation_records with no branch
+  // filter; confirmed live that a wide range (e.g. This Month/All Time) then
+  // matches over half the table and a deep page takes 5+ seconds, tripping
+  // the statement timeout and firing the red data-error banner. SNB/VRSNB
+  // are the only branches that write 'bill'/'advance_final_bill' records
+  // here (Cafe uses orderStore, Hosur uses hosur_bills) — fetching each
+  // separately keeps every request branch-scoped and fast (~390ms even at
+  // the same depth) without changing what data loads.
   useEffect(() => {
-    void fetchBillsInRange(fromKey, toKey);
+    void Promise.all((['SNB', 'VRSNB'] as const).map((b) => fetchBillsInRange(fromKey, toKey, b)));
   }, [fromKey, toKey, fetchBillsInRange]);
 
   const branchStockAlertCount = useCallback((branch: Branch) => {
@@ -2492,9 +2585,10 @@ function buildOwnerClosureRows(
     bankDeposits: ReturnType<typeof useBranchOpsStore.getState>['bankDeposits'];
     cashierClosures: ReturnType<typeof useBranchOpsStore.getState>['cashierClosures'];
     cashMovements: ReturnType<typeof useBranchOpsStore.getState>['cashMovements'];
+    hosurSales: HosurSalesSummary;
   },
 ): OwnerClosureRow[] {
-  const { orders, ownerLedger, bills, returns, purchasePayments, bankDeposits, cashierClosures, cashMovements } = deps;
+  const { orders, ownerLedger, bills, returns, purchasePayments, bankDeposits, cashierClosures, cashMovements, hosurSales } = deps;
   return OWNER_FULL_BRANCHES.map(b => {
     if (b === 'Cafe') {
       const dayOrders = orders.filter(o => ownerLocalDay(o.createdAt) === date && o.status === 'served');
@@ -2534,6 +2628,21 @@ function buildOwnerClosureRows(
         : 0
       ), 0);
       return { branch: ownerBranchDisplay(b), opening: 0, grossSales: gross, returns: 0, netSales: gross, cash, upi, card, credit, expenses: 0, purchases: 0, bankDeposits: 0, expectedCash: cash, countedCash: 0, difference: 0, status: 'Pending' as OwnerClosureRow['status'], closedBy: 'Cafe cashier', closedAt: '', remarks: 'Cafe closure is verified in Daily Closure module.' };
+    }
+    if (b === 'Hosur') {
+      // BUG FIX: "he is not able to see all the sales" — Hosur was ALWAYS
+      // ₹0 here. branch_daily_closure_ledger/branch_daily_closures are
+      // never populated for Hosur (wholesale dispatch-then-bill, not a
+      // cash-drawer counter), and branchOpsStore's `bills` (sourced from
+      // branch_operation_records record_type='bill') never gets a Hosur row
+      // either — confirmed live, zero rows for branch='Hosur'. So this
+      // branch silently fell through both real paths straight to the
+      // all-zero default every single day. Hosur has no cash-drawer
+      // reconciliation concept (mirrors the Cafe row above, which is also
+      // exempt) — sourced from the same hosurSales summary that already
+      // powers the Sales Overview tab and Admin's Hosur Sales tab (now
+      // including walk-in bills too, see useHosurSalesSummary).
+      return { branch: ownerBranchDisplay(b), opening: 0, grossSales: hosurSales.revenue, returns: 0, netSales: hosurSales.revenue, cash: hosurSales.cash, upi: hosurSales.upi, card: hosurSales.card, credit: hosurSales.credit, expenses: 0, purchases: 0, bankDeposits: 0, expectedCash: hosurSales.cash, countedCash: 0, difference: 0, status: 'Pending' as OwnerClosureRow['status'], closedBy: 'Hosur billing', closedAt: '', remarks: 'Hosur is wholesale dispatch-and-bill, not a cash-drawer closure — see Hosur Sales for details.' };
     }
     const ledger = ownerLedger.closureByBranchDate.get(`${b}:${date}`);
     const savedLedgerClosure = ownerLedger.savedClosureByBranchDate.get(`${b}:${date}`);
@@ -2607,12 +2716,13 @@ function OwnerDailyClosureTab() {
     void fetchBillsInRange(date, date);
   }, [date, fetchBillsInRange]);
   const ownerLedger = useBranchLedger(date, date, ['VRSNB', 'SNB', 'Hosur']);
+  const hosurSales = useHosurSalesSummary(date, date);
 
   useEffect(() => { startPolling(60); return () => stopPolling(); }, [startPolling, stopPolling]);
 
   const rows: OwnerClosureRow[] = useMemo(
-    () => buildOwnerClosureRows(date, branch, { orders, ownerLedger, bills, returns, purchasePayments, bankDeposits, cashierClosures, cashMovements }),
-    [ownerLedger, orders, bills, returns, purchasePayments, bankDeposits, cashierClosures, cashMovements, date, branch],
+    () => buildOwnerClosureRows(date, branch, { orders, ownerLedger, bills, returns, purchasePayments, bankDeposits, cashierClosures, cashMovements, hosurSales }),
+    [ownerLedger, orders, bills, returns, purchasePayments, bankDeposits, cashierClosures, cashMovements, date, branch, hosurSales],
   );
 
   const totals = rows.reduce((acc, r) => ({ net: acc.net + r.netSales, cash: acc.cash + r.cash, diff: acc.diff + r.difference, pending: acc.pending + (r.status === 'Pending' ? 1 : 0) }), { net: 0, cash: 0, diff: 0, pending: 0 });
@@ -2731,7 +2841,7 @@ function OwnerAlertsTab() {
   });
 
   useEffect(() => { startPolling(60); return () => stopPolling(); }, [startPolling, stopPolling]);
-  useEffect(() => { OWNER_FULL_BRANCHES.forEach(branch => fetchBranchData(branch)); }, [fetchBranchData]);
+  useEffect(() => { fetchBranchDataStaggered(fetchBranchData); }, [fetchBranchData]);
   useEffect(() => { void fetchStockMismatches(); }, [fetchStockMismatches]);
   useEffect(() => { load(); }, [load]);
 
@@ -3919,6 +4029,7 @@ function OwnerEverythingTab() {
   const { orders: poOrders, load: loadPOs } = useStorePurchaseOrderStore();
   const today = ownerDateInput();
   const ownerLedger = useBranchLedger(today, today, ['VRSNB', 'SNB', 'Hosur']);
+  const hosurSales = useHosurSalesSummary(today, today);
   // Jumps to a detail tab — shares the same ?tab= query param the parent
   // OwnerDashboard already reads, so this works whether the surrounding
   // chrome is the desktop sidebar or the native app's tab strip.
@@ -3945,8 +4056,8 @@ function OwnerEverythingTab() {
   useEffect(() => { void loadExtras(); }, [loadExtras]);
 
   const rows = useMemo(
-    () => buildOwnerClosureRows(today, 'all', { orders, ownerLedger, bills, returns, purchasePayments, bankDeposits, cashierClosures, cashMovements }),
-    [ownerLedger, orders, bills, returns, purchasePayments, bankDeposits, cashierClosures, cashMovements, today],
+    () => buildOwnerClosureRows(today, 'all', { orders, ownerLedger, bills, returns, purchasePayments, bankDeposits, cashierClosures, cashMovements, hosurSales }),
+    [ownerLedger, orders, bills, returns, purchasePayments, bankDeposits, cashierClosures, cashMovements, today, hosurSales],
   );
   const totals = rows.reduce((acc, r) => ({
     netSales: acc.netSales + r.netSales,

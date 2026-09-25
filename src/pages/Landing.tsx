@@ -18,8 +18,16 @@
 // it pulls actual items + prices straight from Supabase — useMenuStore for
 // Cafe Aadvikam's menu_items table, useBakeryItemsStore for Sri
 // Nanjundeshwara Bakery's bakery_items table — instead of only ever showing
-// four hardcoded dishes. A standalone floating WhatsApp button now sits
-// alongside the ChatBot toggle (bottom-left vs bottom-right, no overlap).
+// four hardcoded dishes.
+//
+// BUG FIX: "I need one button with all the functions" — a standalone
+// floating WhatsApp button used to sit bottom-left alongside the ChatBot
+// toggle bottom-right. Two separate floating buttons for overlapping jobs
+// (both are ultimately "get in touch") was confusing, not a real second
+// feature — ChatBot's own Order modal already offers "Order via WhatsApp"
+// and "Call to Order" one tap in, plus its quick chips (Order/Book Hall/
+// Call) and full FAQ chat. Removed the standalone button; ChatBot is now
+// the one floating entry point for everything.
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode, CSSProperties } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -664,8 +672,8 @@ export default function Landing() {
       <header className="sticky top-0 z-50 border-b border-border bg-background/95">
         <div className="mx-auto flex h-[76px] max-w-7xl items-center justify-between px-4 md:px-8">
           <button onClick={() => scrollToId('#top')} className="flex items-center gap-3 text-left">
-            <img key={venue} src={c.logo} alt={venue === 'cafe' ? 'Cafe Aadvikam' : 'Sri Nanjundeshwara Bakery'} className="venue-fade size-11 rounded-full border border-border bg-white object-contain p-1" />
-            <div key={venue} className="venue-fade">
+            <img key={`logo-${venue}`} src={c.logo} alt={venue === 'cafe' ? 'Cafe Aadvikam' : 'Sri Nanjundeshwara Bakery'} className="venue-fade size-11 rounded-full border border-border bg-white object-contain p-1" />
+            <div key={`title-${venue}`} className="venue-fade">
               <p className="font-display text-lg font-bold leading-none text-foreground">Cafe Aadvikam</p>
               <p className="mt-1 text-[10px] font-bold uppercase tracking-[0.18em] text-primary">{c.navSub}</p>
             </div>
@@ -1136,19 +1144,6 @@ export default function Landing() {
           <p className="text-xs text-muted-foreground">&copy; Cafe Aadvikam · Sri Nanjundeshwara Bakery · {CAFE_INFO.address}</p>
         </div>
       </footer>
-
-      {/* Standalone floating WhatsApp button — instant chat, separate from the
-          ChatBot panel (bottom-right). Bottom-left so the two never overlap. */}
-      <a
-        href={waUrl}
-        target="_blank"
-        rel="noreferrer"
-        aria-label="Chat on WhatsApp"
-        className="fixed left-4 z-40 grid size-14 place-items-center rounded-full bg-[#25D366] text-white shadow-lifted transition hover:scale-105 active:scale-95"
-        style={{ bottom: 'calc(env(safe-area-inset-bottom, 0px) + 1.25rem)' }}
-      >
-        <MessageCircle className="size-6" />
-      </a>
 
       {/* ── Gallery lightbox (Apple Photos-style viewer, no library) ── */}
       {lightboxIndex !== null && (

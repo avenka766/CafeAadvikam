@@ -186,6 +186,10 @@ const DATE_PRESETS = [
   { label: '7 Days', days: 6 },
   { label: '15 Days', days: 14 },
   { label: '1 Month', days: 29 },
+  // FEATURE: "show all the sales invoice also, sequence from the starting"
+  // — an explicit, on-demand widen (matches the EGRESS FIX comment below:
+  // default stays Today, this is only fetched when the admin clicks it).
+  { label: 'All Time', days: 3650 },
 ] as const;
 
 function DatePresets({ fromDate, toDate, setFromDate, setToDate }: { fromDate: string; toDate: string; setFromDate: (d: string) => void; setToDate: (d: string) => void }) {
@@ -258,8 +262,17 @@ function AdminDashboard() {
   // branchOpsStore's hydration limit). Whenever the selected report range
   // changes, fetch that exact range directly (across all branches, since this
   // dashboard covers all of them) so totals are never silently clipped.
+  // BUG FIX: "switch tabs / log in, see the error" — a single unscoped call
+  // (no branch) makes Postgres scan branch_operation_records with no branch
+  // filter; confirmed live that a wide "All Time" range then matches over
+  // half the table and a deep page takes 5+ seconds, tripping the statement
+  // timeout and firing the red data-error banner. SNB/VRSNB are the only
+  // branches that write 'bill'/'advance_final_bill' records here (Cafe uses
+  // orderStore, Hosur uses hosur_bills) — fetching each separately, like
+  // AdminVRSNBDashboard already does, keeps every request branch-scoped and
+  // fast (~390ms even at the same depth) without changing what data loads.
   useEffect(() => {
-    void fetchBillsInRange(fromDate, toDate);
+    void Promise.all((['SNB', 'VRSNB'] as const).map((b) => fetchBillsInRange(fromDate, toDate, b)));
   }, [fromDate, toDate, fetchBillsInRange]);
   const { notifications: adminNotifications, load: loadAdminNotifications, markRead } = useNotificationStore();
   const adminLedger = useBranchLedger(fromDate, toDate, ['VRSNB', 'SNB', 'Hosur']);
@@ -276,8 +289,17 @@ function AdminDashboard() {
   // AUDIT FIX (2026-09-04): named so the header's "Refresh" button (and the
   // new per-tab Refresh buttons on Overview/Audit below) can call the exact
   // same fetch on demand instead of only ever running once on mount.
+  // PERF FIX: "switch tabs / log in, see the error" — firing all branches'
+  // fetchBranchData (each up to 7 sub-queries) at once on every mount/refresh
+  // spiked concurrent DB load enough to push borderline queries over the
+  // statement timeout (see project_data_error_banner_root_cause memory).
+  // Stagger the start of each branch's fetch instead — same data, same
+  // freshness, just spread out so the peak concurrent request count drops.
   const refreshBranchAndStock = useCallback(() => {
-    BRANCHES.forEach(branch => void fetchBranchData(branch));
+    BRANCHES.forEach((branch, index) => {
+      if (index === 0) { void fetchBranchData(branch); return; }
+      setTimeout(() => void fetchBranchData(branch), index * 200);
+    });
     void fetchStockMismatches();
   }, [fetchBranchData, fetchStockMismatches]);
   useEffect(() => { refreshBranchAndStock(); }, [refreshBranchAndStock]);
@@ -377,6 +399,15 @@ function AdminDashboard() {
   const [hosurUnbilledDispatched, setHosurUnbilledDispatched] = useState<Array<{
     id: string; orderNumber: string; shopName: string; subtotal: number; createdAt: string;
   }>>([]);
+  // FEATURE: "All the invoices that start with Sales I need them in Hosur
+  // sales tab" — a SALES/26-27/N invoice that's still unpaid/cancelled/test
+  // data (found live: a VRSNB "Sample Bill" with fake customer details) is
+  // deliberately NOT folded into hosurBillsInRange/hosurTotalBilled (that
+  // would inflate real revenue with money that was never actually
+  // collected) — shown here instead, in its own clearly-labeled panel.
+  const [unconfirmedSalesInvoices, setUnconfirmedSalesInvoices] = useState<Array<{
+    id: string; invoiceNo: string; scope: string; status: string; total: number; who: string; createdAt: string;
+  }>>([]);
   // BUG FIX: "Purchases & Expenses" — the store's own `purchases`/`expenses`
   // arrays (fed by branchOpsStore's paginated branch_operation_records
   // hydration, capped at 2 pages of 2500 for admin/owner's no-branch-filter
@@ -442,7 +473,7 @@ function AdminDashboard() {
         return { data: rows, error: null };
       };
 
-      const [headersRes, itemsRes, paymentsRes, hosurRes, unbilledRes, expensesRes, purchasesRes] = await Promise.all([
+      const [headersRes, itemsRes, paymentsRes, hosurRes, unbilledRes, expensesRes, purchasesRes, salesInvoicesRes, walkinBillsRes] = await Promise.all([
         fetchAllRows(() => supabase.from('branch_bill_headers')
           .select('id, branch, bill_no, subtotal, discount, total, status, created_at, salesperson, biller, notes')
           .in('branch', ['SNB', 'VRSNB'])
@@ -503,9 +534,28 @@ function AdminDashboard() {
           .select('payload, created_at')
           .eq('record_type', 'purchase_invoice')
           .gte('created_at', fromTs).lte('created_at', toTs)),
+        // FEATURE: "All the invoices that start with Sales I need them in
+        // Hosur sales tab" — the SALES/26-27/N sequence isn't Hosur-exclusive
+        // (a VRSNB "Custom"/Planned-sale dispatch, or a Planner walk-in sale,
+        // can draw the same number series), and while investigating this the
+        // Anjana Super Market SALES/26-27/272 case turned up a real gap: a
+        // dispatch_invoices row marked 'paid' whose number was never appended
+        // to any hosur_bills row at all, so it was invisible everywhere.
+        // Fetch every SALES/ invoice directly (not filtered by scope) so
+        // nothing like that can hide again; scope='Hosur' rows are
+        // deduplicated against hosur_bills below rather than dropped, so an
+        // orphaned one like /272 still surfaces.
+        fetchAllRows(() => supabase.from('dispatch_invoices')
+          .select('id, invoice_no, scope, status, total, items, hosur_shop_name, customer_name, created_at')
+          .ilike('invoice_no', 'SALES/%')
+          .gte('created_at', fromTs).lte('created_at', toTs)),
+        fetchAllRows(() => supabase.from('bakery_walkin_bills')
+          .select('id, bill_no, items, total, payment_mode, cashier_name, status, customer_name, created_at')
+          .ilike('bill_no', 'SALES/%')
+          .gte('created_at', fromTs).lte('created_at', toTs)),
       ]);
       if (realSalesRequestRef.current !== requestId) return;
-      const err = headersRes.error || itemsRes.error || paymentsRes.error || hosurRes.error || unbilledRes.error || expensesRes.error || purchasesRes.error;
+      const err = headersRes.error || itemsRes.error || paymentsRes.error || hosurRes.error || unbilledRes.error || expensesRes.error || purchasesRes.error || salesInvoicesRes.error || walkinBillsRes.error;
       if (err) { setRealSalesError(err.message); setRealSalesLoading(false); return; }
 
       // BUG FIX (audit 2026-09-02): hosur_bill_items has no branch/date column of its own,
@@ -545,6 +595,41 @@ function AdminDashboard() {
       const hosurBills = (hosurRes.data || []) as Array<Record<string, unknown>>;
       const hosurBillIds = new Set(hosurBills.map((b) => String(b.id)));
 
+      // FEATURE: fold in every other SALES/ invoice — a paid one not yet
+      // reflected on any hosur_bills row (the /272 orphan case) becomes real,
+      // previously-invisible revenue; anything not paid/active is kept out
+      // of the money-bearing arrays entirely and surfaced separately below.
+      const hosurCoveredInvoiceNos = new Set(
+        hosurBills.flatMap((h) => String(h.invoice_no ?? '').split(',').map((s) => s.trim()).filter(Boolean)),
+      );
+      const salesInvoices = (salesInvoicesRes.data || []) as Array<Record<string, unknown>>;
+      const walkinBills = (walkinBillsRes.data || []) as Array<Record<string, unknown>>;
+      // A Hosur-scope dispatch invoice's own 'paid' flag is NOT a reliable
+      // signal of real collected revenue on its own — found live: /272
+      // (Anjana Super Market, ₹875) was marked 'paid' here yet its own
+      // hosur_orders row still had bill_id = null (never actually billed to
+      // the shop) and still shows in "Dispatched, Not Yet Billed" today.
+      // hosur_bills is the only trustworthy "shop confirmed + collected"
+      // record for Hosur, so an uncovered Hosur-scope row ALWAYS goes to the
+      // review list below, regardless of its own status — never auto-counted
+      // as revenue. Non-Hosur scopes (VRSNB Custom dispatch, etc.) don't go
+      // through that two-step dispatch-then-bill flow, so their own status
+      // is authoritative.
+      const isUncoveredHosur = (s: Record<string, unknown>) =>
+        String(s.scope) === 'Hosur' && !hosurCoveredInvoiceNos.has(String(s.invoice_no));
+      const paidExtraSalesInvoices = salesInvoices.filter((s) =>
+        String(s.status) === 'paid' && String(s.scope) !== 'Hosur');
+      const activeWalkinBills = walkinBills.filter((w) => String(w.status) === 'active');
+      const unconfirmedExtra = [
+        ...salesInvoices.filter((s) => isUncoveredHosur(s) || (String(s.scope) !== 'Hosur' && String(s.status) !== 'paid')),
+        ...walkinBills.filter((w) => String(w.status) !== 'active'),
+      ];
+      setUnconfirmedSalesInvoices(unconfirmedExtra.map((r) => ({
+        id: String(r.id), invoiceNo: String(r.invoice_no ?? r.bill_no ?? ''),
+        scope: String(r.scope ?? 'Walk-in'), status: String(r.status ?? ''), total: Number(r.total || 0),
+        who: String(r.hosur_shop_name || r.customer_name || ''), createdAt: String(r.created_at),
+      })));
+
       setRealBills([
         ...headers.map((h) => ({
           id: String(h.id), billNo: String(h.bill_no ?? ''), branch: h.branch as Branch,
@@ -559,10 +644,30 @@ function AdminDashboard() {
           salesperson: '', biller: String(h.shop_name ?? ''),
           invoiceNo: String(h.invoice_no ?? '') || String(h.bill_no ?? ''),
         })),
+        ...paidExtraSalesInvoices.map((s) => ({
+          id: String(s.id), billNo: String(s.invoice_no ?? ''), branch: 'Hosur' as Branch,
+          total: Number(s.total || 0), subtotal: Number(s.total || 0), discount: 0,
+          createdAt: String(s.created_at), status: 'original' as const,
+          salesperson: '', biller: String(s.hosur_shop_name || s.customer_name || (String(s.scope) === 'Hosur' ? '' : `${s.scope} dispatch`)),
+          invoiceNo: String(s.invoice_no ?? ''),
+        })),
+        ...activeWalkinBills.map((w) => ({
+          id: String(w.id), billNo: String(w.bill_no ?? ''), branch: 'Hosur' as Branch,
+          total: Number(w.total || 0), subtotal: Number(w.total || 0), discount: 0,
+          createdAt: String(w.created_at), status: 'original' as const,
+          salesperson: String(w.cashier_name ?? ''), biller: String(w.customer_name || 'Walk-in'),
+          invoiceNo: String(w.bill_no ?? ''),
+        })),
       ]);
 
       const items = (itemsRes.data || []) as Array<Record<string, unknown>>;
       const hosurItems = (hosurItemsRes.data || []) as Array<Record<string, unknown>>;
+      const extraItemsFromJsonb = (rows: Array<Record<string, unknown>>, idKey: string) => rows.flatMap((row) =>
+        ((row.items as Array<Record<string, unknown>>) || []).map((i) => ({
+          billId: String(row[idKey]), branch: 'Hosur' as Branch, itemName: String(i.itemName ?? ''),
+          quantity: Number(i.quantity || 0), unit: String(i.unit ?? ''), unitPrice: Number(i.unitPrice ?? i.price ?? 0),
+          lineTotal: Number(i.lineTotal || 0),
+        })));
       setRealBillItems([
         ...items.map((i) => ({
           billId: String(i.bill_id), branch: i.branch as Branch, itemName: String(i.item_name ?? ''),
@@ -576,6 +681,8 @@ function AdminDashboard() {
           quantity: Number(i.quantity || 0), unit: String(i.unit ?? ''), unitPrice: Number(i.unit_price || 0),
           lineTotal: Number(i.line_total || 0),
         })),
+        ...extraItemsFromJsonb(paidExtraSalesInvoices, 'id'),
+        ...extraItemsFromJsonb(activeWalkinBills, 'id'),
       ]);
 
       const payments = (paymentsRes.data || []) as Array<Record<string, unknown>>;
@@ -2038,7 +2145,7 @@ function AdminDashboard() {
         )}
       </Panel>
 
-      <Panel title="Confirmed Bills" subtitle={`Hosur bills actually confirmed and collected in this range${realSalesLoading ? ' (loading…)' : ''}`}>
+      <Panel title="Confirmed Bills" subtitle={`Hosur bills actually confirmed and collected in this range${realSalesLoading ? ' (loading…)' : hosurBillsInRange.length > 200 ? ` — showing the latest 200 of ${hosurBillsInRange.length} (use Excel/PDF export for the full list)` : ''}`}>
         {realSalesError && <p className="mb-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700">{realSalesError}</p>}
         {hosurBillsInRange.length === 0 ? <EmptyState label={realSalesLoading ? 'Loading bills…' : 'No confirmed Hosur bills in this range.'} /> : (
           <div className="overflow-x-auto">
@@ -2102,6 +2209,39 @@ function AdminDashboard() {
           </div>
         )}
       </Panel>
+
+      {/* FEATURE: "All the invoices that start with Sales I need them in
+          Hosur sales tab" — the SALES/26-27/N sequence is shared with VRSNB
+          "Custom" dispatches and Planner walk-in sales, not Hosur-exclusive.
+          Paid/active ones are already folded into Confirmed Bills + Billed
+          Sales above (via realBills, tagged branch:'Hosur'); anything not
+          paid/active (unpaid, cancelled, or plain test data — found live: a
+          VRSNB "Sample Bill" with fake customer details) stays out of the
+          money totals but is still listed here so nothing is hidden. */}
+      {unconfirmedSalesInvoices.length > 0 && (
+        <Panel title="Other SALES/ Invoices — Needs Review, Not Counted in Revenue" subtitle="Unpaid/cancelled/test invoices from the same SALES/26-27 number series (VRSNB dispatch, Planner walk-in), plus any Hosur dispatch invoice not yet reflected on a confirmed shop bill — shown for visibility only, excluded from Billed Sales above.">
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[760px] text-sm">
+              <thead><tr className="border-b bg-slate-50 text-left text-xs uppercase text-slate-500">
+                <th className="p-3">Invoice Number</th><th className="p-3">Source</th><th className="p-3">Status</th>
+                <th className="p-3">Customer / Shop</th><th className="p-3">Date</th><th className="p-3 text-right">Amount</th>
+              </tr></thead>
+              <tbody className="divide-y">
+                {unconfirmedSalesInvoices.slice(0, 200).map((r) => (
+                  <tr key={r.id}>
+                    <td className="p-3 font-semibold">{r.invoiceNo}</td>
+                    <td className="p-3 text-slate-500">{r.scope}</td>
+                    <td className="p-3"><span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-bold uppercase text-amber-800">{r.status}</span></td>
+                    <td className="p-3">{r.who || '—'}</td>
+                    <td className="p-3 text-slate-500">{fmtDate(r.createdAt)}</td>
+                    <td className="p-3 text-right font-black">{formatCurrency(r.total)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Panel>
+      )}
 
       {/* FEATURE (2026-09-02): "Admin should see the credit details and they
           should only clear the Credit and payment collections. The payment
