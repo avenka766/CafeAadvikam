@@ -633,7 +633,7 @@ interface BranchOpsState {
     name: string,
     user: string,
     details?: Partial<SalespersonProfile>,
-  ) => void;
+  ) => Promise<boolean>;
   updateSalesperson: (
     id: string,
     name: string,
@@ -761,7 +761,7 @@ interface BranchOpsState {
   ) => void;
   addSupplier: (
     supplier: Omit<SupplierRecord, "id" | "createdAt" | "updatedAt">,
-  ) => SupplierRecord;
+  ) => Promise<boolean>;
   updateSupplier: (id: string, updates: Partial<Omit<SupplierRecord, "id" | "branch" | "createdAt" | "updatedAt">>, user: string) => void;
   removeSupplier: (id: string, user: string) => void;
   addExpense: (
@@ -787,7 +787,7 @@ interface BranchOpsState {
   ) => WasteLogRecord;
   addCashier: (
     cashier: Omit<CashierProfile, "id" | "createdAt" | "updatedAt">,
-  ) => CashierProfile;
+  ) => Promise<boolean>;
   updateCashier: (
     id: string,
     updates: Partial<Omit<CashierProfile, "id" | "branch" | "createdAt" | "updatedAt">>,
@@ -842,13 +842,30 @@ async function writeMirrorRow(row: MirrorRow): Promise<{ ok: boolean; error?: st
 // about branch_operation_records itself.
 registerReplayHandler("branch_operation_record", async (_kind, payload) => writeMirrorRow(payload as MirrorRow));
 
+// BUG FIX (2026-09-26): "SNB Branch and SNB Admin salesperson management —
+// unable to see few persons I added, multiple times." This was a
+// fire-and-forget single-attempt write with no retry: an online-but-
+// transient failure (the same "57014 statement timeout" class confirmed
+// live and repeatedly elsewhere this session under concurrent DB load) hit
+// only the `console.error` branch below and the row was permanently lost —
+// the adding staff member's own screen still showed it (the optimistic
+// set() each caller already applied before calling this), but no other
+// device or later reload of the same device would ever see it, since the
+// DB never actually got the write. This is the exact same "silent
+// best-effort write, no retry, no visibility" bug class already found and
+// fixed for dispatch invoice tagging (PlannerDashboard.tsx) and elsewhere.
+// One retry after a short backoff (same pattern already proven in
+// useBranchLedger.ts and branchOpsStore.ts's own runQueries) recovers most
+// of these. mirrorOperationRecord now also returns whether it ultimately
+// succeeded so a caller that cares (addSalesperson) can surface a real
+// error to the user instead of a false "saved" impression.
 const mirrorOperationRecord = (
   branch: Branch,
   recordType: string,
   recordId: string,
   payload: unknown,
   details: { recordNo?: string; amount?: number; status?: string; actor?: string } = {},
-) => {
+): Promise<boolean> => {
   const row: MirrorRow = {
     branch,
     record_type: recordType,
@@ -860,22 +877,24 @@ const mirrorOperationRecord = (
     payload,
     updated_at: new Date().toISOString(),
   };
-  void writeMirrorRow(row).then((result) => {
-    if (result.ok) return;
+  return writeMirrorRow(row).then(async (result) => {
+    if (result.ok) return true;
     // OFFLINE FIX (2026-09-01): this used to just console.error and drop the
     // write entirely — a mutation made while genuinely offline (fetch itself
     // fails, not a real server-side error) would silently never reach the
     // server even after reconnecting, with no trace it had ever happened.
     // The optimistic in-memory state each caller already applied via set()
     // before calling this stands either way; queueing only guarantees the
-    // write itself isn't lost. A real (online) server-side error still just
-    // logs, same as before — enqueueing that would only ever fail the same
-    // way again on replay.
+    // write itself isn't lost.
     if (!navigator.onLine) {
       void useOfflineQueueStore.getState().enqueue("branch_operation_record", row);
-      return;
+      return true;
     }
-    console.error(`[branchOpsStore] Failed to mirror ${recordType}:`, result.error);
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    const retryResult = await writeMirrorRow(row);
+    if (retryResult.ok) return true;
+    console.error(`[branchOpsStore] Failed to mirror ${recordType} after retry:`, retryResult.error);
+    return false;
   });
 };
 
@@ -1477,12 +1496,15 @@ export const useBranchOpsStore = create<BranchOpsState>()(
             ...s.auditLogs,
           ],
         }));
-        mirrorOperationRecord(supplier.branch, "supplier", newSupplier.id, newSupplier, {
+        // BUG FIX (2026-09-26): same "silent best-effort write" class as
+        // addSalesperson — every caller already discarded the old
+        // synchronous return value, so this now reports the real write
+        // outcome instead.
+        return mirrorOperationRecord(supplier.branch, "supplier", newSupplier.id, newSupplier, {
           recordNo: supplier.mobile,
           status: "Active",
           actor: supplier.createdBy,
         });
-        return newSupplier;
       },
       updateSupplier: (id, updates, user) =>
         set((state) => {
@@ -1689,11 +1711,14 @@ export const useBranchOpsStore = create<BranchOpsState>()(
             ...s.auditLogs,
           ],
         }));
-        mirrorOperationRecord(cashier.branch, "cashier_profile", newCashier.id, newCashier, {
+        // BUG FIX (2026-09-26): same "silent best-effort write" class as
+        // addSalesperson (its only caller never even used the old return
+        // value) — now reports the real write outcome instead of the
+        // optimistic set() above masking a failed DB write.
+        return mirrorOperationRecord(cashier.branch, "cashier_profile", newCashier.id, newCashier, {
           status: cashier.status,
           actor: cashier.createdBy,
         });
-        return newCashier;
       },
       updateCashier: (id, updates, user) =>
         set((s) => {
@@ -2123,7 +2148,11 @@ export const useBranchOpsStore = create<BranchOpsState>()(
             ...s.auditLogs,
           ],
         }));
-        mirrorOperationRecord(branch, "salesperson", newSalesperson.id, newSalesperson, {
+        // BUG FIX (2026-09-26): the optimistic set() above always made the
+        // new salesperson appear on THIS screen immediately, masking a
+        // silent DB write failure — the caller now gets the real outcome
+        // back so it can warn the user instead of a false "saved" look.
+        return mirrorOperationRecord(branch, "salesperson", newSalesperson.id, newSalesperson, {
           recordNo: newSalesperson.mobile,
           status: "Active",
           actor: user,
