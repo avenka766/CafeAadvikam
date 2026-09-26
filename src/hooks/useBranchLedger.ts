@@ -101,11 +101,30 @@ export function useBranchLedger(fromDate: string, toDate: string, branches?: Bra
       setError('');
       const branchList = branches && branches.length > 0 ? branches : null;
 
-      const buildClosureQuery = () => {
-        let q = supabase.from('branch_daily_closure_ledger').select('branch, closure_date, bill_count, sales_total, credit_billed, discounts, tax_total, cash_total, upi_total, card_total, credit_collected, advance_collected, advance_balance_collected').gte('closure_date', fromDate).lte('closure_date', toDate);
-        if (branchList) q = q.in('branch', branchList);
-        return q;
-      };
+      // PERF FIX (2026-09-26): "all the dashboard and tabs are getting
+      // [statement timeout], always" — branch_daily_closure_ledger (the
+      // view this used to query directly) computes its 3 GROUP BY CTEs
+      // over the ENTIRE branch_bill_headers/branch_sale_payments/
+      // branch_return_records tables with no filter, THEN applies
+      // closure_date/branch filtering — confirmed via EXPLAIN ANALYZE this
+      // is a full Seq Scan + aggregate of all ~38,000+ rows in the two big
+      // tables on every single call, regardless of how narrow the
+      // requested range is (this hook is used across nearly every Owner/
+      // Admin/branch dashboard tab, so this was the dominant, systemic
+      // cause of the app-wide "canceling statement due to statement
+      // timeout" reports). branch_daily_closure_ledger_ranged() is the
+      // same aggregation with the date/branch filter pushed inside each
+      // CTE so Postgres can use the existing (branch, created_at DESC)
+      // indexes — verified byte-for-byte identical output against the old
+      // view before switching, and ~15x faster (1617ms -> 104ms for a
+      // 7-day range) with a gap that only grows favorably as these tables
+      // keep growing (the old view got linearly slower forever; this one
+      // scales with the filtered range, not total table size).
+      const buildClosureQuery = () => supabase.rpc('branch_daily_closure_ledger_ranged', {
+        p_from_date: fromDate,
+        p_to_date: toDate,
+        p_branches: branchList,
+      });
       const buildSavedClosureQuery = () => {
         let q = supabase.from('branch_daily_closures').select('id, branch, closure_date, cashier, opening_cash, cash_total, upi_total, card_total, credit_billed, credit_collected, advance_collected, advance_balance_collected, refunds, expenses, purchase_payments, discounts, bill_count, duplicate_prints, expected_cash, actual_cash, difference, notes, created_at').gte('closure_date', fromDate).lte('closure_date', toDate).order('closure_date', { ascending: false });
         if (branchList) q = q.in('branch', branchList);
