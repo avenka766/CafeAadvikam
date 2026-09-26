@@ -498,15 +498,21 @@ export default function BranchBillingProTab({
     return Array.from(new Set(configured.filter(Boolean)));
   }, [branch, salespeople]);
 
-  const handleAddSalesperson = useCallback(() => {
+  const handleAddSalesperson = useCallback(async () => {
     const name = newSalespersonName.trim();
     if (!name) { setAddSalespersonError('Enter a name.'); return; }
     const dup = (branchPeople as string[]).some((p) => p.toLowerCase() === name.toLowerCase());
     if (dup) { setAddSalespersonError('That name is already in the list.'); return; }
-    addSalesperson(branch, name, userName);
+    // BUG FIX (2026-09-26): "unable to see few persons I added, multiple
+    // times" — this used to fire-and-forget addSalesperson, so a transient
+    // DB write failure silently dropped the name while billing kept using
+    // it for this bill only; it would then be missing everywhere else.
+    // addSalesperson now reports back whether the write actually landed.
+    const ok = await addSalesperson(branch, name, userName);
+    if (!ok) { setAddSalespersonError(`"${name}" was not saved to the roster — try Add again. You can still use them for this bill, but re-add them once saved.`); }
+    else { setAddSalespersonError(''); }
     setSalesperson(name);
     setNewSalespersonName('');
-    setAddSalespersonError('');
     setAddingSalesperson(false);
   }, [newSalespersonName, branchPeople, addSalesperson, branch, userName]);
 
