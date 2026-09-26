@@ -1210,7 +1210,24 @@ const branchOpsSupabaseStorage: PersistStorage<BranchOpsState> = {
     // builders are single-use thenables, so retrying means rebuilding them
     // fresh, not re-awaiting the same objects — hence the whole bundle is
     // wrapped in this local function instead of built once outside it.
-    const runQueries = () => {
+    // PERF FIX (2026-09-26): "click Stock Audit tab, it just gets stuck /
+    // takes very long" — confirmed live (SNB Admin) and via EXPLAIN ANALYZE:
+    // the admin/owner-scoped opQuery alone (no branch filter, ordered across
+    // the whole 87,000+ row table) takes ~1.4s just to fetch its 8000 rows'
+    // JSONB payloads, and this whole bundle fired ALL 6 of these queries
+    // (app_state, opQuery, stockCountQuery, varianceQuery, complaintQuery,
+    // loadSparseOperationHistory — itself 2+ more requests) at once via
+    // Promise.all, every single hydration. Under any real concurrent load
+    // that's easily enough to blow the 8s authenticated-role statement
+    // timeout on one or more of them — and since the existing retry above
+    // re-fires the SAME all-at-once bundle, a contended first attempt often
+    // just fails the same way twice. Staggered into 3 waves (app_state+
+    // opQuery first since most consumers need those soonest, then the
+    // smaller record-type queries, then the heavier sparse-history fetch)
+    // so this session's own hydration never puts more than ~2 heavy queries
+    // on the DB at once — same pattern already proven on Owner Dashboard's
+    // fetchOwnerEverythingExtras batches.
+    const runQueries = async () => {
       let opQuery = supabase
         .from("branch_operation_records")
         // BUG FIX: added "status" — this is the main hydration query (recent
@@ -1246,22 +1263,24 @@ const branchOpsSupabaseStorage: PersistStorage<BranchOpsState> = {
         complaintQuery = complaintQuery.eq("branch", sessionBranch);
       }
 
-      return Promise.all([
+      const wave1 = await Promise.all([
         supabase
           .from("app_state")
           .select("value")
           .eq("key", name)
           .maybeSingle(),
         opQuery,
-        stockCountQuery,
-        varianceQuery,
-        complaintQuery,
-        // Expense history is sparse but can be older than the high-volume
-        // general operation feed. Loaded separately so billing activity
-        // cannot push valid historical expenses beyond the operation query
-        // limit — called fresh each attempt, not shared with the retry.
-        loadSparseOperationHistory(sessionBranch),
       ]);
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      const wave2 = await Promise.all([stockCountQuery, varianceQuery, complaintQuery]);
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      // Expense history is sparse but can be older than the high-volume
+      // general operation feed. Loaded separately so billing activity
+      // cannot push valid historical expenses beyond the operation query
+      // limit — called fresh each attempt, not shared with the retry.
+      const sparseResult = await loadSparseOperationHistory(sessionBranch);
+
+      return [...wave1, ...wave2, sparseResult] as const;
     };
 
     let [
