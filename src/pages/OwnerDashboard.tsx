@@ -16,7 +16,7 @@ import { useState, useMemo, useEffect, useCallback, useRef, Fragment } from 'rea
 import { useSearchParams } from 'react-router-dom';
 import { useOrderStore } from '@/stores/orderStore';
 import { useBranchStore } from '@/branch/branchStore';
-import { useBranchOpsStore } from '@/branch/branchOpsStore';
+import { useBranchOpsStore, type BranchStockVarianceRecord } from '@/branch/branchOpsStore';
 import type { Branch } from '@/branch/types';
 import { BRANCH_LABELS } from '@/branch/types';
 import { useInvoiceStore } from '@/bakery/invoiceStore';
@@ -76,7 +76,7 @@ function fetchBranchDataStaggered(fetchBranchData: (branch: Branch) => void, bra
   });
 }
 
-type OwnerDatePreset = 'today' | 'yesterday' | '7d' | '15d' | '30d' | 'month';
+type OwnerDatePreset = 'today' | 'yesterday' | '7d' | '15d' | '30d' | 'month' | 'all';
 
 type OwnerAlertTone = 'danger' | 'warning' | 'neutral' | 'success';
 
@@ -86,6 +86,15 @@ type OwnerAlert = {
   note: string;
   tone: OwnerAlertTone;
   branch?: string;
+  // FEATURE (2026-09-26): "merge Owner Alerts and Everything... this tab
+  // should store 7 days data only" — items with a real timestamp (a
+  // notification, complaint, return, cancelled order) can be filtered to
+  // the last 7 days by default and expanded via "View All"; items with no
+  // createdAt are current-state flags (e.g. "3 branches haven't closed
+  // today", "9 POs waiting on approval") that are always shown regardless
+  // of the window, since they describe what's true right now, not a
+  // historical event.
+  createdAt?: string;
 };
 
 type OwnerClosureRow = {
@@ -140,6 +149,7 @@ function ownerPresetStart(preset: OwnerDatePreset) {
   if (preset === '15d') { d.setDate(d.getDate() - 14); d.setHours(0, 0, 0, 0); return d; }
   if (preset === '30d') { d.setDate(d.getDate() - 29); d.setHours(0, 0, 0, 0); return d; }
   if (preset === 'month') { d.setDate(1); d.setHours(0, 0, 0, 0); return d; }
+  if (preset === 'all') { d.setFullYear(d.getFullYear() - 10); d.setHours(0, 0, 0, 0); return d; }
   d.setHours(0, 0, 0, 0);
   return d;
 }
@@ -530,7 +540,12 @@ function SalesOverviewTab() {
   const [branchFilter, setBranchFilter] = useState<Branch | 'all'>('all');
 
   useEffect(() => { startPolling(60); return () => stopPolling(); }, [startPolling, stopPolling]);
-  useEffect(() => { (['VRSNB', 'SNB', 'Hosur'] as const).forEach(b => fetchBranchData(b)); }, [fetchBranchData]);
+  // PERF FIX (2026-09-26): "why do all the tabs take time to load" — this
+  // fired 3 branches' worth of fetchBranchData (itself several queries per
+  // branch) all in the same tick, on top of salesLedger's own 2 queries and
+  // hosurSales — same concurrent-load pattern already fixed elsewhere on
+  // this page with fetchBranchDataStaggered.
+  useEffect(() => { fetchBranchDataStaggered(fetchBranchData, ['VRSNB', 'SNB', 'Hosur']); }, [fetchBranchData]);
 
   const cutoff = useMemo(() => {
     const d = new Date();
@@ -1513,14 +1528,23 @@ function WasteLogsTab() {
 
   const fetchWaste = useCallback(async () => {
     setLoading(true); setError('');
-    const { data, error: err } = await supabase
-      .from('kitchen_waste_log').select('id, food_item, quantity, logged_at')
-      // AUDIT FIX (2026-09-02): bare timestamp = UTC in Postgres, shifting
-      // the window vs this tab's own IST-computed fromDate/toDate.
-      .gte('logged_at', `${fromDate}T00:00:00+05:30`)
-      .lte('logged_at', `${toDate}T23:59:59+05:30`)
-      .order('logged_at', { ascending: false });
-    if (err) setError(err.message);
+    // BUG FIX: "check the data range and see if they are seeing any
+    // issues" — this table's sibling (branch_waste_logs, fetchBranchWaste
+    // below) was already fixed 2026-09-08 for the exact same problem
+    // (PostgREST's 1000-row cap silently drops older rows on a wide range)
+    // but this one was missed. Empty today, so no data has been lost yet —
+    // fixed before it could grow into the same silent gap.
+    const { data, error: err } = await fetchAllRows<{ id: string; food_item: string; quantity: string; logged_at: string }>(
+      'kitchen_waste_log',
+      (q) => q
+        .select('id, food_item, quantity, logged_at')
+        // AUDIT FIX (2026-09-02): bare timestamp = UTC in Postgres, shifting
+        // the window vs this tab's own IST-computed fromDate/toDate.
+        .gte('logged_at', `${fromDate}T00:00:00+05:30`)
+        .lte('logged_at', `${toDate}T23:59:59+05:30`)
+        .order('logged_at', { ascending: false }),
+    );
+    if (err) setError(err);
     else setEntries(data ?? []);
     setLoading(false);
   }, [fromDate, toDate]);
@@ -2188,7 +2212,7 @@ function BranchOverviewTab() {
   const startPolling = useOrderStore(s => s.startPolling);
   const stopPolling = useOrderStore(s => s.stopPolling);
   const { sales, incoming, advanceOrders, creditSales, stockMismatches, fetchBranchData, fetchStockMismatches } = useBranchStore();
-  const { bills, returns, purchases, cashMovements, bankDeposits, cashierClosures, storeOrders, fetchBillsInRange } = useBranchOpsStore();
+  const { bills, returns, purchases, bankDeposits, cashierClosures, storeOrders, fetchBillsInRange } = useBranchOpsStore();
   const [preset, setPreset] = useState<OwnerDatePreset>('today');
   const SALES_UNITS = ['Cafe', 'SNB Branch', 'VRSNB Branch', 'Hosur Branch'];
 
@@ -2202,7 +2226,14 @@ function BranchOverviewTab() {
   useEffect(() => {
     let alive = true;
     (async () => {
-      const { data } = await supabase.from('store_invoices').select('grand_total, paid_amount, delivery_date, created_at');
+      // BUG FIX: "check the data range and see if they are seeing any
+      // issues" — 675 rows today, growing ~280/month; a plain, unbounded
+      // `.select()` here will silently hit PostgREST's 1000-row cap within
+      // about a month and understate Store Purchases (and, in turn, Net
+      // Profit above) with no error at all. Same fix already applied
+      // elsewhere in this file for the exact same table-growth pattern.
+      const { data } = await fetchAllRows<Record<string, unknown>>('store_invoices', (q) => q
+        .select('grand_total, paid_amount, delivery_date, created_at'));
       if (!alive || !data) return;
       setStoreInvoiceRows((data as Array<Record<string, unknown>>).map((invoice) => ({
         total: Number(invoice.grand_total || 0),
@@ -2243,6 +2274,134 @@ function BranchOverviewTab() {
   useEffect(() => {
     void Promise.all((['SNB', 'VRSNB'] as const).map((b) => fetchBillsInRange(fromKey, toKey, b)));
   }, [fromKey, toKey, fetchBillsInRange]);
+
+  // BUG FIX ("every single rupee should be seen by the Owner", 2026-09-26):
+  // "Branch Expenses" below used to come from savedClosure?.expenses (a
+  // branch_daily_closures column that's 0 on every single row in the DB —
+  // nobody has ever populated it) with a cashMovements fallback that's
+  // silently crowded out for wide ranges — branch_operation_records mixes
+  // 19 record types under one shared, recency-ordered fetch limit, so a
+  // high-frequency type like 'notification' (1,600+ rows) pushes low-
+  // frequency types like 'expense' or 'cash_movement' out of the window
+  // entirely once the range goes back more than about a week. Confirmed
+  // live: SNB alone has ₹3,46,751 across 153 real logged expenses (salary
+  // advances, etc.) that were invisible in this P&L before this fix, on
+  // every date range wider than "This Week". Fetching record_type='expense'
+  // directly here, scoped to the selected range and paginated, bypasses
+  // that shared cap for the one figure this panel needs to be exact.
+  const [expensesByBranch, setExpensesByBranch] = useState<Record<string, number>>({});
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const runQuery = () => fetchAllRows<{ branch: string; payload: { amount?: number } }>('branch_operation_records', (q) => q
+        .select('branch, payload')
+        .eq('record_type', 'expense')
+        .gte('created_at', `${fromKey}T00:00:00+05:30`)
+        .lte('created_at', `${toKey}T23:59:59.999+05:30`));
+      let { data, error } = await runQuery();
+      // RESILIENCE: this tab already fires several other wide-range queries
+      // in parallel (fetchBillsInRange, ownerLedger, hosurSales,
+      // storeInvoiceRows, waste logs) — under concurrent load a transient
+      // "57014 statement timeout" here otherwise silently zeroes out real
+      // expense money with no visible error. One retry after a short backoff
+      // matches the same pattern already proven in useBranchLedger.ts and
+      // branchOpsStore.ts's runQueries for the exact same failure mode.
+      if (error) {
+        await new Promise((resolve) => setTimeout(resolve, 800));
+        ({ data, error } = await runQuery());
+      }
+      if (!alive || error) return;
+      const totals: Record<string, number> = {};
+      (data || []).forEach((row) => {
+        totals[row.branch] = (totals[row.branch] || 0) + Number(row.payload?.amount || 0);
+      });
+      setExpensesByBranch(totals);
+    })();
+    return () => { alive = false; };
+  }, [fromKey, toKey]);
+
+  // FEATURE: "every single rupee should be seen by the Owner" — Sales,
+  // Purchases and Expenses were already computed correctly per unit below
+  // (branchRows), but nothing ever combined them into an actual bottom-line
+  // profit figure, and Salary + Waste — two real, recurring costs — weren't
+  // represented anywhere in this rollup at all. Both fetched here, scoped
+  // to the same [from, to] range as everything else on this tab, so "Net
+  // Profit" further down is built from the exact same window the Owner is
+  // already looking at.
+  const { items: snbCatalogPL } = useOperationalBranchCatalog('SNB');
+  const { items: vrsnbCatalogPL } = useOperationalBranchCatalog('VRSNB');
+  const [grossMonthlySalary, setGrossMonthlySalary] = useState(0);
+  // BUG FIX: "All Time" (a synthetic 10-year lookback, safe for real DB
+  // queries since they naturally return nothing before real data exists)
+  // broke this specific calculation — prorating salary over the full
+  // 3,653 days produced a ₹2.6 CRORE estimate for a business that's only
+  // had payroll since 2026-08-20. Confirmed live. Real DB-backed figures
+  // (Sales/Purchases/Waste) don't have this problem because they're bounded
+  // by their own actual rows; this one is a synthetic formula with no such
+  // natural floor, so it needs its own: never prorate further back than the
+  // earliest real employee record.
+  const [earliestPayrollDate, setEarliestPayrollDate] = useState<Date | null>(null);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const [{ data }, { data: earliestRow }] = await Promise.all([
+        supabase.from('employees').select('gross_salary'),
+        supabase.from('employees').select('created_at').order('created_at', { ascending: true }).limit(1).maybeSingle(),
+      ]);
+      if (!alive) return;
+      if (data) setGrossMonthlySalary((data as Array<{ gross_salary: number | null }>).reduce((sum, e) => sum + Number(e.gross_salary || 0), 0));
+      if (earliestRow?.created_at) setEarliestPayrollDate(new Date(earliestRow.created_at));
+    })();
+    return () => { alive = false; };
+  }, []);
+  // Salary is a monthly figure, not a per-transaction one — prorated by how
+  // many days the selected range actually covers rather than claiming exact
+  // day-by-day payroll accuracy. Clearly labeled "Estimated" in the UI.
+  // BUG FIX: computing this from `to`/`from` directly double-counted every
+  // range by one day — `to` is already end-of-day (23:59:59.999), so
+  // "Today" (from=00:00:00.000, to=23:59:59.999, ~0.99999 days apart)
+  // rounded to 1 and then the "+1 to make it inclusive" made it 2, roughly
+  // doubling the salary estimate. Comparing the plain calendar dates
+  // (fromKey/toKey, both midnight-normalized) instead of the time-of-day-
+  // sensitive Date objects gives the correct inclusive day count: same day
+  // in both keys → 1 day, not 2.
+  const daysInRange = useMemo(() => {
+    const fromMidnight = new Date(`${fromKey}T00:00:00`).getTime();
+    const toMidnight = new Date(`${toKey}T00:00:00`).getTime();
+    return Math.max(1, Math.round((toMidnight - fromMidnight) / 86400000) + 1);
+  }, [fromKey, toKey]);
+  // Same inclusive-day math as daysInRange, but clamped so a wide preset
+  // (This Month/All Time) never prorates further back than real payroll data.
+  const salaryDaysInRange = useMemo(() => {
+    if (!earliestPayrollDate) return daysInRange;
+    const earliestMidnight = new Date(earliestPayrollDate); earliestMidnight.setHours(0, 0, 0, 0);
+    const fromMidnight = new Date(`${fromKey}T00:00:00`);
+    const effectiveFrom = fromMidnight.getTime() > earliestMidnight.getTime() ? fromMidnight : earliestMidnight;
+    const toMidnight = new Date(`${toKey}T00:00:00`).getTime();
+    return Math.max(1, Math.round((toMidnight - effectiveFrom.getTime()) / 86400000) + 1);
+  }, [fromKey, toKey, earliestPayrollDate, daysInRange]);
+  const salaryEstimate = (grossMonthlySalary / 30) * salaryDaysInRange;
+
+  const [wasteLogsPL, setWasteLogsPL] = useState<Array<{ branch: string; item_name: string; quantity: number }>>([]);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const { data } = await fetchAllRows<{ branch: string; item_name: string; quantity: number; created_at: string }>('branch_waste_logs', (q) => q
+        .select('branch, item_name, quantity, created_at')
+        .gte('created_at', `${fromKey}T00:00:00+05:30`)
+        .lte('created_at', `${toKey}T23:59:59.999+05:30`));
+      if (!alive) return;
+      setWasteLogsPL(data ?? []);
+    })();
+    return () => { alive = false; };
+  }, [fromKey, toKey]);
+  const wasteValueEstimate = useMemo(() => {
+    const priceByName = new Map([
+      ...snbCatalogPL.map(item => [ownerNormalizeName(item.name), item.price] as const),
+      ...vrsnbCatalogPL.map(item => [ownerNormalizeName(item.name), item.price] as const),
+    ]);
+    return wasteLogsPL.reduce((sum, row) => sum + (priceByName.get(ownerNormalizeName(row.item_name)) ?? 0) * Number(row.quantity || 0), 0);
+  }, [wasteLogsPL, snbCatalogPL, vrsnbCatalogPL]);
 
   const branchStockAlertCount = useCallback((branch: Branch) => {
     if (branch === 'Hosur') return 0;
@@ -2410,7 +2569,7 @@ function BranchOverviewTab() {
       const branchPurchaseInfo = branchPurchaseSummary(branch);
       return {
         unit, sales: gross, netSales: gross, cash, upi, card, credit: Math.max(credit, openCredit),
-        expenses: ownerLedger.toNumber(savedClosure?.expenses || 0), purchases: branchPurchaseInfo.total, pendingPayments: openCredit + branchPurchaseInfo.pending, pendingCredit: openCredit,
+        expenses: expensesByBranch[branch] || 0, purchases: branchPurchaseInfo.total, pendingPayments: openCredit + branchPurchaseInfo.pending, pendingCredit: openCredit,
         stockAlerts: stockAlertCount + pendingIncomingCount(branch),
         closureStatus: savedClosure ? (Math.abs(ownerLedger.toNumber(savedClosure.difference)) > 0 ? 'Difference in closure' : 'Closed') : 'Pending closure',
         keyAlert: branch === 'Hosur'
@@ -2436,14 +2595,14 @@ function BranchOverviewTab() {
     const card = localBills.reduce((sum, b) => sum + (b.paymentMode === 'card' ? moneyNumber(b.total) : b.paymentMode === 'split' ? moneyNumber(b.split?.card) : 0), 0) + dbSales.reduce((sum, s) => sum + ((s.paymentMethod || '').toLowerCase().includes('card') ? moneyNumber(s.unitPrice) * moneyNumber(s.quantitySold) : 0), 0);
     return {
       unit, sales: gross, netSales: Math.max(0, gross - ret), cash, upi, card, credit: openCredit,
-      expenses: cashMovements.filter((movement) => movement.branch === branch && movement.direction === 'out' && !String(movement.purpose || '').toLowerCase().startsWith('purchase payment') && ownerInRange(movement.dateTime, from, to)).reduce((sum, movement) => sum + moneyNumber(movement.amount), 0), purchases: branchPurchaseInfo.total, pendingPayments: openCredit + branchPurchaseInfo.pending, pendingCredit: openCredit,
+      expenses: expensesByBranch[branch] || 0, purchases: branchPurchaseInfo.total, pendingPayments: openCredit + branchPurchaseInfo.pending, pendingCredit: openCredit,
       stockAlerts: stockAlertCount + pendingIncomingCount(branch),
       closureStatus: lastClosure ? (Math.abs(lastClosure.difference) > 0 ? 'Difference in closure' : 'Closed') : 'Pending closure',
       keyAlert: branch === 'Hosur'
         ? `${(advanceOrders[branch] || []).filter(a => a.status === 'pending').length} advance`
         : `${(advanceOrders[branch] || []).filter(a => a.status === 'pending').length} advance · ${stockAlertCount} stock alerts`,
     };
-  }), [ownerLedger, orders, sales, advanceOrders, creditSales, bills, returns, cashMovements, cashierClosures, storeOrders, storeInvoiceRows, from, to, branchStockAlertCount, pendingIncomingCount, branchPurchaseSummary, hosurSales]);
+  }), [ownerLedger, orders, sales, advanceOrders, creditSales, bills, returns, expensesByBranch, cashierClosures, storeOrders, storeInvoiceRows, from, to, branchStockAlertCount, pendingIncomingCount, branchPurchaseSummary, hosurSales]);
 
   const visibleRows = branchRows.filter(r => SALES_UNITS.includes(r.unit));
 
@@ -2468,6 +2627,14 @@ function BranchOverviewTab() {
     alerts: acc.alerts + row.stockAlerts,
   }), { sales: 0, netSales: 0, expenses: 0, alerts: 0 });
 
+  // FEATURE: "every single rupee should be seen by the Owner" — purchases
+  // across EVERY unit (Store's real store_invoices total, plus each
+  // branch's own supplier purchases), not just sales-unit expenses, so Net
+  // Profit below reflects everything actually spent, the same set
+  // branchRows already tracks per row just above.
+  const totalPurchasesAllUnits = branchRows.reduce((sum, row) => sum + row.purchases, 0);
+  const netProfit = totals.netSales - totals.expenses - totalPurchasesAllUnits - salaryEstimate - wasteValueEstimate;
+
   // chartRows no longer used — replaced by grouped payment chart in CHANGE 4c
 
   const PRESET_OPTIONS: Array<{ label: string; value: OwnerDatePreset }> = [
@@ -2477,6 +2644,7 @@ function BranchOverviewTab() {
     { label: '15 Days',    value: '15d' },
     { label: '1 Month',    value: '30d' },
     { label: 'This Month', value: 'month' },
+    { label: 'All Time',   value: 'all' },
   ];
 
   return (
@@ -2507,8 +2675,48 @@ function BranchOverviewTab() {
       <section className="owner-metric-grid wide">
         <OwnerMetricCard icon={<IndianRupee className="size-5" />} label="Gross Sales" value={formatCurrency(totals.sales)} sub="Cafe + branches" tone="green" />
         <OwnerMetricCard icon={<TrendingUp className="size-5" />} label="Net Sales" value={formatCurrency(totals.netSales)} sub="After returns" tone="blue" />
-        <OwnerMetricCard icon={<ShoppingBag className="size-5" />} label="Purchases" value={formatCurrency(storePurchases)} sub="Store only" tone="purple" />
+        <OwnerMetricCard icon={<ShoppingBag className="size-5" />} label="Purchases" value={formatCurrency(totalPurchasesAllUnits)} sub={`Store ${formatCurrency(storePurchases)} + every branch's own supplier buys`} tone="purple" />
         <OwnerMetricCard icon={<WalletCards className="size-5" />} label="Pending Payments" value={formatCurrency(overallCreditPending)} sub="Overall customer credit outstanding" tone="amber" />
+      </section>
+
+      {/* FEATURE: "every single rupee should be seen by the Owner" — the
+          real bottom line: Net Sales minus every cost this dashboard can
+          see (purchases across all units, branch expenses, salary, waste).
+          Salary/Waste are estimates (prorated monthly payroll; catalog-
+          priced waste logs) — labeled as such rather than presented as
+          exact, matching how Waste & Loss already labels its own figures. */}
+      <section className="owner-panel">
+        <div className="owner-panel-head"><div><span>Profit &amp; Loss</span><h3>Net Sales minus every cost this dashboard can see, for the selected range</h3></div></div>
+        <div className="owner-metric-grid wide">
+          <OwnerMetricCard icon={<TrendingUp className="size-5" />} label="Net Sales" value={formatCurrency(totals.netSales)} tone="blue" />
+          <OwnerMetricCard icon={<ShoppingBag className="size-5" />} label="Purchases" value={formatCurrency(-totalPurchasesAllUnits)} sub="All units" tone="purple" />
+          <OwnerMetricCard icon={<WalletCards className="size-5" />} label="Branch Expenses" value={formatCurrency(-totals.expenses)} tone="amber" />
+          <OwnerMetricCard icon={<Users className="size-5" />} label="Salary (Est.)" value={formatCurrency(-salaryEstimate)} sub={`Prorated over ${salaryDaysInRange} day${salaryDaysInRange === 1 ? '' : 's'}${salaryDaysInRange !== daysInRange && earliestPayrollDate ? ` (capped — payroll starts ${earliestPayrollDate.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })})` : ' from current payroll'}`} tone="amber" />
+          <OwnerMetricCard icon={<Trash2 className="size-5" />} label="Waste (Est.)" value={formatCurrency(-wasteValueEstimate)} sub="Branch waste logs, catalog-priced" tone="amber" />
+          <OwnerMetricCard icon={<IndianRupee className="size-5" />} label="Net Profit" value={formatCurrency(netProfit)} tone={netProfit >= 0 ? 'green' : 'red'} />
+        </div>
+        <div className="mt-4">
+          <ResponsiveContainer width="100%" height={200}>
+            <BarChart data={[
+              { name: 'Net Sales', value: totals.netSales },
+              { name: 'Purchases', value: -totalPurchasesAllUnits },
+              { name: 'Expenses', value: -totals.expenses },
+              { name: 'Salary (Est.)', value: -salaryEstimate },
+              { name: 'Waste (Est.)', value: -wasteValueEstimate },
+              { name: 'Net Profit', value: netProfit },
+            ]}>
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(120,82,38,.14)" />
+              <XAxis dataKey="name" tick={{ fontSize: 11 }} />
+              <YAxis tick={{ fontSize: 12 }} tickFormatter={v => `₹${Math.round(Number(v) / 1000)}k`} />
+              <Tooltip formatter={(value: number) => formatCurrency(value)} />
+              <Bar dataKey="value" radius={[4, 4, 0, 0]}>
+                {[totals.netSales, -totalPurchasesAllUnits, -totals.expenses, -salaryEstimate, -wasteValueEstimate, netProfit].map((v, i) => (
+                  <Cell key={i} fill={v >= 0 ? '#126d52' : '#dc2626'} />
+                ))}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
       </section>
 
       {/* CHANGE 4c: Grouped payment bar chart for sales branches */}
@@ -2827,173 +3035,6 @@ function OwnerDailyClosureTab() {
   );
 }
 
-// ── Owner Alerts Tab ─────────────────────────────────────────────────────────
-function OwnerAlertsTab() {
-  const orders = useOrderStore(s => s.orders);
-  const startPolling = useOrderStore(s => s.startPolling);
-  const stopPolling = useOrderStore(s => s.stopPolling);
-  const { creditSales, fetchBranchData, fetchStockMismatches } = useBranchStore();
-  const { purchases, cashierClosures, notifications, storeOrders, returns } = useBranchOpsStore();
-  const { invoices, load } = useInvoiceStore();
-  const [tone, setTone] = useState<'all' | OwnerAlertTone>('all');
-  const [dismissed, setDismissed] = useState<Set<string>>(() => {
-    try { return new Set(JSON.parse(localStorage.getItem('owner-dismissed-alerts') || '[]') as string[]); } catch { return new Set(); }
-  });
-
-  useEffect(() => { startPolling(60); return () => stopPolling(); }, [startPolling, stopPolling]);
-  useEffect(() => { fetchBranchDataStaggered(fetchBranchData); }, [fetchBranchData]);
-  useEffect(() => { void fetchStockMismatches(); }, [fetchStockMismatches]);
-  useEffect(() => { load(); }, [load]);
-
-  // AUDIT FIX (2026-09-04): "every other tab in this file has its own Refresh
-  // button, this one didn't" (same gap already fixed on OwnerAuditTab
-  // 2026-09-02) — this tab's alerts are built from 7 different sources
-  // (creditSales/fetchBranchData, invoices, and purchases/cashierClosures/
-  // notifications/storeOrders/returns from branchOpsStore) and every one of
-  // them only ever loads once on mount or off a background poll/realtime
-  // subscription. Refresh re-runs all of them: fetchBranchData with
-  // force=true to bypass its normal throttle (see BRANCH_FETCH_FRESH_MS in
-  // branchStore.ts) since this is an explicit user-triggered refresh, plus
-  // branchOpsStore's rehydrate() for the purchases/closures/notifications/
-  // storeOrders/returns slices it doesn't otherwise expose a fetch for.
-  const [alertsRefreshing, setAlertsRefreshing] = useState(false);
-  const refreshAlerts = useCallback(async () => {
-    setAlertsRefreshing(true);
-    await Promise.all([
-      ...OWNER_FULL_BRANCHES.map(branch => fetchBranchData(branch, true)),
-      fetchStockMismatches(),
-      load(),
-      useBranchOpsStore.persist.rehydrate(),
-    ]);
-    setAlertsRefreshing(false);
-  }, [fetchBranchData, fetchStockMismatches, load]);
-
-  const alerts: OwnerAlert[] = useMemo(() => {
-    const today = ownerDateInput();
-    const list: OwnerAlert[] = [];
-    OWNER_FULL_BRANCHES.forEach(branch => {
-      const dbCredits = (creditSales[branch] || []).filter(c => c.status !== 'settled' && c.dueDate && new Date(c.dueDate) < new Date());
-      if (dbCredits.length) list.push({ title: 'Overdue branch credit', value: String(dbCredits.length), note: `${ownerBranchDisplay(branch)} credit due follow-up`, tone: 'danger', branch });
-      const closedToday = cashierClosures.some(c => c.branch === branch && ownerLocalDay(c.createdAt) === today);
-      if (branch !== 'Cafe' && !closedToday) list.push({ title: 'Daily closure pending', value: '1', note: `${ownerBranchDisplay(branch)} closure not submitted for today`, tone: 'warning', branch });
-    });
-    const pendingPurchases = purchases.filter(p => (p.syncStatus || 'Not Synced') !== 'Synced');
-    if (pendingPurchases.length) list.push({ title: 'Purchase stock sync pending', value: String(pendingPurchases.length), note: 'Purchased quantities not fully reflected in stock', tone: 'warning' });
-    const pendingInvoice = invoices.filter(i => i.status === 'pending_review');
-    if (pendingInvoice.length) list.push({ title: 'Store invoices pending review', value: String(pendingInvoice.length), note: 'Owner can review purchase exposure', tone: 'warning' });
-    // FEATURE (2026-08-09 / #281): PO→GRN conversions that came in different
-    // from what was approved (qty changed, item dropped, item added) get a
-    // "⚠ PO DISCREPANCY" prefix auto-written into the GRN's notes by
-    // CreateInvoiceModal — surface those here so Owner sees exactly which
-    // GRNs deviated from what they approved, not just that a GRN exists.
-    const poDiscrepancyGRNs = invoices.filter(i => (i.notes || '').startsWith('⚠ PO DISCREPANCY'));
-    if (poDiscrepancyGRNs.length) list.push({ title: 'GRNs differ from approved PO', value: String(poDiscrepancyGRNs.length), note: poDiscrepancyGRNs.map(i => i.invoiceNumber).join(', '), tone: 'danger' });
-    const pendingDispatch = storeOrders.filter(o => ['Pending Store Confirmation', 'Confirmed', 'Ready'].includes(o.status));
-    if (pendingDispatch.length) list.push({ title: 'Pending dispatch / store orders', value: String(pendingDispatch.length), note: 'Packing or store confirmation pending', tone: 'neutral' });
-    const todayReturns = returns.filter(r => ownerLocalDay(r.createdAt) === today);
-    if (todayReturns.reduce((s, r) => s + r.total, 0) > 0) list.push({ title: 'Return amount today', value: formatCurrency(todayReturns.reduce((s, r) => s + r.total, 0)), note: 'Review reasons and staff notes', tone: 'warning' });
-    const cancelled = orders.filter(o => ownerLocalDay(o.createdAt) === today && o.status === 'cancelled');
-    if (cancelled.length) list.push({ title: 'Cafe cancelled orders', value: String(cancelled.length), note: 'Check wastage or service gaps', tone: 'neutral' });
-    notifications.filter(n => n.status !== 'Resolved').slice(0, 6).forEach(n => list.push({ title: n.title, value: n.status, note: `${ownerBranchDisplay(n.branch)} · ${n.details}`, tone: n.type === 'Stock Dispute' ? 'danger' : 'neutral', branch: n.branch }));
-    return list;
-  }, [orders, creditSales, purchases, cashierClosures, notifications, storeOrders, returns, invoices]);
-
-  const visible = alerts.filter(a => (tone === 'all' || a.tone === tone) && !dismissed.has(`${a.title}-${a.branch ?? ''}`));
-
-  // CHANGE 9b: grouped by tone
-  const criticalAlerts    = visible.filter(a => a.tone === 'danger');
-  const warningAlerts     = visible.filter(a => a.tone === 'warning');
-  const operationalAlerts = visible.filter(a => a.tone === 'neutral');
-
-  // CHANGE 9c: branches with any alert
-  const branchesWithAlerts = new Set(alerts.filter(a => a.branch).map(a => a.branch)).size;
-  const dismissAlert = (a: OwnerAlert) => setDismissed(prev => {
-    const next = new Set([...prev, `${a.title}-${a.branch ?? ''}`]);
-    localStorage.setItem('owner-dismissed-alerts', JSON.stringify([...next]));
-    return next;
-  });
-
-  return (
-    <div className="owner-tab-stack">
-      <OwnerToolbar>
-        {(['all', 'danger', 'warning', 'neutral', 'success'] as const).map(option => <button key={option} type="button" onClick={() => setTone(option)} className={cn(tone === option && 'is-active')}>{option === 'all' ? 'All alerts' : option}</button>)}
-        <button type="button" onClick={() => void refreshAlerts()} disabled={alertsRefreshing} className="inline-flex items-center gap-1.5 disabled:opacity-60"><RefreshCw className={cn('size-4', alertsRefreshing && 'animate-spin')} />Refresh</button>
-        <button type="button" onClick={() => ownerCsvDownload('owner-alerts.csv', visible.map(a => ({ Alert: a.title, Value: a.value, Branch: a.branch || 'Business', Tone: a.tone, Details: a.note })))}><Download className="size-4" />Export</button>
-      </OwnerToolbar>
-      {/* CHANGE 9c: improved KPI metrics */}
-      <section className="owner-metric-grid">
-        <OwnerMetricCard icon={<XCircle className="size-5" />} label="Critical" value={alerts.filter(a => a.tone === 'danger').length} tone="red" />
-        <OwnerMetricCard icon={<AlertTriangle className="size-5" />} label="Warnings" value={alerts.filter(a => a.tone === 'warning').length} tone="amber" />
-        <OwnerMetricCard icon={<Bell className="size-5" />} label="Operational" value={alerts.filter(a => a.tone === 'neutral').length} tone="blue" />
-        <OwnerMetricCard icon={<Store className="size-5" />} label="Branches Affected" value={branchesWithAlerts} tone="purple" />
-      </section>
-
-      {/* CHANGE 9b: Grouped alert sections */}
-      {criticalAlerts.length > 0 && (
-        <section className="space-y-2">
-          <h3 className="text-sm font-bold text-red-700 flex items-center gap-1.5"><XCircle className="size-4" /> Critical Alerts</h3>
-          <div className="space-y-2">
-            {criticalAlerts.map((alert, index) => (
-              <article key={`${alert.title}-${index}`} className="bg-gradient-to-br from-red-50 to-white border border-red-200/80 rounded-2xl p-4 shadow-soft flex items-start justify-between gap-3 transition-shadow hover:shadow-lifted">
-                <div className="flex gap-3 items-start">
-                  <span className="flex items-center justify-center size-11 rounded-xl bg-red-100 text-red-700 font-black text-lg tabular-nums shrink-0">{alert.value}</span>
-                  <div>
-                    <h3 className="text-sm font-bold text-red-900">{alert.title}</h3>
-                    <p className="text-xs text-red-700/90 mt-0.5">{alert.note}</p>
-                    {alert.branch && <em className="text-[10px] px-1.5 py-0.5 rounded-full bg-red-100 text-red-800 font-semibold mt-1.5 inline-block">{ownerBranchDisplay(alert.branch)}</em>}
-                  </div>
-                </div>
-                <button onClick={() => dismissAlert(alert)} className="text-[10px] font-semibold text-red-600 hover:text-white hover:bg-red-600 shrink-0 border border-red-200 rounded-full px-2.5 py-1 transition-colors">Dismiss</button>
-              </article>
-            ))}
-          </div>
-        </section>
-      )}
-      {warningAlerts.length > 0 && (
-        <section className="space-y-2">
-          <h3 className="text-sm font-bold text-amber-700 flex items-center gap-1.5"><AlertTriangle className="size-4" /> Warning Alerts</h3>
-          <div className="space-y-2">
-            {warningAlerts.map((alert, index) => (
-              <article key={`${alert.title}-${index}`} className="bg-gradient-to-br from-amber-50 to-white border border-amber-200/80 rounded-2xl p-4 shadow-soft flex items-start justify-between gap-3 transition-shadow hover:shadow-lifted">
-                <div className="flex gap-3 items-start">
-                  <span className="flex items-center justify-center size-11 rounded-xl bg-amber-100 text-amber-700 font-black text-lg tabular-nums shrink-0">{alert.value}</span>
-                  <div>
-                    <h3 className="text-sm font-bold text-amber-900">{alert.title}</h3>
-                    <p className="text-xs text-amber-700/90 mt-0.5">{alert.note}</p>
-                    {alert.branch && <em className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-800 font-semibold mt-1.5 inline-block">{ownerBranchDisplay(alert.branch)}</em>}
-                  </div>
-                </div>
-                <button onClick={() => dismissAlert(alert)} className="text-[10px] font-semibold text-amber-600 hover:text-white hover:bg-amber-600 shrink-0 border border-amber-200 rounded-full px-2.5 py-1 transition-colors">Dismiss</button>
-              </article>
-            ))}
-          </div>
-        </section>
-      )}
-      {operationalAlerts.length > 0 && (
-        <section className="space-y-2">
-          <h3 className="text-sm font-bold text-slate-600 flex items-center gap-1.5"><Bell className="size-4" /> Operational Notes</h3>
-          <div className="space-y-2">
-            {operationalAlerts.map((alert, index) => (
-              <article key={`${alert.title}-${index}`} className="bg-gradient-to-br from-slate-50 to-white border border-slate-200/80 rounded-2xl p-4 shadow-soft flex items-start justify-between gap-3 transition-shadow hover:shadow-lifted">
-                <div className="flex gap-3 items-start">
-                  <span className="flex items-center justify-center size-11 rounded-xl bg-slate-200/70 text-slate-700 font-black text-lg tabular-nums shrink-0">{alert.value}</span>
-                  <div>
-                    <h3 className="text-sm font-bold text-slate-900">{alert.title}</h3>
-                    <p className="text-xs text-slate-600 mt-0.5">{alert.note}</p>
-                    {alert.branch && <em className="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-200 text-slate-700 font-semibold mt-1.5 inline-block">{ownerBranchDisplay(alert.branch)}</em>}
-                  </div>
-                </div>
-                <button onClick={() => dismissAlert(alert)} className="text-[10px] font-semibold text-slate-600 hover:text-white hover:bg-slate-600 shrink-0 border border-slate-300 rounded-full px-2.5 py-1 transition-colors">Dismiss</button>
-              </article>
-            ))}
-          </div>
-        </section>
-      )}
-      {visible.length === 0 && <EmptyOwnerState title="No matching owner alerts" message="Critical issues will appear here automatically from sales, credit, stock, closure and dispatch flows." />}
-    </div>
-  );
-}
-
 // ── Purchases & Store Visibility Tab ─────────────────────────────────────────
 function OwnerPurchasesTab() {
   const { invoices, load } = useInvoiceStore();
@@ -3125,6 +3166,15 @@ function OwnerPurchasesTab() {
             {p.label}
           </button>
         ))}
+        {/* BUG FIX ("check the data range and see if they are seeing any
+            issues", 2026-09-26): only relative-day presets existed — no way
+            to see every purchase ever recorded in one click, same gap
+            already closed on BranchOverviewTab/OwnerCreditTab. The
+            underlying fetch is already range-scoped + paginated (fetchAllRows),
+            so a 10-year lookback is safe here too. */}
+        <button onClick={() => { setFromDate(ownerDateInput(ownerPresetStart('all'))); setToDate(ownerDateInput()); }} className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-black text-slate-600 hover:bg-slate-950 hover:text-white transition">
+          All Time
+        </button>
       </div>
 
       <section className="owner-metric-grid">
@@ -3208,20 +3258,57 @@ function OwnerPurchasesTab() {
 }
 
 function OwnerStockVarianceTab() {
-  const { stockVarianceRecords } = useBranchOpsStore();
-  // AUDIT FIX (2026-09-04): "every other tab in this file has its own Refresh
-  // button, this one didn't" (same gap already fixed on OwnerAuditTab
-  // 2026-09-02) — stockVarianceRecords only ever populates from
-  // branchOpsStore's persist-storage hydration on first mount; a variance
-  // report confirmed by SNB/VRSNB Admin after this screen loaded wouldn't
-  // show up here without a full page reload. rehydrate() re-runs the same
-  // Supabase query this store hydrates from and merges the result back in.
+  // BUG FIX ("check the data range and see if they are seeing any issues",
+  // 2026-09-26): stockVarianceRecords comes from branchOpsStore's shared
+  // rehydrate() hydration, which caps this table at .limit(2000) for owner/
+  // admin sessions (an intentional EGRESS FIX since that same hydration call
+  // also feeds branch POS screens on every mount). branch_stock_variance_records
+  // has grown to 8,324 rows — the shared cap was silently showing the Owner
+  // only the most recent ~24% of all-time variance history, with "Estimated
+  // Loss Value" computed only over that partial window and no indication
+  // anything was missing. Fetching directly here (only when this tab is
+  // actually opened) doesn't touch the shared cap used by branch POS/Admin
+  // screens elsewhere, so it can't regress their egress.
+  // PERF FIX (2026-09-26): "canceling statement due to statement timeout" —
+  // the fix above fetched the FULL table with no date bound, using
+  // fetchAllRows's default deep-OFFSET pagination (confirmed live: ~190ms
+  // per 1000-row page and rising, 9 pages = 1.5s+ every time this tab
+  // opens, on a table that only grows). Added a date-range filter (same
+  // OwnerDatePreset pattern used elsewhere on this page, default 30 days —
+  // "All Time" is still one click away) to shrink what's fetched by
+  // default, AND switched to fetchAllRows's keyset-pagination option
+  // (cursorColumn) so even a wide/"All Time" fetch stays a fast, bounded
+  // index scan per page instead of getting slower with every page like
+  // OFFSET pagination does.
+  const [preset, setPreset] = useState<OwnerDatePreset>('30d');
+  const from = useMemo(() => ownerPresetStart(preset), [preset]);
+  const to = useMemo(() => ownerEndOfToday(), [preset]);
+  const [stockVarianceRecords, setStockVarianceRecords] = useState<BranchStockVarianceRecord[]>([]);
   const [varianceRefreshing, setVarianceRefreshing] = useState(false);
   const refreshVariance = useCallback(async () => {
     setVarianceRefreshing(true);
-    await useBranchOpsStore.persist.rehydrate();
+    const { data } = await fetchAllRows<Record<string, unknown>>('branch_stock_variance_records', (q) => q
+      .select('id, branch, report_id, report_no, item_name, unit, system_qty, physical_qty, difference, reported_by, confirmed_by, created_at')
+      .gte('created_at', from.toISOString())
+      .lte('created_at', to.toISOString())
+      .order('created_at', { ascending: false }), { cursorColumn: 'created_at' });
+    setStockVarianceRecords((data || []).map((row): BranchStockVarianceRecord => ({
+      id: String(row.id),
+      branch: row.branch as Branch,
+      reportId: String(row.report_id ?? ''),
+      reportNo: String(row.report_no ?? ''),
+      itemName: String(row.item_name ?? ''),
+      unit: row.unit ? String(row.unit) : undefined,
+      systemQty: Number(row.system_qty || 0),
+      physicalQty: Number(row.physical_qty || 0),
+      difference: Number(row.difference || 0),
+      reportedBy: String(row.reported_by ?? ''),
+      confirmedBy: String(row.confirmed_by ?? ''),
+      createdAt: String(row.created_at),
+    })));
     setVarianceRefreshing(false);
-  }, []);
+  }, [from, to]);
+  useEffect(() => { void refreshVariance(); }, [refreshVariance]);
   // FEATURE (2026-08-09): "there is no price of the difference how much is
   // loss this should be highlighted" — stock variance rows only ever stored
   // quantities, no rupee value. Price the difference against the live
@@ -3257,6 +3344,15 @@ function OwnerStockVarianceTab() {
     return [...preferred, ...rest];
   }, [branchesWithData]);
   const [branchFilter, setBranchFilter] = useState<'All' | Branch>('All');
+
+  const PRESET_OPTIONS: Array<{ label: string; value: OwnerDatePreset }> = [
+    { label: 'Today',      value: 'today' },
+    { label: '7 Days',     value: '7d' },
+    { label: '15 Days',    value: '15d' },
+    { label: '1 Month',    value: '30d' },
+    { label: 'This Month', value: 'month' },
+    { label: 'All Time',   value: 'all' },
+  ];
 
   const allRows = stockVarianceRecords
     .slice()
@@ -3313,6 +3409,45 @@ function OwnerStockVarianceTab() {
         <h2 className="mt-1 font-display text-2xl font-black text-foreground">Stock Variance</h2>
       </div>
 
+      {/* FEATURE (2026-09-26): "Stock Variance tab also should show the
+          date filter" — same OwnerToolbar + preset-pill pattern used on
+          every other date-scoped Owner tab (Branch Overview, Sales &
+          Profit, etc.), for a consistent look across the dashboard. Merged
+          the Refresh/Export buttons that used to sit in their own toolbar
+          further down into this one, top-of-tab toolbar — matches where
+          every other Owner tab puts them. */}
+      <OwnerToolbar>
+        {PRESET_OPTIONS.map(option => (
+          <button key={option.value} type="button" onClick={() => setPreset(option.value)} className={cn(preset === option.value && 'is-active')}>
+            {option.label}
+          </button>
+        ))}
+        <button type="button" onClick={() => void refreshVariance()} disabled={varianceRefreshing} className="inline-flex items-center gap-1.5 disabled:opacity-60"><RefreshCw className={cn('size-4', varianceRefreshing && 'animate-spin')} />Refresh</button>
+        <button
+          type="button"
+          onClick={() =>
+            ownerCsvDownload(
+              'owner-stock-variance.csv',
+              rows.map(row => ({
+                Date: ownerFmtDateTime(row.createdAt),
+                Branch: row.branch,
+                Report: row.reportNo,
+                Item: row.itemName,
+                Unit: row.unit || '',
+                SystemQty: row.systemQty,
+                PhysicalQty: row.physicalQty,
+                Difference: row.difference,
+                LossValue: row.difference < 0 ? (row.lossValue ?? '') : '',
+                ReportedBy: row.reportedBy,
+                ConfirmedBy: row.confirmedBy,
+              })),
+            )
+          }
+        >
+          <Download className="size-4" />Export
+        </button>
+      </OwnerToolbar>
+
       <div className="flex flex-wrap gap-1.5">
         <button
           type="button"
@@ -3349,39 +3484,6 @@ function OwnerStockVarianceTab() {
         </div>
       </section>
 
-      <OwnerToolbar>
-        <button
-          type="button"
-          onClick={() => void refreshVariance()}
-          disabled={varianceRefreshing}
-          className="inline-flex items-center gap-1.5 disabled:opacity-60"
-        >
-          <RefreshCw className={cn('size-4', varianceRefreshing && 'animate-spin')} />Refresh
-        </button>
-        <button
-          type="button"
-          onClick={() =>
-            ownerCsvDownload(
-              'owner-stock-variance.csv',
-              rows.map(row => ({
-                Date: ownerFmtDateTime(row.createdAt),
-                Branch: row.branch,
-                Report: row.reportNo,
-                Item: row.itemName,
-                Unit: row.unit || '',
-                SystemQty: row.systemQty,
-                PhysicalQty: row.physicalQty,
-                Difference: row.difference,
-                LossValue: row.difference < 0 ? (row.lossValue ?? '') : '',
-                ReportedBy: row.reportedBy,
-                ConfirmedBy: row.confirmedBy,
-              })),
-            )
-          }
-        >
-          <Download className="size-4" />Export
-        </button>
-      </OwnerToolbar>
       <section className="owner-metric-grid">
         <OwnerMetricCard icon={<AlertTriangle className="size-5" />} label="Variance Lines" value={rows.length} tone="amber" />
         <OwnerMetricCard icon={<ArrowDownRight className="size-5" />} label="Short Count" value={shortCount} tone="red" />
@@ -3624,7 +3726,20 @@ const EMPTY_EVERYTHING_EXTRAS: OwnerEverythingExtras = {
   openComplaints: [], wasteEntriesToday: 0, varianceTodayCount: 0, varianceTodayShort: 0,
 };
 
+// RESILIENCE (2026-09-26): "Planner tab throws error... blank" — this feeds
+// both the Everything and Planner tabs; on a real (post-retry-inside-
+// fetchAllRows) failure it used to return EMPTY_EVERYTHING_EXTRAS once and
+// stop, leaving the tab looking blank/zeroed for the rest of the session
+// until a manual Refresh. One more retry after a short backoff here, same
+// pattern already proven elsewhere in this file.
 async function fetchOwnerEverythingExtras(): Promise<{ data: OwnerEverythingExtras; error: string | null }> {
+  const first = await fetchOwnerEverythingExtrasOnce();
+  if (!first.error) return first;
+  await new Promise((resolve) => setTimeout(resolve, 800));
+  return fetchOwnerEverythingExtrasOnce();
+}
+
+async function fetchOwnerEverythingExtrasOnce(): Promise<{ data: OwnerEverythingExtras; error: string | null }> {
   const todayStr = ownerDateInput();
   try {
     // BUG FIX (2026-09-16): "make sure this issue won't occur in future" —
@@ -3635,22 +3750,39 @@ async function fetchOwnerEverythingExtras(): Promise<{ data: OwnerEverythingExtr
     // this was silently undercounting hosurOutstandingCredit,
     // leftoverActiveItems, pendingBakeryOrders etc. on the Owner home screen
     // right now, not just a future risk. Paginated with fetchAllRows.
-    const [
-      hosurBillsRes, leftoverRes, bakeryOrdersRes, hosurOrdersRes, advancesRes, notifRes,
-      complaintsRes, kitchenWasteRes, branchWasteRes, varianceRes,
-    ] = await Promise.all([
+    // PERF FIX (2026-09-26): "why do all the tabs take time to load" /
+    // recurring 57014 statement-timeout reports (e.g. ERR-20260926-*) —
+    // this fired all 10 queries in one Promise.all, and this function is
+    // called from both the Everything tab AND the Planner tab (which ALSO
+    // fires fetchOrders + fetchLeftoverLedger alongside it) — confirmed
+    // live that a Planner tab open can have 12+ Supabase requests in
+    // flight at the same instant, which is enough concurrent load on its
+    // own to make even a small, otherwise-fast query time out. Splitting
+    // into 3 small batches (~150ms apart) caps how many of THIS function's
+    // requests are ever in flight together, without meaningfully slowing
+    // the page down.
+    const batch1 = await Promise.all([
       fetchAllRows<{ credit_amount: number; due_date: string | null }>('hosur_bills', (q) => q.select('credit_amount, due_date').gt('credit_amount', 0)),
       fetchAllRows<{ item_name: string; unit: string; delta: number }>('planner_leftover_ledger', (q) => q.select('item_name, unit, delta')),
       fetchAllRows<{ status: string }>('bakery_orders', (q) => q.select('status')),
+    ]);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    const batch2 = await Promise.all([
       fetchAllRows<{ status: string }>('hosur_orders', (q) => q.select('status')),
       supabase.from('salary_advances').select('amount').eq('cleared', false),
       supabase.from('admin_notifications').select('id, type, title, body, created_at').order('created_at', { ascending: false }).limit(8),
+    ]);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    const batch3 = await Promise.all([
       supabase.from('branch_complaint_tickets').select('id, branch, subject, priority, status, created_at').not('status', 'in', '("Resolved","Closed")').order('created_at', { ascending: false }).limit(10),
       // AUDIT FIX (2026-09-02): bare timestamp = UTC in Postgres, shifting "today" vs todayStr's IST computation.
       supabase.from('kitchen_waste_log').select('id, logged_at').gte('logged_at', `${todayStr}T00:00:00+05:30`).lte('logged_at', `${todayStr}T23:59:59+05:30`),
       supabase.from('branch_waste_logs').select('id, created_at').gte('created_at', `${todayStr}T00:00:00+05:30`).lte('created_at', `${todayStr}T23:59:59+05:30`),
       supabase.from('branch_stock_variance_records').select('id, difference, created_at').gte('created_at', `${todayStr}T00:00:00+05:30`).lte('created_at', `${todayStr}T23:59:59+05:30`),
     ]);
+    const [hosurBillsRes, leftoverRes, bakeryOrdersRes] = batch1;
+    const [hosurOrdersRes, advancesRes, notifRes] = batch2;
+    const [complaintsRes, kitchenWasteRes, branchWasteRes, varianceRes] = batch3;
     // fetchAllRows returns a plain string|null error; the still-unpaginated
     // queries below (small/bounded tables) return a PostgrestError|null —
     // normalize both shapes before reading a message off whichever fired.
@@ -3774,17 +3906,20 @@ function OwnerPlannerSummaryTab() {
 
   const loadAll = useCallback(async () => {
     setLoading(true);
-    await Promise.all([
-      fetchOrders(true, true),
-      (async () => {
-        const { data } = await fetchOwnerEverythingExtras();
-        setExtras(data);
-      })(),
-      (async () => {
-        const { rows } = await fetchLeftoverLedger();
-        setLedgerRows(rows);
-      })(),
+    // PERF FIX (2026-09-26): "Planner tab throws error, blank" / recurring
+    // statement timeouts — these 3 used to fire together via Promise.all,
+    // and fetchOwnerEverythingExtras alone fires ~10 of its own queries
+    // (now batched, see its own fix), so this tab could put well over a
+    // dozen requests in flight at once. Staggered the 3 top-level loads too
+    // so this tab's own peak concurrency stays low regardless.
+    await fetchOrders(true, true);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const [{ data: extrasData }, { rows: leftoverRows }] = await Promise.all([
+      fetchOwnerEverythingExtras(),
+      fetchLeftoverLedger(),
     ]);
+    setExtras(extrasData);
+    setLedgerRows(leftoverRows);
     refreshLeftover();
     setLoading(false);
   }, [fetchOrders, refreshLeftover]);
@@ -4021,12 +4156,25 @@ function OwnerPlannerSummaryTab() {
   );
 }
 
+// FEATURE (2026-09-26): "Merge Owner Alerts tab and Everything tab and show
+// all the data... when they click view all they should see all the data
+// this tab should store 7 days data only" — this used to be two separate
+// tabs (OwnerAlertsTab and OwnerEverythingTab) built from two overlapping-
+// but-different alert pipelines. Merged into one: OwnerEverythingTab now
+// owns both data sources, combines them into a single OwnerAlert[] list,
+// and defaults to showing only the last 7 days of dated items (current-
+// state flags like "3 branches haven't closed today" have no date and are
+// always shown, since they describe right-now truth, not a past event) —
+// a "View All" toggle removes that window entirely. The standalone Owner
+// Alerts tab/route is removed (see the tab list below and WorkspaceChrome.tsx).
 function OwnerEverythingTab() {
   const orders = useOrderStore(s => s.orders);
   const startPolling = useOrderStore(s => s.startPolling);
   const stopPolling = useOrderStore(s => s.stopPolling);
-  const { bills, returns, purchasePayments, bankDeposits, cashierClosures, cashMovements, fetchBillsInRange } = useBranchOpsStore();
+  const { bills, returns, purchasePayments, bankDeposits, cashierClosures, cashMovements, purchases, notifications, storeOrders, fetchBillsInRange } = useBranchOpsStore();
   const { orders: poOrders, load: loadPOs } = useStorePurchaseOrderStore();
+  const { creditSales, fetchBranchData, fetchStockMismatches } = useBranchStore();
+  const { invoices, load: loadInvoices } = useInvoiceStore();
   const today = ownerDateInput();
   const ownerLedger = useBranchLedger(today, today, ['VRSNB', 'SNB', 'Hosur']);
   const hosurSales = useHosurSalesSummary(today, today);
@@ -4050,10 +4198,16 @@ function OwnerEverythingTab() {
     setExtrasLoading(false);
   }, []);
 
+  // PERF FIX (2026-09-26): "why do all the tabs take time to load" — this
+  // now owns 7 independent data sources (its own + Alerts' former ones).
+  // Staggered across a few ticks so this tab never fires them all in the
+  // same instant — same pattern used elsewhere on this page.
   useEffect(() => { startPolling(60); return () => stopPolling(); }, [startPolling, stopPolling]);
   useEffect(() => { void fetchBillsInRange(today, today); }, [today, fetchBillsInRange]);
-  useEffect(() => { void loadPOs(); }, [loadPOs]);
   useEffect(() => { void loadExtras(); }, [loadExtras]);
+  useEffect(() => { const t = setTimeout(() => { void loadPOs(); void loadInvoices(); }, 120); return () => clearTimeout(t); }, [loadPOs, loadInvoices]);
+  useEffect(() => { const t = setTimeout(() => { void fetchStockMismatches(); }, 240); return () => clearTimeout(t); }, [fetchStockMismatches]);
+  useEffect(() => { const t = setTimeout(() => fetchBranchDataStaggered(fetchBranchData), 360); return () => clearTimeout(t); }, [fetchBranchData]);
 
   const rows = useMemo(
     () => buildOwnerClosureRows(today, 'all', { orders, ownerLedger, bills, returns, purchasePayments, bankDeposits, cashierClosures, cashMovements, hosurSales }),
@@ -4071,17 +4225,42 @@ function OwnerEverythingTab() {
   const netCashPosition = totals.cash - totals.expenses;
   const pendingPOs = poOrders.filter(po => po.status === 'pending_approval').length;
 
-  const attentionItems: { icon: React.ReactNode; title: string; detail: string; tone: OwnerAlertTone }[] = [];
-  if (totals.mismatches > 0) attentionItems.push({ icon: <AlertTriangle className="size-4" />, title: `${totals.mismatches} branch${totals.mismatches === 1 ? '' : 'es'} closed with a cash difference today`, detail: `Total difference ${formatCurrency(totals.diff)} — check Daily Closure for which branch.`, tone: 'danger' });
-  if (totals.pendingClosures > 0) attentionItems.push({ icon: <Clock className="size-4" />, title: `${totals.pendingClosures} branch${totals.pendingClosures === 1 ? '' : 'es'} haven't closed out today yet`, detail: 'No closing-cash count submitted for today.', tone: 'warning' });
-  if (pendingPOs > 0) attentionItems.push({ icon: <ClipboardList className="size-4" />, title: `${pendingPOs} purchase order${pendingPOs === 1 ? '' : 's'} waiting on your approval`, detail: 'Store raised these and is blocked until you review them.', tone: 'warning' });
-  if (extras.hosurOverdueCount > 0) attentionItems.push({ icon: <IndianRupee className="size-4" />, title: `${extras.hosurOverdueCount} Hosur shop bill${extras.hosurOverdueCount === 1 ? '' : 's'} overdue`, detail: `${formatCurrency(extras.hosurOverdueCredit)} past its due date, out of ${formatCurrency(extras.hosurOutstandingCredit)} total credit outstanding.`, tone: 'danger' });
-  if (extras.leftoverLowItems.length > 0) attentionItems.push({ icon: <PackageSearch className="size-4" />, title: `${extras.leftoverLowItems.length} item${extras.leftoverLowItems.length === 1 ? '' : 's'} out of Closing Stock`, detail: extras.leftoverLowItems.map(i => i.itemName).slice(0, 4).join(', '), tone: 'warning' });
-  if (extras.readyToDispatchOrders > 0) attentionItems.push({ icon: <Truck className="size-4" />, title: `${extras.readyToDispatchOrders} order${extras.readyToDispatchOrders === 1 ? '' : 's'} produced and waiting to be dispatched`, detail: 'Sitting in Planner Dispatch right now.', tone: 'neutral' });
-  if (extras.outstandingAdvances > 0) attentionItems.push({ icon: <Users className="size-4" />, title: `${formatCurrency(extras.outstandingAdvances)} in staff salary advances not yet cleared`, detail: 'Across all employees — see Staff & Payroll.', tone: 'neutral' });
-  if (extras.openComplaints.length > 0) attentionItems.push({ icon: <AlertTriangle className="size-4" />, title: `${extras.openComplaints.length} open complaint${extras.openComplaints.length === 1 ? '' : 's'} from branch admins`, detail: extras.openComplaints.slice(0, 3).map(c => `${c.branch}: ${c.subject}`).join(' · '), tone: extras.openComplaints.some(c => /high|urgent/i.test(c.priority)) ? 'danger' : 'warning' });
-  if (extras.varianceTodayShort > 0) attentionItems.push({ icon: <AlertTriangle className="size-4" />, title: `${extras.varianceTodayShort} stock item${extras.varianceTodayShort === 1 ? '' : 's'} short on today's physical count`, detail: `${extras.varianceTodayCount} variance line${extras.varianceTodayCount === 1 ? '' : 's'} recorded today in total — see Stock Variance.`, tone: 'warning' });
-  extras.recentNotifications.slice(0, 5).forEach(n => attentionItems.push({ icon: <Bell className="size-4" />, title: n.title || n.type, detail: `${n.body ? n.body + ' — ' : ''}${ownerFmtDateTime(n.createdAt)}`, tone: 'neutral' }));
+  // Combined alert list — current-state flags (no createdAt, always shown)
+  // followed by dated events (createdAt set, subject to the 7-day window).
+  const alerts: OwnerAlert[] = useMemo(() => {
+    const todayStr = ownerDateInput();
+    const list: OwnerAlert[] = [];
+    if (totals.mismatches > 0) list.push({ title: `${totals.mismatches} branch${totals.mismatches === 1 ? '' : 'es'} closed with a cash difference today`, value: String(totals.mismatches), note: `Total difference ${formatCurrency(totals.diff)} — check Daily Closure for which branch.`, tone: 'danger' });
+    if (totals.pendingClosures > 0) list.push({ title: `${totals.pendingClosures} branch${totals.pendingClosures === 1 ? '' : 'es'} haven't closed out today yet`, value: String(totals.pendingClosures), note: 'No closing-cash count submitted for today.', tone: 'warning' });
+    if (pendingPOs > 0) list.push({ title: `${pendingPOs} purchase order${pendingPOs === 1 ? '' : 's'} waiting on your approval`, value: String(pendingPOs), note: 'Store raised these and is blocked until you review them.', tone: 'warning' });
+    if (extras.hosurOverdueCount > 0) list.push({ title: `${extras.hosurOverdueCount} Hosur shop bill${extras.hosurOverdueCount === 1 ? '' : 's'} overdue`, value: String(extras.hosurOverdueCount), note: `${formatCurrency(extras.hosurOverdueCredit)} past its due date, out of ${formatCurrency(extras.hosurOutstandingCredit)} total credit outstanding.`, tone: 'danger' });
+    if (extras.leftoverLowItems.length > 0) list.push({ title: `${extras.leftoverLowItems.length} item${extras.leftoverLowItems.length === 1 ? '' : 's'} out of Closing Stock`, value: String(extras.leftoverLowItems.length), note: extras.leftoverLowItems.map(i => i.itemName).slice(0, 4).join(', '), tone: 'warning' });
+    if (extras.readyToDispatchOrders > 0) list.push({ title: `${extras.readyToDispatchOrders} order${extras.readyToDispatchOrders === 1 ? '' : 's'} produced and waiting to be dispatched`, value: String(extras.readyToDispatchOrders), note: 'Sitting in Planner Dispatch right now.', tone: 'neutral' });
+    if (extras.outstandingAdvances > 0) list.push({ title: `${formatCurrency(extras.outstandingAdvances)} in staff salary advances not yet cleared`, value: formatCurrency(extras.outstandingAdvances), note: 'Across all employees — see Staff & Payroll.', tone: 'neutral' });
+    if (extras.varianceTodayShort > 0) list.push({ title: `${extras.varianceTodayShort} stock item${extras.varianceTodayShort === 1 ? '' : 's'} short on today's physical count`, value: String(extras.varianceTodayShort), note: `${extras.varianceTodayCount} variance line${extras.varianceTodayCount === 1 ? '' : 's'} recorded today in total — see Stock Variance.`, tone: 'warning' });
+    const pendingPurchases = purchases.filter(p => (p.syncStatus || 'Not Synced') !== 'Synced');
+    if (pendingPurchases.length) list.push({ title: 'Purchase stock sync pending', value: String(pendingPurchases.length), note: 'Purchased quantities not fully reflected in stock', tone: 'warning' });
+    const pendingInvoice = invoices.filter(i => i.status === 'pending_review');
+    if (pendingInvoice.length) list.push({ title: 'Store invoices pending review', value: String(pendingInvoice.length), note: 'Owner can review purchase exposure', tone: 'warning' });
+    const poDiscrepancyGRNs = invoices.filter(i => (i.notes || '').startsWith('⚠ PO DISCREPANCY'));
+    if (poDiscrepancyGRNs.length) list.push({ title: 'GRNs differ from approved PO', value: String(poDiscrepancyGRNs.length), note: poDiscrepancyGRNs.map(i => i.invoiceNumber).join(', '), tone: 'danger' });
+    const pendingDispatch = storeOrders.filter(o => ['Pending Store Confirmation', 'Confirmed', 'Ready'].includes(o.status));
+    if (pendingDispatch.length) list.push({ title: 'Pending dispatch / store orders', value: String(pendingDispatch.length), note: 'Packing or store confirmation pending', tone: 'neutral' });
+    OWNER_FULL_BRANCHES.forEach(branch => {
+      const dbCredits = (creditSales[branch] || []).filter(c => c.status !== 'settled' && c.dueDate && new Date(c.dueDate) < new Date());
+      if (dbCredits.length) list.push({ title: 'Overdue branch credit', value: String(dbCredits.length), note: `${ownerBranchDisplay(branch)} credit due follow-up`, tone: 'danger', branch });
+    });
+
+    extras.recentNotifications.forEach(n => list.push({ title: n.title || n.type, value: '', note: n.body || '', tone: 'neutral', createdAt: n.createdAt }));
+    notifications.filter(n => n.status !== 'Resolved').forEach(n => list.push({ title: n.title, value: n.status, note: `${ownerBranchDisplay(n.branch)} · ${n.details}`, tone: n.type === 'Stock Dispute' ? 'danger' : 'neutral', branch: n.branch, createdAt: n.createdAt }));
+    extras.openComplaints.forEach(c => list.push({ title: `Open complaint — ${c.subject}`, value: c.branch, note: `${c.branch}: ${c.subject}`, tone: /high|urgent/i.test(c.priority) ? 'danger' : 'warning', branch: c.branch, createdAt: c.createdAt }));
+    const todayReturnsTotal = returns.filter(r => ownerLocalDay(r.createdAt) === todayStr);
+    if (todayReturnsTotal.reduce((s, r) => s + r.total, 0) > 0) list.push({ title: 'Return amount today', value: formatCurrency(todayReturnsTotal.reduce((s, r) => s + r.total, 0)), note: 'Review reasons and staff notes', tone: 'warning', createdAt: todayReturnsTotal[0]?.createdAt });
+    const cancelledToday = orders.filter(o => o.status === 'cancelled' && ownerLocalDay(o.createdAt) === todayStr);
+    if (cancelledToday.length) list.push({ title: 'Cafe cancelled orders', value: String(cancelledToday.length), note: 'Check wastage or service gaps', tone: 'neutral', createdAt: cancelledToday[0]?.createdAt });
+
+    return list;
+  }, [totals, pendingPOs, extras, purchases, invoices, storeOrders, creditSales, notifications, returns, orders]);
 
   // Android app: fire a local notification the moment a genuinely NEW
   // urgent ('danger') item shows up — e.g. a fresh cash mismatch or newly
@@ -4091,7 +4270,7 @@ function OwnerEverythingTab() {
   // wasn't in the previous set fires. No-op on the web build.
   const seenDangerTitlesRef = useRef<Set<string>>(new Set());
   const hasRunOnceRef = useRef(false);
-  const dangerTitlesKey = attentionItems.filter(a => a.tone === 'danger').map(a => a.title).join('|');
+  const dangerTitlesKey = alerts.filter(a => a.tone === 'danger').map(a => a.title).join('|');
   useEffect(() => {
     if (extrasLoading) return;
     const dangerTitles = dangerTitlesKey ? dangerTitlesKey.split('|') : [];
@@ -4107,12 +4286,58 @@ function OwnerEverythingTab() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dangerTitlesKey, extrasLoading]);
 
-  const toneClass: Record<OwnerAlertTone, string> = {
-    danger: 'border-red-200 bg-red-50 text-red-800',
-    warning: 'border-amber-200 bg-amber-50 text-amber-800',
-    neutral: 'border-slate-200 bg-slate-50 text-slate-700',
-    success: 'border-emerald-200 bg-emerald-50 text-emerald-800',
-  };
+  const [tone, setTone] = useState<'all' | OwnerAlertTone>('all');
+  const [showAllAlerts, setShowAllAlerts] = useState(false);
+  const [dismissed, setDismissed] = useState<Set<string>>(() => {
+    try { return new Set(JSON.parse(localStorage.getItem('owner-dismissed-alerts') || '[]') as string[]); } catch { return new Set(); }
+  });
+  const dismissAlert = (a: OwnerAlert) => setDismissed(prev => {
+    const next = new Set([...prev, `${a.title}-${a.branch ?? ''}`]);
+    localStorage.setItem('owner-dismissed-alerts', JSON.stringify([...next]));
+    return next;
+  });
+
+  const sevenDaysAgo = useMemo(() => { const d = new Date(); d.setDate(d.getDate() - 7); d.setHours(0, 0, 0, 0); return d; }, []);
+  // DATA FIX (2026-09-26, found live): branch-raised notifications
+  // (Stock Dispute, Advance Order, Stock Variance, Stock Count, closure)
+  // essentially never get marked "Resolved" in normal use — confirmed live,
+  // 218 unresolved in the last 7 days alone. Left uncapped, those alone
+  // would fill "Critical"/"Operational" and bury real alerts. The 7-day
+  // window (below) doesn't help here since ALL of them are within 7 days.
+  // Default view caps each tone group to the 10 most recent; "View All"
+  // (same toggle as the 7-day window) removes this cap too, so nothing is
+  // ever permanently hidden — it's a default-view cap, not a data limit.
+  const ALERT_GROUP_CAP = 10;
+  const withinWindow = useMemo(() => alerts
+    .filter(a => (tone === 'all' || a.tone === tone) && !dismissed.has(`${a.title}-${a.branch ?? ''}`))
+    .filter(a => showAllAlerts || !a.createdAt || new Date(a.createdAt) >= sevenDaysAgo),
+  [alerts, tone, dismissed, showAllAlerts, sevenDaysAgo]);
+  const olderAlertsCount = alerts.filter(a => a.createdAt && new Date(a.createdAt) < sevenDaysAgo).length;
+  const criticalAllInWindow = withinWindow.filter(a => a.tone === 'danger');
+  const warningAllInWindow = withinWindow.filter(a => a.tone === 'warning');
+  const operationalAllInWindow = withinWindow.filter(a => a.tone === 'neutral');
+  const criticalAlerts = showAllAlerts ? criticalAllInWindow : criticalAllInWindow.slice(0, ALERT_GROUP_CAP);
+  const warningAlerts = showAllAlerts ? warningAllInWindow : warningAllInWindow.slice(0, ALERT_GROUP_CAP);
+  const operationalAlerts = showAllAlerts ? operationalAllInWindow : operationalAllInWindow.slice(0, ALERT_GROUP_CAP);
+  const visibleAlerts = [...criticalAlerts, ...warningAlerts, ...operationalAlerts];
+  const hiddenByGroupCap = criticalAllInWindow.length - criticalAlerts.length + warningAllInWindow.length - warningAlerts.length + operationalAllInWindow.length - operationalAlerts.length;
+  const branchesWithAlerts = new Set(alerts.filter(a => a.branch).map(a => a.branch)).size;
+
+  const [alertsRefreshing, setAlertsRefreshing] = useState(false);
+  const refreshAlerts = useCallback(async () => {
+    setAlertsRefreshing(true);
+    await Promise.all([
+      loadExtras(),
+      ownerLedger.refresh(),
+      loadPOs(),
+      loadInvoices(),
+      fetchStockMismatches(),
+      ...OWNER_FULL_BRANCHES.map(branch => fetchBranchData(branch, true)),
+      useBranchOpsStore.persist.rehydrate(),
+    ]);
+    setAlertsRefreshing(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loadExtras, loadPOs, loadInvoices, fetchStockMismatches, fetchBranchData]);
 
   return (
     <div className="owner-tab-stack">
@@ -4123,9 +4348,9 @@ function OwnerEverythingTab() {
               <p className="owner-hero-greeting">{ownerGreeting()}, {heroUser?.displayName || heroUser?.username || 'Owner'}</p>
               <span className="owner-hero-date">{ownerLongDate()}</span>
             </div>
-            <span className={cn('owner-hero-status', attentionItems.some(a => a.tone === 'danger') ? 'is-danger' : attentionItems.length ? 'is-warning' : 'is-clear')}>
-              {attentionItems.some(a => a.tone === 'danger') ? <span className="owner-hero-status-dot" /> : null}
-              {attentionItems.length === 0 ? 'All clear' : `${attentionItems.length} to review`}
+            <span className={cn('owner-hero-status', criticalAlerts.length ? 'is-danger' : visibleAlerts.length ? 'is-warning' : 'is-clear')}>
+              {criticalAlerts.length ? <span className="owner-hero-status-dot" /> : null}
+              {visibleAlerts.length === 0 ? 'All clear' : `${visibleAlerts.length} to review`}
             </span>
           </div>
           <div className="owner-hero-figures">
@@ -4142,8 +4367,11 @@ function OwnerEverythingTab() {
       )}
       <OwnerToolbar>
         <span className="text-xs font-bold text-muted-foreground">Everything as of right now — {ownerFmtDateTime(new Date().toISOString())}</span>
-        <button type="button" onClick={() => { void loadExtras(); void ownerLedger.refresh(); void loadPOs(); }} disabled={extrasLoading} className="ml-auto inline-flex items-center gap-1.5 disabled:opacity-60">
-          <RefreshCw className={cn('size-4', extrasLoading && 'animate-spin')} />Refresh
+        <button type="button" onClick={() => void refreshAlerts()} disabled={alertsRefreshing} className="ml-auto inline-flex items-center gap-1.5 disabled:opacity-60">
+          <RefreshCw className={cn('size-4', alertsRefreshing && 'animate-spin')} />Refresh
+        </button>
+        <button type="button" onClick={() => ownerCsvDownload('owner-alerts.csv', visibleAlerts.map(a => ({ Alert: a.title, Value: a.value, Branch: a.branch || 'Business', Tone: a.tone, Details: a.note, Date: a.createdAt ? ownerFmtDateTime(a.createdAt) : '' })))}>
+          <Download className="size-4" />Export
         </button>
       </OwnerToolbar>
 
@@ -4157,24 +4385,96 @@ function OwnerEverythingTab() {
         <OwnerMetricCard icon={<Receipt className="size-5" />} label="Net Sales Today" value={formatCurrency(totals.netSales)} tone="green" sub="Cafe + SNB + VRSNB + Hosur" />
         <OwnerMetricCard icon={<Banknote className="size-5" />} label="Cash Position" value={formatCurrency(netCashPosition)} tone={netCashPosition >= 0 ? 'blue' : 'red'} sub="Cash collected minus expenses" />
         <OwnerMetricCard icon={<IndianRupee className="size-5" />} label="Hosur Credit Outstanding" value={formatCurrency(extras.hosurOutstandingCredit)} tone={extras.hosurOverdueCount > 0 ? 'red' : 'amber'} sub={extras.hosurOverdueCount > 0 ? `${formatCurrency(extras.hosurOverdueCredit)} overdue` : 'Nothing overdue'} />
-        <OwnerMetricCard icon={<AlertTriangle className="size-5" />} label="Needs Attention" value={attentionItems.length} tone={attentionItems.some(a => a.tone === 'danger') ? 'red' : attentionItems.length ? 'amber' : 'green'} sub={attentionItems.length ? 'Scroll down for the full list' : 'Nothing urgent right now'} />
+        <OwnerMetricCard icon={<AlertTriangle className="size-5" />} label="Needs Attention" value={visibleAlerts.length} tone={criticalAlerts.length ? 'red' : visibleAlerts.length ? 'amber' : 'green'} sub={visibleAlerts.length ? 'Scroll down for the full list' : 'Nothing urgent right now'} />
       </section>
 
       <section>
-        <h3 className="mb-2 text-sm font-black text-foreground">Needs Your Attention</h3>
-        {attentionItems.length === 0 ? (
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+          <h3 className="text-sm font-black text-foreground">Needs Your Attention</h3>
+          <div className="flex flex-wrap items-center gap-1.5">
+            {(['all', 'danger', 'warning', 'neutral'] as const).map(option => (
+              <button key={option} type="button" onClick={() => setTone(option)} className={cn('rounded-full border px-2.5 py-1 text-[11px] font-black capitalize transition-colors', tone === option ? 'border-slate-950 bg-slate-950 text-white' : 'border-border bg-card text-muted-foreground hover:text-foreground')}>
+                {option === 'all' ? 'All' : option}
+              </button>
+            ))}
+          </div>
+        </div>
+        {/* FEATURE (2026-09-26): "this tab should store 7 days data only ...
+            when they click view all they should see all the data" — dated
+            items are capped to the last 7 days by default; current-state
+            flags (no date) always show regardless. Also caps each tone
+            group to 10 by default (see ALERT_GROUP_CAP above) since some
+            categories — branch notifications especially — never get marked
+            resolved and would otherwise flood this list within the 7-day
+            window alone. */}
+        {!showAllAlerts && (olderAlertsCount > 0 || hiddenByGroupCap > 0) && (
+          <button type="button" onClick={() => setShowAllAlerts(true)} className="mb-2 w-full rounded-xl border border-dashed border-border bg-card py-2 text-xs font-black text-muted-foreground hover:bg-slate-50">
+            Showing last 7 days, {ALERT_GROUP_CAP} per group — View All ({olderAlertsCount + hiddenByGroupCap} more item{olderAlertsCount + hiddenByGroupCap === 1 ? '' : 's'} hidden)
+          </button>
+        )}
+        {showAllAlerts && (
+          <button type="button" onClick={() => setShowAllAlerts(false)} className="mb-2 w-full rounded-xl border border-dashed border-border bg-card py-2 text-xs font-black text-muted-foreground hover:bg-slate-50">
+            Showing all time — click to collapse back to last 7 days
+          </button>
+        )}
+        {visibleAlerts.length === 0 ? (
           <EmptyOwnerState title="All clear" message="No mismatches, no overdue credit, no pending approvals, no stock-outs right now." />
         ) : (
-          <div className="space-y-2">
-            {attentionItems.map((item, i) => (
-              <div key={i} className={cn('flex items-start gap-2.5 rounded-xl border px-3 py-2.5', toneClass[item.tone])}>
-                <span className="mt-0.5 shrink-0">{item.icon}</span>
-                <div className="min-w-0">
-                  <p className="text-xs font-black leading-snug">{item.title}</p>
-                  {item.detail && <p className="mt-0.5 text-[11px] font-semibold opacity-80">{item.detail}</p>}
-                </div>
+          <div className="space-y-4">
+            {criticalAlerts.length > 0 && (
+              <div className="space-y-2">
+                <h4 className="flex items-center gap-1.5 text-xs font-black text-red-700"><XCircle className="size-3.5" /> Critical</h4>
+                {criticalAlerts.map((a, i) => (
+                  <div key={`c-${i}`} className="flex items-start justify-between gap-2.5 rounded-xl border border-red-200 bg-red-50 px-3 py-2.5">
+                    <div className="flex min-w-0 items-start gap-2.5">
+                      <AlertTriangle className="mt-0.5 size-4 shrink-0 text-red-700" />
+                      <div className="min-w-0">
+                        <p className="text-xs font-black leading-snug text-red-900">{a.title}</p>
+                        {a.note && <p className="mt-0.5 text-[11px] font-semibold text-red-700/90">{a.note}</p>}
+                        {a.branch && <em className="mt-1 inline-block rounded-full bg-red-100 px-1.5 py-0.5 text-[10px] font-semibold text-red-800">{ownerBranchDisplay(a.branch)}</em>}
+                      </div>
+                    </div>
+                    <button onClick={() => dismissAlert(a)} className="shrink-0 rounded-full border border-red-200 px-2.5 py-1 text-[10px] font-semibold text-red-600 hover:bg-red-600 hover:text-white">Dismiss</button>
+                  </div>
+                ))}
               </div>
-            ))}
+            )}
+            {warningAlerts.length > 0 && (
+              <div className="space-y-2">
+                <h4 className="flex items-center gap-1.5 text-xs font-black text-amber-700"><AlertTriangle className="size-3.5" /> Warning</h4>
+                {warningAlerts.map((a, i) => (
+                  <div key={`w-${i}`} className="flex items-start justify-between gap-2.5 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5">
+                    <div className="flex min-w-0 items-start gap-2.5">
+                      <Clock className="mt-0.5 size-4 shrink-0 text-amber-700" />
+                      <div className="min-w-0">
+                        <p className="text-xs font-black leading-snug text-amber-900">{a.title}</p>
+                        {a.note && <p className="mt-0.5 text-[11px] font-semibold text-amber-700/90">{a.note}</p>}
+                        {a.branch && <em className="mt-1 inline-block rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800">{ownerBranchDisplay(a.branch)}</em>}
+                      </div>
+                    </div>
+                    <button onClick={() => dismissAlert(a)} className="shrink-0 rounded-full border border-amber-200 px-2.5 py-1 text-[10px] font-semibold text-amber-600 hover:bg-amber-600 hover:text-white">Dismiss</button>
+                  </div>
+                ))}
+              </div>
+            )}
+            {operationalAlerts.length > 0 && (
+              <div className="space-y-2">
+                <h4 className="flex items-center gap-1.5 text-xs font-black text-slate-600"><Bell className="size-3.5" /> Operational</h4>
+                {operationalAlerts.map((a, i) => (
+                  <div key={`o-${i}`} className="flex items-start justify-between gap-2.5 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5">
+                    <div className="flex min-w-0 items-start gap-2.5">
+                      <Bell className="mt-0.5 size-4 shrink-0 text-slate-600" />
+                      <div className="min-w-0">
+                        <p className="text-xs font-black leading-snug text-slate-900">{a.title}</p>
+                        {a.note && <p className="mt-0.5 text-[11px] font-semibold text-slate-600">{a.note}</p>}
+                        {a.branch && <em className="mt-1 inline-block rounded-full bg-slate-200 px-1.5 py-0.5 text-[10px] font-semibold text-slate-700">{ownerBranchDisplay(a.branch)}</em>}
+                      </div>
+                    </div>
+                    <button onClick={() => dismissAlert(a)} className="shrink-0 rounded-full border border-slate-300 px-2.5 py-1 text-[10px] font-semibold text-slate-600 hover:bg-slate-600 hover:text-white">Dismiss</button>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
       </section>
@@ -4253,7 +4553,6 @@ type OwnerDashboardTab =
   | 'poApprovals'
   | 'closure'
   | 'variance'
-  | 'alerts'
   | 'attendance'
   | 'waste'
   | 'complaints'
@@ -4270,7 +4569,7 @@ export default function OwnerDashboard() {
   const defaultTab: OwnerDashboardTab = native ? 'branches' : 'everything';
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedTab = searchParams.get('tab') as OwnerDashboardTab | null;
-  const ownerTabIds = useMemo<OwnerDashboardTab[]>(() => ['everything', 'branches', 'sales', 'credit', 'purchases', 'poApprovals', 'closure', 'variance', 'alerts', 'attendance', 'waste', 'complaints', 'audit', 'planner'], []);
+  const ownerTabIds = useMemo<OwnerDashboardTab[]>(() => ['everything', 'branches', 'sales', 'credit', 'purchases', 'poApprovals', 'closure', 'variance', 'attendance', 'waste', 'complaints', 'audit', 'planner'], []);
   const initialTab = requestedTab && ownerTabIds.includes(requestedTab) ? requestedTab : defaultTab;
   const [tab, setTab] = useState<OwnerDashboardTab>(initialTab);
   const selectTab = (next: OwnerDashboardTab) => {
@@ -4328,14 +4627,15 @@ export default function OwnerDashboard() {
     { id: 'poApprovals', label: 'PO Approvals',      icon: <ClipboardList className="size-4" />, hint: 'Approve or reject Store purchase orders' },
     { id: 'closure',    label: 'Daily Closure',      icon: <WalletCards   className="size-4" />, hint: 'All unit closing status' },
     { id: 'variance',   label: 'Stock Variance',     icon: <AlertTriangle className="size-4" />, hint: 'Physical stock differences' },
-    { id: 'alerts',     label: 'Owner Alerts',       icon: <Bell          className="size-4" />, hint: 'Actionable risks' },
     { id: 'attendance', label: 'Staff & Payroll',    icon: <CalendarCheck className="size-4" />, hint: 'Attendance and advances' },
     { id: 'waste',      label: 'Waste & Loss',       icon: <Trash2        className="size-4" />, hint: 'Kitchen loss control' },
     { id: 'complaints', label: 'Complaints',          icon: <AlertTriangle className="size-4" />, hint: 'Branch admin complaints' },
     { id: 'audit',      label: 'Audit Logs',          icon: <ShieldCheck   className="size-4" />, hint: 'Sensitive action history' },
     { id: 'planner',    label: 'Planner',             icon: <Factory       className="size-4" />, hint: 'Read-only production & dispatch summary' },
     // Moved to last (2026-08-12, explicit owner request).
-    { id: 'everything', label: 'Everything',         icon: <Layers        className="size-4" />, hint: 'Your full business, one screen' },
+    // FEATURE (2026-09-26): "merge Owner Alerts and Everything" — this now
+    // owns both, so the label/hint reflects that.
+    { id: 'everything', label: 'Everything & Alerts', icon: <Layers        className="size-4" />, hint: 'Your full business + every alert, one screen' },
   ];
 
   const content = (
@@ -4348,7 +4648,6 @@ export default function OwnerDashboard() {
       {tab === 'poApprovals' && <OwnerPOApprovalsTab />}
       {tab === 'closure'    && <OwnerDailyClosureTab />}
       {tab === 'variance'   && <OwnerStockVarianceTab />}
-      {tab === 'alerts'     && <OwnerAlertsTab />}
       {tab === 'attendance' && <AttendanceSalaryTab />}
       {tab === 'waste'      && <WasteLogsTab />}
       {tab === 'complaints' && <OwnerComplaintsTab />}

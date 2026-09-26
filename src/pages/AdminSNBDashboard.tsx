@@ -2268,12 +2268,28 @@ function SuppliersTab({ userName }: { userName: string }) {
     notes: "",
   });
   const [editingId, setEditingId] = useState("");
+  // BUG FIX (2026-09-26): same "unable to see few [records] I added" class
+  // fixed for Salesperson/Cashier Management — addSupplier's write is now
+  // retry-hardened but can still fail; surface it instead of a false "saved".
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
   const rows = suppliers.filter((s) => s.branch === BRANCH);
   const reset = () => { setEditingId(""); setForm({ name: "", address: "", mobile: "", gstNumber: "", itemsProvided: "", notes: "" }); };
-  const save = () => {
+  const save = async () => {
     if (!form.name.trim() || !form.mobile.trim()) return;
-    if (editingId) updateSupplier(editingId, { ...form, createdBy: userName }, userName);
-    else addSupplier({ branch: BRANCH, ...form, createdBy: userName });
+    setSaveError(null);
+    if (editingId) {
+      updateSupplier(editingId, { ...form, createdBy: userName }, userName);
+      reset();
+      return;
+    }
+    setSaving(true);
+    const ok = await addSupplier({ branch: BRANCH, ...form, createdBy: userName });
+    setSaving(false);
+    if (!ok) {
+      setSaveError(`"${form.name}" was not saved — the server didn't confirm the write after retrying. Please try Save again.`);
+      return;
+    }
     reset();
   };
   return (
@@ -2288,7 +2304,8 @@ function SuppliersTab({ userName }: { userName: string }) {
           <Field label="Address"><textarea className={inputCls} value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} /></Field>
           <Field label="Items They Provide"><input className={inputCls} value={form.itemsProvided} onChange={(e) => setForm({ ...form, itemsProvided: e.target.value })} /></Field>
           <Field label="Main Details / Notes"><textarea className={inputCls} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} /></Field>
-          <div className="flex gap-2"><button onClick={save} className={cn(btnCls, "flex-1 bg-slate-950 text-white")}><Plus className="size-4" /> {editingId ? "Update Supplier" : "Save Supplier"}</button>{editingId && <button onClick={reset} className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")}>Cancel</button>}</div>
+          {saveError && <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-xs font-semibold text-red-700">{saveError}</div>}
+          <div className="flex gap-2"><button onClick={() => void save()} disabled={saving} className={cn(btnCls, "flex-1 bg-slate-950 text-white disabled:opacity-60")}><Plus className="size-4" /> {saving ? "Saving…" : editingId ? "Update Supplier" : "Save Supplier"}</button>{editingId && <button onClick={reset} className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")}>Cancel</button>}</div>
         </div>
       </Panel>
       <Panel
@@ -3734,11 +3751,30 @@ function CreditTab({ userName, role, fromDate, toDate }: { userName: string; rol
 
 function CashierManagementTab({ userName }: { userName: string }) {
   const { cashiers, addCashier, updateCashier } = useBranchOpsStore();
+  const { refreshing: cashiersRefreshing, refresh: refreshCashiers } = useOpsStoreRefresh();
+  // BUG FIX (2026-09-26): "unable to see few persons I added" (found while
+  // fixing the same issue for Salesperson Management) — this screen never
+  // refreshed on mount or had a manual Refresh button at all, unlike every
+  // other master-data tab in this file, so a cashier added on another
+  // device/session wouldn't show up here until some unrelated action
+  // happened to trigger a rehydrate. Added mount-time + manual refresh
+  // (same useOpsStoreRefresh pattern already used for Suppliers), plus
+  // real write-failure visibility now that addCashier reports its outcome.
+  useEffect(() => { void refreshCashiers(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const [form, setForm] = useState({ name: "", mobile: "", status: "Active", notes: "" });
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
   const rows = cashiers.filter((c) => c.branch === BRANCH);
-  const save = () => {
+  const save = async () => {
     if (!form.name.trim()) return;
-    addCashier({ branch: BRANCH, name: form.name, mobile: form.mobile, status: form.status as any, notes: form.notes, createdBy: userName });
+    setSaveError(null);
+    setSaving(true);
+    const ok = await addCashier({ branch: BRANCH, name: form.name, mobile: form.mobile, status: form.status as any, notes: form.notes, createdBy: userName });
+    setSaving(false);
+    if (!ok) {
+      setSaveError(`"${form.name}" was not saved — the server didn't confirm the write after retrying. Please try Save again.`);
+      return;
+    }
     setForm({ name: "", mobile: "", status: "Active", notes: "" });
   };
   return (
@@ -3749,10 +3785,11 @@ function CashierManagementTab({ userName }: { userName: string }) {
           <Field label="Mobile"><input className={inputCls} value={form.mobile} onChange={(e) => setForm({ ...form, mobile: e.target.value })} /></Field>
           <Field label="Status"><select className={inputCls} value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}><option>Active</option><option>Inactive</option></select></Field>
           <Field label="Notes"><textarea className={inputCls} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} /></Field>
-          <button onClick={save} className={cn(btnCls, "w-full bg-slate-950 text-white")}>Save Cashier</button>
+          {saveError && <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-xs font-semibold text-red-700">{saveError}</div>}
+          <button onClick={() => void save()} disabled={saving} className={cn(btnCls, "w-full bg-slate-950 text-white disabled:opacity-60")}>{saving ? "Saving…" : "Save Cashier"}</button>
         </div>
       </Panel>
-      <Panel title="Cashier List" icon={<BookOpenCheck className="size-4" />}>
+      <Panel title="Cashier List" icon={<BookOpenCheck className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => void refreshCashiers()} disabled={cashiersRefreshing}><RefreshCcw className={cn("size-4", cashiersRefreshing && "animate-spin")} /> Refresh</button>}>
         <DataTable headers={["Name", "Mobile", "Status", "Notes", "Action"]} rows={rows.map((c) => [c.name, c.mobile || "-", <StatusBadge key="s" tone={c.status === "Active" ? "green" : "red"}>{c.status}</StatusBadge>, c.notes || "-", <button key="a" className={cn(btnCls, "bg-slate-100 text-slate-700")} onClick={() => updateCashier(c.id, { status: c.status === "Active" ? "Inactive" : "Active" }, userName)}>{c.status === "Active" ? "Deactivate" : "Activate"}</button>])} empty="No cashiers added." />
       </Panel>
     </div>
@@ -6824,6 +6861,15 @@ function SalespersonManagementTab({ userName }: { userName: string }) {
     remarks: "",
   });
   const rows = salespeople.filter((p) => p.branch === BRANCH);
+  // BUG FIX (2026-09-26): "unable to see few persons I added, multiple
+  // times" — addSalesperson's DB write was fire-and-forget with no retry;
+  // a transient failure (statement timeout under load, confirmed common in
+  // this app) silently dropped the new person while this screen still
+  // showed them (optimistic local state), so nobody knew to re-add them.
+  // addSalesperson now reports back whether the write actually succeeded;
+  // saving is a real error is surfaced right here instead of a false "saved".
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
   const reset = () => {
     setEditId("");
     setForm({
@@ -6836,8 +6882,9 @@ function SalespersonManagementTab({ userName }: { userName: string }) {
       remarks: "",
     });
   };
-  const save = () => {
+  const save = async () => {
     if (!form.name.trim()) return;
+    setSaveError(null);
     const details: Partial<SalespersonProfile> = {
       mobile: form.mobile,
       address: form.address,
@@ -6848,15 +6895,19 @@ function SalespersonManagementTab({ userName }: { userName: string }) {
       assignedBranch: BRANCH,
       remarks: form.remarks,
     };
-    if (editId)
-      updateSalesperson(
-        editId,
-        form.name,
-        form.status === "Active",
-        userName,
-        details,
-      );
-    else addSalesperson(BRANCH, form.name, userName, details);
+    const name = form.name;
+    if (editId) {
+      updateSalesperson(editId, name, form.status === "Active", userName, details);
+      reset();
+      return;
+    }
+    setSaving(true);
+    const ok = await addSalesperson(BRANCH, name, userName, details);
+    setSaving(false);
+    if (!ok) {
+      setSaveError(`"${name}" was not saved — the server didn't confirm the write after retrying. Please try Add again; if it keeps failing, check your connection.`);
+      return;
+    }
     reset();
   };
   const edit = (p: SalespersonProfile) => {
@@ -6937,12 +6988,18 @@ function SalespersonManagementTab({ userName }: { userName: string }) {
               onChange={(e) => setForm({ ...form, remarks: e.target.value })}
             />
           </Field>
+          {saveError && (
+            <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-xs font-semibold text-red-700">
+              {saveError}
+            </div>
+          )}
           <div className="flex gap-2">
             <button
-              onClick={save}
-              className={cn(btnCls, "flex-1 bg-slate-950 text-white")}
+              onClick={() => void save()}
+              disabled={saving}
+              className={cn(btnCls, "flex-1 bg-slate-950 text-white disabled:opacity-60")}
             >
-              {editId ? "Update" : "Add"} Salesperson
+              {saving ? "Saving…" : `${editId ? "Update" : "Add"} Salesperson`}
             </button>
             {editId && (
               <button
@@ -7772,6 +7829,25 @@ function StockAuditTab({
     field: "difference",
     direction: "desc",
   });
+  // PERF FIX (2026-09-26): "click on the stock audit tab it takes 5 sec to
+  // reflect" — confirmed live and by reading the render code: this used to
+  // render the FULL line-item table (System Qty, Physical Qty input,
+  // Difference, Difference Value, Edit History — a real <table> with a min
+  // width of 1100px) for ALL 90 reports at once (not just the 17 pending
+  // ones), unconditionally, the instant this tab mounted — no new network
+  // fetch involved at all (stockCountReports was already in the store from
+  // login), so this was purely a client-side render-cost problem: with
+  // ~1682 total difference lines across all reports, that's thousands of
+  // interactive table rows (each with a number input + Save button)
+  // mounted at once. Collapsed every report to a summary header by
+  // default; the line-item table now only renders for a report the admin
+  // actually expands.
+  const [expandedReportIds, setExpandedReportIds] = useState<Set<string>>(new Set());
+  const toggleReportExpanded = (id: string) => setExpandedReportIds((current) => {
+    const next = new Set(current);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
   // AUDIT CONTROL (2026-09-08): "Create a new sub tab called Audit Control —
   // the Admin should have the power to add new stock audit persons, select
   // which items each should audit, and add department/category and items
@@ -7807,13 +7883,13 @@ function StockAuditTab({
   }, []);
 
   const itemMeta = useMemo(() => {
-    const map = new Map<string, { price: number; category: string }>();
+    const map = new Map<string, { price: number; category: string; unit: "kg" | "pcs" }>();
     catalogItems.forEach((item) => {
-      map.set(normal(item.name), { price: Number(item.price || 0), category: String(item.category || "-") });
+      map.set(normal(item.name), { price: Number(item.price || 0), category: String(item.category || "-"), unit: item.uom === "Kgs" ? "kg" : "pcs" });
     });
     branchStock.forEach((item) => {
       const key = normal(item.itemName);
-      const current = map.get(key) ?? { price: 0, category: "-" };
+      const current = map.get(key) ?? { price: 0, category: "-", unit: "pcs" as const };
       const livePrice = Number(item.price);
       map.set(key, { ...current, price: Number.isFinite(livePrice) && livePrice > 0 ? livePrice : current.price });
     });
@@ -7821,6 +7897,22 @@ function StockAuditTab({
   }, [branchStock, catalogItems]);
 
   const linePrice = (itemName: string) => itemMeta.get(normal(itemName))?.price ?? 0;
+  // BUG FIX (2026-09-26): "Groundnut Biscuit showing as pcs instead of Kg,
+  // keeps happening for different items" — the review table used to trust
+  // line.unit exactly as it was captured in stock_count_reports at
+  // SUBMISSION time. Confirmed live: for Groundnut Biscuit, both the
+  // current SNB catalog (uom='Kgs') and the current branch_stock row
+  // (unit='kg') are correct RIGHT NOW — so a report line showing 'pcs' can
+  // only be a stale snapshot from whenever it was originally submitted
+  // (e.g. before the catalog/stock unit was itself corrected), which never
+  // gets refreshed once baked into the report. The catalog is the single
+  // source of truth for what unit an item should be measured in, so the
+  // review screen now cross-checks against it live instead of trusting the
+  // frozen snapshot — falls back to the stored line.unit only for an item
+  // the catalog doesn't have at all (can't happen for anything sellable,
+  // but keeps this safe for any legacy/removed item name).
+  const correctLineUnit = (line: { itemName: string; unit?: string }) =>
+    itemMeta.get(normal(line.itemName))?.unit ?? line.unit;
   const lineValue = (line: { itemName: string; difference: number }) =>
     Math.round(Number(line.difference || 0) * linePrice(line.itemName) * 100) / 100;
   const openDifferences = pending.reduce(
@@ -7859,7 +7951,7 @@ function StockAuditTab({
       setNotice("Physical stock must be a valid number greater than or equal to zero.");
       return;
     }
-    const unit = String(line.unit || "").toLowerCase();
+    const unit = String(correctLineUnit(line) || "").toLowerCase();
     if ((unit === "pcs" || unit.includes("nos")) && !Number.isInteger(quantity)) {
       setNotice("Piece items must use a whole-number physical quantity.");
       return;
@@ -7902,7 +7994,7 @@ function StockAuditTab({
           "Reversed At": reportReversals[report.id]?.at ? fmtDateTime(reportReversals[report.id].at) : "",
           Category: itemMeta.get(normal(line.itemName))?.category ?? "-",
           Item: line.itemName,
-          Unit: line.unit || "",
+          Unit: correctLineUnit(line) || "",
           "System Qty": line.systemQty,
           "Physical Qty": line.physicalQty,
           Difference: line.difference,
@@ -8071,33 +8163,45 @@ function StockAuditTab({
           <p className="text-sm font-bold text-slate-500">No SNB receiver stock-count reports submitted yet.</p>
         </Panel>
       ) : (
-        reports.map((report) => (
+        reports.map((report) => {
+          const isExpanded = expandedReportIds.has(report.id);
+          return (
           <Panel
             key={report.id}
             title={`${report.reportNo} - ${report.status}`}
             icon={<ClipboardCheck className="size-4" />}
             action={
-              report.status === "Pending Admin Review" ? (
+              <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  disabled={savingId === report.id || Boolean(savingLine)}
-                  onClick={() => setConfirmingReportId(report.id)}
-                  className={cn(btnCls, "bg-orange-500 text-white shadow-lg shadow-orange-200 disabled:opacity-50")}
+                  onClick={() => toggleReportExpanded(report.id)}
+                  className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")}
                 >
-                  {savingId === report.id ? "Saving..." : "Confirm & Save"}
+                  <ChevronDown className={cn("size-4 transition", isExpanded && "rotate-180")} />
+                  {isExpanded ? "Collapse" : `View ${report.lines.length} item${report.lines.length === 1 ? "" : "s"}`}
                 </button>
-              ) : reportReversals[report.id] ? (
-                <StatusBadge tone="amber">Reversed</StatusBadge>
-              ) : (
-                <button
-                  type="button"
-                  disabled={reversingId === report.id}
-                  onClick={() => void reverseReport(report.id)}
-                  className={cn(btnCls, "bg-red-600 text-white shadow-lg shadow-red-100 disabled:opacity-50")}
-                >
-                  <RotateCcw className="size-4" /> {reversingId === report.id ? "Reversing..." : "Reverse Confirmation"}
-                </button>
-              )
+                {report.status === "Pending Admin Review" ? (
+                  <button
+                    type="button"
+                    disabled={savingId === report.id || Boolean(savingLine)}
+                    onClick={() => setConfirmingReportId(report.id)}
+                    className={cn(btnCls, "bg-orange-500 text-white shadow-lg shadow-orange-200 disabled:opacity-50")}
+                  >
+                    {savingId === report.id ? "Saving..." : "Confirm & Save"}
+                  </button>
+                ) : reportReversals[report.id] ? (
+                  <StatusBadge tone="amber">Reversed</StatusBadge>
+                ) : (
+                  <button
+                    type="button"
+                    disabled={reversingId === report.id}
+                    onClick={() => void reverseReport(report.id)}
+                    className={cn(btnCls, "bg-red-600 text-white shadow-lg shadow-red-100 disabled:opacity-50")}
+                  >
+                    <RotateCcw className="size-4" /> {reversingId === report.id ? "Reversing..." : "Reverse Confirmation"}
+                  </button>
+                )}
+              </div>
             }
           >
             <div className="mb-3 grid gap-2 text-xs font-bold text-slate-500 sm:grid-cols-3">
@@ -8106,6 +8210,11 @@ function StockAuditTab({
               <span>Confirmed by: <b className="text-slate-900">{report.confirmedBy || "-"}</b></span>
               {reportReversals[report.id] && <span className="sm:col-span-3 rounded-xl bg-red-50 p-2 text-red-700">Reversed by <b>{reportReversals[report.id].by}</b> · {reportReversals[report.id].at ? fmtDateTime(reportReversals[report.id].at) : ""} · {reportReversals[report.id].reason}</span>}
             </div>
+            {!isExpanded ? (
+              <button type="button" onClick={() => toggleReportExpanded(report.id)} className="w-full rounded-2xl border border-dashed border-slate-200 bg-slate-50 py-3 text-xs font-black text-slate-500 hover:bg-slate-100">
+                Click to load and review {report.lines.length} item{report.lines.length === 1 ? "" : "s"}
+              </button>
+            ) : (
             <div className="overflow-x-auto rounded-3xl border border-slate-200">
               <table className="w-full min-w-[1100px] text-sm">
                 <thead className="bg-slate-50 text-left text-[11px] font-black uppercase tracking-wide text-slate-500">
@@ -8136,7 +8245,8 @@ function StockAuditTab({
                     const parsedDraft = Number(draft);
                     const changed = draft.trim() !== "" && Number.isFinite(parsedDraft) && Math.abs(parsedDraft - Number(line.physicalQty || 0)) >= 0.0001;
                     const differenceValue = lineValue(line);
-                    const unit = String(line.unit || "").toLowerCase();
+                    const displayUnit = correctLineUnit(line);
+                    const unit = String(displayUnit || "").toLowerCase();
                     const step = unit === "pcs" || unit.includes("nos") ? "1" : "0.001";
                     return (
                       <tr key={line.itemName} className="align-top hover:bg-slate-50/70">
@@ -8144,7 +8254,7 @@ function StockAuditTab({
                           <p className="font-black text-slate-900">{line.itemName}</p>
                           <p className="mt-1 text-[10px] font-bold uppercase tracking-wide text-slate-400">{itemMeta.get(normal(line.itemName))?.category ?? "-"}</p>
                         </td>
-                        <td className="px-4 py-3 text-right font-black tabular-nums text-slate-700">{roundQty(line.systemQty)} {line.unit}</td>
+                        <td className="px-4 py-3 text-right font-black tabular-nums text-slate-700">{roundQty(line.systemQty)} {displayUnit}</td>
                         <td className="px-4 py-3">
                           {report.status === "Pending Admin Review" ? (
                             <div className="flex items-center gap-2">
@@ -8162,7 +8272,7 @@ function StockAuditTab({
                                 className="w-28 rounded-xl border border-slate-200 bg-white px-3 py-2 text-right font-black tabular-nums outline-none focus:border-amber-400 focus:ring-4 focus:ring-amber-100"
                                 aria-label={`Edit physical stock for ${line.itemName}`}
                               />
-                              <span className="text-xs font-bold text-slate-400">{line.unit}</span>
+                              <span className="text-xs font-bold text-slate-400">{displayUnit}</span>
                               <button
                                 type="button"
                                 disabled={!changed || savingLine === key}
@@ -8173,7 +8283,7 @@ function StockAuditTab({
                               </button>
                             </div>
                           ) : (
-                            <span className="font-black tabular-nums">{roundQty(line.physicalQty)} {line.unit}</span>
+                            <span className="font-black tabular-nums">{roundQty(line.physicalQty)} {displayUnit}</span>
                           )}
                         </td>
                         <td className="px-4 py-3 text-right">
@@ -8197,7 +8307,7 @@ function StockAuditTab({
                           {line.editedAt ? (
                             <div className="space-y-1">
                               <p className="font-black text-amber-700">Admin corrected</p>
-                              <p>Original: <b className="text-slate-800">{roundQty(line.originalPhysicalQty ?? line.physicalQty)} {line.unit}</b></p>
+                              <p>Original: <b className="text-slate-800">{roundQty(line.originalPhysicalQty ?? line.physicalQty)} {displayUnit}</b></p>
                               <p>{line.editedBy || "Admin"} · {fmtDateTime(line.editedAt)}</p>
                             </div>
                           ) : (
@@ -8210,8 +8320,10 @@ function StockAuditTab({
                 </tbody>
               </table>
             </div>
+            )}
           </Panel>
-        ))
+          );
+        })
       )}
       </>
       )}

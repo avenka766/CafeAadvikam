@@ -2050,10 +2050,33 @@ function SuppliersTab({ userName }: { userName: string }) {
   const [editingId, setEditingId] = useState("");
   const rows = suppliers.filter((supplier) => supplier.branch === BRANCH);
   const reset = () => { setEditingId(""); setForm(emptyForm); };
-  const save = () => {
+  // BUG FIX (2026-09-26): same "unable to see few [records] I added" class
+  // found and fixed for Salesperson/Cashier Management on the SNB side —
+  // this screen never had a Refresh button (SNB's twin does), and
+  // addSupplier's write is now retry-hardened but can still fail; both
+  // gaps closed here to match.
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [suppliersRefreshing, setSuppliersRefreshing] = useState(false);
+  const refreshSuppliers = async () => {
+    setSuppliersRefreshing(true);
+    try { await useBranchOpsStore.persist.rehydrate(); } finally { setSuppliersRefreshing(false); }
+  };
+  const save = async () => {
     if (!form.name.trim() || !form.mobile.trim()) return;
-    if (editingId) updateSupplier(editingId, { ...form, createdBy: userName }, userName);
-    else addSupplier({ branch: BRANCH, ...form, createdBy: userName });
+    setSaveError(null);
+    if (editingId) {
+      updateSupplier(editingId, { ...form, createdBy: userName }, userName);
+      reset();
+      return;
+    }
+    setSaving(true);
+    const ok = await addSupplier({ branch: BRANCH, ...form, createdBy: userName });
+    setSaving(false);
+    if (!ok) {
+      setSaveError(`"${form.name}" was not saved — the server didn't confirm the write after retrying. Please try Save again.`);
+      return;
+    }
     reset();
   };
   return (
@@ -2068,13 +2091,22 @@ function SuppliersTab({ userName }: { userName: string }) {
           <Field label="Address"><textarea className={inputCls} value={form.address} onChange={(event) => setForm({ ...form, address: event.target.value })} /></Field>
           <Field label="Items They Provide"><input className={inputCls} value={form.itemsProvided} onChange={(event) => setForm({ ...form, itemsProvided: event.target.value })} /></Field>
           <Field label="Notes"><textarea className={inputCls} value={form.notes} onChange={(event) => setForm({ ...form, notes: event.target.value })} /></Field>
+          {saveError && <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-xs font-semibold text-red-700">{saveError}</div>}
           <div className="flex gap-2">
-            <button onClick={save} className={cn(btnCls, "flex-1 bg-slate-950 text-white")}><Plus className="size-4" />{editingId ? "Update Supplier" : "Save Supplier"}</button>
+            <button onClick={() => void save()} disabled={saving} className={cn(btnCls, "flex-1 bg-slate-950 text-white disabled:opacity-60")}><Plus className="size-4" />{saving ? "Saving…" : editingId ? "Update Supplier" : "Save Supplier"}</button>
             {editingId && <button onClick={reset} className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")}>Cancel</button>}
           </div>
         </div>
       </Panel>
-      <Panel title="Supplier List" icon={<BookOpenCheck className="size-4" />}>
+      <Panel
+        title="Supplier List"
+        icon={<BookOpenCheck className="size-4" />}
+        action={
+          <button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => void refreshSuppliers()} disabled={suppliersRefreshing}>
+            <RefreshCcw className={cn("size-4", suppliersRefreshing && "animate-spin")} /> Refresh
+          </button>
+        }
+      >
         <DataTable
           headers={["Name", "Mobile", "GST", "Items", "Address", "Notes", "Added", "Actions"]}
           rows={rows.map((supplier) => [supplier.name, supplier.mobile, supplier.gstNumber || "-", supplier.itemsProvided || "-", supplier.address || "-", supplier.notes || "-", fmtDateTime(supplier.createdAt), <div key={supplier.id} className="flex gap-2"><button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => { setEditingId(supplier.id); setForm({ name: supplier.name, address: supplier.address, mobile: supplier.mobile, gstNumber: supplier.gstNumber, itemsProvided: supplier.itemsProvided, notes: supplier.notes }); }}>Edit</button><button className={cn(btnCls, "bg-red-50 text-red-700 ring-1 ring-red-200")} onClick={() => { if (window.confirm(`Delete ${supplier.name}?`)) removeSupplier(supplier.id, userName); }}>Delete</button></div>])}
@@ -3924,8 +3956,29 @@ function BankDepositsTab({
 }
 
 function SalespersonManagementTab({ userName }: { userName: string }) {
-  const { salespeople, addSalesperson, updateSalesperson, removeSalesperson } =
+  const { salespeople, addSalesperson, updateSalesperson, removeSalesperson, refreshSalespeople } =
     useBranchOpsStore();
+
+  // BUG FIX (2026-09-26): parity with AdminSNBDashboard.tsx's identical tab —
+  // this screen never called refreshSalespeople() at all, so it relied
+  // entirely on the shared, date-scoped branch-ops hydration pipeline
+  // instead of a direct, unbounded fetch. That's the exact "Admin >
+  // Salesperson Management showing nobody" failure mode salespeople were
+  // made master/reference data to avoid in the first place (see the
+  // refreshSalespeople doc-comment in branchOpsStore.ts) — SNB got the fix,
+  // VRSNB never did.
+  useEffect(() => { void refreshSalespeople(BRANCH); }, [refreshSalespeople]);
+
+  const [rosterRefreshing, setRosterRefreshing] = useState(false);
+  const refreshRoster = async () => {
+    setRosterRefreshing(true);
+    try {
+      await refreshSalespeople(BRANCH);
+    } finally {
+      setRosterRefreshing(false);
+    }
+  };
+
   const [editId, setEditId] = useState("");
   const [form, setForm] = useState({
     name: "",
@@ -3937,6 +3990,12 @@ function SalespersonManagementTab({ userName }: { userName: string }) {
     remarks: "",
   });
   const rows = salespeople.filter((p) => p.branch === BRANCH);
+  // BUG FIX (2026-09-26): parity with AdminSNBDashboard.tsx — addSalesperson's
+  // DB write is fire-and-forget-prone (see mirrorOperationRecord's 2026-09-26
+  // fix in branchOpsStore.ts); surface a real failure instead of a false
+  // "saved" look.
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
   const reset = () => {
     setEditId("");
     setForm({
@@ -3949,8 +4008,9 @@ function SalespersonManagementTab({ userName }: { userName: string }) {
       remarks: "",
     });
   };
-  const save = () => {
+  const save = async () => {
     if (!form.name.trim()) return;
+    setSaveError(null);
     const details: Partial<SalespersonProfile> = {
       mobile: form.mobile,
       address: form.address,
@@ -3961,15 +4021,19 @@ function SalespersonManagementTab({ userName }: { userName: string }) {
       assignedBranch: BRANCH,
       remarks: form.remarks,
     };
-    if (editId)
-      updateSalesperson(
-        editId,
-        form.name,
-        form.status === "Active",
-        userName,
-        details,
-      );
-    else addSalesperson(BRANCH, form.name, userName, details);
+    const name = form.name;
+    if (editId) {
+      updateSalesperson(editId, name, form.status === "Active", userName, details);
+      reset();
+      return;
+    }
+    setSaving(true);
+    const ok = await addSalesperson(BRANCH, name, userName, details);
+    setSaving(false);
+    if (!ok) {
+      setSaveError(`"${name}" was not saved — the server didn't confirm the write after retrying. Please try Add again; if it keeps failing, check your connection.`);
+      return;
+    }
     reset();
   };
   const edit = (p: SalespersonProfile) => {
@@ -4050,12 +4114,18 @@ function SalespersonManagementTab({ userName }: { userName: string }) {
               onChange={(e) => setForm({ ...form, remarks: e.target.value })}
             />
           </Field>
+          {saveError && (
+            <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-xs font-semibold text-red-700">
+              {saveError}
+            </div>
+          )}
           <div className="flex gap-2">
             <button
-              onClick={save}
-              className={cn(btnCls, "flex-1 bg-slate-950 text-white")}
+              onClick={() => void save()}
+              disabled={saving}
+              className={cn(btnCls, "flex-1 bg-slate-950 text-white disabled:opacity-60")}
             >
-              {editId ? "Update" : "Add"} Salesperson
+              {saving ? "Saving…" : `${editId ? "Update" : "Add"} Salesperson`}
             </button>
             {editId && (
               <button
@@ -4074,6 +4144,11 @@ function SalespersonManagementTab({ userName }: { userName: string }) {
       <Panel
         title="Salesperson Master"
         icon={<BookOpenCheck className="size-4" />}
+        action={
+          <button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => void refreshRoster()} disabled={rosterRefreshing}>
+            <RefreshCcw className={cn("size-4", rosterRefreshing && "animate-spin")} /> Refresh
+          </button>
+        }
       >
         <DataTable
           headers={[
