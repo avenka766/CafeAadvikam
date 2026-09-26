@@ -284,6 +284,28 @@ export function BranchBillHistoryProTab({ branch }: ModuleProps) {
   const [historyPage, setHistoryPage] = useState(1);
   const isVRSNB = branch === 'VRSNB';
 
+  // PERF FIX (2026-09-26): "all the dashboard and tabs are getting
+  // [statement timeout]" — this used to always fetch up to 8 000 bill
+  // headers (18 months, previously a no-op bound since the app itself is
+  // only ~5 months old), each row joined against branch_bill_items AND
+  // branch_sale_payments via a correlated subquery. Confirmed live via
+  // EXPLAIN ANALYZE: ~700ms for ONE 1000-row page of that join — SNB alone
+  // has 36,000+ bills, so this screen always hit the full 8-page ceiling,
+  // every single time any SNB staff opened Bill History (several times a
+  // day, every day). Both quantity totals and payment-mode labels in the
+  // collapsed row genuinely need the joined data (not just the
+  // click-to-expand detail), so the join itself can't be dropped without
+  // changing what the list shows — instead, default the window to a much
+  // narrower 30 days (which safely stays under one page for normal day-to-
+  // day lookup) with an explicit "Load older bills" widen control for the
+  // rarer case of searching further back.
+  const HISTORY_WINDOW_OPTIONS = [
+    { label: '30 Days', months: 1 },
+    { label: '3 Months', months: 3 },
+    { label: '18 Months', months: 18 },
+  ];
+  const [historyWindowMonths, setHistoryWindowMonths] = useState(1);
+
   useEffect(() => {
     let active = true;
     const load = async () => {
@@ -291,17 +313,8 @@ export function BranchBillHistoryProTab({ branch }: ModuleProps) {
       setLedgerMessage('');
       const allRows: LedgerBillRow[] = [];
       let loadError: { message: string } | null = null;
-      // PERF FIX: this used to page through up to 30 000 bill headers — each
-      // one joined against its own branch_bill_items AND branch_sale_payments
-      // rows — completely unbounded by date, every single time this tab
-      // mounted. As a branch's bill history grew, that ballooned into a
-      // multi-hundred-thousand-row join fetched on every visit and was a
-      // direct cause of the "57014 statement timeout" errors seen in
-      // production on /branch/snb. Bounded to the last 18 months (far more
-      // than anyone needs for day-to-day bill lookup) and cut the page
-      // ceiling from 30 to 8, which is still a generous 8 000 bills.
       const historyCutoff = new Date();
-      historyCutoff.setMonth(historyCutoff.getMonth() - 18);
+      historyCutoff.setMonth(historyCutoff.getMonth() - historyWindowMonths);
       const historyCutoffIso = historyCutoff.toISOString();
       for (let from = 0; from < 8000; from += 1000) {
         const { data, error } = await supabase
@@ -336,7 +349,7 @@ export function BranchBillHistoryProTab({ branch }: ModuleProps) {
 
     void load();
     return () => { active = false; };
-  }, [branch]);
+  }, [branch, historyWindowMonths]);
 
   const sourceRows = ledgerBills.length > 0 ? ledgerBills : bills.filter((b) => b.branch === branch);
   const rows = sourceRows.filter((b) => {
@@ -397,8 +410,19 @@ export function BranchBillHistoryProTab({ branch }: ModuleProps) {
     }
   };
   return <Section title="Bill History" icon={<History className="size-5"/>} action={<div className="relative"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400"/><Input value={query} onChange={(e)=>setQuery(e.target.value)} placeholder={isVRSNB ? 'Search bill or cashier' : 'Search bill, salesperson or cashier'} className="pl-9"/></div>}>
+    <div className="mb-2 flex flex-wrap items-center gap-1.5">
+      <span className="text-[10px] font-black uppercase tracking-wide text-slate-500">Showing</span>
+      {HISTORY_WINDOW_OPTIONS.map(opt => (
+        <button key={opt.months} type="button" onClick={()=>setHistoryWindowMonths(opt.months)} className={cn('rounded-full border px-2.5 py-1 text-[11px] font-black transition-colors', historyWindowMonths===opt.months ? 'border-slate-950 bg-slate-950 text-white' : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50')}>
+          {opt.label}
+        </button>
+      ))}
+    </div>
     {ledgerMessage && <p className="mb-2 rounded-xl bg-amber-50 px-3 py-2 text-sm font-black text-amber-800">{ledgerMessage}</p>}
     {loadingLedger && <p className="mb-2 rounded-xl bg-slate-50 px-3 py-2 text-sm font-black text-slate-500">Loading bill history from Supabase...</p>}
+    {!loadingLedger && query.trim() && rows.length === 0 && historyWindowMonths < 18 && (
+      <p className="mb-2 rounded-xl bg-blue-50 px-3 py-2 text-sm font-black text-blue-800">No match in the last {HISTORY_WINDOW_OPTIONS.find(o=>o.months===historyWindowMonths)?.label.toLowerCase()} — try widening the range above to search further back.</p>
+    )}
     <div className="overflow-auto rounded-xl border border-slate-200"><table className={cn('w-full text-sm', isVRSNB ? 'min-w-[820px]' : 'min-w-[920px]')}><thead className="sticky top-0 z-10 bg-slate-50"><tr className="text-left text-[10px] uppercase tracking-wide text-slate-500"><th className="p-2">Bill</th><th className="p-2">Time</th>{!isVRSNB && <th className="p-2">Salesperson</th>}<th className="p-2">Cashier</th><th className="p-2">Mode</th><th className="p-2 text-right">Qty</th><th className="p-2 text-right">Total</th><th className="p-2">Status</th><th className="p-2 text-right">Action</th></tr></thead><tbody>{rows.length === 0 ? <tr><td colSpan={isVRSNB ? 8 : 9} className="p-6 text-center font-bold text-slate-500">No bills found.</td></tr> : pagedRows.map((b)=><Fragment key={b.id}><tr className="border-t"><td className="p-2 font-black"><button className="inline-flex items-center gap-1" onClick={()=>setExpandedBillId(expandedBillId===b.id?null:b.id)}><ChevronDown className={cn('size-4 transition',expandedBillId===b.id&&'rotate-180')}/>{b.billNo}</button></td><td className="p-2 text-xs">{new Date(b.createdAt).toLocaleString('en-IN')}</td>{!isVRSNB && <td className="p-2">{b.salesperson}</td>}<td className="p-2">{b.biller}</td><td className="p-2 uppercase">{b.paymentMode}</td><td className="p-2 text-right font-black">{b.items.reduce((sum,item)=>sum+item.quantity,0)}</td><td className="p-2 text-right font-black">{money(b.total)}</td><td className="p-2"><span className={cn('rounded-full px-2 py-1 text-[10px] font-black', b.printCount > 1 ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700')}>{b.printCount > 1 ? 'Duplicate' : 'Original'}</span></td><td className="p-2 text-right"><SoftButton onClick={()=>void reprint(b)} disabled={reprintingId===b.id} className="min-h-8 px-2 py-1 text-xs"><Printer className="size-3.5"/>{reprintingId===b.id ? 'Printing...' : 'Duplicate'}</SoftButton></td></tr>{expandedBillId===b.id&&<tr className="border-t bg-slate-50"><td colSpan={isVRSNB?8:9} className="p-2"><div className="overflow-x-auto"><table className="w-full min-w-[620px] text-xs"><thead><tr className="text-left uppercase text-slate-500"><th className="p-2">Item</th><th className="p-2 text-right">Qty</th><th className="p-2">Unit</th><th className="p-2 text-right">Unit Price</th><th className="p-2 text-right">Discount</th><th className="p-2 text-right">Tax</th><th className="p-2 text-right">Line Revenue</th></tr></thead><tbody>{b.items.map((item,index)=><tr key={`${item.itemName}-${index}`} className="border-t"><td className="p-2 font-bold">{item.itemName}</td><td className="p-2 text-right">{item.quantity}</td><td className="p-2">{item.unit}</td><td className="p-2 text-right">{money(item.price)}</td><td className="p-2 text-right">{money(item.discount||0)}</td><td className="p-2 text-right">{money(item.tax||0)}</td><td className="p-2 text-right font-black">{money(item.lineTotal)}</td></tr>)}</tbody></table></div></td></tr>}</Fragment>)}</tbody></table></div>
     {rows.length>historyPageSize&&<div className="mt-2 flex items-center justify-between text-xs font-bold"><span>Showing {(historyPage-1)*historyPageSize+1}-{Math.min(historyPage*historyPageSize,rows.length)} of {rows.length}</span><div className="flex gap-2"><button disabled={historyPage===1} onClick={()=>setHistoryPage((page)=>Math.max(1,page-1))} className="rounded-lg border p-2 disabled:opacity-40"><ChevronLeft className="size-4"/></button><button disabled={historyPage===historyPageCount} onClick={()=>setHistoryPage((page)=>Math.min(historyPageCount,page+1))} className="rounded-lg border p-2 disabled:opacity-40"><ChevronRight className="size-4"/></button></div></div>}
   </Section>;
@@ -2169,11 +2193,16 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
     setLedgerLoading(true);
     setClosureMessage('');
     const date = todayIso();
+    // PERF FIX (2026-09-26): "all the dashboard and tabs are getting
+    // [statement timeout], always" — branch_daily_closure_ledger (the view)
+    // aggregates its 3 source tables in full BEFORE this branch/date filter
+    // ever applies — confirmed a full Seq Scan of ~38,000+ rows on every
+    // call, and this loads on every visit to this branch's own closure
+    // screen, many times a day. Switched to the ranged RPC (same fix as
+    // useBranchLedger.ts), which pushes the filter inside the aggregation
+    // and uses the existing (branch, created_at) indexes instead.
     const { data: ledgerData, error: ledgerError } = await supabase
-      .from('branch_daily_closure_ledger')
-      .select('branch, closure_date, bill_count, sales_total, credit_billed, discounts, tax_total, cash_total, upi_total, card_total, credit_collected, advance_collected, advance_balance_collected')
-      .eq('branch', branch)
-      .eq('closure_date', date)
+      .rpc('branch_daily_closure_ledger_ranged', { p_from_date: date, p_to_date: date, p_branches: [branch] })
       .maybeSingle();
     setLedgerLoading(false);
     if (ledgerError) {

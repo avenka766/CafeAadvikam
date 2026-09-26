@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { CheckCircle2, CreditCard, Lock, Search, X } from 'lucide-react';
 import { supabase, fetchAllRows } from '@/lib/supabase';
 import { cn } from '@/lib/utils';
@@ -37,13 +37,6 @@ type BillPayment = {
 const editableModes: EditableMode[] = ['cash', 'upi', 'card'];
 const roundMoney = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100;
 
-const PAYMENT_EDIT_DATE_PRESETS = [
-  { label: '7 Days', days: 6 },
-  { label: '30 Days', days: 29 },
-  { label: '90 Days', days: 89 },
-  { label: 'All Time', days: 3650 },
-] as const;
-
 function allocationFromRow(row: PaymentRow) {
   const allocation = { cash: 0, upi: 0, card: 0 };
   for (const payment of row.branch_sale_payments || []) {
@@ -66,6 +59,7 @@ export function PaymentModeEditTab({ branch }: { branch: Branch }) {
   const { updateBillPaymentMode } = useBranchOpsStore();
   const [rows, setRows] = useState<BillPayment[]>([]);
   const [query, setQuery] = useState('');
+  const [searchedFor, setSearchedFor] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<Record<string, Allocation>>({});
   const [savingId, setSavingId] = useState<string | null>(null);
   // BUG FIX (audit 2026-09-02): only the disabled={savingId === row.id} prop guarded
@@ -75,36 +69,35 @@ export function PaymentModeEditTab({ branch }: { branch: Branch }) {
   // consistency with the rest of the codebase rather than a live corruption risk.
   const savingInFlightRef = useRef<Set<string>>(new Set());
   const [message, setMessage] = useState('');
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [convertingRow, setConvertingRow] = useState<BillPayment | null>(null);
-  // BUG FIX: "Payment edit mode the data is not loading properly its taking
-  // long time to show" — loadRows used to fetch EVERY bill this branch has
-  // ever had (no date filter at all), joined with its payments, on every
-  // open of this tab. A branch with a few hundred/thousand historical bills
-  // made this genuinely slow. Default to a recent window (fast, covers the
-  // realistic "fix today's/this week's mis-entered payment mode" use case);
-  // widen with the presets below for older corrections.
-  const [rangeDays, setRangeDays] = useState<number>(6);
 
-  const loadRows = useCallback(async () => {
+  // BUG FIX (2026-09-26): "Payment edit tab it is very slow so dont show all
+  // the bills instead show the search field when enter bill number show
+  // only that bill" — the previous fix (a 7-day default window) still
+  // fetched every bill in that window joined with its payments, every time
+  // the tab opened. Now nothing loads until the staff actually searches for
+  // a bill number — one bounded, branch-scoped query, at most 20 matches,
+  // instead of a whole window of bills nobody was going to edit.
+  const runSearch = useCallback(async (raw: string) => {
+    const value = raw.trim();
+    setSearchedFor(value);
+    if (!value) { setRows([]); setDrafts({}); setMessage(''); return; }
     setLoading(true);
     setMessage('');
-    const from = new Date(); from.setDate(from.getDate() - rangeDays); from.setHours(0, 0, 0, 0);
-    // BUG FIX (2026-09-16): the AUDIT FIX below correctly diagnosed the
-    // 1000-row cap but "fixed" it by raising `.limit()` to 3000, which
-    // doesn't work — PostgREST's cap isn't overridable by a bigger client
-    // limit (see fetchAllRows's comment in lib/supabase.ts). Paginated.
-    const { data, error } = await fetchAllRows<any>('branch_bill_headers', (q) => q
+    const { data, error } = await supabase
+      .from('branch_bill_headers')
       .select('id, bill_no, bill_type, salesperson, biller, total, status, created_at, branch_sale_payments(payment_mode, amount)')
       .eq('branch', branch)
-      .gte('created_at', from.toISOString())
-      .order('created_at', { ascending: false }));
+      .ilike('bill_no', `%${value}%`)
+      .order('created_at', { ascending: false })
+      .limit(20);
 
     if (error) {
       setRows([]);
-      setMessage(/branch_bill_headers|does not exist|schema cache/i.test(error)
+      setMessage(/branch_bill_headers|does not exist|schema cache/i.test(error.message)
         ? 'The Supabase branch bill ledger is not installed, so payment modes cannot be edited safely.'
-        : `Could not load bill history: ${error}`);
+        : `Could not search bill history: ${error.message}`);
       setLoading(false);
       return;
     }
@@ -132,17 +125,11 @@ export function PaymentModeEditTab({ branch }: { branch: Branch }) {
       card: row.allocation.card ? String(row.allocation.card) : '',
     }])));
     setLoading(false);
-  }, [branch, rangeDays]);
+  }, [branch]);
 
-  useEffect(() => { void loadRows(); }, [loadRows]);
+  const loadRows = useCallback(() => runSearch(searchedFor ?? ''), [runSearch, searchedFor]);
 
-  const filtered = useMemo(() => {
-    const value = query.trim().toLowerCase();
-    return rows.filter((row) => !value
-      || row.billNo.toLowerCase().includes(value)
-      || (!isVRSNB && row.salesperson.toLowerCase().includes(value))
-      || row.biller.toLowerCase().includes(value));
-  }, [isVRSNB, query, rows]);
+  const filtered = rows;
 
   const draftTotal = (id: string) => {
     const draft = drafts[id] || { cash: '', upi: '', card: '' };
@@ -210,25 +197,36 @@ export function PaymentModeEditTab({ branch }: { branch: Branch }) {
           <div className="rounded-xl bg-blue-50 p-2 text-blue-700"><CreditCard className="size-5" /></div>
           <div><h2 className="text-base font-black text-slate-950 sm:text-lg">Payment Mode Edit</h2><p className="text-[11px] font-bold text-slate-500">Cash, UPI, Card and split allocations can be corrected; bill items and amount remain locked.</p></div>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="flex flex-wrap gap-1.5">
-            {PAYMENT_EDIT_DATE_PRESETS.map((preset) => (
-              <button key={preset.label} type="button" onClick={() => setRangeDays(preset.days)}
-                className={cn('rounded-full border px-3 py-1 text-xs font-black transition', rangeDays === preset.days
-                  ? 'border-slate-950 bg-slate-950 text-white shadow-sm'
-                  : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-100')}>
-                {preset.label}
-              </button>
-            ))}
+        {/* BUG FIX (2026-09-26): "very slow, dont show all the bills instead
+            show the search field, when enter bill number show only that
+            bill" — search-on-demand replaces the always-loaded list. */}
+        <form onSubmit={(event) => { event.preventDefault(); void runSearch(query); }} className="flex flex-wrap items-center gap-2">
+          <div className="relative min-w-[220px] flex-1 sm:max-w-sm">
+            <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
+            <input
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Enter bill number"
+              className="h-9 w-full rounded-xl border-2 border-slate-200 bg-slate-50 pl-9 pr-3 text-sm font-bold outline-none focus:border-blue-400"
+            />
           </div>
-          <div className="relative min-w-[220px] flex-1 sm:max-w-sm"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={isVRSNB ? 'Search bill or cashier' : 'Search bill, salesperson or cashier'} className="h-9 w-full rounded-xl border-2 border-slate-200 bg-slate-50 pl-9 pr-3 text-sm font-bold outline-none focus:border-blue-400" /></div>
-        </div>
+          <button type="submit" disabled={!query.trim() || loading} className="h-9 rounded-xl bg-blue-600 px-4 text-xs font-black text-white disabled:cursor-not-allowed disabled:opacity-40">
+            {loading ? 'Searching...' : 'Search'}
+          </button>
+        </form>
       </div>
       {message && <p className={cn('mx-3 mt-2 shrink-0 rounded-xl px-3 py-2 text-sm font-black', message.includes('updated') ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-800')}>{message}</p>}
       <div className="min-h-0 flex-1 overflow-auto p-2">
+        {searchedFor === null ? (
+          <div className="flex h-full flex-col items-center justify-center gap-2 p-8 text-center">
+            <Search className="size-8 text-slate-300" />
+            <p className="font-bold text-slate-500">Enter a bill number above and press Search to edit its payment.</p>
+            <p className="text-xs text-slate-400">Nothing loads until you search — this keeps the tab fast no matter how much bill history {isVRSNB ? 'VRSNB' : 'SNB'} has.</p>
+          </div>
+        ) : (
         <table className={cn('w-full text-sm', isVRSNB ? 'min-w-[920px]' : 'min-w-[1040px]')}>
           <thead className="sticky top-0 z-10 bg-slate-50 text-left text-[10px] font-black uppercase tracking-wide text-slate-500"><tr><th className="p-2">Bill</th><th className="p-2">Date</th>{!isVRSNB && <th className="p-2">Salesperson</th>}<th className="p-2">Cashier</th><th className="p-2 text-right">Amount</th><th className="p-2">Current</th><th className="p-2">Correct Allocation</th><th className="p-2 text-right">Action</th></tr></thead>
-          <tbody>{loading ? <tr><td colSpan={isVRSNB ? 7 : 8} className="p-8 text-center font-bold text-slate-500">Loading bill history...</td></tr> : filtered.length === 0 ? <tr><td colSpan={isVRSNB ? 7 : 8} className="p-8 text-center font-bold text-slate-500">No bills found.</td></tr> : filtered.map((row) => {
+          <tbody>{loading ? <tr><td colSpan={isVRSNB ? 7 : 8} className="p-8 text-center font-bold text-slate-500">Searching...</td></tr> : filtered.length === 0 ? <tr><td colSpan={isVRSNB ? 7 : 8} className="p-8 text-center font-bold text-slate-500">No bill matching "{searchedFor}" found.</td></tr> : filtered.map((row) => {
             const valid = draftTotal(row.id) === roundMoney(row.total);
             return <tr key={row.id} className="border-t border-slate-100 align-middle">
               <td className="p-2 font-black text-slate-950">{row.billNo}</td><td className="p-2 text-xs text-slate-600">{new Date(row.createdAt).toLocaleString('en-IN')}</td>{!isVRSNB && <td className="p-2 font-bold">{row.salesperson}</td>}<td className="p-2">{row.biller}</td><td className="p-2 text-right font-black">{money(row.total)}</td><td className="p-2"><span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-black uppercase text-slate-700">{row.mode}</span></td>
@@ -237,6 +235,7 @@ export function PaymentModeEditTab({ branch }: { branch: Branch }) {
             </tr>;
           })}</tbody>
         </table>
+        )}
       </div>
       {convertingRow && (
         <ConvertToCreditModal
