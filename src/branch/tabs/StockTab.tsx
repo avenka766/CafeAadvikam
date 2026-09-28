@@ -564,24 +564,49 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
   // Items dispatched days ago that were never confirmed must still be actionable.
   const todayIncoming = branchIncoming.filter((inc) => !inc.confirmed);
 
-  // FEATURE (2026-09-06, REVERTED 2026-09-16): "same item is coming multiple
-  // time with different weight — I dont want like that, it should come as
-  // one" originally grouped same-item incoming rows together. 2026-09-16
-  // correction narrowed that to only merge rows sharing the same dispatch
-  // invoice (see git history for that intermediate version) — but the
-  // explicit follow-up feedback was that even a genuine same-invoice split
-  // ("BIRTHDAY FLAVOURS TO/26-27/151 · 4 batches merged") still isn't
-  // wanted: "they want it separately." No grouping at all now — every
-  // branch_incoming row is its own line, always. `IncomingGroup`/`groupMap`
-  // removed entirely; `IncomingRow` kept as a `{kind:'single'}`-only union
-  // so the render code below (which already branches on `row.kind`) didn't
-  // need touching.
+  // FEATURE (2026-09-06, REVERTED 2026-09-16, RE-ADDED — NARROWLY — 2026-09-28):
+  // the original grouping merged same-item rows across ANY dispatch, which
+  // the client explicitly rejected ("they want it separately"). What came
+  // back this time is different: the Planner dispatch flow can split ONE
+  // item's ONE delivery into an "ordered" row + an "EXTRA (non-requested
+  // item)" row, seconds apart, same invoice (e.g. DILPASAND 180+20 on one
+  // TO/26-27/287 delivery) — branch staff saw that as two separate items to
+  // confirm/dispute for what was physically one drop-off. Confirmed with the
+  // user this specific case (same item + same invoice_no) should merge;
+  // anything without a shared invoice number (different days, or a direct
+  // advance-order dispatch with no invoice at all) stays one row per entry,
+  // matching the 2026-09-16 decision.
   interface IncomingGroup { key: string; itemName: string; unit: 'pcs' | 'kg'; advanceOrderNo: string | null; invoiceNos: string; entries: IncomingStock[]; totalQuantity: number; receivedAt: string; dispatchedBy: string; }
   const actionableIncoming = todayIncoming.filter((inc) => !(disputedIncoming[inc.id] || inc.disputed) && !inc.returnRequested);
   const lockedIncoming = todayIncoming.filter((inc) => (disputedIncoming[inc.id] || inc.disputed) || inc.returnRequested);
+  const actionableGroupMap = new Map<string, IncomingStock[]>();
+  for (const inc of actionableIncoming) {
+    const invoiceNo = (inc.invoiceNo ?? '').trim();
+    // No invoice number to correlate by — never group; one row per entry.
+    const key = invoiceNo ? `${inc.itemName.trim().toLowerCase()}|${invoiceNo}` : `__single__${inc.id}`;
+    const bucket = actionableGroupMap.get(key);
+    if (bucket) bucket.push(inc); else actionableGroupMap.set(key, [inc]);
+  }
   type IncomingRow = { kind: 'group'; group: IncomingGroup } | { kind: 'single'; inc: IncomingStock };
   const incomingRows: IncomingRow[] = [
-    ...actionableIncoming.map((inc): IncomingRow => ({ kind: 'single', inc })),
+    ...Array.from(actionableGroupMap.entries()).map(([key, entries]): IncomingRow => {
+      if (entries.length === 1) return { kind: 'single', inc: entries[0] };
+      const sorted = [...entries].sort((a, b) => new Date(a.receivedAt).getTime() - new Date(b.receivedAt).getTime());
+      return {
+        kind: 'group',
+        group: {
+          key,
+          itemName: sorted[0].itemName,
+          unit: sorted[0].unit,
+          advanceOrderNo: sorted[0].advanceOrderNo ?? null,
+          invoiceNos: sorted[0].invoiceNo ?? '',
+          entries: sorted,
+          totalQuantity: sorted.reduce((sum, e) => sum + e.quantity, 0),
+          receivedAt: sorted[sorted.length - 1].receivedAt,
+          dispatchedBy: sorted[sorted.length - 1].dispatchedBy,
+        },
+      };
+    }),
     ...lockedIncoming.map((inc): IncomingRow => ({ kind: 'single', inc })),
   ].sort((a, b) => new Date(b.kind === 'group' ? b.group.receivedAt : b.inc.receivedAt).getTime() - new Date(a.kind === 'group' ? a.group.receivedAt : a.inc.receivedAt).getTime());
 
@@ -824,11 +849,7 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
                             </span>
                           )}
                         </p>
-                        {/* BUG FIX (2026-09-16): grouping removed entirely
-                            (see above) — `entries` is now always exactly one
-                            row, so the old "N batches merged" suffix here
-                            could never render again. Dropped. */}
-                        <p className="text-xs text-muted-foreground">{fmt(receivedAt)} · {dispatchedBy}</p>
+                        <p className="text-xs text-muted-foreground">{fmt(receivedAt)} · {dispatchedBy}{entries.length > 1 ? ` · ${entries.length} batches merged` : ''}</p>
                       </div>
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
