@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   Banknote,
@@ -21,12 +21,12 @@ import {
 } from 'lucide-react';
 import * as XLSX from '@/lib/safeSpreadsheet';
 import { cn } from '@/lib/utils';
-import { supabase } from '@/lib/supabase';
+import { supabase, fetchAllRows } from '@/lib/supabase';
 import { useAuthStore } from '@/stores/authStore';
 import { useBakeryStore } from './bakeryStore';
-import { useBranchStore } from '@/branch/branchStore';
 import { BRANCHES } from './types';
 import type { Branch } from './types';
+import { mapWalkinBill, type WalkinBillRow } from './dispatchInvoice';
 import { recordLeftoverMovement, sanitizeQtyForUnit } from './PlannerLeftoverTab';
 import { printViaIframe } from '@/lib/printViaIframe';
 import { generateExcelReport, type ExcelSectionSpec, type PdfSectionSpec } from './reportExport';
@@ -390,12 +390,45 @@ export default function PackingDailyClosureTab({ onCounterStatusChange }: { onCo
   const { currentUser } = useAuthStore();
   const orders = useBakeryStore(state => state.orders);
   const fetchOrders = useBakeryStore(state => state.fetchOrders);
-  const branchSales = useBranchStore(state => state.sales.SNB);
-  const branchCreditSales = useBranchStore(state => state.creditSales.SNB);
-  const branchCreditPayments = useBranchStore(state => state.creditPayments.SNB);
-  const fetchBranchData = useBranchStore(state => state.fetchBranchData);
 
   const [date, setDate] = useState(packingBusinessDateToday());
+  // BUG FIX (2026-09-28): "Gross Sales"/"Bills"/cash-UPI-card breakdown/
+  // "Expected Cash" below used to come from branch_sales/branch_credit_sales
+  // tagged branch='SNB' — a completely different table from what this
+  // counter actually bills through. Confirmed live: branch_sales for SNB has
+  // had ZERO rows for the entire last 28 days, while Planner's real counter
+  // (bakery_walkin_bills, the "Sales" tab — gated on THIS counter being open
+  // via counterOpen, see PlannerDashboard.tsx's saveBill) had 101 active
+  // bills totaling ₹3,08,183.90 in that same window, completely unreconciled
+  // by this screen. Worse, `finalize()` below refuses to close the day
+  // unless counted cash exactly matches `expectedCash` — with expectedCash
+  // always understated by the real cash collected, staff could never
+  // genuinely reconcile a real cash day. Fetching Planner's own walk-in
+  // bills for the selected business date instead; Planner's Sales tab has no
+  // credit option (see WALKIN_PAYMENT_MODES — cash/UPI/card only), so
+  // Credit Billed/Credit Collected below are correctly always 0 for this
+  // counter now, rather than showing SNB branch's unrelated credit activity.
+  const [walkinBills, setWalkinBills] = useState<WalkinBillRow[]>([]);
+  // SELF-REVIEW FIX (2026-09-28): a classic stale-response race — if `date`
+  // changes again before a slower fetch for the PREVIOUS date resolves (e.g.
+  // clicking through several Closure History dates quickly), the older
+  // response could land last and silently overwrite this cash-reconciliation
+  // screen with the wrong date's numbers. Guarded the same way this app
+  // already guards its other request races (e.g. AdminDashboard.tsx's
+  // realSalesRequestRef) — only the most recently issued call is allowed to
+  // commit state.
+  const walkinBillsRequestRef = useRef(0);
+  const loadWalkinBills = useCallback(async (forDate: string) => {
+    const requestId = ++walkinBillsRequestRef.current;
+    const fromIso = `${forDate}T00:00:00+05:30`;
+    const toIso = new Date(new Date(fromIso).getTime() + 86_400_000).toISOString();
+    const { data, error: fetchError } = await fetchAllRows<Record<string, unknown>>('bakery_walkin_bills', (q) => q
+      .select('*').gte('created_at', fromIso).lt('created_at', toIso).order('created_at', { ascending: false }));
+    if (walkinBillsRequestRef.current !== requestId) return;
+    if (fetchError) { console.error('[PackingDailyClosureTab] walk-in bill fetch failed:', fetchError); setWalkinBills([]); return; }
+    setWalkinBills((data ?? []).map(mapWalkinBill));
+  }, []);
+  useEffect(() => { void loadWalkinBills(date); }, [date, loadWalkinBills]);
   const [openingCash, setOpeningCash] = useState('0');
   const [countedCash, setCountedCash] = useState('');
   const [notes, setNotes] = useState('');
@@ -479,37 +512,38 @@ export default function PackingDailyClosureTab({ onCounterStatusChange }: { onCo
   }, [date, onCounterStatusChange]);
 
   useEffect(() => {
-    void Promise.all([fetchOrders(true), fetchBranchData('SNB', false, ['sales', 'credit'])]).finally(() => void loadClosure()); // EGRESS FIX: this tab only reads sales + credit sales
-  }, [fetchBranchData, fetchOrders, loadClosure]);
+    void fetchOrders(true).finally(() => void loadClosure());
+  }, [fetchOrders, loadClosure]);
 
   const {
     packedOrders, dispatchedOrderIds, pendingOrders, branchSummary, itemSummary,
     leftoverRows, dispatchedKg, dispatchedPcs, leftoverKg,
   } = usePackingDispatchSummary(orders, date);
 
-  const daySales = useMemo(() => branchSales.filter(sale => businessDate(sale.soldAt) === date), [branchSales, date]);
-  const dayCredits = useMemo(() => branchCreditSales.filter(sale => businessDate(sale.createdAt) === date), [branchCreditSales, date]);
-  const dayCreditPayments = useMemo(() => branchCreditPayments.filter(payment => businessDate(payment.createdAt) === date), [branchCreditPayments, date]);
+  // walkinBills is already fetched scoped to this exact business date (see
+  // the effect above) — cancelled bills excluded, same as every other real
+  // revenue total in this app.
+  const daySales = useMemo(() => walkinBills.filter(b => b.status !== 'cancelled'), [walkinBills]);
 
   const salesByMode = useMemo(() => {
     const result: Record<string, number> = { cash: 0, upi: 0, card: 0, bank: 0, mixed: 0 };
-    daySales.forEach(sale => {
-      const mode = (sale.paymentMethod || 'cash').toLowerCase();
-      result[mode] = (result[mode] || 0) + sale.quantitySold * sale.unitPrice;
+    daySales.forEach(bill => {
+      const mode = (bill.paymentMode || 'cash').toLowerCase();
+      result[mode] = (result[mode] || 0) + bill.total;
     });
     return result;
   }, [daySales]);
-  const creditCollectionsByMode = useMemo(() => {
-    const result: Record<string, number> = { cash: 0, upi: 0, card: 0, bank: 0, mixed: 0 };
-    dayCreditPayments.forEach(payment => { result[payment.paymentMode] = (result[payment.paymentMode] || 0) + payment.amount; });
-    return result;
-  }, [dayCreditPayments]);
 
-  const grossSales = daySales.reduce((sum, sale) => sum + sale.quantitySold * sale.unitPrice, 0);
-  const billCount = new Set(daySales.map(sale => sale.billNo).filter(Boolean)).size;
-  const creditBilled = dayCredits.reduce((sum, sale) => sum + sale.creditAmount, 0);
-  const creditCollected = dayCreditPayments.reduce((sum, payment) => sum + payment.amount, 0);
-  const paymentTotal = (mode: string) => (salesByMode[mode] || 0) + (creditCollectionsByMode[mode] || 0);
+  const grossSales = daySales.reduce((sum, bill) => sum + bill.total, 0);
+  const billCount = daySales.length;
+  // Planner's own Sales tab has no credit payment option (cash/UPI/card
+  // only — see WALKIN_PAYMENT_MODES in PlannerDashboard.tsx), so this
+  // counter never bills or collects on credit. Hardcoded 0 rather than
+  // pulling in SNB branch's own, unrelated credit-sale activity (the
+  // original bug this whole block fixes).
+  const creditBilled = 0;
+  const creditCollected = 0;
+  const paymentTotal = (mode: string) => salesByMode[mode] || 0;
   const cashTotal = paymentTotal('cash');
   const expectedCash = Number(openingCash || 0) + cashTotal;
   const counted = Number(countedCash || 0);
@@ -632,7 +666,7 @@ export default function PackingDailyClosureTab({ onCounterStatusChange }: { onCo
 
   const refresh = async () => {
     setLoading(true); setError('');
-    await Promise.all([fetchOrders(true), fetchBranchData('SNB', false, ['sales', 'credit'])]); // EGRESS FIX: this tab only reads sales + credit sales
+    await Promise.all([fetchOrders(true), loadWalkinBills(date)]);
     await loadClosure();
   };
 

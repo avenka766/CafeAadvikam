@@ -5122,7 +5122,7 @@ function allInvoicesPaymodeFor(r: AllInvoiceRow): string {
   return 'Transfer'; // TO / Cake — internal stock movement, not a counter sale
 }
 
-function PlannerAllInvoicesTab() {
+function PlannerAllInvoicesTab({ active }: { active: boolean }) {
   const [fromDate, setFromDate] = useState(allInvoicesTodayInput());
   const [toDate, setToDate] = useState(allInvoicesTodayInput());
   const [invoices, setInvoices] = useState<DispatchInvoiceRecord[]>([]);
@@ -5140,7 +5140,14 @@ function PlannerAllInvoicesTab() {
   const [partySearch, setPartySearch] = useState('');
   const [selectedParties, setSelectedParties] = useState<Set<string>>(new Set());
 
+  // SELF-REVIEW FIX (2026-09-28): request-id guard so a slower fetch for a
+  // PREVIOUS date range can't land after a newer one and overwrite the
+  // table with stale rows for the wrong range (e.g. clicking "Today" then
+  // "7 Days" quickly) — same pattern as PackingDailyClosureTab's identical
+  // fix and AdminDashboard.tsx's realSalesRequestRef.
+  const loadRequestRef = useRef(0);
   const load = async () => {
+    const requestId = ++loadRequestRef.current;
     setLoading(true); setError('');
     try {
       const fromIso = `${fromDate}T00:00:00+05:30`;
@@ -5150,6 +5157,7 @@ function PlannerAllInvoicesTab() {
         fetchAllRows<Record<string, unknown>>('bakery_walkin_bills', (q) => q.select('*').gte('created_at', fromIso).lt('created_at', toIso).order('created_at', { ascending: false })),
         fetchAllRows<{ invoice_no: string | null; status: string }>('hosur_bills', (q) => q.select('invoice_no, status').not('invoice_no', 'is', null)),
       ]);
+      if (loadRequestRef.current !== requestId) return;
       if (salesRes.error) throw new Error(salesRes.error);
       setInvoices(invoiceRows);
       setSales(((salesRes.data ?? []) as Record<string, unknown>[]).map(mapWalkinBill));
@@ -5163,14 +5171,30 @@ function PlannerAllInvoicesTab() {
       }
       setHosurPaymentByInvoiceNo(paymentMap);
     } catch (err) {
+      if (loadRequestRef.current !== requestId) return;
       setError(err instanceof Error ? err.message : 'Failed to load invoices.');
       setInvoices([]); setSales([]);
     } finally {
-      setLoading(false);
+      if (loadRequestRef.current === requestId) setLoading(false);
     }
   };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { void load(); }, [fromDate, toDate]);
+  // PERF FIX (2026-09-28): "Planner Reports tab taking longer to respond" —
+  // this whole combined tab keeps every section mounted (CSS-hidden, not
+  // unmounted) so typed state and the "Export All" button survive switching
+  // between Reports/All Invoices/Closing Stock/Disputes — see
+  // PlannerReportsAndClosingStockTab below. That meant this section's own
+  // load() (3 queries, including an unbounded all-time hosur_bills fetch —
+  // see above) used to fire the instant the Reports tab was opened at all,
+  // even if the user never actually clicked into "All Invoices". `active`
+  // (true only once this section has been selected at least once) gates the
+  // fetch so opening Reports alone no longer pays this cost.
+  const hasBeenActive = useRef(false);
+  if (active) hasBeenActive.current = true;
+  useEffect(() => {
+    if (!hasBeenActive.current) return;
+    void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fromDate, toDate, active]);
 
   const rows: AllInvoiceRow[] = useMemo(() => {
     const fromInvoices: AllInvoiceRow[] = invoices.map(r => ({
@@ -5494,7 +5518,7 @@ function PlannerReportsAndClosingStockTab({ orders, activeLeftovers, doneOrders 
           <PackingDispatchSummaryPanel onExportDataChange={onDispatchExport} />
         </div>
       </div>
-      <div style={{ display: section === 'all-invoices' ? 'block' : 'none' }}><PlannerAllInvoicesTab /></div>
+      <div style={{ display: section === 'all-invoices' ? 'block' : 'none' }}><PlannerAllInvoicesTab active={section === 'all-invoices'} /></div>
       <div style={{ display: section === 'closing-stock' ? 'block' : 'none' }} className="space-y-6">
         <PlannerLeftoverTab onExportDataChange={onClosingStockExport} />
         <LeftoverDoneTab active={activeLeftovers} done={doneOrders} />

@@ -101,7 +101,17 @@ export default function HosurShopOrderPanel({ section: controlledSection, onPend
     const [shopsRes, pricesRes, ordersRes, itemsRes] = await Promise.all([
       supabase.from('hosur_shops').select('id, shop_name, whatsapp_number, address, is_active, discount_percent').order('shop_name'),
       supabase.from('hosur_shop_price_lists').select('id, shop_id, item_name, item_unit, unit_price, is_active').eq('is_active', true),
-      supabase.from('hosur_orders').select('id, order_number, shop_id, shop_name, shop_whatsapp, status, subtotal, created_at').order('created_at', { ascending: false }).limit(200),
+      // BUG FIX (2026-09-28): "check the other Planner sub-tabs too" —
+      // `.limit(200)` with no status filter was already actively hiding real
+      // orders: 437 real hosur_orders exist, and of the ones older than the
+      // 200 most recent, 43 were still 'pending_packing' (never dispatched)
+      // and 25 were 'dispatched' but never billed — invisible in this exact
+      // panel's Place Order / Dispatch & Billing queues. Same fix as
+      // HosurDashboard.tsx's identical hosur_orders query (same session).
+      fetchAllRows<Record<string, unknown>>('hosur_orders', (q) => q
+        .select('id, order_number, shop_id, shop_name, shop_whatsapp, status, subtotal, created_at')
+        .order('created_at', { ascending: false }))
+        .then((r) => ({ data: r.data, error: r.error ? { message: r.error } : null })),
       // BUG FIX (2026-09-20): this loaded EVERY hosur_order_items row with no
       // filter — 1,353 rows and growing — so PostgREST's silent 1,000-row cap
       // dropped ~350 of them, leaving some of the 200 orders above with missing

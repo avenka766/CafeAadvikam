@@ -657,6 +657,52 @@ export default function PlannerLeftoverTab({ onExportDataChange }: {
     }
   };
 
+  // FEATURE (2026-09-28): "Current Leftover Balance I need the ability to
+  // select multiple items and delete it at once" — reuses the exact same
+  // zero-out-via-correction mechanism as the single-row Delete above (one
+  // real 'adjustment' ledger entry per item, full history preserved), just
+  // looped. Sequential, not Promise.all — this hits the same RPC the single
+  // delete does, and a burst of concurrent corrections against the same
+  // planner_leftover_ledger table is exactly the kind of write contention
+  // this app's own RPCs elsewhere guard against with advisory locks; going
+  // one at a time avoids relying on that guard actually being on every path.
+  const [selectedBalanceKeys, setSelectedBalanceKeys] = useState<Set<string>>(new Set());
+  const [bulkDeleting, setBulkDeleting] = useState(false);
+  const bulkDeletingRef = useRef(false);
+  const toggleBalanceSelected = (key: string) => setSelectedBalanceKeys((prev) => {
+    const next = new Set(prev);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    return next;
+  });
+  const toggleSelectAllBalances = () => setSelectedBalanceKeys((prev) =>
+    prev.size === balances.length ? new Set() : new Set(balances.map((row) => `${row.itemSlug}|${row.unit}`)));
+  const bulkDeleteSelectedBalances = async () => {
+    if (bulkDeletingRef.current || selectedBalanceKeys.size === 0) return;
+    const targets = balances.filter((row) => selectedBalanceKeys.has(`${row.itemSlug}|${row.unit}`));
+    if (targets.length === 0) return;
+    if (!window.confirm(`Delete ${targets.length} item${targets.length === 1 ? '' : 's'} from Current Leftover Balance? This records a correction to zero each one out — full history stays in the Daily Report / Movement Log.`)) return;
+    bulkDeletingRef.current = true;
+    setBulkDeleting(true);
+    setError('');
+    let failed = 0;
+    for (const row of targets) {
+      const result = await renameAndCorrectClosingStockBalance({
+        oldItemSlug: row.itemSlug, oldUnit: row.unit,
+        newItemName: row.itemName, newUnit: row.unit, targetQuantity: 0,
+        editedBy: staffName,
+      });
+      if ('error' in result) failed += 1;
+    }
+    setMessage(failed === 0
+      ? `${targets.length} item${targets.length === 1 ? '' : 's'} removed from Current Leftover Balance.`
+      : `${targets.length - failed} of ${targets.length} items removed — ${failed} failed, check and retry those.`);
+    if (failed > 0) setError(`${failed} item${failed === 1 ? '' : 's'} could not be removed.`);
+    setSelectedBalanceKeys(new Set());
+    setBulkDeleting(false);
+    bulkDeletingRef.current = false;
+    void refresh();
+  };
+
   // ── Edit a Closing Stock entry (item/qty/unit) ───────────────────────────
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
@@ -712,6 +758,27 @@ export default function PlannerLeftoverTab({ onExportDataChange }: {
     // that staff need to see, not just items currently in surplus.
     return Array.from(map.values()).filter((row) => Math.abs(row.balance) > 0.001).sort((a, b) => a.itemName.localeCompare(b.itemName));
   }, [rows]);
+
+  // FEATURE (2026-09-28): "if we search for an item and select that item —
+  // if that item is in Current Leftover Balance then that balance should
+  // show there so that we can edit it" — the Add form used to give no
+  // indication a selected item already had a running balance, so staff could
+  // add a fresh delta with no idea it was stacking on top of (or duplicating)
+  // an existing count instead of correcting it. Matches on the same
+  // itemSlug+unit key the balance table itself uses (closingStockItemSlug is
+  // pure/deterministic, no lookup needed). Also surfaces a same-item balance
+  // under a DIFFERENT unit as a secondary hint, so switching Kg/Pcs doesn't
+  // silently hide a real existing balance either.
+  const selectedItemSameUnitBalance = useMemo(() => {
+    if (!selectedItem) return null;
+    const slug = closingStockItemSlug(selectedItem.name);
+    return balances.find((b) => b.itemSlug === slug && b.unit === unit) ?? null;
+  }, [selectedItem, unit, balances]);
+  const selectedItemOtherUnitBalance = useMemo(() => {
+    if (!selectedItem || selectedItemSameUnitBalance) return null;
+    const slug = closingStockItemSlug(selectedItem.name);
+    return balances.find((b) => b.itemSlug === slug && b.unit !== unit) ?? null;
+  }, [selectedItem, unit, selectedItemSameUnitBalance, balances]);
 
   const todayRows = useMemo(() => rows.filter((row) => row.businessDate === kolkataToday()), [rows]);
   const addedTodayTotal = todayRows.filter((row) => row.delta > 0).length;
@@ -967,6 +1034,18 @@ export default function PlannerLeftoverTab({ onExportDataChange }: {
               onSelect={(item) => { setSelectedItem(item); setItemQuery(item.name); }}
               items={catalog}
             />
+            {selectedItemSameUnitBalance && (
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-teal-200 bg-teal-50 px-3 py-2 text-xs font-bold text-teal-800">
+                <span>Already in Current Leftover Balance: {qtyFmt(selectedItemSameUnitBalance.balance)} {selectedItemSameUnitBalance.unit}</span>
+                <button type="button" onClick={() => startEditBalance(selectedItemSameUnitBalance)} className="rounded-lg bg-teal-700 px-2.5 py-1 text-[10px] font-black text-white">Edit existing balance</button>
+              </div>
+            )}
+            {selectedItemOtherUnitBalance && (
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-800">
+                <span>Also has a balance in {selectedItemOtherUnitBalance.unit}: {qtyFmt(selectedItemOtherUnitBalance.balance)} {selectedItemOtherUnitBalance.unit}</span>
+                <button type="button" onClick={() => startEditBalance(selectedItemOtherUnitBalance)} className="rounded-lg bg-amber-600 px-2.5 py-1 text-[10px] font-black text-white">Edit that balance</button>
+              </div>
+            )}
             <div className="grid grid-cols-2 gap-3">
               <label className="space-y-1">
                 <span className="text-xs font-black text-muted-foreground">Quantity</span>
@@ -993,11 +1072,31 @@ export default function PlannerLeftoverTab({ onExportDataChange }: {
         </div>
 
         <div className="overflow-hidden rounded-2xl border bg-card">
-          <div className="border-b bg-muted/30 px-4 py-3"><h3 className="font-black">Current Leftover Balance</h3><p className="text-xs text-muted-foreground">Running total across all history — this is what's available to dispatch first. A negative balance means more was dispatched than produced/added (a backorder) — it clears automatically once more is produced.</p></div>
+          <div className="border-b bg-muted/30 px-4 py-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h3 className="font-black">Current Leftover Balance</h3>
+              {/* FEATURE (2026-09-28): "select multiple items and delete it
+                  at once" */}
+              {selectedBalanceKeys.size > 0 && (
+                <button
+                  onClick={() => void bulkDeleteSelectedBalances()}
+                  disabled={bulkDeleting}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-red-600 px-2.5 py-1.5 text-[10px] font-black text-white disabled:opacity-50"
+                >
+                  {bulkDeleting ? <Loader2 className="size-3 animate-spin" /> : <Trash2 className="size-3" />}
+                  Delete Selected ({selectedBalanceKeys.size})
+                </button>
+              )}
+            </div>
+            <p className="text-xs text-muted-foreground">Running total across all history — this is what's available to dispatch first. A negative balance means more was dispatched than produced/added (a backorder) — it clears automatically once more is produced.</p>
+          </div>
           <div className="max-h-[420px] overflow-y-auto">
             <table className="min-w-full text-sm">
               <thead className="sticky top-0 bg-muted/50 text-[10px] font-black uppercase tracking-wide text-muted-foreground">
-                <tr><th className="px-4 py-2.5 text-left">Item</th><th className="px-4 py-2.5 text-right">Balance</th><th className="px-4 py-2.5 text-right">Actions</th></tr>
+                <tr>
+                  <th className="w-8 px-4 py-2.5"><input type="checkbox" checked={balances.length > 0 && selectedBalanceKeys.size === balances.length} onChange={toggleSelectAllBalances} className="size-3.5" aria-label="Select all" /></th>
+                  <th className="px-4 py-2.5 text-left">Item</th><th className="px-4 py-2.5 text-right">Balance</th><th className="px-4 py-2.5 text-right">Actions</th>
+                </tr>
               </thead>
               <tbody className="divide-y">
                 {balances.length ? balances.map((row) => {
@@ -1006,7 +1105,7 @@ export default function PlannerLeftoverTab({ onExportDataChange }: {
                   if (editBalanceKey === key) {
                     return (
                       <tr key={key} className="bg-teal-50/60">
-                        <td className="px-4 py-2.5" colSpan={3}>
+                        <td className="px-4 py-2.5" colSpan={4}>
                           <div className="flex flex-wrap items-center gap-1.5">
                             <input autoFocus value={editBalanceName} onChange={(e) => setEditBalanceName(e.target.value)} placeholder="Item name" className="h-8 min-w-[140px] flex-1 rounded-lg border bg-background px-2 text-xs font-bold" />
                             <input type="number" step={editBalanceUnit === 'pcs' ? 1 : 0.001} value={editBalanceQty} onChange={(e) => setEditBalanceQty(sanitizeQtyForUnit(e.target.value, editBalanceUnit))} placeholder="Balance qty" className="h-8 w-24 rounded-lg border bg-background px-2 text-right text-xs font-bold" />
@@ -1026,6 +1125,7 @@ export default function PlannerLeftoverTab({ onExportDataChange }: {
                   }
                   return (
                   <tr key={key} className={isBackorder ? 'bg-red-50/60' : undefined}>
+                    <td className="px-4 py-2.5"><input type="checkbox" checked={selectedBalanceKeys.has(key)} onChange={() => toggleBalanceSelected(key)} className="size-3.5" aria-label={`Select ${row.itemName}`} /></td>
                     <td className="px-4 py-2.5 font-bold">{row.itemName}</td>
                     <td className={cn('px-4 py-2.5 text-right font-black', isBackorder && 'text-red-700')}>
                       {qtyFmt(row.balance)} {row.unit}
@@ -1056,7 +1156,7 @@ export default function PlannerLeftoverTab({ onExportDataChange }: {
                     </td>
                   </tr>
                   );
-                }) : <tr><td colSpan={3} className="px-4 py-10 text-center text-muted-foreground">No leftover stock currently held.</td></tr>}
+                }) : <tr><td colSpan={4} className="px-4 py-10 text-center text-muted-foreground">No leftover stock currently held.</td></tr>}
               </tbody>
             </table>
           </div>
