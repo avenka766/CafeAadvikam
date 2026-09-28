@@ -134,11 +134,19 @@ export interface BranchAdvanceItem {
   price: number;
   lineTotal: number;
   isCustom?: boolean;
+  /** 'store' | 'custom' | 'cake' — which of the branch's own advance-order
+   *  tabs this came from. Cake orders already flow through their own
+   *  dedicated pipeline (Cake Dispatch) — see StoreAdvanceOrdersPanel in
+   *  PlannerDashboard.tsx, which filters on this to avoid double-listing. */
+  orderType?: 'store' | 'custom' | 'cake';
 }
 
 export interface BranchAdvanceOrder {
   id: string;
   branch: Branch;
+  /** SNB-ADV-N / VRSNB-ADV-N — the human-facing number the branch and
+   *  customer actually refer to this order by. */
+  orderNo?: string;
   customerName: string | null;
   items: BranchAdvanceItem[];
   subtotal: number;
@@ -154,6 +162,25 @@ export interface BranchAdvanceOrder {
   reservationStatus?: 'none' | 'reserved' | 'consumed' | 'released';
   /** ISO date string (YYYY-MM-DD) — the date the customer wants delivery */
   deliveryDate: string | null;
+  // BUG FIX (2026-09-28): "Planner is unable to see SNB-ADV-376" — this
+  // whole table (recordAdvanceOrder/collectAdvanceBalance, "System 1" per
+  // the MD Bug #11 note above) was never bridged into Planner's
+  // bakery_orders-based pipeline the way System 2 (Cake advance orders) was
+  // fixed to be on 2026-09-12, so a "store" order (existing branch stock,
+  // no production needed) was structurally invisible to Planner and could
+  // never be dispatched. Worse: the completion RPC's own stock-deduction
+  // step (consume_branch_stock_reservation) is called with source_type
+  // 'branch_advance_order', but nothing ever inserts a branch_stock_reservations
+  // row under that exact tag (the only rows that exist are tagged
+  // 'branch_advance_order_number', a different thing entirely) — so
+  // completing one of these orders has never actually deducted real
+  // inventory. Rather than repair that dead reservation plumbing, Planner
+  // dispatching real stock (branch_incoming + Closing Stock debit, same
+  // mechanism every other dispatch in this app already uses) is now the
+  // real, correct source of truth for "goods delivered" — dispatchedAt
+  // gates branch completion instead.
+  dispatchedAt?: string | null;
+  dispatchedBy?: string | null;
 }
 
 export interface IncomingStock {
@@ -941,7 +968,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         // only window, not a backlog; the still-open backlog below (which
         // genuinely can grow large and must NOT be truncated) is untouched.
         wantAdvance ? supabase.from('branch_advance_orders')
-          .select('id,branch,customer_name,items,subtotal,advance_amount,advance_method,balance_due,sold_by,created_at,fully_paid_at,balance_method,status,delivery_date,notes,reservation_status')
+          .select('id,branch,order_no,customer_name,items,subtotal,advance_amount,advance_method,balance_due,sold_by,created_at,fully_paid_at,balance_method,status,delivery_date,notes,reservation_status,dispatched_at,dispatched_by')
           .eq('branch', branch)
           .gte('created_at', startOfToday)
           .order('created_at', { ascending: false })
@@ -962,7 +989,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         // created today. Fetch open ones separately, unbounded by recency
         // (still capped defensively), and merge below.
         wantAdvance ? supabase.from('branch_advance_orders')
-          .select('id,branch,customer_name,items,subtotal,advance_amount,advance_method,balance_due,sold_by,created_at,fully_paid_at,balance_method,status,delivery_date,notes,reservation_status')
+          .select('id,branch,order_no,customer_name,items,subtotal,advance_amount,advance_method,balance_due,sold_by,created_at,fully_paid_at,balance_method,status,delivery_date,notes,reservation_status,dispatched_at,dispatched_by')
           .eq('branch', branch)
           .eq('status', 'pending')
           .order('created_at', { ascending: false })
@@ -1077,6 +1104,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
           ].map((d) => ({
             id:             d.id,
             branch:         d.branch as Branch,
+            orderNo:        d.order_no ?? undefined,
             customerName:   d.customer_name ?? null,
             items:          (d.items || []) as BranchAdvanceItem[],
             subtotal:       Number(d.subtotal),
@@ -1091,6 +1119,8 @@ export const useBranchStore = create<BranchState>((set, get) => ({
             deliveryDate:   d.delivery_date ?? null,
             notes:          d.notes ?? null,
             reservationStatus: (d.reservation_status ?? 'none') as BranchAdvanceOrder['reservationStatus'],
+            dispatchedAt:   d.dispatched_at ?? null,
+            dispatchedBy:   d.dispatched_by ?? null,
           }));
         }
 
@@ -1398,6 +1428,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     const newOrder: BranchAdvanceOrder = {
       id: String(data.id),
       branch,
+      orderNo: data.order_no != null ? String(data.order_no) : undefined,
       customerName: data.customer_name != null ? String(data.customer_name) : null,
       items: (data.items || order.items) as BranchAdvanceItem[],
       subtotal: Number(data.subtotal ?? order.subtotal),
@@ -1412,6 +1443,8 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       deliveryDate: data.delivery_date ? String(data.delivery_date) : order.deliveryDate ?? null,
       notes: data.notes ? String(data.notes) : order.notes ?? null,
       reservationStatus: String(data.reservation_status || 'reserved') as BranchAdvanceOrder['reservationStatus'],
+      dispatchedAt: null,
+      dispatchedBy: null,
     };
 
     // Do not write branch_sales until the reserved order is completed. Recording
