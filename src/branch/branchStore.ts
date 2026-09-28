@@ -1743,15 +1743,26 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         // RPC is unavailable, fall back to the read-modify-write (same risk as before).
         const { error: rpcErr } = await incrementBranchStock(branch, inc.itemName, inc.quantity, resolvedBarcode);
         if (rpcErr) {
-          // Atomic RPC not available — fall back to non-atomic path with a warning
-          console.warn('[confirmIncoming] increment_branch_stock RPC unavailable, using non-atomic fallback:', rpcErr.message);
-          const newQty = Math.round((existing.quantity + inc.quantity) * 1000) / 1000;
-          let fallbackUpdate = supabase.from('branch_stock')
-            .update({ quantity: newQty, unit: inc.unit, item_name: inc.itemName, item_barcode: resolvedBarcode ?? existing.item_barcode ?? null })
-            .eq('branch', branch);
-          fallbackUpdate = resolvedBarcode != null ? fallbackUpdate.eq('item_barcode', resolvedBarcode) : fallbackUpdate.eq('item_name', inc.itemName);
-          const { error: stockErr } = await fallbackUpdate;
-          if (stockErr) return `Failed to add to stock: ${stockErr.message}`;
+          // BUG FIX (2026-09-28): this used to fall back to a client-computed
+          // `existing.quantity + inc.quantity` written via a plain .update() —
+          // a non-atomic read-modify-write. Two confirms landing close together
+          // (seen for real: a SNB THIRUPATHI LAADU delivery split into two
+          // batches confirmed ~1s apart) could both read the same starting
+          // quantity and the second write would silently clobber the first,
+          // losing an entire confirmed delivery's worth of stock while
+          // `branch_incoming.confirmed` still correctly shows true — exactly
+          // matching a live "goods confirmed but never showed up in stock"
+          // report, traced and corrected via SQL (see 2026-09-28 SNB stock
+          // sync investigation). `increment_branch_stock` is still atomic
+          // (`quantity = quantity + p_qty` inside the DB, on-conflict upsert)
+          // even when matched by name instead of barcode, so use that here
+          // instead of a client-side read-then-write, closing the same race
+          // window this fallback exists to guard against in the first place.
+          console.warn('[confirmIncoming] increment_branch_stock_by_barcode unavailable, using atomic by-name RPC:', rpcErr.message);
+          const { error: atomicErr } = await supabase.rpc('increment_branch_stock', {
+            p_branch: branch, p_item_name: inc.itemName, p_qty: inc.quantity, p_unit: inc.unit,
+          });
+          if (atomicErr) return `Failed to add to stock: ${atomicErr.message}`;
         }
       } else {
         const { error: insErr } = await supabase.from('branch_stock')
