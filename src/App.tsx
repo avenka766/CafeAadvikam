@@ -186,13 +186,37 @@ function AppRoutes() {
     // bare specifier isn't resolvable by the WebView outside a dynamic
     // import boundary.
     void (async () => {
+      // BUG FIX (2026-09-27): "why does it show the login screen — it
+      // should open straight to the dashboard." Root cause: this whole
+      // block ran exactly once, and a fresh cold app-start (right after
+      // install, or right after the device/emulator itself just booted)
+      // can hit the login RPC before the network is actually usable yet —
+      // that single failed attempt fell straight through to the real login
+      // screen for the rest of that app session, with no way back short of
+      // force-quitting and reopening the app. Confirmed live: the exact
+      // same build failed silently on first launch, then auto-logged in
+      // successfully on a second launch a few seconds later with nothing
+      // else different. Retrying the LOGIN call specifically (not the
+      // getInfo() app-id check above it, which is a synchronous native
+      // bridge call and isn't network-dependent) covers this without
+      // changing the "different app -> real login screen" behavior at all.
+      const MAX_LOGIN_ATTEMPTS = 3;
+      const RETRY_DELAY_MS = 1500;
       try {
         const { App: NativeApp } = await import('@capacitor/app');
         const info = await NativeApp.getInfo();
         if (info.id !== OWNER_APP_ID) return; // a different native app (e.g. branch-staff) — real login screen applies
-        await useAuthStore.getState().login(OWNER_AUTOLOGIN_USERNAME, OWNER_AUTOLOGIN_PASSWORD);
+        for (let attempt = 1; attempt <= MAX_LOGIN_ATTEMPTS; attempt++) {
+          try {
+            await useAuthStore.getState().login(OWNER_AUTOLOGIN_USERNAME, OWNER_AUTOLOGIN_PASSWORD);
+            break;
+          } catch (err) {
+            if (attempt === MAX_LOGIN_ATTEMPTS) throw err;
+            await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
+          }
+        }
       } catch {
-        // @capacitor/app unavailable, or getInfo()/login() failed — falls
+        // @capacitor/app unavailable, or every login attempt failed — falls
         // through to the real login screen, same safety net as before.
       } finally {
         setAutoLoginStatus('done');
