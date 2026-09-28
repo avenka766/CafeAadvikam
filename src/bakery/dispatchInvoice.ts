@@ -1324,8 +1324,18 @@ export async function cancelDispatchInvoice(params: {
           const { syncHosurBillWithInvoiceEdit } = await import('./hosurBillingBridge');
           await syncHosurBillWithInvoiceEdit({ hosurOrderId: anchorHosurOrderId, items: combinedItems });
         } else {
-          await supabase.from('hosur_bills').update({ status: 'cancelled', subtotal: 0, credit_amount: 0, updated_at: cancelledAt })
-            .eq('order_id', anchorHosurOrderId).neq('status', 'cancelled');
+          const { data: zeroedBill } = await supabase.from('hosur_bills').update({ status: 'cancelled', subtotal: 0, credit_amount: 0, updated_at: cancelledAt })
+            .eq('order_id', anchorHosurOrderId).neq('status', 'cancelled').select('id').maybeSingle();
+          // BUG FIX (2026-09-28): this used to stop at hosur_bills — the
+          // linked branch_credit_sales row (what Owner/Admin credit reports
+          // actually read) kept showing the full amount as outstanding
+          // credit forever, since nothing ever zeroed it when the bill was
+          // cancelled. Found via 6 cancelled Hosur bills silently
+          // overstating outstanding credit by ~13.4K.
+          if (zeroedBill?.id) {
+            await supabase.from('branch_credit_sales').update({ subtotal: 0, credit_amount: 0, status: 'settled' })
+              .eq('source', 'hosur').eq('source_id', zeroedBill.id);
+          }
         }
       }
     } catch (err) {

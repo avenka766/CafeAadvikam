@@ -40,6 +40,7 @@ import { buildHosurOrderTag, buildHosurItemId, checkRecentDuplicateHosurOrder } 
 import { closestRecipeMatch } from './recipeNameMatch';
 import KgPackAdder from './KgPackAdder';
 import { sanitizeQtyForUnit, requantizeForUnit } from './PlannerLeftoverTab';
+import { businessDate } from '@/lib/businessDate';
 
 // AUDIT FIX (2026-09-05): "the payment should be round off there should not
 // be any decimal points".
@@ -962,7 +963,7 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
         setGstGenerating(v => ({ ...v, [order.id]: true }));
         setGstErrorMap(v => { const next = { ...v }; delete next[order.id]; return next; });
         try {
-          const invoiceDate = new Date().toISOString().slice(0, 10);
+          const invoiceDate = businessDate();
           const gstLines: GstTaxInvoiceLine[] = invoiceItems.map(l => ({
             itemName: l.itemName, hsnCode: orderGstHsn, qty: l.quantity,
             uom: l.unit === 'pcs' ? 'Nos' : l.unit === 'kg' ? 'Kg' : l.unit,

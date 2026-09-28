@@ -5201,7 +5201,7 @@ function GstInvoiceTab() {
   const [consigneeStateCode, setConsigneeStateCode] = useState('33');
 
   const [invoiceNo, setInvoiceNo] = useState('');
-  const [invoiceDate, setInvoiceDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [invoiceDate, setInvoiceDate] = useState(() => kolkataToday());
   const [referenceNo, setReferenceNo] = useState('');
   const [referenceDate, setReferenceDate] = useState('');
   const [remarks, setRemarks] = useState('');
@@ -5292,8 +5292,8 @@ function GstInvoiceTab() {
   // save_walkin_bill_secure. Recent Invoices below reads that table back.
   const [recentInvoices, setRecentInvoices] = useState<GstTaxInvoiceRecord[]>([]);
   const [loadingRecentInvoices, setLoadingRecentInvoices] = useState(true);
-  const [recentInvoiceFromDate, setRecentInvoiceFromDate] = useState(() => new Date().toISOString().slice(0, 10));
-  const [recentInvoiceToDate, setRecentInvoiceToDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [recentInvoiceFromDate, setRecentInvoiceFromDate] = useState(() => kolkataToday());
+  const [recentInvoiceToDate, setRecentInvoiceToDate] = useState(() => kolkataToday());
   const loadRecentInvoices = useCallback(async () => {
     setLoadingRecentInvoices(true);
     try {
@@ -5644,7 +5644,7 @@ function BillingWalkinTab() {
 // excluded from the Item-wise Sales totals since the goods came back to
 // stock, not a real sale.
 function SalesExcelExport() {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = kolkataToday();
   const [fromDate, setFromDate] = useState(today);
   const [toDate, setToDate] = useState(today);
   const [open, setOpen] = useState(false);
@@ -6314,8 +6314,8 @@ function BillingTab() {
   // so once more than 30 bills existed there was no way to find or reprint
   // an older one. Now a From/To range (default: today) that fetches every
   // matching bill via fetchAllRows, not just the newest 30.
-  const [recentFromDate, setRecentFromDate] = useState(() => new Date().toISOString().slice(0, 10));
-  const [recentToDate, setRecentToDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [recentFromDate, setRecentFromDate] = useState(() => kolkataToday());
+  const [recentToDate, setRecentToDate] = useState(() => kolkataToday());
   // FEATURE (2026-09-03): "need the option to edit the bills."
   const [editingBill, setEditingBill] = useState<WalkinBillRow | null>(null);
 
@@ -6502,7 +6502,7 @@ function BillingTab() {
         setGstGenerating(true);
         setGstError('');
         try {
-          const invoiceDate = new Date().toISOString().slice(0, 10);
+          const invoiceDate = kolkataToday();
           // FEATURE (2026-09-03): "Even if we check the box also they should
           // follow their respective invoice number not the gst invoice
           // number its should follow the sequence of SALES/26-27/..." — the
@@ -7067,7 +7067,7 @@ function EditWalkinBillModal({ bill, onClose, onSaved }: {
         setGstGenerating(true);
         setGstError('');
         try {
-          const invoiceDate = new Date().toISOString().slice(0, 10);
+          const invoiceDate = kolkataToday();
           const discountMult = newSubtotal > 0 ? newTotal / newSubtotal : 1;
           const gstLines: GstTaxInvoiceLine[] = cleaned.map(l => ({
             itemName: l.itemName,
@@ -9286,7 +9286,14 @@ function RecentDispatchInvoices({ scope, hosurShopId, title, customSalesOnly }: 
       // — that's the only marker distinguishing them from SNB's own branch
       // invoices, which never carry a customerName.
       const filtered = customSalesOnly ? records.filter(r => !!r.customerName && !r.hosurShopId) : records;
-      setInvoices(hosurShopId ? filtered.filter(r => r.hosurShopId === hosurShopId) : filtered);
+      const scoped = hosurShopId ? filtered.filter(r => r.hosurShopId === hosurShopId) : filtered;
+      // BUG FIX (2026-09-28): "bill numbers should come in sequence" (same
+      // root cause as Admin Dispatch Details) — listDispatchInvoices only
+      // orders by created_at, which can diverge from the invoice's own
+      // minted number under concurrent saves. Natural/numeric sort on
+      // invoiceNo itself guarantees a correct, stable sequence here too.
+      scoped.sort((a, b) => b.invoiceNo.localeCompare(a.invoiceNo, undefined, { numeric: true, sensitivity: 'base' }));
+      setInvoices(scoped);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not load recent invoices.');
       setInvoices([]);
@@ -9524,7 +9531,7 @@ function EditDispatchInvoiceModal({ invoice, onClose, onSaved }: {
         setGstGenerating(true);
         setGstError('');
         try {
-          const invoiceDate = new Date().toISOString().slice(0, 10);
+          const invoiceDate = kolkataToday();
           const discountMult = result.record.subtotal > 0 ? result.record.total / result.record.subtotal : 1;
           const gstLines: GstTaxInvoiceLine[] = result.record.items.map(l => ({
             itemName: l.itemName, hsnCode: gstHsnCode.trim(), qty: l.quantity,
@@ -11595,6 +11602,16 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
   const sendingRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<DispatchInvoiceRecord | null>(null);
+  // BUG FIX: "client unable to see TO/26-27/245 in Planner — but the items
+  // showed in SNB Order > Incoming." Confirmed live: the dispatch itself and
+  // the invoice row both succeed reliably; tagging the already-written
+  // branch_incoming rows with that invoice number is a separate best-effort
+  // UPDATE below that used to only console.error on failure — invisible to
+  // the planner, no retry, no way to know it needed fixing. One retry
+  // (mirrors hosurBillingBridge's attachInvoiceNo) closes the transient
+  // case; this surfaces a visible warning right in this modal if it still
+  // fails, instead of a console line nobody sees.
+  const [incomingTagWarning, setIncomingTagWarning] = useState<string | null>(null);
   // FEATURE (2026-09-02): "already the hosur sales are billed in full credit
   // — cant we directly dispatch and bill and send the whatsapp bill directly
   // when we dispatch." Once dispatch + the invoice above succeed, a Hosur
@@ -11997,11 +12014,21 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
       if ((scope === 'SNB' || scope === 'VRSNB') && !customer) {
         const dispatchIds = actions.map(a => a.dispatchEntryId);
         if (dispatchIds.length > 0) {
-          const { error: incomingTagError } = await supabase
+          const tagIncoming = async () => supabase
             .from('branch_incoming')
             .update({ invoice_no: record.invoiceNo })
             .in('dispatch_id', dispatchIds);
-          if (incomingTagError) console.error('[DispatchReviewModal] Failed to tag branch_incoming with invoice number:', incomingTagError.message);
+          let { error: incomingTagError } = await tagIncoming();
+          if (incomingTagError) {
+            // One retry — covers a transient hiccup (network blip, brief
+            // timeout) instead of permanently leaving these items untagged
+            // on the first failure, same as hosurBillingBridge's attachInvoiceNo.
+            ({ error: incomingTagError } = await tagIncoming());
+          }
+          if (incomingTagError) {
+            console.error('[DispatchReviewModal] Failed to tag branch_incoming with invoice number:', incomingTagError.message);
+            setIncomingTagWarning(`Dispatched and invoiced (${record.invoiceNo}), but ${dispatchIds.length} item${dispatchIds.length === 1 ? '' : 's'} in ${scope}'s Incoming tab may still show no invoice number (${incomingTagError.message}). The dispatch and invoice are correct — open ${scope} Order Dashboard → Incoming and refresh; if the invoice number is still missing there, re-run this tag manually.`);
+          }
         }
       }
 
@@ -12073,7 +12100,7 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
         setGstGenerating(true);
         setGstError(null);
         try {
-          const invoiceDate = new Date().toISOString().slice(0, 10);
+          const invoiceDate = kolkataToday();
           // FEATURE (2026-09-03): "Even if we check the box also they should
           // follow their respective invoice number not the gst invoice
           // number its should follow the sequence of SALES/26-27/..." — the
@@ -12349,6 +12376,9 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
           <>
             <p className="text-sm font-black text-teal-700">Dispatched — Invoice {result.invoiceNo} created (Rs. {Math.round(result.total)}).</p>
             <p className="mt-1 text-[11px] font-bold text-muted-foreground">Stored under this batch — reprint any time from the Invoice tab.</p>
+            {incomingTagWarning && (
+              <p className="mt-2 rounded-xl border border-amber-200 bg-amber-50 p-2.5 text-[11px] font-bold text-amber-800">{incomingTagWarning}</p>
+            )}
             {scope === 'Hosur' && hosurShop && (
               <div className="mt-3 rounded-xl border p-3 text-[11px] font-bold">
                 {hosurBilling && (

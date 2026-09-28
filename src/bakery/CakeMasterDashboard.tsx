@@ -8,6 +8,7 @@ import {
 import { cn } from '@/lib/utils';
 import { useAuthStore } from '@/stores/authStore';
 import { supabase } from '@/lib/supabase';
+import { businessDate } from '@/lib/businessDate';
 import LoadingSkeleton from '@/components/ui/LoadingSkeleton';
 
 type CakeOrderStatus = 'New' | 'Accepted' | 'Baking' | 'Correction Required' | 'Ready for Packing' | 'Packed' | 'Dispatched' | 'Cancelled';
@@ -70,8 +71,12 @@ function mapRow(d: any): CakeMasterOrder {
   };
 }
 
+// IST FIX (2026-09-27): used to return the raw UTC calendar date, so the
+// "Today" delivery-date filter below would show yesterday's (or an empty)
+// list between 12am-5:30am IST -- exactly the early-morning window a
+// bakery dispatches cake orders in.
 function todayStr() {
-  return new Date().toISOString().slice(0, 10);
+  return businessDate();
 }
 
 function fmtDate(d?: string | null) {
