@@ -14,14 +14,15 @@ import {
   Store, CreditCard, MessageCircle, Bell, CalendarDays,
   Search, Printer, Receipt, ListPlus, BarChart3, FileText, Minus, IndianRupee,
   ShoppingCart, Percent, Trash2, Scale, PackageMinus, Pencil, RotateCcw,
-  Undo2, ClipboardCheck,
+  Undo2, ClipboardCheck, Filter, FileDown,
 } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import * as XLSX from 'xlsx';
 import jsPDF from 'jspdf';
 import { useBakeryStore, isPlannedOrder, clampQtyForUnit, isAdvanceOrderTagged, parseAdvanceOrderNotes, type ParsedAdvanceOrder } from './bakeryStore';
 import { useAuthStore } from '@/stores/authStore';
-import { cn } from '@/lib/utils';
+import { cn, formatCurrency } from '@/lib/utils';
+import { useSortableRows, SortableTh } from '@/components/admin/SortableTable';
 import type { BakeryOrder, BakeryOrderItem, PreparedItem, Branch } from './types';
 import { BRANCHES, BAKERY_ITEMS } from './types';
 import { printHtml } from '@/branch/printUtils';
@@ -5040,9 +5041,386 @@ function PackingDispatchSummaryPanel({ onExportDataChange }: {
 // into Reports only" — Packing & Dispatch is no longer its own sub-tab
 // button; PackingDispatchSummaryPanel now renders as a section inside
 // "Reports" itself, right under ReportsTab. That leaves 3 sub-tabs.
-type CombinedReportSection = 'reports' | 'closing-stock' | 'disputes';
+// ─── Planner sub-tab: All Invoices ──────────────────────────────────────────
+// FEATURE (2026-09-28): "In Planner dashboard: Reports tab: I need a new sub
+// tab for all the invoices same like Admin Dispatch details. Same like this.
+// I need a filter and In the excel I need report like this" (reference:
+// AdminDispatchDetailsTab.tsx, plus a Tally-style Party Name filter panel and
+// a "Bill-wise Sales Report" export with Date/Type/Voucher No/Party Name/Net
+// Value/Paymode columns + a Total row). Reuses the exact same data sources as
+// Admin's Dispatch Details tab (listDispatchInvoices + bakery_walkin_bills +
+// hosur_bills payment status) so the two views never drift apart.
+type InvoiceBucket = 'TO' | 'SALES' | 'Cake';
+const INVOICE_BUCKET_LABEL: Record<InvoiceBucket, string> = { TO: 'TO — SNB & VRSNB', SALES: 'SALES — Hosur & Sales', Cake: 'Cake' };
+const INVOICE_BUCKET_TONE: Record<InvoiceBucket, string> = {
+  TO: 'bg-blue-50 text-blue-700 ring-blue-200',
+  SALES: 'bg-emerald-50 text-emerald-700 ring-emerald-200',
+  Cake: 'bg-pink-50 text-pink-700 ring-pink-200',
+};
+function invoiceBucketFor(scope: string): InvoiceBucket {
+  if (scope === 'SNB' || scope === 'VRSNB') return 'TO';
+  if (scope === 'Cake') return 'Cake';
+  return 'SALES'; // Hosur (dispatch invoices) + Sales (walk-in bills)
+}
+interface AllInvoiceRow {
+  key: string;
+  bucket: InvoiceBucket;
+  scopeLabel: string;
+  invoiceNo: string;
+  party: string;
+  date: string;
+  itemCount: number;
+  total: number;
+  dispatchedBy: string;
+  status: DispatchInvoiceRecord['status'];
+  paymentMode?: string;
+  paymentStatus?: string;
+}
+function allInvoicesTodayInput(d = new Date()) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+function allInvoicesDaysAgoInput(days: number) {
+  const d = new Date();
+  d.setDate(d.getDate() - days);
+  return allInvoicesTodayInput(d);
+}
+// FEATURE: the reference "Bill-wise Sales Report" uses DD-MM-YYYY, distinct
+// from the rest of this app's "DD Mon YYYY" convention — matched exactly for
+// this one export sheet only.
+function allInvoicesFmtDateDMY(iso: string) {
+  const d = new Date(iso);
+  return `${String(d.getDate()).padStart(2, '0')}-${String(d.getMonth() + 1).padStart(2, '0')}-${d.getFullYear()}`;
+}
+function allInvoicesFmtDate(iso: string) { return new Date(iso).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }); }
+function allInvoicesFmtTime(iso: string) { return new Date(iso).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }); }
+const ALL_INVOICES_HOSUR_LABEL: Record<string, { label: string; tone: string }> = {
+  paid: { label: 'Paid', tone: 'bg-emerald-50 text-emerald-700 ring-emerald-200' },
+  settled: { label: 'Settled', tone: 'bg-emerald-50 text-emerald-700 ring-emerald-200' },
+  credit_open: { label: 'Credit', tone: 'bg-amber-50 text-amber-700 ring-amber-200' },
+  partial_credit: { label: 'Partial Credit', tone: 'bg-amber-50 text-amber-700 ring-amber-200' },
+  draft: { label: 'Draft', tone: 'bg-slate-100 text-slate-600 ring-slate-200' },
+  confirmed: { label: 'Confirmed', tone: 'bg-slate-100 text-slate-600 ring-slate-200' },
+};
+// Same real-money-status mapping as Admin Dispatch Details — dispatch_invoices'
+// own status only means goods left, not that money came in (Hosur is always
+// billed on credit, so its dispatch status alone would say "paid" while the
+// shop still owes the full amount).
+function allInvoicesStatusDisplay(r: Pick<AllInvoiceRow, 'status' | 'paymentStatus'>): { label: string; tone: string } {
+  if (r.status === 'cancelled') return { label: 'Cancelled', tone: 'bg-red-600 text-white ring-red-600' };
+  if (r.paymentStatus) return ALL_INVOICES_HOSUR_LABEL[r.paymentStatus] ?? { label: r.paymentStatus, tone: 'bg-slate-100 text-slate-600 ring-slate-200' };
+  return { label: r.status === 'unpaid' ? 'Unpaid' : 'Paid', tone: 'bg-emerald-50 text-emerald-700 ring-emerald-200' };
+}
+// FEATURE: "Paymode" for the Bill-wise Sales Report — this app has no single
+// universal payment-mode concept the way Tally/billmaxo does (a TO/Cake
+// dispatch invoice is an internal stock movement, nothing is collected at a
+// counter for it; Hosur is always credit; only a walk-in Sales bill has a
+// real cash/UPI/card mode) — each bucket maps to the most honest equivalent
+// rather than a fabricated value.
+function allInvoicesPaymodeFor(r: AllInvoiceRow): string {
+  if (r.bucket === 'SALES' && r.paymentMode) return r.paymentMode.charAt(0).toUpperCase() + r.paymentMode.slice(1);
+  if (r.bucket === 'SALES') return 'Credit'; // Hosur dispatch invoice — always billed on credit
+  return 'Transfer'; // TO / Cake — internal stock movement, not a counter sale
+}
+
+function PlannerAllInvoicesTab() {
+  const [fromDate, setFromDate] = useState(allInvoicesTodayInput());
+  const [toDate, setToDate] = useState(allInvoicesTodayInput());
+  const [invoices, setInvoices] = useState<DispatchInvoiceRecord[]>([]);
+  const [sales, setSales] = useState<WalkinBillRow[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [bucketFilter, setBucketFilter] = useState<'All' | InvoiceBucket>('All');
+  const [search, setSearch] = useState('');
+  const [hosurPaymentByInvoiceNo, setHosurPaymentByInvoiceNo] = useState<Map<string, string>>(new Map());
+
+  // FEATURE: the "Filters" panel — a searchable, multi-select Party Name
+  // filter ("Filter On: Party Name"). Empty set = no filter (show every
+  // party), matching the reference checklist before anything is ticked.
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [partySearch, setPartySearch] = useState('');
+  const [selectedParties, setSelectedParties] = useState<Set<string>>(new Set());
+
+  const load = async () => {
+    setLoading(true); setError('');
+    try {
+      const fromIso = `${fromDate}T00:00:00+05:30`;
+      const toIso = new Date(new Date(`${toDate}T00:00:00+05:30`).getTime() + 86_400_000).toISOString();
+      const [invoiceRows, salesRes, hosurBillsRes] = await Promise.all([
+        listDispatchInvoices({ fromDate: fromIso, toDate: toIso }),
+        fetchAllRows<Record<string, unknown>>('bakery_walkin_bills', (q) => q.select('*').gte('created_at', fromIso).lt('created_at', toIso).order('created_at', { ascending: false })),
+        fetchAllRows<{ invoice_no: string | null; status: string }>('hosur_bills', (q) => q.select('invoice_no, status').not('invoice_no', 'is', null)),
+      ]);
+      if (salesRes.error) throw new Error(salesRes.error);
+      setInvoices(invoiceRows);
+      setSales(((salesRes.data ?? []) as Record<string, unknown>[]).map(mapWalkinBill));
+      const paymentMap = new Map<string, string>();
+      if (!hosurBillsRes.error) {
+        for (const row of (hosurBillsRes.data ?? []) as { invoice_no: string | null; status: string }[]) {
+          for (const no of (row.invoice_no ?? '').split(',').map(s => s.trim()).filter(Boolean)) {
+            paymentMap.set(no, row.status);
+          }
+        }
+      }
+      setHosurPaymentByInvoiceNo(paymentMap);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load invoices.');
+      setInvoices([]); setSales([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { void load(); }, [fromDate, toDate]);
+
+  const rows: AllInvoiceRow[] = useMemo(() => {
+    const fromInvoices: AllInvoiceRow[] = invoices.map(r => ({
+      key: r.id, bucket: invoiceBucketFor(r.scope), scopeLabel: r.scope, invoiceNo: r.invoiceNo,
+      party: r.hosurShopName || r.customerName || `${r.scope} Branch`,
+      date: r.createdAt, itemCount: r.items.length, total: r.total, dispatchedBy: r.dispatchedBy, status: r.status,
+      paymentStatus: r.scope === 'Hosur' ? hosurPaymentByInvoiceNo.get(r.invoiceNo) : undefined,
+    }));
+    const fromSales: AllInvoiceRow[] = sales.map(b => ({
+      key: `wb-${b.id}`, bucket: 'SALES', scopeLabel: 'Sales', invoiceNo: b.billNo,
+      party: b.customerName || 'Walk-in Customer',
+      date: b.createdAt, itemCount: b.items.length, total: b.total, dispatchedBy: b.cashierName || 'Planner',
+      status: b.status === 'cancelled' ? 'cancelled' : 'paid', paymentMode: b.paymentMode,
+    }));
+    return [...fromInvoices, ...fromSales].sort((a, b) => b.invoiceNo.localeCompare(a.invoiceNo, undefined, { numeric: true, sensitivity: 'base' }));
+  }, [invoices, sales, hosurPaymentByInvoiceNo]);
+
+  const partyOptions = useMemo(() => Array.from(new Set(rows.map(r => r.party))).sort((a, b) => a.localeCompare(b)), [rows]);
+  const filteredPartyOptions = useMemo(() => {
+    const q = partySearch.trim().toLowerCase();
+    return q ? partyOptions.filter(p => p.toLowerCase().includes(q)) : partyOptions;
+  }, [partyOptions, partySearch]);
+  const toggleParty = (p: string) => setSelectedParties(prev => {
+    const next = new Set(prev);
+    if (next.has(p)) next.delete(p); else next.add(p);
+    return next;
+  });
+
+  const filteredRows = useMemo(() => {
+    let list = bucketFilter === 'All' ? rows : rows.filter(r => r.bucket === bucketFilter);
+    if (selectedParties.size > 0) list = list.filter(r => selectedParties.has(r.party));
+    const q = search.trim().toLowerCase();
+    if (q) list = list.filter(r => r.invoiceNo.toLowerCase().includes(q) || r.party.toLowerCase().includes(q) || r.dispatchedBy.toLowerCase().includes(q));
+    return list;
+  }, [rows, bucketFilter, selectedParties, search]);
+
+  const { sorted: sortedRows, sortKey, sortDir, toggleSort } = useSortableRows<AllInvoiceRow>(
+    filteredRows,
+    (r, key) => {
+      switch (key) {
+        case 'invoiceNo': return r.invoiceNo;
+        case 'group': return r.scopeLabel;
+        case 'party': return r.party;
+        case 'items': return r.itemCount;
+        case 'total': return r.total;
+        case 'dispatchedBy': return r.dispatchedBy;
+        default: return new Date(r.date).getTime();
+      }
+    },
+    'invoiceNo',
+    'desc',
+  );
+
+  // Totals reflect the current filters (bucket + party + search) — the KPI
+  // cards and the Excel/PDF exports below always agree with what's on screen.
+  const totalsByBucket = useMemo(() => {
+    const map: Record<InvoiceBucket, { count: number; value: number }> = { TO: { count: 0, value: 0 }, SALES: { count: 0, value: 0 }, Cake: { count: 0, value: 0 } };
+    for (const r of filteredRows) {
+      if (r.status === 'cancelled') continue;
+      map[r.bucket].count += 1; map[r.bucket].value += r.total;
+    }
+    return map;
+  }, [filteredRows]);
+  const grandTotal = totalsByBucket.TO.value + totalsByBucket.SALES.value + totalsByBucket.Cake.value;
+  const grandCount = totalsByBucket.TO.count + totalsByBucket.SALES.count + totalsByBucket.Cake.count;
+
+  const exportExcel = async () => {
+    const { exportWorkbook } = await import('@/lib/exportAdminReport');
+    const billwiseRows = sortedRows.filter(r => r.status !== 'cancelled').map(r => ({
+      date: allInvoicesFmtDateDMY(r.date), type: 'Sales', voucherNo: r.invoiceNo, partyName: r.party,
+      netValue: r.total, paymode: allInvoicesPaymodeFor(r),
+    }));
+    const grand = billwiseRows.reduce((s, r) => s + r.netValue, 0);
+    await exportWorkbook(`Planner_All_Invoices_${fromDate}_${toDate}`, [
+      {
+        // FEATURE: matches the exact reference layout — Date, Type, Voucher
+        // No, Party Name, Net Value, Paymode, plus a Total row at the end.
+        name: 'Bill-wise Sales Report', title: `Bill-wise Sales Report [${fromDate} to ${toDate}]`,
+        columns: [
+          { header: 'Date', key: 'date', width: 14 }, { header: 'Type', key: 'type', width: 10 },
+          { header: 'Voucher No', key: 'voucherNo', width: 18 }, { header: 'Party Name', key: 'partyName', width: 28 },
+          { header: 'Net Value', key: 'netValue', width: 14 }, { header: 'Paymode', key: 'paymode', width: 12 },
+        ],
+        rows: [...billwiseRows, { date: '', type: '', voucherNo: '', partyName: 'Total', netValue: grand, paymode: '' }],
+      },
+      {
+        name: 'Summary', title: `All Invoices — Summary (${fromDate} to ${toDate})`,
+        columns: [{ header: 'Group', key: 'group', width: 26 }, { header: 'Invoices', key: 'count' }, { header: 'Total Value', key: 'value' }],
+        rows: [
+          { group: 'TO — SNB & VRSNB', count: totalsByBucket.TO.count, value: totalsByBucket.TO.value },
+          { group: 'SALES — Hosur & Sales', count: totalsByBucket.SALES.count, value: totalsByBucket.SALES.value },
+          { group: 'Cake', count: totalsByBucket.Cake.count, value: totalsByBucket.Cake.value },
+          { group: 'Grand Total', count: grandCount, value: grandTotal },
+        ],
+      },
+    ]);
+  };
+
+  const exportPdf = async () => {
+    const { exportReportPdf, pdfMoney } = await import('@/lib/exportAdminReport');
+    const PDF_CAP = 300;
+    await exportReportPdf({
+      filename: `Planner_All_Invoices_${fromDate}_${toDate}`,
+      title: 'All Invoices',
+      subtitle: `${fromDate} to ${toDate}${selectedParties.size > 0 ? ` · ${selectedParties.size} part${selectedParties.size === 1 ? 'y' : 'ies'} selected` : ''}`,
+      kpis: [
+        { label: 'Total Invoices', value: String(grandCount) },
+        { label: 'Total Value', value: pdfMoney(grandTotal) },
+        { label: 'TO (SNB/VRSNB)', value: pdfMoney(totalsByBucket.TO.value) },
+        { label: 'SALES (Hosur/Sales)', value: pdfMoney(totalsByBucket.SALES.value) },
+        { label: 'Cake', value: pdfMoney(totalsByBucket.Cake.value) },
+      ],
+      sections: [
+        {
+          heading: sortedRows.length > PDF_CAP ? `Bill-wise (first ${PDF_CAP} of ${sortedRows.length})` : 'Bill-wise',
+          columns: [
+            { header: 'Voucher No', width: 30 }, { header: 'Party', width: 40 }, { header: 'Net Value', width: 24, align: 'right' },
+            { header: 'Paymode', width: 20 }, { header: 'Date', width: 34 }, { header: 'Status', width: 20 },
+          ],
+          rows: sortedRows.slice(0, PDF_CAP).map(r => [r.invoiceNo, r.party, pdfMoney(r.total), allInvoicesPaymodeFor(r), allInvoicesFmtDateDMY(r.date), allInvoicesStatusDisplay(r).label]),
+        },
+      ],
+    });
+  };
+
+  return (
+    <div className="space-y-5">
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-3xl border border-border bg-card p-4 shadow-sm">
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="flex items-center gap-2 rounded-2xl border border-border bg-card px-3 py-2 text-xs font-semibold text-muted-foreground">
+            From<input type="date" value={fromDate} onChange={e => setFromDate(e.target.value)} className="bg-transparent font-bold text-foreground outline-none" />
+          </label>
+          <label className="flex items-center gap-2 rounded-2xl border border-border bg-card px-3 py-2 text-xs font-semibold text-muted-foreground">
+            To<input type="date" value={toDate} onChange={e => setToDate(e.target.value)} className="bg-transparent font-bold text-foreground outline-none" />
+          </label>
+          {[{ label: 'Today', days: 0 }, { label: '7 Days', days: 6 }, { label: '30 Days', days: 29 }].map(p => (
+            <button key={p.label} onClick={() => { setFromDate(allInvoicesDaysAgoInput(p.days)); setToDate(allInvoicesTodayInput()); }}
+              className="rounded-full border border-border bg-card px-3 py-1 text-xs font-black text-muted-foreground hover:bg-muted">
+              {p.label}
+            </button>
+          ))}
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <button onClick={() => setFiltersOpen(o => !o)}
+            className={cn('inline-flex items-center gap-2 rounded-2xl border px-3 py-2 text-xs font-black', selectedParties.size > 0 ? 'border-teal-700 bg-teal-700 text-white' : 'border-border bg-card text-muted-foreground')}>
+            <Filter className="size-3.5" /> Filters{selectedParties.size > 0 ? ` (${selectedParties.size})` : ''}
+          </button>
+          <button onClick={() => void exportExcel()} className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-3 py-2 text-xs font-black text-white">
+            <FileSpreadsheet className="size-3.5" /> Excel
+          </button>
+          <button onClick={() => void exportPdf()} className="inline-flex items-center gap-2 rounded-2xl bg-slate-950 px-3 py-2 text-xs font-black text-white">
+            <FileDown className="size-3.5" /> PDF
+          </button>
+        </div>
+      </div>
+
+      {filtersOpen && (
+        <div className="rounded-3xl border border-border bg-card p-4 shadow-sm">
+          <div className="mb-3 flex items-center justify-between gap-2">
+            <p className="text-xs font-black uppercase tracking-[0.16em] text-muted-foreground">Filter On: Party Name</p>
+            {selectedParties.size > 0 && (
+              <button onClick={() => setSelectedParties(new Set())} className="text-xs font-black text-teal-700 hover:underline">Clear ({selectedParties.size})</button>
+            )}
+          </div>
+          <div className="relative mb-2">
+            <Search className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+            <input value={partySearch} onChange={e => setPartySearch(e.target.value)} placeholder="Search party name…"
+              className="w-full rounded-2xl border border-border bg-card py-2 pl-8 pr-3 text-xs font-semibold text-foreground outline-none" />
+          </div>
+          <div className="max-h-64 space-y-0.5 overflow-y-auto rounded-2xl border border-border p-2">
+            {filteredPartyOptions.length === 0 && <p className="p-2 text-xs text-muted-foreground">No parties match.</p>}
+            {filteredPartyOptions.map(p => (
+              <label key={p} className="flex cursor-pointer items-center gap-2 rounded-xl px-2 py-1.5 text-xs font-semibold text-foreground hover:bg-muted">
+                <input type="checkbox" checked={selectedParties.has(p)} onChange={() => toggleParty(p)} className="size-3.5 accent-teal-700" />
+                {p}
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <StatCard label="Total Invoices" value={formatCurrency(grandTotal)} icon={<IndianRupee className="size-5" />} tone="slate" helper={`${grandCount} invoices`} />
+        <StatCard label="TO — SNB & VRSNB" value={formatCurrency(totalsByBucket.TO.value)} icon={<Truck className="size-5" />} tone="blue" helper={`${totalsByBucket.TO.count} invoices`} />
+        <StatCard label="SALES — Hosur & Sales" value={formatCurrency(totalsByBucket.SALES.value)} icon={<Receipt className="size-5" />} tone="emerald" helper={`${totalsByBucket.SALES.count} invoices`} />
+        <StatCard label="Cake" value={formatCurrency(totalsByBucket.Cake.value)} icon={<Cake className="size-5" />} tone="amber" helper={`${totalsByBucket.Cake.count} invoices`} />
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2 rounded-3xl border border-border bg-card p-3 shadow-sm">
+        {(['All', 'TO', 'SALES', 'Cake'] as const).map(b => (
+          <button key={b} onClick={() => setBucketFilter(b)}
+            className={cn('rounded-full border px-3 py-1.5 text-xs font-black transition', bucketFilter === b ? 'border-slate-950 bg-slate-950 text-white' : 'border-border bg-card text-muted-foreground hover:bg-muted')}>
+            {b === 'All' ? 'All' : INVOICE_BUCKET_LABEL[b]}
+          </button>
+        ))}
+        <div className="relative ml-auto min-w-[14rem] flex-1">
+          <Search className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search invoice no, party, dispatched by…"
+            className="w-full rounded-2xl border border-border bg-card py-2 pl-8 pr-3 text-xs font-semibold text-foreground outline-none" />
+        </div>
+      </div>
+
+      {error && <p className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-xs font-bold text-red-700">{error}</p>}
+
+      <div className="overflow-hidden rounded-3xl border border-border bg-card shadow-sm">
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[900px] text-sm">
+            <thead>
+              <tr className="border-b bg-muted text-left text-xs uppercase text-muted-foreground">
+                <SortableTh label="Invoice No" sortKey="invoiceNo" activeKey={sortKey} dir={sortDir} onSort={toggleSort} />
+                <SortableTh label="Date" sortKey="date" activeKey={sortKey} dir={sortDir} onSort={toggleSort} />
+                <SortableTh label="Group" sortKey="group" activeKey={sortKey} dir={sortDir} onSort={toggleSort} />
+                <SortableTh label="Party" sortKey="party" activeKey={sortKey} dir={sortDir} onSort={toggleSort} />
+                <SortableTh label="Items" sortKey="items" activeKey={sortKey} dir={sortDir} onSort={toggleSort} align="right" />
+                <SortableTh label="Total" sortKey="total" activeKey={sortKey} dir={sortDir} onSort={toggleSort} align="right" />
+                <th className="p-3">Paymode</th>
+                <th className="p-3">Status</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y">
+              {loading && (
+                <tr><td colSpan={8} className="p-8 text-center text-sm font-semibold text-muted-foreground"><Loader2 className="mx-auto mb-2 size-5 animate-spin" /> Loading invoices…</td></tr>
+              )}
+              {!loading && sortedRows.length === 0 && (
+                <tr><td colSpan={8} className="p-8 text-center text-sm font-semibold text-muted-foreground">No invoices match these filters.</td></tr>
+              )}
+              {!loading && sortedRows.map(r => (
+                <tr key={r.key} className={cn(r.status === 'cancelled' && 'bg-red-50/40')}>
+                  <td className={cn('p-3 font-black text-foreground', r.status === 'cancelled' && 'line-through decoration-red-400')}>{r.invoiceNo}</td>
+                  <td className="p-3 text-muted-foreground">{allInvoicesFmtDate(r.date)} · {allInvoicesFmtTime(r.date)}</td>
+                  <td className="p-3"><span className={cn('inline-flex rounded-full px-2 py-0.5 text-[10px] font-black uppercase ring-1', INVOICE_BUCKET_TONE[r.bucket])}>{r.scopeLabel}</span></td>
+                  <td className="p-3 text-foreground">{r.party}</td>
+                  <td className="p-3 text-right tabular-nums text-muted-foreground">{r.itemCount}</td>
+                  <td className="p-3 text-right font-black text-foreground">{formatCurrency(r.total)}</td>
+                  <td className="p-3 text-muted-foreground">{allInvoicesPaymodeFor(r)}</td>
+                  <td className="p-3"><span className={cn('inline-flex rounded-full px-2 py-0.5 text-[10px] font-black uppercase ring-1', allInvoicesStatusDisplay(r).tone)}>{allInvoicesStatusDisplay(r).label}</span></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+type CombinedReportSection = 'reports' | 'all-invoices' | 'closing-stock' | 'disputes';
 const COMBINED_REPORT_SECTIONS: { key: CombinedReportSection; label: string; icon: JSX.Element }[] = [
   { key: 'reports', label: 'Reports', icon: <BarChart3 className="size-4" /> },
+  { key: 'all-invoices', label: 'All Invoices', icon: <Receipt className="size-4" /> },
   { key: 'closing-stock', label: 'Closing Stock', icon: <Scale className="size-4" /> },
   { key: 'disputes', label: 'Disputes & Returns', icon: <Undo2 className="size-4" /> },
 ];
@@ -5116,6 +5494,7 @@ function PlannerReportsAndClosingStockTab({ orders, activeLeftovers, doneOrders 
           <PackingDispatchSummaryPanel onExportDataChange={onDispatchExport} />
         </div>
       </div>
+      <div style={{ display: section === 'all-invoices' ? 'block' : 'none' }}><PlannerAllInvoicesTab /></div>
       <div style={{ display: section === 'closing-stock' ? 'block' : 'none' }} className="space-y-6">
         <PlannerLeftoverTab onExportDataChange={onClosingStockExport} />
         <LeftoverDoneTab active={activeLeftovers} done={doneOrders} />
