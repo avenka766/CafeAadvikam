@@ -392,6 +392,18 @@ function rowsFromPayload<T>(value: unknown): T[] {
   return Array.isArray(value) ? value as T[] : [];
 }
 
+// PERF FIX (2026-09-27): snb_item_wise_sales_report / snb_category_wise_sales_report
+// joined branch_bill_items unfiltered on every call (a full scan of the
+// whole table regardless of the requested range, since the view had no
+// way to push the caller's date filter onto that side of the join). These
+// two ranged RPCs filter both sides explicitly -- see the migration
+// comment on snb_item_wise_sales_report_ranged for the full root cause.
+async function fetchRangedRpc<T>(fnName: string, fromDate: string, toDate: string): Promise<T[]> {
+  const { data, error } = await supabase.rpc(fnName, { p_from_date: fromDate, p_to_date: toDate });
+  if (error) throw new Error(`${fnName}: ${error.message}`);
+  return (data ?? []) as T[];
+}
+
 async function fetchSnbPurchaseWorkflowSnapshot(
   fromDate: string,
   toDate: string,
@@ -468,8 +480,8 @@ export function useSnbAdminReports(fromDate: string, toDate: string) {
       fetchPaged("snb_daily_counter_summary", { ...range, dateColumn: "business_date", orderColumn: "business_date", columns: "business_date,closed_counter_count,open_counter_count,gross_sales,discounts,returns,net_sales,cash_sales,upi_sales,card_sales,credit_sales,credit_collected,advance_collected,expected_cash,counted_cash,difference" }),
       fetchPaged("snb_cashier_bill_report", { ...range, dateColumn: "created_at", orderColumn: "created_at", columns: "id,bill_no,created_at,cashier_user_id,cashier_username,counter_session_id,total,discount,balance,status" }),
       fetchPaged("snb_salesperson_bill_report", { ...range, dateColumn: "business_date", orderColumn: "created_at", columns: "bill_id,bill_no,created_at,business_date,salesperson,subtotal,discount,total,balance,status,cashier_username,counter_session_id" }),
-      fetchPaged("snb_item_wise_sales_report", { ...range, dateColumn: "business_date", orderColumn: "business_date", columns: "business_date,item_name,unit,quantity_sold,gross_sales,item_discount,tax,net_item_sales,bill_count" }),
-      fetchPaged("snb_category_wise_sales_report", { ...range, dateColumn: "business_date", orderColumn: "business_date", columns: "business_date,category,quantity_sold,gross_sales,item_discount,net_item_sales,bill_count" }),
+      fetchRangedRpc<SnbItemSalesRow>("snb_item_wise_sales_report_ranged", fromDate, toDate),
+      fetchRangedRpc<SnbCategorySalesRow>("snb_category_wise_sales_report_ranged", fromDate, toDate),
       fetchPaged("snb_bill_discount_report", { ...range, dateColumn: "business_date", orderColumn: "bill_datetime", columns: "bill_id,bill_no,business_date,bill_datetime,cashier,salesperson,customer_name,subtotal,discount,discount_percent,tax,round_off,total,effective_discount_percent" }),
       // EGRESS FIX: these two are deliberately NOT scoped to the selected date
       // range — an invoice from months ago that's still unpaid must keep
