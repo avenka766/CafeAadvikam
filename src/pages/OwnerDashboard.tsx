@@ -3767,7 +3767,16 @@ async function fetchOwnerEverythingExtrasOnce(): Promise<{ data: OwnerEverything
     // requests are ever in flight together, without meaningfully slowing
     // the page down.
     const batch1 = await Promise.all([
-      fetchAllRows<{ credit_amount: number; due_date: string | null }>('hosur_bills', (q) => q.select('credit_amount, due_date').gt('credit_amount', 0)),
+      // BUG FIX (2026-09-28): no `neq('status', 'cancelled')` guard here —
+      // relied solely on credit_amount being correctly zeroed elsewhere when
+      // a bill is cancelled. Found live: 6 cancelled Hosur bills whose
+      // branch_credit_sales row never got zeroed (see dispatchInvoice.ts's
+      // cancel path) still had this table's own credit_amount correct, but
+      // only because a separate manual data fix zeroed it — this query had
+      // no independent protection against that happening again. Matches the
+      // same `neq('status', 'cancelled')` already on useHosurSalesSummary
+      // just above.
+      fetchAllRows<{ credit_amount: number; due_date: string | null }>('hosur_bills', (q) => q.select('credit_amount, due_date').gt('credit_amount', 0).neq('status', 'cancelled')),
       fetchAllRows<{ item_name: string; unit: string; delta: number }>('planner_leftover_ledger', (q) => q.select('item_name, unit, delta')),
       fetchAllRows<{ status: string }>('bakery_orders', (q) => q.select('status')),
     ]);
