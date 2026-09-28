@@ -44,6 +44,7 @@ import {
   Inbox, Flame, ShoppingCart, Menu, X,
 } from 'lucide-react';
 import { isNativeApp } from '@/lib/platform';
+import { businessDate } from '@/lib/businessDate';
 import { useOperationalBranchCatalog } from '@/hooks/useOperationalBranchCatalog';
 import { useBakeryStore } from '@/bakery/bakeryStore';
 import { useLeftoverBalanceMap, qtyFmt, fetchLeftoverLedger, type LeftoverLedgerRow, type LeftoverUnit } from '@/bakery/PlannerLeftoverTab';
@@ -536,7 +537,7 @@ function SalesOverviewTab() {
   const stopPolling = useOrderStore(s => s.stopPolling);
   const { sales, fetchBranchData } = useBranchStore();
   const { bills, returns } = useBranchOpsStore();
-  const [dateRange, setDateRange] = useState<'today' | 'yesterday' | '7d' | '15d' | '30d' | 'month' | 'all'>('7d');
+  const [dateRange, setDateRange] = useState<'today' | 'yesterday' | '7d' | '15d' | '30d' | 'month' | 'all'>('today');
   const [branchFilter, setBranchFilter] = useState<Branch | 'all'>('all');
 
   useEffect(() => { startPolling(60); return () => stopPolling(); }, [startPolling, stopPolling]);
@@ -825,33 +826,36 @@ function SalesOverviewTab() {
     // instead of a one-off Tailwind space-y utility.
     <div className="owner-tab-stack">
       {/* Filters */}
-      <div className="flex flex-wrap gap-2 items-center">
-        <div className="flex gap-1 p-1 rounded-xl bg-muted">
-          {DATE_PRESETS.map(r => (
-            <button key={r.value} onClick={() => setDateRange(r.value)}
-              className={cn('px-3 py-2 rounded-lg text-sm font-semibold transition-all',
-                dateRange === r.value ? 'bg-card shadow text-foreground' : 'text-muted-foreground')}>
-              {r.label}
-            </button>
-          ))}
-        </div>
-        <select value={branchFilter} onChange={e => setBranchFilter(e.target.value as Branch | 'all')}
-          className="rounded-xl border border-border bg-card px-3 py-2 text-sm outline-none">
+      {/* LAYOUT FIX (2026-09-27): "date filters are not good and the cards
+          are not fitting properly" — this row used to be a plain, non-
+          wrapping flex of 7 preset buttons + a select + 2 buttons. On a
+          narrow phone that row's min-content is wider than the screen, and
+          because it has no wrap/scroll, it silently stretched the whole
+          tab's grid container past the viewport — every card grid below
+          inherited that oversized width and got cut off at the right edge.
+          Switched to the same OwnerToolbar component (flex-wrap: wrap,
+          already used correctly by every other date-scoped Owner tab), and
+          the branch select now lives here too instead of a separate row. */}
+      <OwnerToolbar>
+        {DATE_PRESETS.map(r => (
+          <button key={r.value} type="button" onClick={() => setDateRange(r.value)} className={cn(dateRange === r.value && 'is-active')}>
+            {r.label}
+          </button>
+        ))}
+        <select value={branchFilter} onChange={e => setBranchFilter(e.target.value as Branch | 'all')}>
           <option value="all">All Branches</option>
           <option value="Cafe">Cafe</option>
           <option value="VRSNB">VRSNB Branch</option>
           <option value="SNB">SNB Branch</option>
           <option value="Hosur">Hosur Branch</option>
         </select>
-        <button onClick={() => salesLedger.refresh()} disabled={salesLedger.loading}
-          className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-border bg-card text-sm font-semibold hover:bg-muted transition disabled:opacity-60">
+        <button type="button" onClick={() => salesLedger.refresh()} disabled={salesLedger.loading} className="inline-flex items-center gap-1.5 disabled:opacity-60">
           <RefreshCw className={cn('size-4', salesLedger.loading && 'animate-spin')} />Refresh
         </button>
-        <button onClick={exportSales}
-          className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-border bg-card text-sm font-semibold hover:bg-muted transition">
+        <button type="button" onClick={exportSales} className="inline-flex items-center gap-1.5">
           <Download className="size-4" />Export
         </button>
-      </div>
+      </OwnerToolbar>
 
       {/* BUG FIX (2026-09-08): "data should be accurate — check all
           dashboards" — confirmed live: on a genuine ledger-fetch failure
@@ -900,7 +904,7 @@ function SalesOverviewTab() {
       <div className="grid grid-cols-2 gap-3">
         <KPI icon={<IndianRupee className="size-4" />} label="Total Revenue" value={formatCurrency(selectedGrandTotal)} sub={branchFilter === 'all' ? 'All branches' : branchFilter} color="bg-primary/10 text-primary" />
         {showCafe && <KPI icon={<Store       className="size-4" />} label="Cafe Revenue"    value={formatCurrency(cafeRevenue)}   sub={`${cafeCount} orders`}       color="bg-emerald-50 text-emerald-700" />}
-        {showBranches && <KPI icon={<ShoppingBag className="size-4" />} label="Bakery Revenue" value={formatCurrency(selectedBakeryRevenue)} sub={`${selectedBakeryQty} items`} color="bg-amber-50 text-amber-700" />}
+        {showBranches && <KPI icon={<ShoppingBag className="size-4" />} label="Bakery Revenue" value={formatCurrency(selectedBakeryRevenue)} sub={`${roundQty(selectedBakeryQty)} items`} color="bg-amber-50 text-amber-700" />}
         {showCafe && <KPI icon={<TrendingUp className="size-4" />} label="Avg Order Value" value={formatCurrency(avgOrderValue)} sub="Cafe only" color="bg-blue-50 text-blue-700" />}
         {showBranches && <KPI icon={<IndianRupee className="size-4" />} label="Advance Collected" value={formatCurrency(advanceCreditTotals.advanceCollected)} sub="Included in Total Revenue once billed" color="bg-sky-50 text-sky-700" />}
         {showBranches && <KPI icon={<IndianRupee className="size-4" />} label="Credit Outstanding" value={formatCurrency(advanceCreditTotals.creditOutstanding)} sub={`${formatCurrency(advanceCreditTotals.creditBilled)} billed on credit`} color="bg-rose-50 text-rose-700" />}
@@ -1619,7 +1623,7 @@ function WasteLogsTab() {
   const dailyWasteCount = useMemo(() => {
     const counts: Record<string, number> = {};
     entries.forEach(e => {
-      const day = e.logged_at.slice(0, 10);
+      const day = businessDate(e.logged_at);
       counts[day] = (counts[day] || 0) + 1;
     });
     return Object.entries(counts)
@@ -1633,7 +1637,7 @@ function WasteLogsTab() {
   const grouped = useMemo(() => {
     const g: Record<string, typeof pricedEntries> = {};
     pricedEntries.forEach(e => {
-      const date = e.logged_at.slice(0, 10);
+      const date = businessDate(e.logged_at);
       if (!g[date]) g[date] = [];
       g[date].push(e);
     });
@@ -1645,7 +1649,7 @@ function WasteLogsTab() {
   const branchWasteGrouped = useMemo(() => {
     const g: Record<string, typeof filteredBranchWaste> = {};
     filteredBranchWaste.forEach(log => {
-      const date = log.createdAt.slice(0, 10);
+      const date = businessDate(log.createdAt);
       if (!g[date]) g[date] = [];
       g[date].push(log);
     });
@@ -1666,8 +1670,8 @@ function WasteLogsTab() {
   const applyPreset = (from: number, to: number) => {
     const d1 = new Date(); d1.setDate(d1.getDate() - from);
     const d2 = new Date(); d2.setDate(d2.getDate() - to);
-    setFromDate(d1.toISOString().slice(0, 10));
-    setToDate(d2.toISOString().slice(0, 10));
+    setFromDate(businessDate(d1));
+    setToDate(businessDate(d2));
   };
 
   const BRANCH_COLORS_MAP: Record<string, string> = {
@@ -1894,12 +1898,9 @@ function OwnerAuditTab() {
   // once. "All time" is still one click away via the date fields.
   const [sourceFilter, setSourceFilter] = useState<string>('all');
   const auditToday = ownerDateInput();
-  const auditWeekAgo = useMemo(() => {
-    const d = new Date();
-    d.setDate(d.getDate() - 7);
-    return d.toISOString().slice(0, 10);
-  }, []);
-  const [dateFrom, setDateFrom] = useState(auditWeekAgo);
+  // UX FIX (2026-09-27): "all the date should be default in todays date" —
+  // was defaulting to a 7-day window; opens scoped to Today by default now.
+  const [dateFrom, setDateFrom] = useState(auditToday);
   const [dateTo, setDateTo] = useState(auditToday);
   // BUG FIX (2026-08-09): "we are unable to see all the logs" — this tab only
   // ever read the `auditLogs` bucket (populated from just 4 call sites app-
@@ -3039,7 +3040,9 @@ function OwnerDailyClosureTab() {
 function OwnerPurchasesTab() {
   const { invoices, load } = useInvoiceStore();
   const { orders: purchaseOrders, load: loadOrders } = usePurchaseOrderStore();
-  const [fromDate, setFromDate] = useState(ownerDateInput(ownerPresetStart('30d')));
+  // UX FIX (2026-09-27): "all the date should be default in todays date" —
+  // was defaulting to a 30-day window; opens scoped to Today by default now.
+  const [fromDate, setFromDate] = useState(ownerDateInput());
   const [toDate, setToDate] = useState(ownerDateInput());
   const [query, setQuery] = useState('');
   const [status, setStatus] = useState('all');
@@ -3274,13 +3277,15 @@ function OwnerStockVarianceTab() {
   // fetchAllRows's default deep-OFFSET pagination (confirmed live: ~190ms
   // per 1000-row page and rising, 9 pages = 1.5s+ every time this tab
   // opens, on a table that only grows). Added a date-range filter (same
-  // OwnerDatePreset pattern used elsewhere on this page, default 30 days —
-  // "All Time" is still one click away) to shrink what's fetched by
-  // default, AND switched to fetchAllRows's keyset-pagination option
-  // (cursorColumn) so even a wide/"All Time" fetch stays a fast, bounded
-  // index scan per page instead of getting slower with every page like
-  // OFFSET pagination does.
-  const [preset, setPreset] = useState<OwnerDatePreset>('30d');
+  // OwnerDatePreset pattern used elsewhere on this page) to shrink what's
+  // fetched by default, AND switched to fetchAllRows's keyset-pagination
+  // option (cursorColumn) so even a wide/"All Time" fetch stays a fast,
+  // bounded index scan per page instead of getting slower with every page
+  // like OFFSET pagination does.
+  // UX FIX (2026-09-27): "all the date should be default in todays date" —
+  // was defaulting to 30 days; every date-scoped Owner tab now opens
+  // scoped to Today by default, same as Branch Overview and Sales & Profit.
+  const [preset, setPreset] = useState<OwnerDatePreset>('today');
   const from = useMemo(() => ownerPresetStart(preset), [preset]);
   const to = useMemo(() => ownerEndOfToday(), [preset]);
   const [stockVarianceRecords, setStockVarianceRecords] = useState<BranchStockVarianceRecord[]>([]);
@@ -3379,7 +3384,7 @@ function OwnerStockVarianceTab() {
   const dayGroups = useMemo(() => {
     const map = new Map<string, VarianceRow[]>();
     for (const row of rows) {
-      const key = new Date(row.createdAt).toISOString().slice(0, 10);
+      const key = businessDate(row.createdAt);
       if (!map.has(key)) map.set(key, []);
       map.get(key)!.push(row);
     }
@@ -3999,12 +4004,12 @@ function OwnerPlannerSummaryTab() {
     for (let i = 6; i >= 0; i--) {
       const d = new Date();
       d.setDate(d.getDate() - i);
-      const key = d.toISOString().slice(0, 10);
+      const key = businessDate(d);
       days.push({ date: key, label: d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }), Orders: 0 });
     }
     const byDate = new Map(days.map(d => [d.date, d]));
     orders.forEach(o => {
-      const key = String(o.createdAt || '').slice(0, 10);
+      const key = o.createdAt ? businessDate(o.createdAt) : '';
       const row = byDate.get(key);
       if (row) row.Orders += 1;
     });
@@ -4572,9 +4577,24 @@ export default function OwnerDashboard() {
   const ownerTabIds = useMemo<OwnerDashboardTab[]>(() => ['everything', 'branches', 'sales', 'credit', 'purchases', 'poApprovals', 'closure', 'variance', 'attendance', 'waste', 'complaints', 'audit', 'planner'], []);
   const initialTab = requestedTab && ownerTabIds.includes(requestedTab) ? requestedTab : defaultTab;
   const [tab, setTab] = useState<OwnerDashboardTab>(initialTab);
+  // BUG FIX (2026-09-27): "Everything & Alerts tab is not working" — this
+  // used to clear the URL's ?tab= param whenever `next` was 'everything'
+  // (correct back when 'everything' was the ONLY possible default, so an
+  // empty param always resolved back to it). Once defaultTab started
+  // varying by platform (native -> 'branches', web -> 'everything'), that
+  // became wrong specifically on native: clearing the param made the
+  // resolver effect below see no requestedTab, fall back to defaultTab
+  // ('branches' on native), and immediately overwrite the tab state right
+  // back to Branch Overview — tapping "Everything & Alerts" in the drawer
+  // silently did nothing. Confirmed live: reproducible every time on the
+  // native build. Fixed by clearing the param only when `next` actually
+  // IS this platform's own default (still preserves the original bare
+  // `/owner` -> Everything behavior for web's sidebar link, since
+  // defaultTab is 'everything' there) — every other tab, including
+  // 'everything' on native, now gets an explicit, persisted `?tab=` value.
   const selectTab = (next: OwnerDashboardTab) => {
     setTab(next);
-    setSearchParams(next === 'everything' ? {} : { tab: next });
+    setSearchParams(next === defaultTab ? {} : { tab: next });
   };
 
   // BUG FIX (2026-08-12): "clicking Everything from another tab doesn't

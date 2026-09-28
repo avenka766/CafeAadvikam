@@ -419,6 +419,19 @@ function AdminDashboard() {
   // selected range — same fix pattern as realBills/realBillItems above.
   const [realExpenses, setRealExpenses] = useState<Array<{ id: string; branch: string; amount: number; mode: string; category: string; description: string; createdAt: string }>>([]);
   const [realPurchases, setRealPurchases] = useState<Array<{ id: string; branch: string; supplier: string; total: number; createdAt: string }>>([]);
+  // FEATURE (2026-09-28): "I need both to show as different rows" — a Hosur
+  // bill spanning >1 dispatch batch stores a comma-joined invoice_no (by
+  // design, see hosurBillingBridge.ts) with ONE combined total. Splitting
+  // into real rows needs to know each batch's own share — dispatch_invoices
+  // (already fetched as part of the SALES/ scan below) is the only place
+  // that per-batch split still exists, keyed by invoice_no. This map holds
+  // just enough (invoice_no -> that batch's own dispatch total) to compute
+  // the RATIO between batches; the actual row amount is still derived from
+  // the bill's own (shop-price-correct) total, never this raw dispatch
+  // figure directly — some shops bill at a discount off the dispatch/MRP
+  // price recorded here, so using it as an absolute amount would overstate
+  // the row.
+  const [hosurDispatchTotalsByInvoiceNo, setHosurDispatchTotalsByInvoiceNo] = useState<Map<string, number>>(new Map());
 
   // AUDIT FIX (2026-09-04): extracted out of the mount/date-change effect so
   // Overview, Cafe, Branches and Hosur (every tab that reads realBills/
@@ -604,6 +617,11 @@ function AdminDashboard() {
       );
       const salesInvoices = (salesInvoicesRes.data || []) as Array<Record<string, unknown>>;
       const walkinBills = (walkinBillsRes.data || []) as Array<Record<string, unknown>>;
+      const dispatchTotalsByInvoiceNo = new Map<string, number>();
+      salesInvoices.filter((s) => String(s.scope) === 'Hosur').forEach((s) => {
+        dispatchTotalsByInvoiceNo.set(String(s.invoice_no ?? ''), Number(s.total || 0));
+      });
+      setHosurDispatchTotalsByInvoiceNo(dispatchTotalsByInvoiceNo);
       // A Hosur-scope dispatch invoice's own 'paid' flag is NOT a reliable
       // signal of real collected revenue on its own — found live: /272
       // (Anjana Super Market, ₹875) was marked 'paid' here yet its own
@@ -1953,20 +1971,70 @@ function AdminDashboard() {
   // billing (hosur_bills, same source Owner Dashboard's Hosur card already
   // uses) AND, just as importantly, the dispatched-but-never-billed backlog
   // — the real reason Hosur revenue always looked like ₹0 elsewhere.
-  const hosurBillsInRange = useMemo(() => realBillsInRange.filter(b => b.branch === 'Hosur'), [realBillsInRange]);
+  // BUG FIX (2026-09-28): "bill numbers should come in sequence, in Excel
+  // also" — this used to keep whatever order realBillsInRange happened to
+  // be in (created_at), which both the default table view AND the Excel/
+  // PDF exports below read directly (exports use hosurBillsInRange itself,
+  // not the interactively-sorted `sortedHosurBills`). Sorting once here by
+  // invoiceNo (natural/numeric compare, so ".../9" sorts before ".../90")
+  // fixes the default view and both exports in one place, same fix as
+  // Admin Dispatch Details' `rows` useMemo.
+  const hosurBillsInRange = useMemo(() => realBillsInRange.filter(b => b.branch === 'Hosur')
+    .sort((a, b) => (b.invoiceNo || b.billNo || '').localeCompare(a.invoiceNo || a.billNo || '', undefined, { numeric: true, sensitivity: 'base' })), [realBillsInRange]);
   const hosurBillItemsInRange = useMemo(() => realBillItems.filter(i => i.branch === 'Hosur'), [realBillItems]);
+  // FEATURE (2026-09-28): "I need both to show as different rows" — replaces
+  // the earlier "stack invoice numbers on separate lines, same row" fix the
+  // user explicitly rejected. A comma-joined invoice_no now becomes N real
+  // rows, one per dispatch batch, with the bill's total split PROPORTIONALLY
+  // by each batch's own dispatch_invoices total (ratio only — see
+  // hosurDispatchTotalsByInvoiceNo above for why the raw dispatch figure
+  // can't be used as the row amount directly). Rows sum back to exactly the
+  // bill's real total (largest-remainder rounding, never off by a paisa).
+  // Known limitation: Items/Date/Shop are shared across a bill's split rows
+  // (per-batch item attribution isn't reliably preserved in the data) —
+  // only Invoice Number and Bill Price are split; the expanded item list
+  // says so explicitly for a split row.
+  const splitAmountByRatio = useCallback((total: number, ratios: number[]): number[] => {
+    const n = ratios.length;
+    if (n <= 1) return [Math.round(total * 100) / 100];
+    const positive = ratios.map(r => (r > 0 ? r : 0));
+    const sum = positive.reduce((s, r) => s + r, 0);
+    const effective = sum > 0 ? positive : ratios.map(() => 1);
+    const effectiveSum = sum > 0 ? sum : n;
+    const raw = effective.map(r => (total * r) / effectiveSum);
+    const floors = raw.map(v => Math.floor(v * 100) / 100);
+    let remainderPaise = Math.round(total * 100) - Math.round(floors.reduce((s, v) => s + v, 0) * 100);
+    const order = raw.map((v, i) => ({ i, frac: v - floors[i] })).sort((a, b) => b.frac - a.frac);
+    const result = [...floors];
+    for (let k = 0; k < order.length && remainderPaise > 0; k++) {
+      result[order[k].i] = Math.round((result[order[k].i] + 0.01) * 100) / 100;
+      remainderPaise -= 1;
+    }
+    return result;
+  }, []);
+  const hosurBillsSplitForDisplay = useMemo(() => hosurBillsInRange.flatMap(b => {
+    const invoiceNos = (b.invoiceNo || b.billNo || '—').split(',').map(s => s.trim()).filter(Boolean);
+    if (invoiceNos.length <= 1) {
+      return [{ ...b, rowKey: b.id, splitInvoiceNo: invoiceNos[0] || b.invoiceNo || b.billNo || '—', splitTotal: b.total, splitIndex: 0, splitCount: 1 }];
+    }
+    const ratios = invoiceNos.map(no => hosurDispatchTotalsByInvoiceNo.get(no) ?? 0);
+    const amounts = splitAmountByRatio(b.total, ratios);
+    return invoiceNos.map((no, idx) => ({
+      ...b, rowKey: `${b.id}-${idx}`, splitInvoiceNo: no, splitTotal: amounts[idx], splitIndex: idx, splitCount: invoiceNos.length,
+    }));
+  }).sort((a, b) => b.splitInvoiceNo.localeCompare(a.splitInvoiceNo, undefined, { numeric: true, sensitivity: 'base' })), [hosurBillsInRange, hosurDispatchTotalsByInvoiceNo, splitAmountByRatio]);
   const { sorted: sortedHosurBills, sortKey: hosurBillsSortKey, sortDir: hosurBillsSortDir, toggleSort: toggleHosurBillsSort } = useSortableRows(
-    hosurBillsInRange,
+    hosurBillsSplitForDisplay,
     (b, key) => {
       switch (key) {
-        case 'invoiceNo': return b.invoiceNo || b.billNo;
+        case 'invoiceNo': return b.splitInvoiceNo;
         case 'biller': return b.biller;
         case 'items': return hosurBillItemsInRange.filter(i => i.billId === b.id).length;
-        case 'total': return b.total;
+        case 'total': return b.splitTotal;
         default: return new Date(b.createdAt).getTime();
       }
     },
-    'date',
+    'invoiceNo',
     'desc',
   );
   const hosurTotalBilled = useMemo(() => hosurBillsInRange.reduce((sum, b) => sum + b.total, 0), [hosurBillsInRange]);
@@ -2033,9 +2101,13 @@ function AdminDashboard() {
         { header: 'Total Sales', key: 'totalSales' }, { header: 'Cash', key: 'cash' }, { header: 'UPI', key: 'upi' }, { header: 'Card', key: 'card' },
         { header: 'Salesperson', key: 'salesperson', width: 18 }, { header: 'Biller', key: 'biller' },
       ],
-      rows: hosurBillsInRange.map(b => {
+      // FEATURE (2026-09-28): same batch-split as the table (see
+      // hosurBillsSplitForDisplay) — a multi-batch bill is now N rows here
+      // too, each with its own invoice number and proportional Total Sales,
+      // "in sequence" per the earlier Excel-ordering request.
+      rows: hosurBillsSplitForDisplay.map(b => {
         const paid = billPaidByMode.get(b.id) ?? { cash: 0, upi: 0, card: 0 };
-        return { branch: 'Hosur', invoiceNo: b.invoiceNo || b.billNo || '—', date: fmtDate(b.createdAt), time: fmtTime(b.createdAt), totalSales: b.total, cash: paid.cash, upi: paid.upi, card: paid.card, salesperson: b.salesperson || '—', biller: b.biller || '—' };
+        return { branch: 'Hosur', invoiceNo: b.splitInvoiceNo, date: fmtDate(b.createdAt), time: fmtTime(b.createdAt), totalSales: b.splitTotal, cash: paid.cash, upi: paid.upi, card: paid.card, salesperson: b.salesperson || '—', biller: b.biller || '—' };
       }),
     },
     {
@@ -2071,9 +2143,11 @@ function AdminDashboard() {
           rows: [...hosurUnbilledDispatched].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()).slice(0, PDF_BILL_CAP).map(o => [o.orderNumber || '—', o.shopName || '—', pdfMoney(o.subtotal), fmtDateTime(o.createdAt)]),
         },
         {
-          heading: hosurBillsInRange.length > PDF_BILL_CAP ? `Confirmed Bills (first ${PDF_BILL_CAP} of ${hosurBillsInRange.length})` : 'Confirmed Bills',
+          heading: hosurBillsSplitForDisplay.length > PDF_BILL_CAP ? `Confirmed Bills (first ${PDF_BILL_CAP} of ${hosurBillsSplitForDisplay.length})` : 'Confirmed Bills',
           columns: [{ header: 'Invoice Number', width: 30 }, { header: 'Items', width: 20, align: 'right' }, { header: 'Total', width: 30, align: 'right' }, { header: 'Biller', width: 40 }, { header: 'Time', width: 40 }],
-          rows: hosurBillsInRange.slice(0, PDF_BILL_CAP).map(b => [b.invoiceNo || b.billNo || '—', String((realBillItemsByBillId.get(b.id) ?? []).length), pdfMoney(b.total), b.biller || b.salesperson || '—', fmtDateTime(b.createdAt)]),
+          // FEATURE (2026-09-28): same batch-split as the table/Excel — each
+          // dispatch batch of a multi-invoice bill is its own row here too.
+          rows: hosurBillsSplitForDisplay.slice(0, PDF_BILL_CAP).map(b => [b.splitInvoiceNo, String((realBillItemsByBillId.get(b.id) ?? []).length), pdfMoney(b.splitTotal), b.biller || b.salesperson || '—', fmtDateTime(b.createdAt)]),
         },
       ],
     });
@@ -2167,21 +2241,39 @@ function AdminDashboard() {
               <tbody className="divide-y">
                 {sortedHosurBills.slice(0, 200).map(b => {
                   const items = hosurBillItemsInRange.filter(i => i.billId === b.id);
-                  const expanded = expandedBillId === b.id;
+                  const expanded = expandedBillId === b.rowKey;
                   return (
-                    <Fragment key={b.id}>
-                      <tr onClick={() => setExpandedBillId(expanded ? null : b.id)} className="cursor-pointer hover:bg-slate-50">
+                    <Fragment key={b.rowKey}>
+                      <tr onClick={() => setExpandedBillId(expanded ? null : b.rowKey)} className="cursor-pointer hover:bg-slate-50">
                         <td className="p-3"><ChevronDown className={cn('size-4 text-slate-400 transition-transform', expanded && 'rotate-180')} /></td>
-                        <td className="p-3 font-semibold">{b.invoiceNo || b.billNo || '—'}</td>
+                        <td className="p-3 font-semibold">
+                          {/* BUG FIX (2026-09-28): a Hosur bill's own invoice_no is
+                              genuinely a comma-joined list when it spans more than
+                              one dispatch batch (see hosurBillingBridge.ts — real,
+                              intentional data: one confirmed bill CAN cover goods
+                              from 2+ separate dispatch invoices). User explicitly
+                              rejected an earlier "stack on separate lines, same
+                              row" fix and asked for real separate rows — each batch
+                              is now its own row, with Bill Price split
+                              proportionally by that batch's own dispatch total
+                              (see hosurBillsSplitForDisplay above). */}
+                          {b.splitInvoiceNo}
+                          {b.splitCount > 1 && <span className="ml-1.5 text-[10px] font-normal text-slate-400">(batch {b.splitIndex + 1}/{b.splitCount})</span>}
+                        </td>
                         <td className="p-3 text-slate-500">{fmtDate(b.createdAt)}</td>
                         <td className="p-3 text-slate-500">{fmtTime(b.createdAt)}</td>
                         <td className="p-3">{b.biller || '—'}</td>
                         <td className="p-3 text-right tabular-nums text-slate-500">{items.length}</td>
-                        <td className="p-3 text-right font-black">{formatCurrency(b.total)}</td>
+                        <td className="p-3 text-right font-black">{formatCurrency(b.splitTotal)}</td>
                       </tr>
                       {expanded && (
                         <tr>
                           <td colSpan={7} className="bg-slate-50/70 p-4">
+                            {b.splitCount > 1 && (
+                              <p className="mb-2 text-[11px] font-semibold text-amber-600">
+                                Showing all items for the combined bill ({b.splitCount} batches) — Bill Price above ({formatCurrency(b.splitTotal)}) is only this batch's proportional share.
+                              </p>
+                            )}
                             {items.length === 0 ? <p className="text-xs text-slate-500">No line items recorded for this bill.</p> : (
                               <table className="w-full text-xs">
                                 <thead><tr className="text-left uppercase text-slate-400"><th className="py-1.5">Item</th><th className="py-1.5 text-right">Qty</th><th className="py-1.5">Unit</th><th className="py-1.5 text-right">Unit Price</th><th className="py-1.5 text-right">Line Total</th></tr></thead>
