@@ -3,10 +3,11 @@
 import { useMemo, useState } from 'react';
 import {
   Wallet, Clock, CheckCircle2, Search, X, Calendar, ChevronRight,
-  ChevronDown, IndianRupee, Banknote, Smartphone, CreditCard, AlertCircle, Filter,
+  ChevronDown, IndianRupee, Banknote, Smartphone, CreditCard, AlertCircle, Filter, Truck, Loader2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { SectionHeader, EmptyState } from '../components';
+import { useBranchStore } from '../branchStore';
 import type { BranchAdvanceOrder } from '../branchStore';
 import type { Branch } from '../types';
 
@@ -51,6 +52,36 @@ export function AdvancePaymentsTab({ branch, advanceOrders }: Props) {
   const [statusFilter, setStatusFilter] = useState<'all' | 'pending' | 'completed'>('all');
   const [dateFilter, setDateFilter] = useState('');
   const [expanded, setExpanded] = useState<string | null>(null);
+
+  // BUG FIX (2026-09-28): "SNB branch is not able to complete the sales" —
+  // this whole tab used to be read-only (a report only); collectAdvanceBalance
+  // in branchStore.ts existed but was never called from anywhere in the app,
+  // so no store/custom advance order (branch_advance_orders — a separate
+  // system from Cake advance orders, which already complete correctly via
+  // their own Final Bill flow) could ever actually be completed. Gated on
+  // Planner having dispatched real stock first (dispatchedAt) — the
+  // completion RPC's own stock-deduction step is dead code (source_type
+  // mismatch against branch_stock_reservations, see BranchAdvanceOrder's own
+  // comment in branchStore.ts), so this dispatch gate is now the real
+  // guarantee that goods actually left Planner before the branch can collect
+  // payment and hand them over.
+  const collectAdvanceBalance = useBranchStore(s => s.collectAdvanceBalance);
+  const [collectingId, setCollectingId] = useState<string | null>(null);
+  const [collectMode, setCollectMode] = useState<Record<string, 'cash' | 'upi' | 'card'>>({});
+  const [collectError, setCollectError] = useState<Record<string, string>>({});
+
+  const doCollect = async (order: BranchAdvanceOrder) => {
+    if (collectingId) return;
+    setCollectingId(order.id);
+    setCollectError(e => ({ ...e, [order.id]: '' }));
+    try {
+      const mode = collectMode[order.id] || 'cash';
+      const err = await collectAdvanceBalance(branch, order.id, mode);
+      if (err) setCollectError(e => ({ ...e, [order.id]: err }));
+    } finally {
+      setCollectingId(null);
+    }
+  };
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -307,6 +338,41 @@ export function AdvancePaymentsTab({ branch, advanceOrders }: Props) {
                     </div>
                   )}
                 </div>
+
+                {/* BUG FIX (2026-09-28): "SNB branch is not able to complete
+                    the sales" — Collect Balance was never wired up anywhere.
+                    Cake orders (a different system, completed via their own
+                    Final Bill flow) are excluded — this only applies to
+                    store/custom orders. */}
+                {!isCompleted && order.items[0]?.orderType !== 'cake' && (
+                  <div className="border-t border-border/50 bg-card px-4 py-3 space-y-2">
+                    {!order.dispatchedAt ? (
+                      <p className="flex items-center gap-1.5 text-[11px] font-bold text-amber-700">
+                        <Truck className="size-3.5" /> Waiting for Planner to dispatch this order before it can be completed.
+                      </p>
+                    ) : (
+                      <>
+                        {order.balanceDue > 0 && (
+                          <div className="flex gap-1.5">
+                            {(['cash', 'upi', 'card'] as const).map(m => (
+                              <button key={m} type="button" onClick={() => setCollectMode(cm => ({ ...cm, [order.id]: m }))}
+                                className={cn('flex flex-1 items-center justify-center gap-1 rounded-lg border py-1.5 text-[11px] font-bold capitalize',
+                                  (collectMode[order.id] || 'cash') === m ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground')}>
+                                {methodIcon(m)} {m}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                        <button type="button" disabled={collectingId === order.id} onClick={() => void doCollect(order)}
+                          className="flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 py-2.5 text-sm font-bold text-white disabled:opacity-50">
+                          {collectingId === order.id ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
+                          {order.balanceDue > 0 ? `Collect ${fmt(order.balanceDue)} & Complete` : 'Mark Delivered / Complete'}
+                        </button>
+                        {collectError[order.id] && <p className="text-[11px] font-bold text-red-600">{collectError[order.id]}</p>}
+                      </>
+                    )}
+                  </div>
+                )}
               </div>
             );
           })}
