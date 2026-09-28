@@ -1590,6 +1590,12 @@ function IncomingOrdersTab({ orders, onAdd }: { orders: BakeryOrder[]; onAdd: Re
         </div>
       </div>
 
+      {/* BUG FIX (2026-09-28): "come correctly in the Advance orders tab
+          and Incoming orders tab also" — store advance orders (a separate
+          system from the bakery_orders list below) surfaced here too, same
+          panel as the Advance Orders tab. See StoreAdvanceOrdersPanel. */}
+      <StoreAdvanceOrdersPanel compact />
+
       {showAdd && (
         <div className="rounded-2xl border border-border bg-white p-4 shadow-sm">
           <div className="grid gap-3 sm:grid-cols-4">
@@ -11695,6 +11701,146 @@ function DispatchChecklistModal({ row, orders, branchFilter, onClose, onDispatch
   );
 }
 
+// ─── Store Advance Orders (branch_advance_orders — "System 1") ─────────────
+// BUG FIX (2026-09-28): "Planner is unable to see SNB-ADV-376" — traced to a
+// completely separate advance-order system (branch_advance_orders, entry
+// point BillTab.tsx → AdvancePaymentsTab in the branch app) that was never
+// bridged into Planner at all, unlike the Cake-order system below (fixed
+// 2026-09-05/09-12). A "store" order — fulfilled from stock the branch
+// already has, no production needed — never creates a bakery_orders row, so
+// it was structurally invisible everywhere in Planner. Deeper investigation
+// found the branch's own completion path is worse than just invisible: its
+// stock-deduction step (consume_branch_stock_reservation, called with
+// source_type 'branch_advance_order') never matches any real reservation row
+// (the only rows that exist are tagged 'branch_advance_order_number', a
+// different thing) — so completing one of these orders has never actually
+// deducted real inventory, for any branch, ever. Rather than repair that
+// dead plumbing, this panel makes a real Planner dispatch (Closing Stock
+// debit + a tagged branch_incoming row, the same mechanism every other
+// dispatch in this app already uses) the actual source of truth for "goods
+// delivered" — see dispatchedAt on BranchAdvanceOrder.
+function StoreAdvanceOrdersPanel({ compact = false }: { compact?: boolean }) {
+  const currentUser = useAuthStore(s => s.currentUser);
+  const dispatchedBy = currentUser?.displayName || currentUser?.username || 'Planner';
+  const advanceOrdersByBranch = useBranchStore(s => s.advanceOrders);
+  const fetchBranchData = useBranchStore(s => s.fetchBranchData);
+  const [loading, setLoading] = useState(true);
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    try { await Promise.all([fetchBranchData('SNB', false, ['advance']), fetchBranchData('VRSNB', false, ['advance'])]); }
+    finally { setLoading(false); }
+  }, [fetchBranchData]);
+  useEffect(() => { void refresh(); }, [refresh]);
+
+  // BUG FIX (2026-09-28, mid-build correction): "only the Store items and
+  // custom items orders should show. Cake orders are correctly working in
+  // Cake Dispatch tab." Live-checked: 187 of 209 branch_advance_orders rows
+  // are actually orderType='cake' (only 21 store + 3 custom) — showing all
+  // of them here would have massively duplicated Cake Dispatch's own list.
+  // The branch UI saves one uniform orderType per order (its own
+  // store/custom/cake mode tab at save time), so checking the first item is
+  // reliable, not just a shortcut.
+  const orders = useMemo(() =>
+    (['SNB', 'VRSNB'] as const)
+      .flatMap(b => advanceOrdersByBranch[b].map(o => ({ ...o, branch: b })))
+      .filter(o => o.status === 'pending' && o.items[0]?.orderType !== 'cake')
+      .sort((a, b) => (a.deliveryDate || a.createdAt).localeCompare(b.deliveryDate || b.createdAt)),
+    [advanceOrdersByBranch]);
+
+  const [dispatchingId, setDispatchingId] = useState<string | null>(null);
+  const [notice, setNotice] = useState<Record<string, string>>({});
+
+  const dispatchOrder = async (order: (typeof orders)[number]) => {
+    if (dispatchingId) return;
+    setDispatchingId(order.id);
+    setNotice(n => ({ ...n, [order.id]: '' }));
+    try {
+      const errors: string[] = [];
+      for (const item of order.items) {
+        const ledgerResult = await recordLeftoverMovement({
+          itemName: item.itemName, unit: item.sellUnit, delta: -Math.abs(item.quantity),
+          businessDate: kolkataToday(), reason: 'dispatch', recordedBy: dispatchedBy,
+          branch: order.branch, notes: `Store advance order ${order.orderNo || order.id.slice(0, 8)}`,
+        });
+        if ('error' in ledgerResult) errors.push(`${item.itemName}: ${ledgerResult.error}`);
+        const { error: incomingErr } = await supabase.from('branch_incoming').insert({
+          dispatch_id: crypto.randomUUID(), branch: order.branch, item_name: item.itemName,
+          quantity: item.quantity, unit: item.sellUnit, received_at: new Date().toISOString(),
+          dispatched_by: dispatchedBy, confirmed: false, advance_order_no: order.orderNo || null,
+        });
+        if (incomingErr) errors.push(`${item.itemName}: ${incomingErr.message}`);
+      }
+      if (errors.length > 0) { setNotice(n => ({ ...n, [order.id]: `Dispatch incomplete — ${errors.join('; ')}` })); return; }
+      const { error: markErr } = await supabase.from('branch_advance_orders')
+        .update({ dispatched_at: new Date().toISOString(), dispatched_by: dispatchedBy })
+        .eq('id', order.id);
+      if (markErr) { setNotice(n => ({ ...n, [order.id]: `Sent, but could not mark as dispatched: ${markErr.message}. Retry so the branch sees it as delivered.` })); return; }
+      setNotice(n => ({ ...n, [order.id]: 'Dispatched — sent to branch Incoming, ready to complete.' }));
+      void refresh();
+    } finally {
+      setDispatchingId(null);
+    }
+  };
+
+  const pendingDispatch = orders.filter(o => !o.dispatchedAt);
+  const alreadyDispatched = orders.filter(o => o.dispatchedAt);
+
+  if (loading && orders.length === 0) return <div className="flex justify-center py-8"><Loader2 className="size-5 animate-spin text-muted-foreground" /></div>;
+  if (orders.length === 0) return compact ? null : (
+    <div className="flex flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-border py-10 text-center">
+      <Store className="size-7 text-muted-foreground/40" />
+      <p className="text-sm font-bold text-muted-foreground">No store advance orders waiting right now.</p>
+    </div>
+  );
+
+  return (
+    <section className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border bg-card p-3.5">
+        <div className="flex items-center gap-2">
+          <Store className="size-4 text-amber-500" />
+          <h3 className="text-sm font-black text-foreground">Store Advance Orders — SNB &amp; VRSNB</h3>
+          <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-black text-muted-foreground">{orders.length}</span>
+          <span className="text-[11px] font-bold text-muted-foreground">— fulfilled from existing branch stock, no Production Entry needed</span>
+        </div>
+        <button type="button" title="Refresh" onClick={() => void refresh()} disabled={loading} className="grid size-9 place-items-center rounded-lg border border-border text-muted-foreground disabled:cursor-wait disabled:opacity-60">
+          <RefreshCw className={cn('size-3.5', loading && 'animate-spin')} />
+        </button>
+      </div>
+      <div className="space-y-2.5">
+        {[...pendingDispatch, ...alreadyDispatched].map(order => {
+          const isOverdue = !!order.deliveryDate && order.deliveryDate < kolkataToday() && !order.dispatchedAt;
+          return (
+            <div key={order.id} className={cn(
+              'flex flex-wrap items-start justify-between gap-3 rounded-2xl border bg-card p-3.5',
+              order.dispatchedAt ? 'border-emerald-200 bg-emerald-50/30' : isOverdue ? 'border-red-300' : 'border-border',
+            )}>
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="rounded-md bg-foreground px-1.5 py-0.5 text-[10px] font-black text-white">{order.branch}</span>
+                  <span className="flex items-center gap-1 rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-bold text-muted-foreground"><Receipt className="size-3" />{order.orderNo || order.id.slice(0, 8)}</span>
+                  {isOverdue && <span className="rounded-md bg-red-600 px-1.5 py-0.5 text-[10px] font-black text-white">OVERDUE</span>}
+                  <span className={cn('rounded-md px-1.5 py-0.5 text-[10px] font-black', order.dispatchedAt ? 'bg-emerald-600 text-white' : 'bg-teal-600 text-white')}>{order.dispatchedAt ? 'Dispatched' : 'Ready to dispatch'}</span>
+                </div>
+                <p className="mt-0.5 truncate text-sm font-black text-foreground">{order.customerName || 'Customer'}</p>
+                <p className="truncate text-[11px] font-bold text-muted-foreground">Delivery {order.deliveryDate ? fmtAdvDate(order.deliveryDate) : '—'} · Balance due {formatCurrency(order.balanceDue)}</p>
+                <p className="mt-1 truncate text-[11px] font-bold text-muted-foreground">{order.items.map(i => `${i.itemName} (${i.quantity} ${i.sellUnit})`).join(', ')}</p>
+              </div>
+              <div className="flex shrink-0 flex-col items-end gap-1.5">
+                {!order.dispatchedAt && (
+                  <button type="button" disabled={dispatchingId === order.id} onClick={() => void dispatchOrder(order)} className="flex items-center gap-2 rounded-xl bg-foreground px-4 py-2.5 text-sm font-black text-white active:scale-95 disabled:opacity-50">
+                    {dispatchingId === order.id ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />} Dispatch to {order.branch}
+                  </button>
+                )}
+                {notice[order.id] && <p className="max-w-[16rem] text-right text-[11px] font-bold text-teal-700">{notice[order.id]}</p>}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 // ─── Tab: Advance Orders (SNB/VRSNB) ───────────────────────────────────────
 // FEATURE (2026-09-05): "Advance orders that come from SNB and VRSNB are
 // unable to track and unable to dispatch — this is causing confusion...
@@ -11792,6 +11938,12 @@ function AdvancePlannerOrdersTab({ orders }: { orders: BakeryOrder[] }) {
   const todayKey = kolkataToday();
 
   return (
+    <div className="space-y-6">
+      {/* BUG FIX (2026-09-28): "Planner is unable to see SNB-ADV-376" — a
+          separate advance-order system (branch_advance_orders) that never
+          reached this tab at all. See StoreAdvanceOrdersPanel's own comment
+          for the full root cause. */}
+      <StoreAdvanceOrdersPanel />
     <section className="space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border bg-card p-3.5">
         <div className="flex items-center gap-2">
@@ -11888,6 +12040,7 @@ function AdvancePlannerOrdersTab({ orders }: { orders: BakeryOrder[] }) {
         />
       )}
     </section>
+    </div>
   );
 }
 
