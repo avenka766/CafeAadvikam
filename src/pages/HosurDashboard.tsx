@@ -1137,7 +1137,16 @@ export default function HosurDashboard({ hideNav = false }: { hideNav?: boolean 
       ] = await Promise.all([
         supabase.from('hosur_shops').select('id, shop_name, whatsapp_number, address, is_active, created_at, updated_at, discount_percent').eq('is_active', true).order('shop_name', { ascending: true }),
         supabase.from('hosur_shop_price_lists').select('id, shop_id, item_name, item_unit, unit_price, is_active, updated_at').eq('is_active', true),
-        supabase.from('hosur_orders').select('id, order_number, shop_id, shop_name, shop_whatsapp, shop_address, status, subtotal, created_by, created_at, received_at, bill_id, notes').order('created_at', { ascending: false }).limit(250),
+        // BUG FIX (2026-09-28): "check the Hosur Shops & Billing tab too" —
+        // `.limit(250)` does NOT override PostgREST's hard 1000-row response
+        // cap and was well below it anyway; confirmed live this was already
+        // actively truncating — 437 real hosur_orders exist (187 silently
+        // hidden past the 250 most-recent). Paginated with fetchAllRows, same
+        // fix pattern already applied to hosur_order_items/hosur_bill_items
+        // right below in this same block.
+        fetchAllRows<Record<string, unknown>>('hosur_orders', (q) => q
+          .select('id, order_number, shop_id, shop_name, shop_whatsapp, shop_address, status, subtotal, created_by, created_at, received_at, bill_id, notes')
+          .order('created_at', { ascending: false })),
         // EGRESS FIX: was ordered ascending with a 10,000 cap and no date bound
         // — that returned the OLDEST 10,000 line items ever recorded (a
         // correctness bug: the newest ones could be silently excluded once the
@@ -1154,7 +1163,14 @@ export default function HosurDashboard({ hideNav = false }: { hideNav?: boolean 
         fetchAllRows<Record<string, unknown>>('hosur_order_items', (q) => q.select('id, order_id, item_name, unit, quantity, unit_price, line_total, dispatched_quantity, received_quantity')
           .gte('created_at', new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString())
           .order('created_at', { ascending: false })),
-        supabase.from('hosur_bills').select('id, bill_no, invoice_no, order_id, shop_id, shop_name, shop_whatsapp, subtotal, paid_amount, credit_amount, payment_type, payment_mode, due_date, status, confirmed_by, confirmed_at, created_at, whatsapp_status').order('created_at', { ascending: false }).limit(250),
+        // BUG FIX (2026-09-28): same as hosur_orders above — `.limit(250)`
+        // was already actively hiding real data: 421 real hosur_bills exist,
+        // 168 of them (₹3,98,584 in real outstanding credit) fell past the
+        // 250 most-recent and were invisible on this tab's Credit Ledger.
+        // This is the exact query that powers it.
+        fetchAllRows<Record<string, unknown>>('hosur_bills', (q) => q
+          .select('id, bill_no, invoice_no, order_id, shop_id, shop_name, shop_whatsapp, subtotal, paid_amount, credit_amount, payment_type, payment_mode, due_date, status, confirmed_by, confirmed_at, created_at, whatsapp_status')
+          .order('created_at', { ascending: false })),
         // EGRESS FIX: same fix as hosur_order_items above.
         fetchAllRows<Record<string, unknown>>('hosur_bill_items', (q) => q.select('id, bill_id, item_name, unit, quantity, unit_price, line_total')
           .gte('created_at', new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString())
@@ -1164,11 +1180,26 @@ export default function HosurDashboard({ hideNav = false }: { hideNav?: boolean 
         // The HosurCreditTab already shows wholesale (shop-supply) and retail separately
         // by filtering on credit_type. The Owner Dashboard SalesOverviewTab similarly
         // uses credit_type to prevent double-counting wholesale revenue already in hosur_bills.
-        supabase.from('branch_credit_sales').select('id, branch, source, source_id, customer_ref, customer_name, subtotal, amount_paid, credit_amount, due_date, status, created_at, settled_at, credit_type, bill_no').eq('branch', BRANCH).order('created_at', { ascending: false }).limit(500),
-        supabase.from('branch_credit_payments').select('id, credit_sale_id, amount, payment_mode, remarks, payment_purpose, collected_by, collected_role, created_at, branch_credit_sales!inner(source_id, customer_ref)').eq('branch', BRANCH).order('created_at', { ascending: false }).limit(500),
-        supabase.from('hosur_whatsapp_logs').select('id, shop_id, shop_name, phone, bill_id, bill_no, message_type, message_body, status, error_message, sent_at, created_at').order('created_at', { ascending: false }).limit(500),
-        supabase.from('hosur_payment_reminders').select('id, credit_sale_id, ledger_id, bill_id, shop_id, shop_name, pending_amount, due_date, reminder_no, status, whatsapp_log_id, sent_at, created_at').order('created_at', { ascending: false }).limit(500),
-        supabase.from('hosur_disputes').select('id, order_id, order_number, item_name, expected_quantity, received_quantity, unit, raised_by, status, admin_remarks, created_at, resolved_at').order('created_at', { ascending: false }).limit(500),
+        // BUG FIX (2026-09-28): `.limit(500)` — not yet actively truncating
+        // (421 rows for Hosur today) but the same latent bug as hosur_bills
+        // above, just one growth-cycle away from silently hiding real credit
+        // balances again. Paginated preemptively along with every other
+        // capped query in this block.
+        fetchAllRows<Record<string, unknown>>('branch_credit_sales', (q) => q
+          .select('id, branch, source, source_id, customer_ref, customer_name, subtotal, amount_paid, credit_amount, due_date, status, created_at, settled_at, credit_type, bill_no')
+          .eq('branch', BRANCH).order('created_at', { ascending: false })),
+        fetchAllRows<Record<string, unknown>>('branch_credit_payments', (q) => q
+          .select('id, credit_sale_id, amount, payment_mode, remarks, payment_purpose, collected_by, collected_role, created_at, branch_credit_sales!inner(source_id, customer_ref)')
+          .eq('branch', BRANCH).order('created_at', { ascending: false })),
+        fetchAllRows<Record<string, unknown>>('hosur_whatsapp_logs', (q) => q
+          .select('id, shop_id, shop_name, phone, bill_id, bill_no, message_type, message_body, status, error_message, sent_at, created_at')
+          .order('created_at', { ascending: false })),
+        fetchAllRows<Record<string, unknown>>('hosur_payment_reminders', (q) => q
+          .select('id, credit_sale_id, ledger_id, bill_id, shop_id, shop_name, pending_amount, due_date, reminder_no, status, whatsapp_log_id, sent_at, created_at')
+          .order('created_at', { ascending: false })),
+        fetchAllRows<Record<string, unknown>>('hosur_disputes', (q) => q
+          .select('id, order_id, order_number, item_name, expected_quantity, received_quantity, unit, raised_by, status, admin_remarks, created_at, resolved_at')
+          .order('created_at', { ascending: false })),
         supabase.from('admin_notifications').select('id, type, title, body, ref_id, ref_label, is_read, created_at').eq('recipient_role', 'branch_hosur').or('type.ilike.%hosur%,title.ilike.%hosur%,body.ilike.%hosur%,ref_label.ilike.%hosur%').order('created_at', { ascending: false }).limit(100),
       ]);
 

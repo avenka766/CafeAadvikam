@@ -2105,8 +2105,18 @@ function AdminDashboard() {
       // hosurBillsSplitForDisplay) — a multi-batch bill is now N rows here
       // too, each with its own invoice number and proportional Total Sales,
       // "in sequence" per the earlier Excel-ordering request.
+      // SELF-REVIEW FIX (2026-09-28): billPaidByMode is keyed by the
+      // underlying bill id, which BOTH split rows of a multi-batch bill
+      // share — a payment recorded against the bill would show as the full
+      // amount on every split row, double-counting it if the Cash/UPI/Card
+      // columns are ever summed. No live bill hits this today (checked live:
+      // zero multi-invoice Hosur bills currently have paid_amount > 0), but
+      // it's a real latent bug for the first one that does. Only the first
+      // split row carries the real payment breakdown; later rows show 0,
+      // same convention as Bill Price would need if payment ever needed
+      // splitting too.
       rows: hosurBillsSplitForDisplay.map(b => {
-        const paid = billPaidByMode.get(b.id) ?? { cash: 0, upi: 0, card: 0 };
+        const paid = b.splitIndex === 0 ? (billPaidByMode.get(b.id) ?? { cash: 0, upi: 0, card: 0 }) : { cash: 0, upi: 0, card: 0 };
         return { branch: 'Hosur', invoiceNo: b.splitInvoiceNo, date: fmtDate(b.createdAt), time: fmtTime(b.createdAt), totalSales: b.splitTotal, cash: paid.cash, upi: paid.upi, card: paid.card, salesperson: b.salesperson || '—', biller: b.biller || '—' };
       }),
     },
