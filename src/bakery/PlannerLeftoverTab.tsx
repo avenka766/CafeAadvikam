@@ -288,10 +288,50 @@ export function closingStockBalanceKey(itemSlug: string, unit: LeftoverUnit): st
 // already knows the unit of the row it's checking (row.unit /
 // checklistItem.unit), so it asks for the balance in that specific unit
 // instead of an ambiguous "whichever one this map felt like keeping".
+// PERF FIX (2026-09-28, live complaint — "planner dashboard is slow when we
+// switch tabs"): this hook has multiple independent call sites mounted at
+// once inside PlannerDashboard.tsx (Daily Closure's balance check, the GST
+// invoice line's stock lookup) — each used to run its OWN
+// fetchLeftoverLedger() on mount, with zero sharing. fetchLeftoverLedger
+// itself pages the WHOLE unbounded ledger history (already 5000+ rows, 5
+// sequential round trips) — confirmed live via network instrumentation that
+// opening Reports fired dozens of Supabase calls, this the single largest
+// contributor. A module-level cache + in-flight dedupe means every hook
+// instance mounted at the same moment shares ONE real fetch instead of N,
+// and a later mount within the same session reuses the already-fetched rows
+// instead of re-running the full unbounded query again. explicit refresh()
+// (e.g. after recording a movement) still always forces a real re-fetch and
+// re-broadcasts to every mounted consumer, so they all stay in sync —
+// stricter than before, where only the one component that called refresh()
+// actually updated.
+let leftoverLedgerCache: LeftoverLedgerRow[] | null = null;
+let leftoverLedgerInFlight: Promise<{ rows: LeftoverLedgerRow[]; error: string }> | null = null;
+const leftoverLedgerSubscribers = new Set<(rows: LeftoverLedgerRow[]) => void>();
+function fetchLeftoverLedgerShared(force: boolean): Promise<{ rows: LeftoverLedgerRow[]; error: string }> {
+  if (!force && leftoverLedgerCache) return Promise.resolve({ rows: leftoverLedgerCache, error: '' });
+  if (!force && leftoverLedgerInFlight) return leftoverLedgerInFlight;
+  const promise = fetchLeftoverLedger().then((result) => {
+    leftoverLedgerInFlight = null;
+    if (!result.error) {
+      leftoverLedgerCache = result.rows;
+      leftoverLedgerSubscribers.forEach((cb) => cb(result.rows));
+    }
+    return result;
+  });
+  leftoverLedgerInFlight = promise;
+  return promise;
+}
+
 export function useLeftoverBalanceMap(): { balances: Map<string, { itemName: string; unit: LeftoverUnit; balance: number }>; refresh: () => void } {
-  const [rows, setRows] = useState<LeftoverLedgerRow[]>([]);
-  const refresh = useCallback(() => { void fetchLeftoverLedger().then(({ rows: fetched }) => setRows(fetched)); }, []);
-  useEffect(() => { refresh(); }, [refresh]);
+  const [rows, setRows] = useState<LeftoverLedgerRow[]>(leftoverLedgerCache ?? []);
+  useEffect(() => {
+    let cancelled = false;
+    void fetchLeftoverLedgerShared(false).then(({ rows: fetched }) => { if (!cancelled) setRows(fetched); });
+    const sub = (r: LeftoverLedgerRow[]) => setRows(r);
+    leftoverLedgerSubscribers.add(sub);
+    return () => { cancelled = true; leftoverLedgerSubscribers.delete(sub); };
+  }, []);
+  const refresh = useCallback(() => { void fetchLeftoverLedgerShared(true).then(({ rows: fetched }) => setRows(fetched)); }, []);
   const balances = useMemo(() => {
     const perUnit = new Map<string, { itemName: string; unit: LeftoverUnit; balance: number }>();
     rows.forEach((row) => {
@@ -449,13 +489,25 @@ export function ItemSearchPicker({ value, onChange, onSelect, items, placeholder
   );
 }
 
-export default function PlannerLeftoverTab({ onExportDataChange }: {
+export default function PlannerLeftoverTab({ active = true, onExportDataChange }: {
   // FEATURE (2026-09-15): lets the merged Reports tab's top-level "Export
   // All" button fold this section's current Excel/PDF data into one
   // combined file — reported up on every change via useEffect below rather
   // than re-fetched, since this tab is always mounted (CSS-hidden, not
   // unmounted) whenever the combined tab is open.
   onExportDataChange?: (data: { excel: ExcelSectionSpec; pdf: PdfSectionSpec }) => void;
+  // PERF FIX (2026-09-28): "planner dashboard is very slow when we switch
+  // tabs" — this tab stays mounted (CSS-hidden) inside the combined Reports
+  // tab, so its own fetchLeftoverLedger() — up to 5 sequential round trips
+  // for the whole unbounded ledger history — used to fire the instant
+  // Reports was opened at all, even if the user landed on "Reports" or
+  // "Disputes & Returns" and never actually clicked into "Closing Stock".
+  // Same fix already applied to "All Invoices" (see PlannerAllInvoicesTab's
+  // own PERF FIX comment) — `active` (true only once this section has been
+  // selected at least once) gates the fetch. Defaults to true so this
+  // component's other, standalone callers (outside the combined tab, if any)
+  // keep today's eager-load behavior unchanged.
+  active?: boolean;
 } = {}) {
   const { currentUser } = useAuthStore();
   const staffName = currentUser?.displayName || currentUser?.username || 'Planner Staff';
@@ -473,7 +525,13 @@ export default function PlannerLeftoverTab({ onExportDataChange }: {
     if (fetchError) setError(fetchError);
     setLoading(false);
   }, []);
-  useEffect(() => { void refresh(); }, [refresh]);
+  const hasBeenActive = useRef(false);
+  if (active) hasBeenActive.current = true;
+  useEffect(() => {
+    if (!hasBeenActive.current) return;
+    void refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refresh, active]);
 
   // FEATURE (2026-08-10): "cake orders should be clearly noted and tracked
   // in reports and closing stock." Cakes are custom-made per order (not a

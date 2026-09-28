@@ -26,7 +26,7 @@ import { useAuthStore } from '@/stores/authStore';
 import { useBakeryStore } from './bakeryStore';
 import { BRANCHES } from './types';
 import type { Branch } from './types';
-import { mapWalkinBill, type WalkinBillRow } from './dispatchInvoice';
+import { mapWalkinBill, noteDispatchInvoiceReturnOnly, type WalkinBillRow } from './dispatchInvoice';
 import { recordLeftoverMovement, sanitizeQtyForUnit } from './PlannerLeftoverTab';
 import { printViaIframe } from '@/lib/printViaIframe';
 import { generateExcelReport, type ExcelSectionSpec, type PdfSectionSpec } from './reportExport';
@@ -139,6 +139,23 @@ type PendingReturnRow = {
   id: string; source_branch: string; transfer_reference: string; item_name: string;
   expected_quantity: number; unit: string; request_reason: string | null;
   requested_by: string | null; requested_at: string | null;
+  // source_incoming_id links back to the exact branch_incoming row this
+  // return came from — used to trace to the original dispatch invoice below.
+  // Already returned by list_packing_transfer_in_secure() (SETOF
+  // packing_transfer_in, every column), just not previously read client-side.
+  source_incoming_id: string | null;
+};
+
+// FEATURE (2026-09-28): "it should keep track of all the confirmed return
+// ones" — list_packing_transfer_in_secure() already returns every row
+// (SETOF packing_transfer_in, all statuses), but the panel below used to
+// throw away everything except status='pending', so once a return was
+// confirmed it vanished with no record anywhere in this tab. Same source
+// query, just also keep the 'posted' ones for a history table.
+type ConfirmedReturnRow = {
+  id: string; source_branch: string; item_name: string;
+  expected_quantity: number; received_quantity: number; unit: string;
+  remarks: string | null; received_by: string | null; received_at: string | null;
 };
 
 function ConfirmReturnRow({ row, staffName, onDone }: { row: PendingReturnRow; staffName: string; onDone: () => void }) {
@@ -146,9 +163,14 @@ function ConfirmReturnRow({ row, staffName, onDone }: { row: PendingReturnRow; s
   const [remarks, setRemarks] = useState('');
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
+  const [notice, setNotice] = useState('');
+  // The underlying return is already confirmed once posted!=null — a
+  // dispatch-bill-sync notice must never invite a second click of Confirm
+  // (the RPC would just reject it: "This request is not pending").
+  const [done, setDone] = useState(false);
 
   const confirm = async () => {
-    setErr('');
+    setErr(''); setNotice('');
     const received = Number(qty);
     if (!Number.isFinite(received) || received <= 0) { setErr('Enter a received quantity greater than zero.'); return; }
     setSaving(true);
@@ -167,7 +189,72 @@ function ConfirmReturnRow({ row, staffName, onDone }: { row: PendingReturnRow; s
       });
       if ('error' in leftoverResult) { setErr(`Return confirmed, but closing stock sync failed: ${leftoverResult.error}`); setSaving(false); return; }
     }
+
+    // BUG FIX (2026-09-28): "Even after the planner confirmed the return
+    // still the item is showing in the SNB Order > Incoming tab." Requesting
+    // a return (request_packing_transfer_in_return_secure) sets
+    // branch_incoming.return_requested=true but leaves confirmed=false —
+    // and confirming the return on the Planner side
+    // (confirm_packing_transfer_in_secure) never touches branch_incoming at
+    // all, so the row sat "locked" in the branch's Incoming list forever,
+    // looking like a still-open request. It isn't a real incoming delivery
+    // any more (the goods went back to Packing, not into branch stock), so
+    // mark it confirmed here — WITHOUT running it through the stock-add RPC
+    // (that would wrongly credit branch_stock for goods that were returned,
+    // not received) — purely to drop it out of the active Incoming queue.
+    if (posted && row.source_incoming_id) {
+      const { error: closeErr } = await supabase.from('branch_incoming')
+        .update({ confirmed: true }).eq('id', row.source_incoming_id);
+      if (closeErr) console.error('[ConfirmReturnRow] Failed to clear the source Incoming row:', closeErr.message);
+    }
+
+    // FEATURE (2026-09-28): "If the planner confirms the return then it
+    // should also get reflected in the Dispatched bill also. All the
+    // returned items should be tracked and it should be noted." Trace this
+    // return back to the exact branch_incoming row it came from (recorded on
+    // request via source_incoming_id), read its invoice_no, find the
+    // matching dispatch_invoices row, and note the return on it via
+    // noteDispatchInvoiceReturnOnly — a bill-only sibling of the Dispatch
+    // tab's own manual Return sub-tab's returnDispatchInvoiceItems. Uses the
+    // bill-only version, not that one: the branch-side Closing Stock credit
+    // just above is already the real stock movement, and the full
+    // returnDispatchInvoiceItems would touch stock a second time via
+    // dispatch_log (confirmed live as a real bug — see its own comment in
+    // dispatchInvoice.ts). Best-effort and non-blocking either way: the
+    // branch-side return + Closing Stock sync above are the real,
+    // already-completed action; a missing/already-adjusted invoice link
+    // must never undo or block that.
+    // setNotice() is async (state), so a same-tick `if (notice)` read below
+    // would still see the pre-update value — track it in a plain local too.
+    let invoiceNotice = '';
+    if (posted && row.source_incoming_id) {
+      try {
+        const { data: incRow } = await supabase.from('branch_incoming')
+          .select('invoice_no, branch').eq('id', row.source_incoming_id).maybeSingle();
+        const invoiceNo = (incRow as { invoice_no?: string | null; branch?: string } | null)?.invoice_no;
+        if (invoiceNo) {
+          const { data: invRow } = await supabase.from('dispatch_invoices')
+            .select('id').eq('invoice_no', invoiceNo).eq('scope', posted.source_branch)
+            .neq('status', 'cancelled').order('created_at', { ascending: false }).limit(1).maybeSingle();
+          if (invRow?.id) {
+            const result = await noteDispatchInvoiceReturnOnly({
+              invoiceId: invRow.id as string,
+              returns: [{ itemName: posted.item_name, unit: posted.unit, qty: Number(posted.received_quantity) }],
+              reason: remarks.trim() || 'Returned from branch (confirmed via Disputes & Returns)',
+              returnedBy: staffName,
+            });
+            if ('error' in result) invoiceNotice = `Return confirmed, but the dispatched bill (${invoiceNo}) wasn't updated: ${result.error}`;
+          } else {
+            invoiceNotice = `Return confirmed. Dispatched bill ${invoiceNo} couldn't be found to mark the return on it.`;
+          }
+        }
+      } catch (e) {
+        invoiceNotice = `Return confirmed, but updating the dispatched bill failed: ${e instanceof Error ? e.message : 'unknown error'}`;
+      }
+    }
+
     setSaving(false);
+    if (invoiceNotice) { setNotice(invoiceNotice); setDone(true); return; } // keep the row visible so the notice is seen before the list refreshes
     onDone();
   };
 
@@ -179,34 +266,47 @@ function ConfirmReturnRow({ row, staffName, onDone }: { row: PendingReturnRow; s
           <p className="text-xs text-muted-foreground">{row.source_branch} · Requested {row.expected_quantity} {row.unit} · {row.requested_by || '-'} · {row.requested_at ? new Date(row.requested_at).toLocaleString('en-IN') : ''}</p>
           {row.request_reason && <p className="mt-1 text-xs italic text-muted-foreground">"{row.request_reason}"</p>}
         </div>
-        <span className="shrink-0 rounded-full bg-blue-100 px-2 py-1 text-[10px] font-black text-blue-700">Pending</span>
+        <span className={cn('shrink-0 rounded-full px-2 py-1 text-[10px] font-black', done ? 'bg-emerald-100 text-emerald-700' : 'bg-blue-100 text-blue-700')}>{done ? 'Confirmed' : 'Pending'}</span>
       </div>
-      <div className="grid gap-2 sm:grid-cols-[140px_minmax(0,1fr)_auto]">
-        {/* BUG FIX (audit 2026-08-30): hardcoded step="0.001" and no
-            sanitization regardless of unit — this writes straight into the
-            shared Closing Stock ledger below (recordLeftoverMovement), same
-            "pcs never allow decimal points" gap found across several other
-            Planner qty inputs today. */}
-        <label className="space-y-1"><span className="text-[10px] font-black text-muted-foreground">Received Qty</span><input type="number" min="0.001" step={row.unit === 'pcs' ? 1 : 0.001} value={qty} onChange={(e) => setQty(sanitizeQtyForUnit(e.target.value, row.unit === 'pcs' ? 'pcs' : 'kg'))} className="h-9 w-full rounded-lg border bg-background px-2 text-sm font-bold" /></label>
-        <label className="space-y-1"><span className="text-[10px] font-black text-muted-foreground">Remarks (optional)</span><input value={remarks} onChange={(e) => setRemarks(e.target.value)} className="h-9 w-full rounded-lg border bg-background px-2 text-sm" /></label>
-        <div className="flex items-end"><button onClick={() => void confirm()} disabled={saving} className="h-9 w-full rounded-lg bg-teal-700 px-4 text-xs font-black text-white disabled:opacity-50 sm:w-auto">{saving ? <Loader2 className="mx-auto size-4 animate-spin" /> : 'Confirm'}</button></div>
-      </div>
+      {!done && (
+        <div className="grid gap-2 sm:grid-cols-[140px_minmax(0,1fr)_auto]">
+          {/* BUG FIX (audit 2026-08-30): hardcoded step="0.001" and no
+              sanitization regardless of unit — this writes straight into the
+              shared Closing Stock ledger below (recordLeftoverMovement), same
+              "pcs never allow decimal points" gap found across several other
+              Planner qty inputs today. */}
+          <label className="space-y-1"><span className="text-[10px] font-black text-muted-foreground">Received Qty</span><input type="number" min="0.001" step={row.unit === 'pcs' ? 1 : 0.001} value={qty} onChange={(e) => setQty(sanitizeQtyForUnit(e.target.value, row.unit === 'pcs' ? 'pcs' : 'kg'))} className="h-9 w-full rounded-lg border bg-background px-2 text-sm font-bold" /></label>
+          <label className="space-y-1"><span className="text-[10px] font-black text-muted-foreground">Remarks (optional)</span><input value={remarks} onChange={(e) => setRemarks(e.target.value)} className="h-9 w-full rounded-lg border bg-background px-2 text-sm" /></label>
+          <div className="flex items-end"><button onClick={() => void confirm()} disabled={saving} className="h-9 w-full rounded-lg bg-teal-700 px-4 text-xs font-black text-white disabled:opacity-50 sm:w-auto">{saving ? <Loader2 className="mx-auto size-4 animate-spin" /> : 'Confirm'}</button></div>
+        </div>
+      )}
       {err && <p className="text-xs font-bold text-red-600">{err}</p>}
+      {notice && <p className="text-xs font-bold text-amber-600">{notice}</p>}
     </div>
   );
 }
 
-export function DisputesAndReturnsPanel({ onExportDataChange }: {
+export function DisputesAndReturnsPanel({ active = true, onExportDataChange }: {
   // FEATURE (2026-09-15): lets the merged Reports tab's top-level "Export
   // All" button fold this panel's current snapshot into the combined file —
   // reported up on every change since this panel stays mounted (CSS-hidden)
   // whenever the combined tab is open.
   onExportDataChange?: (data: { excel: ExcelSectionSpec; pdf: PdfSectionSpec }) => void;
+  // PERF FIX (2026-09-28): "planner dashboard is very slow when we switch
+  // tabs" — same fix as PlannerAllInvoicesTab/PlannerLeftoverTab: this panel
+  // stays mounted (CSS-hidden) inside the combined Reports tab, so its own
+  // load() (disputes + returns + confirmed-returns, 2 queries) used to fire
+  // the instant Reports was opened, even if the user never clicked into
+  // "Disputes & Returns" specifically. `active` (true only once this section
+  // has been selected at least once) gates it. Defaults to true so any
+  // other, standalone caller keeps today's eager-load behavior.
+  active?: boolean;
 } = {}) {
   const { currentUser } = useAuthStore();
   const staffName = currentUser?.displayName || currentUser?.username || 'Planner';
   const [disputes, setDisputes] = useState<PendingDisputeRow[]>([]);
   const [returns, setReturns] = useState<PendingReturnRow[]>([]);
+  const [confirmedReturns, setConfirmedReturns] = useState<ConfirmedReturnRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
@@ -222,11 +322,21 @@ export function DisputesAndReturnsPanel({ onExportDataChange }: {
     if (disputeRes.error) setError(disputeRes.error.message);
     else setDisputes((disputeRes.data || []) as PendingDisputeRow[]);
     if (returnRes.error) setError((prev) => prev || returnRes.error!.message);
-    else setReturns(((returnRes.data || []) as (PendingReturnRow & { status: string })[]).filter((r) => r.status === 'pending'));
+    else {
+      const all = (returnRes.data || []) as (PendingReturnRow & ConfirmedReturnRow & { status: string })[];
+      setReturns(all.filter((r) => r.status === 'pending'));
+      setConfirmedReturns(all.filter((r) => r.status === 'posted'));
+    }
     setLoading(false);
   }, []);
 
-  useEffect(() => { void load(); }, [load]);
+  const hasBeenActive = useRef(false);
+  if (active) hasBeenActive.current = true;
+  useEffect(() => {
+    if (!hasBeenActive.current) return;
+    void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [load, active]);
 
   // EXPORT (2026-09-15): a point-in-time snapshot of the pending queue, not
   // a historical report — no PDF button of its own (low value for a
@@ -240,6 +350,12 @@ export function DisputesAndReturnsPanel({ onExportDataChange }: {
           Reason: r.request_reason || '', 'Requested By': r.requested_by || '',
           'Requested At': r.requested_at ? new Date(r.requested_at).toLocaleString('en-IN') : '',
         })) },
+        { name: 'Confirmed Returns', fallback: 'No confirmed returns', rows: confirmedReturns.map(r => ({
+          'From Branch': r.source_branch, Item: r.item_name, 'Requested Qty': r.expected_quantity,
+          'Received Qty': r.received_quantity, Unit: r.unit, 'Confirmed By': r.received_by || '',
+          'Confirmed At': r.received_at ? new Date(r.received_at).toLocaleString('en-IN') : '',
+          Remarks: r.remarks || '',
+        })) },
         { name: 'Open Disputes', fallback: 'No open disputes', rows: disputes.map(d => ({
           Branch: d.branch, Item: d.item_name, 'Dispatched Qty': d.quantity,
           'Received Qty': d.disputed_received_quantity ?? '', Unit: d.unit,
@@ -251,8 +367,8 @@ export function DisputesAndReturnsPanel({ onExportDataChange }: {
     pdf: {
       title: 'Disputes & Returns',
       subtitle: `Snapshot as of ${new Date().toLocaleString('en-IN')}`,
-      kpiCols: 2,
-      kpis: [['Pending Returns', String(returns.length)], ['Open Disputes', String(disputes.length)]],
+      kpiCols: 3,
+      kpis: [['Pending Returns', String(returns.length)], ['Confirmed Returns', String(confirmedReturns.length)], ['Open Disputes', String(disputes.length)]],
       tables: [
         {
           title: 'Pending Returns from SNB / VRSNB',
@@ -260,6 +376,13 @@ export function DisputesAndReturnsPanel({ onExportDataChange }: {
           colWidths: [70, 150, 45, 35, 90, 100],
           rows: returns.map(r => [r.source_branch, r.item_name.slice(0, 30), String(r.expected_quantity), r.unit, (r.requested_by || '-').slice(0, 18), r.requested_at ? new Date(r.requested_at).toLocaleDateString('en-IN') : '-']),
           emptyText: 'No pending returns.',
+        },
+        {
+          title: 'Confirmed Returns',
+          headers: ['From Branch', 'Item', 'Received', 'Unit', 'Confirmed By', 'Confirmed At'],
+          colWidths: [70, 150, 55, 35, 90, 100],
+          rows: confirmedReturns.map(r => [r.source_branch, r.item_name.slice(0, 30), String(r.received_quantity), r.unit, (r.received_by || '-').slice(0, 18), r.received_at ? new Date(r.received_at).toLocaleDateString('en-IN') : '-']),
+          emptyText: 'No confirmed returns.',
         },
         {
           title: 'Open Stock Disputes',
@@ -270,7 +393,7 @@ export function DisputesAndReturnsPanel({ onExportDataChange }: {
         },
       ],
     },
-  }), [returns, disputes]);
+  }), [returns, confirmedReturns, disputes]);
 
   useEffect(() => { onExportDataChange?.(disputesExportSpecs); }, [disputesExportSpecs, onExportDataChange]);
 
@@ -286,8 +409,9 @@ export function DisputesAndReturnsPanel({ onExportDataChange }: {
           <FileSpreadsheet className="size-4" /> Excel
         </button>
       </div>
-      <div className="grid gap-3 sm:grid-cols-2">
+      <div className="grid gap-3 sm:grid-cols-3">
         <StatCard label="Pending Returns" value={returns.length} helper="Awaiting your confirmation" icon={<Undo2 className="size-5" />} tone={returns.length ? 'blue' : 'slate'} />
+        <StatCard label="Confirmed Returns" value={confirmedReturns.length} helper="Already processed" icon={<CheckCircle2 className="size-5" />} tone={confirmedReturns.length ? 'emerald' : 'slate'} />
         <StatCard label="Open Disputes" value={disputes.length} helper="Awaiting Admin review" icon={<AlertTriangle className="size-5" />} tone={disputes.length ? 'amber' : 'slate'} />
       </div>
 
@@ -301,6 +425,44 @@ export function DisputesAndReturnsPanel({ onExportDataChange }: {
             ? <p className="py-8 text-center text-sm text-muted-foreground">No pending returns.</p>
             : returns.map((row) => <ConfirmReturnRow key={row.id} row={row} staffName={staffName} onDone={() => void load()} />)}
         </div>
+      </div>
+
+      <div className="overflow-hidden rounded-2xl border bg-card">
+        <div className="flex items-center justify-between border-b bg-muted/30 px-4 py-3">
+          <div><h3 className="font-black">Confirmed Returns</h3><p className="text-xs text-muted-foreground">History of every return already confirmed — Closing Stock credited and, where a dispatched bill was linked, noted on it too.</p></div>
+        </div>
+        {confirmedReturns.length === 0 ? (
+          <p className="py-8 text-center text-sm text-muted-foreground">No confirmed returns yet.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-muted/20 text-left text-[10px] font-black uppercase text-muted-foreground">
+                <tr>
+                  <th className="px-4 py-2">Branch</th>
+                  <th className="px-4 py-2">Item</th>
+                  <th className="px-4 py-2 text-right">Requested</th>
+                  <th className="px-4 py-2 text-right">Received</th>
+                  <th className="px-4 py-2">Confirmed By</th>
+                  <th className="px-4 py-2">Confirmed At</th>
+                  <th className="px-4 py-2">Remarks</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {confirmedReturns.map((r) => (
+                  <tr key={r.id}>
+                    <td className="px-4 py-2 font-bold">{r.source_branch}</td>
+                    <td className="px-4 py-2">{r.item_name}</td>
+                    <td className="px-4 py-2 text-right text-muted-foreground">{r.expected_quantity} {r.unit}</td>
+                    <td className="px-4 py-2 text-right font-bold">{r.received_quantity} {r.unit}</td>
+                    <td className="px-4 py-2">{r.received_by || '-'}</td>
+                    <td className="px-4 py-2 text-muted-foreground">{r.received_at ? new Date(r.received_at).toLocaleString('en-IN') : '-'}</td>
+                    <td className="px-4 py-2 text-muted-foreground">{r.remarks || '-'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
       <div className="overflow-hidden rounded-2xl border bg-card">

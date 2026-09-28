@@ -295,8 +295,16 @@ export default function PackingCakeOrdersTab({ mode = 'packing' }: { mode?: 'pac
   // looking exactly like it still needed dispatching. Dispatched orders
   // now live only in the new History view below.
   const dispatchedOrders = orders.filter(order => order.status === 'Dispatched');
+  // BUG FIX (2026-09-28, live report — SNB-ADV-291): planner mode fetches
+  // every status, including 'Cancelled' (see load()'s comment above) — this
+  // filter excluded the early/dispatched stages but never excluded
+  // 'Cancelled', so a cancelled order fell through to `!== 'Correction
+  // Required'` (true) and kept showing in the "Ready" list with a live
+  // "Dispatch to {branch}" button, weeks after being cancelled. The data was
+  // already correct (status='Cancelled' in cake_master_orders) — only the
+  // display was wrong.
   const visibleOrders = orders.filter(order => {
-    if (EARLY_STAGES.includes(order.status) || order.status === 'Dispatched') return false;
+    if (EARLY_STAGES.includes(order.status) || order.status === 'Dispatched' || order.status === 'Cancelled') return false;
     return view === 'corrections' ? order.status === 'Correction Required' : order.status !== 'Correction Required';
   });
 

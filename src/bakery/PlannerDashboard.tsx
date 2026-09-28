@@ -41,6 +41,7 @@ import { closestRecipeMatch } from './recipeNameMatch';
 import { useBranchCatalogStore } from '@/stores/branchCatalogStore';
 import { useRecipeStore } from './recipeStore';
 import { useBranchStore } from '@/branch/branchStore';
+import { useBranchOpsStore } from '@/branch/branchOpsStore';
 import { useNotificationStore } from '@/bakery/notificationStore';
 import { generateExcelReport, generatePdfReport, type ExcelSectionSpec, type PdfSectionSpec } from './reportExport';
 import { printWasteLogBatch } from '@/pages/AdminSNBDashboard';
@@ -1589,12 +1590,6 @@ function IncomingOrdersTab({ orders, onAdd }: { orders: BakeryOrder[]; onAdd: Re
           </button>
         </div>
       </div>
-
-      {/* BUG FIX (2026-09-28): "come correctly in the Advance orders tab
-          and Incoming orders tab also" — store advance orders (a separate
-          system from the bakery_orders list below) surfaced here too, same
-          panel as the Advance Orders tab. See StoreAdvanceOrdersPanel. */}
-      <StoreAdvanceOrdersPanel compact />
 
       {showAdd && (
         <div className="rounded-2xl border border-border bg-white p-4 shadow-sm">
@@ -4044,28 +4039,6 @@ function ReportsTab({ orders, onExportDataChange }: {
   // the per-order proportional split (see computeReportRows). Keyed
   // `${closingStockItemSlug(name)}|${unit}`.
   const [producedByLedger, setProducedByLedger] = useState<Map<string, number>>(new Map());
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const effectiveFrom = reportsCutoff && reportsCutoff > dateFrom ? reportsCutoff : dateFrom;
-      const { data } = await supabase
-        .from('planner_leftover_ledger')
-        .select('item_slug, unit, delta')
-        .eq('reason', 'production_carryover')
-        .gte('business_date', effectiveFrom)
-        .lte('business_date', dateTo);
-      if (cancelled) return;
-      const map = new Map<string, number>();
-      for (const r of (data ?? []) as { item_slug: string; unit: string; delta: number }[]) {
-        // Re-canonicalise the stored slug so it lines up with the report row's
-        // closingStockItemSlug(itemName) key even for older non-canonical rows.
-        const key = `${closingStockItemSlug(String(r.item_slug)) || String(r.item_slug)}|${String(r.unit)}`;
-        map.set(key, Math.round(((map.get(key) ?? 0) + Number(r.delta ?? 0)) * 1000) / 1000);
-      }
-      setProducedByLedger(map);
-    })();
-    return () => { cancelled = true; };
-  }, [dateFrom, dateTo, reportsCutoff, refreshTick]);
 
   // FEATURE (2026-09-11): "when dispatch it will be sent back in pcs but you
   // need to calculate and note it in the report like 10 pcs sent its weight
@@ -4103,6 +4076,13 @@ function ReportsTab({ orders, onExportDataChange }: {
   const stripUnitParen = (s: string) => s.replace(/\s*\((?:kgs?|pcs|pieces?|nos)\)\s*$/i, '').trim();
 
   const [bakerLedgerRows, setBakerLedgerRows] = useState<{ key: string; name: string; unit: 'kg' | 'pcs'; qty: number }[]>([]);
+  // PERF FIX (2026-09-28): "planner dashboard is very slow" — this used to be
+  // two separate effects (producedByLedger above, bakerLedgerRows here) each
+  // querying planner_leftover_ledger with the EXACT same
+  // reason/business_date filter, differing only in which columns they
+  // selected and how they aggregated the result — a genuinely duplicate
+  // round trip on every Reports load/date-range change. One fetch now feeds
+  // both derived maps.
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -4114,17 +4094,22 @@ function ReportsTab({ orders, onExportDataChange }: {
         .gte('business_date', effectiveFrom)
         .lte('business_date', dateTo);
       if (cancelled) return;
-      const m = new Map<string, { key: string; name: string; unit: 'kg' | 'pcs'; qty: number }>();
+      const producedMap = new Map<string, number>();
+      const bakerMap = new Map<string, { key: string; name: string; unit: 'kg' | 'pcs'; qty: number }>();
       for (const r of (data ?? []) as { item_slug: string; item_name: string | null; unit: string; delta: number }[]) {
         const unit: 'kg' | 'pcs' = r.unit === 'pcs' ? 'pcs' : 'kg';
+        // Re-canonicalise the stored slug so it lines up with the report row's
+        // closingStockItemSlug(itemName) key even for older non-canonical rows.
         const slug = closingStockItemSlug(String(r.item_slug)) || String(r.item_slug);
         const key = `${slug}|${unit}`;
-        const e = m.get(key) ?? { key, name: stripUnitParen(String(r.item_name || r.item_slug || '')), unit, qty: 0 };
+        producedMap.set(key, Math.round(((producedMap.get(key) ?? 0) + Number(r.delta ?? 0)) * 1000) / 1000);
+        const e = bakerMap.get(key) ?? { key, name: stripUnitParen(String(r.item_name || r.item_slug || '')), unit, qty: 0 };
         if (!e.name && r.item_name) e.name = stripUnitParen(String(r.item_name));
         e.qty = r3n(e.qty + (Number(r.delta) || 0));
-        m.set(key, e);
+        bakerMap.set(key, e);
       }
-      setBakerLedgerRows(Array.from(m.values()));
+      setProducedByLedger(producedMap);
+      setBakerLedgerRows(Array.from(bakerMap.values()));
     })();
     return () => { cancelled = true; };
   }, [dateFrom, dateTo, reportsCutoff, refreshTick]);
@@ -5526,10 +5511,10 @@ function PlannerReportsAndClosingStockTab({ orders, activeLeftovers, doneOrders 
       </div>
       <div style={{ display: section === 'all-invoices' ? 'block' : 'none' }}><PlannerAllInvoicesTab active={section === 'all-invoices'} /></div>
       <div style={{ display: section === 'closing-stock' ? 'block' : 'none' }} className="space-y-6">
-        <PlannerLeftoverTab onExportDataChange={onClosingStockExport} />
+        <PlannerLeftoverTab active={section === 'closing-stock'} onExportDataChange={onClosingStockExport} />
         <LeftoverDoneTab active={activeLeftovers} done={doneOrders} />
       </div>
-      <div style={{ display: section === 'disputes' ? 'block' : 'none' }}><DisputesAndReturnsPanel onExportDataChange={onDisputesExport} /></div>
+      <div style={{ display: section === 'disputes' ? 'block' : 'none' }}><DisputesAndReturnsPanel active={section === 'disputes'} onExportDataChange={onDisputesExport} /></div>
     </div>
   );
 }
@@ -11740,21 +11725,46 @@ function StoreAdvanceOrdersPanel({ compact = false }: { compact?: boolean }) {
   // The branch UI saves one uniform orderType per order (its own
   // store/custom/cake mode tab at save time), so checking the first item is
   // reliable, not just a shortcut.
-  const orders = useMemo(() =>
-    (['SNB', 'VRSNB'] as const)
+  // FEATURE (2026-09-28): "Just make them invisible in Advance orders tab.
+  // Dont touch the orders that has been dispatched already." — a growing
+  // batch of old OVERDUE orders (some from July, never dispatched) was
+  // cluttering this panel. Display-only: nothing in branch_advance_orders is
+  // touched (no cancel, no delete) — any order that was ALREADY dispatched
+  // stays visible exactly as before (the branch still needs to see it to
+  // collect payment/close), only an overdue order that was NEVER dispatched
+  // drops out of this list.
+  const orders = useMemo(() => {
+    const today = kolkataToday();
+    return (['SNB', 'VRSNB'] as const)
       .flatMap(b => advanceOrdersByBranch[b].map(o => ({ ...o, branch: b })))
       .filter(o => o.status === 'pending' && o.items[0]?.orderType !== 'cake')
-      .sort((a, b) => (a.deliveryDate || a.createdAt).localeCompare(b.deliveryDate || b.createdAt)),
-    [advanceOrdersByBranch]);
+      .filter(o => o.dispatchedAt || !o.deliveryDate || o.deliveryDate >= today)
+      .sort((a, b) => (a.deliveryDate || a.createdAt).localeCompare(b.deliveryDate || b.createdAt));
+  }, [advanceOrdersByBranch]);
 
   const [dispatchingId, setDispatchingId] = useState<string | null>(null);
   const [notice, setNotice] = useState<Record<string, string>>({});
+  // Ref lock: setDispatchingId (state) lags a render behind a click, so two
+  // rapid clicks both read dispatchingId===null and both proceed. A ref is
+  // synchronous and closes that window. See project_advance_order_system1_gap
+  // memory — this exact class of bug caused real duplicate dispatches on
+  // 2026-09-28 (SNB-ADV-038/049/357/367/369).
+  const dispatchLockRef = useRef<Set<string>>(new Set());
 
   const dispatchOrder = async (order: (typeof orders)[number]) => {
-    if (dispatchingId) return;
+    if (dispatchLockRef.current.has(order.id)) return;
+    dispatchLockRef.current.add(order.id);
     setDispatchingId(order.id);
     setNotice(n => ({ ...n, [order.id]: '' }));
     try {
+      // Defense in depth: re-check against the DB, not local/cached state,
+      // right before writing. Catches the case where the screen shows a
+      // stale "not yet dispatched" order (e.g. left open across days) and a
+      // second dispatch is attempted for a row already dispatched earlier.
+      const { data: fresh, error: freshErr } = await supabase
+        .from('branch_advance_orders').select('dispatched_at').eq('id', order.id).maybeSingle();
+      if (freshErr) { setNotice(n => ({ ...n, [order.id]: `Could not verify order status: ${freshErr.message}` })); return; }
+      if (fresh?.dispatched_at) { setNotice(n => ({ ...n, [order.id]: 'Already dispatched — refreshing…' })); void refresh(); return; }
       const errors: string[] = [];
       for (const item of order.items) {
         const ledgerResult = await recordLeftoverMovement({
@@ -11775,9 +11785,23 @@ function StoreAdvanceOrdersPanel({ compact = false }: { compact?: boolean }) {
         .update({ dispatched_at: new Date().toISOString(), dispatched_by: dispatchedBy })
         .eq('id', order.id);
       if (markErr) { setNotice(n => ({ ...n, [order.id]: `Sent, but could not mark as dispatched: ${markErr.message}. Retry so the branch sees it as delivered.` })); return; }
+      // BUG FIX (2026-09-28, live incident — SNB-ADV-376): the branch's OWN
+      // completion screen (BranchBusinessModules.tsx "Advance Orders" card,
+      // used via "Send to Store") gates its "Confirm & Print Final Bill"
+      // button on a COMPLETELY SEPARATE field — branch_operation_records'
+      // mirrored storeStatus, normally only ever advanced by the real
+      // bakery_orders/submitDispatch pipeline (see updateAdvanceStoreStatusByOrderNo's
+      // callers in bakeryStore.ts). This direct-dispatch path never told
+      // that mechanism anything, so an order dispatched here stayed
+      // permanently stuck on the branch's own screen — "Waiting for packing
+      // to dispatch" — even though the goods had genuinely gone out and
+      // branch_advance_orders.dispatched_at was correctly set. Sync it here
+      // too so both completion screens agree once this dispatch lands.
+      if (order.orderNo) useBranchOpsStore.getState().updateAdvanceStoreStatusByOrderNo(order.orderNo, 'dispatched', dispatchedBy);
       setNotice(n => ({ ...n, [order.id]: 'Dispatched — sent to branch Incoming, ready to complete.' }));
       void refresh();
     } finally {
+      dispatchLockRef.current.delete(order.id);
       setDispatchingId(null);
     }
   };
@@ -11893,7 +11917,16 @@ function AdvancePlannerOrdersTab({ orders }: { orders: BakeryOrder[] }) {
   );
 
   const [view, setView] = useState<'active' | 'history'>('active');
-  const activeOrders = advanceOrders.filter(x => x.order.status !== 'dispatched');
+  const todayKeyForFilter = kolkataToday();
+  // FEATURE (2026-09-28): "Just make them invisible in Advance orders tab.
+  // Dont touch the orders that has been dispatched already." — same
+  // display-only fix as StoreAdvanceOrdersPanel's own orders filter just
+  // above: an order that's overdue (delivery date passed) AND never
+  // dispatched drops out of the active list; anything already dispatched
+  // (which already lives in History, not here) is completely untouched.
+  const activeOrders = advanceOrders.filter(x =>
+    x.order.status !== 'dispatched'
+    && !(x.parsed.deliveryDate && x.parsed.deliveryDate < todayKeyForFilter));
   const historyOrders = advanceOrders.filter(x => x.order.status === 'dispatched');
   const visible = view === 'active' ? activeOrders : historyOrders;
 

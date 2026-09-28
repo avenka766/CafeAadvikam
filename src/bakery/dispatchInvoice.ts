@@ -569,25 +569,51 @@ export function renderDispatchInvoiceHtml(record: DispatchInvoiceRecord, mode: '
       returnedByKey.set(k, (returnedByKey.get(k) ?? 0) + it.qty);
     }
   }
-  const netByKey = new Map(record.items.map(i => [itemKey(i.itemName, i.unit), i]));
+  // BUG FIX (2026-09-28): "DILPASAND was sent 200 pcs but its showing as 2"
+  // — a dispatch can split one item into an ordered line + an "EXTRA
+  // (non-requested item)" line (see submitDispatch's extraNote in
+  // bakeryStore.ts). Those were kept as separate DispatchInvoiceItem array
+  // entries, so this printed tax invoice showed the same item name twice
+  // with no explanation at all (worse than the app, which at least has a
+  // ledger note) — matches the same duplicate-row complaint already fixed
+  // in the branch Incoming tab (StockTab.tsx), now applied here too. Sum
+  // same-key entries into ONE aggregated value, keyed the same way
+  // returnedByKey already was, instead of the old last-write-wins Map.
+  const netByKey = new Map<string, { quantity: number; lineTotal: number }>();
+  for (const i of record.items) {
+    const k = itemKey(i.itemName, i.unit);
+    const existing = netByKey.get(k);
+    if (existing) { existing.quantity += i.quantity; existing.lineTotal += i.lineTotal; }
+    else netByKey.set(k, { quantity: i.quantity, lineTotal: i.lineTotal });
+  }
   // Charge lines never belong in the real-item table (see chargeItems above)
   // — same exclusion applied to whichever source array (returned invoices
   // read from originalItems instead of record.items).
   const rowSourceItems = (isReturned ? (record.originalItems ?? record.items) : record.items).filter(i => i.unit !== 'charge');
-  const rows = rowSourceItems.map((i, idx) => {
+  interface MergedRow { itemName: string; unit: string; quantity: number; lineTotal: number }
+  const mergedByKey = new Map<string, MergedRow>();
+  const mergedOrder: string[] = [];
+  for (const i of rowSourceItems) {
     const k = itemKey(i.itemName, i.unit);
+    const existing = mergedByKey.get(k);
+    if (existing) { existing.quantity += i.quantity; existing.lineTotal += i.lineTotal; }
+    else { mergedByKey.set(k, { itemName: i.itemName, unit: i.unit, quantity: i.quantity, lineTotal: i.lineTotal }); mergedOrder.push(k); }
+  }
+  const rows = mergedOrder.map((k, idx) => {
+    const m = mergedByKey.get(k)!;
     const netItem = netByKey.get(k);
     const netQty = netItem ? netItem.quantity : 0;
     const netAmount = netItem ? netItem.lineTotal : 0;
     const returnedQty = returnedByKey.get(k) ?? 0;
+    const effectiveRate = m.quantity > 0 ? m.lineTotal / m.quantity : 0;
     return `
     <tr>
       <td>${idx + 1}</td>
-      <td>${esc(i.itemName)}</td>
+      <td>${esc(m.itemName)}</td>
       ${isReturned
-        ? `<td class="num">${fmtQty(i.quantity)}</td><td class="num">${returnedQty > 0 ? fmtQty(returnedQty) : '-'}</td><td class="num">${fmtQty(netQty)}</td>`
-        : `<td class="num">${fmtQty(i.quantity)}</td>`}
-      <td class="num">${Math.round(i.unitPrice)}</td>
+        ? `<td class="num">${fmtQty(m.quantity)}</td><td class="num">${returnedQty > 0 ? fmtQty(returnedQty) : '-'}</td><td class="num">${fmtQty(netQty)}</td>`
+        : `<td class="num">${fmtQty(m.quantity)}</td>`}
+      <td class="num">${Math.round(effectiveRate)}</td>
       <td class="num">${Math.round(netAmount)}</td>
     </tr>`;
   }).join('');
@@ -1372,6 +1398,108 @@ export async function cancelDispatchInvoice(params: {
 // anything but Hosur) a best-effort WhatsApp send of the corrected invoice
 // PDF to whatever phone is on file (Custom's customerPhone; SNB/VRSNB have
 // none, so nothing is sent for them, only the stock/bill correction happens).
+//
+// NOTE (2026-09-28): a SIBLING function, noteDispatchInvoiceReturnOnly
+// (below this one is defined further down — see its own comment), exists
+// for the OTHER return path in this app (Disputes & Returns' branch-return
+// confirm) where the stock movement already happened through a different
+// mechanism and only the bill needs to catch up — that one deliberately does
+// NOT call updateDispatchInvoice, to avoid double-crediting stock. Don't
+// reuse this function (returnDispatchInvoiceItems) for that case.
+// FEATURE (2026-09-28): "If the planner confirms the return then it should
+// also get reflected in the Dispatched bill also." — for a return that comes
+// from the branch's own Incoming → Return flow (Disputes & Returns panel),
+// NOT the Dispatch tab's manual Return sub-tab above. That real stock
+// movement already happened at confirm time — the branch's Closing Stock
+// credit was already recorded (see ConfirmReturnRow in
+// PackingDailyClosureTab.tsx). Calling the full returnDispatchInvoiceItems
+// above for this case double-credits stock: updateDispatchInvoice's own step
+// 1 ("Fully-removed items") calls deleteDispatchEntry, which credits Closing
+// Stock AGAIN for the same physical return whenever the original order's
+// dispatch_log entry still resolves — confirmed live as the cause of a real
+// "getting an error" report right after this feature first shipped calling
+// returnDispatchInvoiceItems directly (updateDispatchInvoice's deeper
+// reconciliation has failure modes this simpler case never needs to hit,
+// e.g. its own fallbackAnchorOrderId guard). This function does ONLY the
+// bill-side bookkeeping — items/original_items/return_log/subtotal/discount/
+// round_off/total — identical math to updateDispatchInvoice's own step 4,
+// with zero interaction with dispatch_log, branch_stock, or Closing Stock.
+// Use this whenever the real stock movement already happened through a
+// different path and only the printed bill needs to catch up.
+export async function noteDispatchInvoiceReturnOnly(params: {
+  invoiceId: string;
+  returns: { itemName: string; unit: string; qty: number }[];
+  reason?: string;
+  returnedBy: string;
+}): Promise<{ ok: true; record: DispatchInvoiceRecord } | { error: string }> {
+  const cleanedReturns = params.returns
+    .filter(r => r.itemName.trim() && r.qty > 0)
+    .map(r => ({ ...r, itemName: r.itemName.trim() }));
+  if (cleanedReturns.length === 0) return { error: 'Enter a return quantity for at least one item.' };
+
+  const { data: invRow, error: invErr } = await supabase.from('dispatch_invoices').select('*').eq('id', params.invoiceId).single();
+  if (invErr || !invRow) return { error: invErr?.message || 'Invoice not found — it may have been removed.' };
+  const original = recordFromRow(invRow as Record<string, unknown>);
+  if (original.status === 'cancelled') return { error: 'This invoice is cancelled — there is nothing to return.' };
+
+  const key = (it: { itemName: string; unit: string }) => `${it.itemName.trim().toLowerCase()}|${it.unit}`;
+  const currentByKey = new Map(original.items.map(i => [key(i), i]));
+  for (const r of cleanedReturns) {
+    const current = currentByKey.get(key(r));
+    if (!current) return { error: `"${r.itemName}" (${r.unit}) isn't on this invoice — it may have already been returned.` };
+    if (r.qty > current.quantity + 0.01) {
+      return { error: `Can't return ${r.qty} ${r.unit} of ${r.itemName} — only ${current.quantity % 1 === 0 ? current.quantity : current.quantity.toFixed(3)} ${r.unit} is currently on this invoice.` };
+    }
+  }
+
+  const updatedItems: DispatchInvoiceItem[] = original.items
+    .map(i => {
+      const ret = cleanedReturns.find(r => key(r) === key(i));
+      if (!ret) return i;
+      const newQty = Math.max(0, i.quantity - ret.qty);
+      return { ...i, quantity: newQty, lineTotal: Math.round(newQty * i.unitPrice * 100) / 100 };
+    })
+    .filter(i => i.quantity > 0.001);
+  if (updatedItems.length === 0) {
+    return { error: 'That would return every item on this bill — ask an admin to cancel the invoice instead.' };
+  }
+
+  // Same formula as updateDispatchInvoice's own step 4 (see its comment) —
+  // keeps a reprint's totals internally consistent either way.
+  const subtotal = Math.round(updatedItems.reduce((s, i) => s + i.lineTotal, 0) * 100) / 100;
+  const discountAmount = Math.round(subtotal * (original.discountPct / 100) * 100) / 100;
+  const preRound = subtotal - discountAmount;
+  const total = Math.round(preRound);
+  const roundOff = Math.round((total - preRound) * 100) / 100;
+
+  const returnLogEntry = { at: new Date().toISOString(), by: params.returnedBy, reason: params.reason?.trim() || null, items: cleanedReturns };
+  const newOriginalItems = original.originalItems ?? original.items;
+  const newReturnLog = [...original.returnLog, returnLogEntry];
+
+  const { data: afterRow, error: updateErr } = await supabase.from('dispatch_invoices').update({
+    items: updatedItems,
+    original_items: newOriginalItems,
+    return_log: newReturnLog,
+    subtotal, discount_amount: discountAmount, round_off: roundOff, total,
+  }).eq('id', params.invoiceId).select('*').single();
+  if (updateErr) return { error: updateErr.message || 'Failed to save the return on the bill.' };
+
+  const { useAuthStore } = await import('@/stores/authStore');
+  const user = useAuthStore.getState().currentUser;
+  if (user) {
+    const { useActivityLogStore } = await import('./activityLogStore');
+    const itemsDesc = cleanedReturns.map(r => `${r.qty % 1 === 0 ? r.qty : r.qty.toFixed(3)} ${r.unit} ${r.itemName}`).join(', ');
+    void useActivityLogStore.getState().log({
+      staffId: user.id, staffName: user.displayName, role: user.role,
+      action: 'Returned Dispatch Invoice Items (bill only)',
+      detail: `Invoice ${original.invoiceNo} (${original.scope}) — noted return of ${itemsDesc}${params.reason ? ` — ${params.reason}` : ''} (stock already synced elsewhere). New total Rs. ${Math.round(total)}`,
+      branch: original.scope,
+    });
+  }
+
+  return { ok: true, record: recordFromRow(afterRow as Record<string, unknown>) };
+}
+
 export async function returnDispatchInvoiceItems(params: {
   invoiceId: string;
   returns: { itemName: string; unit: string; qty: number }[];
