@@ -164,7 +164,6 @@ export function navForRole(role?: string): NavItem[] {
         { label: 'PO Approvals', path: '/owner?tab=poApprovals', icon: <ClipboardList className="size-4" />, group: 'Operations' },
         { label: 'Daily Closure', path: '/owner?tab=closure', icon: <WalletCards className="size-4" />, group: 'Reports' },
         { label: 'Stock Variance', path: '/owner?tab=variance', icon: <AlertTriangle className="size-4" />, group: 'Reports' },
-        { label: 'Owner Alerts', path: '/owner?tab=alerts', icon: <Bell className="size-4" />, group: 'Reports' },
         { label: 'Complaints', path: '/owner?tab=complaints', icon: <Bell className="size-4" />, group: 'Reports' },
         { label: 'Audit Logs', path: '/owner?tab=audit', icon: <ShieldCheck className="size-4" />, group: 'Reports' },
         { label: 'Staff & Payroll', path: '/owner?tab=attendance', icon: <CalendarCheck className="size-4" />, group: 'Admin' },
@@ -177,7 +176,9 @@ export function navForRole(role?: string): NavItem[] {
         // Moved to last (2026-08-12, explicit owner request) — 'Admin' is
         // the last group to render, so this puts Everything at the very
         // bottom of the sidebar instead of the top.
-        { label: 'Everything', path: '/owner', icon: <Layers className="size-4" />, group: 'Admin' },
+        // FEATURE (2026-09-26): "merge Owner Alerts and Everything" — the
+        // standalone Owner Alerts entry above is gone; this now covers both.
+        { label: 'Everything & Alerts', path: '/owner', icon: <Layers className="size-4" />, group: 'Admin' },
       ];
     case 'billing':
       return [
