@@ -212,7 +212,21 @@ export default function AdminDispatchDetailsTab() {
       dispatchedBy: b.cashierName || 'Planner', status: b.status === 'cancelled' ? 'cancelled' : 'paid', record: walkinBillToInvoiceRecord(b),
       paymentMode: b.paymentMode,
     }));
-    return [...fromInvoices, ...fromSales].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    // BUG FIX (2026-09-28): "bill numbers should come in sequence, there
+    // should not be 2 bills in one row" — this used to sort purely by
+    // created_at, but a dispatch invoice's row-insert timestamp and its
+    // minted invoice number don't always land in the same order (concurrent
+    // saves, clock precision, or a Hosur bill whose invoice_no was appended
+    // to later than its own created_at — see hosurBillingBridge.ts). That
+    // let two invoices swap positions relative to their real sequence,
+    // which is what looked like invoice numbers appearing out of order /
+    // doubled up next to each other. Sorting by invoiceNo itself (natural/
+    // numeric string compare, so ".../9" sorts before ".../90") guarantees
+    // a stable, always-correct sequence regardless of timestamps — and
+    // this is the single array both the table (via useSortableRows below)
+    // and both exports (exportExcel/exportPdf, which read `rows` directly)
+    // are built from, so the fix applies everywhere at once.
+    return [...fromInvoices, ...fromSales].sort((a, b) => b.invoiceNo.localeCompare(a.invoiceNo, undefined, { numeric: true, sensitivity: 'base' }));
   }, [invoices, sales, hosurPaymentByInvoiceNo]);
 
   const filteredRows = useMemo(() => {
@@ -238,7 +252,7 @@ export default function AdminDispatchDetailsTab() {
         default: return new Date(r.date).getTime();
       }
     },
-    'date',
+    'invoiceNo',
     'desc',
   );
 

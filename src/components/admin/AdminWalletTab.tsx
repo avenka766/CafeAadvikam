@@ -14,6 +14,7 @@ import type {
   WalletStatus, WalletTransaction,
 } from '@/features/commerce/types';
 import { useWalletPromotionStore } from '@/stores/walletPromotionStore';
+import { businessDate } from '@/lib/businessDate';
 
 const paymentModes: Array<{ value: WalletPaymentMode; label: string }> = [
   { value: 'cash', label: 'Cash' }, { value: 'upi', label: 'UPI' }, { value: 'card', label: 'Card' },
@@ -26,7 +27,10 @@ const priorities: Array<{ value: WalletDeductionPriority; label: string }> = [
   { value: 'paid_first', label: 'Paid balance first' },
   { value: 'proportional', label: 'Deduct proportionally' },
 ];
-const today = () => new Date().toISOString().slice(0, 10);
+// IST FIX (2026-09-27): was raw UTC (new Date().toISOString().slice(0,10)),
+// which made "Credits Today"/"Purchases Today" below show the wrong day's
+// totals between 12am-5:30am IST.
+const today = () => businessDate();
 const dateText = (value?: string | null) => value ? new Date(value).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
 const VIP_SPEND_THRESHOLD = 50000;
 const suggestedTier = (wallet: WalletCustomer): WalletCustomerType | null => {
@@ -149,8 +153,8 @@ export default function AdminWalletTab() {
       balance: wallets.reduce((sum, wallet) => sum + wallet.totalBalance, 0),
       credited: completed.filter((transaction) => ['credit', 'cashback', 'adjustment'].includes(transaction.transactionType) && transaction.newPaidBalance + transaction.newPromotionalBalance >= transaction.previousPaidBalance + transaction.previousPromotionalBalance).reduce((sum, transaction) => sum + transaction.amount, 0),
       spent: completed.filter((transaction) => transaction.transactionType === 'debit').reduce((sum, transaction) => sum + transaction.amount, 0),
-      creditsToday: completed.filter((transaction) => transaction.createdAt.slice(0, 10) === todayKey && ['credit', 'cashback'].includes(transaction.transactionType)).reduce((sum, transaction) => sum + transaction.amount, 0),
-      purchasesToday: completed.filter((transaction) => transaction.createdAt.slice(0, 10) === todayKey && transaction.transactionType === 'debit').reduce((sum, transaction) => sum + transaction.amount, 0),
+      creditsToday: completed.filter((transaction) => businessDate(transaction.createdAt) === todayKey && ['credit', 'cashback'].includes(transaction.transactionType)).reduce((sum, transaction) => sum + transaction.amount, 0),
+      purchasesToday: completed.filter((transaction) => businessDate(transaction.createdAt) === todayKey && transaction.transactionType === 'debit').reduce((sum, transaction) => sum + transaction.amount, 0),
       expired: completed.filter((transaction) => transaction.transactionType === 'expiry').reduce((sum, transaction) => sum + transaction.amount, 0),
       suspended: wallets.filter((wallet) => wallet.status === 'suspended').length,
     };

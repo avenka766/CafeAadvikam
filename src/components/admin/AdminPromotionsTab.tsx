@@ -11,6 +11,7 @@ import type { PromotionCampaign, PromotionRule, PromotionRuleType, PromotionStat
 import { evaluatePromotions } from '@/features/commerce/promotionEngine';
 import { useWalletPromotionStore } from '@/stores/walletPromotionStore';
 import { useMenuStore } from '@/stores/menuStore';
+import { businessDate } from '@/lib/businessDate';
 
 const statuses: PromotionStatus[] = ['Draft', 'Scheduled', 'Active', 'Paused', 'Completed', 'Expired', 'Cancelled'];
 const ruleTypes: Array<{ value: PromotionRuleType; label: string }> = [
@@ -34,8 +35,10 @@ const ruleTypes: Array<{ value: PromotionRuleType; label: string }> = [
 const dayOptions = [{ value: 1, label: 'Mon' }, { value: 2, label: 'Tue' }, { value: 3, label: 'Wed' }, { value: 4, label: 'Thu' }, { value: 5, label: 'Fri' }, { value: 6, label: 'Sat' }, { value: 0, label: 'Sun' }];
 const customerSegmentOptions = ['all', 'wallet customers', 'new customers', 'existing customers', 'Regular', 'VIP', 'Wholesale', 'Corporate', 'Staff'];
 const channelOptions = [{ value: 'cafe_billing', label: 'Cafe billing' }, { value: 'branch_billing', label: 'Branch billing' }];
-const today = () => new Date().toISOString().slice(0, 10);
-const addDays = (days: number) => { const date = new Date(); date.setDate(date.getDate() + days); return date.toISOString().slice(0, 10); };
+// IST FIX (2026-09-27): both were raw UTC, so a campaign created between
+// 12am-5:30am IST defaulted to yesterday's start date.
+const today = () => businessDate();
+const addDays = (days: number) => { const date = new Date(); date.setDate(date.getDate() + days); return businessDate(date); };
 const parseList = (value: string) => Array.from(new Set(value.split(/[\n,]+/).map((item) => item.trim()).filter(Boolean)));
 const joinList = (value?: string[]) => (value || []).join(', ');
 const ruleLabel = (value?: PromotionRuleType) => ruleTypes.find((item) => item.value === value)?.label || 'Promotion';
