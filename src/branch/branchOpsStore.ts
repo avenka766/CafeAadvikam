@@ -3439,15 +3439,23 @@ export const useBranchOpsStore = create<BranchOpsState>()(
         // query — a wide date range with no branch filter (Admin/Owner's
         // "All Time" overview) matches over half of branch_operation_records,
         // and a deep .range() page took 5+ seconds, tripping the statement
-        // timeout. A keyset (cursor) rewrite was tried and rejected: Postgres
-        // won't push the two-column (created_at, record_id) OR-based cursor
-        // condition into an index bound the way it does a plain inequality —
-        // confirmed live, one variant measured SLOWER (7.3s) than the
-        // original. Fixed at the call sites instead (see AdminDashboard.tsx
-        // and OwnerDashboard.tsx): loop per-branch like AdminVRSNBDashboard
-        // already did, rather than one unscoped all-branch call — a
-        // branch-scoped deep page is ~390ms even at the same offset, so nothing
-        // needed to change here.
+        // timeout. A keyset (cursor) rewrite was tried and rejected at the
+        // time: Postgres wouldn't push the two-column (created_at, record_id)
+        // OR-based cursor condition into an index bound the way it does a
+        // plain inequality — one variant measured SLOWER (7.3s) than the
+        // original. Fixed at the call sites instead: loop per-branch like
+        // AdminVRSNBDashboard already did.
+        // BUG FIX (2026-09-29): that branch-scoping alone stopped being enough
+        // once real data grew — confirmed live, SNB alone now matches 74k+
+        // rows in this table for a realistic "All Time" range, and the old
+        // OFFSET pagination re-sorts that whole matching set on every one of
+        // its ~74 pages. Revisited the keyset idea with a single-column
+        // cursor (drop the record_id tie-break the earlier two-column OR
+        // version needed — this dedups into a Set downstream, so page order
+        // doesn't matter and an ultra-rare same-millisecond tie at a page
+        // boundary is an acceptable trade, same call already made for the
+        // Hosur Sales report's own pagination) — each page then seeks via the
+        // plain created_at index instead of re-sorting from scratch.
         const { data, error } = await fetchAllRows<{ record_type: string; record_id: string; payload: unknown; created_at: string }>(
           "branch_operation_records",
           (query) => {
@@ -3456,11 +3464,11 @@ export const useBranchOpsStore = create<BranchOpsState>()(
               .in("record_type", ["bill", "advance_final_bill"])
               .gte("created_at", `${startDate}T00:00:00`)
               .lte("created_at", `${endDate}T23:59:59`)
-              .order("created_at", { ascending: true })
-              .order("record_id", { ascending: true });
+              .order("created_at", { ascending: false });
             if (branch) q = q.eq("branch", branch);
             return q;
           },
+          { cursorColumn: "created_at" },
         );
         if (error) {
           console.error("[branchOpsStore] fetchBillsInRange failed:", error);
