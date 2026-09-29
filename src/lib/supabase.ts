@@ -191,7 +191,17 @@ export async function fetchAllRows<T = Record<string, unknown>>(
       const page = (data ?? []) as T[];
       rows.push(...page);
       if (page.length < pageSize) break;
-      cursor = (page[page.length - 1] as Record<string, unknown>)[cursorColumn];
+      // SAFETY (2026-09-29): a caller whose .select() omits cursorColumn
+      // would otherwise cursor on `undefined` — confirmed live elsewhere
+      // (AdminDashboard.tsx's own copy of this pattern) that every
+      // subsequent page then fails with a real 400
+      // ("created_at=lt.undefined"). Fail fast with a clear message instead
+      // of sending a request that can only ever error.
+      const nextCursor = (page[page.length - 1] as Record<string, unknown>)[cursorColumn];
+      if (nextCursor === undefined || nextCursor === null) {
+        return { data: rows, error: `Pagination cursor missing — select() must include ${cursorColumn}.` };
+      }
+      cursor = nextCursor;
     }
     return { data: rows, error: null };
   }
