@@ -1117,7 +1117,15 @@ function ownerCalcSalary(emp: { id: string; grossSalary: number; salaryAdvance: 
     if (row.present) presentDays += 1;
     if (row.half) halfDays += 1;
     if (row.woff) woffDays += 1;
-    if ((row.present || row.half) && !row.woff) {
+    // BUG FIX (2026-09-29): matches AttendanceSalary.tsx's calcSalary, which
+    // was explicitly corrected on 2026-09-05/06 ("even if they are absent
+    // the food deduction should show", "for Week off also the food
+    // deduction should show") — this Owner-side copy was never updated and
+    // still skipped canteen deductions on absent/week-off days, understating
+    // deductions (overstating Net Payable) whenever a staff member ate on
+    // one of those days. Confirmed live: Sep 2026 alone had 14 such rows
+    // across 8 employees, worth 310 undercounted here.
+    {
       const meals = [row.bf, row.lunch, row.dinner].filter(Boolean).length;
       canteenTotal += meals === 3 ? 30 : meals * 10;
     }

@@ -189,7 +189,18 @@ const DATE_PRESETS = [
   // FEATURE: "show all the sales invoice also, sequence from the starting"
   // — an explicit, on-demand widen (matches the EGRESS FIX comment below:
   // default stays Today, this is only fetched when the admin clicks it).
-  { label: 'All Time', days: 3650 },
+  // BUG FIX (2026-09-29): "All Time keeps giving an error" — 3650 days
+  // (10 years) forced every date-scoped fetch this page triggers (Hosur
+  // Sales' 9-stream Promise.all, branchOpsStore's fetchBillsInRange,
+  // useBranchLedger's branch_daily_closure_ledger_ranged RPC) to deep-paginate
+  // through the real data's entire history at once, all concurrently —
+  // confirmed live in edge_logs: several of those requests genuinely 500'd
+  // under the combined load (not a bug in any single query — each one is
+  // fast in isolation; it's the simultaneous depth across ~10+ streams).
+  // The real data only goes back to late June 2026, so 3650 days was buying
+  // nothing; 400 days covers all real history (~13 months of headroom) at a
+  // fraction of the page count.
+  { label: 'All Time', days: 400 },
 ] as const;
 
 function DatePresets({ fromDate, toDate, setFromDate, setToDate }: { fromDate: string; toDate: string; setFromDate: (d: string) => void; setToDate: (d: string) => void }) {
@@ -397,7 +408,7 @@ function AdminDashboard() {
   // billed. Surfacing this list directly (not just the revenue total) is
   // the whole point of "show all the data clearly" for Hosur.
   const [hosurUnbilledDispatched, setHosurUnbilledDispatched] = useState<Array<{
-    id: string; orderNumber: string; shopName: string; subtotal: number; createdAt: string;
+    id: string; orderNumber: string; invoiceNo: string; shopName: string; subtotal: number; createdAt: string;
   }>>([]);
   // FEATURE: "All the invoices that start with Sales I need them in Hosur
   // sales tab" — a SALES/26-27/N invoice that's still unpaid/cancelled/test
@@ -466,34 +477,89 @@ function AdminDashboard() {
       // that ran in ~0.4-0.8s standalone timed out here under combined
       // load). One retry after a short backoff clears a transient
       // contention spike without needing to throttle overall concurrency.
+      // BUG FIX (2026-09-29): "All Time keeps giving multiple errors, data
+      // not loading" — shrinking the All Time window (see DATE_PRESETS)
+      // didn't fix this because real data barely predates that window
+      // anyway, so row counts were unchanged. The actual cause: this used
+      // OFFSET pagination (`.range(from, from+999)`), which forces Postgres
+      // to re-run the FULL filter+sort from scratch on every single page —
+      // confirmed live that branch_bill_items alone (no created_at index,
+      // ~107k matching rows) did a full sequential scan on EVERY one of its
+      // ~40-100+ pages, and that cost is paid again independently for each
+      // of the 9 concurrent streams. Switched to keyset/cursor pagination
+      // (`created_at < last-seen-value`, same technique as the shared
+      // fetchAllRows in lib/supabase.ts) — each page seeks directly to its
+      // starting point instead of re-scanning everything before it, so the
+      // total work across all pages is O(matching rows) instead of
+      // O(pages × matching rows). Cursors purely on created_at regardless of
+      // which column a given query's own range filter uses — pagination
+      // correctness only needs a monotonic column to walk, not the same one
+      // as the WHERE clause.
       const fetchAllRows = async <T,>(
         build: () => any,
         pageSize = 1000,
         maxRows = 50000,
       ): Promise<{ data: T[]; error: { message: string } | null }> => {
         const rows: T[] = [];
-        for (let from = 0; from < maxRows; from += pageSize) {
-          let { data, error } = await build().range(from, from + pageSize - 1);
+        let cursor: string | null = null;
+        const page = () => {
+          let q = build().order('created_at', { ascending: false });
+          if (cursor !== null) q = q.lt('created_at', cursor);
+          return q.limit(pageSize);
+        };
+        for (let i = 0; i < maxRows / pageSize; i++) {
+          let { data, error } = await page();
           for (let attempt = 1; error && attempt <= 2; attempt++) {
             await new Promise((resolve) => setTimeout(resolve, attempt * 800));
-            ({ data, error } = await build().range(from, from + pageSize - 1));
+            ({ data, error } = await page());
           }
           if (error) return { data: rows, error };
-          const page = (data || []) as T[];
-          rows.push(...page);
-          if (page.length < pageSize) break;
+          const rowsPage = (data || []) as T[];
+          rows.push(...rowsPage);
+          if (rowsPage.length < pageSize) break;
+          const nextCursor = (rowsPage[rowsPage.length - 1] as Record<string, unknown>).created_at as string | undefined;
+          // SAFETY (2026-09-29): a call site whose .select() doesn't include
+          // created_at would otherwise cursor on `undefined` forever — every
+          // later page then fails with a real, confirmed-live 400
+          // ("created_at=lt.undefined"), retries, still fails, and loops all
+          // the way to maxRows. Bail out with what's been fetched so far
+          // instead of hammering the DB with guaranteed-broken requests.
+          if (!nextCursor) return { data: rows, error: { message: 'Pagination cursor missing — select() must include created_at.' } };
+          cursor = nextCursor;
         }
         return { data: rows, error: null };
       };
 
-      const [headersRes, itemsRes, paymentsRes, hosurRes, unbilledRes, expensesRes, purchasesRes, salesInvoicesRes, walkinBillsRes] = await Promise.all([
-        fetchAllRows(() => supabase.from('branch_bill_headers')
+      // BUG FIX (2026-09-29): "All Time keeps giving multiple errors" (cont'd)
+      // — even with keyset pagination + supporting indexes, some of these
+      // streams (branch_bill_items especially) still touch nearly the whole
+      // table on a wide range, because real data saturates any realistic
+      // "All Time" window — Postgres correctly prefers a sequential scan
+      // over an index there (confirmed via EXPLAIN: the index goes unused,
+      // selectivity too high for it to help). Firing all 9 of those
+      // full/near-full scans at the exact same instant (the previous
+      // Promise.all) is what pushes the DB into genuine contention/timeout
+      // territory. Capping concurrency trades a little wall-clock time for
+      // not overwhelming the connection pool — same DB work, spread out.
+      const runLimited = async <T,>(tasks: Array<() => Promise<T>>, limit: number): Promise<T[]> => {
+        const results: T[] = new Array(tasks.length);
+        let next = 0;
+        await Promise.all(Array.from({ length: Math.min(limit, tasks.length) }, async () => {
+          while (next < tasks.length) {
+            const i = next++;
+            results[i] = await tasks[i]();
+          }
+        }));
+        return results;
+      };
+
+      const [headersRes, itemsRes, paymentsRes, hosurRes, unbilledRes, expensesRes, purchasesRes, salesInvoicesRes, walkinBillsRes] = await runLimited([
+        () => fetchAllRows(() => supabase.from('branch_bill_headers')
           .select('id, branch, bill_no, subtotal, discount, total, status, created_at, salesperson, biller, notes')
           .in('branch', ['SNB', 'VRSNB'])
-          .gte('created_at', fromTs).lte('created_at', toTs)
-          .order('created_at', { ascending: false })),
-        fetchAllRows(() => supabase.from('branch_bill_items')
-          .select('bill_id, branch, item_name, quantity, unit, unit_price, line_total')
+          .gte('created_at', fromTs).lte('created_at', toTs)),
+        () => fetchAllRows(() => supabase.from('branch_bill_items')
+          .select('bill_id, branch, item_name, quantity, unit, unit_price, line_total, created_at')
           .in('branch', ['SNB', 'VRSNB'])
           .gte('created_at', fromTs).lte('created_at', toTs)),
         // BUG FIX (2026-09-05): "the payment mode ... is not displaying" for
@@ -505,8 +571,8 @@ function AdminDashboard() {
         // this filter only ever allowed 'bill_collection'/'credit_upfront',
         // so billPaidByMode's lookup missed them and every cash/UPI/card
         // column silently fell back to 0 despite a real, nonzero bill total.
-        fetchAllRows(() => supabase.from('branch_sale_payments')
-          .select('bill_id, payment_mode, amount, payment_purpose')
+        () => fetchAllRows(() => supabase.from('branch_sale_payments')
+          .select('bill_id, payment_mode, amount, payment_purpose, created_at')
           .in('branch', ['SNB', 'VRSNB'])
           .in('payment_purpose', ['bill_collection', 'credit_upfront', 'advance_balance', 'credit_settlement'])
           .gte('created_at', fromTs).lte('created_at', toTs)),
@@ -515,12 +581,12 @@ function AdminDashboard() {
         // (SALES/26-27/N), written directly onto the bill by
         // dispatchReceiveAndBill at billing time (see hosurBillingBridge.ts)
         // rather than inferred here — no join needed.
-        fetchAllRows(() => supabase.from('hosur_bills')
+        () => fetchAllRows(() => supabase.from('hosur_bills')
           .select('id, bill_no, invoice_no, shop_id, shop_name, subtotal, paid_amount, credit_amount, payment_mode, confirmed_at, status, created_at, updated_at')
           .not('confirmed_at', 'is', null)
           .neq('status', 'cancelled')
           .gte('confirmed_at', fromTs).lte('confirmed_at', toTs)),
-        fetchAllRows(() => supabase.from('hosur_orders')
+        () => fetchAllRows(() => supabase.from('hosur_orders')
           .select('id, order_number, shop_name, subtotal, created_at')
           .eq('status', 'dispatched').is('bill_id', null)
           .gte('created_at', fromTs).lte('created_at', toTs)),
@@ -539,11 +605,11 @@ function AdminDashboard() {
         // (orderStore). If a future archive round adds a new dated table
         // that should be included here, add it deliberately — don't leave a
         // stale reference like this one behind when a table gets dropped.
-        fetchAllRows(() => supabase.from('branch_operation_records')
+        () => fetchAllRows(() => supabase.from('branch_operation_records')
           .select('payload, created_at')
           .eq('record_type', 'expense')
           .gte('created_at', fromTs).lte('created_at', toTs)),
-        fetchAllRows(() => supabase.from('branch_operation_records')
+        () => fetchAllRows(() => supabase.from('branch_operation_records')
           .select('payload, created_at')
           .eq('record_type', 'purchase_invoice')
           .gte('created_at', fromTs).lte('created_at', toTs)),
@@ -558,15 +624,15 @@ function AdminDashboard() {
         // nothing like that can hide again; scope='Hosur' rows are
         // deduplicated against hosur_bills below rather than dropped, so an
         // orphaned one like /272 still surfaces.
-        fetchAllRows(() => supabase.from('dispatch_invoices')
-          .select('id, invoice_no, scope, status, total, items, hosur_shop_name, customer_name, created_at')
+        () => fetchAllRows(() => supabase.from('dispatch_invoices')
+          .select('id, invoice_no, scope, status, total, items, hosur_shop_name, customer_name, created_at, dispatch_entry_ids')
           .ilike('invoice_no', 'SALES/%')
           .gte('created_at', fromTs).lte('created_at', toTs)),
-        fetchAllRows(() => supabase.from('bakery_walkin_bills')
+        () => fetchAllRows(() => supabase.from('bakery_walkin_bills')
           .select('id, bill_no, items, total, payment_mode, cashier_name, status, customer_name, created_at')
           .ilike('bill_no', 'SALES/%')
           .gte('created_at', fromTs).lte('created_at', toTs)),
-      ]);
+      ], 1);
       if (realSalesRequestRef.current !== requestId) return;
       const err = headersRes.error || itemsRes.error || paymentsRes.error || hosurRes.error || unbilledRes.error || expensesRes.error || purchasesRes.error || salesInvoicesRes.error || walkinBillsRes.error;
       if (err) { setRealSalesError(err.message); setRealSalesLoading(false); return; }
@@ -583,16 +649,30 @@ function AdminDashboard() {
       for (let i = 0; i < hosurBillIdList.length; i += CHUNK_SIZE) {
         const chunk = hosurBillIdList.slice(i, i + CHUNK_SIZE);
         const chunkRes = await fetchAllRows<Record<string, unknown>>(() => supabase.from('hosur_bill_items')
-          .select('bill_id, item_name, quantity, unit, unit_price, line_total')
+          .select('bill_id, item_name, quantity, unit, unit_price, line_total, created_at')
           .in('bill_id', chunk));
         if (chunkRes.error) { setRealSalesError(chunkRes.error.message); setRealSalesLoading(false); return; }
         hosurItemsChunks.push(...chunkRes.data);
       }
       if (realSalesRequestRef.current !== requestId) return;
       const hosurItemsRes = { data: hosurItemsChunks, error: null as { message: string } | null };
+      // FEATURE (2026-09-29): "Dont show Order id show Invoice Number" — a
+      // dispatched-not-yet-billed order can already have a real dispatch_invoices
+      // row (invoice minted at dispatch time) even though hosur_orders.bill_id is
+      // still null (the shop hasn't been billed) — same /272-orphan mechanism
+      // documented below. Match on dispatch_entry_ids[].orderId, same field
+      // used for the SALES/ invoice-splitting logic further down.
+      const orderInvoiceMap = new Map<string, string>();
+      (salesInvoicesRes.data as Array<Record<string, unknown>>).forEach((s) => {
+        const inv = String(s.invoice_no ?? '');
+        if (!inv) return;
+        ((s.dispatch_entry_ids as Array<{ orderId?: string }> | null) || []).forEach((e) => {
+          if (e?.orderId) orderInvoiceMap.set(String(e.orderId), inv);
+        });
+      });
       setHosurUnbilledDispatched((unbilledRes.data as Array<Record<string, unknown>>).map((o) => ({
-        id: String(o.id), orderNumber: String(o.order_number ?? ''), shopName: String(o.shop_name ?? ''),
-        subtotal: Number(o.subtotal || 0), createdAt: String(o.created_at),
+        id: String(o.id), orderNumber: String(o.order_number ?? ''), invoiceNo: orderInvoiceMap.get(String(o.id)) ?? '',
+        shopName: String(o.shop_name ?? ''), subtotal: Number(o.subtotal || 0), createdAt: String(o.created_at),
       })));
       setRealExpenses((expensesRes.data as Array<{ payload: Record<string, unknown>; created_at: string }>).map((r) => ({
         id: String(r.payload?.id ?? ''), branch: String(r.payload?.branch ?? ''), amount: Number(r.payload?.amount || 0),
@@ -729,7 +809,7 @@ function AdminDashboard() {
       let advanceDeposits: Array<Record<string, unknown>> = [];
       if (advanceTags.length > 0) {
         const depositRes = await fetchAllRows<Record<string, unknown>>(() => supabase.from('branch_sale_payments')
-          .select('bill_no, payment_mode, amount')
+          .select('bill_no, payment_mode, amount, created_at')
           .eq('payment_purpose', 'advance_paid')
           .in('bill_no', advanceTags));
         if (!depositRes.error) advanceDeposits = depositRes.data;
@@ -2097,7 +2177,7 @@ function AdminDashboard() {
       // comment in fetchRealSalesData above for how this is derived.
       name: 'Bill-wise Sales', title: `Hosur Sales — Bill-wise Sales (${fromDate} to ${toDate})`,
       columns: [
-        { header: 'Branch', key: 'branch' }, { header: 'Invoice Number', key: 'invoiceNo', width: 18 }, { header: 'Date', key: 'date', width: 14 }, { header: 'Time', key: 'time', width: 12 },
+        { header: 'Branch', key: 'branch' }, { header: 'Invoice Number', key: 'invoiceNo', width: 18 }, { header: 'Status', key: 'status', width: 14 }, { header: 'Date', key: 'date', width: 14 }, { header: 'Time', key: 'time', width: 12 },
         { header: 'Total Sales', key: 'totalSales' }, { header: 'Cash', key: 'cash' }, { header: 'UPI', key: 'upi' }, { header: 'Card', key: 'card' },
         { header: 'Salesperson', key: 'salesperson', width: 18 }, { header: 'Biller', key: 'biller' },
       ],
@@ -2115,10 +2195,36 @@ function AdminDashboard() {
       // split row carries the real payment breakdown; later rows show 0,
       // same convention as Bill Price would need if payment ever needed
       // splitting too.
-      rows: hosurBillsSplitForDisplay.map(b => {
-        const paid = b.splitIndex === 0 ? (billPaidByMode.get(b.id) ?? { cash: 0, upi: 0, card: 0 }) : { cash: 0, upi: 0, card: 0 };
-        return { branch: 'Hosur', invoiceNo: b.splitInvoiceNo, date: fmtDate(b.createdAt), time: fmtTime(b.createdAt), totalSales: b.splitTotal, cash: paid.cash, upi: paid.upi, card: paid.card, salesperson: b.salesperson || '—', biller: b.biller || '—' };
-      }),
+      // BUG FIX (2026-09-29): "SALES/26-27/57 ... it should show even if its
+      // cancelled" — this sheet only ever listed hosurBillsInRange (confirmed
+      // bills), so a cancelled/unpaid/test invoice from the same SALES/
+      // sequence (already shown on-screen in "Other SALES/ Invoices — Needs
+      // Review") silently broke the number sequence in the export with no
+      // trace. Folded in here, sorted back into sequence, with its own
+      // amount and a Status column so it's clearly not counted in the
+      // confirmed totals above — matches the Total Sales/Cash/UPI/Card
+      // figures, which are still computed from hosurBillsInRange only.
+      // BUG FIX (2026-09-29, cont'd): "/74, /73 are not showing" — those two
+      // were still missing after the fix above because they were filtered to
+      // scope==='Hosur' here, but they're bakery_walkin_bills rows (a
+      // Planner walk-in sale, not Hosur), which draw from the exact same
+      // SALES/26-27/N series (see the "isn't Hosur-exclusive" comment on
+      // salesInvoicesRes above) — the on-screen "Other SALES/ Invoices"
+      // panel this data already comes from never filtered by scope either.
+      // Dropped the scope filter so the sequence is genuinely gap-free;
+      // each merged-in row now shows its real scope instead of a hardcoded
+      // 'Hosur', since some of these aren't Hosur transactions at all.
+      rows: [
+        ...hosurBillsSplitForDisplay.map(b => {
+          const paid = b.splitIndex === 0 ? (billPaidByMode.get(b.id) ?? { cash: 0, upi: 0, card: 0 }) : { cash: 0, upi: 0, card: 0 };
+          return { branch: 'Hosur', invoiceNo: b.splitInvoiceNo, status: 'Billed', date: fmtDate(b.createdAt), time: fmtTime(b.createdAt), totalSales: b.splitTotal, cash: paid.cash, upi: paid.upi, card: paid.card, salesperson: b.salesperson || '—', biller: b.biller || '—' };
+        }),
+        ...unconfirmedSalesInvoices.map(r => ({
+          branch: r.scope, invoiceNo: r.invoiceNo, status: r.status === 'cancelled' ? 'Cancelled' : 'Not Billed',
+          date: fmtDate(r.createdAt), time: fmtTime(r.createdAt), totalSales: r.total, cash: 0, upi: 0, card: 0,
+          salesperson: '—', biller: r.who || '—',
+        })),
+      ].sort((a, b) => b.invoiceNo.localeCompare(a.invoiceNo, undefined, { numeric: true, sensitivity: 'base' })),
     },
     {
       // FEATURE (2026-09-04): "extra sheet with bill number and what all
@@ -2149,8 +2255,8 @@ function AdminDashboard() {
       sections: [
         {
           heading: 'Dispatched, Not Yet Billed',
-          columns: [{ header: 'Order', width: 30 }, { header: 'Shop', width: 45 }, { header: 'Value', width: 30, align: 'right' }, { header: 'Dispatched', width: 40 }],
-          rows: [...hosurUnbilledDispatched].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()).slice(0, PDF_BILL_CAP).map(o => [o.orderNumber || '—', o.shopName || '—', pdfMoney(o.subtotal), fmtDateTime(o.createdAt)]),
+          columns: [{ header: 'Invoice Number', width: 30 }, { header: 'Shop', width: 45 }, { header: 'Value', width: 30, align: 'right' }, { header: 'Dispatched', width: 40 }],
+          rows: [...hosurUnbilledDispatched].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()).slice(0, PDF_BILL_CAP).map(o => [o.invoiceNo || 'Not invoiced yet', o.shopName || '—', pdfMoney(o.subtotal), fmtDateTime(o.createdAt)]),
         },
         {
           heading: hosurBillsSplitForDisplay.length > PDF_BILL_CAP ? `Confirmed Bills (first ${PDF_BILL_CAP} of ${hosurBillsSplitForDisplay.length})` : 'Confirmed Bills',
@@ -2213,11 +2319,11 @@ function AdminDashboard() {
         {hosurUnbilledDispatched.length === 0 ? <EmptyState label="Nothing outstanding — every dispatched order in this range has been billed." /> : (
           <div className="overflow-x-auto">
             <table className="w-full min-w-[600px] text-sm">
-              <thead><tr className="border-b bg-slate-50 text-left text-xs uppercase text-slate-500"><th className="p-3">Order</th><th className="p-3">Shop</th><th className="p-3 text-right">Value</th><th className="p-3">Dispatched</th></tr></thead>
+              <thead><tr className="border-b bg-slate-50 text-left text-xs uppercase text-slate-500"><th className="p-3">Invoice Number</th><th className="p-3">Shop</th><th className="p-3 text-right">Value</th><th className="p-3">Dispatched</th></tr></thead>
               <tbody className="divide-y">
                 {hosurUnbilledDispatched.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()).slice(0, 200).map(o => (
                   <tr key={o.id} className="hover:bg-red-50/40">
-                    <td className="p-3 font-bold">{o.orderNumber || '—'}</td>
+                    <td className="p-3 font-bold">{o.invoiceNo || 'Not invoiced yet'}</td>
                     <td className="p-3">{o.shopName || '—'}</td>
                     <td className="p-3 text-right font-black text-red-600">{formatCurrency(o.subtotal)}</td>
                     <td className="p-3 text-slate-500">{fmtDateTime(o.createdAt)}</td>
