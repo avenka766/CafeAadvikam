@@ -5123,6 +5123,14 @@ function PlannerAllInvoicesTab({ active }: { active: boolean }) {
   const [bucketFilter, setBucketFilter] = useState<'All' | InvoiceBucket>('All');
   const [search, setSearch] = useState('');
   const [hosurPaymentByInvoiceNo, setHosurPaymentByInvoiceNo] = useState<Map<string, string>>(new Map());
+  // BUG FIX (2026-09-30): "Excel report showing completely wrong dates" —
+  // dispatch_invoices.created_at is when goods left Berigai, not when the
+  // shop was actually billed. Usually the same day, so invisible — but a
+  // shop billed days after dispatch (confirmed live: Anjana Super Market,
+  // SALES/26-27/272, dispatched 15 Sept, not actually billed until 25 Sept)
+  // showed the wrong date everywhere this tab's data feeds, including its
+  // own Excel export. hosur_bills.confirmed_at is the real billing date.
+  const [hosurConfirmedAtByInvoiceNo, setHosurConfirmedAtByInvoiceNo] = useState<Map<string, string>>(new Map());
 
   // FEATURE: the "Filters" panel — a searchable, multi-select Party Name
   // filter ("Filter On: Party Name"). Empty set = no filter (show every
@@ -5146,21 +5154,24 @@ function PlannerAllInvoicesTab({ active }: { active: boolean }) {
       const [invoiceRows, salesRes, hosurBillsRes] = await Promise.all([
         listDispatchInvoices({ fromDate: fromIso, toDate: toIso }),
         fetchAllRows<Record<string, unknown>>('bakery_walkin_bills', (q) => q.select('*').gte('created_at', fromIso).lt('created_at', toIso).order('created_at', { ascending: false })),
-        fetchAllRows<{ invoice_no: string | null; status: string }>('hosur_bills', (q) => q.select('invoice_no, status').not('invoice_no', 'is', null)),
+        fetchAllRows<{ invoice_no: string | null; status: string; confirmed_at: string | null }>('hosur_bills', (q) => q.select('invoice_no, status, confirmed_at').not('invoice_no', 'is', null)),
       ]);
       if (loadRequestRef.current !== requestId) return;
       if (salesRes.error) throw new Error(salesRes.error);
       setInvoices(invoiceRows);
       setSales(((salesRes.data ?? []) as Record<string, unknown>[]).map(mapWalkinBill));
       const paymentMap = new Map<string, string>();
+      const confirmedAtMap = new Map<string, string>();
       if (!hosurBillsRes.error) {
-        for (const row of (hosurBillsRes.data ?? []) as { invoice_no: string | null; status: string }[]) {
+        for (const row of (hosurBillsRes.data ?? []) as { invoice_no: string | null; status: string; confirmed_at: string | null }[]) {
           for (const no of (row.invoice_no ?? '').split(',').map(s => s.trim()).filter(Boolean)) {
             paymentMap.set(no, row.status);
+            if (row.confirmed_at) confirmedAtMap.set(no, row.confirmed_at);
           }
         }
       }
       setHosurPaymentByInvoiceNo(paymentMap);
+      setHosurConfirmedAtByInvoiceNo(confirmedAtMap);
     } catch (err) {
       if (loadRequestRef.current !== requestId) return;
       setError(err instanceof Error ? err.message : 'Failed to load invoices.');
@@ -5191,7 +5202,8 @@ function PlannerAllInvoicesTab({ active }: { active: boolean }) {
     const fromInvoices: AllInvoiceRow[] = invoices.map(r => ({
       key: r.id, bucket: invoiceBucketFor(r.scope), scopeLabel: r.scope, invoiceNo: r.invoiceNo,
       party: r.hosurShopName || r.customerName || `${r.scope} Branch`,
-      date: r.createdAt, itemCount: r.items.length, total: r.total, dispatchedBy: r.dispatchedBy, status: r.status,
+      date: (r.scope === 'Hosur' && hosurConfirmedAtByInvoiceNo.get(r.invoiceNo)) || r.createdAt,
+      itemCount: r.items.length, total: r.total, dispatchedBy: r.dispatchedBy, status: r.status,
       paymentStatus: r.scope === 'Hosur' ? hosurPaymentByInvoiceNo.get(r.invoiceNo) : undefined,
     }));
     const fromSales: AllInvoiceRow[] = sales.map(b => ({
@@ -5201,7 +5213,7 @@ function PlannerAllInvoicesTab({ active }: { active: boolean }) {
       status: b.status === 'cancelled' ? 'cancelled' : 'paid', paymentMode: b.paymentMode,
     }));
     return [...fromInvoices, ...fromSales].sort((a, b) => b.invoiceNo.localeCompare(a.invoiceNo, undefined, { numeric: true, sensitivity: 'base' }));
-  }, [invoices, sales, hosurPaymentByInvoiceNo]);
+  }, [invoices, sales, hosurPaymentByInvoiceNo, hosurConfirmedAtByInvoiceNo]);
 
   const partyOptions = useMemo(() => Array.from(new Set(rows.map(r => r.party))).sort((a, b) => a.localeCompare(b)), [rows]);
   const filteredPartyOptions = useMemo(() => {
