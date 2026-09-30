@@ -493,6 +493,18 @@ function AdminDashboard() {
       setRealSalesError('');
       const fromTs = `${fromDate}T00:00:00`;
       const toTs = `${toDate}T23:59:59.999`;
+      const fromMs = new Date(fromTs).getTime();
+      const toMs = new Date(toTs).getTime();
+      // BUG FIX (2026-09-30): a Hosur bill's confirmed_at (when the shop's
+      // credit got settled) can trail its dispatch date by days or weeks
+      // (confirmed live: SALES/26-27/272 dispatched 15 Sept, confirmed 25
+      // Sept) — since the Hosur Sales tab now displays dispatch date (see
+      // below), a hosur_bills fetch filtered strictly by confirmed_at<=toTs
+      // would silently drop a bill dispatched inside the selected range but
+      // confirmed after it. Widen the fetch's upper bound generously; the
+      // real [fromMs,toMs] window is still enforced afterward against the
+      // same resolved (dispatch-date-first) value actually shown on screen.
+      const hosurConfirmedFetchToTs = new Date(toMs + 60 * 24 * 60 * 60 * 1000).toISOString();
       // BUG FIX: PostgREST caps rows per request (commonly 1000) regardless
       // of a `.limit()` requesting more — a single request for
       // branch_bill_items on a day with 400+ bills (several items each)
@@ -617,7 +629,7 @@ function AdminDashboard() {
           .select('id, bill_no, invoice_no, shop_id, shop_name, subtotal, paid_amount, credit_amount, payment_mode, confirmed_at, status, created_at, updated_at')
           .not('confirmed_at', 'is', null)
           .neq('status', 'cancelled')
-          .gte('confirmed_at', fromTs).lte('confirmed_at', toTs)),
+          .gte('confirmed_at', fromTs).lte('confirmed_at', hosurConfirmedFetchToTs)),
         () => fetchAllRows(() => supabase.from('hosur_orders')
           .select('id, order_number, shop_name, subtotal, created_at')
           .eq('status', 'dispatched').is('bill_id', null)
@@ -730,8 +742,21 @@ function AdminDashboard() {
       const salesInvoices = (salesInvoicesRes.data || []) as Array<Record<string, unknown>>;
       const walkinBills = (walkinBillsRes.data || []) as Array<Record<string, unknown>>;
       const dispatchTotalsByInvoiceNo = new Map<string, number>();
+      // BUG FIX (2026-09-30): "Excel is showing wrong date" — this tab used
+      // hosur_bills.confirmed_at (when the shop's credit got settled) as the
+      // bill's date, but SALES/26-27/N is minted at dispatch time — the
+      // invoice's real date is dispatch date, same as every neighboring
+      // invoice number in the same sequence. Confirmed live: a bill billed
+      // days after dispatch (Anjana Super Market, /272, dispatched 15 Sept,
+      // confirmed 25 Sept) showed 25 Sept here, out of order against /271
+      // and /273 right next to it, both dated 15 Sept. Root cause of the
+      // original client complaint — an earlier same-day attempt at this fix
+      // moved Planner's date to confirmed_at to match this tab instead of
+      // fixing this tab to use dispatch date; reverted, fixed here instead.
+      const dispatchCreatedAtByInvoiceNo = new Map<string, string>();
       salesInvoices.filter((s) => String(s.scope) === 'Hosur').forEach((s) => {
         dispatchTotalsByInvoiceNo.set(String(s.invoice_no ?? ''), Number(s.total || 0));
+        if (s.created_at) dispatchCreatedAtByInvoiceNo.set(String(s.invoice_no ?? ''), String(s.created_at));
       });
       setHosurDispatchTotalsByInvoiceNo(dispatchTotalsByInvoiceNo);
       // A Hosur-scope dispatch invoice's own 'paid' flag is NOT a reliable
@@ -777,14 +802,28 @@ function AdminDashboard() {
         // future bug of any kind that re-introduces this drift now surfaces
         // immediately (banner below + Bill-wise Sales column) instead of
         // silently reaching a client again.
-        ...hosurBills.map((h) => ({
-          id: String(h.id), billNo: String(h.bill_no ?? ''), branch: 'Hosur' as Branch,
-          total: Number(h.subtotal || 0), subtotal: Number(h.subtotal || 0), discount: 0,
-          createdAt: String(h.confirmed_at), status: 'original' as const,
-          salesperson: '', biller: String(h.shop_name ?? ''),
-          invoiceNo: String(h.invoice_no ?? '') || String(h.bill_no ?? ''),
-          dataCheckOk: Math.abs(Number(h.subtotal || 0) - (Number(h.credit_amount || 0) + Number(h.paid_amount || 0))) < 0.01,
-        })),
+        ...hosurBills.map((h) => {
+          // A bill spanning multiple dispatch batches has a comma-joined
+          // invoice_no — the first one dispatched is the representative
+          // date here (same "shared across split rows" approximation
+          // hosurBillsSplitForDisplay already documents for this case).
+          const firstInvoiceNo = String(h.invoice_no ?? '').split(',').map((s) => s.trim()).filter(Boolean)[0];
+          const dispatchDate = firstInvoiceNo ? dispatchCreatedAtByInvoiceNo.get(firstInvoiceNo) : undefined;
+          return {
+            id: String(h.id), billNo: String(h.bill_no ?? ''), branch: 'Hosur' as Branch,
+            total: Number(h.subtotal || 0), subtotal: Number(h.subtotal || 0), discount: 0,
+            createdAt: dispatchDate || String(h.confirmed_at), status: 'original' as const,
+            salesperson: '', biller: String(h.shop_name ?? ''),
+            invoiceNo: String(h.invoice_no ?? '') || String(h.bill_no ?? ''),
+            dataCheckOk: Math.abs(Number(h.subtotal || 0) - (Number(h.credit_amount || 0) + Number(h.paid_amount || 0))) < 0.01,
+          };
+        // The confirmed_at fetch above was deliberately widened past toTs so
+        // a late-confirmed bill dispatched inside the selected range isn't
+        // silently dropped. Enforce the real [fromMs,toMs] window here
+        // against the SAME resolved date just assigned to createdAt above —
+        // this must always match what's displayed, or a bill can appear
+        // "out of range" (or a real in-range bill can go missing) again.
+        }).filter((b) => { const t = new Date(b.createdAt).getTime(); return t >= fromMs && t <= toMs; }),
         ...paidExtraSalesInvoices.map((s) => ({
           id: String(s.id), billNo: String(s.invoice_no ?? ''), branch: 'Hosur' as Branch,
           total: Number(s.total || 0), subtotal: Number(s.total || 0), discount: 0,
