@@ -14,6 +14,7 @@ import {
   ShieldCheck,
   ShoppingBag,
   Smartphone,
+  Star,
   Trash2,
   Truck,
   X,
@@ -244,7 +245,7 @@ export default function QROrderPage() {
         key: data.keyId,
         amount: data.amount,
         currency: 'INR',
-        name: 'VRSNB Bakery',
+        name: 'Sri Nanjundeshwara Bakery & Sweets',
         description: `Bakery order · ${cart.length} products`,
         order_id: data.orderId,
         prefill: { name: customer.name.trim(), contact: phone },
@@ -296,9 +297,9 @@ export default function QROrderPage() {
             <ArrowLeft className="size-5" />
           </button>
           <button type="button" onClick={() => { setScreen('menu'); window.scrollTo({ top: 0 }); }} className="flex min-w-0 flex-1 items-center gap-3 text-left">
-            <img src={snbLogo} alt="VRSNB Bakery" className="size-11 rounded-2xl bg-white object-contain p-1.5 shadow-sm" />
+            <img src={snbLogo} alt="Sri Nanjundeshwara Bakery & Sweets" className="size-11 rounded-2xl bg-white object-contain p-1.5 shadow-sm" />
             <div className="min-w-0">
-              <p className="truncate font-display text-lg font-black">VRSNB Bakery</p>
+              <p className="truncate font-display text-lg font-black">Sri Nanjundeshwara Bakery & Sweets</p>
               <p className="truncate text-[11px] font-bold uppercase tracking-[0.16em] text-amber-800">Fresh bakery ordering</p>
             </div>
           </button>
@@ -317,14 +318,19 @@ export default function QROrderPage() {
       {screen === 'menu' ? (
         <>
           <section className="relative overflow-hidden bg-stone-950 text-white">
-            <img src={bakeryHero} alt="VRSNB bakery display" className="absolute inset-0 h-full w-full object-cover opacity-35" />
+            <img src={bakeryHero} alt="Sri Nanjundeshwara Bakery & Sweets display counter" className="absolute inset-0 h-full w-full object-cover opacity-35" />
             <div className="absolute inset-0 bg-gradient-to-r from-black via-black/80 to-black/25" />
             <div className="relative mx-auto grid max-w-7xl gap-8 px-4 py-12 sm:px-6 md:grid-cols-[1fr_340px] md:items-end md:py-16">
               <div>
-                <span className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.2em] text-amber-200 backdrop-blur">
-                  <Clock3 className="size-3.5" /> Fresh orders · 6 AM–10 PM
-                </span>
-                <h1 className="mt-5 max-w-3xl font-display text-4xl font-black leading-[.96] sm:text-6xl">Order VRSNB bakery favourites in a few simple steps.</h1>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.2em] text-amber-200 backdrop-blur">
+                    <Clock3 className="size-3.5" /> Fresh orders · 6 AM–10 PM
+                  </span>
+                  <span className="inline-flex items-center gap-1.5 rounded-full border border-white/15 bg-white/10 px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.2em] text-amber-200 backdrop-blur">
+                    <Star className="size-3.5 fill-amber-300 text-amber-300" /> 4.5 · 686 Google reviews
+                  </span>
+                </div>
+                <h1 className="mt-5 max-w-3xl font-display text-4xl font-black leading-[.96] sm:text-6xl">Order Sri Nanjundeshwara Bakery & Sweets favourites in a few simple steps.</h1>
                 <p className="mt-4 max-w-2xl text-sm font-semibold leading-6 text-white/70 sm:text-base">Choose products, adjust quantity, enter delivery details, pay securely and track the order using the same mobile number.</p>
               </div>
               <div className="rounded-3xl border border-white/10 bg-white/10 p-4 backdrop-blur-xl">
@@ -366,7 +372,7 @@ export default function QROrderPage() {
 
           <section className="mx-auto max-w-7xl px-4 py-7 pb-32 sm:px-6 lg:pb-12">
             <div className="mb-5 flex items-end justify-between gap-3">
-              <div><p className="text-[10px] font-black uppercase tracking-[0.2em] text-amber-800">VRSNB catalogue</p><h2 className="mt-1 font-display text-2xl font-black">{selectedCategory === 'all' ? 'All bakery products' : selectedCategory}</h2></div>
+              <div><p className="text-[10px] font-black uppercase tracking-[0.2em] text-amber-800">Baked fresh, every day</p><h2 className="mt-1 font-display text-2xl font-black">{selectedCategory === 'all' ? 'All bakery products' : selectedCategory}</h2></div>
               <p className="text-xs font-bold text-stone-500">{filteredItems.length} products</p>
             </div>
 
@@ -377,7 +383,10 @@ export default function QROrderPage() {
                   const step = quantityStep(item);
                   return (
                     <article key={item.barcode} className={cn('flex min-h-[245px] flex-col overflow-hidden rounded-3xl border bg-white p-3 shadow-sm transition', quantity > 0 ? 'border-amber-400 ring-2 ring-amber-100' : 'border-stone-200 hover:-translate-y-0.5 hover:shadow-lg')}>
-                      <div className="grid h-24 place-items-center rounded-2xl bg-gradient-to-br from-amber-50 to-orange-100 text-4xl">{CATEGORY_EMOJI[item.category] || '🥐'}</div>
+                      <div className="relative grid h-24 place-items-center overflow-hidden rounded-2xl bg-gradient-to-br from-amber-100 via-orange-50 to-amber-50 text-5xl shadow-inner">
+                        <div className="pointer-events-none absolute -right-3 -top-3 size-14 rounded-full bg-amber-200/40 blur-xl" aria-hidden="true" />
+                        <span className="relative drop-shadow-sm">{CATEGORY_EMOJI[item.category] || '🥐'}</span>
+                      </div>
                       <div className="flex flex-1 flex-col pt-3">
                         <p className="line-clamp-2 text-sm font-black leading-5">{item.name}</p>
                         <p className="mt-1 text-[10px] font-black uppercase tracking-wide text-stone-400">{item.category} · {item.uom === 'Kgs' ? 'Price per kg' : 'Per pack/item'}</p>

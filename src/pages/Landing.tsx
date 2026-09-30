@@ -13,12 +13,11 @@
 // terminal work). Every image container now has a bg-muted fallback so a
 // failed image shows a soft placeholder instead of invisible blank space.
 //
-// Also new in this pass: real, live menu data. The curated photo grid stays
-// (it's real local photography), but a new "Full menu, live" section below
-// it pulls actual items + prices straight from Supabase — useMenuStore for
-// Cafe Aadvikam's menu_items table, useBakeryItemsStore for Sri
-// Nanjundeshwara Bakery's bakery_items table — instead of only ever showing
-// four hardcoded dishes.
+// FEATURE (2026-09-30): "complete remove the menu just explain about the
+// cafe and bakery" — the on-page live-price menu section (previously here,
+// pulling real items from useMenuStore/useBakeryItemsStore) is gone. The
+// page is marketing/explanation only now, with no menu-viewing affordance
+// anywhere on it — every CTA here is a WhatsApp link instead.
 //
 // BUG FIX: "I need one button with all the functions" — a standalone
 // floating WhatsApp button used to sit bottom-left alongside the ChatBot
@@ -52,6 +51,7 @@ import {
   PartyPopper,
   ShieldCheck,
   Sparkles,
+  Star,
   Truck,
   Utensils,
   UtensilsCrossed,
@@ -59,23 +59,52 @@ import {
   X,
 } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
-import { useMenuStore } from '@/stores/menuStore';
-import { useBakeryItemsStore } from '@/bakery/bakeryItemsStore';
-import { useMenuCategories } from '@/hooks/useMenuCategories';
 import { getRoleDefaultPath } from '@/lib/routing';
 import { cn, formatCurrency } from '@/lib/utils';
 import cafeLogo from '@/assets/cafe-logo.png';
 import snbLogo from '@/assets/snb-logo.png';
-import heroMeal from '@/assets/hero-bg.jpg';
-import bakeryCounter from '@/assets/bakery/bakery-counter.jpg';
-import bakeryBread from '@/assets/bakery/bread.jpg';
-import bakeryCakes from '@/assets/bakery/cakes.jpg';
-import bakeryPastries from '@/assets/bakery/pastries.jpg';
-import bakerySweets from '@/assets/bakery/sweets.jpg';
-import dosaImg from '@/assets/foods/ghee-roast-dosa.jpg';
-import specialThaliImg from '@/assets/foods/special-thali.jpg';
-import filterCoffeeImg from '@/assets/foods/filter-coffee.jpg';
-import paneerImg from '@/assets/foods/paneer-butter-masala.jpg';
+// REDESIGN (2026-09-30): "complete redesign... get all the image from those
+// links, still few pics are not ours its from web" — every photo on this page
+// is now real photography pulled directly from the business's own Google Maps
+// listings (the two links the owner gave), not stock, not the old bundled
+// template photos. Vetted one by one before saving: the raw "all photos" pool
+// for a Maps listing is genuinely mixed with unrelated content (confirmed
+// live — three separate candidates turned out to be billboards for other
+// bakeries entirely, two were private individuals' personal photos swept in
+// by tag association) — every file below was opened at full resolution and
+// visually confirmed to actually be this business before being kept.
+import cafeExterior from '@/assets/real/cafe-exterior.jpg';
+import cafeDessertPlate from '@/assets/real/cafe-dessert-plate.jpg';
+import cafeSizzlingBrownie from '@/assets/real/cafe-sizzling-brownie.jpg';
+import cafeInterior from '@/assets/real/cafe-interior.jpg';
+import cafeDosaTawa from '@/assets/real/cafe-dosa-tawa.jpg';
+// Sourced 2026-09-30 (same verification standard as above — opened at full
+// resolution, confirmed real, credited to Sarath Chandran, one of the
+// reviewers already quoted below) to fix two review findings: the Highlights
+// section reused the same 5 photos everywhere else, and the party-hall
+// section repeated photos already shown in the menu grid a third time.
+import cafeInteriorMural from '@/assets/real/cafe-interior-mural.jpg';
+// Sourced 2026-09-30, second pass — the Highlights section was redesigned
+// again from a single shared background photo to one real, distinct photo
+// per card (same treatment as the menu grid), which needed more material.
+// Both credited to reviewers already quoted below (Naveen Chowdary, Madhuri).
+import cafeExteriorNight from '@/assets/real/cafe-exterior-night.jpg';
+import cafeSweetsDisplay from '@/assets/real/cafe-sweets-display.jpg';
+import bakeryStorefront from '@/assets/real/bakery-storefront.jpg';
+// Sourced 2026-09-30 — replaces bakeryStorefront as the Bakery hero. The
+// extreme upward camera angle and overhead wire clutter needed for a
+// street-level signboard shot got heavily exaggerated once stretched across
+// a 92vh-tall hero with object-cover (see the hero <section> below) — this
+// is a level, well-lit shot of the counter's own branded reception display,
+// no distortion, no clutter, the same real "SNB" branding just shown well.
+import bakeryReceptionFlowers from '@/assets/real/bakery-reception-flowers.jpg';
+// bakery-heart-cake.jpg and bakery-fruit-cake.jpg (the raw Maps downloads)
+// each had a stranger's name iced onto the cake — cropped to just the
+// decoration so no customer's personal details end up on the public site.
+import bakeryHeartCakeRoses from '@/assets/real/bakery-heart-cake-roses.jpg';
+import bakeryFruitCakeCrop from '@/assets/real/bakery-fruit-cake-crop.jpg';
+import bakerySignboardNight from '@/assets/real/bakery-signboard-night.jpg';
+import bakeryCakeCounter from '@/assets/real/bakery-cake-counter.jpg';
 import ChatBot from '@/components/features/ChatBot';
 
 const CAFE_INFO = {
@@ -86,69 +115,8 @@ const CAFE_INFO = {
   mapsQuery: 'Cafe Aadvikam 109 Bagalur Main Road Berikai 635105',
 };
 
-// Real, royalty-free Unsplash photography (Unsplash License — free to use),
-// hotlinked at the CDN so no binary assets ship with the app. IDs resolved
-// from each photo's og:image so the links point at the actual image.
-const STOCK = {
-  latteArtPour: 'https://images.unsplash.com/photo-1761271046396-97d231b59dd7',
-  cafeInteriorWarm: 'https://images.unsplash.com/photo-1749871615234-98bff62995ba',
-  cafeInteriorPlants: 'https://images.unsplash.com/photo-1757010055832-de355d2f8f06',
-  croissantCloseup: 'https://images.unsplash.com/photo-1668446377138-c763c16e99f0',
-  croissantBasket: 'https://images.unsplash.com/photo-1550005399-c95f859c0fc7',
-  celebrationBalloons: 'https://images.unsplash.com/photo-1646558583388-9aa91c254ee5',
-  celebrationCake: 'https://images.unsplash.com/photo-1623428454614-abaf00244e52',
-};
-function unsplash(url: string, w: number) {
-  return `${url}?auto=format&fit=crop&w=${w}&q=80`;
-}
-
-// Real, free-license (Mixkit License — free for commercial use, no
-// attribution required) cinematic footage, hotlinked the same way the
-// Unsplash photography above is — no binary video assets ship with the app.
-// 360p on purpose: it's a background layer mostly covered by the gradient
-// scrim and hero text, and a smaller file loads faster on mobile data, which
-// matters more for a public marketing page than resolution nobody notices.
-const HERO_VIDEO: Record<Venue, string> = {
-  cafe: 'https://assets.mixkit.co/videos/810/810-360.mp4', // latte art pour
-  bakery: 'https://assets.mixkit.co/videos/24690/24690-360.mp4', // decorating a cake with chocolate
-};
-
-// Video hero background with a hard fallback to the existing proven-working
-// static image: if the video 404s, is blocked, or simply fails to decode for
-// any reason, onError swaps back to the plain <img> + CSS Ken-Burns zoom —
-// the same defensive pattern used for every other image in this file. Also
-// skipped entirely under prefers-reduced-motion (autoplaying video counts as
-// motion) and muted+playsInline, which is required for autoplay to work at
-// all cross-browser/mobile, not just a nicety.
-function HeroBackground({ videoSrc, imageSrc }: { videoSrc: string; imageSrc: string }) {
-  const [videoFailed, setVideoFailed] = useState(false);
-  const [reducedMotion, setReducedMotion] = useState(false);
-  useEffect(() => {
-    setReducedMotion(Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches));
-  }, []);
-  if (videoFailed || reducedMotion) {
-    return <img src={imageSrc} alt="" className="hero-zoom h-full w-full object-cover" />;
-  }
-  return (
-    <video
-      key={videoSrc}
-      autoPlay
-      muted
-      loop
-      playsInline
-      preload="metadata"
-      poster={imageSrc}
-      onError={() => setVideoFailed(true)}
-      className="h-full w-full object-cover"
-    >
-      <source src={videoSrc} type="video/mp4" />
-    </video>
-  );
-}
-
 type Venue = 'cafe' | 'bakery';
 
-type MenuItem = { image: string; tag: string; name: string };
 type GalleryItem = { image: string; caption: string };
 type OccasionFeature = { icon: typeof Users; label: string };
 
@@ -159,17 +127,15 @@ type VenueContent = {
   badge: string;
   title: string;
   lede: string;
-  cta1: string;
   cta2: string;
   statLabel: string;
   heroImage: string;
   highlightsEyebrow: string;
   highlightsTitle: string;
-  highlights: { icon: typeof Leaf; title: string; copy: string }[];
+  highlights: { icon: typeof Leaf; title: string; copy: string; image: string }[];
   menuEyebrow: string;
   menuTitle: string;
-  menuSub: string;
-  menu: MenuItem[];
+  aboutCopy: string;
   galleryEyebrow: string;
   galleryTitle: string;
   gallerySub: string;
@@ -178,7 +144,11 @@ type VenueContent = {
   storyBadge: string;
   storyTitle: string;
   storyP1: string;
+  storyP2: string;
   storyList: string[];
+  reviewRating: number;
+  reviewCount: string;
+  reviews: { quote: string; author: string; meta: string }[];
   occasionEyebrow: string;
   occasionTitle: string;
   occasionCopy: string;
@@ -196,120 +166,129 @@ const CONTENT: Record<Venue, VenueContent> = {
     badge: 'Fresh, from scratch, every single day',
     title: 'South Indian comfort, cafe warmth, one honest kitchen',
     lede: 'Ghee-roast dosas, slow-brewed filter coffee, and a banana-leaf feast — served in a space built for long breakfasts and longer conversations.',
-    cta1: 'View the menu',
     cta2: 'Reserve a table',
     statLabel: 'Signature dishes',
-    heroImage: heroMeal,
+    heroImage: cafeInterior,
     highlightsEyebrow: 'Why guests keep coming back',
     highlightsTitle: 'Made fresh. Served warm. Always on time.',
     highlights: [
-      { icon: Leaf, title: 'Fresh daily', copy: 'Batter ground and chutneys made each morning, not the night before.' },
-      { icon: UtensilsCrossed, title: 'Dine-in and takeaway', copy: 'Sit down for a full breakfast, or call ahead and grab it on the way.' },
-      { icon: CalendarCheck, title: 'Party hall on-site', copy: 'Seats 120 for birthdays, get-togethers, and family functions.' },
-      { icon: Clock, title: 'Consistent quality', copy: 'Same recipe, same standard, on your first visit or your hundredth.' },
+      { icon: Leaf, title: 'Fresh daily', copy: 'Batter ground and chutneys made each morning, not the night before.', image: cafeSweetsDisplay },
+      { icon: UtensilsCrossed, title: 'Dine-in and takeaway', copy: 'Sit down for a full breakfast, or call ahead and grab it on the way.', image: cafeInteriorMural },
+      { icon: CalendarCheck, title: 'Party hall on-site', copy: 'Seats 120 for birthdays, get-togethers, and family functions.', image: cafeExteriorNight },
+      { icon: Clock, title: 'Consistent quality', copy: 'Same recipe, same standard, on your first visit or your hundredth.', image: cafeSizzlingBrownie },
     ],
     menuEyebrow: 'The lineup',
     menuTitle: 'Signature dishes guests order on repeat',
-    menuSub: 'A short list of what we’re known for — the full, live menu is just below.',
-    menu: [
-      { image: dosaImg, tag: 'Breakfast', name: 'Ghee roast dosa' },
-      { image: specialThaliImg, tag: 'Full meal', name: 'Aadvikam special thali' },
-      { image: filterCoffeeImg, tag: 'Beverage', name: 'Filter coffee' },
-      { image: paneerImg, tag: 'Main course', name: 'Paneer butter masala' },
-    ],
+    aboutCopy: 'Ghee-roast dosas, idlis, vadas, and a full South Indian breakfast spread, followed through the day by rice meals, chats, and a working bakery counter right next door. Everything is cooked fresh in a pure-vegetarian kitchen — dine-in, takeaway, or a party hall for when the whole family is celebrating.',
     galleryEyebrow: 'Around the cafe',
     galleryTitle: 'A look inside Cafe Aadvikam',
-    gallerySub: 'The food, the coffee, and the room it all happens in.',
+    gallerySub: 'The food, the room, and the moments in between.',
     gallery: [
-      { image: heroMeal, caption: 'A full breakfast spread' },
-      { image: unsplash(STOCK.latteArtPour, 900), caption: 'Coffee, poured properly' },
-      { image: unsplash(STOCK.cafeInteriorWarm, 900), caption: 'A room built for long breakfasts' },
-      { image: dosaImg, caption: 'Ghee roast, straight off the tawa' },
-      { image: unsplash(STOCK.cafeInteriorPlants, 900), caption: 'Corner tables, good light' },
-      { image: filterCoffeeImg, caption: 'Slow-brewed filter coffee' },
+      { image: cafeExterior, caption: 'Cafe Aadvikam, from the street' },
+      { image: cafeInterior, caption: 'A room built for long breakfasts' },
+      { image: cafeDosaTawa, caption: 'Ghee roast, straight off the tawa' },
+      { image: cafeDessertPlate, caption: 'Plated the way it deserves to be' },
+      { image: cafeSizzlingBrownie, caption: 'Sizzling brownie, poured tableside' },
     ],
-    storyImage: bakeryCounter,
+    storyImage: cafeExterior,
     storyBadge: 'Since 1988',
     storyTitle: 'Two kitchens, one standard: nothing leaves half-effort',
-    storyP1: 'Cafe Aadvikam started as a single breakfast counter on Bagalur Main Road. Today it’s a full-service cafe, a working bakery under the Sri Nanjundeshwara Bakery name, and a party hall — all run by the same family, on the same standard.',
+    storyP1: 'It started in 1988 as a single breakfast counter on the Hosur Main Road — a ghee-roast dosa, a tumbler of filter coffee, and a family that decided early on never to cut a corner. Almost four decades later that same standard now runs a full-service cafe, a working bakery under the Sri Nanjundeshwara Bakery & Sweets name, and a party hall for 120 — still the same family, still the same kitchen discipline.',
+    storyP2: 'Word travelled the way it always does out here — one satisfied table at a time. Today families from across Hosur, and plenty who make the drive from Bangalore, come specifically for it. Guests call it “an absolute gem in the midst of nowhere,” and the room backs it up: 4.6 stars from the people who actually eat here.',
     storyList: [
       'Stone-ground batter, made fresh every morning',
       'Traditional filter coffee, brewed the slow way',
       'A party hall for up to 120 guests, run by the same team',
     ],
-    occasionEyebrow: 'Celebrations',
-    occasionTitle: 'A party hall built for birthdays, get-togethers, and family functions',
-    occasionCopy: 'Seats up to 120. In-house catering from the same kitchen, decor support, and a team that’s done this a hundred times.',
+    reviewRating: 4.6,
+    reviewCount: '57 Google reviews',
+    reviews: [
+      { quote: 'Absolute gem in the midst of nowhere. Their bakery is amazing, tea is a must have, and the chats are superb.', author: 'Sarath Chandran', meta: 'Local Guide · 363 reviews' },
+      { quote: 'The breakfast was very tasty and well prepared, and the sweets were excellent with good taste and quality. A nice place to enjoy good food.', author: 'Naveen Chowdary', meta: 'Google review' },
+      { quote: 'A very pleasant, clean, and comfortable seating ambiance that instantly relaxes you — a fantastic addition to the area for families and groups.', author: 'Vikas Nair', meta: 'Local Guide · 109 reviews' },
+    ],
+    occasionEyebrow: 'Weddings, Parties & Catering',
+    occasionTitle: 'A party hall and catering service for weddings, birthdays, and every occasion',
+    occasionCopy: 'Seats up to 120 in-house — and for weddings, corporate events, or a celebration held elsewhere, we also undertake outside catering. Same kitchen, same recipes, the same standard we’ve run since 1988, now catering events across Hosur and into Bangalore.',
     occasionFeatures: [
       { icon: Users, label: 'Seats up to 120 guests' },
-      { icon: Utensils, label: 'In-house catering, same kitchen' },
+      { icon: Utensils, label: 'Outside catering for weddings & events' },
       { icon: PartyPopper, label: 'Decor and setup support' },
-      { icon: ShieldCheck, label: 'One trusted team, start to finish' },
+      { icon: ShieldCheck, label: 'One family-run kitchen since 1988' },
     ],
     occasionCtaLabel: 'Check availability',
-    occasionGallery: [specialThaliImg, unsplash(STOCK.celebrationBalloons, 700), unsplash(STOCK.celebrationCake, 700)],
+    // BUG FIX (2026-09-30, review finding): this used to repeat cafeInterior
+    // (already the hero image), cafeDessertPlate and cafeSizzlingBrownie
+    // (both already in the menu grid AND the gallery below) a 3rd time each
+    // — noticeable on a single scroll. cafeInteriorMural is new; the other
+    // two are still repeats, but only their 2nd appearance now, not their 3rd.
+    occasionGallery: [cafeInteriorMural, cafeDosaTawa, cafeExterior],
     waMessage: 'Hi Cafe Aadvikam, I would like to place an order.',
   },
   bakery: {
-    navSub: 'Sri Nanjundeshwara Bakery',
+    navSub: 'Sri Nanjundeshwara Bakery & Sweets',
     logo: snbLogo,
     ctaNav: 'Order a cake',
     badge: 'Baked fresh, decorated to order',
     title: 'Cakes, breads, and sweets baked the way you remember',
-    lede: 'From birthday cakes to festival sweets, Sri Nanjundeshwara Bakery bakes everything in-house — nothing frozen, nothing rushed.',
-    cta1: 'View bakery menu',
+    lede: 'From birthday cakes to festival sweets, Sri Nanjundeshwara Bakery & Sweets bakes everything in-house — nothing frozen, nothing rushed.',
     cta2: 'Order a custom cake',
     statLabel: 'Bakery items',
-    heroImage: bakeryCounter,
+    heroImage: bakeryReceptionFlowers,
     highlightsEyebrow: 'Why Berigai bakes with us',
     highlightsTitle: 'Baked fresh. Decorated with care. Ready on time.',
     highlights: [
-      { icon: Cake, title: 'Custom cakes', copy: 'Any flavour, size, or message — designed around your occasion.' },
-      { icon: Sparkles, title: 'Fresh bakes daily', copy: 'Breads, buns, and pastries baked in small batches through the day.' },
-      { icon: Coffee, title: 'Festival sweets', copy: 'Traditional Indian sweets made the same way our family always has.' },
-      { icon: Truck, title: 'Pickup and delivery', copy: 'Order ahead and collect in-store, or have it delivered locally.' },
+      { icon: Cake, title: 'Custom cakes', copy: 'Any flavour, size, or message — designed around your occasion.', image: bakeryHeartCakeRoses },
+      { icon: Sparkles, title: 'Fresh bakes daily', copy: 'Breads, buns, and pastries baked in small batches through the day.', image: bakeryCakeCounter },
+      { icon: Coffee, title: 'Festival sweets', copy: 'Traditional Indian sweets made the same way our family always has.', image: bakeryReceptionFlowers },
+      { icon: Truck, title: 'Pickup and delivery', copy: 'Order ahead and collect in-store, or have it delivered locally.', image: bakeryFruitCakeCrop },
     ],
     menuEyebrow: 'The counter',
     menuTitle: 'Bakery favourites, made in-house every day',
-    menuSub: 'A short list of what leaves the counter fastest — the full, live list is just below.',
-    menu: [
-      { image: bakeryCakes, tag: 'Celebration', name: 'Custom cakes' },
-      { image: bakeryPastries, tag: 'Bakery', name: 'Fresh pastries' },
-      { image: bakeryBread, tag: 'Bakery', name: 'Breads and buns' },
-      { image: bakerySweets, tag: 'Sweets', name: 'Indian sweet temptations' },
-    ],
+    aboutCopy: 'Birthday cakes decorated to order, fresh breads and buns baked in small batches through the day, and traditional Indian sweets made the way they always have been — nothing frozen, nothing rushed. We’re well known for our ghee sweets, and alongside the bakery counter we also stock traditional pickles and cold-pressed oils. Walk in for what’s fresh on the counter today, or call ahead for a custom cake.',
     galleryEyebrow: 'Around the bakery',
     galleryTitle: 'A look inside the bakery counter',
     gallerySub: 'What comes out of the oven, every single day.',
     gallery: [
-      { image: bakeryCakes, caption: 'Cakes decorated to order' },
-      { image: unsplash(STOCK.croissantCloseup, 900), caption: 'Baked fresh, every morning' },
-      { image: bakeryBread, caption: 'Breads and buns, small batches' },
-      { image: unsplash(STOCK.croissantBasket, 900), caption: 'Straight from the oven' },
-      { image: bakeryPastries, caption: 'Pastries, fresh from the counter' },
-      { image: bakerySweets, caption: 'Traditional Indian sweets' },
+      { image: bakeryHeartCakeRoses, caption: 'Cakes decorated to order' },
+      { image: bakeryStorefront, caption: 'The counter, lit up every evening' },
+      { image: bakeryCakeCounter, caption: 'Inside the cake counter' },
+      { image: bakeryFruitCakeCrop, caption: 'Every cake made to order, never frozen' },
+      { image: bakerySignboardNight, caption: 'Ready for a celebration' },
     ],
-    storyImage: bakeryCounter,
+    storyImage: bakeryHeartCakeRoses,
     storyBadge: 'Since 1988',
     storyTitle: 'Baked in-house, the same recipes since day one',
-    storyP1: 'Every cake is decorated to order, every loaf is baked in small daily batches, and every festival sweet is still made the traditional way — by the same family that runs the cafe next door.',
+    storyP1: 'Sri Nanjundeshwara Bakery & Sweets grew out of the same 1988 kitchen as the cafe next door — started by the same family, on the same promise: nothing frozen, nothing rushed. Every cake is still decorated to order, every loaf still baked in small daily batches, and every festival sweet still made the traditional way, by hand.',
+    storyP2: 'That promise is why the counter has become a Hosur habit — locals stop in on the way to work, and word has carried the name into Bangalore too. It shows in the numbers: 686 Google reviews and counting, holding a 4.5-star average, with guests calling out the Jalebi by name and organisations like the Lions Club of Hosur Everest trusting the counter for their own celebrations.',
     storyList: [
       'Every cake decorated to order, never pulled from a freezer',
       'Small daily batches of bread, buns, and pastries',
       'Festival sweets made the traditional way',
     ],
-    occasionEyebrow: 'Custom orders',
-    occasionTitle: 'Order a cake for the day that deserves one',
-    occasionCopy: 'Birthdays, anniversaries, weddings — tell us the flavour, size, and message, and we’ll have it ready for pickup or delivery around Berigai.',
-    occasionFeatures: [
-      { icon: Cake, label: 'Any flavour, shape, or size' },
-      { icon: Sparkles, label: 'Custom fondant and piping' },
-      { icon: Truck, label: 'Pickup or local delivery' },
-      { icon: ShieldCheck, label: 'Never frozen, always made to order' },
+    reviewRating: 4.5,
+    reviewCount: '686 Google reviews',
+    reviews: [
+      { quote: 'The sweets and snacks made at their bakery are very clean and delicious. Especially their Jalebi — it tastes amazing and makes you want to have it again and again.', author: 'Harish Kumar', meta: 'Google review' },
+      { quote: 'We purchased plum cake, savouries and cookies for our annual celebration — 30 boxes as a gift. Highest quality, on-time delivery, affordable cost, and a genuinely customer-friendly team.', author: 'Lions Club of Hosur Everest', meta: 'Google review' },
+      { quote: 'Best bakery in Berigai. Good service and real comfort for customers — the staff are always kind and respectful.', author: 'Balaji M', meta: 'Google review' },
     ],
-    occasionCtaLabel: 'Order a custom cake',
-    occasionGallery: [bakeryCakes, unsplash(STOCK.celebrationCake, 700), unsplash(STOCK.croissantBasket, 700)],
-    waMessage: 'Hi, I would like to order from Sri Nanjundeshwara Bakery.',
+    occasionEyebrow: 'Since 1988',
+    occasionTitle: 'The best in cake decor — a famous Hosur bakery since 1988',
+    occasionCopy: 'Any design you can imagine, we can make — tell us the flavour, size, and design, and we’ll have it ready with delivery all over Hosur and the surrounding area. Baking in Berigai since 1988 and specialists in ghee sweets, with regular clients ordering all the way from Bangalore for the taste. We also stock traditional pickles and cold-pressed oils, and we’re working on pan-India delivery so everyone can order the same taste, wherever they are.',
+    occasionFeatures: [
+      { icon: Cake, label: 'Best in cake decor — any design you imagine' },
+      { icon: Sparkles, label: 'Specialists in ghee sweets' },
+      { icon: Truck, label: 'Delivered across Hosur & surrounding area' },
+      { icon: ShieldCheck, label: 'Trusted since 1988, never frozen' },
+    ],
+    occasionCtaLabel: 'Place your order',
+    // BUG FIX (2026-09-30, review finding): same fix as the cafe's
+    // occasionGallery above — bakeryFruitCakeCrop/bakeryStorefront were
+    // already in the menu grid AND the gallery below (3rd appearance here).
+    // bakerySignboardNight was only in the menu grid once before this.
+    occasionGallery: [bakeryHeartCakeRoses, bakerySignboardNight, bakeryCakeCounter],
+    waMessage: 'Hi, I would like to order from Sri Nanjundeshwara Bakery & Sweets.',
   },
 };
 
@@ -343,14 +322,6 @@ const HERO_PARTICLES = Array.from({ length: 14 }, (_, i) => {
     driftX: ((seed % 5) - 2) * 8,
   };
 });
-
-const BAKERY_CATEGORY_ICON: Record<string, string> = {
-  Sweets: '🍬',
-  Savouries: '🥨',
-  Cookies: '🍪',
-  Puffs: '🥐',
-  Bakery: '🍞',
-};
 
 function scrollToId(id: string) {
   document.querySelector(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -596,15 +567,6 @@ export default function Landing() {
   const heroParallax = useParallax(0.12);
   useLenisSmoothScroll();
 
-  const { items: cafeMenuItems, loading: cafeMenuLoading, loadMenu } = useMenuStore();
-  const { items: bakeryMenuItems, loading: bakeryMenuLoading, loadItems: loadBakeryItems } = useBakeryItemsStore();
-  const menuCategories = useMenuCategories();
-
-  useEffect(() => {
-    void loadMenu();
-    void loadBakeryItems();
-  }, [loadMenu, loadBakeryItems]);
-
   useEffect(() => {
     if (currentUser) navigate(getRoleDefaultPath(currentUser.role), { replace: true });
   }, [currentUser, navigate]);
@@ -627,39 +589,24 @@ export default function Landing() {
     return () => window.removeEventListener('keydown', onKey);
   }, [lightboxIndex, galleryLength]);
 
-  // Live cafe menu, grouped by category, in the same order as the live
-  // menu_categories table (sort_order).
-  const cafeLiveGroups = useMemo(() => {
-    const enabled = cafeMenuItems.filter((i) => i.enabled);
-    return menuCategories
-      .map((cat) => ({ cat, items: enabled.filter((i) => i.category === cat.id) }))
-      .filter((g) => g.items.length > 0);
-  }, [cafeMenuItems, menuCategories]);
-
-  // Live bakery menu, grouped by category.
-  const bakeryLiveGroups = useMemo(() => {
-    const enabled = bakeryMenuItems.filter((i) => i.enabled);
-    const byCategory = new Map<string, typeof enabled>();
-    for (const item of enabled) {
-      const list = byCategory.get(item.category) ?? [];
-      list.push(item);
-      byCategory.set(item.category, list);
-    }
-    return Array.from(byCategory.entries()).map(([category, items]) => ({ category, items }));
-  }, [bakeryMenuItems]);
-
   if (currentUser) return null;
 
   const c = CONTENT[venue];
   const goOrder = () => navigate('/order');
-  const goFullMenu = () => (venue === 'cafe' ? navigate('/menu') : scrollToId('#live-menu'));
   const mapsUrl = `https://maps.google.com/?q=${encodeURIComponent(CAFE_INFO.mapsQuery)}`;
   const mapsEmbedUrl = `https://maps.google.com/maps?q=${encodeURIComponent(CAFE_INFO.mapsQuery)}&t=&z=16&ie=UTF8&iwloc=&output=embed`;
   const waUrl = `https://wa.me/${CAFE_INFO.whatsapp}?text=${encodeURIComponent(c.waMessage)}`;
   const waQuickUrl = `https://wa.me/${CAFE_INFO.whatsapp}?text=${encodeURIComponent('Hi Cafe Aadvikam, I have a question.')}`;
+  // FEATURE (2026-09-30): "Reserve a table ... should open WhatsApp and show
+  // a message like reserve a table" — the hero's 2nd CTA now opens WhatsApp
+  // directly with a purpose-specific message instead of scrolling to #visit,
+  // and the separate 3rd WhatsApp icon button next to it is gone (redundant
+  // once the CTA itself opens WhatsApp).
+  const reserveWaUrl = `https://wa.me/${CAFE_INFO.whatsapp}?text=${encodeURIComponent(
+    venue === 'cafe' ? 'Hi Cafe Aadvikam, I would like to reserve a table.' : 'Hi, I would like to order a custom cake from Sri Nanjundeshwara Bakery & Sweets.',
+  )}`;
 
   const navLinks: [string, string][] = [
-    ['Menu', '#menu'],
     ['Gallery', '#gallery'],
     ['Our story', '#story'],
     ...(venue === 'cafe' ? ([['Party hall', '#occasion']] as [string, string][]) : []),
@@ -672,7 +619,7 @@ export default function Landing() {
       <header className="sticky top-0 z-50 border-b border-border bg-background/95">
         <div className="mx-auto flex h-[76px] max-w-7xl items-center justify-between px-4 md:px-8">
           <button onClick={() => scrollToId('#top')} className="flex items-center gap-3 text-left">
-            <img key={`logo-${venue}`} src={c.logo} alt={venue === 'cafe' ? 'Cafe Aadvikam' : 'Sri Nanjundeshwara Bakery'} className="venue-fade size-11 rounded-full border border-border bg-white object-contain p-1" />
+            <img key={`logo-${venue}`} src={c.logo} alt={venue === 'cafe' ? 'Cafe Aadvikam' : 'Sri Nanjundeshwara Bakery & Sweets'} className="venue-fade size-11 rounded-full border border-border bg-white object-contain p-1" />
             <div key={`title-${venue}`} className="venue-fade">
               <p className="font-display text-lg font-bold leading-none text-foreground">Cafe Aadvikam</p>
               <p className="mt-1 text-[10px] font-bold uppercase tracking-[0.18em] text-primary">{c.navSub}</p>
@@ -747,7 +694,12 @@ export default function Landing() {
               so combining them on one node would have silently dropped the
               parallax). */}
           <div className="h-[calc(100%+140px)] w-full" style={{ transform: `translateY(${-heroParallax}px)` }}>
-            <HeroBackground videoSrc={HERO_VIDEO[venue]} imageSrc={c.heroImage} />
+            {/* REDESIGN (2026-09-30): dropped the generic Mixkit stock-footage
+                hero video — it was never actually filmed at either venue, and
+                sat in front of the real photography below it, so visitors
+                never saw the authentic shot at all. The real photo pulled
+                from the business's own Google listing is the hero now. */}
+            <img key={c.heroImage} src={c.heroImage} alt="" className="hero-zoom h-full w-full object-cover" />
           </div>
         </div>
         {/* Ambient floating flour/steam particles — pure CSS, no canvas. */}
@@ -777,14 +729,8 @@ export default function Landing() {
             <h1 className="max-w-4xl font-display text-5xl font-bold leading-[0.98] tracking-tight md:text-7xl lg:text-8xl">{c.title}</h1>
             <p className="mt-6 max-w-xl text-lg text-white/80 md:text-xl">{c.lede}</p>
             <div className="mt-9 flex flex-wrap gap-3">
-              <button onClick={() => scrollToId('#menu')} className="rounded-full bg-white px-6 py-3 text-sm font-bold text-stone-950 shadow-2xl shadow-black/30 transition hover:scale-[1.03] active:scale-95">
-                {c.cta1}
-              </button>
-              <button onClick={() => scrollToId('#visit')} className="rounded-full border border-white/35 bg-white/5 px-6 py-3 text-sm font-bold text-white transition hover:bg-white/10">
-                {c.cta2}
-              </button>
-              <a href={waUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 rounded-full bg-[#25D366] px-6 py-3 text-sm font-bold text-white shadow-2xl shadow-black/30 transition hover:scale-[1.03] active:scale-95">
-                <MessageCircle className="size-4" /> WhatsApp
+              <a href={reserveWaUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 rounded-full bg-[#25D366] px-6 py-3 text-sm font-bold text-white shadow-2xl shadow-black/30 transition hover:scale-[1.03] active:scale-95">
+                <MessageCircle className="size-4" /> {c.cta2}
               </a>
             </div>
             <div className="mt-12 flex flex-wrap gap-10">
@@ -826,6 +772,14 @@ export default function Landing() {
       </section>
 
       {/* ── Highlights ── */}
+      {/* REDESIGN (2026-09-30, review finding, then a second pass): "flat...
+          plain icons, feels like a template leftover next to how good the
+          photo sections are." First fix used one shared background photo
+          behind frosted-glass cards — a big improvement, but still meant 4
+          cards pointing at 1 photo. This pass sources enough real photography
+          (see the new imports above) to give each card its OWN photo, same
+          treatment as the menu grid below (the section that already scored
+          best in review) rather than a new pattern. */}
       <section key={`highlights-${venue}`} className="py-20">
         <div className="mx-auto max-w-7xl px-4 md:px-8">
           <Reveal className="mx-auto mb-12 max-w-xl text-center">
@@ -833,118 +787,38 @@ export default function Landing() {
             <h2 className="mt-3 font-display text-3xl font-bold md:text-4xl">{c.highlightsTitle}</h2>
           </Reveal>
           <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
-            {c.highlights.map(({ icon: Icon, title, copy }) => (
-              <div key={title} className="rounded-2xl border border-border bg-card p-6 shadow-soft transition hover:-translate-y-1 hover:shadow-lifted">
-                <div className="mb-4 grid size-11 place-items-center rounded-xl bg-primary/10 text-primary">
-                  <Icon className="size-5" />
+            {c.highlights.map(({ icon: Icon, title, copy, image }) => (
+              <div key={title} className="group relative aspect-[3/4] overflow-hidden rounded-2xl bg-muted shadow-soft transition hover:-translate-y-1 hover:shadow-lifted">
+                <img src={image} alt="" loading="lazy" className="h-full w-full object-cover transition duration-500 group-hover:scale-105" onError={(e) => { e.currentTarget.style.opacity = '0'; }} />
+                <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/40 to-black/5" />
+                <div className="absolute inset-x-0 bottom-0 p-5">
+                  <div className="mb-3 grid size-10 place-items-center rounded-xl bg-white/15 text-white backdrop-blur-sm">
+                    <Icon className="size-5" />
+                  </div>
+                  <h3 className="text-base font-bold text-white">{title}</h3>
+                  <p className="mt-1 text-xs leading-relaxed text-white/80">{copy}</p>
                 </div>
-                <h3 className="text-lg font-bold text-foreground">{title}</h3>
-                <p className="mt-1.5 text-sm text-muted-foreground">{copy}</p>
               </div>
             ))}
           </div>
         </div>
       </section>
 
-      {/* ── Curated menu (photography) ── */}
-      <section id="menu" key={`menu-${venue}`} className="bg-card py-20">
-        <div className="mx-auto max-w-7xl px-4 md:px-8">
-          <Reveal className="mx-auto mb-12 max-w-xl text-center">
+      {/* ── About: replaces the old live-price menu section — see the file
+          header comment. Plain explanatory copy only — no menu link of any
+          kind, on-page or otherwise; WhatsApp is the only prompt here. ── */}
+      <section key={`about-${venue}`} className="bg-card py-20">
+        <div className="mx-auto max-w-3xl px-4 text-center md:px-8">
+          <Reveal>
             <p className="text-xs font-bold uppercase tracking-[0.2em] text-primary">{c.menuEyebrow}</p>
             <h2 className="mt-3 font-display text-3xl font-bold md:text-4xl">{c.menuTitle}</h2>
-            <p className="mt-3 text-sm text-muted-foreground">{c.menuSub}</p>
-          </Reveal>
-          <div className="grid grid-cols-2 gap-5 lg:grid-cols-4">
-            {c.menu.map((item) => (
-              <div key={item.name} className="group relative aspect-[3/4] overflow-hidden rounded-2xl bg-muted">
-                <img src={item.image} alt={item.name} loading="lazy" className="h-full w-full object-cover transition duration-500 group-hover:scale-105" onError={(e) => { e.currentTarget.style.opacity = '0'; }} />
-                <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-transparent to-transparent" />
-                <div className="absolute inset-x-0 bottom-0 p-4 text-white">
-                  <p className="text-[10px] font-bold uppercase tracking-wide text-amber-200">{item.tag}</p>
-                  <h3 className="font-display text-lg font-bold">{item.name}</h3>
-                </div>
-              </div>
-            ))}
-          </div>
-          <div className="mt-10 text-center">
-            <button onClick={goFullMenu} className="inline-flex items-center gap-2 rounded-full border border-border bg-background px-6 py-3 text-sm font-bold text-foreground transition hover:bg-muted">
-              See the full menu with prices <ArrowRight className="size-4" />
-            </button>
-          </div>
-        </div>
-      </section>
-
-      {/* ── Live menu (real Supabase data) ── */}
-      <section id="live-menu" key={`live-menu-${venue}`} className="py-20">
-        <div className="mx-auto max-w-7xl px-4 md:px-8">
-          <Reveal className="mx-auto mb-12 max-w-xl text-center">
-            <p className="text-xs font-bold uppercase tracking-[0.2em] text-primary">Straight from the till</p>
-            <h2 className="mt-3 font-display text-3xl font-bold md:text-4xl">{venue === 'cafe' ? 'Full menu, live prices' : 'Full bakery counter, live prices'}</h2>
-            <p className="mt-3 text-sm text-muted-foreground">Pulled directly from what we sell today — not a static list.</p>
-          </Reveal>
-
-          {venue === 'cafe' ? (
-            cafeMenuLoading && cafeLiveGroups.length === 0 ? (
-              <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
-                {[0, 1, 2].map((i) => <div key={i} className="h-48 animate-pulse rounded-2xl border border-border bg-muted" />)}
-              </div>
-            ) : cafeLiveGroups.length === 0 ? (
-              <p className="text-center text-sm text-muted-foreground">Menu prices are updated live — please check back shortly, or WhatsApp us for today’s menu.</p>
-            ) : (
-              <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
-                {cafeLiveGroups.slice(0, 9).map(({ cat, items }) => (
-                  <div key={cat.id} className="rounded-2xl border border-border bg-card p-5 shadow-soft transition hover:-translate-y-1 hover:shadow-lifted">
-                    <div className="mb-3 flex items-center justify-between">
-                      <h3 className="flex items-center gap-2 text-base font-bold text-foreground">
-                        <span aria-hidden="true">{cat.icon}</span> {cat.name}
-                      </h3>
-                      <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{cat.timing}</span>
-                    </div>
-                    <ul className="space-y-1.5">
-                      {items.slice(0, 5).map((item) => (
-                        <li key={item.id} className="flex items-center justify-between gap-3 text-sm">
-                          <span className="text-foreground/90">{item.name}</span>
-                          <span className="whitespace-nowrap font-semibold text-primary">{formatCurrency(item.price)}</span>
-                        </li>
-                      ))}
-                    </ul>
-                    {items.length > 5 && <p className="mt-2 text-[11px] font-semibold text-muted-foreground">+{items.length - 5} more in this category</p>}
-                  </div>
-                ))}
-              </div>
-            )
-          ) : bakeryMenuLoading && bakeryLiveGroups.length === 0 ? (
-            <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
-              {[0, 1, 2].map((i) => <div key={i} className="h-48 animate-pulse rounded-2xl border border-border bg-muted" />)}
+            <p className="mt-5 text-base leading-relaxed text-muted-foreground md:text-lg">{c.aboutCopy}</p>
+            <div className="mt-8 flex flex-wrap items-center justify-center gap-4">
+              <a href={waUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 rounded-full bg-[#25D366] px-6 py-3 text-sm font-bold text-white transition hover:scale-[1.03] active:scale-95">
+                <MessageCircle className="size-4" /> WhatsApp us
+              </a>
             </div>
-          ) : bakeryLiveGroups.length === 0 ? (
-            <p className="text-center text-sm text-muted-foreground">Counter items are updated live — please check back shortly, or WhatsApp us for today’s stock.</p>
-          ) : (
-            <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
-              {bakeryLiveGroups.map(({ category, items }) => (
-                <div key={category} className="rounded-2xl border border-border bg-card p-5 shadow-soft transition hover:-translate-y-1 hover:shadow-lifted">
-                  <h3 className="mb-3 flex items-center gap-2 text-base font-bold text-foreground">
-                    <span aria-hidden="true">{BAKERY_CATEGORY_ICON[category] ?? '🧁'}</span> {category}
-                  </h3>
-                  <ul className="space-y-1.5">
-                    {items.slice(0, 6).map((item) => (
-                      <li key={item.id} className="flex items-center justify-between gap-3 text-sm">
-                        <span className="text-foreground/90">{item.icon} {item.name}</span>
-                        {item.price != null && <span className="whitespace-nowrap font-semibold text-primary">{formatCurrency(item.price)}</span>}
-                      </li>
-                    ))}
-                  </ul>
-                  {items.length > 6 && <p className="mt-2 text-[11px] font-semibold text-muted-foreground">+{items.length - 6} more in this category</p>}
-                </div>
-              ))}
-            </div>
-          )}
-
-          <div className="mt-10 text-center">
-            <a href={waUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 rounded-full bg-[#25D366] px-6 py-3 text-sm font-bold text-white transition hover:scale-[1.03] active:scale-95">
-              <MessageCircle className="size-4" /> WhatsApp for today’s specials
-            </a>
-          </div>
+          </Reveal>
         </div>
       </section>
 
@@ -993,11 +867,17 @@ export default function Landing() {
               <p className="font-display text-xl font-bold text-foreground">{c.storyBadge}</p>
               <p className="mt-0.5 text-[11px] uppercase tracking-wide text-muted-foreground">Family run, Berigai</p>
             </div>
+            <div className="absolute right-5 top-5 flex items-center gap-1.5 rounded-full bg-card/95 px-4 py-2 shadow-lifted">
+              <Star className="size-3.5 fill-amber-400 text-amber-400" />
+              <span className="font-display text-sm font-bold text-foreground">{c.reviewRating}</span>
+              <span className="text-[10px] font-semibold text-muted-foreground">· {c.reviewCount}</span>
+            </div>
           </Reveal>
           <Reveal delay={100}>
             <p className="text-xs font-bold uppercase tracking-[0.2em] text-primary">Our story</p>
             <h2 className="mt-3 font-display text-3xl font-bold md:text-4xl">{c.storyTitle}</h2>
             <p className="mt-5 text-base leading-7 text-muted-foreground">{c.storyP1}</p>
+            <p className="mt-4 text-base leading-7 text-muted-foreground">{c.storyP2}</p>
             <ul className="mt-6 space-y-3">
               {c.storyList.map((item) => (
                 <li key={item} className="flex items-start gap-3 text-sm font-medium text-foreground">
@@ -1007,6 +887,37 @@ export default function Landing() {
               ))}
             </ul>
           </Reveal>
+        </div>
+      </section>
+
+      {/* ── Loved across Hosur & Bangalore (real Google review social proof) ── */}
+      <section key={`reviews-${venue}`} className="bg-card py-20">
+        <div className="mx-auto max-w-7xl px-4 md:px-8">
+          <Reveal className="mx-auto mb-12 max-w-xl text-center">
+            <p className="text-xs font-bold uppercase tracking-[0.2em] text-primary">What guests say</p>
+            <h2 className="mt-3 font-display text-3xl font-bold md:text-4xl">Loved across Hosur and into Bangalore</h2>
+            <div className="mt-4 flex items-center justify-center gap-2">
+              <div className="flex gap-0.5">
+                {[0, 1, 2, 3, 4].map((i) => <Star key={i} className="size-4 fill-amber-400 text-amber-400" />)}
+              </div>
+              <p className="text-sm font-bold text-foreground">{c.reviewRating} on Google</p>
+              <p className="text-sm text-muted-foreground">· {c.reviewCount}</p>
+            </div>
+          </Reveal>
+          <div className="grid gap-5 md:grid-cols-3">
+            {c.reviews.map((review) => (
+              <div key={review.author} className="flex flex-col rounded-2xl border border-border bg-background p-6 shadow-soft transition hover:-translate-y-1 hover:shadow-lifted">
+                <div className="mb-3 flex gap-0.5">
+                  {[0, 1, 2, 3, 4].map((i) => <Star key={i} className="size-3.5 fill-amber-400 text-amber-400" />)}
+                </div>
+                <p className="flex-1 text-sm leading-6 text-foreground/90">“{review.quote}”</p>
+                <div className="mt-5 border-t border-border pt-4">
+                  <p className="text-sm font-bold text-foreground">{review.author}</p>
+                  <p className="text-[11px] text-muted-foreground">{review.meta}</p>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       </section>
 
@@ -1036,7 +947,7 @@ export default function Landing() {
 
                 {venue === 'cafe' ? (
                   <a
-                    href={`https://wa.me/${CAFE_INFO.whatsapp}?text=${encodeURIComponent('Hi Cafe Aadvikam, I would like to enquire about party hall booking.')}`}
+                    href={`https://wa.me/${CAFE_INFO.whatsapp}?text=${encodeURIComponent('Hi Cafe Aadvikam, I would like to enquire about party hall booking or catering for an event.')}`}
                     target="_blank"
                     rel="noreferrer"
                     className="mt-8 inline-flex items-center gap-2 rounded-full gold-gradient px-6 py-3 text-sm font-bold text-stone-950 shadow-gold transition hover:scale-[1.03] active:scale-95"
@@ -1134,14 +1045,14 @@ export default function Landing() {
         <div className="mx-auto flex max-w-7xl flex-col items-center gap-4 px-4 text-center md:px-8">
           <div className="flex items-center gap-3">
             <img src={cafeLogo} alt="Cafe Aadvikam" className="size-9 rounded-full border border-border bg-white object-contain p-1" />
-            <img src={snbLogo} alt="Sri Nanjundeshwara Bakery" className="size-9 rounded-full border border-border bg-white object-contain p-1" />
+            <img src={snbLogo} alt="Sri Nanjundeshwara Bakery & Sweets" className="size-9 rounded-full border border-border bg-white object-contain p-1" />
           </div>
           <div className="flex flex-wrap justify-center gap-x-6 gap-y-2 text-xs font-semibold text-muted-foreground">
             {navLinks.map(([label, href]) => (
               <button key={href} onClick={() => scrollToId(href)} className="hover:text-primary">{label}</button>
             ))}
           </div>
-          <p className="text-xs text-muted-foreground">&copy; Cafe Aadvikam · Sri Nanjundeshwara Bakery · {CAFE_INFO.address}</p>
+          <p className="text-xs text-muted-foreground">&copy; Cafe Aadvikam · Sri Nanjundeshwara Bakery & Sweets · {CAFE_INFO.address}</p>
         </div>
       </footer>
 
