@@ -7669,6 +7669,172 @@ function EditWalkinBillModal({ bill, onClose, onSaved }: {
 // dispatch_invoices row created 'unpaid' and flipped to 'paid' later.
 const SAMPLE_BILL_NOTE = 'Sample Bill';
 
+// FEATURE (2026-09-30): "need the ability to edit the bill and remove the
+// item in sample bill" — Sample Bill had no edit path at all, only print +
+// mark paid. Deliberately NOT reusing EditDispatchInvoiceModal/
+// updateDispatchInvoice (the generic dispatch_invoices editor further below)
+// for two reasons: (1) that function appends an edit note onto `notes` on
+// every save, but Recent Sample Bills' own list (loadRecent below) filters
+// on an EXACT notes===SAMPLE_BILL_NOTE match — an edited bill would silently
+// vanish from that list the moment it's saved; (2) a Sample Bill never has
+// dispatchEntryIds (its items come straight from the branch catalog, not a
+// real dispatch_log entry), so updateDispatchInvoice's whole stock-
+// reconciliation path is always a no-op for it — correct for an UNPAID bill
+// (no stock was ever touched yet) but silently wrong for a PAID one, where
+// markDispatchInvoicePaid already debited the Closing Stock pool for the
+// ORIGINAL items. Mirrors EditWalkinBillModal's simpler reverse-then-reapply
+// approach instead, only touching stock at all when the bill is already paid.
+interface EditableSampleBillLine { key: number; itemName: string; unit: 'pcs' | 'kg'; price: number; quantity: number }
+
+function EditSampleBillModal({ bill, onClose, onSaved }: {
+  bill: DispatchInvoiceRecord; onClose: () => void; onSaved: () => void;
+}) {
+  const currentUser = useAuthStore(s => s.currentUser);
+  const [lines, setLines] = useState<EditableSampleBillLine[]>(
+    () => bill.items.map((i, idx) => ({ key: idx, itemName: i.itemName, unit: i.unit === 'pcs' ? 'pcs' : 'kg', price: i.unitPrice, quantity: i.quantity })),
+  );
+  const nextKeyRef = useRef(bill.items.length);
+  const [discountPct, setDiscountPct] = useState(String(bill.discountPct || 0));
+  const [saving, setSaving] = useState(false);
+  const savingInFlightRef = useRef(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const updateLine = (key: number, patch: Partial<EditableSampleBillLine>) =>
+    setLines(prev => prev.map(l => l.key === key ? { ...l, ...patch } : l));
+  const removeLine = (key: number) => setLines(prev => prev.filter(l => l.key !== key));
+  const addLine = () => {
+    const key = nextKeyRef.current++;
+    setLines(prev => [...prev, { key, itemName: '', unit: 'pcs', price: 0, quantity: 0 }]);
+  };
+
+  const clampedPct = Math.max(0, Math.min(100, Number(discountPct) || 0));
+  const previewSubtotal = Math.round(lines.reduce((s, l) => s + l.price * l.quantity, 0) * 100) / 100;
+  const previewDiscountAmount = Math.round(previewSubtotal * (clampedPct / 100) * 100) / 100;
+  const previewTotal = Math.max(0, Math.round(previewSubtotal - previewDiscountAmount));
+
+  const save = async () => {
+    if (savingInFlightRef.current) return;
+    setError(null);
+    const cleaned = lines
+      .filter(l => l.itemName.trim() && l.quantity > 0 && l.price >= 0)
+      .map(l => ({ itemName: l.itemName.trim(), unit: l.unit, quantity: l.quantity, unitPrice: l.price, lineTotal: Math.round(l.price * l.quantity * 100) / 100 }));
+    if (cleaned.length === 0) { setError('Add at least one item with a name, quantity above 0 and a valid price.'); return; }
+    savingInFlightRef.current = true;
+    setSaving(true);
+    try {
+      // Stock was only ever debited if this bill was already marked paid
+      // (markDispatchInvoicePaid) — full reverse of the ORIGINAL items' debit
+      // then reapply of the EDITED items' debit, same approach
+      // EditWalkinBillModal uses rather than a line-by-line diff (this bill
+      // has no downstream contributingOrderIds-style totals a diff would
+      // need to protect, so the simpler approach is safe here too).
+      if (bill.status === 'paid') {
+        for (const line of bill.items) {
+          try {
+            const result = await recordLeftoverMovement({
+              itemName: line.itemName, unit: line.unit === 'pcs' ? 'pcs' : 'kg',
+              delta: Math.abs(line.quantity), businessDate: kolkataToday(), reason: 'return',
+              recordedBy: currentUser?.displayName || 'Planner',
+              notes: `Edited Sample Bill ${bill.invoiceNo} — reverting original items`,
+            });
+            if ('error' in result) console.error('[EditSampleBillModal] stock reversal failed:', result.error);
+          } catch (err) { console.error('[EditSampleBillModal] stock reversal threw:', err); }
+        }
+        for (const line of cleaned) {
+          try {
+            const result = await recordLeftoverMovement({
+              itemName: line.itemName, unit: line.unit === 'pcs' ? 'pcs' : 'kg',
+              delta: -Math.abs(line.quantity), businessDate: kolkataToday(), reason: 'dispatch',
+              recordedBy: currentUser?.displayName || 'Planner',
+              notes: `Edited Sample Bill ${bill.invoiceNo}`,
+            });
+            if ('error' in result) console.error('[EditSampleBillModal] stock debit failed:', result.error);
+          } catch (err) { console.error('[EditSampleBillModal] stock debit threw:', err); }
+        }
+      }
+
+      // Same subtotal/discount/round-off formula as saveDispatchInvoice, so
+      // this stays internally consistent with every other dispatch invoice
+      // row (whole-rupee total, difference tracked in round_off).
+      const subtotal = Math.round(cleaned.reduce((s, l) => s + l.lineTotal, 0) * 100) / 100;
+      const discountAmount = Math.round(subtotal * (clampedPct / 100) * 100) / 100;
+      const preRound = subtotal - discountAmount;
+      const total = Math.max(0, Math.round(preRound));
+      const roundOff = Math.round((total - preRound) * 100) / 100;
+
+      // notes is deliberately left untouched (stays exactly SAMPLE_BILL_NOTE)
+      // — see the comment above this component for why.
+      const { error: updateError } = await supabase.from('dispatch_invoices').update({
+        items: cleaned, subtotal, discount_pct: clampedPct, discount_amount: discountAmount,
+        round_off: roundOff, total,
+      }).eq('id', bill.id);
+      if (updateError) throw updateError;
+
+      onSaved();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save the edited bill.');
+    } finally {
+      setSaving(false);
+      savingInFlightRef.current = false;
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="max-h-[90vh] w-full max-w-xl overflow-y-auto rounded-2xl bg-white p-5 shadow-xl">
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-sm font-black text-foreground">Edit Sample Bill — {bill.invoiceNo}</p>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="size-4" /></button>
+        </div>
+        <p className="mt-1 text-[11px] font-bold text-muted-foreground">
+          {bill.status === 'paid'
+            ? 'This bill is already paid — editing adjusts the Closing Stock ledger to match (removes the original quantities, applies the new ones).'
+            : 'Stock has not been touched yet (only happens on Mark Paid) — editing here only changes the bill itself.'}
+        </p>
+
+        <div className="mt-3 space-y-2">
+          {lines.map(l => (
+            <div key={l.key} className="grid gap-2 sm:grid-cols-[1fr_4.5rem_4.5rem_4.5rem_auto]">
+              <input value={l.itemName} onChange={e => updateLine(l.key, { itemName: e.target.value })} placeholder="Item name" className="h-9 rounded-lg border border-border bg-background px-2 text-xs font-bold" />
+              <select value={l.unit} onChange={e => updateLine(l.key, { unit: e.target.value as 'pcs' | 'kg' })} className="h-9 rounded-lg border border-border bg-background px-1 text-xs font-bold">
+                <option value="pcs">pcs</option>
+                <option value="kg">kg</option>
+              </select>
+              <input type="number" min="0" step="0.01" value={l.price} onChange={e => updateLine(l.key, { price: Math.max(0, Number(e.target.value) || 0) })} placeholder="Price" className="h-9 rounded-lg border border-border bg-background px-2 text-xs font-bold" />
+              <input type="number" min="0" step={l.unit === 'kg' ? 0.001 : 1} value={l.quantity} onChange={e => updateLine(l.key, { quantity: clampQtyForUnit(Number(e.target.value) || 0, l.unit) })} placeholder="Qty" className="h-9 rounded-lg border border-border bg-background px-2 text-xs font-bold" />
+              <button onClick={() => removeLine(l.key)} className="flex h-9 items-center justify-center rounded-lg border border-destructive/30 bg-destructive/10 text-destructive hover:bg-destructive/20"><X className="size-3.5" /></button>
+            </div>
+          ))}
+        </div>
+        <button onClick={addLine} className="mt-2 flex items-center gap-1.5 rounded-xl border border-border bg-card px-3 py-1.5 text-xs font-bold text-foreground hover:bg-muted"><Plus className="size-3.5" /> Add Item</button>
+
+        <div className="mt-3 space-y-1.5 rounded-xl border border-border bg-muted/20 p-3">
+          <label className="flex items-center gap-1.5 text-[11px] font-black uppercase tracking-wide text-muted-foreground"><Percent className="size-3.5" /> Discount for the whole bill</label>
+          <div className="flex items-center gap-1.5">
+            <input type="number" min={0} max={100} value={discountPct} onChange={e => setDiscountPct(e.target.value)} className="w-20 rounded-lg border border-border bg-background px-2 py-1.5 text-right text-sm font-bold" />
+            <span className="text-xs font-bold text-muted-foreground">%</span>
+          </div>
+        </div>
+
+        <div className="mt-3 space-y-1 rounded-xl bg-muted/40 p-3 text-sm">
+          <div className="flex justify-between font-bold text-muted-foreground"><span>Subtotal</span><span>{invoiceMoney(previewSubtotal)}</span></div>
+          {previewDiscountAmount > 0 && <div className="flex justify-between font-bold text-red-600"><span>Discount ({clampedPct}%)</span><span>- {invoiceMoney(previewDiscountAmount)}</span></div>}
+          <div className="flex justify-between border-t border-border pt-1.5 text-base font-black text-foreground"><span>Total</span><span>{invoiceMoney(previewTotal)}</span></div>
+        </div>
+
+        {error && <p className="mt-3 rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs font-bold text-destructive">{error}</p>}
+
+        <div className="mt-4 flex justify-end gap-2">
+          <button onClick={onClose} className="rounded-xl border border-border bg-card px-4 py-2 text-xs font-bold text-foreground hover:bg-muted">Cancel</button>
+          <button onClick={save} disabled={saving} className="flex items-center gap-1.5 rounded-xl cafe-gradient px-4 py-2 text-xs font-black text-white shadow-teal disabled:opacity-50">
+            {saving ? <Loader2 className="size-3.5 animate-spin" /> : <Pencil className="size-3.5" />} Save Changes
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function SampleBillTab() {
   const { items: catalogItems, loadCatalog } = useBranchCatalogStore();
   const currentUser = useAuthStore(s => s.currentUser);
@@ -7704,6 +7870,9 @@ function SampleBillTab() {
   // same customer.
   const savingInFlightRef = useRef(false);
   const [markingPaidId, setMarkingPaidId] = useState<string | null>(null);
+  // FEATURE (2026-09-30): "need the ability to edit the bill and remove the
+  // item in sample bill" — see EditSampleBillModal above.
+  const [editingBill, setEditingBill] = useState<DispatchInvoiceRecord | null>(null);
   const [error, setError] = useState('');
   const [lastBill, setLastBill] = useState<DispatchInvoiceRecord | null>(null);
   const [recent, setRecent] = useState<DispatchInvoiceRecord[]>([]);
@@ -7994,6 +8163,7 @@ function SampleBillTab() {
               <div className="mt-2 flex flex-wrap gap-1.5">
                 <button onClick={() => printDispatchInvoice(lastBill, 'thermal')} className="flex items-center gap-1 rounded-lg bg-muted px-2.5 py-1.5 text-[11px] font-bold text-muted-foreground hover:bg-slate-200"><Printer className="size-3.5" /> Thermal</button>
                 <button onClick={() => printDispatchInvoice(lastBill, 'a4')} className="flex items-center gap-1 rounded-lg bg-muted px-2.5 py-1.5 text-[11px] font-bold text-muted-foreground hover:bg-slate-200"><Printer className="size-3.5" /> A4</button>
+                <button onClick={() => setEditingBill(lastBill)} className="flex items-center gap-1 rounded-lg border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-[11px] font-black text-amber-800 hover:bg-amber-100"><Pencil className="size-3.5" /> Edit</button>
                 {lastBill.status === 'unpaid' && (
                   <button onClick={() => markPaid(lastBill)} disabled={markingPaidId === lastBill.id} className="flex items-center gap-1 rounded-lg bg-teal-600 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-teal-700 disabled:opacity-50">
                     {markingPaidId === lastBill.id ? <Loader2 className="size-3.5 animate-spin" /> : <CheckCircle2 className="size-3.5" />} Mark as Paid
@@ -8032,6 +8202,7 @@ function SampleBillTab() {
                 <div className="flex items-center gap-2">
                   <span className="text-sm font-black text-foreground">{invoiceMoney(bill.total)}</span>
                   <button onClick={() => printDispatchInvoice(bill, 'thermal')} className="rounded-lg border border-border bg-card p-1.5 text-muted-foreground hover:bg-muted" title="Print thermal"><Printer className="size-3.5" /></button>
+                  <button onClick={() => setEditingBill(bill)} className="flex items-center gap-1 rounded-lg border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-[11px] font-black text-amber-800 hover:bg-amber-100"><Pencil className="size-3.5" /> Edit</button>
                   {bill.status === 'unpaid' && (
                     <button onClick={() => markPaid(bill)} disabled={markingPaidId === bill.id} className="flex items-center gap-1 rounded-lg bg-teal-600 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-teal-700 disabled:opacity-50">
                       {markingPaidId === bill.id ? <Loader2 className="size-3.5 animate-spin" /> : <CheckCircle2 className="size-3.5" />} Mark Paid
@@ -8043,6 +8214,18 @@ function SampleBillTab() {
           </div>
         )}
       </div>
+
+      {editingBill && (
+        <EditSampleBillModal
+          bill={editingBill}
+          onClose={() => setEditingBill(null)}
+          onSaved={() => {
+            setEditingBill(null);
+            if (lastBill?.id === editingBill.id) setLastBill(null);
+            void loadRecent();
+          }}
+        />
+      )}
     </div>
   );
 }
