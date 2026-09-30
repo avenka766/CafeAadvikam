@@ -257,6 +257,38 @@ function AdminDashboard() {
   const [toDate, setToDate] = useState(todayInput());
   const [closureDate, setClosureDate] = useState(todayInput());
   const [branchFilter, setBranchFilter] = useState<Branch | 'all'>('all');
+  // GUARDRAIL (2026-09-30): "make sure this will never ever occur again" —
+  // 91 counter sessions (SNB+VRSNB) were found marked status='void' by a
+  // 2026-09-08 manual cleanup while 79 of them still had real bills worth
+  // ~Rs.4.78L attached, invisible to Daily Closure/Branch Report/GST
+  // reporting until recovered the same day this was written. The root cause
+  // (a session-scoping bug in open_branch_counter_session_secure) is fixed
+  // and the current function is airtight — it always finds and properly
+  // auto-closes any prior open session before opening a new one, so this
+  // exact failure shouldn't recur. This is the backstop regardless: flags
+  // ANY void session that still has a real bill attached, from any cause,
+  // the moment an admin opens this tab, rather than letting it sit
+  // undiscovered for weeks like the first one did.
+  const [voidSessionsWithBills, setVoidSessionsWithBills] = useState<{ id: string; branch: string; businessDate: string; billCount: number; revenue: number }[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const { data, error } = await supabase
+        .from('branch_counter_sessions')
+        .select('id, branch, business_date, branch_bill_headers!inner(id, subtotal, status)')
+        .eq('status', 'void')
+        .eq('branch_bill_headers.status', 'original');
+      if (cancelled || error || !data) return;
+      const rows = (data as unknown as { id: string; branch: string; business_date: string; branch_bill_headers: { subtotal: number }[] }[])
+        .map(r => ({
+          id: r.id, branch: r.branch, businessDate: r.business_date,
+          billCount: r.branch_bill_headers.length,
+          revenue: r.branch_bill_headers.reduce((s, b) => s + Number(b.subtotal || 0), 0),
+        }));
+      setVoidSessionsWithBills(rows);
+    })();
+    return () => { cancelled = true; };
+  }, []);
   const [expandedBillId, setExpandedBillId] = useState<string | null>(null);
   const [billSearch, setBillSearch] = useState('');
   const [itemsSection, setItemsSection] = useState<'snb' | 'vrsnb'>('snb');
@@ -390,7 +422,7 @@ function AdminDashboard() {
   const [realBills, setRealBills] = useState<Array<{
     id: string; billNo: string; branch: Branch; total: number; subtotal: number;
     discount: number; createdAt: string; status: 'original' | 'returned' | 'duplicate_printed';
-    salesperson: string; biller: string; invoiceNo?: string;
+    salesperson: string; biller: string; invoiceNo?: string; dataCheckOk?: boolean;
   }>>([]);
   const [realBillItems, setRealBillItems] = useState<Array<{
     billId: string; branch: Branch; itemName: string; quantity: number; unit: string;
@@ -735,12 +767,23 @@ function AdminDashboard() {
           createdAt: String(h.created_at), status: (h.status as 'original' | 'returned' | 'duplicate_printed') || 'original',
           salesperson: String(h.salesperson ?? ''), biller: String(h.biller ?? ''),
         })),
+        // GUARDRAIL (2026-09-30): "make sure this issue won't occur in
+        // future" — root cause was a leftover duplicate hosur_bill_items row
+        // from an already-fixed re-bill bug (see hosurBillingBridge.ts's
+        // hasUnbilledQuantity guard), left uncleaned so subtotal silently
+        // disagreed with credit_amount+paid_amount for weeks before a client
+        // caught it in this exact Excel export. Flag that same disagreement
+        // here, at read time, for every Hosur bill regardless of cause — a
+        // future bug of any kind that re-introduces this drift now surfaces
+        // immediately (banner below + Bill-wise Sales column) instead of
+        // silently reaching a client again.
         ...hosurBills.map((h) => ({
           id: String(h.id), billNo: String(h.bill_no ?? ''), branch: 'Hosur' as Branch,
           total: Number(h.subtotal || 0), subtotal: Number(h.subtotal || 0), discount: 0,
           createdAt: String(h.confirmed_at), status: 'original' as const,
           salesperson: '', biller: String(h.shop_name ?? ''),
           invoiceNo: String(h.invoice_no ?? '') || String(h.bill_no ?? ''),
+          dataCheckOk: Math.abs(Number(h.subtotal || 0) - (Number(h.credit_amount || 0) + Number(h.paid_amount || 0))) < 0.01,
         })),
         ...paidExtraSalesInvoices.map((s) => ({
           id: String(s.id), billNo: String(s.invoice_no ?? ''), branch: 'Hosur' as Branch,
@@ -854,6 +897,26 @@ function AdminDashboard() {
     : `${new Date(`${fromDate}T00:00:00`).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })} – ${new Date(`${toDate}T00:00:00`).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}`;
 
   const cafeOrdersInRange = useMemo(() => orders.filter(o => inRange(o.createdAt, fromDate, toDate)), [orders, fromDate, toDate]);
+  // GUARDRAIL (2026-09-30): "make sure this issue won't occur in future" —
+  // three real advance/pre-orders (#2216, #2207, #2208) were marked
+  // fullyPaidAt (balance collected in cash, confirmed by the owner) but had
+  // no linked balance order and `total` never updated from the initial
+  // advance amount — invisible to SalesReport.tsx's GST sheets (which
+  // exclude paymentType='advance' rows entirely and rely on a proper linked
+  // balance order, tagged paymentType='cash', to carry that revenue into
+  // CGST/SGST) AND understated on this tab's own Bill-wise Sales export.
+  // Fixed by creating the missing linked balance orders (#4915/4916/4917)
+  // and reverting these three back to advance-only totals, matching what
+  // the app's own collectBalance() flow produces — that's the CORRECT
+  // shape (total = advance amount, balanceOrderId set), so the check below
+  // only flags fullyPaidAt-without-a-linked-balance-order, not every
+  // advance/total gap.
+  const cafeDataIntegrityIssues = useMemo(
+    () => cafeOrdersInRange.filter(o =>
+      o.paymentType === 'advance' && o.fullyPaidAt && !o.balanceOrderId
+      && Math.abs((o.total || 0) - (o.fullAmount ?? o.subtotal ?? 0)) > 1),
+    [cafeOrdersInRange],
+  );
   const { sorted: sortedCafeOrders, sortKey: cafeOrdersSortKey, sortDir: cafeOrdersSortDir, toggleSort: toggleCafeOrdersSort } = useSortableRows(
     cafeOrdersInRange,
     (o, key) => {
@@ -1508,10 +1571,14 @@ function AdminDashboard() {
         { header: 'Branch', key: 'branch' }, { header: 'Bill No', key: 'billNo' }, { header: 'Date', key: 'date', width: 14 }, { header: 'Time', key: 'time', width: 12 },
         { header: 'Total Sales', key: 'totalSales' }, { header: 'Cash', key: 'cash' }, { header: 'UPI', key: 'upi' }, { header: 'Card', key: 'card' },
         { header: 'Salesperson', key: 'salesperson', width: 18 }, { header: 'Biller', key: 'biller', width: 18 },
+        // GUARDRAIL (2026-09-30): see cafeDataIntegrityIssues above.
+        { header: 'Data Check', key: 'dataCheck', width: 14 },
       ],
       rows: cafeOrdersInRange.map(o => {
         const paid = cafePaidByMode(o.paymentType, o.paymentBreakdown, o.total || 0);
-        return { branch: 'Cafe', billNo: o.orderNumber, date: fmtDate(o.createdAt), time: fmtTime(o.createdAt), totalSales: o.total || 0, cash: paid.cash, upi: paid.upi, card: paid.card, salesperson: o.createdBy || '-', biller: o.billedBy || o.createdBy || '-' };
+        const dataCheck = o.paymentType === 'advance' && o.fullyPaidAt && !o.balanceOrderId && Math.abs((o.total || 0) - (o.fullAmount ?? o.subtotal ?? 0)) > 1
+          ? 'MISMATCH — verify before use' : 'OK';
+        return { branch: 'Cafe', billNo: o.orderNumber, date: fmtDate(o.createdAt), time: fmtTime(o.createdAt), totalSales: o.total || 0, cash: paid.cash, upi: paid.upi, card: paid.card, salesperson: o.createdBy || '-', biller: o.billedBy || o.createdBy || '-', dataCheck };
       }),
     },
     {
@@ -1592,6 +1659,14 @@ function AdminDashboard() {
         <KpiCard label="Cash Collected" value={formatCurrency(cafePaymentSplit.cash)} icon={<Banknote className="size-5" />} tone="blue" />
         <KpiCard label="UPI Collected" value={formatCurrency(cafePaymentSplit.upi)} icon={<Smartphone className="size-5" />} tone="purple" />
       </div>
+
+      {/* GUARDRAIL (2026-09-30): see cafeDataIntegrityIssues above. */}
+      {cafeDataIntegrityIssues.length > 0 && (
+        <div className="rounded-2xl border border-red-300 bg-red-100 px-4 py-3 text-sm font-semibold text-red-900">
+          <AlertTriangle className="mr-2 inline size-4" />
+          Data check failed on {cafeDataIntegrityIssues.length} advance order{cafeDataIntegrityIssues.length === 1 ? '' : 's'} — marked fully paid but total doesn't match the real order value: {cafeDataIntegrityIssues.map(o => `#${o.orderNumber}`).join(', ')}. Do not send this range's Excel/PDF to anyone until these are corrected.
+        </div>
+      )}
 
       <div className="grid gap-5 xl:grid-cols-2">
         <Panel title="Cafe Sales Trend" subtitle="Cafe-only revenue trend">
@@ -2061,6 +2136,14 @@ function AdminDashboard() {
   // Admin Dispatch Details' `rows` useMemo.
   const hosurBillsInRange = useMemo(() => realBillsInRange.filter(b => b.branch === 'Hosur')
     .sort((a, b) => (b.invoiceNo || b.billNo || '').localeCompare(a.invoiceNo || a.billNo || '', undefined, { numeric: true, sensitivity: 'base' })), [realBillsInRange]);
+  // GUARDRAIL (2026-09-30): see the dataCheckOk comment above — bills that
+  // fail this check in the CURRENT date range, surfaced as a banner so an
+  // admin sees it before exporting/sending anything, not after a client
+  // complains.
+  const hosurDataIntegrityIssues = useMemo(
+    () => hosurBillsInRange.filter(b => b.dataCheckOk === false),
+    [hosurBillsInRange],
+  );
   const hosurBillItemsInRange = useMemo(() => realBillItems.filter(i => i.branch === 'Hosur'), [realBillItems]);
   // FEATURE (2026-09-28): "I need both to show as different rows" — replaces
   // the earlier "stack invoice numbers on separate lines, same row" fix the
@@ -2180,6 +2263,9 @@ function AdminDashboard() {
         { header: 'Branch', key: 'branch' }, { header: 'Invoice Number', key: 'invoiceNo', width: 18 }, { header: 'Status', key: 'status', width: 14 }, { header: 'Date', key: 'date', width: 14 }, { header: 'Time', key: 'time', width: 12 },
         { header: 'Total Sales', key: 'totalSales' }, { header: 'Cash', key: 'cash' }, { header: 'UPI', key: 'upi' }, { header: 'Card', key: 'card' },
         { header: 'Salesperson', key: 'salesperson', width: 18 }, { header: 'Biller', key: 'biller' },
+        // GUARDRAIL (2026-09-30): travels with the file itself, not just the
+        // on-screen banner — see hosurDataIntegrityIssues above.
+        { header: 'Data Check', key: 'dataCheck', width: 14 },
       ],
       // FEATURE (2026-09-28): same batch-split as the table (see
       // hosurBillsSplitForDisplay) — a multi-batch bill is now N rows here
@@ -2217,12 +2303,12 @@ function AdminDashboard() {
       rows: [
         ...hosurBillsSplitForDisplay.map(b => {
           const paid = b.splitIndex === 0 ? (billPaidByMode.get(b.id) ?? { cash: 0, upi: 0, card: 0 }) : { cash: 0, upi: 0, card: 0 };
-          return { branch: 'Hosur', invoiceNo: b.splitInvoiceNo, status: 'Billed', date: fmtDate(b.createdAt), time: fmtTime(b.createdAt), totalSales: b.splitTotal, cash: paid.cash, upi: paid.upi, card: paid.card, salesperson: b.salesperson || '—', biller: b.biller || '—' };
+          return { branch: 'Hosur', invoiceNo: b.splitInvoiceNo, status: 'Billed', date: fmtDate(b.createdAt), time: fmtTime(b.createdAt), totalSales: b.splitTotal, cash: paid.cash, upi: paid.upi, card: paid.card, salesperson: b.salesperson || '—', biller: b.biller || '—', dataCheck: b.dataCheckOk === false ? 'MISMATCH — verify before use' : 'OK' };
         }),
         ...unconfirmedSalesInvoices.map(r => ({
           branch: r.scope, invoiceNo: r.invoiceNo, status: r.status === 'cancelled' ? 'Cancelled' : 'Not Billed',
           date: fmtDate(r.createdAt), time: fmtTime(r.createdAt), totalSales: r.total, cash: 0, upi: 0, card: 0,
-          salesperson: '—', biller: r.who || '—',
+          salesperson: '—', biller: r.who || '—', dataCheck: '—',
         })),
       ].sort((a, b) => b.invoiceNo.localeCompare(a.invoiceNo, undefined, { numeric: true, sensitivity: 'base' })),
     },
@@ -2312,6 +2398,19 @@ function AdminDashboard() {
         <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-800">
           <AlertTriangle className="mr-2 inline size-4" />
           {hosurUnbilledDispatched.length} order{hosurUnbilledDispatched.length === 1 ? '' : 's'} worth {formatCurrency(hosurUnbilledTotal)} {hosurUnbilledDispatched.length === 1 ? 'has' : 'have'} been dispatched to shops but never confirmed/billed in Planner's Hosur Shops &amp; Billing → Dispatch &amp; Billing Queue. This is real revenue not yet tracked as collected.
+        </div>
+      )}
+
+      {/* GUARDRAIL (2026-09-30): "make sure this issue won't occur in
+          future" — a client complained about wrong totals in this exact
+          export, traced to a bill whose stored total silently disagreed
+          with its own credit+paid figures. This catches that class of
+          problem for every bill in range, regardless of what causes it,
+          before it ever reaches an export or a client again. */}
+      {hosurDataIntegrityIssues.length > 0 && (
+        <div className="rounded-2xl border border-red-300 bg-red-100 px-4 py-3 text-sm font-semibold text-red-900">
+          <AlertTriangle className="mr-2 inline size-4" />
+          Data check failed on {hosurDataIntegrityIssues.length} bill{hosurDataIntegrityIssues.length === 1 ? '' : 's'} — stored total doesn't match credit + paid: {hosurDataIntegrityIssues.map(b => b.invoiceNo || b.billNo).join(', ')}. Do not send this range's Excel/PDF to anyone until these are corrected — the figures below and in the export may be wrong for these bills specifically.
         </div>
       )}
 
@@ -2776,6 +2875,13 @@ function AdminDashboard() {
   // CHANGE 9: Improved DailyClosureTab with presets, better layout, summary totals. CHANGE 14: Removed KPI grid
   const DailyClosureTab = (
     <div className="space-y-5">
+      {/* GUARDRAIL (2026-09-30): see voidSessionsWithBills above. */}
+      {voidSessionsWithBills.length > 0 && (
+        <div className="rounded-2xl border border-red-300 bg-red-100 px-4 py-3 text-sm font-semibold text-red-900">
+          <AlertTriangle className="mr-2 inline size-4" />
+          {voidSessionsWithBills.length} counter session{voidSessionsWithBills.length === 1 ? '' : 's'} marked void still {voidSessionsWithBills.length === 1 ? 'has' : 'have'} real bills attached — {formatCurrency(voidSessionsWithBills.reduce((s, r) => s + r.revenue, 0))} invisible to Daily Closure and every branch report right now: {voidSessionsWithBills.map(r => `${r.branch} ${r.businessDate} (${r.billCount} bills)`).join(', ')}. This is the exact pattern that hid ~₹4.78L of real revenue for a month until 2026-09-30 — don't let it sit, finalize or investigate these sessions.
+        </div>
+      )}
       {/* CHANGE 9c: closure date presets (Today/Yesterday only) */}
       <div className="flex gap-1.5">
         {[{ label: 'Today', days: 0 }, { label: 'Yesterday', days: 1 }].map(p => (
