@@ -1319,7 +1319,13 @@ function AttendanceSalaryTab() {
                 <h4 className="font-bold text-slate-900">{branch}</h4>
                 <span className="text-xs text-slate-500">{emps.length} staff</span>
               </div>
-              <div className="grid grid-cols-3 gap-3">
+              {/* RESPONSIVE FIX (2026-09-30): "fits all cards" on a narrow
+                  phone (Samsung S26/Z Flip 5 inner screen, ~360-412px) — a
+                  bare grid-cols-3 (unlike owner-metric-grid/owner-business-grid
+                  above, which already collapse at 900px/720px) squeezed
+                  "Earned Payroll" (a rupee figure) into a ~90px column and
+                  wrapped it awkwardly. 2 columns on mobile, 3 from tablet up. */}
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
                 <div className="text-center">
                   <p className="text-xl font-black text-slate-950">{emps.length}</p>
                   <p className="text-[10px] text-slate-500">Headcount</p>
@@ -3025,7 +3031,10 @@ function OwnerDailyClosureTab() {
       {rows.length > 0 && (
         <div className="rounded-2xl bg-slate-50 p-4 border border-slate-200">
           <h4 className="font-bold text-sm mb-3">Day Totals — {date}</h4>
-          <div className="grid grid-cols-4 gap-3">
+          {/* RESPONSIVE FIX (2026-09-30): same "fits all cards" narrow-phone
+              fix as the payroll grid above — 4 equal columns of rupee
+              figures had no room to breathe on a ~360-412px screen. */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             {[
               ['Total Sales', formatCurrency(rows.reduce((s, r) => s + r.grossSales, 0))],
               ['Total Cash',  formatCurrency(rows.reduce((s, r) => s + r.cash, 0))],
