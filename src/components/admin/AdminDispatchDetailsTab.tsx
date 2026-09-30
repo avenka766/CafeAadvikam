@@ -143,6 +143,12 @@ export default function AdminDispatchDetailsTab() {
   // batches — see hosurBillingBridge's own "combined items across batches"
   // comment — so its own created_at can predate the range being viewed).
   const [hosurPaymentByInvoiceNo, setHosurPaymentByInvoiceNo] = useState<Map<string, string>>(new Map());
+  // BUG FIX (2026-09-30): same root cause as PlannerDashboard.tsx's
+  // PlannerAllInvoicesTab — dispatch_invoices.created_at is when goods left
+  // Berigai, not when a Hosur shop was actually billed. Usually the same
+  // day (invisible), wrong when billed days after dispatch. This tab has
+  // its own separate copy of the date-mapping logic, so needed its own fix.
+  const [hosurConfirmedAtByInvoiceNo, setHosurConfirmedAtByInvoiceNo] = useState<Map<string, string>>(new Map());
 
   const load = async () => {
     setLoading(true); setError('');
@@ -158,7 +164,7 @@ export default function AdminDispatchDetailsTab() {
       const [invoiceRows, salesRes, hosurBillsRes] = await Promise.all([
         listDispatchInvoices({ fromDate: fromIso, toDate: toIso }),
         fetchAllRows<Record<string, unknown>>('bakery_walkin_bills', (q) => q.select('*').gte('created_at', fromIso).lt('created_at', toIso).order('created_at', { ascending: false })),
-        fetchAllRows<{ invoice_no: string | null; status: string }>('hosur_bills', (q) => q.select('invoice_no, status').not('invoice_no', 'is', null)),
+        fetchAllRows<{ invoice_no: string | null; status: string; confirmed_at: string | null }>('hosur_bills', (q) => q.select('invoice_no, status, confirmed_at').not('invoice_no', 'is', null)),
       ]);
       if (salesRes.error) throw new Error(salesRes.error);
       // FEATURE (2026-09-06): "recorded in the report and admin dispatch
@@ -170,17 +176,20 @@ export default function AdminDispatchDetailsTab() {
       setInvoices(invoiceRows);
       setSales(((salesRes.data ?? []) as Record<string, unknown>[]).map(mapWalkinBill));
       const paymentMap = new Map<string, string>();
+      const confirmedAtMap = new Map<string, string>();
       if (!hosurBillsRes.error) {
-        for (const row of (hosurBillsRes.data ?? []) as { invoice_no: string | null; status: string }[]) {
+        for (const row of (hosurBillsRes.data ?? []) as { invoice_no: string | null; status: string; confirmed_at: string | null }[]) {
           // invoice_no is a comma-joined list when one bill spans multiple
           // dispatch batches (see hosurBillingBridge.ts step 2b) — register
           // the bill's status against every invoice number it covers.
           for (const no of (row.invoice_no ?? '').split(',').map(s => s.trim()).filter(Boolean)) {
             paymentMap.set(no, row.status);
+            if (row.confirmed_at) confirmedAtMap.set(no, row.confirmed_at);
           }
         }
       }
       setHosurPaymentByInvoiceNo(paymentMap);
+      setHosurConfirmedAtByInvoiceNo(confirmedAtMap);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load dispatch details.');
       setInvoices([]); setSales([]);
@@ -197,7 +206,8 @@ export default function AdminDispatchDetailsTab() {
       scopeLabel: r.scope,
       invoiceNo: r.invoiceNo,
       party: r.hosurShopName || r.customerName || `${r.scope} Branch`,
-      date: r.createdAt, itemCount: r.items.length,
+      date: (r.scope === 'Hosur' && hosurConfirmedAtByInvoiceNo.get(r.invoiceNo)) || r.createdAt,
+      itemCount: r.items.length,
       subtotal: r.subtotal, discountAmount: r.discountAmount, total: r.total,
       dispatchedBy: r.dispatchedBy, status: r.status, record: r,
       paymentStatus: r.scope === 'Hosur' ? hosurPaymentByInvoiceNo.get(r.invoiceNo) : undefined,
@@ -227,7 +237,7 @@ export default function AdminDispatchDetailsTab() {
     // and both exports (exportExcel/exportPdf, which read `rows` directly)
     // are built from, so the fix applies everywhere at once.
     return [...fromInvoices, ...fromSales].sort((a, b) => b.invoiceNo.localeCompare(a.invoiceNo, undefined, { numeric: true, sensitivity: 'base' }));
-  }, [invoices, sales, hosurPaymentByInvoiceNo]);
+  }, [invoices, sales, hosurPaymentByInvoiceNo, hosurConfirmedAtByInvoiceNo]);
 
   const filteredRows = useMemo(() => {
     let list = bucketFilter === 'All' ? rows : rows.filter(r => r.bucket === bucketFilter);
