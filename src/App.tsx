@@ -11,7 +11,7 @@ import DataHealthBanner from '@/components/layout/DataHealthBanner';
 import ElectronRefreshButton from '@/components/layout/ElectronRefreshButton';
 import WorkspaceChrome from '@/components/layout/WorkspaceChrome';
 import { getRoleDefaultPath } from '@/lib/routing';
-import { isNativeApp } from '@/lib/platform';
+import { isNativeApp, isElectronApp } from '@/lib/platform';
 import type { UserRole } from '@/types';
 import { useMenuStore } from '@/stores/menuStore';
 import { useOfflineQueueStore } from '@/lib/offlineQueue';
@@ -149,6 +149,14 @@ function AppRoutes() {
   const isPublicRoute = publicRoutes.includes(location.pathname);
   const { currentUser } = useAuthStore();
   const native = isNativeApp();
+  // BUG FIX (2026-09-30): "the .exe should not show the landing page, only
+  // the login page" — deliberately NOT folded into `native` itself (see
+  // isElectronApp()'s own comment in platform.ts for why): the Windows app
+  // should keep the normal desktop Header/WorkspaceChrome/BottomNav below
+  // (WorkspaceChrome is explicitly built for a desktop, per the comment
+  // above `rootElement`), it just also has no reason to show the public
+  // marketing Landing page like Owner's/the branch-staff phone apps.
+  const skipLandingPage = native || isElectronApp();
   const [hydrated, setHydrated] = useState(
     () => useAuthStore.persist.hasHydrated()
   );
@@ -291,7 +299,7 @@ function AppRoutes() {
   // deliberately built to show a real login screen instead — would otherwise
   // open on the customer-facing Landing page on a fresh install. Scoped to
   // `native` only, so the real web deployment's `/` behavior is untouched.
-  const rootElement = native && !currentUser ? <Navigate to="/login" replace /> : <Landing />;
+  const rootElement = skipLandingPage && !currentUser ? <Navigate to="/login" replace /> : <Landing />;
 
   const routes = (
     <Suspense fallback={<div className="flex min-h-[40vh] items-center justify-center text-sm text-muted-foreground">Loading workspace…</div>}>
@@ -355,7 +363,7 @@ function AppRoutes() {
   // are skipped entirely rather than stacking a second, desktop-oriented
   // layer of navigation on top. None of this touches the web build, which
   // keeps its existing Header/WorkspaceChrome/BottomNav exactly as before.
-  if (native && !currentUser && location.pathname === '/') {
+  if (skipLandingPage && !currentUser && location.pathname === '/') {
     return <Navigate to="/login" replace />;
   }
 
