@@ -17,12 +17,10 @@
 // visible DOM, on the web deployment or either mobile app.
 import { useEffect, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
-
-declare global {
-  interface Window {
-    cafeAadvikamDesktop?: { isElectron: boolean };
-  }
-}
+// window.cafeAadvikamDesktop's type now lives in src/lib/platform.ts (the
+// single source of truth — see its own comment for why a second, possibly
+// differently-shaped `declare global` here would conflict).
+import '@/lib/platform';
 
 export default function ElectronRefreshButton() {
   const [isElectron, setIsElectron] = useState(false);
