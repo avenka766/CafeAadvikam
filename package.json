@@ -123,7 +123,7 @@
   },
   "build": {
     "appId": "com.cafeaadvikam.app",
-    "productName": "Cafe Aadvikam",
+    "productName": "Sri Nanjundeshwara Bakery",
     "files": [
       "electron/**/*",
       "dist/**/*",
@@ -145,7 +145,7 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Cafe Aadvikam"
+      "shortcutName": "Sri Nanjundeshwara Bakery"
     }
   },
   "engines": {
