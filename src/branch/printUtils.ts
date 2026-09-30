@@ -5,6 +5,7 @@ import { BRANCH_LABELS } from './types';
 import type { BranchBillRecord } from './branchOpsStore';
 import { supabase } from '@/lib/supabase';
 import { printViaIframe } from '@/lib/printViaIframe';
+import { desktopSilentPrint } from '@/lib/platform';
 
 export const BRANCH_PRINT_COMPLETE_EVENT = 'cafe-aadvikam:branch-print-complete';
 
@@ -54,6 +55,34 @@ const cashTenderedChangeHtml = (bill: BranchBillRecord, rowClass: string) => {
 const PRINT_TRIGGER = '<script>window.onload=function(){if(window.__printed)return;window.__printed=true;try{window.print()}catch(e){}};</script>';
 
 function triggerPrintWithFallback(target: Window) {
+  // FEATURE (2026-09-30): "the bill should print without showing the print
+  // preview" — Electron's own window.print()/iframe.print() always opens
+  // the native OS print dialog; true silent printing needs the desktop
+  // app's main process instead (see desktopSilentPrint()'s own comment).
+  // `target`'s document already has PRINT_TRIGGER written into it — stripped
+  // here so the FRESH hidden print window our own IPC call creates doesn't
+  // also fire a second, non-silent print from that same inline script.
+  // `target.onafterprint` (set by every caller of this function, e.g.
+  // printCounterBill's cleanup) is invoked directly once our own print
+  // resolves, since the real `afterprint` event never fires on `target`
+  // when its own .print() is never called.
+  const silent = desktopSilentPrint(target.document.documentElement.outerHTML.replace(PRINT_TRIGGER, ''));
+  if (silent) {
+    // A couple of callers (printAccountingVoucher, printBranchCashierClosure)
+    // pass a real, visible window.open() popup rather than a hidden iframe —
+    // now that it's never going to show a print dialog of its own, close it
+    // too rather than leaving an orphaned window on screen. No-op/harmless
+    // for the hidden-iframe callers (an iframe's contentWindow.close() does
+    // nothing meaningful, wrapped in the same try/catch either way).
+    void silent
+      .then((result) => { if (!result.success) console.error('[printUtils] Electron silent print failed:', result.errorType); })
+      .catch((err) => console.error('[printUtils] Electron silent print threw:', err))
+      .finally(() => {
+        try { target.onafterprint?.(new Event('afterprint')); } catch { /* target may already be gone */ }
+        try { target.close(); } catch { /* iframe contentWindow — nothing to close */ }
+      });
+    return;
+  }
   const flagged = target as unknown as { __printed?: boolean };
   // Immediate attempt — still inside the original click's call stack (the
   // document.write()+close() above are synchronous, so the receipt text is
