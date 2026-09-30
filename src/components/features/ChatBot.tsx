@@ -426,14 +426,17 @@ export default function ChatBot() {
 
   return (
     <>
-      {/* Floating toggle button — z-50 (U-18: was z-40, covered by modals) */}
+      {/* Floating toggle button — z-50 (U-18: was z-40, covered by modals).
+          BUG FIX (2026-09-30): chat button overlap on mobile — Landing has no
+          bottom nav bar, but the old offset was sized for one anyway, so the
+          button floated mid-page over scrolling content. Now just clears the safe area. */}
       <button
         onClick={() => setOpen(o => !o)}
         className={cn(
           'fixed right-4 z-50 w-14 h-14 rounded-full shadow-teal flex items-center justify-center transition-all duration-300',
           'cafe-gradient text-white hover:scale-105 active:scale-95',
         )}
-        style={{ bottom: `calc(env(safe-area-inset-bottom, 0px) + 5rem + ${keyboardOffset}px)` }}
+        style={{ bottom: `calc(env(safe-area-inset-bottom, 0px) + 1.5rem + ${keyboardOffset}px)` }}
         aria-label="Open chat"
       >
         {open ? <X className="size-6" /> : <MessageCircle className="size-6" />}
@@ -455,7 +458,7 @@ export default function ChatBot() {
           open ? 'opacity-100 scale-100 pointer-events-auto' : 'opacity-0 scale-95 pointer-events-none',
         )}
         style={{
-          bottom: `calc(env(safe-area-inset-bottom, 0px) + 9rem + ${keyboardOffset}px)`,
+          bottom: `calc(env(safe-area-inset-bottom, 0px) + 5.5rem + ${keyboardOffset}px)`,
           height: '520px',
         }}
       >
