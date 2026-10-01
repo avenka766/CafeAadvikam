@@ -50,6 +50,7 @@ import { useBranchCatalogStore, type BranchCatalogItem } from '@/stores/branchCa
 import { HOSUR_VRSNB_PRICE_LIST } from '@/data/hosurVrsnbPriceList';
 import { buildHosurOrderTag, buildHosurItemId, checkRecentDuplicateHosurOrder } from '@/bakery/hosurOrderShared';
 import { getPackingCounterStatus } from '@/bakery/packingCounter';
+import { queueHosurConfirmBill } from '@/bakery/hosurBillingBridge';
 import KgPackAdder from '@/bakery/KgPackAdder';
 
 export const BRANCH = 'Hosur' as const;
@@ -1529,6 +1530,10 @@ export default function HosurDashboard({ hideNav = false }: { hideNav?: boolean 
   };
 
   const createDraftBill = async (order: HosurOrder, items: HosurOrderItem[]) => {
+    // OFFLINE GUARD (2026-10-01): mints a real bill number and checks live
+    // server state for an existing bill on this order — same reasoning as
+    // the guards in hosurBillingBridge.ts/HosurShopOrderPanel.tsx.
+    if (!navigator.onLine) throw new Error('No internet connection — billing needs a live connection to safely assign a bill number. Please reconnect and try again.');
     const existing = bills.find((bill) => bill.orderId === order.id && bill.status !== 'cancelled');
     if (existing) return existing.id;
     const { data: serverExisting, error: lookupError } = await supabase.from('hosur_bills').select('id').eq('order_id', order.id).neq('status', 'cancelled').maybeSingle();
@@ -1584,6 +1589,30 @@ export default function HosurDashboard({ hideNav = false }: { hideNav?: boolean 
   };
 
   const confirmBill = async (bill: HosurBill, paymentType: PaymentType, draft: PaymentDraft) => {
+    // OFFLINE SUPPORT (2026-10-01): "fix everything properly" — unlike
+    // createDraftBill (which mints a brand-new bill number and genuinely
+    // can't proceed without a connection), confirmBill acts on a bill that
+    // already exists and is already visible on screen — the same shape as
+    // every other action made offline-capable this pass. Credit-only when
+    // queued (counter reconciliation for cash/partial is meaningless
+    // offline, same reasoning as dispatchAndBill's own restriction); real
+    // writes run for real at replay time via runHosurConfirmBillCore
+    // (hosurBillingBridge.ts), shared with the online call below so there's
+    // exactly one implementation, not two to keep in sync.
+    if (!navigator.onLine) {
+      if (paymentType !== 'credit') {
+        throw new Error('No internet connection — only credit billing can be queued offline. Switch to Credit, or wait for a connection for cash/partial payment.');
+      }
+      if (!draft.dueDate) throw new Error('Due date is mandatory for Credit and Partial Payment bills.');
+      const items = billItems[bill.id] ?? [];
+      await queueHosurConfirmBill({
+        bill: { id: bill.id, orderId: bill.orderId, shopId: bill.shopId, shopName: bill.shopName, shopWhatsapp: bill.shopWhatsapp, billNo: bill.billNo, invoiceNo: bill.invoiceNo, subtotal: bill.subtotal },
+        items: items.map((item) => ({ itemName: item.itemName, unit: item.unit, quantity: item.quantity, unitPrice: item.unitPrice, lineTotal: item.lineTotal })),
+        paymentType, paidAmount: undefined, paymentMode: null, dueDate: draft.dueDate,
+        userName, userRole,
+      });
+      return;
+    }
     await assertHosurCounterOpen();
     const total = bill.subtotal;
     let paid = 0;

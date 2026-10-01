@@ -21,6 +21,10 @@ import AdminWalletTab from '@/components/admin/AdminWalletTab';
 import AdminPromotionsTab from '@/components/admin/AdminPromotionsTab';
 import AdminInvoicesTab from '@/bakery/AdminInvoicesTab';
 import AdminPurchaseOrdersTab from '@/bakery/AdminPurchaseOrdersTab';
+import AdminTestimonialsTab from '@/components/admin/AdminTestimonialsTab';
+import AdminCakeGalleryTab from '@/components/admin/AdminCakeGalleryTab';
+import AdminPromoBannersTab from '@/components/admin/AdminPromoBannersTab';
+import AdminLeadsTab from '@/components/admin/AdminLeadsTab';
 import { useBranchLedger } from '@/hooks/useBranchLedger';
 import { useNotificationStore } from '@/bakery/notificationStore';
 import { supabase, fetchAllRows } from '@/lib/supabase';
@@ -35,14 +39,14 @@ import {
   FileSpreadsheet, Filter, History, IndianRupee, Landmark, LayoutDashboard,
   Lock, Package, PackageSearch, Printer, RefreshCw, Search,
   ShieldCheck, ShoppingBag, Smartphone, Store, TrendingDown, TrendingUp,
-  Trash2, WalletCards, Gift, X, Truck,
+  Trash2, WalletCards, Gift, X, Truck, Star, Image, Megaphone, Users,
 } from 'lucide-react';
 
 const CHART_COLORS = ['#2563eb', '#d97706', '#059669', '#7c3aed', '#dc2626', '#0891b2', '#ea580c'];
 const PAYMENT_COLORS = ['#16a34a', '#2563eb', '#7c3aed', '#f97316', '#dc2626'];
 
 // CHANGE 3: Removed 'stock-alerts' from AdminTab union
-type AdminTab = 'wallet' | 'promotions' | 'overview' | 'cafe' | 'branches' | 'hosur' | 'dispatch-details' | 'items' | 'daily-closure' | 'credits' | 'advance' | 'stock-disputes' | 'stock-variance' | 'waste' | 'audit' | 'invoices' | 'purchase-orders' | 'alerts' | 'complaints' | 'attendance';
+type AdminTab = 'wallet' | 'promotions' | 'overview' | 'cafe' | 'branches' | 'hosur' | 'dispatch-details' | 'items' | 'daily-closure' | 'credits' | 'advance' | 'stock-disputes' | 'stock-variance' | 'waste' | 'audit' | 'invoices' | 'purchase-orders' | 'alerts' | 'complaints' | 'attendance' | 'testimonials' | 'cake-gallery' | 'promo-banners' | 'leads';
 
 type SalesTxn = {
   id: string; branch: Branch; itemName: string; qty: number; revenue: number;
@@ -88,6 +92,12 @@ const NAV_ITEMS: Array<{ id: AdminTab; label: string; description: string; icon:
   { id: 'alerts', label: 'Alerts', description: 'Business alerts (no low-stock)', icon: Bell, adminOnly: true },
   { id: 'complaints', label: 'Complaints', description: 'Branch admin complaints and issues', icon: ClipboardList, adminOnly: true },
   { id: 'attendance', label: 'Attendance & Payroll', description: 'Staff attendance and salary management', icon: CalendarClock, adminOnly: true },
+  // FEATURE (2026-09-30 homepage redesign): admin CMS for the new DB-backed
+  // homepage sections — see src/pages/Landing.tsx and src/components/admin/.
+  { id: 'testimonials', label: 'Testimonials', description: 'Manage homepage reviews (Cafe and Bakery)', icon: Star, adminOnly: true },
+  { id: 'cake-gallery', label: 'Cake Gallery', description: 'Photos shown in the homepage cake gallery', icon: Image, adminOnly: true },
+  { id: 'promo-banners', label: 'Promo Banners', description: 'Homepage announcement banner', icon: Megaphone, adminOnly: true },
+  { id: 'leads', label: 'Leads', description: 'Party hall enquiries and PAN-India waitlist sign-ups', icon: Users, adminOnly: true },
 ];
 
 function todayInput(d = new Date()) {
@@ -3474,6 +3484,10 @@ function AdminDashboard() {
     alerts: AlertsTab,
     complaints: ComplaintsTab,
     attendance: AttendanceTab,
+    testimonials: <AdminTestimonialsTab />,
+    'cake-gallery': <AdminCakeGalleryTab />,
+    'promo-banners': <AdminPromoBannersTab />,
+    leads: <AdminLeadsTab />,
   };
 
   const activeMeta = NAV_ITEMS.find(item => item.id === activeTab) || NAV_ITEMS[0];
