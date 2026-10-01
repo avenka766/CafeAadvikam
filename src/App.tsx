@@ -15,7 +15,18 @@ import { isNativeApp, isElectronApp } from '@/lib/platform';
 import type { UserRole } from '@/types';
 import { useMenuStore } from '@/stores/menuStore';
 import { useOfflineQueueStore } from '@/lib/offlineQueue';
-import Landing from '@/pages/Landing';
+// PERF FIX (2026-10-01): "SNB branch dashboard still slow to load" — Landing
+// was the only top-level route imported eagerly (every other route below
+// already uses lazy()), and it's the sole consumer of the three.js/GSAP/
+// Lenis-heavy cinematic hero. Because of that one eager import, the main
+// entry bundle statically pulled in the 684KB three-vendor chunk — verified
+// directly in the built output (dist/assets/index-*.js references
+// three-vendor-*.js) — meaning EVERY page load, including every branch/
+// admin/owner dashboard that never renders Landing at all, paid to download
+// and parse it. Landing is only ever rendered as a plain JSX element inside
+// the already-Suspense-wrapped <Routes> below, so lazy-loading it here is a
+// pure win with no behavior change for the one route that does use it.
+const Landing = lazy(() => import('@/pages/Landing'));
 import Login from '@/pages/Login';
 const MenuPage = lazy(() => import('@/pages/MenuPage'));
 const OrderPad = lazy(() => import('@/pages/OrderPad'));
