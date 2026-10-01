@@ -5,6 +5,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { MessageCircle, X, Send, Phone, ShoppingBag, CalendarDays, ChevronRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { CAFE_INFO } from '@/constants/cafeInfo';
 import cafeLogo from '@/assets/cafe-logo.png';
 // PERF-03: menu dataset lazy-loaded via dynamic import so it's excluded from the
 // main bundle and only fetched when the chatbot first mounts.
@@ -23,9 +24,12 @@ function getMenuData() {
 // it resolves before the user can type their first message.
 import('./chatBotMenuData.json').then(m => { _menuDataCache = m.default as unknown as typeof _menuDataCache; });
 
-const CAFE_WA = '919095445444';
-const BAKERY_PHONE = '+91 9095445444';
-const MAPS_URL = 'https://www.google.com/maps/place/Cafe+Aadvikam/@12.808481,77.9602846,17z/data=!4m6!3m5!1s0x3baddf00120caa5f:0x7cf353554e2c66a9!8m2!3d12.808481!4d77.9628595!16s%2Fg%2F11z0zvhx9p';
+// Sourced from the shared CAFE_INFO (src/constants/cafeInfo.ts) instead of
+// hardcoding a second copy — this file previously had its own hours text
+// that had drifted to the wrong '6 AM – 10 PM' (see cafeInfo.ts header).
+const CAFE_WA = CAFE_INFO.whatsapp;
+const BAKERY_PHONE = CAFE_INFO.phone;
+const MAPS_URL = CAFE_INFO.mapsPlaceUrl;
 const SNB_WEBSITE = 'https://www.snbbakery.in';
 
 // PERF-03: Menu dataset moved to a separate JSON file so it's only loaded when
@@ -98,10 +102,10 @@ function getResponse(q: string): string {
     return 'You can order in 3 easy ways:\n\n1. 💬 WhatsApp — +91 90954 45444\n2. 📞 Call — +91 9095445444\n3. 🚶 Walk in — 109 Bagalur Main Road, Berikai\n\nFor bakery items, WhatsApp a day in advance!';
 
   if (/location|address|where|map|direction|berikai|how to reach/i.test(ql))
-    return '📍 Cafe Aadvikam\n109 Bagalur Main Road, Berikai 635105\n\n⏰ Open 6 AM – 10 PM daily\n\nAmple parking available!';
+    return '📍 Cafe Aadvikam\n109 Bagalur Main Road, Berikai 635105\n\n⏰ Open 7 AM – 10 PM daily\n\nAmple parking available!';
 
   if (/hour|timing|time|open|close|when/i.test(ql) && !/menu|breakfast|lunch|biryani|chinese|rice|bread|snack|beverage/i.test(ql))
-    return '⏰ Open 6 AM – 10 PM every day.\n\n• Breakfast: 7AM–11AM\n• Beverages: 6AM–10PM\n• Lunch: 12PM–3PM\n• Biriyani, Chinese, Starters: 12PM–3PM & 7PM–10PM\n• Rice & Noodles: 12PM–10PM\n• Evening Snacks & Chats: 3PM–10PM\n• Parotta & Gravy: 7PM–10PM\n• Kids Menu: 11AM–10PM';
+    return '⏰ Open 7 AM – 10 PM every day.\n\n• Breakfast: 7AM–11AM\n• Beverages: 6AM–10PM\n• Lunch: 12PM–3PM\n• Biriyani, Chinese, Starters: 12PM–3PM & 7PM–10PM\n• Rice & Noodles: 12PM–10PM\n• Evening Snacks & Chats: 3PM–10PM\n• Parotta & Gravy: 7PM–10PM\n• Kids Menu: 11AM–10PM';
 
   if (/party hall|party|hall|event|birthday|celebrate|function|corporate|book.*hall|reception/i.test(ql))
     return '🎉 Party Hall — Cafe Aadvikam\n\nPerfect for:\n• Birthday parties\n• Family gatherings\n• Corporate events\n• Receptions & celebrations\n\n✅ Spacious hall with ample parking\n✅ Pure veg catering from our kitchen\n✅ Customisable arrangements\n\n📍 109 Bagalur Main Road, Berikai\n\nTap "Book Party Hall" below to send your details via WhatsApp!';
@@ -110,7 +114,7 @@ function getResponse(q: string): string {
     return '📞 +91 9095445444\n💬 WhatsApp: +91 90954 45444\n🌐 www.snbbakery.in\n📍 109 Bagalur Main Road, Berikai 635105';
 
   if (/about|who are|what is cafe|aadvikam|vrsnb/i.test(ql))
-    return 'Cafe Aadvikam — Restaurant & Party Hall\n\nA pure vegetarian restaurant serving authentic South Indian breakfast, North Indian cuisine, Chinese dishes, and freshly baked goods.\n\n• Type: Pure Vegetarian 🌿\n• Hours: 6 AM – 10 PM Daily\n• Address: 109 Bagalur Main Road, Berikai 635105\n• Venture of: VRSNB Foods LLP\n• Website: www.snbbakery.in';
+    return 'Cafe Aadvikam — Restaurant & Party Hall\n\nA pure vegetarian restaurant serving authentic South Indian breakfast, North Indian cuisine, Chinese dishes, and freshly baked goods.\n\n• Type: Pure Vegetarian 🌿\n• Hours: 7 AM – 10 PM Daily\n• Address: 109 Bagalur Main Road, Berikai 635105\n• Venture of: VRSNB Foods LLP\n• Website: www.snbbakery.in';
 
   if (/breakfast|idly|dosa|vada|pongal|upma|uttapam|kesari/i.test(ql))
     return menuSection('South Indian Breakfast');
@@ -165,7 +169,7 @@ function getResponse(q: string): string {
     return 'Price ranges at Cafe Aadvikam 💰\n\n• Breakfast: ₹19–₹89\n• Soups: ₹59–₹79\n• Lunch: ₹79–₹89\n• Biriyani: ₹140–₹200\n• Tandoori Starters: ₹110–₹190\n• Chinese: ₹79–₹120\n• Rice & Noodles: ₹110–₹189\n• Breads: ₹30–₹90\n• Gravy & Curry: ₹140–₹170\n• Beverages: ₹20–₹70\n\nAsk about a specific dish for exact price!';
 
   if (/thank|thanks|great|awesome|helpful/i.test(ql))
-    return 'You\'re welcome! 😊 Hope to see you at Cafe Aadvikam soon.\n\n📍 109 Bagalur Main Road, Berikai · ⏰ 6AM–10PM daily';
+    return 'You\'re welcome! 😊 Hope to see you at Cafe Aadvikam soon.\n\n📍 109 Bagalur Main Road, Berikai · ⏰ 7AM–10PM daily';
 
   for (const cat of Object.keys(getMenu())) {
     if (ql.includes(cat.toLowerCase().split(' ')[0]) || ql.includes(cat.toLowerCase()))
@@ -258,9 +262,11 @@ function ContactModal({ onClose, onSubmit }: { onClose: () => void; onSubmit: (f
           <div>
             <label className="text-xs font-semibold text-gray-500 mb-1 block">Enquiry Type</label>
             <select className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm outline-none focus:border-orange-400 bg-white" value={form.type} onChange={e => setForm(f => ({ ...f, type: e.target.value }))}>
-              <option>Party Hall Booking</option>
-              <option>Menu Enquiry</option>
+              <option>Cake Order</option>
               <option>Bakery Order</option>
+              <option>Catering Enquiry</option>
+              <option>Party Hall Booking</option>
+              <option>Bulk Order</option>
               <option>General Enquiry</option>
             </select>
           </div>
@@ -287,7 +293,7 @@ function OrderModal({ onClose }: { onClose: () => void }) {
   const options = [
     { icon: '💬', label: 'Order via WhatsApp', sub: 'Chat to place your order', action: () => openWA('Hi, I want to place an order at Cafe Aadvikam'), bg: 'bg-green-50' },
     { icon: '📞', label: 'Call to Order', sub: BAKERY_PHONE, action: () => window.open(`tel:${BAKERY_PHONE}`), bg: 'bg-amber-50' },
-    { icon: '📍', label: 'Dine In / Visit Us', sub: '109 Bagalur Main Road, Berikai · 6AM–10PM', action: () => window.open(MAPS_URL, '_blank'), bg: 'bg-red-50' },
+    { icon: '📍', label: 'Dine In / Visit Us', sub: '109 Bagalur Main Road, Berikai · 7AM–10PM', action: () => window.open(MAPS_URL, '_blank'), bg: 'bg-red-50' },
     { icon: '🌐', label: 'SNB Bakery Website', sub: 'www.snbbakery.in', action: () => window.open(SNB_WEBSITE, '_blank'), bg: 'bg-purple-50' },
   ];
 
@@ -427,16 +433,23 @@ export default function ChatBot() {
   return (
     <>
       {/* Floating toggle button — z-50 (U-18: was z-40, covered by modals).
-          BUG FIX (2026-09-30): chat button overlap on mobile — Landing has no
-          bottom nav bar, but the old offset was sized for one anyway, so the
-          button floated mid-page over scrolling content. Now just clears the safe area. */}
+          BUG FIX (2026-09-30): chat button overlap on mobile — Landing had no
+          bottom nav bar at the time, but the old offset was sized for one
+          anyway, so the button floated mid-page over scrolling content. That
+          was fixed by just clearing the safe area.
+          FEATURE (2026-09-30, same day, later): Landing's redesign added a
+          real mobile sticky bottom action bar back (~4.25rem tall) — the
+          --chat-extra var below clears it on mobile only (0 on desktop,
+          where that bar doesn't render), so this doesn't regress the fix
+          above into the exact bug it was written to solve. */}
       <button
         onClick={() => setOpen(o => !o)}
         className={cn(
           'fixed right-4 z-50 w-14 h-14 rounded-full shadow-teal flex items-center justify-center transition-all duration-300',
           'cafe-gradient text-white hover:scale-105 active:scale-95',
+          'max-md:[--chat-extra:4.25rem] md:[--chat-extra:0px]',
         )}
-        style={{ bottom: `calc(env(safe-area-inset-bottom, 0px) + 1.5rem + ${keyboardOffset}px)` }}
+        style={{ bottom: `calc(env(safe-area-inset-bottom, 0px) + 1.5rem + ${keyboardOffset}px + var(--chat-extra, 0px))` }}
         aria-label="Open chat"
       >
         {open ? <X className="size-6" /> : <MessageCircle className="size-6" />}
@@ -456,9 +469,10 @@ export default function ChatBot() {
           'bg-white rounded-2xl shadow-2xl border border-gray-100 overflow-hidden',
           'transition-all duration-300 origin-bottom-right',
           open ? 'opacity-100 scale-100 pointer-events-auto' : 'opacity-0 scale-95 pointer-events-none',
+          'max-md:[--chat-extra:4.25rem] md:[--chat-extra:0px]',
         )}
         style={{
-          bottom: `calc(env(safe-area-inset-bottom, 0px) + 5.5rem + ${keyboardOffset}px)`,
+          bottom: `calc(env(safe-area-inset-bottom, 0px) + 5.5rem + ${keyboardOffset}px + var(--chat-extra, 0px))`,
           height: '520px',
         }}
       >
