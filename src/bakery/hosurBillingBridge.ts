@@ -14,6 +14,8 @@ import {
   type PaymentType, type BillStatus, type HosurBill, type HosurBillItem, type HosurWhatsappLog,
 } from '@/pages/HosurDashboard';
 import { getPackingCounterStatus } from './packingCounter';
+import { saveDispatchInvoice } from './dispatchInvoice';
+import { registerReplayHandler, useOfflineQueueStore } from '@/lib/offlineQueue';
 
 export interface HosurOrderForBilling {
   id: string;
@@ -512,6 +514,344 @@ export async function dispatchReceiveAndBill(params: {
 
   return { billId, billNo: displayNo, whatsappStatus: whatsapp.status, whatsappError: whatsapp.errorMessage };
 }
+
+// OFFLINE SUPPORT (2026-10-01): "I need complete offline bill when network is
+// not there" — HosurShopOrderPanel.tsx's "Dispatch & Bill" quick action
+// (dispatchAndBill) used to just refuse outright when offline (see the guard
+// added earlier this pass). This is the real queue-and-replay path instead,
+// built the same way as every other offline-capable flow in this app
+// (branch_checkout, cafe_order_submit): capture the operator's intent now,
+// defer EVERY actual write — invoice minting, the bill itself, leftover-pool
+// bookkeeping — to replay time, when they run for real against live server
+// state. Deliberately does NOT pre-validate or pre-mint anything client-side
+// (no provisional invoice number, nothing "frozen" and reconciled later) —
+// unlike branch_checkout's offline path, this one is a single shared
+// function called identically whether it runs immediately (online) or later
+// (replay), so there is no second, parallel implementation to keep in sync
+// and no way for the two paths to silently diverge.
+//
+// This is deliberately SAFER than it might look at first glance, precisely
+// BECAUSE nothing is decided early: the exact same duplicate-rebill guard
+// (hasUnbilledQuantity, inside dispatchReceiveAndBill) and the exact same
+// atomic invoice-number minting (saveDispatchInvoice) run at replay time
+// against whatever the server actually looks like then — identical to the
+// operator simply waiting for a connection and clicking the button
+// themselves, just automated. See project_hosur_duplicate_rebill memory for
+// why that live check exists and must never be bypassed or weakened.
+//
+// Restricted to credit payment only (mirrors branch_checkout's own
+// `offlineEligible` restriction, and this codebase's existing stated
+// philosophy for Hosur: "no need to open the counter because everything is
+// recorded as credit" — a full/partial cash payment needs the counter
+// reconciled live, which is meaningless without a connection anyway).
+export interface HosurDispatchAndBillPayload {
+  order: HosurOrderForBilling;
+  billItems: { id: string; itemName: string; unit: 'pcs' | 'kg'; quantity: number; unitPrice: number; receivedQuantity: number }[];
+  charges: HosurBillCharge[];
+  // Full payment capture (full/partial/credit) — NOT hardcoded to credit:
+  // this function backs BOTH the normal online call (every payment type) and
+  // the offline queue (which separately restricts ITSELF to credit before
+  // ever constructing a payload — see the offline branch in
+  // HosurShopOrderPanel.tsx). Hardcoding credit here would silently break
+  // full/partial payment for the online path too.
+  payment: PaymentCapture;
+  userName: string;
+  gst: { on: boolean; pct: number; hsn: string; supplyType: 'intra' | 'inter' } | null;
+  // Leftover-pool rows the operator had already matched to this order before
+  // going offline (HosurShopOrderPanel's `appliedLeftovers`, filtered to this
+  // order) — captured as a snapshot of operator intent, not re-derived from
+  // whatever local state happens to exist when this replays.
+  appliedLeftovers: { leftoverId: string; qty: number }[];
+}
+
+export async function runHosurDispatchAndBillCore(payload: HosurDispatchAndBillPayload): Promise<{ billNo: string; whatsappStatus: 'sent' | 'failed'; whatsappError: string | null }> {
+  const { order, billItems, charges, gst } = payload;
+
+  const invoiceItems = [
+    ...billItems.map(i => ({
+      itemName: i.itemName, unit: i.unit, quantity: i.receivedQuantity, unitPrice: i.unitPrice,
+      lineTotal: Math.round(i.receivedQuantity * i.unitPrice * 100) / 100,
+      ...(gst?.on ? { hsnCode: gst.hsn, gstPct: gst.pct } : {}),
+    })),
+    ...charges.map(c => ({ itemName: c.name, unit: 'charge', quantity: 1, unitPrice: c.amount, lineTotal: c.amount })),
+  ];
+
+  let mintedInvoiceNo: string | undefined;
+  let mintedInvoiceId: string | undefined;
+  try {
+    const invoiceRecord = await saveDispatchInvoice({
+      scope: 'Hosur',
+      hosurShopId: order.shopId, hosurShopName: order.shopName, hosurShopPhone: order.shopWhatsapp,
+      dispatchedBy: payload.userName,
+      items: invoiceItems,
+      discountPct: 0,
+      isGstInvoice: gst?.on ?? false,
+      gstSupplyType: gst?.supplyType ?? 'intra',
+    });
+    mintedInvoiceNo = invoiceRecord.invoiceNo;
+    mintedInvoiceId = invoiceRecord.id;
+  } catch (err) {
+    console.error('[runHosurDispatchAndBillCore] Failed to mint a dispatch invoice number (non-fatal):', err);
+  }
+
+  let outcome: Awaited<ReturnType<typeof dispatchReceiveAndBill>>;
+  try {
+    outcome = await dispatchReceiveAndBill({
+      order, items: billItems, charges,
+      payment: payload.payment,
+      userName: payload.userName,
+      invoiceNo: mintedInvoiceNo,
+    });
+  } catch (err) {
+    if (mintedInvoiceId) {
+      await supabase.from('dispatch_invoices').delete().eq('id', mintedInvoiceId)
+        .then(({ error }) => { if (error) console.error('[runHosurDispatchAndBillCore] Failed to roll back orphaned invoice:', error); });
+    }
+    throw err;
+  }
+
+  // Shortfall tracking and applied-leftover consumption — same best-effort,
+  // warn-on-failure semantics as the online path always had (the bill above
+  // has already succeeded either way; these are stock-pool bookkeeping, not
+  // the money-bearing record).
+  const shortfalls = billItems
+    .map(i => ({ ...i, shortfall: Math.round((i.quantity - i.receivedQuantity) * 1000) / 1000 }))
+    .filter(i => i.shortfall > 0.01);
+  if (shortfalls.length > 0) {
+    const { error: shortfallError } = await supabase.from('hosur_leftover_pool').insert(shortfalls.map(s => ({
+      item_name: s.itemName, unit: s.unit, quantity: s.shortfall, unit_price: s.unitPrice,
+      source_order_id: order.id, source_shop_name: order.shopName, reason: 'dispatch_shortfall',
+    })));
+    if (shortfallError) console.warn('[runHosurDispatchAndBillCore] Failed to record dispatch shortfall in leftover pool:', shortfallError.message);
+  }
+
+  for (const applied of payload.appliedLeftovers) {
+    const { data: leftoverRow, error: leftoverReadError } = await supabase.from('hosur_leftover_pool').select('quantity').eq('id', applied.leftoverId).maybeSingle();
+    if (leftoverReadError || !leftoverRow) {
+      console.warn(`[runHosurDispatchAndBillCore] Could not read leftover pool row ${applied.leftoverId} to consume it — left untouched to avoid corrupting real stock:`, leftoverReadError?.message);
+      continue;
+    }
+    const currentQty = Number(leftoverRow.quantity ?? 0);
+    const remaining = Math.round((currentQty - applied.qty) * 1000) / 1000;
+    if (remaining <= 0.01) {
+      await supabase.from('hosur_leftover_pool').update({
+        status: 'resolved', quantity: Math.max(0, remaining), resolved_at: new Date().toISOString(),
+        resolved_order_id: order.id, resolved_shop_name: order.shopName,
+      }).eq('id', applied.leftoverId);
+    } else {
+      await supabase.from('hosur_leftover_pool').update({
+        quantity: remaining, resolved_order_id: order.id, resolved_shop_name: order.shopName,
+      }).eq('id', applied.leftoverId);
+    }
+  }
+
+  return outcome;
+}
+
+/**
+ * Queues a "Dispatch & Bill" intent for replay once back online — see the
+ * module comment above `runHosurDispatchAndBillCore`. Caller is responsible
+ * for deciding when to use this (credit payment + !navigator.onLine) and for
+ * any local UI state (marking the order "queued", clearing drafts) — this
+ * only owns the queue entry itself.
+ */
+export async function queueHosurDispatchAndBill(payload: HosurDispatchAndBillPayload): Promise<void> {
+  await useOfflineQueueStore.getState().enqueue('hosur_dispatch_and_bill', payload);
+}
+
+registerReplayHandler('hosur_dispatch_and_bill', async (_kind, payload) => {
+  try {
+    await runHosurDispatchAndBillCore(payload as HosurDispatchAndBillPayload);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'Failed to dispatch and bill this order.' };
+  }
+});
+
+// OFFLINE SUPPORT (2026-10-01): same reasoning as hosur_dispatch_and_bill
+// above, for HosurShopOrderPanel.tsx's "dispatch leftover stock to a shop"
+// action — the one real difference is there's no pre-existing hosur_orders
+// row to bill against (a leftover dispatch synthesizes one on the spot), so
+// that creation is ALSO deferred to replay time rather than happening eagerly
+// (which would otherwise leave an orphaned pending order if the device never
+// reconnects). Reuses runHosurDispatchAndBillCore's own appliedLeftovers
+// consumption for the pool bookkeeping instead of a second copy of that
+// read-then-update logic.
+export interface HosurLeftoverDispatchPayload {
+  shop: { id: string; shopName: string; whatsappNumber: string; address: string | null };
+  leftoverRowId: string;
+  itemName: string;
+  unit: 'pcs' | 'kg';
+  reason: string;
+  qty: number;
+  price: number;
+  payment: PaymentCapture;
+  userName: string;
+}
+
+export async function runHosurLeftoverDispatchCore(payload: HosurLeftoverDispatchPayload): Promise<{ billNo: string; whatsappStatus: 'sent' | 'failed'; whatsappError: string | null; orderNumber: string }> {
+  const { shop, qty, price } = payload;
+  const orderDate = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: '2-digit', month: '2-digit', day: '2-digit' }).format(new Date()).replace(/-/g, '');
+  const orderNumber = 'HSR-LO-' + orderDate + '-' + crypto.randomUUID().slice(0, 4).toUpperCase();
+  const lineTotal = Math.round(qty * price * 100) / 100;
+
+  const { data: newOrder, error: orderError } = await supabase.from('hosur_orders').insert({
+    order_number: orderNumber, shop_id: shop.id, shop_name: shop.shopName,
+    shop_whatsapp: shop.whatsappNumber, shop_address: shop.address,
+    status: 'pending_packing', subtotal: lineTotal, created_by: payload.userName,
+    notes: `Leftover dispatch (${payload.reason === 'dispatch_shortfall' ? 'not sent at earlier dispatch' : payload.reason === 'manual_entry' ? 'manually recorded stock' : 'cancelled after dispatch'})`,
+  }).select('id').single();
+  if (orderError || !newOrder) throw orderError || new Error('Failed to create the order for this dispatch.');
+
+  const { data: newItem, error: itemError } = await supabase.from('hosur_order_items').insert({
+    order_id: newOrder.id, item_name: payload.itemName, unit: payload.unit, quantity: qty,
+    unit_price: price, line_total: lineTotal, dispatched_quantity: 0, received_quantity: 0,
+  }).select('id').single();
+  if (itemError || !newItem) throw itemError || new Error('Failed to create the item for this dispatch.');
+
+  const outcome = await runHosurDispatchAndBillCore({
+    order: { id: newOrder.id, orderNumber, shopId: shop.id, shopName: shop.shopName, shopWhatsapp: shop.whatsappNumber },
+    billItems: [{ id: newItem.id, itemName: payload.itemName, unit: payload.unit, quantity: qty, unitPrice: price, receivedQuantity: qty }],
+    charges: [],
+    payment: payload.payment,
+    userName: payload.userName,
+    gst: null,
+    appliedLeftovers: [{ leftoverId: payload.leftoverRowId, qty }],
+  });
+  return { ...outcome, orderNumber };
+}
+
+export async function queueHosurLeftoverDispatch(payload: HosurLeftoverDispatchPayload): Promise<void> {
+  await useOfflineQueueStore.getState().enqueue('hosur_leftover_dispatch', payload);
+}
+
+registerReplayHandler('hosur_leftover_dispatch', async (_kind, payload) => {
+  try {
+    await runHosurLeftoverDispatchCore(payload as HosurLeftoverDispatchPayload);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'Failed to dispatch this leftover.' };
+  }
+});
+
+// OFFLINE SUPPORT (2026-10-01): HosurDashboard.tsx's older manual 3-tab
+// billing flow (Receiving tab's createDraftBill, Billing tab's confirmBill)
+// is a genuinely two-step, asynchronous workflow — a draft bill is created
+// when stock is received, and payment is confirmed later (possibly much
+// later, possibly by different staff) once the shop actually pays. That
+// shape doesn't map onto "queue one combined action" the way the one-click
+// Dispatch & Bill button did, so createDraftBill stays online-only (refusing
+// to create a brand-new bill number with no connection is the safe choice —
+// see the guard in HosurDashboard.tsx). confirmBill, however, operates on a
+// bill that already exists and is already visible on screen — structurally
+// identical in shape to everything else made offline-capable this pass:
+// capture the payment intent, defer every write to replay time, same
+// `.eq('status','draft')` double-confirm guard runs for real then. Also
+// credit-only when queued, same reasoning as dispatchAndBill — and skips
+// printBill() (a live browser print dialog popping up unprompted during a
+// background replay, possibly minutes later with the screen long since
+// navigated away from, would be confusing rather than useful; the bill is
+// reachable to print normally once synced).
+export interface HosurConfirmBillPayload {
+  bill: { id: string; orderId: string | null; shopId: string; shopName: string; shopWhatsapp: string; billNo: string; invoiceNo: string | null; subtotal: number };
+  items: { itemName: string; unit: string; quantity: number; unitPrice: number; lineTotal: number }[];
+  paymentType: PaymentType;
+  paidAmount?: number;
+  paymentMode: string | null;
+  dueDate: string | null;
+  userName: string;
+  userRole: string;
+}
+
+export async function runHosurConfirmBillCore(payload: HosurConfirmBillPayload): Promise<void> {
+  const { bill, items } = payload;
+  const { paid, credit, status } = computePaymentSplit(bill.subtotal, {
+    paymentType: payload.paymentType, paidAmount: payload.paidAmount, paymentMode: payload.paymentMode, dueDate: payload.dueDate,
+  });
+  if ((payload.paymentType === 'credit' || payload.paymentType === 'partial') && !payload.dueDate) {
+    throw new Error('Due date is mandatory for Credit and Partial Payment bills.');
+  }
+  if (payload.paymentType === 'partial' && paid <= 0) throw new Error('Enter paid amount for partial payment.');
+  if (payload.paymentType === 'partial' && paid >= bill.subtotal) throw new Error('Partial payment paid amount must be less than bill total.');
+
+  const now = new Date().toISOString();
+  const { data: updatedBill, error: billError } = await supabase.from('hosur_bills').update({
+    paid_amount: paid, credit_amount: credit, payment_type: payload.paymentType,
+    payment_mode: payload.paymentType === 'credit' ? null : payload.paymentMode,
+    due_date: credit > 0 ? payload.dueDate : null,
+    status, confirmed_by: payload.userName, confirmed_at: now,
+  }).eq('id', bill.id).eq('status', 'draft').select('id').maybeSingle();
+  if (billError) throw billError;
+  if (!updatedBill) throw new Error('This bill has already been confirmed (possibly from another tab/device) — refresh and check its status before retrying.');
+
+  if (bill.orderId) {
+    const { error: orderStatusError } = await supabase.from('hosur_orders').update({ status: 'billed' }).eq('id', bill.orderId);
+    if (orderStatusError) console.error('[runHosurConfirmBillCore] Failed to mark hosur_orders as billed (bill itself is confirmed):', orderStatusError);
+  }
+
+  if (credit > 0) {
+    const rollbackToDraft = async () => {
+      const { error: rollbackError } = await supabase.from('hosur_bills').update({
+        paid_amount: 0, credit_amount: 0, payment_type: null, payment_mode: null,
+        due_date: null, status: 'draft', confirmed_by: null, confirmed_at: null,
+      }).eq('id', bill.id).eq('status', status);
+      if (rollbackError) console.error('[runHosurConfirmBillCore] Rollback-to-draft itself failed:', rollbackError);
+    };
+    const { data: creditSale, error: ledgerError } = await supabase.from('branch_credit_sales').insert({
+      branch: BRANCH, source: 'hosur', source_id: bill.id, customer_ref: bill.shopId, customer_name: bill.shopName,
+      customer_phone: bill.shopWhatsapp,
+      items: items.map((item) => ({ itemName: item.itemName, quantity: item.quantity, sellUnit: item.unit, price: item.unitPrice, lineTotal: item.lineTotal })),
+      subtotal: bill.subtotal, amount_paid: paid, credit_amount: credit, sold_by: payload.userName, bill_no: bill.billNo,
+      due_date: payload.dueDate, status: paid > 0 ? 'partial' : 'pending', notes: 'Hosur credit bill',
+    }).select('id').single();
+    if (ledgerError) { await rollbackToDraft(); throw ledgerError; }
+    if (paid > 0 && creditSale?.id) {
+      const { error: paymentError } = await supabase.from('branch_credit_payments').insert({
+        credit_sale_id: creditSale.id, branch: BRANCH, bill_no: bill.billNo, amount: paid,
+        payment_mode: payload.paymentMode, payment_purpose: 'partial_at_billing', remarks: 'Hosur partial payment at billing',
+        collected_by: payload.userName, collected_role: payload.userRole, created_at: now,
+      });
+      if (paymentError) { await rollbackToDraft(); await supabase.from('branch_credit_sales').delete().eq('id', creditSale.id); throw paymentError; }
+    }
+    await notifyAdmin('Hosur credit bill created', `${bill.shopName} has credit of ₹${Math.round(credit)} on bill ${bill.invoiceNo ?? bill.billNo}. Due ${payload.dueDate}.`, bill.id, bill.invoiceNo ?? bill.billNo, { billId: bill.id, amount: credit });
+  }
+
+  if (paid > 0 && items.length > 0) {
+    const salesRows = items.map((item) => ({
+      branch: BRANCH, item_name: item.itemName, quantity_sold: item.quantity, sold_at: now,
+      sold_by: payload.userName, payment_method: payload.paymentMode, unit_price: item.unitPrice, bill_no: bill.billNo, source: 'hosur_wholesale',
+    }));
+    const { error: salesError } = await supabase.from('branch_sales').insert(salesRows);
+    if (salesError) console.warn('[runHosurConfirmBillCore] branch_sales mirror failed:', salesError.message);
+  }
+
+  const { data: billRow } = await supabase.from('hosur_bills').select('*').eq('id', bill.id).single();
+  const { data: billItemRows } = await supabase.from('hosur_bill_items').select('*').eq('bill_id', bill.id);
+  const finalBill = mapBill(billRow);
+  const finalItems = (billItemRows ?? []).map(mapBillItem);
+  const body = buildBillMessage(finalBill, finalItems);
+  const displayNo = finalBill.invoiceNo ?? bill.billNo;
+  const whatsapp = await sendHosurWhatsapp({
+    shopId: bill.shopId, shopName: bill.shopName, phone: bill.shopWhatsapp,
+    billId: bill.id, billNo: displayNo, messageType: 'bill', body, billForMedia: finalBill, itemsForMedia: finalItems,
+  });
+  if (whatsapp.status === 'failed') {
+    await notifyAdmin('Hosur WhatsApp bill failed', `${displayNo} for ${bill.shopName} could not be sent. Retry from WhatsApp Logs.`, bill.id, displayNo, { error: whatsapp.errorMessage });
+  }
+}
+
+export async function queueHosurConfirmBill(payload: HosurConfirmBillPayload): Promise<void> {
+  await useOfflineQueueStore.getState().enqueue('hosur_confirm_bill', payload);
+}
+
+registerReplayHandler('hosur_confirm_bill', async (_kind, payload) => {
+  try {
+    await runHosurConfirmBillCore(payload as HosurConfirmBillPayload);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'Failed to confirm this bill.' };
+  }
+});
 
 // FEATURE (2026-09-03): "if they edit the bill the new invoice should go to
 // the client with the update invoice in whatsapp" — a Hosur dispatch is

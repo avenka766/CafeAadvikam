@@ -30,8 +30,10 @@ import { useAuthStore } from '@/stores/authStore';
 import { cn } from '@/lib/utils';
 import { exportToExcel } from '@/lib/exportExcel';
 import { printViaIframe } from '@/lib/printViaIframe';
-import { dispatchReceiveAndBill } from './hosurBillingBridge';
-import { saveDispatchInvoice } from './dispatchInvoice';
+import {
+  runHosurDispatchAndBillCore, queueHosurDispatchAndBill,
+  runHosurLeftoverDispatchCore, queueHosurLeftoverDispatch, type PaymentCapture,
+} from './hosurBillingBridge';
 import { buildGstTaxInvoiceHtml, type GstTaxInvoiceLine } from './gstTaxInvoice';
 import { printHtml } from '@/branch/printUtils';
 import { getPackingCounterStatus } from './packingCounter';
@@ -876,19 +878,6 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
         receivedQuantity: overrides[item.id] !== undefined ? Number(overrides[item.id] || 0) : item.dispatchedQuantity,
       }));
       const orderChargesToBill = charges[order.id] ?? [];
-      // BUG FIX (2026-09-06): "should always show the invoice number" — this
-      // "Dispatch & Bill" quick action never went through Planner's own
-      // DispatchReviewModal.confirm() (the only other place that mints a
-      // real dispatch_invoices row), so a shop billed straight from here got
-      // NO invoice number at all — HosurDashboard/Admin's Hosur Sales tab
-      // then had nothing to show but the internal bill_no. Mint one here too
-      // (same 'Hosur' SALES/26-27/N sequence, no dispatchEntryIds since
-      // there's no bakery_orders/dispatch_log entry behind a Hosur shop
-      // order — same as a Cake invoice's own no-stock-link case) and pass it
-      // through. Best-effort: a numbering hiccup must never block a real
-      // dispatch + bill that's otherwise ready to go.
-      let mintedInvoiceNo: string | undefined;
-      let mintedInvoiceId: string | undefined;
       // FEATURE (2026-09-12): one flat GST%/HSN for the whole order (not per
       // line) — see the note above gstEnabled's declaration.
       const orderGstOn = gstEnabled[order.id] === true;
@@ -903,52 +892,69 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
         })),
         ...orderChargesToBill.map(c => ({ itemName: c.name, unit: 'charge', quantity: 1, unitPrice: c.amount, lineTotal: c.amount })),
       ];
-      try {
-        const invoiceRecord = await saveDispatchInvoice({
-          scope: 'Hosur',
-          hosurShopId: order.shopId, hosurShopName: order.shopName, hosurShopPhone: order.shopWhatsapp,
-          dispatchedBy: currentUser?.displayName || 'Planner',
-          items: invoiceItems,
-          discountPct: 0,
-          isGstInvoice: orderGstOn,
-          gstSupplyType: orderGstSupplyType,
-        });
-        mintedInvoiceNo = invoiceRecord.invoiceNo;
-        mintedInvoiceId = invoiceRecord.id;
-      } catch (err) {
-        console.error('[HosurShopOrderPanel] Failed to mint a dispatch invoice number (non-fatal):', err);
-      }
-      // BUG FIX (2026-09-06, audit): saveDispatchInvoice above already
-      // consumes a real, gap-free invoice number and writes its row BEFORE
-      // any of dispatchReceiveAndBill's own validation (counter-open, due
-      // date, partial-amount) or writes run. If that call then throws — a
-      // stale counter-closed check, a network hiccup, anything — the invoice
-      // would be left behind as a phantom row: a real invoice number with no
-      // dispatch, no stock movement, and no bill ever actually created,
-      // silently inflating Admin Dispatch Details' totals. Delete it if the
-      // dispatch/bill itself never went through.
-      let outcome: Awaited<ReturnType<typeof dispatchReceiveAndBill>>;
-      try {
-        outcome = await dispatchReceiveAndBill({
-          order: { id: order.id, orderNumber: order.orderNumber, shopId: order.shopId, shopName: order.shopName, shopWhatsapp: order.shopWhatsapp },
-          items: billItems,
-          charges: orderChargesToBill,
-          payment: {
-            paymentType: pType,
-            paidAmount: pType === 'partial' ? Number(paidAmount[order.id] || 0) : undefined,
-            paymentMode: pType === 'credit' ? null : (paymentMode[order.id] || 'cash'),
-            dueDate: pType !== 'full' ? (dueDate[order.id] || null) : null,
-          },
-          userName: currentUser?.displayName || 'Planner',
-          invoiceNo: mintedInvoiceNo,
-        });
-      } catch (err) {
-        if (mintedInvoiceId) {
-          await supabase.from('dispatch_invoices').delete().eq('id', mintedInvoiceId)
-            .then(({ error }) => { if (error) console.error('[HosurShopOrderPanel] Failed to roll back orphaned invoice:', error); });
+      const appliedForOrderSnapshot = (Object.entries(appliedLeftovers) as [string, { leftoverId: string; qty: number }][])
+        .filter(([key]) => key.startsWith(`${order.id}::`))
+        .map(([, applied]) => ({ leftoverId: applied.leftoverId, qty: applied.qty }));
+
+      // OFFLINE SUPPORT (2026-10-01): "I need complete offline bill when
+      // network is not there" — queues the FULL dispatch+bill intent (via
+      // runHosurDispatchAndBillCore, shared with the replay handler so
+      // there's exactly one implementation) instead of doing any of it now.
+      // Restricted to credit — matches branch_checkout's own offline
+      // restriction and this codebase's existing "no need to open the
+      // counter, everything is recorded as credit" philosophy for Hosur; a
+      // cash/partial payment needs the counter reconciled live, which is
+      // meaningless without a connection anyway.
+      if (!navigator.onLine) {
+        if (pType !== 'credit') {
+          throw new Error('No internet connection — only credit billing can be queued offline. Switch this order to Credit, or wait for a connection for cash/partial payment.');
         }
-        throw err;
+        const offlineDueDate = dueDate[order.id] || '';
+        if (!offlineDueDate) throw new Error('Due date is required for credit billing.');
+        await queueHosurDispatchAndBill({
+          order: { id: order.id, orderNumber: order.orderNumber, shopId: order.shopId, shopName: order.shopName, shopWhatsapp: order.shopWhatsapp },
+          billItems, charges: orderChargesToBill,
+          payment: { paymentType: 'credit', dueDate: offlineDueDate },
+          userName: currentUser?.displayName || 'Planner',
+          gst: orderGstOn ? { on: true, pct: orderGstPct, hsn: orderGstHsn, supplyType: orderGstSupplyType } : null,
+          appliedLeftovers: appliedForOrderSnapshot,
+        });
+        setResult(r => ({ ...r, [order.id]: { ok: true, message: `No connection — queued for ${order.shopName}. Will dispatch, bill, and send the WhatsApp bill automatically once you're back online.` } }));
+        if (orderChargesToBill.length > 0) setCharges(v => ({ ...v, [order.id]: [] }));
+        for (const applied of appliedForOrderSnapshot) setAppliedLeftovers(v => { const next = { ...v }; delete next[`${order.id}::${applied.leftoverId}`]; return next; });
+        onDone();
+        return { ok: true, message: 'Queued — will sync once back online.' };
       }
+
+      // BUG FIX (2026-09-06): "should always show the invoice number" — this
+      // "Dispatch & Bill" quick action never went through Planner's own
+      // DispatchReviewModal.confirm() (the only other place that mints a
+      // real dispatch_invoices row), so a shop billed straight from here got
+      // NO invoice number at all — HosurDashboard/Admin's Hosur Sales tab
+      // then had nothing to show but the internal bill_no. Mint one here too
+      // (same 'Hosur' SALES/26-27/N sequence, no dispatchEntryIds since
+      // there's no bakery_orders/dispatch_log entry behind a Hosur shop
+      // order — same as a Cake invoice's own no-stock-link case) and pass it
+      // through. Best-effort: a numbering hiccup must never block a real
+      // dispatch + bill that's otherwise ready to go.
+      //
+      // REFACTOR (2026-10-01): mint+bill+shortfall+leftover-consume now live
+      // in runHosurDispatchAndBillCore (hosurBillingBridge.ts), shared with
+      // the offline replay path above — this call is the online equivalent
+      // of the queued one, not a second implementation of the same thing.
+      const outcome = await runHosurDispatchAndBillCore({
+        order: { id: order.id, orderNumber: order.orderNumber, shopId: order.shopId, shopName: order.shopName, shopWhatsapp: order.shopWhatsapp },
+        billItems, charges: orderChargesToBill,
+        payment: {
+          paymentType: pType,
+          paidAmount: pType === 'partial' ? Number(paidAmount[order.id] || 0) : undefined,
+          paymentMode: pType === 'credit' ? null : (paymentMode[order.id] || 'cash'),
+          dueDate: pType !== 'full' ? (dueDate[order.id] || null) : null,
+        },
+        userName: currentUser?.displayName || 'Planner',
+        gst: orderGstOn ? { on: true, pct: orderGstPct, hsn: orderGstHsn, supplyType: orderGstSupplyType } : null,
+        appliedLeftovers: appliedForOrderSnapshot,
+      });
       setResult(r => ({ ...r, [order.id]: {
         ok: outcome.whatsappStatus === 'sent',
         message: outcome.whatsappStatus === 'sent'
@@ -1002,63 +1008,13 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
       // they've actually been billed so reopening this card (or billing a
       // different order) doesn't carry them over.
       if (orderChargesToBill.length > 0) setCharges(v => ({ ...v, [order.id]: [] }));
-      // Whatever was ordered but not actually sent (planner reduced the qty
-      // below what was ordered) goes into the leftover pool — never silently
-      // dropped, so it can be offered to the same shop's next matching order.
-      // BUG FIX (2026-08-07): `i.receivedQuantity` (== billItems' quantity)
-      // now already INCLUDES any applied leftover (applyLeftoverToItem adds
-      // it on top of the dispatched baseline, and it's what's actually
-      // billed) — so it must NOT also be subtracted here separately, or a
-      // real shortfall gets understated by exactly the applied amount every
-      // time leftover was used on this line.
-      const shortfalls = billItems
-        .map(i => ({ ...i, shortfall: Math.round((i.quantity - i.receivedQuantity) * 1000) / 1000 }))
-        .filter(i => i.shortfall > 0.01);
-      if (shortfalls.length > 0) {
-        // AUDIT FIX (2026-09-03): unchecked — if this insert failed, the
-        // under-shipped quantity was never tracked anywhere, while the bill
-        // and WhatsApp send had already succeeded and the planner saw a
-        // clean success message. Same "never silently dropped" intent the
-        // comment above already states; this specific write just wasn't
-        // actually checked.
-        const { error: shortfallError } = await supabase.from('hosur_leftover_pool').insert(shortfalls.map(s => ({
-          item_name: s.itemName, unit: s.unit, quantity: s.shortfall, unit_price: s.unitPrice,
-          source_order_id: order.id, source_shop_name: order.shopName, reason: 'dispatch_shortfall',
-        })));
-        if (shortfallError) console.warn('[HosurShopOrderPanel] Failed to record dispatch shortfall in leftover pool:', shortfallError.message);
-      }
-      // Actually consume any leftover the planner applied to this order —
-      // reduce the pool row by what was used, or resolve it fully if used up.
-      const appliedForOrder = (Object.entries(appliedLeftovers) as [string, { leftoverId: string; qty: number }][]).filter(([key]) => key.startsWith(`${order.id}::`));
-      for (const [key, applied] of appliedForOrder) {
-        const { data: leftoverRow, error: leftoverReadError } = await supabase.from('hosur_leftover_pool').select('quantity').eq('id', applied.leftoverId).maybeSingle();
-        // BUG FIX (2026-08-07): a failed read here used to fall through
-        // `?? 0`, making a real leftover row's quantity look like it was
-        // already zero — the code below would then mark it "resolved" with
-        // quantity 0, permanently destroying tracked stock that was never
-        // actually consumed, with no error shown (the bill/WhatsApp send had
-        // already succeeded by this point, so the planner saw a clean
-        // success message). Skip the write instead and warn, leaving the
-        // pool row untouched so it can be reconciled manually rather than
-        // silently corrupted.
-        if (leftoverReadError || !leftoverRow) {
-          console.warn(`[HosurShopOrderPanel] Could not read leftover pool row ${applied.leftoverId} to consume it — left untouched to avoid corrupting real stock:`, leftoverReadError?.message);
-          setAppliedLeftovers(v => { const next = { ...v }; delete next[key]; return next; });
-          continue;
-        }
-        const currentQty = Number(leftoverRow.quantity ?? 0);
-        const remaining = Math.round((currentQty - applied.qty) * 1000) / 1000;
-        if (remaining <= 0.01) {
-          await supabase.from('hosur_leftover_pool').update({
-            status: 'resolved', quantity: Math.max(0, remaining), resolved_at: new Date().toISOString(),
-            resolved_order_id: order.id, resolved_shop_name: order.shopName,
-          }).eq('id', applied.leftoverId);
-        } else {
-          await supabase.from('hosur_leftover_pool').update({
-            quantity: remaining, resolved_order_id: order.id, resolved_shop_name: order.shopName,
-          }).eq('id', applied.leftoverId);
-        }
-        setAppliedLeftovers(v => { const next = { ...v }; delete next[key]; return next; });
+      // Shortfall tracking and applied-leftover pool consumption already
+      // happened inside runHosurDispatchAndBillCore above (shared with the
+      // offline replay path) — just clear the local UI state for whichever
+      // leftovers this order actually had applied, matching what the core
+      // function just consumed server-side.
+      for (const applied of appliedForOrderSnapshot) {
+        setAppliedLeftovers(v => { const next = { ...v }; delete next[`${order.id}::${applied.leftoverId}`]; return next; });
       }
       setLeftoverTick(t => t + 1);
       onDone();
@@ -1743,32 +1699,10 @@ function HosurLeftoverAndCancelPanel({ pendingOrders, pendingItems, appliedLefto
 
   const activeShops = shops.filter(s => s.isActive);
 
-  // Reduces (or fully resolves) a leftover pool row by whatever quantity was
-  // just actually sent out — same consumption logic used when an "Apply to a
-  // pending order" match gets dispatched, just triggered from here instead.
-  // BUG FIX (2026-08-07): this used to compute `remaining` from `row.quantity`
-  // — a value from React state that may be stale relative to the DB if this
-  // same leftover row was consumed by something else since the last `load()`
-  // (the sibling consumption path inside dispatchAndBill guards against
-  // exactly this by re-reading the current quantity first). Re-read fresh
-  // here too so two near-simultaneous consumptions of the same row can't
-  // compute the wrong remaining balance.
-  const consumeLeftover = async (row: LeftoverRow, qty: number, orderId: string, shopName: string) => {
-    const { data: freshRow, error: freshReadError } = await supabase.from('hosur_leftover_pool').select('quantity').eq('id', row.id).maybeSingle();
-    if (freshReadError || !freshRow) {
-      console.warn(`[HosurShopOrderPanel] Could not read leftover pool row ${row.id} to consume it — left untouched to avoid corrupting real stock:`, freshReadError?.message);
-      return;
-    }
-    const remaining = Math.round((Number(freshRow.quantity ?? 0) - qty) * 1000) / 1000;
-    if (remaining <= 0.01) {
-      await supabase.from('hosur_leftover_pool').update({
-        status: 'resolved', quantity: Math.max(0, remaining), resolved_at: new Date().toISOString(),
-        resolved_order_id: orderId, resolved_shop_name: shopName,
-      }).eq('id', row.id);
-    } else {
-      await supabase.from('hosur_leftover_pool').update({ quantity: remaining, resolved_order_id: orderId, resolved_shop_name: shopName }).eq('id', row.id);
-    }
-  };
+  // consumeLeftover's logic moved into runHosurDispatchAndBillCore's
+  // appliedLeftovers handling (hosurBillingBridge.ts) as part of the
+  // offline-support refactor — shared now with the offline replay path
+  // instead of being a second copy of the same read-then-update logic.
 
   const dispatchLeftoverToShop = async (row: LeftoverRow) => {
     const shop = activeShops.find(s => s.id === dispatchShopId);
@@ -1791,93 +1725,52 @@ function HosurLeftoverAndCancelPanel({ pendingOrders, pendingItems, appliedLefto
     setDispatchBusy(true);
     setDispatchResult(v => ({ ...v, [row.id]: undefined as any }));
     try {
+      const payment: PaymentCapture = {
+        paymentType: dispatchPaymentType,
+        paidAmount: dispatchPaymentType === 'partial' ? Number(dispatchPaidAmount || 0) : undefined,
+        paymentMode: dispatchPaymentType === 'credit' ? null : (dispatchPaymentMode || 'cash'),
+        dueDate: dispatchPaymentType !== 'full' ? (dispatchDueDate || null) : null,
+      };
+      const corePayload = {
+        shop: { id: shop.id, shopName: shop.shopName, whatsappNumber: shop.whatsappNumber, address: shop.address },
+        leftoverRowId: row.id, itemName: row.itemName, unit: (row.unit === 'pcs' ? 'pcs' : 'kg') as 'pcs' | 'kg', reason: row.reason,
+        qty, price, payment, userName: currentUser?.displayName || 'Planner',
+      };
+
+      // OFFLINE SUPPORT (2026-10-01): "I need complete offline bill when
+      // network is not there" — same reasoning and restriction as
+      // dispatchAndBill above (queues the full intent, credit-only, nothing
+      // written locally before this point).
+      if (!navigator.onLine) {
+        if (dispatchPaymentType !== 'credit') {
+          throw new Error('No internet connection — only credit billing can be queued offline. Switch to Credit, or wait for a connection for cash/partial payment.');
+        }
+        if (!dispatchDueDate) throw new Error('Due date is required for credit billing.');
+        await queueHosurLeftoverDispatch(corePayload);
+        setDispatchResult(v => ({ ...v, [row.id]: { ok: true, message: `No connection — queued for ${shop.shopName}. Will dispatch, bill, and send the WhatsApp bill automatically once you're back online.` } }));
+        setDispatchQty(''); setDispatchPrice(''); setDispatchPaidAmount(''); setDispatchDueDate('');
+        load();
+        return;
+      }
+
       // A real order + item row backs this exactly like any normal shop
       // order, so it goes through the same billing/WhatsApp pipeline and
       // shows up in the shop's own order history — nothing about a leftover
       // dispatch is a special, untracked side-channel.
-      const orderDate = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: '2-digit', month: '2-digit', day: '2-digit' }).format(new Date()).replace(/-/g, '');
-      const orderNumber = 'HSR-LO-' + orderDate + '-' + crypto.randomUUID().slice(0, 4).toUpperCase();
-      const lineTotal = Math.round(qty * price * 100) / 100;
-      const { data: newOrder, error: orderError } = await supabase.from('hosur_orders').insert({
-        order_number: orderNumber, shop_id: shop.id, shop_name: shop.shopName,
-        shop_whatsapp: shop.whatsappNumber, shop_address: shop.address,
-        status: 'pending_packing', subtotal: lineTotal, created_by: currentUser?.displayName || 'Planner',
-        notes: `Leftover dispatch (${row.reason === 'dispatch_shortfall' ? 'not sent at earlier dispatch' : row.reason === 'manual_entry' ? 'manually recorded stock' : 'cancelled after dispatch'})`,
-      }).select('id').single();
-      if (orderError || !newOrder) throw orderError || new Error('Failed to create the order for this dispatch.');
+      //
+      // REFACTOR (2026-10-01): order creation + mint + bill + leftover-pool
+      // consumption now live in runHosurLeftoverDispatchCore
+      // (hosurBillingBridge.ts), shared with the offline replay path above.
+      const outcome = await runHosurLeftoverDispatchCore(corePayload);
 
-      const { data: newItem, error: itemError } = await supabase.from('hosur_order_items').insert({
-        order_id: newOrder.id, item_name: row.itemName, unit: row.unit, quantity: qty,
-        unit_price: price, line_total: lineTotal, dispatched_quantity: 0, received_quantity: 0,
-      }).select('id').single();
-      if (itemError || !newItem) throw itemError || new Error('Failed to create the item for this dispatch.');
-
-      // BUG FIX (2026-09-06): same "always show the invoice number" fix as
-      // dispatchAndBill above — this leftover quick-dispatch never minted a
-      // real invoice either. Best-effort: never block a real dispatch+bill
-      // over a numbering hiccup.
-      let mintedInvoiceNo: string | undefined;
-      let mintedInvoiceId: string | undefined;
-      try {
-        const invoiceRecord = await saveDispatchInvoice({
-          scope: 'Hosur',
-          hosurShopId: shop.id, hosurShopName: shop.shopName, hosurShopPhone: shop.whatsappNumber,
-          dispatchedBy: currentUser?.displayName || 'Planner',
-          items: [{ itemName: row.itemName, unit: row.unit, quantity: qty, unitPrice: price, lineTotal }],
-          discountPct: 0,
-        });
-        mintedInvoiceNo = invoiceRecord.invoiceNo;
-        mintedInvoiceId = invoiceRecord.id;
-      } catch (err) {
-        console.error('[HosurShopOrderPanel] Failed to mint a dispatch invoice number (non-fatal):', err);
-      }
-      // BUG FIX (2026-09-06, audit): see the identical fix in dispatchAndBill
-      // above — don't leave a real, consumed invoice number as a phantom row
-      // if the bill itself never actually completed.
-      let outcome: Awaited<ReturnType<typeof dispatchReceiveAndBill>>;
-      try {
-        outcome = await dispatchReceiveAndBill({
-          order: { id: newOrder.id, orderNumber, shopId: shop.id, shopName: shop.shopName, shopWhatsapp: shop.whatsappNumber },
-          items: [{ id: newItem.id, itemName: row.itemName, unit: row.unit === 'pcs' ? 'pcs' : 'kg', quantity: qty, unitPrice: price, receivedQuantity: qty }],
-          payment: {
-            paymentType: dispatchPaymentType,
-            paidAmount: dispatchPaymentType === 'partial' ? Number(dispatchPaidAmount || 0) : undefined,
-            paymentMode: dispatchPaymentType === 'credit' ? null : (dispatchPaymentMode || 'cash'),
-            dueDate: dispatchPaymentType !== 'full' ? (dispatchDueDate || null) : null,
-          },
-          userName: currentUser?.displayName || 'Planner',
-          invoiceNo: mintedInvoiceNo,
-        });
-      } catch (err) {
-        if (mintedInvoiceId) {
-          await supabase.from('dispatch_invoices').delete().eq('id', mintedInvoiceId)
-            .then(({ error }) => { if (error) console.error('[HosurShopOrderPanel] Failed to roll back orphaned invoice:', error); });
-        }
-        throw err;
-      }
-
-      // BUG FIX: the bill is already real and paid/credited at this point —
-      // reporting the outcome BEFORE the pool-consumption update means a
-      // failure in that (comparatively minor) bookkeeping step can never be
-      // mistaken for the dispatch itself having failed. Reporting it after
-      // would have let the catch block below show "Failed to dispatch" for
-      // an order that had actually already been billed, tempting the
-      // planner to dispatch it a second time and double-bill the shop.
       setDispatchResult(v => ({ ...v, [row.id]: {
         ok: outcome.whatsappStatus === 'sent',
         message: outcome.whatsappStatus === 'sent'
           ? `Dispatched, billed (${outcome.billNo}), and WhatsApp bill sent to ${shop.shopName}.`
           : `Dispatched and billed (${outcome.billNo}), but WhatsApp send failed: ${outcome.whatsappError}. Retry from WhatsApp Logs.`,
       }}));
-      setDispatchBillSnapshot(v => ({ ...v, [row.id]: { billNo: outcome.billNo, shopName: shop.shopName, orderNumber, itemName: row.itemName, unit: row.unit, quantity: qty, unitPrice: price } }));
+      setDispatchBillSnapshot(v => ({ ...v, [row.id]: { billNo: outcome.billNo, shopName: shop.shopName, orderNumber: outcome.orderNumber, itemName: row.itemName, unit: row.unit, quantity: qty, unitPrice: price } }));
       setDispatchQty(''); setDispatchPrice(''); setDispatchPaidAmount(''); setDispatchDueDate('');
-      try {
-        await consumeLeftover(row, qty, newOrder.id, shop.shopName);
-      } catch {
-        // The bill succeeded regardless — only the pool bookkeeping failed.
-        // Surface it as an addendum, not a failure of the dispatch itself.
-        setDispatchResult(v => ({ ...v, [row.id]: { ok: true, message: `Dispatched and billed (${outcome.billNo}) successfully, but the leftover pool couldn't be updated automatically — reduce "${row.itemName}" by ${num(qty)} ${row.unit} manually or refresh this panel.` } }));
-      }
       load();
     } catch (err) {
       setDispatchResult(v => ({ ...v, [row.id]: { ok: false, message: err instanceof Error ? err.message : 'Failed to dispatch this leftover.' } }));

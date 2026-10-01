@@ -12849,6 +12849,13 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
             })
             .filter((i): i is HosurOrderItemForBilling => i !== null);
           if (billItems.length === 0) throw new Error('No dispatched items found to bill.');
+          // OFFLINE GUARD (2026-10-01): the dispatch + invoice above have
+          // already succeeded by this point (this block only runs after
+          // them), so this specific gap only matters for a mid-flight
+          // disconnect right here — already gracefully recoverable (caught
+          // below, dispatch stands, operator can bill from HosurShopOrderPanel
+          // once reconnected) but a clear message beats a raw network error.
+          if (!navigator.onLine) throw new Error('No internet connection — the dispatch is saved, but the credit bill needs a live connection. Bill this order from Hosur Shop Orders once reconnected.');
 
           // Due in 2 days from today (IST) — fixed per Hosur's always-credit workflow, no picker.
           const dueDate = kolkataDateKey(new Date(Date.now() + 2 * 86_400_000).toISOString());
