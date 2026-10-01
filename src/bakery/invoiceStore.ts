@@ -4,6 +4,7 @@
 import { create } from 'zustand';
 import { supabase, fetchAllRows } from '@/lib/supabase';
 import { useAuthStore } from '@/stores/authStore';
+import { useOfflineQueueStore, registerReplayHandler } from '@/lib/offlineQueue';
 
 export interface InvoiceLineItem {
   itemName: string;
@@ -435,3 +436,22 @@ export const useInvoiceStore = create<InvoiceState>((set, get) => ({
 
   pendingCount: () => get().invoices.filter(i => i.status === 'pending_review').length,
 }));
+
+// OFFLINE FIX (2026-10-01): "make Store/Bakery goods-receipt (GRN) work
+// offline" — first of several Store flows, starting here because it's the
+// highest-frequency, most time-sensitive one (recording what actually
+// arrived from a supplier delivery). Simpler to queue safely than the
+// dispatch-invoice flows: the GRN number (createInvoice above, `GRN-${rand}`)
+// is a random client-generated code, not a server-counted sequence, so
+// there's no "two dispatches burn the same number" race to coordinate at
+// replay time — the exact same createInvoice() action already used online
+// is reused verbatim here, no duplicate logic to keep in sync.
+export async function queueStoreCreateInvoice(data: Omit<StoreInvoice, 'id' | 'invoiceNumber' | 'status' | 'createdAt'>): Promise<void> {
+  await useOfflineQueueStore.getState().enqueue('store_create_invoice', data);
+}
+
+registerReplayHandler('store_create_invoice', async (_kind, payload) => {
+  const result = await useInvoiceStore.getState().createInvoice(payload as Omit<StoreInvoice, 'id' | 'invoiceNumber' | 'status' | 'createdAt'>);
+  if (!result.invoice) return { ok: false, error: result.error ?? 'Failed to sync this GRN.' };
+  return { ok: true };
+});

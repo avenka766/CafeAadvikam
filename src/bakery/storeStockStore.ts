@@ -7,6 +7,7 @@ import { create } from 'zustand';
 import { supabase, fetchAllRows } from '@/lib/supabase';
 import { makeSingletonSubscriber } from '@/lib/realtimeChannel';
 import { useRecipeStore } from './recipeStore';
+import { useOfflineQueueStore, registerReplayHandler } from '@/lib/offlineQueue';
 
 export type StockUnit = 'kg' | 'L' | 'pcs' | 'g' | 'nos' | 'bunch' | 'ltr';
 
@@ -557,3 +558,53 @@ export const useStoreStockStore = create<StoreStockState>()((set, get) => ({
       }),
   ),
 }));
+
+// OFFLINE FIX (2026-10-01): "make Store/Bakery raw-material stock counts
+// work offline" — updateItem above does an absolute "set to X" write with a
+// compare-and-swap guard against the live DB quantity. That guard is correct
+// for the online case but self-defeating for a delayed offline replay: the
+// real quantity having moved for any reason (production deduction, another
+// edit) in the meantime would make the replay bounce almost every time.
+// quantity changes are queued as a DELTA instead (commutative, no stale-
+// comparison problem — see adjust_store_raw_stock_quantity) and applied via
+// a dedicated atomic RPC; unit/category/minThreshold changes have no such
+// concurrency risk (nothing else mutates them in the background) and are
+// queued as a plain field update, same shape updateItem already writes.
+interface StoreStockEditPayload {
+  id: string;
+  quantityDelta: number;
+  unit?: StockUnit;
+  minThreshold?: number;
+  category?: StockCategory;
+}
+
+async function runStoreStockEditCore(payload: StoreStockEditPayload): Promise<void> {
+  if (payload.quantityDelta !== 0) {
+    const { error } = await supabase.rpc('adjust_store_raw_stock_quantity', {
+      p_id: payload.id,
+      p_delta: payload.quantityDelta,
+    });
+    if (error) throw new Error(error.message);
+  }
+  const fields: Record<string, unknown> = {};
+  if (payload.unit !== undefined) fields.unit = payload.unit;
+  if (payload.minThreshold !== undefined) fields.min_threshold = payload.minThreshold;
+  if (payload.category !== undefined) fields.item_category = payload.category;
+  if (Object.keys(fields).length > 0) {
+    const { error } = await supabase.from('store_raw_stock').update(fields).eq('id', payload.id);
+    if (error) throw new Error(error.message);
+  }
+}
+
+export async function queueStoreStockEdit(payload: StoreStockEditPayload): Promise<void> {
+  await useOfflineQueueStore.getState().enqueue('store_stock_edit', payload);
+}
+
+registerReplayHandler('store_stock_edit', async (_kind, payload) => {
+  try {
+    await runStoreStockEditCore(payload as StoreStockEditPayload);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'Failed to sync this stock edit.' };
+  }
+});

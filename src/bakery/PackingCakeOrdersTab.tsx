@@ -8,6 +8,7 @@ import { ensureCakeDispatchIncoming, cakeIncomingDispatchId } from '@/branch/cak
 import { printHtml } from '@/branch/printUtils';
 import { printViaIframe } from '@/lib/printViaIframe';
 import { saveDispatchInvoice, printDispatchInvoice, recordFromRow as recordFromDispatchInvoiceRow, type DispatchInvoiceRecord, type DispatchInvoiceItem, type DispatchInvoiceScope } from './dispatchInvoice';
+import { useOfflineQueueStore, registerReplayHandler } from '@/lib/offlineQueue';
 import { CAKE_DESIGNS, cakeTypesFor, calculateCakePrice, type CakeCreamType, type CakeDesignType } from '@/branch/cakePricing';
 // FEATURE (2026-08-10): "the custom cake order sub tab... should be same
 // like SNB branch Advance cake orders" -- reuses the exact same component
@@ -752,6 +753,67 @@ function printCakeChecklist(orders: CakeOrderRow[], packingUser: string, mode: '
   </body></html>`);
 }
 
+// OFFLINE FIX (2026-10-01): "make Cake dispatch work offline" — shares the
+// exact same architecture as runPlannerDispatchAndInvoiceCore in
+// PlannerDashboard.tsx (one core function used by both the live online
+// confirm() below and this replay handler): dispatch every cake
+// (performCakeDispatch — already idempotent, re-checks each order's real DB
+// status first and no-ops if it's already 'Dispatched', safe to retry) then
+// save one invoice per branch in the batch. Queues the exact CakeOrderRow
+// snapshots the planner reviewed and approved at confirm time, so a replayed
+// invoice reflects what was actually shown/confirmed, not whatever the order
+// might have drifted to by the time connectivity returns.
+interface CakeDispatchAndInvoicePayload {
+  orders: CakeOrderRow[];
+  dispatchedBy: string;
+  discountPct: number;
+}
+
+async function runCakeDispatchAndInvoiceCore(payload: CakeDispatchAndInvoicePayload): Promise<DispatchInvoiceRecord[]> {
+  const clampedDiscountPct = Math.max(0, Math.min(100, Number(payload.discountPct) || 0));
+  for (const order of payload.orders) {
+    await performCakeDispatch(order, payload.dispatchedBy);
+  }
+  const byBranch = new Map<CakeOrderRow['branch'], CakeOrderRow[]>();
+  for (const o of payload.orders) {
+    const list = byBranch.get(o.branch) ?? [];
+    list.push(o);
+    byBranch.set(o.branch, list);
+  }
+  const records: DispatchInvoiceRecord[] = [];
+  for (const [branch, group] of byBranch) {
+    if (branch === 'Planner') continue; // no dispatch invoice for Planner-scope cakes
+    const items: DispatchInvoiceItem[] = group.map((o) => ({
+      itemName: cakeItemLabel(o), unit: 'pcs', quantity: 1,
+      unitPrice: Number(o.order_value), lineTotal: Number(o.order_value),
+    }));
+    const record = await saveDispatchInvoice({
+      scope: 'Cake', dispatchedBy: payload.dispatchedBy, items, discountPct: clampedDiscountPct,
+      dispatchEntryIds: group.map((o) => ({ orderId: o.id, dispatchEntryId: o.id })),
+    });
+    records.push(record);
+    const dispatchIds = group.map((o) => cakeIncomingDispatchId(o.id));
+    const tagIncoming = () => supabase.from('branch_incoming').update({ invoice_no: record.invoiceNo }).in('dispatch_id', dispatchIds);
+    let { error: incomingTagError } = await tagIncoming();
+    if (incomingTagError) ({ error: incomingTagError } = await tagIncoming());
+    if (incomingTagError) console.error('[CakeDispatchReplay] Failed to tag branch_incoming with invoice number:', incomingTagError.message);
+  }
+  return records;
+}
+
+async function queueCakeDispatchAndInvoice(payload: CakeDispatchAndInvoicePayload): Promise<void> {
+  await useOfflineQueueStore.getState().enqueue('cake_dispatch_and_invoice', payload);
+}
+
+registerReplayHandler('cake_dispatch_and_invoice', async (_kind, payload) => {
+  try {
+    await runCakeDispatchAndInvoiceCore(payload as CakeDispatchAndInvoicePayload);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'Failed to sync this cake dispatch.' };
+  }
+});
+
 // FEATURE (2026-08-08): "I need the ability to select multiple items and
 // dispatch at once and I need the checklist and the invoice — get the price
 // from the SNB branch advance cake order." One review step covers both the
@@ -771,6 +833,11 @@ function CakeDispatchReviewModal({ orders, dispatchedBy, onClose, onDone }: {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [results, setResults] = useState<DispatchInvoiceRecord[] | null>(null);
+  // OFFLINE FIX (2026-10-01): set only when confirm() queued this batch
+  // instead of completing it live — no real invoice number exists yet, so
+  // this renders a distinct "queued" panel instead of the normal results
+  // screen, which would otherwise have nothing real to show or print.
+  const [queuedOffline, setQueuedOffline] = useState(false);
   // RETRY-SAFETY FIX (2026-08-08 audit): a batch here can span 2 branches
   // (SNB + VRSNB cakes together), each getting its own saveDispatchInvoice
   // call in a loop below. If branch A's invoice saves fine but branch B's
@@ -825,6 +892,27 @@ function CakeDispatchReviewModal({ orders, dispatchedBy, onClose, onDone }: {
       setError(`These cakes have no price recorded on their advance order: ${missingPriceOrders.map(o => o.order_no).join(', ')}. Fix the advance order's price before dispatching.`);
       return;
     }
+    // OFFLINE FIX (2026-10-01): queues the whole batch via the shared core
+    // above instead of running the live loop below — see
+    // runCakeDispatchAndInvoiceCore's comment for why this is safe to retry
+    // and why it queues the exact reviewed snapshot.
+    if (!navigator.onLine) {
+      sendingInFlightRef.current = true;
+      setSending(true);
+      setError(null);
+      try {
+        await queueCakeDispatchAndInvoice({ orders, dispatchedBy, discountPct: clampedDiscountPct });
+        setQueuedOffline(true);
+        onDone();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Failed to queue this cake dispatch.');
+      } finally {
+        sendingInFlightRef.current = false;
+        setSending(false);
+      }
+      return;
+    }
+
     sendingInFlightRef.current = true;
     setSending(true);
     setError(null);
@@ -882,6 +970,27 @@ function CakeDispatchReviewModal({ orders, dispatchedBy, onClose, onDone }: {
       sendingInFlightRef.current = false;
     }
   };
+
+  // OFFLINE FIX (2026-10-01): a distinct screen, not the normal results
+  // screen below — no real invoice number exists yet (it's minted only once
+  // this replays after reconnecting), so there is nothing real to show or
+  // print here.
+  if (queuedOffline) {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+        <div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-xl">
+          <p className="text-sm font-black text-foreground">Cake Dispatch Queued — No Internet Connection</p>
+          <p className="mt-2 text-[12px] font-bold text-muted-foreground">
+            This batch of {orders.length} cake{orders.length === 1 ? '' : 's'} is saved on this device and will be dispatched and billed with a real invoice number automatically the moment this device reconnects to the internet. Nothing more is needed from you right now.
+          </p>
+          <p className="mt-2 text-[11px] font-bold text-amber-700">
+            Check the offline banner at the top of the screen to see when it has synced.
+          </p>
+          <button onClick={onClose} className="mt-4 w-full rounded-xl bg-primary py-2 text-sm font-black text-primary-foreground">Close</button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">

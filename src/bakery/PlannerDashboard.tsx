@@ -49,12 +49,14 @@ import {
   businessFor, defaultDiscountPct, saveDispatchInvoice, printDispatchInvoice, listDispatchInvoices, markDispatchInvoicePaid, updateDispatchInvoice, cancelDispatchInvoice,
   mapWalkinBill, walkinBillToInvoiceRecord, returnDispatchInvoiceItems, recordFromRow, saveWalkinBillSecure,
   saveAdvanceSale, settleAdvanceSale, cancelAdvanceSale, listAdvanceSales, advanceSaleToInvoiceRecord,
-  type DispatchInvoiceRecord, type DispatchInvoiceItem, type WalkinBillRow, type WalkinBillItem, type AdvanceSaleRecord, type AdvanceSaleItem,
+  type DispatchInvoiceRecord, type DispatchInvoiceItem, type WalkinBillRow, type WalkinBillItem, type AdvanceSaleRecord, type AdvanceSaleItem, type DispatchInvoiceScope,
 } from './dispatchInvoice';
+import { useOfflineQueueStore, registerReplayHandler } from '@/lib/offlineQueue';
 import { useMenuStore } from '@/stores/menuStore';
 import { isNativeApp } from '@/lib/platform';
 import NativeNav from '@/components/layout/NativeNav';
 import { supabase, fetchAllRows } from '@/lib/supabase';
+import { getCached, setCached } from '@/lib/localCache';
 import { getPackingCounterStatus, packingBusinessDateToday } from './packingCounter';
 import {
   GST_INVOICE_SELLER_DEFAULT, GST_INVOICE_BANK_DEFAULT, buildGstTaxInvoiceHtml, financialYearForDate,
@@ -12310,6 +12312,110 @@ export interface PendingDispatchAction {
 // instead of only being able to catch a fast double-click.
 const confirmedDispatchBatchSignatures = new Set<string>();
 
+// OFFLINE FIX (2026-10-01): "Phase 2 — Planner/dispatch offline" — until now
+// DispatchReviewModal.confirm() (SNB/VRSNB/Custom dispatch — the main
+// everyday dispatch flow) had zero offline support at all, unlike Hosur's
+// shop-order dispatch (hosurBillingBridge.ts) which already queues safely.
+// This covers the CORE, universal part of confirm() — dispatch each item
+// (submitDispatch, already idempotent by dispatchEntryId, see
+// confirmedDispatchBatchSignatures above) then save the invoice
+// (saveDispatchInvoice, atomic number+insert) — via one shared function used
+// by BOTH the live online call and this replay handler, same architecture as
+// runHosurDispatchAndBillCore. Deliberately does NOT cover the two optional
+// follow-on steps confirm() can also do (Hosur auto-bill+WhatsApp, GST Tax
+// Invoice) — both need the real invoice number this function only produces
+// AFTER a live round-trip, so confirm() itself blocks offline with a clear
+// message for those two specific cases instead of queuing a dispatch that
+// silently skips a bill/WhatsApp the planner was told would happen
+// automatically. Every other case (the overwhelming majority of daily
+// dispatch — plain SNB/VRSNB, Custom without GST) queues for real.
+interface PlannerDispatchActionPayload {
+  orderId: string;
+  dispatchEntryId: string;
+  itemName: string;
+  quantity: number;
+  unit: 'pcs' | 'kg';
+  targetHosurOrderId?: string;
+  isExtra?: boolean;
+  isCustomSale?: boolean;
+  customerName?: string;
+}
+
+interface PlannerDispatchAndInvoicePayload {
+  scope: Branch;
+  actions: PlannerDispatchActionPayload[];
+  invoiceItems: DispatchInvoiceItem[];
+  discountPct: number;
+  dispatchedBy: string;
+  numberScope?: DispatchInvoiceScope;
+  hosurShopId: string | null;
+  hosurShopName: string | null;
+  hosurShopPhone: string | null;
+  customerName: string | null;
+  customerPhone: string | null;
+  customerAddress: string | null;
+}
+
+async function runPlannerDispatchAndInvoiceCore(payload: PlannerDispatchAndInvoicePayload): Promise<DispatchInvoiceRecord> {
+  for (const a of payload.actions) {
+    await useBakeryStore.getState().submitDispatch(a.orderId, {
+      id: a.dispatchEntryId,
+      itemName: a.itemName,
+      quantity: a.quantity,
+      unit: a.unit,
+      branch: payload.scope,
+      dispatchedBy: payload.dispatchedBy,
+      dispatchedAt: new Date().toISOString(),
+      ...(a.targetHosurOrderId ? { targetHosurOrderId: a.targetHosurOrderId } : {}),
+      ...(a.isExtra ? { isExtra: true } : {}),
+      ...(a.isCustomSale ? { isCustomSale: true, customerName: a.customerName } : {}),
+    });
+  }
+
+  const record = await saveDispatchInvoice({
+    scope: payload.scope,
+    numberScope: payload.numberScope,
+    hosurShopId: payload.hosurShopId,
+    hosurShopName: payload.hosurShopName,
+    hosurShopPhone: payload.hosurShopPhone,
+    customerName: payload.customerName,
+    customerPhone: payload.customerPhone,
+    customerAddress: payload.customerAddress,
+    dispatchedBy: payload.dispatchedBy,
+    items: payload.invoiceItems,
+    discountPct: payload.discountPct,
+    dispatchEntryIds: payload.actions.map((a) => ({ orderId: a.orderId, dispatchEntryId: a.dispatchEntryId })),
+  });
+
+  // Same best-effort branch_incoming tagging as the online confirm() path —
+  // the dispatch + invoice above have already succeeded and must stand
+  // regardless of whether this works.
+  if ((payload.scope === 'SNB' || payload.scope === 'VRSNB') && !payload.customerName) {
+    const dispatchIds = payload.actions.map((a) => a.dispatchEntryId);
+    if (dispatchIds.length > 0) {
+      const tagIncoming = () => supabase.from('branch_incoming').update({ invoice_no: record.invoiceNo }).in('dispatch_id', dispatchIds);
+      let { error: tagError } = await tagIncoming();
+      if (tagError) ({ error: tagError } = await tagIncoming());
+      if (tagError) console.error('[PlannerDispatchReplay] Failed to tag branch_incoming with invoice number:', tagError.message);
+    }
+  }
+
+  return record;
+}
+
+async function queuePlannerDispatchAndInvoice(payload: PlannerDispatchAndInvoicePayload): Promise<void> {
+  await useOfflineQueueStore.getState().enqueue('planner_dispatch_and_invoice', payload);
+}
+
+registerReplayHandler('planner_dispatch_and_invoice', async (_kind, payload) => {
+  try {
+    await runPlannerDispatchAndInvoiceCore(payload as PlannerDispatchAndInvoicePayload);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'Failed to sync this dispatch.' };
+  }
+});
+
 function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber, customer, actions, skippedItems, dispatchedBy, onDispatch, onClose, onDone }: {
   scope: Branch;
   hosurShop?: { id: string; name: string; phone: string } | null;
@@ -12385,6 +12491,13 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
   const sendingRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<DispatchInvoiceRecord | null>(null);
+  // OFFLINE FIX (2026-10-01): set only when confirm() queued this dispatch
+  // instead of completing it live — no real invoice number exists yet (it's
+  // minted at replay time), so this renders a distinct "queued" panel rather
+  // than the normal result screen, which would otherwise show/print a
+  // fabricated invoice number for a bill that doesn't exist in the database
+  // yet.
+  const [queuedOffline, setQueuedOffline] = useState(false);
   // BUG FIX: "client unable to see TO/26-27/245 in Planner — but the items
   // showed in SNB Order > Incoming." Confirmed live: the dispatch itself and
   // the invoice row both succeed reliably; tagging the already-written
@@ -12485,8 +12598,19 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
   useEffect(() => {
     if (scope !== 'Hosur' || !hosurShop) return;
     let cancelled = false;
+    const cacheKey = `hosur_shop_prices_v1_${hosurShop.id}`;
     (async () => {
       setLoadingPrices(true);
+      // OFFLINE FIX (2026-10-01): "Phase 2 — Planner/dispatch offline" — this
+      // price list directly drives the dispatch bill's math for this shop,
+      // so a network failure here previously left hosurPrices empty with no
+      // fallback at all (every item would price at 0). Paint the last-known
+      // list immediately (best-effort, instant) so a reload while offline
+      // still has real prices to dispatch against; the network fetch right
+      // below still runs unconditionally and overwrites it the moment it
+      // succeeds, same pattern as every other offline fix this session.
+      const cached = await getCached<Record<string, number>>(cacheKey);
+      if (!cancelled && cached) setHosurPrices(cached);
       const { data, error: err } = await supabase.from('hosur_shop_price_lists').select('item_name, unit_price').eq('shop_id', hosurShop.id).eq('is_active', true);
       if (cancelled) return;
       if (!err && data) {
@@ -12495,6 +12619,7 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
           map[row.item_name.trim().toLowerCase()] = Number(row.unit_price) || 0;
         }
         setHosurPrices(map);
+        void setCached(cacheKey, map);
       }
       setLoadingPrices(false);
     })();
@@ -12699,6 +12824,65 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
     const effectiveChargeLines: DispatchInvoiceItem[] = effectiveCharges.map(c => ({
       itemName: c.name, unit: 'charge', quantity: 1, unitPrice: c.amount, lineTotal: c.amount,
     }));
+
+    // OFFLINE FIX (2026-10-01): "Phase 2 — Planner/dispatch offline" — see
+    // runPlannerDispatchAndInvoiceCore's own comment above for the full
+    // reasoning. The two follow-on steps below (Hosur auto-bill+WhatsApp,
+    // GST Tax Invoice) both need the real invoice number saveDispatchInvoice
+    // only produces after a live round-trip — queuing those would mean
+    // telling the planner "dispatched" while silently skipping a bill/
+    // WhatsApp they were told would happen automatically. Blocked here with
+    // a clear message instead; every other case queues for real.
+    if (!navigator.onLine) {
+      if (gstInvoiceOffered && gstEnabled) {
+        setError('No internet connection — a dispatch with a GST Tax Invoice needs a live connection. Uncheck the GST invoice box to send this offline, or try again once reconnected.');
+        return;
+      }
+      if (scope === 'Hosur' && hosurShop?.id && hosurOrderId) {
+        setError('No internet connection — this Hosur shop order needs a live connection to dispatch and auto-bill. Try again once reconnected.');
+        return;
+      }
+      sendingRef.current = true;
+      setSending(true);
+      setError(null);
+      try {
+        const roundedActions = effectiveActions
+          .map((a) => ({ ...a, quantity: a.unit === 'pcs' ? Math.round(a.quantity) : a.quantity }))
+          .filter((a) => !(a.unit === 'pcs' && a.quantity <= 0));
+        await queuePlannerDispatchAndInvoice({
+          scope,
+          actions: roundedActions.map((a) => ({
+            orderId: a.orderId,
+            dispatchEntryId: a.dispatchEntryId,
+            itemName: a.itemName,
+            quantity: a.quantity,
+            unit: a.unit,
+            ...(a.targetHosurOrderId ? { targetHosurOrderId: a.targetHosurOrderId } : {}),
+            ...(a.isExtra ? { isExtra: true } : {}),
+            ...(customer ? { isCustomSale: true, customerName: customer.name } : {}),
+          })),
+          invoiceItems: [...invoiceLines, ...effectiveChargeLines],
+          discountPct,
+          dispatchedBy,
+          numberScope: customer ? 'Hosur' : undefined,
+          hosurShopId: hosurShop?.id ?? null,
+          hosurShopName: hosurShop?.name ?? null,
+          hosurShopPhone: hosurShop?.phone ?? null,
+          customerName: customer?.name ?? null,
+          customerPhone: customer?.phone ?? null,
+          customerAddress: customer?.address ?? null,
+        });
+        if (batchSignature) confirmedDispatchBatchSignatures.add(batchSignature);
+        setQueuedOffline(true);
+        onDone();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Failed to queue this dispatch.');
+      } finally {
+        sendingRef.current = false;
+        setSending(false);
+      }
+      return;
+    }
 
     sendingRef.current = true;
     setSending(true);
@@ -12945,6 +13129,28 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
       setSending(false);
     }
   };
+
+  // OFFLINE FIX (2026-10-01): a distinct screen, not the normal result
+  // screen below — no real invoice number exists yet (it's minted only once
+  // this replays after reconnecting), so there is nothing real to show or
+  // print here. Showing/printing a fabricated number would be worse than no
+  // number at all.
+  if (queuedOffline) {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+        <div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-xl">
+          <p className="text-sm font-black text-foreground">Dispatch Queued — No Internet Connection</p>
+          <p className="mt-2 text-[12px] font-bold text-muted-foreground">
+            This dispatch{customer ? ` to ${customer.name}` : ` to ${scope}`} is saved on this device and will be sent to {scope}'s stock and billed with a real invoice number automatically the moment this device reconnects to the internet. Nothing more is needed from you right now.
+          </p>
+          <p className="mt-2 text-[11px] font-bold text-amber-700">
+            Check the offline banner at the top of the screen to see when it has synced.
+          </p>
+          <button onClick={onClose} className="mt-4 w-full rounded-xl bg-primary py-2 text-sm font-black text-primary-foreground">Close</button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">

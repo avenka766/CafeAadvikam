@@ -10,7 +10,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useSupplierStore } from './supplierStore';
-import { useInvoiceStore, type StoreInvoice, type InvoiceLineItem } from './invoiceStore';
+import { useInvoiceStore, queueStoreCreateInvoice, type StoreInvoice, type InvoiceLineItem } from './invoiceStore';
 import { useStoreStockStore, type StockUnit } from './storeStockStore';
 import { useNotificationStore } from './notificationStore';
 import { searchItems } from './storeItemMaster';
@@ -1040,6 +1040,46 @@ export function CreateInvoiceModal({
     setError('');
     const normalizedNotes = notes.trim();
     const normalizedGrandTotal = Number(invoiceLines.reduce((sum, line) => sum + line.totalPrice, 0).toFixed(2));
+
+    // OFFLINE FIX (2026-10-01): "make Store/Bakery GRN work offline" — only
+    // the plain new-GRN case below queues for real. Editing an existing
+    // invoice and converting a purchase order into one both need this
+    // modal's already-loaded server state (editingInvoice/sourcePO) to still
+    // be correct by the time it eventually replays, which this modal can't
+    // promise once it's long closed — blocked here with a clear message
+    // instead of silently queuing something that might apply against stale
+    // data later.
+    if (!navigator.onLine && (editingInvoice || sourcePO)) {
+      setError(editingInvoice
+        ? 'No internet connection — editing an existing GRN needs a live connection. Try again once reconnected.'
+        : 'No internet connection — converting a purchase order into a GRN needs a live connection. Try again once reconnected.');
+      setSaving(false);
+      savingRef.current = false;
+      return;
+    }
+    if (!navigator.onLine) {
+      try {
+        await queueStoreCreateInvoice({
+          supplierId,
+          supplierName: supplier.businessName,
+          deliveryDate,
+          lineItems: invoiceLines,
+          grandTotal: normalizedGrandTotal,
+          notes: normalizedNotes,
+          syncedToStock: false,
+          supplierInvoiceNumber: supplierInvoiceNumber.trim() || undefined,
+          supplierInvoiceDate: supplierInvoiceDate || undefined,
+          vehicleNumber: vehicleNumber.trim() || undefined,
+        });
+        setInfo('No internet connection — this GRN is saved on this device and will sync with a real GRN number automatically once reconnected. Check the offline banner at the top of the screen for sync status.');
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Failed to queue this GRN.');
+      } finally {
+        setSaving(false);
+        savingRef.current = false;
+      }
+      return;
+    }
 
     try {
       if (editingInvoice) {

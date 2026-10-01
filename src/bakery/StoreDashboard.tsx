@@ -28,7 +28,7 @@ import { cn } from '@/lib/utils';
 import { isNativeApp } from '@/lib/platform';
 import NativeNav from '@/components/layout/NativeNav';
 import {
-  useStoreStockStore, getAllRecipeMaterials, normaliseName, convertToStockUnit,
+  useStoreStockStore, getAllRecipeMaterials, normaliseName, convertToStockUnit, queueStoreStockEdit,
   type StockUnit, type StockItem, type StockCategory,
 } from './storeStockStore';
 import { useSupplierStore, type Supplier } from './supplierStore';
@@ -1745,6 +1745,26 @@ function StoreInventoryTab() {
         // unconditional close here was forcing the modal shut even when
         // the save had just failed.
         const before = editItem;
+        // OFFLINE FIX (2026-10-01): "make Store/Bakery raw-material stock
+        // counts work offline" — queues the quantity change as a DELTA
+        // (this device's own before/after), not updateItem's absolute set,
+        // so it applies correctly against whatever the real quantity is by
+        // the time this replays, instead of almost always bouncing on
+        // updateItem's own stale-comparison guard. See queueStoreStockEdit's
+        // own comment for the full reasoning. No notifyStockChange here —
+        // nothing has actually changed in the database yet; the offline
+        // banner at the top of the screen is the honest signal until it
+        // syncs.
+        if (!navigator.onLine) {
+          await queueStoreStockEdit({
+            id: before.id,
+            quantityDelta: u.quantity !== undefined ? u.quantity - before.quantity : 0,
+            unit: u.unit,
+            minThreshold: u.minThreshold,
+            category: u.category,
+          });
+          return;
+        }
         const err = await updateItem(editItem.id, u);
         if (err) throw new Error(err);
         const qtyNote = u.quantity !== undefined ? `stock ${before.quantity} ${before.unit} to ${u.quantity} ${u.unit || before.unit}` : 'details changed';
