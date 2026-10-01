@@ -2,7 +2,9 @@
 User-agent: *
 Allow: /
 Allow: /menu
+Allow: /digital-menu
 Allow: /order
+Allow: /cafe-order
 
 # Block all internal staff/admin routes from crawlers
 Disallow: /admin-dashboard
@@ -13,3 +15,5 @@ Disallow: /order-pad
 Disallow: /bakery/
 Disallow: /branch/
 Disallow: /attendance
+
+Sitemap: https://cafeaadvikam.com/sitemap.xml
