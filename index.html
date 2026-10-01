@@ -6,14 +6,18 @@
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon.png?v=2" />
     <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=2" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
-    <title>Cafe Aadvikam — Restaurant & Party Hall</title>
-    <meta name="description" content="Pure vegetarian restaurant with authentic South Indian flavours. Order management system for Cafe Aadvikam, 109 Bagalur Main Road, Berikai 635105." />
-    <meta property="og:type" content="website" />
-    <meta property="og:title" content="Cafe Aadvikam — Restaurant & Party Hall" />
-    <meta property="og:description" content="Authentic Flavours, Timeless Taste. Pure vegetarian restaurant crafted for fresh ingredients and soulful dining." />
+    <title>Cafe Aadvikam — Restaurant, Party Hall & Bakery in Hosur Since 1988</title>
+    <meta name="description" content="Pure vegetarian restaurant, party hall, and catering in Berigai, Hosur, alongside Sri Nanjundeshwara Bakery & Sweets — custom cakes, ghee sweets, pickles and cold-pressed oils. Family-run since 1988." />
+    <link rel="canonical" href="https://cafeaadvikam.com/" />
+    <meta property="og:type" content="restaurant" />
+    <meta property="og:title" content="Cafe Aadvikam — Restaurant, Party Hall & Bakery in Hosur Since 1988" />
+    <meta property="og:description" content="A pure vegetarian restaurant, party hall and catering service in Berigai, Hosur — with a working bakery counter, custom cakes, ghee sweets, pickles and cold-pressed oils. Family-run since 1988." />
+    <meta property="og:image" content="https://cafeaadvikam.com/og-image.jpg" />
+    <meta property="og:url" content="https://cafeaadvikam.com/" />
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:title" content="Cafe Aadvikam — Restaurant & Party Hall" />
-    <meta name="twitter:description" content="Authentic Flavours, Timeless Taste. Pure vegetarian restaurant crafted for fresh ingredients and soulful dining." />
+    <meta name="twitter:title" content="Cafe Aadvikam — Restaurant, Party Hall & Bakery in Hosur Since 1988" />
+    <meta name="twitter:description" content="A pure vegetarian restaurant, party hall and catering service in Berigai, Hosur — with a working bakery counter, custom cakes, ghee sweets, pickles and cold-pressed oils. Family-run since 1988." />
+    <meta name="twitter:image" content="https://cafeaadvikam.com/og-image.jpg" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Source+Sans+3:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
@@ -21,6 +25,136 @@
          AUDIT FIX (2026-09-09): moved to an external file (public/error-handler.js)
          so the page's CSP script-src no longer needs 'unsafe-inline'. -->
     <script src="/error-handler.js"></script>
+    <!-- SEO (2026-09-30 redesign brief): static JSON-LD, not a per-route
+         react-helmet system — this is a single-page marketing site for one
+         real business, so one static schema block covers it without adding
+         a new runtime dependency. Every fact below is real (see
+         src/constants/cafeInfo.ts and the reviews already shown on the page)
+         — no invented ratings, awards, or counts. -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "Restaurant",
+        "name": "Cafe Aadvikam",
+        "image": "https://cafeaadvikam.com/og-image.jpg",
+        "url": "https://cafeaadvikam.com/",
+        "telephone": "+91 90954 45444",
+        "servesCuisine": ["South Indian", "North Indian", "Chinese"],
+        "priceRange": "₹₹",
+        "address": {
+          "@type": "PostalAddress",
+          "streetAddress": "109 Bagalur Main Road",
+          "addressLocality": "Berikai",
+          "addressRegion": "Tamil Nadu",
+          "postalCode": "635105",
+          "addressCountry": "IN"
+        },
+        "openingHoursSpecification": {
+          "@type": "OpeningHoursSpecification",
+          "dayOfWeek": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"],
+          "opens": "07:00",
+          "closes": "22:00"
+        },
+        "aggregateRating": {
+          "@type": "AggregateRating",
+          "ratingValue": "4.6",
+          "reviewCount": "57"
+        },
+        "sameAs": []
+      }
+    </script>
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "Bakery",
+        "name": "Sri Nanjundeshwara Bakery & Sweets",
+        "url": "https://cafeaadvikam.com/",
+        "telephone": "+91 90954 45444",
+        "priceRange": "₹₹",
+        "address": {
+          "@type": "PostalAddress",
+          "streetAddress": "109 Bagalur Main Road",
+          "addressLocality": "Berikai",
+          "addressRegion": "Tamil Nadu",
+          "postalCode": "635105",
+          "addressCountry": "IN"
+        },
+        "openingHoursSpecification": {
+          "@type": "OpeningHoursSpecification",
+          "dayOfWeek": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"],
+          "opens": "07:00",
+          "closes": "22:00"
+        },
+        "aggregateRating": {
+          "@type": "AggregateRating",
+          "ratingValue": "4.5",
+          "reviewCount": "686"
+        }
+      }
+    </script>
+    <!-- FAQ schema (brief section 27) — every answer is a fact already
+         stated elsewhere on the page (hours, party hall capacity, custom
+         cakes, PAN-India status); nothing new is claimed here. -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "FAQPage",
+        "mainEntity": [
+          {
+            "@type": "Question",
+            "name": "Is Cafe Aadvikam pure vegetarian?",
+            "acceptedAnswer": { "@type": "Answer", "text": "Yes, Cafe Aadvikam is a pure vegetarian restaurant serving South Indian, North Indian and Chinese dishes." }
+          },
+          {
+            "@type": "Question",
+            "name": "What are Cafe Aadvikam's opening hours?",
+            "acceptedAnswer": { "@type": "Answer", "text": "Cafe Aadvikam is open 7 AM to 10 PM, every day of the week." }
+          },
+          {
+            "@type": "Question",
+            "name": "Does Cafe Aadvikam have a party hall for events?",
+            "acceptedAnswer": { "@type": "Answer", "text": "Yes, the in-house party hall is a big hall with ample parking, and outside catering is also available for weddings, corporate events and family functions across Hosur and into Bangalore." }
+          },
+          {
+            "@type": "Question",
+            "name": "Can I order a custom cake from Sri Nanjundeshwara Bakery & Sweets?",
+            "acceptedAnswer": { "@type": "Answer", "text": "Yes, every cake is decorated to order — tell us the flavour, size and design and it's delivered across Hosur and the surrounding area." }
+          },
+          {
+            "@type": "Question",
+            "name": "Does Sri Nanjundeshwara Bakery & Sweets deliver pan-India?",
+            "acceptedAnswer": { "@type": "Answer", "text": "Yes — Sri Nanjundeshwara Bakery & Sweets now delivers bakery and traditional food products pan-India, so you can order the same taste wherever you are." }
+          }
+        ]
+      }
+    </script>
+    <!-- Product schema (brief section 27) — the two discrete, named
+         offerings this business actually sells at a custom (not fixed)
+         price, so no "offers.price" is given — schema.org allows a Product
+         with no Offer; inventing a price here would be a bigger problem
+         than omitting one. Breadcrumb schema was deliberately skipped: this
+         is a single-page site with no distinct crawlable sub-pages, so a
+         breadcrumb hierarchy wouldn't describe anything real. -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "Product",
+        "name": "Custom Cake — Sri Nanjundeshwara Bakery & Sweets",
+        "description": "Cakes decorated to order — any flavour, size and design, delivered across Hosur and the surrounding area.",
+        "image": "https://cafeaadvikam.com/cake-gallery/barbie-princess.jpg",
+        "brand": { "@type": "Brand", "name": "Sri Nanjundeshwara Bakery & Sweets" }
+      }
+    </script>
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "Product",
+        "name": "Ghee Sweets — Sri Nanjundeshwara Bakery & Sweets",
+        "description": "Traditional ghee sweets made the traditional way, for celebrations and gifting.",
+        "image": "https://cafeaadvikam.com/og-image.jpg",
+        "brand": { "@type": "Brand", "name": "Sri Nanjundeshwara Bakery & Sweets" }
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>

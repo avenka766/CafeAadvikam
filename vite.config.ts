@@ -59,6 +59,14 @@ export default defineConfig({
           // for 10 days. Keep dijkstrajs in the same chunk as qrcode/jspdf.
           if (id.includes("jspdf") || id.includes("qrcode") || id.includes("dijkstrajs")) return "document-vendor";
           if (id.includes("framer-motion")) return "motion-vendor";
+          // PERF (2026-10-01): three.js (~600KB) is only used by one
+          // decorative hero effect on the public Landing page (dynamically
+          // imported there, not touched by any other route) and has no CJS
+          // interop relationship with anything above — unlike the
+          // dijkstrajs/qrcode case, splitting it out carries none of that
+          // risk. Matches the exact node_modules path, not a bare "three"
+          // substring, so it can't accidentally catch an unrelated package.
+          if (id.includes("node_modules/three/")) return "three-vendor";
           if (id.includes("@radix-ui") || id.includes("cmdk") || id.includes("vaul")) return "ui-vendor";
           return "vendor";
         },
