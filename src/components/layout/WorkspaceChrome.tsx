@@ -18,14 +18,17 @@ import {
   FileText,
   Flame,
   History,
+  Image,
   Inbox,
   Layers,
   ListPlus,
   LayoutDashboard,
   LogOut,
+  Megaphone,
   Package,
   PackageCheck,
   QrCode,
+  Star,
   Receipt,
   FileSpreadsheet,
   RotateCcw,
@@ -154,6 +157,16 @@ export function navForRole(role?: string): NavItem[] {
         { label: 'Attendance & Payroll', path: '/admin-dashboard?tab=attendance', icon: <CalendarCheck className="size-4" />, group: 'Admin' },
         { label: 'Staff Management', path: '/staff-management', icon: <Users className="size-4" />, group: 'Admin' },
         { label: 'QR Table Codes', path: '/qr-menu', icon: <QrCode className="size-4" />, group: 'Admin' },
+        // BUG FIX (2026-10-01): these 4 tabs were added to AdminDashboard.tsx's
+        // own NAV_ITEMS (so /admin-dashboard?tab=testimonials etc. works) but
+        // never linked here — this is the SEPARATE, parallel nav list the
+        // comment above (owner role, line ~171) already warns about: adding a
+        // tab to a page's own in-page NAV_ITEMS doesn't surface it in this
+        // sidebar automatically. The tabs were functional but undiscoverable.
+        { label: 'Testimonials', path: '/admin-dashboard?tab=testimonials', icon: <Star className="size-4" />, group: 'Admin' },
+        { label: 'Cake Gallery', path: '/admin-dashboard?tab=cake-gallery', icon: <Image className="size-4" />, group: 'Admin' },
+        { label: 'Promo Banners', path: '/admin-dashboard?tab=promo-banners', icon: <Megaphone className="size-4" />, group: 'Admin' },
+        { label: 'Leads', path: '/admin-dashboard?tab=leads', icon: <Users className="size-4" />, group: 'Admin' },
       ];
     case 'owner':
       return [

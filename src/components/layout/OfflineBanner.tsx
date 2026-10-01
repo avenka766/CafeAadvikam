@@ -44,6 +44,9 @@ const KIND_LABELS: Record<string, string> = {
   branch_settle_credit_sale: 'Credit settlement',
   branch_checkout: 'SNB/VRSNB bill',
   branch_apply_credit_discount: 'Credit discount',
+  hosur_dispatch_and_bill: 'Hosur dispatch & bill',
+  hosur_leftover_dispatch: 'Hosur leftover dispatch & bill',
+  hosur_confirm_bill: 'Hosur bill confirmation',
 };
 
 export default function OfflineBanner() {
