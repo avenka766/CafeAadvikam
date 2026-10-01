@@ -173,20 +173,43 @@ export default function BranchDashboard({ branch }: Props) {
   // itself. Fetching once here, at the dashboard root, guarantees every tab
   // (present or future) shares one always-fresh roster instead of each
   // needing its own opt-in refresh call.
+  // PERF FIX (2026-10-01): "branch dashboard very slow, [57014] statement
+  // timeout" — this mount sequence used to fire fetchBranchData,
+  // fetchStockMismatches, fetchCreditPayments, syncIncomingFromDispatches,
+  // seedBranchItems, cleanOldData, refreshSalespeople, and loadTodayLedger
+  // (below) all essentially simultaneously — 8 independent query bundles at
+  // once, on TOP of branchOpsStore's own hydration (already staggered into
+  // waves for exactly this reason). Live postgres_logs during a real
+  // slowdown showed completely unrelated small-table queries timing out
+  // under concurrent load, the classic signature of too many queries
+  // landing on the DB in the same instant rather than any one of them being
+  // inherently slow. Staggered into small waves, same proven pattern as
+  // branchOpsStore's hydration: fetchBranchData (what billing actually
+  // needs first) fires immediately; everything else is spread across the
+  // next ~600ms. Nothing here changes what loads or how fresh it is — only
+  // when, so the DB sees a trickle instead of a burst. Cleared on unmount so
+  // a fast branch-switch can't fire a stale wave's setState after the fact.
   useEffect(() => {
-    void refreshSalespeople(branch);
+    const t = window.setTimeout(() => { void refreshSalespeople(branch); }, 450);
+    return () => window.clearTimeout(t);
   }, [branch, refreshSalespeople]);
 
   useEffect(() => {
+    const timers: number[] = [];
     fetchBranchData(branch);
-    fetchStockMismatches();
-    fetchCreditPayments(branch);
+
+    timers.push(window.setTimeout(() => {
+      fetchStockMismatches();
+      fetchCreditPayments(branch);
+    }, 150));
 
     if (initializedRef.current !== branch) {
       initializedRef.current = branch;
-      syncIncomingFromDispatches(branch, true);
-      seedBranchItems(branch);
-      cleanOldData();
+      timers.push(window.setTimeout(() => {
+        syncIncomingFromDispatches(branch, true);
+        seedBranchItems(branch);
+        cleanOldData();
+      }, 300));
     }
 
     const unsubscribe = subscribeToStock(branch);
@@ -199,10 +222,14 @@ export default function BranchDashboard({ branch }: Props) {
     // anyway" — a real, if rarer, failure mode this recovery poll exists
     // for specifically).
     const refresh = () => { if (!document.hidden) void fetchBranchData(branch); };
+    // Staggered for the same reason as the mount wave above — a cashier
+    // tabbing back and forth (checking WhatsApp, a calculator app, etc.)
+    // during a busy shift used to fire both of these at once on every
+    // return, repeatedly, stacking on top of whatever else just refocused.
     const refreshOnVisible = () => {
       if (document.hidden) return;
       void fetchBranchData(branch);
-      syncIncomingFromDispatches(branch);
+      timers.push(window.setTimeout(() => { if (!document.hidden) syncIncomingFromDispatches(branch); }, 150));
     };
     document.addEventListener('visibilitychange', refreshOnVisible);
     const id = setInterval(refresh, 15 * 60_000);
@@ -213,6 +240,7 @@ export default function BranchDashboard({ branch }: Props) {
       document.removeEventListener('visibilitychange', refreshOnVisible);
       clearInterval(id);
       clearInterval(syncId);
+      timers.forEach((t) => window.clearTimeout(t));
     };
   }, [branch, cleanOldData, fetchBranchData, fetchCreditPayments, fetchStockMismatches, seedBranchItems, subscribeToStock, syncIncomingFromDispatches]);
 
@@ -226,10 +254,18 @@ export default function BranchDashboard({ branch }: Props) {
   }, [branch]);
 
   useEffect(() => {
-    void loadTodayLedger();
-    const refreshOnVisible = () => { if (!document.hidden) void loadTodayLedger(); };
+    const mountTimer = window.setTimeout(() => { void loadTodayLedger(); }, 600);
+    // Offset from the OTHER visibilitychange handler above (which fires
+    // fetchBranchData immediately + syncIncomingFromDispatches at +150ms) so
+    // regaining focus doesn't pile three unrelated query bundles into the
+    // same instant — same staggering reasoning as the mount effect above.
+    const refreshOnVisible = () => {
+      if (document.hidden) return;
+      window.setTimeout(() => { if (!document.hidden) void loadTodayLedger(); }, 300);
+    };
     document.addEventListener('visibilitychange', refreshOnVisible);
     return () => {
+      window.clearTimeout(mountTimer);
       document.removeEventListener('visibilitychange', refreshOnVisible);
     };
   }, [loadTodayLedger]);
