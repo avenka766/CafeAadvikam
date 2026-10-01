@@ -12,7 +12,7 @@ import { supabase } from '@/lib/supabase';
 import { businessDate } from '@/lib/businessDate';
 import { useAuthStore } from '@/stores/authStore';
 import { isNativeApp } from '@/lib/platform';
-import { useBranchStore } from './branchStore';
+import { useBranchStore, hydrateBranchDataFromCache } from './branchStore';
 import { SettingsTab } from './tabs/SettingsTab';
 import { ReportsTab } from './tabs/ReportsTab';
 import BranchBillingProTab from './tabs/BranchBillingProTab';
@@ -196,6 +196,13 @@ export default function BranchDashboard({ branch }: Props) {
 
   useEffect(() => {
     const timers: number[] = [];
+    // OFFLINE FIX (2026-10-01): "Phase 1 — branch stock + billing offline" —
+    // fills the dashboard with last-known-good data instantly (best-effort,
+    // no-op once a real fetch has already landed for this branch) so a
+    // reload while offline shows real numbers instead of a blank screen,
+    // while fetchBranchData right below still runs exactly as before and
+    // overwrites it the moment the network succeeds.
+    void hydrateBranchDataFromCache(branch);
     fetchBranchData(branch);
 
     timers.push(window.setTimeout(() => {

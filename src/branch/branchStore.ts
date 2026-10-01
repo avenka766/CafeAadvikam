@@ -10,6 +10,7 @@ import { startOfBusinessDayISO } from '@/lib/businessDate';
 import { useOfflineQueueStore, registerReplayHandler } from '@/lib/offlineQueue';
 import { generateId } from '@/lib/utils';
 import { isAdvanceOrderTagged, parseAdvanceOrderNotes } from '@/bakery/bakeryStore';
+import { getCached, setCached } from '@/lib/localCache';
 
 const normalizeStockName = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
@@ -558,6 +559,55 @@ function computeBranchRealtimeChange(state: BranchState, branch: Branch, table: 
 // deliberately NOT wired here; they still work online exactly as before,
 // and simply fail (as they already did pre-this-change) if attempted
 // offline, with no optimistic state applied so nothing misleading is shown.
+// OFFLINE FIX (2026-10-01): "Phase 1 — branch stock + billing offline" —
+// fetchBranchData's result was ONLY ever held in memory (Zustand state),
+// never persisted. The existing offline queue already lets billing WRITES
+// (recordSale, recordCreditSale, confirmIncoming, etc. — see the
+// registerReplayHandler calls below) succeed while offline, but a page
+// reload or app restart while offline had nothing to read — stock, today's
+// sales, open credit/advance — leaving a blank dashboard even though the
+// write side was already safe. This persists the same six scoped slices
+// fetchBranchData already fetches into the same IndexedDB cache orderStore.ts
+// uses for Cafe orders, and hydrates from it once per branch per session
+// before the first real fetch resolves — same "stale-while-revalidate"
+// shape, not a new pattern. Never overwrites state a real fetch already
+// populated (checked via stock.length/lastSyncedAt), so a fast network
+// response always wins over the cached snapshot.
+const BRANCH_DATA_CACHE_PREFIX = 'branch_data_v1_';
+const branchDataCacheHydrated = new Set<Branch>();
+
+type CachedBranchData = {
+  stock: StockItem[];
+  sales: SaleRecord[];
+  incoming: IncomingStock[];
+  thresholds: Record<string, number>;
+  advanceOrders: BranchAdvanceOrder[];
+  creditSales: CreditSale[];
+  cachedAt: string;
+};
+
+export async function hydrateBranchDataFromCache(branch: Branch): Promise<void> {
+  if (branchDataCacheHydrated.has(branch)) return;
+  branchDataCacheHydrated.add(branch);
+  const cached = await getCached<CachedBranchData>(`${BRANCH_DATA_CACHE_PREFIX}${branch}`);
+  if (!cached) return;
+  useBranchStore.setState((s) => {
+    // A real fetch may have already landed (or be in flight and about to
+    // land) before this cache read resolves — never clobber fresher state.
+    // branchLastFetchedAt is the same module-level map fetchBranchData
+    // itself stamps on every successful completion (see below).
+    if (s.stock[branch].length > 0 || branchLastFetchedAt.has(branch)) return {};
+    return {
+      stock: { ...s.stock, [branch]: cached.stock ?? [] },
+      sales: { ...s.sales, [branch]: cached.sales ?? [] },
+      incoming: { ...s.incoming, [branch]: cached.incoming ?? [] },
+      thresholds: { ...s.thresholds, [branch]: cached.thresholds ?? {} },
+      advanceOrders: { ...s.advanceOrders, [branch]: cached.advanceOrders ?? [] },
+      creditSales: { ...s.creditSales, [branch]: cached.creditSales ?? [] },
+    };
+  });
+}
+
 type ThresholdUpdatePayload = { branch: Branch; itemName: string; itemBarcode: number | null; threshold: number };
 
 async function writeThresholdUpdate(payload: ThresholdUpdatePayload): Promise<{ ok: boolean; error?: string }> {
@@ -1161,6 +1211,22 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         return { stock, sales, incoming, thresholds, advanceOrders, creditSales };
       });
       branchLastFetchedAt.set(branch, Date.now());
+      // OFFLINE FIX (2026-10-01): persist this branch's current slices so a
+      // reload while offline has something real to hydrate from (see
+      // hydrateBranchDataFromCache above) — best-effort, never blocks or
+      // throws (see localCache.ts). Read back via get() rather than the
+      // locals above since a narrow-scope call only rebuilt SOME of them;
+      // get() always reflects the full, just-merged state for this branch.
+      const freshState = get();
+      void setCached(`${BRANCH_DATA_CACHE_PREFIX}${branch}`, {
+        stock: freshState.stock[branch],
+        sales: freshState.sales[branch],
+        incoming: freshState.incoming[branch],
+        thresholds: freshState.thresholds[branch],
+        advanceOrders: freshState.advanceOrders[branch],
+        creditSales: freshState.creditSales[branch],
+        cachedAt: new Date().toISOString(),
+      } satisfies CachedBranchData);
     } catch (e) {
       console.error('fetchBranchData error:', e);
     } finally {
