@@ -1,3 +1,8 @@
+import { CAFE_INFO } from './cafeInfo';
+
+// address/phone/hours below previously drifted from the real values (see
+// cafeInfo.ts's header comment) — now sourced from the single shared
+// CAFE_INFO so this file can't drift again.
 export const CAFE_CONFIG = {
   name: 'Cafe Aadvikam',
   tagline: 'Restaurant & Party Hall',
@@ -7,10 +12,10 @@ export const CAFE_CONFIG = {
     'Experience the perfect blend of traditional flavors and modern ambiance. Our cafe serves authentic South Indian breakfast, North Indian cuisine, Chinese dishes, and freshly baked goods.',
   partyDescription:
     'Planning a celebration? Our party hall is perfect for birthdays, family gatherings, and corporate events. Ample parking available.',
-  address: '109 Bagalur Main Road, Berikai 635105',
-  phone: '',
+  address: CAFE_INFO.address,
+  phone: CAFE_INFO.phone,
   type: 'Pure Vegetarian',
-  hours: '6 AM - 10 PM Daily',
+  hours: CAFE_INFO.hours,
   googleMapsUrl: 'https://www.google.com/maps/search/?api=1&query=Cafe+Aadvikam+109+Bagalur+Main+Road+Berikai+635105',
 };
 
