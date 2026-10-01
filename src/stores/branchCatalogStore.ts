@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { supabase } from '@/lib/supabase';
 import { SNB_ITEMS } from '@/branch/snbItems';
 import { VRSNB_ITEMS } from '@/branch/vrsnbItems';
+import { getCached, setCached } from '@/lib/localCache';
 
 export type CatalogBranch = 'SNB' | 'VRSNB';
 export type CatalogUom = 'Nos' | 'Kgs';
@@ -58,6 +59,34 @@ function mapDbRow(row: Record<string, unknown>): BranchCatalogItem {
 
 function isMissingTable(message?: string) {
   return /branch_items|does not exist|schema cache|could not find/i.test(message ?? '');
+}
+
+// OFFLINE FIX (2026-10-01): "Phase 1 — branch stock + billing offline" —
+// before this, the ONLY offline fallback for prices was the hardcoded
+// seedItems() list baked into the bundle at build time. If the admin had
+// since changed a price or added an item, a reload while offline silently
+// fell back to that stale bundled price — a real billing-correctness risk
+// (wrong price -> wrong bill), not just a blank-screen one. This persists
+// the real, last-fetched catalogue (same IndexedDB cache branchStore.ts's
+// hydrateBranchDataFromCache uses) and hydrates from it once per branch per
+// session, strictly BEFORE loadCatalog's own network fetch — which still
+// runs unconditionally right after and overwrites this the moment it
+// succeeds, same "paint last-known-good, then refresh" shape used
+// everywhere else offline support has been added this session.
+const CATALOG_CACHE_PREFIX = 'branch_catalog_v1_';
+const catalogCacheHydrated = new Set<CatalogBranch>();
+
+async function hydrateCatalogFromCacheOnce(branch: CatalogBranch): Promise<void> {
+  if (catalogCacheHydrated.has(branch)) return;
+  catalogCacheHydrated.add(branch);
+  const cached = await getCached<BranchCatalogItem[]>(`${CATALOG_CACHE_PREFIX}${branch}`);
+  if (!cached || cached.length === 0) return;
+  useBranchCatalogStore.setState((s) => {
+    // A real fetch may have already finished before this cache read
+    // resolves — never clobber it with a possibly-older cached snapshot.
+    if (s.loaded[branch]) return {};
+    return { items: { ...s.items, [branch]: cached } };
+  });
 }
 
 async function ensureStockLink(item: BranchCatalogItem) {
@@ -145,6 +174,7 @@ export const useBranchCatalogStore = create<BranchCatalogState>((set, get) => ({
   departmentsLoaded: { SNB: false, VRSNB: false },
 
   loadCatalog: async (branch, force = false) => {
+    void hydrateCatalogFromCacheOnce(branch);
     if (!force && (get().loaded[branch] || get().loading[branch])) return;
     set((state) => ({
       loading: { ...state.loading, [branch]: true },
@@ -178,10 +208,14 @@ export const useBranchCatalogStore = create<BranchCatalogState>((set, get) => ({
       const dbItems = (data ?? []).map((row) => mapDbRow(row as Record<string, unknown>));
       // The migration seeds the catalogue. Keep a seed fallback only for an empty legacy database,
       // but never merge missing rows after data exists because an inactive/deleted item must stay hidden.
+      const resolvedItems = dbItems.length ? dbItems : seedItems(branch);
       set((state) => ({
-        items: { ...state.items, [branch]: dbItems.length ? dbItems : seedItems(branch) },
+        items: { ...state.items, [branch]: resolvedItems },
         loaded: { ...state.loaded, [branch]: true },
       }));
+      // Only persist real DB data — never cache the static seed fallback
+      // itself, so a later real fetch always has a chance to overwrite it.
+      if (dbItems.length) void setCached(`${CATALOG_CACHE_PREFIX}${branch}`, dbItems);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to load branch catalogue.';
       set((state) => ({
