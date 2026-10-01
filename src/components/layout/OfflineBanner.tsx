@@ -47,6 +47,10 @@ const KIND_LABELS: Record<string, string> = {
   hosur_dispatch_and_bill: 'Hosur dispatch & bill',
   hosur_leftover_dispatch: 'Hosur leftover dispatch & bill',
   hosur_confirm_bill: 'Hosur bill confirmation',
+  planner_dispatch_and_invoice: 'Planner dispatch & invoice',
+  cake_dispatch_and_invoice: 'Cake dispatch & invoice',
+  store_create_invoice: 'Store GRN (goods receipt)',
+  store_stock_edit: 'Store raw-material stock edit',
 };
 
 export default function OfflineBanner() {
