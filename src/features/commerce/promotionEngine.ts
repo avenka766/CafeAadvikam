@@ -61,7 +61,12 @@ function couponMatches(rule: PromotionRule, couponCode: string | undefined) {
   if (rule.type !== 'coupon') return true;
   const required = String(rule.couponCode || '').trim().toUpperCase();
   const entered = String(couponCode || '').trim().toUpperCase();
-  return Boolean(entered && (!required || required === entered));
+  // BUG FIX (audit 2026-09-02): `!required` made a coupon-type rule with no code
+  // configured (blank/unset couponCode) match ANY string the customer typed in as a
+  // "coupon" — a real discount-abuse hole: typing literally anything would apply that
+  // campaign. A coupon rule with no real code configured must never match.
+  if (!required) return false;
+  return Boolean(entered && required === entered);
 }
 
 function eligibleLines(campaign: PromotionCampaign, lines: PromotionCartLine[]) {
@@ -228,10 +233,21 @@ export function evaluatePromotions(campaigns: PromotionCampaign[], input: Promot
     }
   });
 
+  // AUDIT FIX (2026-09-02): the old comparator switched criteria (value vs
+  // priority) per PAIR depending on either element's own bestOfferOnly flag
+  // — not a valid ordering, since whether A beats B depended on B's flag
+  // too. Array.sort on a non-transitive comparator is implementation-
+  // defined, so the "best"/applied[0] campaign could be picked wrong.
+  // Same outcome for the common case (at most one bestOfferOnly campaign
+  // active) but transitive: if ANY candidate is bestOfferOnly, the whole
+  // set sorts purely by value (matching the original intent that a
+  // bestOfferOnly campaign — and anything compared against it — is judged
+  // by value, not priority); otherwise, sort by priority then value.
+  const anyBestOfferOnly = candidates.some((c) => c.campaign.bestOfferOnly);
   candidates.sort((a, b) => {
     const aValue = a.applied.discount + a.applied.cashback;
     const bValue = b.applied.discount + b.applied.cashback;
-    if (a.campaign.bestOfferOnly || b.campaign.bestOfferOnly) return bValue - aValue;
+    if (anyBestOfferOnly) return bValue - aValue;
     return b.campaign.priority - a.campaign.priority || bValue - aValue;
   });
 
