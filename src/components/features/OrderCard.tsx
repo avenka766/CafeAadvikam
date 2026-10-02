@@ -770,7 +770,7 @@ export default function OrderCard({ order, showActions = false, counterOpenedTod
         {showActions && (order.status === 'served' || order.status === 'cancelled') && (
           <div className="px-3.5 py-2.5 border-t border-border">
             <button onClick={() => setShowReceipt(true)} className="w-full py-2 rounded-lg bg-muted text-foreground text-sm font-body font-medium flex items-center justify-center gap-2 active:scale-[0.97]">
-              <Printer className="size-4" />View Receipt
+              <Printer className="size-4" />{order.status === 'served' ? 'Print Duplicate Bill' : 'View Receipt'}
             </button>
           </div>
         )}
