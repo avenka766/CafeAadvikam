@@ -80,7 +80,7 @@ export default function AdminLeadsTab() {
       <div className="mb-4 flex items-center justify-between">
         <div>
           <h2 className="text-lg font-bold text-gray-900">Leads</h2>
-          <p className="text-xs text-gray-500">Every party hall enquiry and (historical) PAN-India sign-up submitted from the homepage.</p>
+          <p className="text-xs text-gray-500">Customer requests for events, catering, cakes, bulk orders, visits and shopping help, plus historical PAN-India sign-ups.</p>
         </div>
         <button onClick={reload} className="flex items-center gap-2 rounded-lg border border-gray-300 px-3 py-1.5 text-sm font-semibold hover:bg-gray-50">
           <RefreshCw className="size-4" /> Refresh
@@ -103,7 +103,7 @@ export default function AdminLeadsTab() {
       {loading ? <p className="text-sm text-gray-500">Loading…</p> : (
         <>
           <div className="mb-2 mt-2 flex items-center justify-between">
-            <h3 className="text-sm font-bold uppercase tracking-wide text-gray-500">Party hall & catering enquiries ({filteredEnquiries.length}{statusFilter !== 'all' ? ` of ${enquiries.length}` : ''})</h3>
+            <h3 className="text-sm font-bold uppercase tracking-wide text-gray-500">Customer enquiries ({filteredEnquiries.length}{statusFilter !== 'all' ? ` of ${enquiries.length}` : ''})</h3>
             {statusFilter !== 'all' && <button onClick={() => setStatusFilter('all')} className="text-xs font-semibold text-emerald-700 hover:underline">Clear filter</button>}
           </div>
           <div className="mb-8 overflow-x-auto rounded-xl border border-gray-200">
@@ -112,7 +112,7 @@ export default function AdminLeadsTab() {
                 <tr>
                   <th className="px-4 py-2">Name</th>
                   <th className="px-4 py-2">Contact</th>
-                  <th className="px-4 py-2">Event</th>
+                  <th className="px-4 py-2">Enquiry type</th>
                   <th className="px-4 py-2">Date</th>
                   <th className="px-4 py-2">Guests</th>
                   <th className="px-4 py-2">Requirements</th>
@@ -129,7 +129,7 @@ export default function AdminLeadsTab() {
                       <div className="flex items-center gap-2">
                         <span>{r.phone}</span>
                         <a href={`tel:${r.phone}`} className="grid size-6 place-items-center rounded-full bg-gray-100 text-gray-600 hover:bg-gray-200" aria-label={`Call ${r.name}`} title="Call"><Phone className="size-3.5" /></a>
-                        <a href={waLink(r.phone, `Hi ${r.name}, thanks for your party hall enquiry with Cafe Aadvikam — following up here.`)} target="_blank" rel="noreferrer" className="grid size-6 place-items-center rounded-full bg-[#25D366]/15 text-[#128C4A] hover:bg-[#25D366]/25" aria-label={`WhatsApp ${r.name}`} title="WhatsApp"><MessageCircle className="size-3.5" /></a>
+                        <a href={waLink(r.phone, `Hi ${r.name}, thanks for your ${r.event_type?.toLowerCase() || "customer"} enquiry with Cafe Aadvikam / SNB Bakery — following up here.`)} target="_blank" rel="noreferrer" className="grid size-6 place-items-center rounded-full bg-[#25D366]/15 text-[#128C4A] hover:bg-[#25D366]/25" aria-label={`WhatsApp ${r.name}`} title="WhatsApp"><MessageCircle className="size-3.5" /></a>
                       </div>
                     </td>
                     <td className="px-4 py-2">{r.event_type ?? '—'}</td>

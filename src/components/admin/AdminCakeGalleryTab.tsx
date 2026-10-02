@@ -1,6 +1,5 @@
 // Manages src/pages/Landing.tsx's DB-backed cake gallery (Bakery venue,
-// #cakes section). Falls back to the existing real bakery photos already on
-// the page if this table is empty, so it's safe to start with none.
+// #cakes section). Only active Admin photos appear; an empty gallery stays hidden.
 //
 // REDESIGN (2026-10-01): added stats, category filter chips (mirrors the
 // same chips the public gallery itself shows), search, drag-free up/down
@@ -69,10 +68,10 @@ function GalleryDialog({ row, categories, onClose, onSaved }: { row: CakeGallery
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true">
-      <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl">
+      <div className="max-h-[90vh] overflow-y-auto w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl">
         <div className="mb-4 flex items-center justify-between">
           <h3 className="text-lg font-bold">{row ? 'Edit cake photo' : 'Add cake photo'}</h3>
-          <button onClick={onClose} className="grid size-8 place-items-center rounded-full hover:bg-gray-100"><X className="size-4" /></button>
+          <button onClick={onClose} aria-label="Close editor" className="grid size-8 place-items-center rounded-full hover:bg-gray-100"><X className="size-4" /></button>
         </div>
         <div className="grid gap-3">
           {imageUrl && <img src={imageUrl} alt="" className="aspect-square w-full rounded-xl object-cover" />}
@@ -149,7 +148,7 @@ export default function AdminCakeGalleryTab() {
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-lg font-bold text-gray-900">Cake gallery</h2>
-          <p className="text-xs text-gray-500">Photos shown in the homepage cake gallery — falls back to real bakery photos if this list is empty.</p>
+          <p className="text-xs text-gray-500">Active photos appear in the homepage cake gallery with these captions, categories and display order. An empty gallery stays hidden.</p>
         </div>
         <button onClick={() => setDialog('new')} className="flex items-center gap-2 rounded-lg bg-emerald-700 px-4 py-2 text-sm font-bold text-white hover:bg-emerald-800">
           <Plus className="size-4" /> Add photo
@@ -196,7 +195,7 @@ export default function AdminCakeGalleryTab() {
       ) : filtered.length === 0 ? (
         <div className="rounded-xl border border-dashed border-gray-300 p-8 text-center">
           <Cake className="mx-auto mb-2 size-8 text-gray-300" />
-          <p className="text-sm text-gray-400">{rows.length === 0 ? 'No photos yet — the homepage is showing the existing real bakery photos as a fallback. Add photos here to build a real cake gallery.' : 'No photos match your filter.'}</p>
+          <p className="text-sm text-gray-400">{rows.length === 0 ? 'No photos yet — upload your cake photos here to show them on the homepage.' : 'No photos match your filter.'}</p>
         </div>
       ) : (
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4">

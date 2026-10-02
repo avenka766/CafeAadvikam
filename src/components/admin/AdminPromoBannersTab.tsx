@@ -16,6 +16,7 @@ import { supabase } from '@/lib/supabase';
 import { cn } from '@/lib/utils';
 import { uploadSiteContentImage } from './siteContentImages';
 import { useSupabaseRows } from './useSupabaseRows';
+import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 
 type PromoBanner = {
   id: string;
@@ -45,8 +46,8 @@ function BannerPreview({ title, message, ctaLabel }: { title: string; message: s
   if (!title.trim()) return null;
   return (
     <div>
-      <p className="mb-1 text-[11px] font-bold uppercase tracking-wide text-gray-400">Preview (as shown on the homepage)</p>
-      <div className="cafe-gradient flex flex-wrap items-center justify-center gap-3 rounded-lg px-4 py-2.5 text-center text-xs font-bold text-primary-foreground sm:text-sm">
+      <p className="mb-1 text-[11px] font-bold uppercase tracking-wide text-gray-400">Offer text preview</p>
+      <div className="bg-[#682c36] flex flex-wrap items-center justify-center gap-3 rounded-lg px-4 py-2.5 text-center text-xs font-bold text-primary-foreground sm:text-sm">
         <span>{title}</span>
         {message.trim() && <span className="font-normal opacity-90">{message}</span>}
         {ctaLabel.trim() && <span className="underline underline-offset-2">{ctaLabel}</span>}
@@ -112,7 +113,7 @@ function BannerDialog({ row, onClose, onSaved }: { row: PromoBanner | null; onCl
       <div className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-2xl bg-white p-6 shadow-2xl">
         <div className="mb-4 flex items-center justify-between">
           <h3 className="text-lg font-bold">{row ? 'Edit banner' : 'Add banner'}</h3>
-          <button onClick={onClose} className="grid size-8 place-items-center rounded-full hover:bg-gray-100"><X className="size-4" /></button>
+          <button onClick={onClose} aria-label="Close editor" className="grid size-8 place-items-center rounded-full hover:bg-gray-100"><X className="size-4" /></button>
         </div>
         <div className="grid gap-3">
           <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Title" className="rounded-lg border border-gray-300 px-3 py-2 text-sm" />
@@ -123,7 +124,7 @@ function BannerDialog({ row, onClose, onSaved }: { row: PromoBanner | null; onCl
           {imageUrl && <img src={imageUrl} alt="" className="aspect-[3/1] w-full rounded-xl object-cover" />}
           <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleFile(f); }} />
           <button onClick={() => fileRef.current?.click()} disabled={uploading} className="flex items-center justify-center gap-2 rounded-lg border border-dashed border-gray-300 px-4 py-3 text-sm font-semibold text-gray-600 hover:bg-gray-50">
-            {uploading ? <><Loader2 className="size-4 animate-spin" /> Uploading…</> : (imageUrl ? 'Replace image' : 'Upload image (optional, not shown in the banner strip itself — used if this banner is ever featured elsewhere)')}
+            {uploading ? <><Loader2 className="size-4 animate-spin" /> Uploading…</> : (imageUrl ? 'Replace image' : 'Upload image (optional, shown alongside the offer on the homepage)')}
           </button>
           <input value={ctaLink} onChange={(e) => setCtaLink(e.target.value)} placeholder="Button link — where the button goes (e.g. /order, or a WhatsApp link)" className="rounded-lg border border-gray-300 px-3 py-2 text-sm" />
           <div>
@@ -163,14 +164,25 @@ function BannerDialog({ row, onClose, onSaved }: { row: PromoBanner | null; onCl
 export default function AdminPromoBannersTab() {
   const { rows, loading, reload, flash, setFlash } = useSupabaseRows<PromoBanner>('promo_banners', (q) => q.order('display_order'));
   const [dialog, setDialog] = useState<PromoBanner | 'new' | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<PromoBanner | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState('');
 
   const liveCount = useMemo(() => rows.filter((r) => liveStatus(r).label === 'Live now').length, [rows]);
 
   const remove = async (id: string) => {
-    if (!window.confirm('Delete this banner? This cannot be undone.')) return;
-    await supabase.from('promo_banners').delete().eq('id', id);
-    setFlash('Banner deleted.');
-    void reload();
+    if (deleting) return;
+    setDeleting(true);
+    setDeleteError('');
+    try {
+      const { error } = await supabase.from('promo_banners').delete().eq('id', id);
+      if (error) throw error;
+      setDeleteTarget(null);
+      setFlash('Banner deleted.');
+      void reload();
+    } catch (error) {
+      setDeleteError(error instanceof Error ? error.message : 'Unable to delete this banner. Please try again.');
+    } finally { setDeleting(false); }
   };
 
   const duplicate = async (row: PromoBanner) => {
@@ -185,7 +197,7 @@ export default function AdminPromoBannersTab() {
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-lg font-bold text-gray-900">Promo banners</h2>
-          <p className="text-xs text-gray-500">The announcement strip shown below the nav on the homepage — only one condition matters: active + within its date range.</p>
+          <p className="text-xs text-gray-500">Active offers appear within their date range. Both venues appears after the opening story; cafe and bakery offers appear beside their sections. Images and buttons are shown too.</p>
         </div>
         <button onClick={() => setDialog('new')} className="flex items-center gap-2 rounded-lg bg-emerald-700 px-4 py-2 text-sm font-bold text-white hover:bg-emerald-800">
           <Plus className="size-4" /> Add banner
@@ -242,7 +254,7 @@ export default function AdminPromoBannersTab() {
                       <div className="flex gap-2">
                         <button onClick={() => setDialog(r)} className="grid size-8 place-items-center rounded-lg hover:bg-gray-100" aria-label="Edit"><Pencil className="size-4" /></button>
                         <button onClick={() => void duplicate(r)} className="grid size-8 place-items-center rounded-lg hover:bg-gray-100" aria-label="Duplicate"><Copy className="size-4" /></button>
-                        <button onClick={() => void remove(r.id)} className="grid size-8 place-items-center rounded-lg text-red-600 hover:bg-red-50" aria-label="Delete"><Trash2 className="size-4" /></button>
+                        <button onClick={() => { setDeleteError(''); setDeleteTarget(r); }} className="grid size-8 place-items-center rounded-lg text-red-600 hover:bg-red-50" aria-label="Delete"><Trash2 className="size-4" /></button>
                       </div>
                     </td>
                   </tr>
@@ -253,6 +265,12 @@ export default function AdminPromoBannersTab() {
         </div>
       )}
       {dialog && <BannerDialog row={dialog === 'new' ? null : dialog} onClose={() => setDialog(null)} onSaved={() => { setFlash(dialog === 'new' ? 'Banner added.' : 'Banner updated.'); void reload(); }} />}
+      <Dialog open={!!deleteTarget} onOpenChange={open => { if (!open && !deleting) setDeleteTarget(null); }}>
+        <DialogContent><DialogTitle>Delete this banner?</DialogTitle><DialogDescription>“{deleteTarget?.title}” will be permanently removed. This cannot be undone.</DialogDescription>
+          {deleteError && <p role="alert" className="text-sm text-red-700">{deleteError}</p>}
+          <div className="flex justify-end gap-3"><button disabled={deleting} onClick={() => setDeleteTarget(null)} className="rounded-lg border px-4 py-2">Cancel</button><button disabled={deleting} onClick={() => deleteTarget && void remove(deleteTarget.id)} className="rounded-lg bg-red-700 px-4 py-2 text-white">{deleting ? 'Deleting…' : 'Delete banner'}</button></div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -1,7 +1,6 @@
 // Manages src/pages/Landing.tsx's DB-backed testimonials section (public
 // SELECT of active rows only — see the `testimonials` table's RLS). The
-// homepage falls back to its own hardcoded reviews if this table is ever
-// empty, so this screen is purely additive/curatorial, not load-bearing.
+// homepage shows only published reviews and hides the section when empty.
 //
 // REDESIGN (2026-10-01): added search/filter, per-venue + active stats, a
 // star-rating field (the `rating` column already existed in the DB but was
@@ -78,10 +77,10 @@ function TestimonialDialog({ row, onClose, onSaved }: { row: Testimonial | null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true">
-      <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl">
+      <div className="max-h-[90vh] overflow-y-auto w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl">
         <div className="mb-4 flex items-center justify-between">
           <h3 className="text-lg font-bold">{row ? 'Edit testimonial' : 'Add testimonial'}</h3>
-          <button onClick={onClose} className="grid size-8 place-items-center rounded-full hover:bg-gray-100"><X className="size-4" /></button>
+          <button onClick={onClose} aria-label="Close editor" className="grid size-8 place-items-center rounded-full hover:bg-gray-100"><X className="size-4" /></button>
         </div>
         <div className="grid gap-3">
           <div>
@@ -179,7 +178,7 @@ export default function AdminTestimonialsTab() {
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-lg font-bold text-gray-900">Testimonials</h2>
-          <p className="text-xs text-gray-500">Reviews shown on the homepage — falls back to the built-in reviews if this list is empty.</p>
+          <p className="text-xs text-gray-500">Active reviews appear on the homepage with their rating, author and venue. Disable all reviews to hide the section.</p>
         </div>
         <button onClick={() => setDialog('new')} className="flex items-center gap-2 rounded-lg bg-emerald-700 px-4 py-2 text-sm font-bold text-white hover:bg-emerald-800">
           <Plus className="size-4" /> Add testimonial
