@@ -380,7 +380,7 @@ function AppRoutes() {
 
   return (
     <>
-      {!native && !isLandingRoute && <Header />}
+      {!native && !isLandingRoute && location.pathname !== '/order' && <Header />}
       {!native && currentUser && !isPublicRoute ? (
         <WorkspaceChrome>{routes}</WorkspaceChrome>
       ) : routes}
