@@ -1,32 +1,79 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Link, useNavigate } from "react-router-dom";
 import {
   ArrowLeft,
+  ArrowRight,
+  Cake,
+  Cookie,
+  Leaf,
+  Sparkles,
+  Heart as HeartIcon,
   Check,
   ChevronRight,
-  Clock3,
   CreditCard,
-  MapPin,
   Minus,
   PackageCheck,
   Plus,
   Search,
   ShieldCheck,
   ShoppingBag,
-  Smartphone,
-  Star,
   Trash2,
   Truck,
   X,
-} from 'lucide-react';
-import { catalogCategories, useBranchCatalogStore, type BranchCatalogItem } from '@/stores/branchCatalogStore';
-import { cn, formatCurrency } from '@/lib/utils';
-import { supabase } from '@/lib/supabase';
-import snbLogo from '@/assets/snb-logo.png';
-import bakeryHero from '@/assets/bakery/bakery-counter.jpg';
+} from "lucide-react";
+import {
+  catalogCategories,
+  useBranchCatalogStore,
+  type BranchCatalogItem,
+} from "@/stores/branchCatalogStore";
+import { cn } from "@/lib/utils";
+import { supabase } from "@/lib/supabase";
+import { LeadEnquiry } from "@/components/features/LeadEnquiry";
+import snbLogo from "@/assets/snb-logo.png";
+import { CAFE_INFO } from "@/constants/cafeInfo";
+import "@/styles/heritage.css";
+import "@/styles/heritage-shop.css";
 
-const CART_STORAGE_KEY = 'vrsnb-customer-order-v2';
-const PHONE_STORAGE_KEY = 'vrsnb-customer-phone';
+const prettyName = (value: string) =>
+  value.toLowerCase().replace(/\b\w/g, (letter) => letter.toUpperCase());
+const currencyFormatter = new Intl.NumberFormat("en-IN", {
+  style: "currency",
+  currency: "INR",
+  minimumFractionDigits: 0,
+  maximumFractionDigits: 2,
+});
+const formatCurrency = (value: number) => currencyFormatter.format(value);
+const productIcon = (category: string) =>
+  /CAKE/.test(category)
+    ? Cake
+    : /COOK|BISCUIT|BAKERY/.test(category)
+    ? Cookie
+    : /SWEET|HALWA|JAMUN|PAK|LADDU|BURFI|PEDA|BAKLAVA/.test(category)
+    ? Sparkles
+    : Leaf;
+
+const COLLECTIONS = [
+  {
+    id: "sweets",
+    label: "Sweets",
+    pattern: /SWEET|HALWA|JAMUN|PAK|LADDU|BURFI|PEDA|BAKLAVA|CHOCOLATE/i,
+  },
+  {
+    id: "savouries",
+    label: "Savouries",
+    pattern: /CHIPS|MURUK|MIX|NIPPAT|PAKODA|DAL/i,
+  },
+  {
+    id: "bakes",
+    label: "Bakes & cakes",
+    pattern: /BAKERY|CAKE|BISCUIT|COOKIE/i,
+  },
+  { id: "pantry", label: "Pantry", pattern: /OIL|PICKLE/i },
+];
+const startingPrice = (item: BranchCatalogItem) =>
+  item.price * (item.uom === "Kgs" ? 0.25 : 1);
+const CART_STORAGE_KEY = "vrsnb-customer-order-v2";
+const PHONE_STORAGE_KEY = "vrsnb-customer-phone";
 const TAX_RATE = 0.03;
 
 type CartLine = BranchCatalogItem & { quantity: number };
@@ -53,20 +100,12 @@ declare global {
 }
 
 const EMPTY_CUSTOMER: CheckoutForm = {
-  name: '',
-  phone: '',
-  address: '',
-  locationPin: '',
-  note: '',
-  deliverySlot: 'As soon as possible',
-};
-
-const CATEGORY_EMOJI: Record<string, string> = {
-  CHIPS: '🥔', MURUK: '🥨', MIXTURE: '🥣', PAKODA: '🧆', NIPPAT: '🫓', DAL: '🌾',
-  BAKERY: '🥐', CAKE: '🎂', COOKIES: '🍪', HALWA: '🍮', JAMUN: '🟤',
-  'MYSORE PAK': '🟨', BAKLAVA: '🥮', 'CASHEW SWEETS': '🌰', 'CASHEW BISCUIT': '🍪',
-  'CAKE ROLL': '🍰', BURFI: '◇', PEDA: '🟠', LADDU: '🟡', 'CASHEW LADDU': '🌰',
-  MIX: '🎁', CHOCOLATE: '🍫', SWEETS: '🍬', 'SPL SWEETS': '✨',
+  name: "",
+  phone: "",
+  address: "",
+  locationPin: "",
+  note: "",
+  deliverySlot: "As soon as possible",
 };
 
 function roundMoney(value: number) {
@@ -74,17 +113,22 @@ function roundMoney(value: number) {
 }
 
 function quantityStep(item: BranchCatalogItem) {
-  return item.uom === 'Kgs' ? 0.25 : 1;
+  return item.uom === "Kgs" ? 0.25 : 1;
 }
 
 function quantityLabel(line: CartLine) {
-  return line.uom === 'Kgs' ? `${line.quantity.toFixed(2)} kg` : `${line.quantity} ${line.quantity === 1 ? 'item' : 'items'}`;
+  return line.uom === "Kgs"
+    ? `${line.quantity.toFixed(2)} kg`
+    : `${line.quantity} ${line.quantity === 1 ? "item" : "items"}`;
 }
 
 function loadStoredDraft(): StoredOrderDraft {
-  if (typeof window === 'undefined') return { cart: [], customer: EMPTY_CUSTOMER };
+  if (typeof window === "undefined")
+    return { cart: [], customer: EMPTY_CUSTOMER };
   try {
-    const parsed = JSON.parse(localStorage.getItem(CART_STORAGE_KEY) || '{}') as Partial<StoredOrderDraft>;
+    const parsed = JSON.parse(
+      localStorage.getItem(CART_STORAGE_KEY) || "{}"
+    ) as Partial<StoredOrderDraft>;
     return {
       cart: Array.isArray(parsed.cart) ? parsed.cart : [],
       customer: { ...EMPTY_CUSTOMER, ...(parsed.customer || {}) },
@@ -97,30 +141,47 @@ function loadStoredDraft(): StoredOrderDraft {
 async function ensureRazorpayLoaded() {
   if (window.Razorpay) return;
   await new Promise<void>((resolve, reject) => {
-    const existing = document.querySelector<HTMLScriptElement>('script[data-vrsnb-razorpay="true"]');
+    const existing = document.querySelector<HTMLScriptElement>(
+      'script[data-vrsnb-razorpay="true"]'
+    );
     if (existing) {
-      existing.addEventListener('load', () => resolve(), { once: true });
-      existing.addEventListener('error', () => reject(new Error('Unable to load secure payment.')), { once: true });
+      existing.addEventListener("load", () => resolve(), { once: true });
+      existing.addEventListener(
+        "error",
+        () => reject(new Error("Unable to load secure payment.")),
+        { once: true }
+      );
       return;
     }
-    const script = document.createElement('script');
-    script.src = 'https://checkout.razorpay.com/v1/checkout.js';
+    const script = document.createElement("script");
+    script.src = "https://checkout.razorpay.com/v1/checkout.js";
     script.async = true;
-    script.dataset.vrsnbRazorpay = 'true';
+    script.dataset.vrsnbRazorpay = "true";
     script.onload = () => resolve();
-    script.onerror = () => reject(new Error('Unable to load secure payment.'));
+    script.onerror = () => reject(new Error("Unable to load secure payment."));
     document.head.appendChild(script);
   });
 }
 
-export default function QROrderPage() {
+export default function BakeryOrderPage() {
   const navigate = useNavigate();
   const initialDraft = useMemo(loadStoredDraft, []);
   const [cart, setCart] = useState<CartLine[]>(initialDraft.cart);
   const [customer, setCustomer] = useState<CheckoutForm>(initialDraft.customer);
-  const [selectedCategory, setSelectedCategory] = useState<string>('all');
-  const [search, setSearch] = useState('');
-  const [screen, setScreen] = useState<'menu' | 'checkout'>('menu');
+  const [selectedCategory, setSelectedCategory] = useState<string>("all");
+  const [search, setSearch] = useState("");
+  const [sort, setSort] = useState("featured");
+  const [collection, setCollection] = useState("all");
+  const [packSizes, setPackSizes] = useState<Record<number, number>>({});
+  const [visibleCount, setVisibleCount] = useState(24);
+  useEffect(
+    () => setVisibleCount(24),
+    [search, selectedCategory, collection, sort]
+  );
+  const [screen, setScreen] = useState<"menu" | "checkout">("menu");
+  useEffect(() => {
+    window.scrollTo({ top: 0, behavior: "instant" });
+  }, [screen]);
   const [paying, setPaying] = useState(false);
   // BUG FIX (audit 2026-09-02): payAndPlaceOrder relied only on disabled={paying} — a
   // useState flag updated asynchronously — with no synchronous guard inside the handler.
@@ -131,57 +192,103 @@ export default function QROrderPage() {
   // class already fixed in QROrderPage.tsx via a ref set synchronously before the first
   // await; mirrored here.
   const payingRef = useRef(false);
-  const [error, setError] = useState('');
-  const [addedNotice, setAddedNotice] = useState('');
-  const { items: catalogByBranch, loadCatalog, subscribe } = useBranchCatalogStore();
-  const catalogItems = useMemo(() => catalogByBranch.VRSNB.filter((item) => item.active), [catalogByBranch]);
-  const categories = useMemo(() => catalogCategories(catalogItems), [catalogItems]);
+  const [error, setError] = useState("");
+  const [addedNotice, setAddedNotice] = useState("");
+  const {
+    items: catalogByBranch,
+    loadCatalog,
+    subscribe,
+  } = useBranchCatalogStore();
+  const catalogItems = useMemo(
+    () => catalogByBranch.VRSNB.filter((item) => item.active),
+    [catalogByBranch]
+  );
+  const categories = useMemo(
+    () => catalogCategories(catalogItems),
+    [catalogItems]
+  );
 
   useEffect(() => {
-    void loadCatalog('VRSNB');
-    return subscribe('VRSNB');
+    void loadCatalog("VRSNB");
+    return subscribe("VRSNB");
   }, [loadCatalog, subscribe]);
 
   useEffect(() => {
     if (!catalogItems.length) return;
-    setCart((current) => current.flatMap((line) => {
-      const latest = catalogItems.find((item) => item.barcode === line.barcode);
-      return latest ? [{ ...latest, quantity: line.quantity }] : [];
-    }));
+    setCart((current) =>
+      current.flatMap((line) => {
+        const latest = catalogItems.find(
+          (item) => item.barcode === line.barcode
+        );
+        return latest ? [{ ...latest, quantity: line.quantity }] : [];
+      })
+    );
   }, [catalogItems]);
 
   useEffect(() => {
-    localStorage.setItem(CART_STORAGE_KEY, JSON.stringify({ cart, customer } satisfies StoredOrderDraft));
+    localStorage.setItem(
+      CART_STORAGE_KEY,
+      JSON.stringify({ cart, customer } satisfies StoredOrderDraft)
+    );
   }, [cart, customer]);
 
   useEffect(() => {
     if (!addedNotice) return;
-    const timer = window.setTimeout(() => setAddedNotice(''), 1600);
+    const timer = window.setTimeout(() => setAddedNotice(""), 1600);
     return () => window.clearTimeout(timer);
   }, [addedNotice]);
 
   const filteredItems = useMemo(() => {
     const q = search.trim().toLowerCase();
-    return catalogItems.filter((item) => (
-      (selectedCategory === 'all' || item.category === selectedCategory)
-      && (!q || item.name.toLowerCase().includes(q) || item.category.toLowerCase().includes(q) || String(item.barcode).includes(q))
-    ));
-  }, [catalogItems, search, selectedCategory]);
+    const matches = catalogItems.filter(
+      (item) =>
+        (selectedCategory === "all" || item.category === selectedCategory) &&
+        (collection === "all" ||
+          COLLECTIONS.find((c) => c.id === collection)!.pattern.test(
+            item.category
+          )) &&
+        (!q ||
+          item.name.toLowerCase().includes(q) ||
+          item.category.toLowerCase().includes(q) ||
+          String(item.barcode).includes(q))
+    );
+    return sort === "name"
+      ? matches.sort((a, b) => a.name.localeCompare(b.name))
+      : sort === "price-low"
+      ? matches.sort((a, b) => startingPrice(a) - startingPrice(b))
+      : sort === "price-high"
+      ? matches.sort((a, b) => startingPrice(b) - startingPrice(a))
+      : matches;
+  }, [catalogItems, search, selectedCategory, collection, sort]);
 
-  const subtotal = useMemo(() => roundMoney(cart.reduce((sum, line) => sum + line.price * line.quantity, 0)), [cart]);
+  const subtotal = useMemo(
+    () =>
+      roundMoney(
+        cart.reduce((sum, line) => sum + line.price * line.quantity, 0)
+      ),
+    [cart]
+  );
   const taxAmount = useMemo(() => roundMoney(subtotal * TAX_RATE), [subtotal]);
-  const grandTotal = useMemo(() => roundMoney(subtotal + taxAmount), [subtotal, taxAmount]);
-  const cartUnits = useMemo(() => cart.reduce((sum, line) => sum + line.quantity, 0), [cart]);
+  const grandTotal = useMemo(
+    () => roundMoney(subtotal + taxAmount),
+    [subtotal, taxAmount]
+  );
 
-  const getQuantity = (barcode: number) => cart.find((line) => line.barcode === barcode)?.quantity || 0;
+  const getQuantity = (barcode: number) =>
+    cart.find((line) => line.barcode === barcode)?.quantity || 0;
 
   const setQuantity = (item: BranchCatalogItem, next: number) => {
     const safeNext = Math.max(0, Math.round(next * 100) / 100);
     setCart((current) => {
-      if (safeNext <= 0) return current.filter((line) => line.barcode !== item.barcode);
+      if (safeNext <= 0)
+        return current.filter((line) => line.barcode !== item.barcode);
       const existing = current.some((line) => line.barcode === item.barcode);
       return existing
-        ? current.map((line) => line.barcode === item.barcode ? { ...line, quantity: safeNext } : line)
+        ? current.map((line) =>
+            line.barcode === item.barcode
+              ? { ...line, quantity: safeNext }
+              : line
+          )
         : [...current, { ...item, quantity: safeNext }];
     });
   };
@@ -192,22 +299,23 @@ export default function QROrderPage() {
   };
 
   const validateCheckout = () => {
-    if (!cart.length) return 'Add at least one bakery item.';
-    if (!customer.name.trim()) return 'Enter the customer name.';
-    if (!/^\d{10}$/.test(customer.phone.replace(/\D/g, ''))) return 'Enter a valid 10-digit mobile number.';
-    if (!customer.address.trim()) return 'Enter the complete delivery address.';
-    if (!customer.locationPin.trim()) return 'Enter the area PIN code or map link.';
-    return '';
+    if (!cart.length) return "Add at least one bakery item.";
+    if (!customer.name.trim()) return "Enter the customer name.";
+    if (!/^\d{10}$/.test(customer.phone.replace(/\D/g, "")))
+      return "Enter a valid 10-digit mobile number.";
+    if (!customer.address.trim()) return "Enter the complete delivery address.";
+    if (!customer.locationPin.trim())
+      return "Enter the area PIN code or map link.";
+    return "";
   };
 
   const openCheckout = () => {
     if (!cart.length) {
-      setError('Add at least one item before checkout.');
+      setError("Add at least one item before checkout.");
       return;
     }
-    setError('');
-    setScreen('checkout');
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    setError("");
+    setScreen("checkout");
   };
 
   const payAndPlaceOrder = async () => {
@@ -220,62 +328,106 @@ export default function QROrderPage() {
 
     payingRef.current = true;
     setPaying(true);
-    setError('');
+    setError("");
     try {
       await ensureRazorpayLoaded();
-      const phone = customer.phone.replace(/\D/g, '');
-      const items = cart.map((line) => ({ barcode: line.barcode, qty: line.quantity }));
-      const { data, error: createError } = await supabase.functions.invoke('create-razorpay-order', {
-        body: {
-          customer: { ...customer, phone },
-          items,
-          subtotal,
-          taxRate: 3,
-          taxAmount,
-          amount: Math.round(grandTotal * 100),
-          notes: { source: 'vrsnb_customer_booking', deliverySlot: customer.deliverySlot },
-        },
-      });
-      if (createError || !data?.orderId || !data?.keyId || !data?.publicOrderId) {
-        throw new Error(createError?.message || data?.error || 'Unable to create the order.');
+      const phone = customer.phone.replace(/\D/g, "");
+      const items = cart.map((line) => ({
+        barcode: line.barcode,
+        qty: line.quantity,
+      }));
+      const { data, error: createError } = await supabase.functions.invoke(
+        "create-razorpay-order",
+        {
+          body: {
+            customer: { ...customer, phone },
+            items,
+            subtotal,
+            taxRate: 3,
+            taxAmount,
+            amount: Math.round(grandTotal * 100),
+            notes: {
+              source: "vrsnb_customer_booking",
+              deliverySlot: customer.deliverySlot,
+            },
+          },
+        }
+      );
+      if (
+        createError ||
+        !data?.orderId ||
+        !data?.keyId ||
+        !data?.publicOrderId
+      ) {
+        throw new Error(
+          createError?.message || data?.error || "Unable to create the order."
+        );
       }
-      if (!window.Razorpay) throw new Error('Secure payment is unavailable. Please refresh and retry.');
+      if (!window.Razorpay)
+        throw new Error(
+          "Secure payment is unavailable. Please refresh and retry."
+        );
 
       const razorpay = new window.Razorpay({
         key: data.keyId,
         amount: data.amount,
-        currency: 'INR',
-        name: 'Sri Nanjundeshwara Bakery & Sweets',
+        currency: "INR",
+        name: "Sri Nanjundeshwara Bakery & Sweets",
         description: `Bakery order · ${cart.length} products`,
         order_id: data.orderId,
         prefill: { name: customer.name.trim(), contact: phone },
-        notes: { public_order_id: data.publicOrderId, tax_rate: '3%' },
-        theme: { color: '#16120d' },
-        modal: { ondismiss: () => { payingRef.current = false; setPaying(false); } },
+        notes: { public_order_id: data.publicOrderId, tax_rate: "3%" },
+        theme: { color: "#16120d" },
+        modal: {
+          ondismiss: () => {
+            payingRef.current = false;
+            setPaying(false);
+          },
+        },
         config: {
           display: {
             blocks: {
-              upi: { name: 'Pay via UPI', instruments: [{ method: 'upi' }] },
-              wallet: { name: 'Pay via Wallet', instruments: [{ method: 'wallet' }] },
+              upi: { name: "Pay via UPI", instruments: [{ method: "upi" }] },
+              wallet: {
+                name: "Pay via Wallet",
+                instruments: [{ method: "wallet" }],
+              },
             },
-            sequence: ['block.upi', 'block.wallet'],
+            sequence: ["block.upi", "block.wallet"],
             preferences: { show_default_blocks: false },
           },
         },
         handler: async (response: RazorpayResponse) => {
           try {
-            const { data: verified, error: verifyError } = await supabase.functions.invoke('verify-razorpay-payment', {
-              body: { ...response, publicOrderId: data.publicOrderId },
-            });
-            if (verifyError || !verified?.success) throw new Error(verifyError?.message || verified?.error || 'Payment verification failed.');
+            const { data: verified, error: verifyError } =
+              await supabase.functions.invoke("verify-razorpay-payment", {
+                body: { ...response, publicOrderId: data.publicOrderId },
+              });
+            if (verifyError || !verified?.success)
+              throw new Error(
+                verifyError?.message ||
+                  verified?.error ||
+                  "Payment verification failed."
+              );
             payingRef.current = false;
             localStorage.setItem(PHONE_STORAGE_KEY, phone);
             localStorage.removeItem(CART_STORAGE_KEY);
             setCart([]);
             setCustomer(EMPTY_CUSTOMER);
-            navigate(`/order/track?phone=${encodeURIComponent(phone)}&order=${encodeURIComponent(verified.orderNumber || data.orderNumber || '')}`, { replace: true });
+            navigate(
+              `/order/track?phone=${encodeURIComponent(
+                phone
+              )}&order=${encodeURIComponent(
+                verified.orderNumber || data.orderNumber || ""
+              )}`,
+              { replace: true }
+            );
           } catch (verificationError) {
-            setError(verificationError instanceof Error ? verificationError.message : 'Payment verification failed.');
+            setError(
+              verificationError instanceof Error
+                ? verificationError.message
+                : "Payment verification failed."
+            );
             payingRef.current = false;
             setPaying(false);
           }
@@ -283,193 +435,701 @@ export default function QROrderPage() {
       });
       razorpay.open();
     } catch (orderError) {
-      setError(orderError instanceof Error ? orderError.message : 'Unable to place the order.');
+      setError(
+        orderError instanceof Error
+          ? orderError.message
+          : "Unable to place the order."
+      );
       payingRef.current = false;
       setPaying(false);
     }
   };
 
+  function cartLines() {
+    return cart.map((line) => (
+      <article className="s-basket-line" key={line.barcode}>
+        <div className="s-line-title">
+          <strong>{prettyName(line.name)}</strong>
+          <button
+            type="button"
+            onClick={() => setQuantity(line, 0)}
+            aria-label={`Remove ${line.name}`}
+          >
+            <Trash2 />
+          </button>
+        </div>
+        <div className="s-line-bottom">
+          <div className="s-mini-quantity">
+            <button
+              type="button"
+              onClick={() =>
+                setQuantity(line, line.quantity - quantityStep(line))
+              }
+              aria-label={`Decrease ${line.name}`}
+            >
+              <Minus />
+            </button>
+            <span>{quantityLabel(line)}</span>
+            <button
+              type="button"
+              onClick={() => addItem(line)}
+              aria-label={`Increase ${line.name}`}
+            >
+              <Plus />
+            </button>
+          </div>
+          <span>{formatCurrency(roundMoney(line.price * line.quantity))}</span>
+        </div>
+      </article>
+    ));
+  }
+  function totals() {
+    return (
+      <div className="s-totals">
+        <div>
+          <span>Subtotal</span>
+          <strong>{formatCurrency(subtotal)}</strong>
+        </div>
+        <div>
+          <span>Tax (3%)</span>
+          <strong>{formatCurrency(taxAmount)}</strong>
+        </div>
+        <div>
+          <span>Total</span>
+          <strong>{formatCurrency(grandTotal)}</strong>
+        </div>
+      </div>
+    );
+  }
   return (
-    <main className="min-h-screen bg-[#f7f2e8] text-stone-950">
-      <header className="sticky top-0 z-50 border-b border-stone-200/80 bg-[#f7f2e8]/95 backdrop-blur-xl">
-        <div className="mx-auto flex max-w-7xl items-center justify-between gap-3 px-4 py-3 sm:px-6">
-          <button type="button" onClick={() => screen === 'checkout' ? setScreen('menu') : navigate('/')} className="grid size-11 shrink-0 place-items-center rounded-2xl border border-stone-200 bg-white shadow-sm" aria-label="Go back">
-            <ArrowLeft className="size-5" />
-          </button>
-          <button type="button" onClick={() => { setScreen('menu'); window.scrollTo({ top: 0 }); }} className="flex min-w-0 flex-1 items-center gap-3 text-left">
-            <img src={snbLogo} alt="Sri Nanjundeshwara Bakery & Sweets" className="size-11 rounded-2xl bg-white object-contain p-1.5 shadow-sm" />
-            <div className="min-w-0">
-              <p className="truncate font-display text-lg font-black">Sri Nanjundeshwara Bakery & Sweets</p>
-              <p className="truncate text-[11px] font-bold uppercase tracking-[0.16em] text-amber-800">Fresh bakery ordering</p>
-            </div>
-          </button>
-          <button type="button" onClick={() => navigate('/order/track')} className="inline-flex min-h-11 items-center gap-2 rounded-2xl border border-stone-200 bg-white px-3 text-xs font-black shadow-sm sm:px-4">
-            <PackageCheck className="size-4" /><span className="hidden sm:inline">Track order</span>
-          </button>
+    <main
+      className={cn(
+        "heritage s-shop",
+        cart.length > 0 && screen === "menu" && "s-has-cart"
+      )}
+    >
+      <header className="h-nav">
+        <div className="h-wrap h-nav-inner">
+          <Link to="/" className="h-brand">
+            <img src={snbLogo} alt="SNB" />
+            <span>
+              <strong>SNB Sweets & Bakes</strong>
+              <small>Sri Nanjundeshwara Bakery · Since 1988</small>
+            </span>
+          </Link>
+          <nav className="s-header-links" aria-label="Shop navigation">
+            <button
+              type="button"
+              aria-label={
+                screen === "checkout" ? "Back to shopping" : "Back to our story"
+              }
+              onClick={() =>
+                screen === "checkout" ? setScreen("menu") : navigate("/")
+              }
+            >
+              <ArrowLeft />
+              <span>
+                {screen === "checkout" ? "Keep exploring" : "Our story"}
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => navigate("/order/track")}
+              aria-label="Track order"
+            >
+              <PackageCheck />
+              <span>Track order</span>
+            </button>
+          </nav>
         </div>
       </header>
-
+      <div className="s-announcement">
+        A little taste of home, wherever you are. Now delivering Pan-India.
+      </div>
+      <ol className="s-steps h-wrap" aria-label="Ordering steps">
+        <li aria-current={screen === "menu" ? "step" : undefined}>
+          <span>01</span> Choose your favourites
+        </li>
+        <li aria-current={screen === "checkout" ? "step" : undefined}>
+          <span>02</span> Delivery details
+        </li>
+        <li>
+          <span>03</span> Secure payment
+        </li>
+      </ol>
       {addedNotice && (
-        <div className="fixed left-1/2 top-20 z-[70] flex -translate-x-1/2 items-center gap-2 rounded-full bg-emerald-700 px-4 py-2 text-xs font-black text-white shadow-xl" role="status" aria-live="polite">
-          <Check className="size-4" /> {addedNotice}
+        <div className="s-toast" role="status" aria-live="polite">
+          <Check />
+          {addedNotice}
         </div>
       )}
-
-      {screen === 'menu' ? (
+      {screen === "menu" ? (
         <>
-          <section className="relative overflow-hidden bg-stone-950 text-white">
-            <img src={bakeryHero} alt="Sri Nanjundeshwara Bakery & Sweets display counter" className="absolute inset-0 h-full w-full object-cover opacity-35" />
-            <div className="absolute inset-0 bg-gradient-to-r from-black via-black/80 to-black/25" />
-            <div className="relative mx-auto grid max-w-7xl gap-8 px-4 py-12 sm:px-6 md:grid-cols-[1fr_340px] md:items-end md:py-16">
+          <div className="h-wrap">
+            <section className="s-hero">
               <div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.2em] text-amber-200 backdrop-blur">
-                    <Clock3 className="size-3.5" /> Fresh orders · 6 AM–10 PM
+                <p className="h-eyebrow">From our family kitchen to yours</p>
+                <h1>
+                  A box of joy.
+                  <br />
+                  <em>A taste of tradition.</em>
+                </h1>
+                <p className="h-copy">
+                  Pick something you love, something to share, or a little of
+                  both. Your next sweet memory starts here.
+                </p>
+                <div className="s-trust">
+                  <span>
+                    <ShieldCheck />
+                    Quality ingredients
                   </span>
-                  <span className="inline-flex items-center gap-1.5 rounded-full border border-white/15 bg-white/10 px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.2em] text-amber-200 backdrop-blur">
-                    <Star className="size-3.5 fill-amber-300 text-amber-300" /> 4.5 · 686 Google reviews
+                  <span>
+                    <Truck />
+                    Pan-India delivery
+                  </span>
+                  <span>
+                    <HeartIcon />
+                    Made with care
                   </span>
                 </div>
-                <h1 className="mt-5 max-w-3xl font-display text-4xl font-black leading-[.96] sm:text-6xl">Order Sri Nanjundeshwara Bakery & Sweets favourites in a few simple steps.</h1>
-                <p className="mt-4 max-w-2xl text-sm font-semibold leading-6 text-white/70 sm:text-base">Choose products, adjust quantity, enter delivery details, pay securely and track the order using the same mobile number.</p>
               </div>
-              <div className="rounded-3xl border border-white/10 bg-white/10 p-4 backdrop-blur-xl">
-                <div className="grid grid-cols-3 gap-2 text-center">
-                  {[['1', 'Add items'], ['2', 'Pay'], ['3', 'Track']].map(([step, label]) => (
-                    <div key={step} className="rounded-2xl bg-black/25 p-3"><p className="text-xl font-black text-amber-300">{step}</p><p className="mt-1 text-[10px] font-black uppercase tracking-wide text-white/70">{label}</p></div>
-                  ))}
-                </div>
+              <div className="s-hero-art">
+                <img
+                  src="/images/heritage/special-sweets.jpeg"
+                  alt="SNB special sweets assortment"
+                />
+                <img
+                  src="/images/heritage/cashew-sweets.jpeg"
+                  alt="SNB cashew sweets assortment"
+                />
               </div>
-            </div>
-          </section>
-
-          <section className="sticky top-[69px] z-40 border-b border-stone-200 bg-[#f7f2e8]/95 backdrop-blur-xl">
-            <div className="mx-auto max-w-7xl space-y-3 px-4 py-4 sm:px-6">
-              <div className="relative">
-                <Search className="absolute left-4 top-1/2 size-5 -translate-y-1/2 text-stone-400" />
-                <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search cakes, sweets, savouries or barcode" className="h-14 w-full rounded-2xl border border-stone-200 bg-white pl-12 pr-12 text-sm font-bold shadow-sm outline-none transition focus:border-amber-500 focus:ring-4 focus:ring-amber-200/50" />
-                {search && <button type="button" onClick={() => setSearch('')} className="absolute right-4 top-1/2 -translate-y-1/2 text-stone-400" aria-label="Clear search"><X className="size-5" /></button>}
+            </section>
+            <nav className="s-collections" aria-label="Shop collections">
+              <button
+                type="button"
+                aria-pressed={collection === "all"}
+                onClick={() => {
+                  setCollection("all");
+                  setSelectedCategory("all");
+                }}
+              >
+                All favourites
+              </button>
+              {COLLECTIONS.filter((c) =>
+                catalogItems.some((item) => c.pattern.test(item.category))
+              ).map((c) => (
+                <button
+                  key={c.id}
+                  type="button"
+                  aria-pressed={collection === c.id}
+                  onClick={() => {
+                    setCollection(c.id);
+                    setSelectedCategory("all");
+                  }}
+                >
+                  {c.label}
+                </button>
+              ))}
+            </nav>
+            <section className="s-search-row" aria-label="Find products">
+              <div className="s-search">
+                <Search aria-hidden="true" />
+                <input
+                  aria-label="Search products"
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                  placeholder="Find your favourite sweets, savouries and more…"
+                />
+                {search && (
+                  <button
+                    type="button"
+                    onClick={() => setSearch("")}
+                    aria-label="Clear search"
+                  >
+                    <X />
+                  </button>
+                )}
               </div>
-
-              <label className="block md:hidden">
-                <span className="sr-only">Choose category</span>
-                <select value={selectedCategory} onChange={(event) => setSelectedCategory(event.target.value)} className="h-12 w-full rounded-2xl border border-stone-200 bg-white px-4 text-sm font-black outline-none focus:border-amber-500">
-                  <option value="all">All categories</option>
-                  {categories.map((category) => <option key={category} value={category}>{category}</option>)}
+              <label className="s-sort">
+                Sort by
+                <select
+                  aria-label="Sort products"
+                  value={sort}
+                  onChange={(e) => setSort(e.target.value)}
+                >
+                  <option value="featured">Our selection</option>
+                  <option value="name">Name A–Z</option>
+                  <option value="price-low">Starting price: low to high</option>
+                  <option value="price-high">
+                    Starting price: high to low
+                  </option>
                 </select>
               </label>
-
-              <div className="hidden flex-wrap gap-2 md:flex">
-                <button type="button" onClick={() => setSelectedCategory('all')} className={cn('rounded-full px-4 py-2 text-xs font-black transition', selectedCategory === 'all' ? 'bg-stone-950 text-white' : 'border border-stone-200 bg-white text-stone-700 hover:border-amber-400')}>All products</button>
+            </section>
+            <label className="s-mobile-filter">
+              Browse by category
+              <select
+                value={selectedCategory}
+                onChange={(event) => {
+                  setSelectedCategory(event.target.value);
+                  setCollection("all");
+                }}
+              >
+                <option value="all">All our favourites</option>
                 {categories.map((category) => (
-                  <button key={category} type="button" onClick={() => setSelectedCategory(category)} className={cn('rounded-full px-3 py-2 text-xs font-black transition', selectedCategory === category ? 'bg-amber-400 text-stone-950' : 'border border-stone-200 bg-white text-stone-700 hover:border-amber-400')}>
-                    {CATEGORY_EMOJI[category] || '•'} {category}
+                  <option key={category} value={category}>
+                    {prettyName(category)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="s-layout">
+              <aside className="s-categories" aria-label="Product categories">
+                <h2>Find your favourites</h2>
+                <button
+                  type="button"
+                  aria-pressed={selectedCategory === "all"}
+                  onClick={() => {
+                    setSelectedCategory("all");
+                    setCollection("all");
+                  }}
+                >
+                  All products<small>{catalogItems.length}</small>
+                </button>
+                {categories.map((category) => (
+                  <button
+                    key={category}
+                    type="button"
+                    aria-pressed={selectedCategory === category}
+                    onClick={() => {
+                      setSelectedCategory(category);
+                      setCollection("all");
+                    }}
+                  >
+                    {prettyName(category)}
+                    <small>
+                      {
+                        catalogItems.filter(
+                          (item) => item.category === category
+                        ).length
+                      }
+                    </small>
                   </button>
                 ))}
-              </div>
-            </div>
-          </section>
-
-          <section className="mx-auto max-w-7xl px-4 py-7 pb-32 sm:px-6 lg:pb-12">
-            <div className="mb-5 flex items-end justify-between gap-3">
-              <div><p className="text-[10px] font-black uppercase tracking-[0.2em] text-amber-800">Baked fresh, every day</p><h2 className="mt-1 font-display text-2xl font-black">{selectedCategory === 'all' ? 'All bakery products' : selectedCategory}</h2></div>
-              <p className="text-xs font-bold text-stone-500">{filteredItems.length} products</p>
-            </div>
-
-            {filteredItems.length ? (
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
-                {filteredItems.map((item) => {
-                  const quantity = getQuantity(item.barcode);
-                  const step = quantityStep(item);
-                  return (
-                    <article key={item.barcode} className={cn('flex min-h-[245px] flex-col overflow-hidden rounded-3xl border bg-white p-3 shadow-sm transition', quantity > 0 ? 'border-amber-400 ring-2 ring-amber-100' : 'border-stone-200 hover:-translate-y-0.5 hover:shadow-lg')}>
-                      <div className="relative grid h-24 place-items-center overflow-hidden rounded-2xl bg-gradient-to-br from-amber-100 via-orange-50 to-amber-50 text-5xl shadow-inner">
-                        <div className="pointer-events-none absolute -right-3 -top-3 size-14 rounded-full bg-amber-200/40 blur-xl" aria-hidden="true" />
-                        <span className="relative drop-shadow-sm">{CATEGORY_EMOJI[item.category] || '🥐'}</span>
-                      </div>
-                      <div className="flex flex-1 flex-col pt-3">
-                        <p className="line-clamp-2 text-sm font-black leading-5">{item.name}</p>
-                        <p className="mt-1 text-[10px] font-black uppercase tracking-wide text-stone-400">{item.category} · {item.uom === 'Kgs' ? 'Price per kg' : 'Per pack/item'}</p>
-                        <p className="mt-2 text-lg font-black text-orange-700">{formatCurrency(item.price)}</p>
-                        <div className="mt-auto pt-3">
-                          {quantity <= 0 ? (
-                            <button type="button" onClick={() => addItem(item)} className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-2xl bg-stone-950 text-sm font-black text-white active:scale-[.98]"><Plus className="size-4" /> Add</button>
-                          ) : (
-                            <div className="flex h-11 items-center justify-between rounded-2xl bg-stone-950 p-1 text-white">
-                              <button type="button" onClick={() => setQuantity(item, quantity - step)} className="grid size-9 place-items-center rounded-xl bg-white/10" aria-label={`Decrease ${item.name}`}><Minus className="size-4" /></button>
-                              <div className="text-center"><p className="text-sm font-black leading-none">{item.uom === 'Kgs' ? quantity.toFixed(2) : quantity}</p><p className="mt-0.5 text-[8px] font-bold uppercase text-white/55">{item.uom}</p></div>
-                              <button type="button" onClick={() => addItem(item)} className="grid size-9 place-items-center rounded-xl bg-amber-300 text-stone-950" aria-label={`Increase ${item.name}`}><Plus className="size-4" /></button>
+              </aside>
+              <section aria-label="Products">
+                <div className="s-products-top">
+                  <h2>
+                    {search
+                      ? "Your search results"
+                      : selectedCategory === "all"
+                      ? "Made for your cravings"
+                      : prettyName(selectedCategory)}
+                  </h2>
+                  <span role="status">{filteredItems.length} products</span>
+                </div>
+                {filteredItems.length > 0 ? (
+                  <>
+                    <div className="s-products">
+                      {filteredItems.slice(0, visibleCount).map((item) => {
+                        const quantity = getQuantity(item.barcode);
+                        const Icon = productIcon(item.category);
+                        const packSize =
+                          item.uom === "Kgs"
+                            ? packSizes[item.barcode] || 0.25
+                            : 1;
+                        return (
+                          <article
+                            key={item.barcode}
+                            className={cn(
+                              "s-product",
+                              quantity > 0 && "s-product-selected"
+                            )}
+                          >
+                            <div className="s-product-top">
+                              <Icon aria-hidden="true" />
+                              <small>{prettyName(item.category)}</small>
                             </div>
-                          )}
-                        </div>
-                      </div>
-                    </article>
-                  );
-                })}
-              </div>
-            ) : (
-              <div className="rounded-3xl border border-dashed border-stone-300 bg-white p-12 text-center"><Search className="mx-auto size-8 text-stone-300" /><p className="mt-3 font-black">No matching bakery products</p><button type="button" onClick={() => { setSearch(''); setSelectedCategory('all'); }} className="mt-3 text-sm font-black text-orange-700">Clear filters</button></div>
-            )}
-          </section>
-
-          {cart.length > 0 && (
-            <div className="fixed inset-x-0 bottom-0 z-50 border-t border-white/10 bg-stone-950 p-3 text-white shadow-2xl lg:sticky lg:bottom-0">
-              <div className="mx-auto flex max-w-7xl items-center justify-between gap-4">
-                <button type="button" onClick={openCheckout} className="flex min-w-0 flex-1 items-center gap-3 text-left">
-                  <span className="grid size-11 shrink-0 place-items-center rounded-2xl bg-amber-300 text-stone-950"><ShoppingBag className="size-5" /></span>
-                  <span className="min-w-0"><strong className="block truncate text-sm">{cart.length} products · {cartUnits.toFixed(cart.some((line) => line.uom === 'Kgs') ? 2 : 0)} units</strong><small className="text-white/55">Includes 3% tax at checkout</small></span>
-                </button>
-                <button type="button" onClick={openCheckout} className="inline-flex min-h-12 items-center gap-2 rounded-2xl bg-amber-300 px-4 text-sm font-black text-stone-950 sm:px-6">
-                  {formatCurrency(grandTotal)} <ChevronRight className="size-4" />
-                </button>
-              </div>
-            </div>
-          )}
-        </>
-      ) : (
-        <section className="mx-auto grid max-w-7xl gap-6 px-4 py-6 pb-12 sm:px-6 lg:grid-cols-[minmax(0,1fr)_390px] lg:items-start">
-          <div className="space-y-5">
-            <div className="rounded-3xl border border-stone-200 bg-white p-5 shadow-sm sm:p-6">
-              <div className="flex items-center justify-between gap-3"><div><p className="text-[10px] font-black uppercase tracking-[0.2em] text-amber-800">Step 1</p><h1 className="mt-1 font-display text-2xl font-black">Review your bakery order</h1></div><button type="button" onClick={() => setScreen('menu')} className="rounded-xl border border-stone-200 px-3 py-2 text-xs font-black">Add more</button></div>
-              <div className="mt-5 space-y-3">
-                {cart.map((line) => {
-                  const step = quantityStep(line);
-                  return (
-                    <article key={line.barcode} className="flex gap-3 rounded-2xl border border-stone-200 p-3">
-                      <div className="grid size-16 shrink-0 place-items-center rounded-2xl bg-amber-50 text-2xl">{CATEGORY_EMOJI[line.category] || '🥐'}</div>
-                      <div className="min-w-0 flex-1"><div className="flex justify-between gap-3"><div><p className="font-black">{line.name}</p><p className="text-[10px] font-black uppercase text-stone-400">{quantityLabel(line)} · {formatCurrency(line.price)} {line.uom === 'Kgs' ? '/ kg' : ''}</p></div><button type="button" onClick={() => setQuantity(line, 0)} className="text-stone-400" aria-label={`Remove ${line.name}`}><Trash2 className="size-4" /></button></div>
-                        <div className="mt-3 flex items-center justify-between gap-3"><div className="flex items-center gap-2 rounded-xl bg-stone-100 p-1"><button type="button" onClick={() => setQuantity(line, line.quantity - step)} className="grid size-8 place-items-center rounded-lg bg-white"><Minus className="size-3.5" /></button><span className="min-w-12 text-center text-xs font-black">{line.uom === 'Kgs' ? line.quantity.toFixed(2) : line.quantity}</span><button type="button" onClick={() => setQuantity(line, line.quantity + step)} className="grid size-8 place-items-center rounded-lg bg-stone-950 text-white"><Plus className="size-3.5" /></button></div><p className="font-black text-orange-700">{formatCurrency(line.price * line.quantity)}</p></div>
-                      </div>
-                    </article>
-                  );
-                })}
-              </div>
-            </div>
-
-            <div className="rounded-3xl border border-stone-200 bg-white p-5 shadow-sm sm:p-6">
-              <p className="text-[10px] font-black uppercase tracking-[0.2em] text-amber-800">Step 2</p><h2 className="mt-1 font-display text-2xl font-black">Delivery and contact details</h2>
-              <p className="mt-2 text-sm font-semibold text-stone-500">Use the same mobile number later to track every status update.</p>
-              <div className="mt-5 grid gap-4 sm:grid-cols-2">
-                <label className="space-y-1.5"><span className="text-xs font-black">Customer name *</span><input value={customer.name} onChange={(event) => setCustomer({ ...customer, name: event.target.value })} autoComplete="name" className="h-12 w-full rounded-2xl border border-stone-200 px-4 text-sm font-bold outline-none focus:border-amber-500 focus:ring-4 focus:ring-amber-100" placeholder="Full name" /></label>
-                <label className="space-y-1.5"><span className="text-xs font-black">Mobile number *</span><div className="relative"><Smartphone className="absolute left-4 top-1/2 size-4 -translate-y-1/2 text-stone-400" /><input value={customer.phone} onChange={(event) => setCustomer({ ...customer, phone: event.target.value.replace(/\D/g, '').slice(0, 10) })} inputMode="numeric" autoComplete="tel" className="h-12 w-full rounded-2xl border border-stone-200 pl-11 pr-4 text-sm font-bold outline-none focus:border-amber-500 focus:ring-4 focus:ring-amber-100" placeholder="10-digit mobile" /></div></label>
-                <label className="space-y-1.5 sm:col-span-2"><span className="text-xs font-black">Delivery address *</span><textarea value={customer.address} onChange={(event) => setCustomer({ ...customer, address: event.target.value })} autoComplete="street-address" className="min-h-24 w-full rounded-2xl border border-stone-200 px-4 py-3 text-sm font-bold outline-none focus:border-amber-500 focus:ring-4 focus:ring-amber-100" placeholder="House/shop, street, area and landmark" /></label>
-                <label className="space-y-1.5"><span className="text-xs font-black">PIN code or map link *</span><div className="relative"><MapPin className="absolute left-4 top-1/2 size-4 -translate-y-1/2 text-stone-400" /><input value={customer.locationPin} onChange={(event) => setCustomer({ ...customer, locationPin: event.target.value })} className="h-12 w-full rounded-2xl border border-stone-200 pl-11 pr-4 text-sm font-bold outline-none focus:border-amber-500 focus:ring-4 focus:ring-amber-100" placeholder="635105 or Google Maps link" /></div></label>
-                <label className="space-y-1.5"><span className="text-xs font-black">Preferred delivery</span><select value={customer.deliverySlot} onChange={(event) => setCustomer({ ...customer, deliverySlot: event.target.value })} className="h-12 w-full rounded-2xl border border-stone-200 bg-white px-4 text-sm font-bold outline-none focus:border-amber-500"><option>As soon as possible</option><option>Morning · 8 AM–12 PM</option><option>Afternoon · 12 PM–4 PM</option><option>Evening · 4 PM–8 PM</option></select></label>
-                <label className="space-y-1.5 sm:col-span-2"><span className="text-xs font-black">Order notes</span><textarea value={customer.note} onChange={(event) => setCustomer({ ...customer, note: event.target.value })} className="min-h-20 w-full rounded-2xl border border-stone-200 px-4 py-3 text-sm font-bold outline-none focus:border-amber-500 focus:ring-4 focus:ring-amber-100" placeholder="Cake message, packing request or delivery instructions" /></label>
-              </div>
+                            <h3>{prettyName(item.name)}</h3>
+                            <p className="s-product-price">
+                              <strong>
+                                {formatCurrency(
+                                  roundMoney(item.price * packSize)
+                                )}
+                              </strong>
+                              <small>
+                                {item.uom === "Kgs"
+                                  ? ` / ${
+                                      packSize === 1
+                                        ? "1 kg"
+                                        : `${packSize * 1000} g`
+                                    }`
+                                  : "/ item"}
+                              </small>
+                            </p>
+                            {item.uom === "Kgs" && (
+                              <label className="s-pack-size">
+                                <span>{formatCurrency(item.price)} / kg</span>
+                                <select
+                                  aria-label={`Pack size for ${item.name}`}
+                                  value={packSize}
+                                  onChange={(e) =>
+                                    setPackSizes({
+                                      ...packSizes,
+                                      [item.barcode]: Number(e.target.value),
+                                    })
+                                  }
+                                >
+                                  <option value={0.25}>250 g</option>
+                                  <option value={0.5}>500 g</option>
+                                  <option value={1}>1 kg</option>
+                                </select>
+                              </label>
+                            )}
+                            <div className="s-product-bottom">
+                              {quantity === 0 ? (
+                                <button
+                                  type="button"
+                                  className="s-add"
+                                  onClick={() => {
+                                    setQuantity(item, packSize);
+                                    setAddedNotice(
+                                      `${item.name} added to your basket`
+                                    );
+                                  }}
+                                  aria-label={`Add ${item.name}`}
+                                >
+                                  <Plus />
+                                  {item.uom === "Kgs"
+                                    ? `Add ${
+                                        packSize === 1
+                                          ? "1 kg"
+                                          : `${packSize * 1000} g`
+                                      }`
+                                    : "Add to basket"}
+                                </button>
+                              ) : (
+                                <div className="s-quantity">
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setQuantity(
+                                        item,
+                                        quantity - quantityStep(item)
+                                      )
+                                    }
+                                    aria-label={`Decrease ${item.name}`}
+                                  >
+                                    <Minus />
+                                  </button>
+                                  <span>
+                                    {item.uom === "Kgs"
+                                      ? `${quantity.toFixed(2)} kg`
+                                      : `${quantity} ${
+                                          quantity === 1 ? "item" : "items"
+                                        }`}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => addItem(item)}
+                                    aria-label={`Increase ${item.name}`}
+                                  >
+                                    <Plus />
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          </article>
+                        );
+                      })}
+                    </div>
+                    {visibleCount < filteredItems.length && (
+                      <button
+                        className="h-button s-show-more"
+                        type="button"
+                        onClick={() => setVisibleCount((count) => count + 24)}
+                      >
+                        Explore more favourites <ArrowRight />
+                      </button>
+                    )}
+                  </>
+                ) : (
+                  <div className="s-empty">
+                    <Search />
+                    <h3>No favourites found just yet.</h3>
+                    <p>Try another name or explore a different category.</p>
+                    <button
+                      className="h-link"
+                      type="button"
+                      onClick={() => {
+                        setSearch("");
+                        setSelectedCategory("all");
+                        setCollection("all");
+                      }}
+                    >
+                      Show all products <ArrowRight />
+                    </button>
+                  </div>
+                )}
+              </section>
+              <aside className="s-basket" aria-label="Your basket">
+                <div className="s-basket-title">
+                  <h2>Your little box of joy</h2>
+                  <span>{cart.length}</span>
+                </div>
+                {cart.length ? (
+                  <>
+                    <div className="s-basket-lines">{cartLines()}</div>
+                    {totals()}
+                    <button
+                      className="h-button"
+                      type="button"
+                      onClick={openCheckout}
+                    >
+                      Continue to checkout <ArrowRight />
+                    </button>
+                    <p className="s-payment-note">
+                      <ShieldCheck />
+                      Secure payment with Razorpay
+                    </p>
+                  </>
+                ) : (
+                  <div className="s-empty-basket">
+                    <ShoppingBag />
+                    <p>Something delicious belongs here.</p>
+                    <small>
+                      Add your favourites and we will keep them ready in your
+                      basket.
+                    </small>
+                  </div>
+                )}
+              </aside>
             </div>
           </div>
-
-          <aside className="sticky top-24 rounded-3xl bg-stone-950 p-5 text-white shadow-2xl sm:p-6">
-            <p className="text-[10px] font-black uppercase tracking-[0.2em] text-amber-300">Final bill</p><h2 className="mt-1 font-display text-2xl font-black">Payment summary</h2>
-            <div className="mt-5 space-y-3 border-y border-white/10 py-5 text-sm"><div className="flex justify-between text-white/70"><span>Subtotal</span><strong className="text-white">{formatCurrency(subtotal)}</strong></div><div className="flex justify-between text-white/70"><span>Tax (3%)</span><strong className="text-white">{formatCurrency(taxAmount)}</strong></div><div className="flex justify-between text-lg"><span className="font-black">Grand total</span><strong className="text-amber-300">{formatCurrency(grandTotal)}</strong></div></div>
-            <div className="mt-5 grid gap-2 text-xs font-bold text-white/60"><p className="flex items-center gap-2"><ShieldCheck className="size-4 text-emerald-400" /> Secure Razorpay payment</p><p className="flex items-center gap-2"><Truck className="size-4 text-amber-300" /> Delivery status tracking by mobile</p><p className="flex items-center gap-2"><PackageCheck className="size-4 text-blue-300" /> Order details saved after payment</p></div>
-            {error && <p className="mt-5 rounded-2xl border border-red-400/25 bg-red-500/10 px-3 py-3 text-xs font-bold text-red-200">{error}</p>}
-            <button type="button" onClick={() => void payAndPlaceOrder()} disabled={paying || !cart.length} className="mt-5 inline-flex min-h-14 w-full items-center justify-center gap-2 rounded-2xl bg-amber-300 px-4 text-sm font-black text-stone-950 shadow-lg shadow-amber-500/20 disabled:cursor-not-allowed disabled:opacity-50"><CreditCard className={cn('size-5', paying && 'animate-pulse')} /> {paying ? 'Opening secure payment…' : `Pay ${formatCurrency(grandTotal)} & place order`}</button>
-            <button type="button" onClick={() => setScreen('menu')} className="mt-3 w-full rounded-2xl border border-white/10 px-4 py-3 text-xs font-black text-white/70">Continue shopping</button>
-          </aside>
-        </section>
+          {cart.length > 0 && (
+            <div className="s-mobile-basket">
+              <div>
+                <strong>
+                  {cart.length} {cart.length === 1 ? "product" : "products"} in
+                  your basket
+                </strong>
+                <small>{formatCurrency(grandTotal)} · including tax</small>
+              </div>
+              <button type="button" onClick={openCheckout}>
+                View basket <ArrowRight />
+              </button>
+            </div>
+          )}
+          <section className="h-wrap s-personal-help">
+            <div>
+              <p className="h-eyebrow">Something a little more personal</p>
+              <h2>Big celebrations. Thoughtful gifts.</h2>
+              <p>
+                Planning a bulk order, corporate gifts or a custom cake? Tell us
+                what you have in mind and our team will help you choose.
+              </p>
+            </div>
+            <LeadEnquiry topic="Bulk order & gifting">
+              Plan an order with us
+            </LeadEnquiry>
+          </section>
+        </>
+      ) : (
+        <div className="h-wrap">
+          <header className="s-checkout-top">
+            <p className="h-eyebrow">A little closer to something delicious</p>
+            <h1>
+              Let's bring it <em>home.</em>
+            </h1>
+            <div className="s-steps">
+              <span>01 · Your favourites</span>
+              <ChevronRight />
+              <strong>02 · Delivery & payment</strong>
+              <ChevronRight />
+              <span>03 · Enjoy</span>
+            </div>
+          </header>
+          <div className="s-checkout">
+            <div>
+              <section className="s-checkout-panel">
+                <div className="s-checkout-heading">
+                  <h2>Your favourites</h2>
+                  <button
+                    type="button"
+                    className="h-link"
+                    onClick={() => setScreen("menu")}
+                  >
+                    Add more <Plus size={15} />
+                  </button>
+                </div>
+                {cart.length > 0 ? (
+                  <div className="s-checkout-lines">{cartLines()}</div>
+                ) : (
+                  <div className="s-empty-basket">
+                    <ShoppingBag />
+                    <p>Your basket is empty.</p>
+                    <button
+                      type="button"
+                      className="h-link"
+                      onClick={() => setScreen("menu")}
+                    >
+                      Find your favourites <ArrowRight />
+                    </button>
+                  </div>
+                )}
+              </section>
+              <section className="s-checkout-panel">
+                <p className="h-eyebrow">Where shall we send your order?</p>
+                <h2>Delivery details</h2>
+                <p>
+                  Use this mobile number to follow your order, from our kitchen
+                  to your door.
+                </p>
+                <div className="s-form-grid">
+                  <label>
+                    Your name *
+                    <input
+                      required
+                      value={customer.name}
+                      onChange={(event) =>
+                        setCustomer({ ...customer, name: event.target.value })
+                      }
+                      autoComplete="name"
+                      placeholder="Full name"
+                    />
+                  </label>
+                  <label>
+                    Mobile number *
+                    <input
+                      required
+                      value={customer.phone}
+                      onChange={(event) =>
+                        setCustomer({
+                          ...customer,
+                          phone: event.target.value
+                            .replace(/\D/g, "")
+                            .slice(0, 10),
+                        })
+                      }
+                      inputMode="numeric"
+                      autoComplete="tel"
+                      maxLength={10}
+                      placeholder="10-digit mobile number"
+                    />
+                  </label>
+                  <label className="s-form-wide">
+                    Delivery address *
+                    <textarea
+                      required
+                      value={customer.address}
+                      onChange={(event) =>
+                        setCustomer({
+                          ...customer,
+                          address: event.target.value,
+                        })
+                      }
+                      autoComplete="street-address"
+                      rows={3}
+                      placeholder="House or building, street, area, city and state"
+                    />
+                  </label>
+                  <label>
+                    PIN code or map link *
+                    <input
+                      required
+                      value={customer.locationPin}
+                      onChange={(event) =>
+                        setCustomer({
+                          ...customer,
+                          locationPin: event.target.value,
+                        })
+                      }
+                      placeholder="Your PIN code or Google Maps link"
+                    />
+                  </label>
+                  <label>
+                    Preferred delivery slot
+                    <select
+                      value={customer.deliverySlot}
+                      onChange={(event) =>
+                        setCustomer({
+                          ...customer,
+                          deliverySlot: event.target.value,
+                        })
+                      }
+                    >
+                      <option>As soon as possible</option>
+                      <option>Morning · 8 AM–12 PM</option>
+                      <option>Afternoon · 12 PM–4 PM</option>
+                      <option>Evening · 4 PM–8 PM</option>
+                    </select>
+                  </label>
+                  <label className="s-form-wide">
+                    A little note for us
+                    <textarea
+                      value={customer.note}
+                      onChange={(event) =>
+                        setCustomer({ ...customer, note: event.target.value })
+                      }
+                      rows={2}
+                      placeholder="Packing requests, a cake message or delivery instructions"
+                    />
+                  </label>
+                </div>
+                <p style={{ marginTop: 16 }}>
+                  Delivery slots are preferences for local orders. Pan-India
+                  delivery timing depends on your destination.
+                </p>
+              </section>
+            </div>
+            <aside className="s-basket" aria-label="Payment summary">
+              <p className="h-eyebrow">Made with care. Almost yours.</p>
+              <h2>Order summary</h2>
+              {totals()}
+              <p className="s-payment-note">
+                <ShieldCheck />
+                Secure Razorpay payment
+              </p>
+              <p className="s-payment-note">
+                <PackageCheck />
+                Track your order by mobile number
+              </p>
+              {error && (
+                <p className="s-error" role="alert">
+                  {error}
+                </p>
+              )}
+              <button
+                type="button"
+                className="h-button"
+                onClick={() => void payAndPlaceOrder()}
+                disabled={paying || !cart.length}
+              >
+                <CreditCard />
+                {paying
+                  ? "Opening payment…"
+                  : `Pay ${formatCurrency(grandTotal)} & place order`}
+              </button>
+              <button
+                className="h-link"
+                type="button"
+                onClick={() => setScreen("menu")}
+              >
+                Continue shopping
+              </button>
+            </aside>
+          </div>
+        </div>
       )}
+      <footer className="s-footer">
+        <p>From our family kitchen, with love. Since 1988.</p>
+        <p>
+          <Link to="/">Our story</Link>
+          <a href={`tel:${CAFE_INFO.phone.replace(/\s/g, "")}`}>
+            Need a hand? {CAFE_INFO.phone}
+          </a>
+        </p>
+      </footer>
     </main>
   );
 }
