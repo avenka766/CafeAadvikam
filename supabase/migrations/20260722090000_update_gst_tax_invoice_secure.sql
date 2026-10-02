@@ -76,5 +76,7 @@ end;
 $$;
 
 revoke all on function public.update_gst_tax_invoice_secure(uuid,date,text,text,text,text,text,text,text,text,jsonb,numeric,numeric,numeric,numeric,numeric,numeric,text,text,date,text) from public;
-revoke all on function public.update_gst_tax_invoice_secure(uuid,date,text,text,text,text,text,text,text,text,jsonb,numeric,numeric,numeric,numeric,numeric,numeric,text,text,date,text) from anon;
-grant execute on function public.update_gst_tax_invoice_secure(uuid,date,text,text,text,text,text,text,text,text,jsonb,numeric,numeric,numeric,numeric,numeric,numeric,text,text,date,text) to authenticated;
+-- Staff sign in through the app's own session (not Supabase Auth), so calls
+-- arrive as anon; require_app_staff() inside the function enforces the real
+-- staff check, same as save_gst_tax_invoice_secure.
+grant execute on function public.update_gst_tax_invoice_secure(uuid,date,text,text,text,text,text,text,text,text,jsonb,numeric,numeric,numeric,numeric,numeric,numeric,text,text,date,text) to anon, authenticated;
