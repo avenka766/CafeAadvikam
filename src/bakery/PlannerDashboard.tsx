@@ -60,7 +60,7 @@ import { getCached, setCached } from '@/lib/localCache';
 import { getPackingCounterStatus, packingBusinessDateToday } from './packingCounter';
 import {
   GST_INVOICE_SELLER_DEFAULT, GST_INVOICE_BANK_DEFAULT, buildGstTaxInvoiceHtml, financialYearForDate,
-  saveGstTaxInvoiceSecure, listGstTaxInvoices,
+  saveGstTaxInvoiceSecure, updateGstTaxInvoiceSecure, listGstTaxInvoices,
   type GstTaxInvoiceLine, type GstTaxInvoiceRecord,
 } from './gstTaxInvoice';
 
@@ -5639,6 +5639,9 @@ function GstInvoiceTab() {
   const [bankIfsc, setBankIfsc] = useState(GST_INVOICE_BANK_DEFAULT.ifscCode);
   const [error, setError] = useState('');
   const [generating, setGenerating] = useState(false);
+  // Edit mode: the id/number of the saved invoice being corrected. The number
+  // is immutable (GST numbering stays gap-free); saving updates that row.
+  const [editing, setEditing] = useState<{ id: string; invoiceNo: string } | null>(null);
 
   const addLine = () => setLines(prev => [...prev, { id: crypto.randomUUID(), itemName: '', hsnCode: '', qty: '1', uom: 'Nos', rate: '', gstPct: '5' }]);
   const removeLine = (id: string) => setLines(prev => prev.filter(l => l.id !== id));
@@ -5717,6 +5720,42 @@ function GstInvoiceTab() {
   }, [recentInvoiceFromDate, recentInvoiceToDate]);
   useEffect(() => { void loadRecentInvoices(); }, [loadRecentInvoices]);
 
+  const resetForm = () => {
+    setEditing(null);
+    setBuyerName(''); setBuyerAddress(''); setBuyerGstin(''); setBuyerStateName('Tamil Nadu'); setBuyerStateCode('33');
+    setConsigneeSameAsBuyer(true); setConsigneeName(''); setConsigneeAddress(''); setConsigneeGstin('');
+    setInvoiceNo(''); setInvoiceDate(kolkataToday()); setReferenceNo(''); setReferenceDate(''); setRemarks('');
+    setSupplyType('intra');
+    setLines([{ id: crypto.randomUUID(), itemName: '', hsnCode: '', qty: '1', uom: 'Nos', rate: '', gstPct: '5' }]);
+  };
+
+  const startEdit = (inv: GstTaxInvoiceRecord) => {
+    setError('');
+    setEditing({ id: inv.id, invoiceNo: inv.invoiceNo });
+    setBuyerName(inv.buyerName);
+    setBuyerAddress(inv.buyerAddress || '');
+    setBuyerGstin(inv.buyerGstin || '');
+    setBuyerStateName(inv.buyerStateName || 'Tamil Nadu');
+    setBuyerStateCode(inv.buyerStateCode || '33');
+    const differentConsignee = Boolean(inv.consigneeName) && (
+      inv.consigneeName !== inv.buyerName || (inv.consigneeAddress || '') !== (inv.buyerAddress || '') || (inv.consigneeGstin || '') !== (inv.buyerGstin || '')
+    );
+    setConsigneeSameAsBuyer(!differentConsignee);
+    setConsigneeName(inv.consigneeName || '');
+    setConsigneeAddress(inv.consigneeAddress || '');
+    setConsigneeGstin(inv.consigneeGstin || '');
+    setInvoiceNo(inv.invoiceNo);
+    setInvoiceDate(inv.invoiceDate);
+    setSupplyType(inv.supplyType);
+    setReferenceNo(inv.referenceNo || '');
+    setReferenceDate(inv.referenceDate || '');
+    setRemarks(inv.remarks || '');
+    setLines(inv.items.length > 0
+      ? inv.items.map(i => ({ id: crypto.randomUUID(), itemName: i.itemName, hsnCode: i.hsnCode || '', qty: String(i.qty), uom: i.uom || 'Nos', rate: String(i.rate), gstPct: String(i.gstPct) }))
+      : [{ id: crypto.randomUUID(), itemName: '', hsnCode: '', qty: '1', uom: 'Nos', rate: '', gstPct: '5' }]);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
   const generateInvoice = async () => {
     setError('');
     const validLines = computedLines.filter(l => l.itemName.trim() && l.qty > 0);
@@ -5740,7 +5779,21 @@ function GstInvoiceTab() {
       // repeat even with multiple staff generating invoices at once — a
       // real GST-compliance requirement, not just cosmetic uniqueness.
       // Manual override (typing a value into Invoice No) still wins.
-      const saved = await saveGstTaxInvoiceSecure({
+      const saved = editing ? await updateGstTaxInvoiceSecure({
+        id: editing.id,
+        invoiceDate,
+        buyer: { name: buyerName, address: buyerAddress, gstin: buyerGstin, stateName: buyerStateName, stateCode: buyerStateCode },
+        consignee,
+        items: validLines.map(l => ({ itemName: l.itemName, hsnCode: l.hsnCode, qty: l.qty, uom: l.uom, rate: l.rate, gstPct: l.gstPct })),
+        taxableValue: beforeTaxValue,
+        cgstAmount: totalCgst,
+        sgstAmount: totalSgst,
+        igstAmount: totalIgst,
+        roundOff,
+        total: totalAmount,
+        supplyType,
+        referenceNo, referenceDate, remarks,
+      }) : await saveGstTaxInvoiceSecure({
         manualInvoiceNo: invoiceNo,
         invoiceDate,
         buyer: { name: buyerName, address: buyerAddress, gstin: buyerGstin, stateName: buyerStateName, stateCode: buyerStateCode },
@@ -5772,9 +5825,10 @@ function GstInvoiceTab() {
         preparedBy: currentUser?.displayName || currentUser?.username || 'Planner',
       });
       printHtml(saved.invoiceNo, html);
+      if (editing) resetForm();
       void loadRecentInvoices();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not generate the next invoice number. Please try again.');
+      setError(err instanceof Error ? err.message : editing ? 'Could not save the invoice changes. Please try again.' : 'Could not generate the next invoice number. Please try again.');
     } finally {
       setGenerating(false);
     }
@@ -5783,6 +5837,12 @@ function GstInvoiceTab() {
   return (
     <div className="space-y-4">
       {error && <p className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700">{error}</p>}
+      {editing && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2">
+          <p className="text-xs font-black text-amber-800">Editing invoice #{editing.invoiceNo} — the invoice number cannot be changed.</p>
+          <button type="button" onClick={resetForm} className="rounded-lg border border-amber-300 bg-white px-3 py-1 text-xs font-black text-amber-800 hover:bg-amber-100">Cancel edit</button>
+        </div>
+      )}
 
       <div className="rounded-2xl border border-border bg-card p-4">
         <p className="mb-2 text-xs font-black uppercase tracking-wide text-muted-foreground">Seller (letterhead)</p>
@@ -5846,7 +5906,7 @@ function GstInvoiceTab() {
         <p className="mb-2 text-xs font-black uppercase tracking-wide text-muted-foreground">Invoice Details</p>
         <div className="grid gap-3 sm:grid-cols-3">
           <label className="space-y-1"><span className="text-xs font-black text-muted-foreground">Invoice No (blank = auto, {financialYearForDate(invoiceDate)} sequence)</span>
-            <input value={invoiceNo} onChange={e => setInvoiceNo(e.target.value)} placeholder="e.g. GST/S/26-27/68" className="h-11 w-full rounded-xl border border-border px-3 text-sm font-bold" /></label>
+            <input value={invoiceNo} onChange={e => setInvoiceNo(e.target.value)} disabled={Boolean(editing)} placeholder="e.g. GST/S/26-27/68" className="h-11 w-full rounded-xl border border-border px-3 text-sm font-bold disabled:bg-muted disabled:text-muted-foreground" /></label>
           <label className="space-y-1"><span className="text-xs font-black text-muted-foreground">Invoice Date</span>
             <input type="date" value={invoiceDate} onChange={e => setInvoiceDate(e.target.value)} className="h-11 w-full rounded-xl border border-border px-3 text-sm font-bold" /></label>
           <label className="space-y-1"><span className="text-xs font-black text-muted-foreground">Supply Type</span>
@@ -5930,7 +5990,7 @@ function GstInvoiceTab() {
       </div>
 
       <button onClick={() => void generateInvoice()} disabled={generating} className="flex w-full items-center justify-center gap-2 rounded-xl bg-purple-600 py-3 text-sm font-black text-white hover:bg-purple-700 disabled:opacity-60">
-        {generating ? <Loader2 className="size-4 animate-spin" /> : <Printer className="size-4" />} {generating ? 'Generating…' : 'Generate & Print Tax Invoice (A4)'}
+        {generating ? <Loader2 className="size-4 animate-spin" /> : <Printer className="size-4" />} {generating ? (editing ? 'Saving…' : 'Generating…') : editing ? 'Save Changes & Print Tax Invoice (A4)' : 'Generate & Print Tax Invoice (A4)'}
       </button>
 
       <div className="overflow-hidden rounded-2xl border border-border bg-white shadow-sm">
@@ -5965,6 +6025,7 @@ function GstInvoiceTab() {
                 </div>
                 <div className="flex items-center gap-2">
                   <span className="text-sm font-black text-foreground">{invoiceMoney(inv.total)}</span>
+                  <button onClick={() => startEdit(inv)} className="flex items-center gap-1 rounded-lg border border-amber-300 bg-amber-50 px-2 py-1.5 text-[10px] font-black text-amber-800 hover:bg-amber-100" title="Edit invoice"><Pencil className="size-3.5" /> Edit</button>
                   <button
                     onClick={() => {
                       const buyer = { name: inv.buyerName, address: inv.buyerAddress || '', gstin: inv.buyerGstin || '', stateName: inv.buyerStateName || '', stateCode: inv.buyerStateCode || '' };

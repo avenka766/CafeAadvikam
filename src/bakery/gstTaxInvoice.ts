@@ -493,6 +493,52 @@ export async function saveGstTaxInvoiceSecure(input: {
   return mapGstTaxInvoice(data as Record<string, unknown>);
 }
 
+// Edits a saved invoice in place. The invoice number is immutable (GST
+// numbering must stay gap-free); everything else can be corrected.
+export async function updateGstTaxInvoiceSecure(input: {
+  id: string;
+  invoiceDate: string;
+  buyer: GstPartyDetails;
+  consignee?: GstPartyDetails;
+  items: GstTaxInvoiceLine[];
+  taxableValue: number;
+  cgstAmount: number;
+  sgstAmount: number;
+  igstAmount: number;
+  roundOff: number;
+  total: number;
+  supplyType: 'intra' | 'inter';
+  referenceNo?: string | null;
+  referenceDate?: string | null;
+  remarks?: string | null;
+}): Promise<GstTaxInvoiceRecord> {
+  const { data, error } = await supabase.rpc('update_gst_tax_invoice_secure', {
+    p_id: input.id,
+    p_invoice_date: input.invoiceDate,
+    p_buyer_name: input.buyer.name,
+    p_buyer_gstin: input.buyer.gstin || null,
+    p_buyer_address: input.buyer.address || null,
+    p_buyer_state_name: input.buyer.stateName || null,
+    p_buyer_state_code: input.buyer.stateCode || null,
+    p_consignee_name: input.consignee?.name || null,
+    p_consignee_address: input.consignee?.address || null,
+    p_consignee_gstin: input.consignee?.gstin || null,
+    p_items: input.items,
+    p_taxable_value: input.taxableValue,
+    p_cgst_amount: input.cgstAmount,
+    p_sgst_amount: input.sgstAmount,
+    p_igst_amount: input.igstAmount,
+    p_round_off: input.roundOff,
+    p_total: input.total,
+    p_supply_type: input.supplyType,
+    p_reference_no: input.referenceNo || null,
+    p_reference_date: input.referenceDate || null,
+    p_remarks: input.remarks || null,
+  });
+  if (error) throw new Error(error.message);
+  return mapGstTaxInvoice(data as Record<string, unknown>);
+}
+
 export async function listGstTaxInvoices(opts: { fromDate: string; toDate: string }): Promise<GstTaxInvoiceRecord[]> {
   const { data, error } = await fetchAllRows<Record<string, unknown>>(
     'gst_tax_invoices',
