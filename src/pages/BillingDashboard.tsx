@@ -4799,6 +4799,7 @@ export default function BillingDashboard() {
   };
 
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all');
+  const [historySearch, setHistorySearch] = useState('');
   const [refreshing, setRefreshing] = useState(false);
 
   const refreshOrders = useCallback(async () => {
@@ -4903,10 +4904,31 @@ export default function BillingDashboard() {
 
   const filtered = useMemo(() => {
     if (activeTab === 'new_bill' || activeTab === 'advance' || activeTab === 'alerts' || activeTab === 'payment_edit') return [];
-    let result = regularOrders.filter(o => matchesStatusTab(o, activeTab));
+    // History search: when a query is typed, look across every loaded order
+    // (the 90-day window), not just today's, so old bills can be found and
+    // reprinted as a duplicate.
+    const query = historySearch.trim().toLowerCase();
+    const pool = query
+      ? orders.filter(o => !(o.paymentType === 'advance' && (o.balanceDue ?? 0) > 0))
+      : regularOrders;
+    let result = pool.filter(o => matchesStatusTab(o, activeTab));
     if (sourceFilter !== 'all') result = result.filter(o => o.orderSource === sourceFilter);
+    if (query) {
+      const digits = query.replace(/^#/, '');
+      result = result.filter(o => {
+        const bill = String(o.orderNumber ?? '');
+        const hay = [
+          bill, bill.padStart(4, '0'), o.customerName, o.paymentType,
+          o.tableNumber != null ? `table ${o.tableNumber}` : '', String(Math.round(o.total ?? 0)),
+          new Date(o.createdAt).toLocaleDateString('en-IN'), businessDate(o.createdAt),
+          ...(o.items ?? []).map(i => i.menuItem?.name),
+        ].filter(Boolean).join(' ').toLowerCase();
+        return hay.includes(query) || hay.includes(digits);
+      });
+      result = [...result].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    }
     return result;
-  }, [regularOrders, activeTab, sourceFilter, matchesStatusTab]);
+  }, [orders, regularOrders, activeTab, sourceFilter, matchesStatusTab, historySearch]);
 
   // Counts use regularOrders so advance (pending balance) never pollutes them
   const qrCount = regularOrders.filter(o => o.orderSource === 'qr').length;
@@ -4995,6 +5017,27 @@ export default function BillingDashboard() {
           })}
         </div>
       </div>
+
+      {activeTab === 'served' && (
+        <div className="shrink-0 border-b border-border bg-background px-3 py-2">
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+            <input
+              value={historySearch}
+              onChange={(e) => setHistorySearch(e.target.value)}
+              placeholder="Search bills — bill no, customer, item, table, amount, date…"
+              className="w-full rounded-xl border border-border bg-card py-2 pl-9 pr-9 text-sm font-semibold"
+              aria-label="Search bills"
+            />
+            {historySearch && (
+              <button type="button" onClick={() => setHistorySearch('')} aria-label="Clear search" className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full p-1 text-muted-foreground hover:bg-muted">
+                <X className="size-4" />
+              </button>
+            )}
+          </div>
+          {historySearch.trim() && <p className="mt-1 text-[11px] font-bold text-muted-foreground">{filtered.length} bill{filtered.length === 1 ? '' : 's'} found (last 90 days)</p>}
+        </div>
+      )}
 
       {/* Content */}
       {/* STATE-LOSS FIX: New Bill and Advance used to be conditionally
