@@ -13,6 +13,7 @@ import { useSearchParams } from "react-router-dom";
 import { cn, roundQty, sanitizeDecimalInput } from "@/lib/utils";
 import { useBranchLedger } from "@/hooks/useBranchLedger";
 import { useCafeOrderSales } from "@/hooks/useCafeOrderSales";
+import { useVrsnbReportRecords, mergeReportClosures } from '@/hooks/useVrsnbReportRecords';
 import { useCafeOrderRows } from "@/hooks/useCafeOrderRows";
 import { supabase, fetchAllRows } from "@/lib/supabase";
 import { useAuthStore } from "@/stores/authStore";
@@ -466,7 +467,7 @@ export default function AdminVRSNBDashboard() {
   // report date range, fetch that exact range directly so totals are never
   // silently clipped by the cap.
   useEffect(() => {
-    void fetchBillsInRange(fromDate, toDate, "VRSNB");
+    VRSNB_ADMIN_BRANCHES.forEach(branch => void fetchBillsInRange(fromDate, toDate, branch));
   }, [fromDate, toDate, fetchBillsInRange]);
   const [lowStockOpen, setLowStockOpen] = useState(true);
   const [lowSearch, setLowSearch] = useState("");
@@ -3245,13 +3246,26 @@ function CurrentCashTab(props: any) {
   );
 }
 
+function ReportLoadStatus({ loading, error }: { loading: boolean; error: string }) {
+  return <div aria-live="polite">
+    {loading && <p className="mb-3 rounded-xl bg-blue-50 p-3 text-sm font-semibold text-blue-800">Loading records for the selected branches and date range...</p>}
+    {error && <p role="alert" className="mb-3 rounded-xl bg-red-50 p-3 text-sm font-semibold text-red-800">Some records could not be loaded. The report may be incomplete. Use Refresh to retry. {error}</p>}
+  </div>;
+}
+
 function HistoryTab(props: any) {
-  const { purchases, purchasePayments, bankDeposits, expenses, auditLogs, cashierClosures } = useBranchOpsStore();
   const branches: Branch[] = props.reportBranches || [BRANCH];
+  const report = useVrsnbReportRecords(props.fromDate, props.toDate, branches);
+  const { purchases, purchasePayments, bankDeposits, expenses, auditLogs } = report;
+  const cashierClosures = mergeReportClosures(report.cashierClosures, props.adminLedger.savedClosures || []);
+  const cafe = useCafeOrderRows(props.fromDate, props.toDate, branches.includes('Cafe'));
   const withinRange = (value: string) => inRange(value, props.fromDate, props.toDate);
   const [refreshing, setRefreshing] = useState(false);
   const refreshHistory = async () => {
     setRefreshing(true);
+    report.refresh();
+    cafe.refresh();
+    props.adminLedger.refresh();
     try {
       await Promise.all([
         ...branches.map((branch) => props.fetchBranchData(branch, true, ['sales'])),
@@ -3263,18 +3277,22 @@ function HistoryTab(props: any) {
     }
   };
   const rows = [
-    ...props.branchBills.map((bill: any) => ({ date: bill.createdAt, type: "Sale", reference: bill.billNo, details: `${bill.customerName || "Walk-in"} - ${bill.items.length} item(s)`, amount: bill.total, user: bill.cashier || bill.createdBy || "-", status: bill.status || "Completed" })),
-    ...props.branchReturns.map((row: any) => ({ date: row.createdAt, type: "Sales Return", reference: row.returnNo, details: row.reason, amount: -Number(row.total || 0), user: row.returnedBy, status: "Completed" })),
-    ...purchases.filter((row) => branches.includes(row.branch) && withinRange(row.createdAt)).map((row) => ({ date: row.createdAt, type: "Purchase Invoice", reference: row.invoiceNo, details: `${row.supplier} - ${row.itemName}`, amount: row.total, user: row.enteredBy, status: row.syncStatus || "Not Synced" })),
-    ...purchasePayments.filter((row) => branches.includes(row.branch) && withinRange(row.createdAt)).map((row) => ({ date: row.createdAt, type: "Supplier Payment", reference: row.reference || row.id, details: row.supplier, amount: -row.amount, user: row.paidBy, status: row.mode.toUpperCase() })),
-    ...expenses.filter((row) => branches.includes(row.branch) && withinRange(`${row.expenseDate}T12:00:00`)).map((row) => ({ date: row.createdAt, type: "Expense", reference: row.id, details: `${row.category} - ${row.description}`, amount: -row.amount, user: row.enteredBy, status: row.mode.toUpperCase() })),
-    ...bankDeposits.filter((row) => branches.includes(row.branch) && withinRange(row.createdAt)).map((row) => ({ date: row.createdAt, type: "Bank Deposit", reference: row.transactionRef || row.slipNo || row.id, details: row.bankAccount, amount: -row.amount, user: row.enteredBy, status: row.paymentMode })),
-    ...cashierClosures.filter((row) => branches.includes(row.branch) && withinRange(row.createdAt)).map((row) => ({ date: row.createdAt, type: "Cashier Closure", reference: row.id, details: row.cashier || "Cashier", amount: row.closingCash, user: row.cashier, status: "Closed" })),
-    ...auditLogs.filter((row) => branches.includes(row.branch) && withinRange(row.createdAt)).map((row) => ({ date: row.createdAt, type: "Audit", reference: row.id, details: row.action, amount: 0, user: row.user, status: "Recorded" })),
+    ...report.legacySales.map(row => ({ branch: row.branch, date: row.soldAt, type: 'Legacy Sale Item', reference: row.billNo || row.id, details: row.itemName + ' × ' + row.quantitySold, amount: row.quantitySold * row.unitPrice, user: row.soldBy, status: row.paymentMethod || 'Completed' })),
+    ...cafe.rows.map(row => ({ branch: 'Cafe', date: row.createdAt, type: 'Sale', reference: row.billNo, details: row.customer, amount: row.total, user: row.person, status: row.paymentType })),
+    ...report.bills.map((bill: any) => ({ branch: bill.branch, date: bill.createdAt, type: "Sale", reference: bill.billNo, details: `${bill.creditCustomerName || "Walk-in"} - ${bill.items.length} item(s)`, amount: bill.total, user: bill.biller || "-", status: bill.status || "Completed" })),
+    ...report.returns.map((row: any) => ({ branch: row.branch, date: row.createdAt, type: "Sales Return", reference: row.returnNo, details: row.reason, amount: -Number(row.total || 0), user: row.returnedBy, status: "Completed" })),
+    ...purchases.filter((row) => branches.includes(row.branch) && withinRange(row.createdAt)).map((row) => ({ branch: row.branch, date: row.createdAt, type: "Purchase Invoice", reference: row.invoiceNo, details: `${row.supplier} - ${row.itemName}`, amount: row.total, user: row.enteredBy, status: row.syncStatus || "Not Synced" })),
+    ...purchasePayments.filter((row) => branches.includes(row.branch) && withinRange(row.createdAt)).map((row) => ({ branch: row.branch, date: row.createdAt, type: "Supplier Payment", reference: row.reference || row.id, details: row.supplier, amount: -row.amount, user: row.paidBy, status: row.mode.toUpperCase() })),
+    ...expenses.filter((row) => branches.includes(row.branch) && withinRange(`${row.expenseDate}T12:00:00`)).map((row) => ({ branch: row.branch, date: row.createdAt, type: "Expense", reference: row.id, details: `${row.category} - ${row.description}`, amount: -row.amount, user: row.enteredBy, status: row.mode.toUpperCase() })),
+    ...bankDeposits.filter((row) => branches.includes(row.branch) && withinRange(`${row.depositDate}T12:00:00`)).map((row) => ({ branch: row.branch, date: row.createdAt, type: "Bank Deposit", reference: row.transactionRef || row.slipNo || row.id, details: row.bankAccount, amount: -row.amount, user: row.enteredBy, status: row.paymentMode })),
+    ...cashierClosures.filter((row) => branches.includes(row.branch) && withinRange(row.createdAt)).map((row) => ({ branch: row.branch, date: row.createdAt, type: "Cashier Closure", reference: row.id, details: row.cashier || "Cashier", amount: row.closingCash, user: row.cashier, status: "Closed" })),
+    ...auditLogs.filter((row) => branches.includes(row.branch) && withinRange(row.createdAt)).map((row) => ({ branch: row.branch, date: row.createdAt, type: "Audit", reference: row.id, details: row.action, amount: 0, user: row.user, status: "Recorded" })),
   ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   return (
-    <Panel title="Complete VRSNB History" icon={<History className="size-4" />} action={<div className="flex gap-2"><button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => void refreshHistory()} disabled={refreshing}><RefreshCcw className={cn("size-4", refreshing && "animate-spin")} />Refresh</button><button className={cn(btnCls, "bg-slate-950 text-white")} onClick={() => csvDownload("VRSNB_Complete_History.xls", rows)}><Download className="size-4" />Excel</button></div>}>
-      <DataTable headers={["Date & Time", "Type", "Reference", "Details", "Amount", "User", "Status"]} rows={rows.map((row) => [fmtDateTime(row.date), row.type, row.reference, row.details, row.amount === 0 ? "-" : money(row.amount), row.user || "-", row.status])} empty="No VRSNB history found for this date range." />
+    <Panel title={`${props.reportLabel} History`} icon={<History className="size-4" />} action={<div className="flex gap-2"><button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => void refreshHistory()} disabled={refreshing}><RefreshCcw className={cn("size-4", refreshing && "animate-spin")} />Refresh</button><button className={cn(btnCls, "bg-slate-950 text-white")} onClick={() => csvDownload("VRSNB_Complete_History.xls", rows)}><Download className="size-4" />Excel</button></div>}>
+      <ReportLoadStatus loading={report.loading || cafe.loading || props.adminLedger.loading} error={[report.error, cafe.error, props.adminLedger.error].filter(Boolean).join(' | ')} />
+      <p className="mb-3 text-sm text-slate-600">{props.fromDate} to {props.toDate} · {rows.length} records</p>
+      <DataTable headers={["Branch", "Date & Time", "Type", "Reference", "Details", "Amount", "User", "Status"]} rows={rows.map((row) => [row.branch, fmtDateTime(row.date), row.type, row.reference, row.details, row.amount === 0 ? "-" : money(row.amount), row.user || "-", row.status])} empty={report.loading || cafe.loading || props.adminLedger.loading ? "Loading history..." : report.error || cafe.error ? "History could not be fully loaded. Please retry." : "No history found for the selected branches and date range."} />
     </Panel>
   );
 }
@@ -4896,11 +4914,17 @@ function DailyClosureTab({ userName, ...props }: any) {
 
 function ReportsTab(props: any) {
   const { creditSales, fetchCreditSales } = useBranchStore();
-  const { purchases, purchasePayments, expenses, bankDeposits, wasteLogs, quotations, cashierClosures } =
-    useBranchOpsStore();
+  const branches: Branch[] = props.reportBranches || [BRANCH];
+  const report = useVrsnbReportRecords(props.fromDate, props.toDate, branches);
+  const cafe = useCafeOrderRows(props.fromDate, props.toDate, branches.includes('Cafe'));
+  const { purchases, purchasePayments, expenses, bankDeposits, wasteLogs, quotations } = report;
+  const cashierClosures = mergeReportClosures(report.cashierClosures, props.adminLedger.savedClosures || []);
   const [refreshing, setRefreshing] = useState(false);
   const refreshReports = async () => {
     setRefreshing(true);
+    report.refresh();
+    cafe.refresh();
+    props.adminLedger.refresh();
     try {
       const branches: Branch[] = props.reportBranches || [BRANCH];
       await Promise.all([
@@ -4913,18 +4937,41 @@ function ReportsTab(props: any) {
       setRefreshing(false);
     }
   };
-  const dueCredits = (creditSales[BRANCH] || []).filter((c) => c.status !== "settled");
+  const dueCredits = branches.flatMap(branch => creditSales[branch] || []).filter((c) => c.status !== "settled");
   const whatsappRows: any[] = [];
   const reminderRows: any[] = [];
-  const disputeRows: any[] = [];
-  const branchPurchases = purchases.filter((p) => p.branch === BRANCH);
+  const disputeRows = report.complaints;
+  const branchPurchases = purchases.filter((p) => branches.includes(p.branch));
   const supplierDue = branchPurchases.reduce((sum, p) => sum + Math.max(0, p.total - p.paidAmount), 0);
   const purchaseTotal = branchPurchases.reduce((sum, p) => sum + p.total, 0);
-  const branchExpenses = expenses.filter((e) => e.branch === BRANCH);
-  const branchDeposits = bankDeposits.filter((d) => d.branch === BRANCH);
-  const branchWaste = wasteLogs.filter((w) => w.branch === BRANCH);
-  const branchQuotes = quotations.filter((q) => q.branch === BRANCH);
-  const branchClosures = cashierClosures.filter((c) => c.branch === BRANCH);
+  const branchExpenses = expenses.filter((e) => branches.includes(e.branch));
+  const branchDeposits = bankDeposits.filter((d) => branches.includes(d.branch));
+  const branchWaste = wasteLogs.filter((w) => branches.includes(w.branch));
+  const branchQuotes = quotations.filter((q) => branches.includes(q.branch));
+  const branchClosures = cashierClosures.filter((c) => branches.includes(c.branch));
+  const billRows = [
+    ...report.legacySales.map(row => ({ Branch: row.branch, Date: row.soldAt, Bill: row.billNo || row.id, Customer: 'Legacy item: ' + row.itemName, Cashier: row.soldBy, Amount: row.quantitySold * row.unitPrice, Payment: row.paymentMethod || '-' })),
+    ...report.bills.map(bill => ({ Branch: bill.branch, Date: bill.createdAt, Bill: bill.billNo, Customer: bill.creditCustomerName || 'Walk-in', Cashier: bill.biller, Amount: bill.total, Payment: bill.paymentMode })),
+    ...cafe.rows.map(bill => ({ Branch: 'Cafe', Date: bill.createdAt, Bill: bill.billNo, Customer: bill.customer, Cashier: bill.person, Amount: bill.total, Payment: bill.paymentType })),
+  ].sort((a, b) => b.Date.localeCompare(a.Date));
+  const itemMap = new Map<string, { branch: string; name: string; qty: number; gross: number; returns: number; net: number }>();
+  const addItem = (branch: string, name: string, qty: number, gross: number, returned = 0) => {
+    const key = branch + '|' + name;
+    const row = itemMap.get(key) || { branch, name, qty: 0, gross: 0, returns: 0, net: 0 };
+    row.qty += Number(qty); row.gross += Number(gross); row.returns += Number(returned);
+    row.net = row.gross - row.returns;
+    itemMap.set(key, row);
+  };
+  report.bills.forEach(bill => (bill.items || []).forEach(item => addItem(bill.branch, item.itemName, item.quantity, item.lineTotal)));
+  report.returns.forEach(bill => (bill.items || []).forEach(item => addItem(bill.branch, item.itemName, 0, 0, item.lineTotal)));
+  cafe.rows.forEach(bill => bill.items.forEach(item => addItem('Cafe', item.menuItem?.name || 'Item', item.quantity, item.quantity * Number(item.menuItem?.price || 0))));
+  report.legacySales.forEach(row => addItem(row.branch, row.itemName, row.quantitySold, row.quantitySold * row.unitPrice));
+  const itemRows = [...itemMap.values()].sort((a, b) => b.net - a.net);
+  const periodExpenses = branchExpenses.reduce((sum, row) => sum + Number(row.amount || 0), 0);
+  props = { ...props, expenseAmount: periodExpenses,
+    purchasePaid: purchasePayments.reduce((sum, row) => sum + Number(row.amount || 0), 0),
+    depositAmount: branchDeposits.reduce((sum, row) => sum + Number(row.amount || 0), 0),
+    salesBreakdown: { ...props.salesBreakdown, expenses: periodExpenses } };
   const collectionTotal = props.cashSales + props.upiSales + props.cardSales + props.clearedCredit + props.advanceCollected + props.advanceBalanceCollected;
   const rupeeRows = [
     ["Regular bill sales", props.salesBreakdown.billSales, "Bill value before advances and credit recovery"],
@@ -4968,13 +5015,15 @@ function ReportsTab(props: any) {
         PendingCredit: props.pendingCredit,
       }],
     },
+    { name: "Sales Bills", rows: billRows },
     {
       name: "Rupee Story",
       rows: rupeeRows.map(([Source, Amount, Meaning]) => ({ Source, Amount, Meaning })),
     },
     {
       name: "Item Sales",
-      rows: props.topItems.map((item: any) => ({
+      rows: itemRows.map((item: any) => ({
+        Branch: item.branch,
         Item: item.name,
         Quantity: item.qty,
         Gross: item.gross,
@@ -4985,6 +5034,7 @@ function ReportsTab(props: any) {
     {
       name: "Credit",
       rows: dueCredits.map((credit) => ({
+        Branch: credit.branch,
         Customer: credit.customerName,
         Bill: credit.billNo,
         Total: credit.subtotal,
@@ -4997,6 +5047,7 @@ function ReportsTab(props: any) {
     {
       name: "Purchases",
       rows: branchPurchases.map((purchase) => ({
+        Branch: purchase.branch,
         Invoice: purchase.invoiceNo,
         Supplier: purchase.supplier,
         Total: purchase.total,
@@ -5007,7 +5058,8 @@ function ReportsTab(props: any) {
     },
     {
       name: "Supplier Payments",
-      rows: purchasePayments.filter((payment) => payment.branch === BRANCH).map((payment) => ({
+      rows: purchasePayments.filter((payment) => branches.includes(payment.branch)).map((payment) => ({
+        Branch: payment.branch,
         Date: payment.createdAt,
         Supplier: payment.supplier,
         Amount: payment.amount,
@@ -5018,20 +5070,21 @@ function ReportsTab(props: any) {
     {
       name: "Expenses Deposits",
       rows: [
-        ...branchExpenses.map((entry) => ({ Type: "Expense", Date: entry.expenseDate, Details: `${entry.category} - ${entry.description}`, Amount: entry.amount, ModeOrBank: entry.mode.toUpperCase() })),
-        ...branchDeposits.map((entry) => ({ Type: "Bank Deposit", Date: entry.depositDate, Details: entry.remarks || entry.transactionRef || entry.slipNo || "", Amount: entry.amount, ModeOrBank: entry.bankAccount })),
+        ...branchExpenses.map((entry) => ({ Branch: entry.branch, Type: "Expense", Date: entry.expenseDate, Details: `${entry.category} - ${entry.description}`, Amount: entry.amount, ModeOrBank: entry.mode.toUpperCase() })),
+        ...branchDeposits.map((entry) => ({ Branch: entry.branch, Type: "Bank Deposit", Date: entry.depositDate, Details: entry.remarks || entry.transactionRef || entry.slipNo || "", Amount: entry.amount, ModeOrBank: entry.bankAccount })),
       ],
     },
     {
       name: "Waste Quotations",
       rows: [
-        ...branchWaste.map((entry) => ({ Type: "Waste", Date: entry.createdAt, Reference: entry.logType, Details: `${entry.itemName} - ${entry.reason}`, ValueOrQty: `${entry.quantity} ${entry.unit}`, Status: entry.verifiedBy })),
-        ...branchQuotes.map((entry) => ({ Type: "Quotation", Date: entry.createdAt, Reference: entry.quoteNo, Details: entry.customerName, ValueOrQty: entry.total, Status: entry.status })),
+        ...branchWaste.map((entry) => ({ Branch: entry.branch, Type: "Waste", Date: entry.createdAt, Reference: entry.logType, Details: `${entry.itemName} - ${entry.reason}`, ValueOrQty: `${entry.quantity} ${entry.unit}`, Status: entry.verifiedBy })),
+        ...branchQuotes.map((entry) => ({ Branch: entry.branch, Type: "Quotation", Date: entry.createdAt, Reference: entry.quoteNo, Details: entry.customerName, ValueOrQty: entry.total, Status: entry.status })),
       ],
     },
     {
       name: "Cashier Closures",
       rows: branchClosures.map((closure) => ({
+        Branch: closure.branch,
         Date: closure.createdAt,
         Cashier: closure.cashier,
         Expected: closure.expectedCash,
@@ -5102,6 +5155,12 @@ function ReportsTab(props: any) {
           </div>
         }
       >
+        <ReportLoadStatus loading={report.loading || cafe.loading || props.adminLedger.loading} error={[report.error, cafe.error, props.adminLedger.error].filter(Boolean).join(' | ')} />
+        <p className="mb-4 text-sm font-semibold text-slate-600">{props.reportLabel} · {props.fromDate} to {props.toDate}. Credit balances are current outstanding amounts.</p>
+        <div className="mb-6">
+          <h3 className="mb-2 font-bold">Sales Bills / Legacy Items ({billRows.length})</h3>
+          <DataTable headers={['Branch', 'Date', 'Bill', 'Customer', 'Cashier', 'Amount', 'Payment']} rows={billRows.map(row => [row.Branch, fmtDateTime(row.Date), row.Bill, row.Customer, row.Cashier, money(row.Amount), row.Payment])} empty={report.loading || cafe.loading || props.adminLedger.loading ? 'Loading sales bills...' : 'No sales bills in the selected date range.'} />
+        </div>
         <div className="grid gap-4 xl:grid-cols-2">
           <div className="xl:col-span-2">
             <div className="mb-3 rounded-[2rem] border border-orange-100 bg-gradient-to-br from-orange-50 via-white to-emerald-50 p-4">
@@ -5128,10 +5187,11 @@ function ReportsTab(props: any) {
             />
           </div>
           <div>
-            <h3 className="mb-2 font-black">Item-wise Sales</h3>
+            <h3 className="mb-2 font-black">Item-wise Sales</h3><p className="mb-2 text-xs text-slate-600">Line values before bill-level discounts and rounding.</p>
             <DataTable
-              headers={["Item", "Qty", "Gross", "Returns", "Net"]}
-              rows={props.topItems.map((i: any) => [
+              headers={["Branch", "Item", "Qty", "Gross", "Returns", "Net"]}
+              rows={itemRows.map((i: any) => [
+                i.branch,
                 i.name,
                 i.qty,
                 money(i.gross),
@@ -5144,6 +5204,7 @@ function ReportsTab(props: any) {
             <h3 className="mb-2 font-black">Due Payment Report</h3>
             <DataTable
               headers={[
+                "Branch",
                 "Customer",
                 "Bill",
                 "Total",
@@ -5152,7 +5213,7 @@ function ReportsTab(props: any) {
                 "Due Date",
                 "Status",
               ]}
-              rows={dueCredits.map((c) => [
+              rows={dueCredits.map((c) => [c.branch, 
                 c.customerName,
                 c.billNo,
                 money(c.subtotal),
@@ -5167,10 +5228,11 @@ function ReportsTab(props: any) {
           <div>
             <h3 className="mb-2 font-black">Supplier Purchase Position</h3>
             <DataTable
-              headers={["Invoice", "Supplier", "Total", "Paid", "Due", "Status"]}
+              headers={["Branch", "Invoice", "Supplier", "Total", "Paid", "Due", "Status"]}
               rows={branchPurchases.map((p) => {
                 const due = Math.max(0, p.total - p.paidAmount);
                 return [
+                  p.branch,
                   p.invoiceNo,
                   p.supplier,
                   money(p.total),
@@ -5185,8 +5247,9 @@ function ReportsTab(props: any) {
           <div>
             <h3 className="mb-2 font-black">Supplier Payments</h3>
             <DataTable
-              headers={["Date", "Supplier", "Amount", "Mode", "Reference"]}
-              rows={purchasePayments.filter((p) => p.branch === BRANCH).map((p) => [
+              headers={["Branch", "Date", "Supplier", "Amount", "Mode", "Reference"]}
+              rows={purchasePayments.filter((p) => branches.includes(p.branch)).map((p) => [
+                p.branch,
                 fmtDateTime(p.createdAt),
                 p.supplier,
                 money(p.amount),
@@ -5199,10 +5262,10 @@ function ReportsTab(props: any) {
           <div className="xl:col-span-2">
             <h3 className="mb-2 font-black">Expenses And Bank Deposits</h3>
             <DataTable
-              headers={["Type", "Date", "Details", "Amount", "Mode / Bank"]}
+              headers={["Branch", "Type", "Date", "Details", "Amount", "Mode / Bank"]}
               rows={[
-                ...branchExpenses.map((e) => ["Expense", fmtDate(e.expenseDate), `${e.category} - ${e.description}`, money(e.amount), e.mode.toUpperCase()]),
-                ...branchDeposits.map((d) => ["Bank Deposit", fmtDate(d.depositDate), d.remarks || d.transactionRef || d.slipNo || "-", money(d.amount), d.bankAccount]),
+                ...branchExpenses.map((e) => [e.branch, "Expense", fmtDate(e.expenseDate), `${e.category} - ${e.description}`, money(e.amount), e.mode.toUpperCase()]),
+                ...branchDeposits.map((d) => [d.branch, "Bank Deposit", fmtDate(d.depositDate), d.remarks || d.transactionRef || d.slipNo || "-", money(d.amount), d.bankAccount]),
               ]}
               empty="No expenses or deposits."
             />
@@ -5210,24 +5273,24 @@ function ReportsTab(props: any) {
           <div>
             <h3 className="mb-2 font-black">Waste Logs</h3>
             <DataTable
-              headers={["Date", "Type", "Item", "Qty", "Reason", "Verified By"]}
-              rows={branchWaste.map((w) => [fmtDateTime(w.createdAt), w.logType, w.itemName, `${w.quantity} ${w.unit}`, w.reason, w.verifiedBy])}
+              headers={["Branch", "Date", "Type", "Item", "Qty", "Reason", "Verified By"]}
+              rows={branchWaste.map((w) => [w.branch, fmtDateTime(w.createdAt), w.logType, w.itemName, `${w.quantity} ${w.unit}`, w.reason, w.verifiedBy])}
               empty="No waste logs."
             />
           </div>
           <div>
             <h3 className="mb-2 font-black">Quotations</h3>
             <DataTable
-              headers={["Quote", "Customer", "Mobile", "Items", "Total", "Status"]}
-              rows={branchQuotes.map((q) => [q.quoteNo, q.customerName, q.mobile || "-", q.items.length, money(q.total), q.status])}
+              headers={["Branch", "Quote", "Customer", "Mobile", "Items", "Total", "Status"]}
+              rows={branchQuotes.map((q) => [q.branch, q.quoteNo, q.customerName, q.mobile || "-", q.items.length, money(q.total), q.status])}
               empty="No quotations."
             />
           </div>
           <div className="xl:col-span-2">
             <h3 className="mb-2 font-black">Cashier Closure Reconciliation</h3>
             <DataTable
-              headers={["Date", "Cashier", "Expected", "Closing", "Difference", "Cash", "UPI", "Card", "Credit Collections"]}
-              rows={branchClosures.map((c) => [
+              headers={["Branch", "Date", "Cashier", "Expected", "Closing", "Difference", "Cash", "UPI", "Card", "Credit Collections"]}
+              rows={branchClosures.map((c) => [c.branch, 
                 fmtDateTime(c.createdAt),
                 c.cashier,
                 money(c.expectedCash),
@@ -5248,7 +5311,7 @@ function ReportsTab(props: any) {
             <DataTable
               headers={["Bill", "Customer", "Status", "Date"]}
               rows={whatsappRows}
-              empty="No WhatsApp log table is connected yet. Supabase migration includes vrsnb_whatsapp_logs."
+              empty="WhatsApp delivery reporting is not available. Delivery status has not been loaded."
             />
           </div>
           <div>
@@ -5256,21 +5319,22 @@ function ReportsTab(props: any) {
             <DataTable
               headers={["Bill", "Customer", "Pending", "Last Reminder"]}
               rows={reminderRows}
-              empty="No reminder history yet. Supabase migration includes vrsnb_payment_reminders."
+              empty="Payment reminder reporting is not available. Reminder status has not been loaded."
             />
           </div>
           <div className="xl:col-span-2">
-            <h3 className="mb-2 font-black">Dispute Report</h3>
+            <h3 className="mb-2 font-black">Complaints Report</h3>
             <DataTable
-              headers={["Date", "Title", "Details", "Raised By", "Status"]}
+              headers={["Branch", "Date", "Title", "Details", "Raised By", "Status"]}
               rows={disputeRows.map((d) => [
+                d.branch,
                 fmtDateTime(d.createdAt),
                 d.title,
                 d.details,
                 d.raisedBy,
                 d.status,
               ])}
-              empty="No disputes."
+              empty="No complaints in the selected date range."
             />
           </div>
         </div>
