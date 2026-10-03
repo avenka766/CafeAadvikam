@@ -90,7 +90,11 @@ export function businessFor(scope: DispatchInvoiceScope): DispatchInvoiceBusines
   // branch" field through the invoice record for — in practice virtually
   // every cake order is SNB-attributed, so 'Cake' prints SNB's letterhead.
   // Revisit if VRSNB-branded cake invoices turn out to matter.
-  return scope === 'SNB' || scope === 'Cake' ? SNB_BUSINESS : VRSNB_FOODS_BUSINESS;
+  // CHANGE (2026-10-03): "In Planner Dispatch tab, for VRSNB and SNB the bill
+  // should show the VRSNB one, not Sri Nanjundeshwara Bakery" — SNB dispatch
+  // invoices now use the VRSNB FOODS LLP letterhead like VRSNB and Hosur.
+  // Only cake invoices still print the Sri Nanjundeshwara Bakery letterhead.
+  return scope === 'Cake' ? SNB_BUSINESS : VRSNB_FOODS_BUSINESS;
 }
 
 // Default discount policy (2026-08-08): only SNB's catalog prices are
