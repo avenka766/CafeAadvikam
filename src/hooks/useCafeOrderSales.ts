@@ -73,9 +73,10 @@ export function useCafeOrderSales(fromDate: string, toDate: string, enabled: boo
           .select('total, payment_type, payment_breakdown')
           .eq('status', 'served')
           .neq('payment_type', 'unpaid')
-          .gte('created_at', `${fromDate}T00:00:00`)
-          .lte('created_at', `${toDate}T23:59:59.999`),
-        { maxRows: 20000 },
+          .gte('created_at', `${fromDate}T00:00:00+05:30`)
+          .lte('created_at', `${toDate}T23:59:59.999+05:30`)
+          .order('created_at', { ascending: false }).order('id', { ascending: false }),
+        { maxRows: Infinity },
       );
       if (!active) return;
       if (error) {

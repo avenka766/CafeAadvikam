@@ -10,6 +10,7 @@
 // be spliced directly into that same log table's row list.
 import { useCallback, useEffect, useState } from 'react';
 import { fetchAllRows } from '@/lib/supabase';
+import type { CartItem } from '@/types';
 
 export type CafeOrderRow = {
   id: string;
@@ -19,10 +20,13 @@ export type CafeOrderRow = {
   person: string;
   total: number;
   paymentType: string;
+  items: CartItem[];
 };
 
 export type CafeOrderRowsResult = {
   rows: CafeOrderRow[];
+  loading: boolean;
+  error: string;
   // Bumped by the caller to force a fresh re-fetch on demand (a manual
   // "Refresh" button) without needing fromDate/toDate/enabled to change —
   // this hook otherwise only ever re-queries when one of those changes, so
@@ -36,16 +40,24 @@ function isValidDate(value: string) {
 
 export function useCafeOrderRows(fromDate: string, toDate: string, enabled: boolean): CafeOrderRowsResult {
   const [rows, setRows] = useState<CafeOrderRow[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState('');
   const [refreshToken, setRefreshToken] = useState(0);
   const refresh = useCallback(() => setRefreshToken((t) => t + 1), []);
 
   useEffect(() => {
     if (!enabled || !isValidDate(fromDate) || !isValidDate(toDate) || fromDate > toDate) {
       setRows([]);
+      setLoading(false);
+      setLoadError(enabled ? 'Select a valid date range.' : '');
       return;
     }
     let active = true;
+    setRows([]);
+    setLoading(true);
+    setLoadError('');
     (async () => {
+      try {
       // BUG FIX (2026-09-08): a plain `.limit(2000)` here was silently
       // capped at 1000 rows by PostgREST's project-wide response cap — see
       // fetchAllRows in src/lib/supabase.ts. Paged so a busy range is never
@@ -54,15 +66,16 @@ export function useCafeOrderRows(fromDate: string, toDate: string, enabled: bool
       const { data, error } = await fetchAllRows<Record<string, unknown>>(
         'orders',
         (q) => q
-          .select('id, order_number, created_at, customer_name, billed_by, created_by, total, payment_type')
+          .select('id, order_number, created_at, customer_name, billed_by, created_by, total, payment_type, items')
           .eq('status', 'served')
           .neq('payment_type', 'unpaid')
-          .gte('created_at', `${fromDate}T00:00:00`)
-          .lte('created_at', `${toDate}T23:59:59.999`)
-          .order('created_at', { ascending: false }),
-        { maxRows: 20000 },
+          .gte('created_at', `${fromDate}T00:00:00+05:30`)
+          .lte('created_at', `${toDate}T23:59:59.999+05:30`)
+          .order('created_at', { ascending: false }).order('id', { ascending: false }),
+        { maxRows: Infinity },
       );
-      if (!active || error || !data) { if (!error) setRows([]); return; }
+      if (!active) return;
+      if (error) setLoadError(`Cafe orders: ${error}`);
       setRows((data as Record<string, unknown>[]).map((row) => ({
         id: String(row.id),
         billNo: row.order_number != null ? `CAFE-${String(row.order_number).padStart(4, '0')}` : String(row.id),
@@ -71,10 +84,14 @@ export function useCafeOrderRows(fromDate: string, toDate: string, enabled: bool
         person: (row.billed_by as string) || (row.created_by as string) || '-',
         total: Number(row.total ?? 0),
         paymentType: (row.payment_type as string) || '-',
+        items: Array.isArray(row.items) ? row.items as CartItem[] : [],
       })));
+      } catch (cause) {
+        if (active) setLoadError(`Cafe orders: ${cause instanceof Error ? cause.message : String(cause)}`);
+      } finally { if (active) setLoading(false); }
     })();
     return () => { active = false; };
   }, [fromDate, toDate, enabled, refreshToken]);
 
-  return { rows, refresh };
+  return { rows, refresh, loading, error: loadError };
 }
