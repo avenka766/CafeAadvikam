@@ -1,0 +1,55 @@
+import type { Order } from '@/types';
+
+export const CAFE_GST_COLUMNS = 'gst_enabled, gst_rate, taxable_amount, cgst_amount, sgst_amount, gst_amount';
+const money = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100;
+
+/** Additional GST on the discounted food and parcel amount. Round the payable once. */
+export function calculateCafeGst(subtotal: number, discount = 0, parcelCharges = 0, enabled = true) {
+  const taxableAmount = money(Math.max(0, subtotal + parcelCharges - discount));
+  const gstAmount = enabled ? money(taxableAmount * 0.05) : 0;
+  const cgstAmount = money(gstAmount / 2);
+  const sgstAmount = money(gstAmount - cgstAmount);
+  const total = Math.round(money(taxableAmount + gstAmount));
+  return { gstEnabled: enabled, gstRate: enabled ? 5 : 0, taxableAmount, cgstAmount, sgstAmount, gstAmount, total,
+    roundOff: money(total - taxableAmount - gstAmount) };
+}
+
+export function cafeGstColumns(tax: ReturnType<typeof calculateCafeGst>) {
+  return { gst_enabled: tax.gstEnabled, gst_rate: tax.gstRate, taxable_amount: tax.taxableAmount,
+    cgst_amount: tax.cgstAmount, sgst_amount: tax.sgstAmount, gst_amount: tax.gstAmount };
+}
+
+/** Receipts use the saved snapshot; never add today's tax to an old bill. */
+export function savedCafeGst(order: Pick<Order, 'gstEnabled' | 'gstRate' | 'gstAmount' | 'cgstAmount' | 'sgstAmount' | 'taxableAmount'>) {
+  return { gstEnabled: order.gstEnabled === true, gstRate: Number(order.gstRate || 0),
+    gstAmount: Number(order.gstAmount || 0), cgstAmount: Number(order.cgstAmount || 0),
+    sgstAmount: Number(order.sgstAmount || 0), taxableAmount: Number(order.taxableAmount || 0) };
+}
+
+/** Tax collected at billing; a credit balance is not cash received. */
+export function cafeGstCollection(order: Order) {
+  const tax = savedCafeGst(order);
+  const billed = tax.gstEnabled && order.status !== 'cancelled' &&
+    !['unpaid', 'advance'].includes(order.paymentType) && order.orderSource !== 'balance';
+  if (!billed) return { billed: 0, collected: 0, credit: 0, cgst: 0, sgst: 0, extraCollected: 0 };
+  const paid = order.paymentType === 'credit' ? 0 : order.paymentType === 'part_payment'
+    ? ['cash', 'upi', 'card', 'wallet'].reduce((sum, key) =>
+      sum + Number(order.paymentBreakdown?.[key as keyof NonNullable<Order['paymentBreakdown']>] || 0), 0)
+    : order.total;
+  const fraction = order.total > 0 ? Math.min(1, Math.max(0, paid / order.total)) : 0;
+  const collected = money(tax.gstAmount * fraction);
+  const cgst = money(tax.cgstAmount * fraction);
+  return { billed: tax.gstAmount, collected, credit: money(tax.gstAmount - collected),
+    cgst, sgst: money(collected - cgst),
+    extraCollected: money((order.total - Math.round(tax.taxableAmount)) * fraction) };
+}
+
+export function summarizeCafeGst(orders: Order[]) {
+  const totals = orders.reduce((sum, order) => {
+    const row = cafeGstCollection(order);
+    return { billed: sum.billed + row.billed, collected: sum.collected + row.collected,
+      credit: sum.credit + row.credit, cgst: sum.cgst + row.cgst, sgst: sum.sgst + row.sgst,
+      extraCollected: sum.extraCollected + row.extraCollected };
+  }, { billed: 0, collected: 0, credit: 0, cgst: 0, sgst: 0, extraCollected: 0 });
+  return Object.fromEntries(Object.entries(totals).map(([key, value]) => [key, money(value)])) as typeof totals;
+}

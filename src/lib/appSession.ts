@@ -1,4 +1,4 @@
-import { isNativeApp } from '@/lib/platform';
+import { isNativeApp, isElectronApp } from '@/lib/platform';
 
 export const APP_SESSION_STORAGE_KEY = 'cafe-aadvikam-app-session';
 
@@ -11,7 +11,7 @@ export const APP_SESSION_STORAGE_KEY = 'cafe-aadvikam-app-session';
 // possibly-shared browser/terminal). See authStore.ts for the matching
 // change to the persisted currentUser, and extend_staff_session_secure for
 // how the underlying session is kept from expiring server-side too.
-const sessionStore = () => (isNativeApp() ? localStorage : sessionStorage);
+const sessionStore = () => (isNativeApp() || isElectronApp() ? localStorage : sessionStorage);
 
 export function getAppSessionToken(): string | null {
   try {

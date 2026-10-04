@@ -232,18 +232,18 @@ export const useOfflineQueueStore = create<OfflineQueueState>((set, get) => ({
 
         const handler = replayHandlers.get(entry.kind);
         if (!handler) {
-          // No store has registered a handler for this kind — most likely a
-          // queued entry left over from an older deploy whose write path
-          // changed shape. Drop it rather than blocking every later entry
-          // of this kind forever on something no code can ever replay, but
-          // log loudly so it isn't silently lost without a trace.
-          console.error(`[offlineQueue] no replay handler registered for kind "${entry.kind}" — dropping queued entry ${entry.id}`);
-          const remaining = get().pending.filter((e) => e.id !== entry.id);
+          // Lazy-loaded dashboards may not have registered their replay code yet.
+          // Retain the original write until that dashboard can handle it.
+          const remaining = get().pending.map(e => e.id === entry.id
+            ? { ...e, attempts: e.attempts + 1, lastError: 'Open the dashboard where this change was made, then retry sync.' } : e);
           set({ pending: remaining });
           await writeQueue(remaining);
+          blockedKinds.add(entry.kind);
           continue;
         }
-        const result = await handler(entry.kind, entry.payload);
+        let result: ReplayResult;
+        try { result = await handler(entry.kind, entry.payload); }
+        catch (error) { result = { ok: false, error: error instanceof Error ? error.message : 'Sync failed. Please retry.' }; }
         if (result.ok) {
           const remaining = get().pending.filter((e) => e.id !== entry.id);
           set({ pending: remaining });
