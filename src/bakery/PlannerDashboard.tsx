@@ -12006,11 +12006,9 @@ function StoreAdvanceOrdersPanel({ compact = false }: { compact?: boolean }) {
   // collect payment/close), only an overdue order that was NEVER dispatched
   // drops out of this list.
   const orders = useMemo(() => {
-    const today = kolkataToday();
     return (['SNB', 'VRSNB'] as const)
       .flatMap(b => advanceOrdersByBranch[b].map(o => ({ ...o, branch: b })))
       .filter(o => o.status === 'pending' && o.items[0]?.orderType !== 'cake')
-      .filter(o => o.dispatchedAt || !o.deliveryDate || o.deliveryDate >= today)
       .sort((a, b) => (a.deliveryDate || a.createdAt).localeCompare(b.deliveryDate || b.createdAt));
   }, [advanceOrdersByBranch]);
 
@@ -12189,16 +12187,15 @@ function AdvancePlannerOrdersTab({ orders }: { orders: BakeryOrder[] }) {
   );
 
   const [view, setView] = useState<'active' | 'history'>('active');
-  const todayKeyForFilter = kolkataToday();
   // FEATURE (2026-09-28): "Just make them invisible in Advance orders tab.
   // Dont touch the orders that has been dispatched already." — same
   // display-only fix as StoreAdvanceOrdersPanel's own orders filter just
   // above: an order that's overdue (delivery date passed) AND never
   // dispatched drops out of the active list; anything already dispatched
   // (which already lives in History, not here) is completely untouched.
-  const activeOrders = advanceOrders.filter(x =>
-    x.order.status !== 'dispatched'
-    && !(x.parsed.deliveryDate && x.parsed.deliveryDate < todayKeyForFilter));
+  // UPDATE (2026-10-04): overdue undispatched orders are shown again (sorted
+  // first, flagged Overdue on the card) so none go missing from the Planner.
+  const activeOrders = advanceOrders.filter(x => x.order.status !== 'dispatched');
   const historyOrders = advanceOrders.filter(x => x.order.status === 'dispatched');
   const visible = view === 'active' ? activeOrders : historyOrders;
 
