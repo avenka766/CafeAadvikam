@@ -28,6 +28,8 @@ import { BRANCHES, BAKERY_ITEMS } from './types';
 import { printHtml } from '@/branch/printUtils';
 import { printViaIframe } from '@/lib/printViaIframe';
 import PackingTransferInTab from './PackingTransferInTab';
+import FestivalProductionPanel from './FestivalProductionPanel';
+import { Switch } from '@/components/ui/switch';
 import PackingDailyClosureTab, { usePackingDispatchSummary, StatCard, DisputesAndReturnsPanel } from './PackingDailyClosureTab';
 import { exportToExcel } from '@/lib/exportExcel';
 import HosurDashboard from '@/pages/HosurDashboard';
@@ -2631,7 +2633,18 @@ function groupOrdersByStoreDate(orders: BakeryOrder[]): DateGroup[] {
 // gets its own collapsible group with its own merged rows, so an item still
 // pending from an earlier date stays visible under that date instead of
 // getting folded into today's total.
-function ProductionEntryTab({ orders, productionCutoff }: { orders: BakeryOrder[]; productionCutoff?: string | null }) {
+function ProductionEntryTab(props: { orders: BakeryOrder[]; productionCutoff?: string | null }) {
+  const [festivalMode, setFestivalMode] = useState(false);
+  return <div className="space-y-4">
+    <div className="flex items-center justify-between gap-4 rounded-2xl border border-purple-200 bg-card p-4">
+      <div><label htmlFor="festival-production-mode" className="text-sm font-black">Festival Production</label><p className="text-xs text-muted-foreground">{festivalMode ? 'Festival entries are tracked separately.' : 'Switch on to record festival production separately from normal orders.'}</p></div>
+      <Switch id="festival-production-mode" checked={festivalMode} onCheckedChange={setFestivalMode} />
+    </div>
+    {festivalMode ? <FestivalProductionPanel /> : <NormalProductionEntryTab {...props} />}
+  </div>;
+}
+
+function NormalProductionEntryTab({ orders, productionCutoff }: { orders: BakeryOrder[]; productionCutoff?: string | null }) {
   const [search, setSearch] = useState('');
   // FEATURE (2026-08-24): "date-wise grouping should be removed, add new
   // quantity to old" — computeProductionRows already sums by item across
@@ -5445,8 +5458,9 @@ function PlannerAllInvoicesTab({ active }: { active: boolean }) {
   );
 }
 
-type CombinedReportSection = 'reports' | 'all-invoices' | 'closing-stock' | 'disputes';
+type CombinedReportSection = 'festival-production' | 'reports' | 'all-invoices' | 'closing-stock' | 'disputes';
 const COMBINED_REPORT_SECTIONS: { key: CombinedReportSection; label: string; icon: JSX.Element }[] = [
+  { key: 'festival-production', label: 'Festival Production', icon: <Factory className="size-4" /> },
   { key: 'reports', label: 'Reports', icon: <BarChart3 className="size-4" /> },
   { key: 'all-invoices', label: 'All Invoices', icon: <Receipt className="size-4" /> },
   { key: 'closing-stock', label: 'Closing Stock', icon: <Scale className="size-4" /> },
@@ -5502,10 +5516,10 @@ function PlannerReportsAndClosingStockTab({ orders, activeLeftovers, doneOrders 
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-[10px] font-black uppercase tracking-wide text-muted-foreground">Export everything:</span>
           <button onClick={exportAllExcel} disabled={allSections.length === 0} className="flex items-center gap-1.5 rounded-xl border border-teal-700 bg-teal-700 px-3 py-2 text-xs font-black text-white hover:bg-teal-800 disabled:cursor-wait disabled:opacity-60">
-            <FileSpreadsheet className="size-4" /> Excel (All)
+            <FileSpreadsheet className="size-4" /> Excel (Normal reports)
           </button>
           <button onClick={exportAllPdf} disabled={allSections.length === 0} className="flex items-center gap-1.5 rounded-xl bg-slate-950 px-3 py-2 text-xs font-black text-white hover:bg-slate-800 disabled:cursor-wait disabled:opacity-60">
-            <FileText className="size-4" /> PDF (All)
+            <FileText className="size-4" /> PDF (Normal reports)
           </button>
         </div>
       </div>
@@ -5522,6 +5536,7 @@ function PlannerReportsAndClosingStockTab({ orders, activeLeftovers, doneOrders 
           <PackingDispatchSummaryPanel onExportDataChange={onDispatchExport} />
         </div>
       </div>
+      {section === 'festival-production' && <FestivalProductionPanel reportOnly />}
       <div style={{ display: section === 'all-invoices' ? 'block' : 'none' }}><PlannerAllInvoicesTab active={section === 'all-invoices'} /></div>
       <div style={{ display: section === 'closing-stock' ? 'block' : 'none' }} className="space-y-6">
         <PlannerLeftoverTab active={section === 'closing-stock'} onExportDataChange={onClosingStockExport} />
