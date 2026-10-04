@@ -1,3 +1,4 @@
+import { savedCafeGst } from '@/lib/cafeGst';
 import { X, Printer } from 'lucide-react';
 import { formatTime } from '@/lib/utils';
 import type { Order } from '@/types';
@@ -21,28 +22,6 @@ function fmt(n: number) { return n.toFixed(2); }
 // above keep `fmt`'s 2-decimal precision since those are the GST-compliance
 // breakdown for this GST-registered receipt.
 function rupee(n: number) { return String(Math.round(n)); }
-
-// GST 5% inclusive → split CGST 2.5% + SGST 2.5%.
-// BUG FIX (audit): this used to run on `order.total` (post-discount, minus
-// parcel charges) — but the bill actually printed at checkout time
-// (BillingDashboard.tsx's receiptTotals/taxableAmount/gstParts) computes the
-// Sub Total/CGST/SGST split from the PRE-discount gross of each line
-// (price * qty), summed per item, with any discount shown as its own
-// separate line below. For a discounted order those two calculations don't
-// agree — the checkout bill and this "View Receipt"/"Print Duplicate" view
-// of the SAME order would print different Sub Total/CGST/SGST figures,
-// which matters for GST reconciliation. Mirrors the checkout math exactly
-// so both are always the same number for the same order.
-function taxableAmount(total: number): number {
-  return Math.round((Number(total || 0) / 1.05) * 100) / 100;
-}
-function gstParts(total: number) {
-  const taxable = taxableAmount(total);
-  const tax = Math.max(0, Number(total || 0) - taxable);
-  const cgst = Math.round((tax / 2) * 100) / 100;
-  const sgst = Math.round((tax - cgst) * 100) / 100;
-  return { taxable, cgst, sgst };
-}
 
 interface ReceiptProps {
   order: Order;
@@ -110,13 +89,10 @@ table{width:100%;border-collapse:collapse}td{padding:1px 2px;vertical-align:top}
   const orderLabel = order.orderType === 'dine_in' && order.tableNumber
     ? `Table ${order.tableNumber}` : 'Pick Up';
 
-  // C-06 FIX: compute GST only on food total — parcel charges are not subject
-  // to food GST (naturally excluded here since only order.items are summed;
-  // parcelCharges is a separate field, never part of this total).
   const parcelCharges = order.parcelCharges ?? 0;
-  const grossFoodTotal = order.items.reduce((s, ci) => s + ci.menuItem.price * ci.quantity, 0);
-  const base = order.items.reduce((s, ci) => s + taxableAmount(ci.menuItem.price * ci.quantity), 0);
-  const { cgst, sgst } = gstParts(grossFoodTotal);
+  const base = order.items.reduce((sum, ci) => sum + ci.menuItem.price * ci.quantity, 0);
+  const tax = savedCafeGst(order);
+  const roundOff = Math.round((order.total - base - parcelCharges + order.discount - tax.gstAmount) * 100) / 100;
   const totalQty = order.items.reduce((s, ci) => s + ci.quantity, 0);
   const cashierName = order.billedBy || order.createdBy || 'biller';
 
@@ -215,7 +191,7 @@ table{width:100%;border-collapse:collapse}td{padding:1px 2px;vertical-align:top}
             </thead>
             <tbody>
               {order.items.map(ci => {
-                const unitBase = ci.menuItem.price / 1.05;
+                const unitBase = ci.menuItem.price;
                 return (
                   <tr key={ci.menuItem.id}>
                     <td className="py-0.5 pr-1">{ci.menuItem.name}</td>
@@ -237,16 +213,14 @@ table{width:100%;border-collapse:collapse}td{padding:1px 2px;vertical-align:top}
                 <td className="text-right">Sub Total</td>
                 <td className="text-right tabular-nums pl-3">{fmt(base)}</td>
               </tr>
-              <tr>
-                <td />
-                <td className="text-right">CGST@2.5  2.5%</td>
-                <td className="text-right tabular-nums pl-3">{fmt(cgst)}</td>
-              </tr>
-              <tr>
-                <td />
-                <td className="text-right">SGST@2.5  2.5%</td>
-                <td className="text-right tabular-nums pl-3">{fmt(sgst)}</td>
-              </tr>
+              {tax.gstEnabled && <>
+                <tr><td /><td className="text-right">CGST (2.5%)</td><td className="text-right tabular-nums pl-3">{fmt(tax.cgstAmount)}</td></tr>
+                <tr><td /><td className="text-right">SGST (2.5%)</td><td className="text-right tabular-nums pl-3">{fmt(tax.sgstAmount)}</td></tr>
+                <tr><td /><td className="text-right">Total GST (5%)</td><td className="text-right tabular-nums pl-3">{fmt(tax.gstAmount)}</td></tr>
+              </>}
+              {order.gstRate === 0 && <tr><td /><td className="text-right">GST</td><td className="text-right">Off</td></tr>}
+              {order.discount > 0 && <tr><td /><td className="text-right">Discount</td><td className="text-right">-{fmt(order.discount)}</td></tr>}
+              {Math.abs(roundOff) >= 0.005 && <tr><td /><td className="text-right">Round off</td><td className="text-right">{roundOff > 0 ? '+' : ''}{fmt(roundOff)}</td></tr>}
               {/* C-06 FIX: show parcel charges as a separate line item */}
               {parcelCharges > 0 && (
                 <tr>
@@ -264,13 +238,6 @@ table{width:100%;border-collapse:collapse}td{padding:1px 2px;vertical-align:top}
             <span className="tabular-nums">₹{rupee(order.total)}</span>
           </div>
           <div className="border-t-2 border-gray-900 my-1.5" />
-
-          {order.discount > 0 && (
-            <div className="flex justify-between text-[11px] text-emerald-700 mb-1">
-              <span>Discount</span>
-              <span className="tabular-nums">-₹{rupee(order.discount)}</span>
-            </div>
-          )}
 
           {order.paymentType && order.paymentType !== 'unpaid' && (
             <p className="text-[11px] text-gray-600 mt-0.5">{PAYMENT_LABELS[order.paymentType] || order.paymentType}</p>

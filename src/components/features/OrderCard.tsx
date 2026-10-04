@@ -1,3 +1,5 @@
+import { calculateCafeGst } from '@/lib/cafeGst';
+import { CafeGstControl } from './CafeGstControl';
 import { useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useOrderStore } from '@/stores/orderStore';
@@ -49,6 +51,9 @@ export default function OrderCard({ order, showActions = false, counterOpenedTod
   const [discType, setDiscType] = useState<'percentage' | 'flat'>('percentage');
   const [discValue, setDiscValue] = useState('');
   const [showPayment, setShowPayment] = useState(false);
+  const [gstEnabled, setGstEnabled] = useState(true);
+  const gst = calculateCafeGst(order.subtotal, order.discount, order.parcelCharges || 0, gstEnabled);
+  const paymentTotal = order.paymentType === 'unpaid' ? gst.total : order.total;
   const [showCancelPrompt, setShowCancelPrompt] = useState(false);
   const [cancelReason, setCancelReason] = useState('');
   const [cancelCustomReason, setCancelCustomReason] = useState('');
@@ -158,7 +163,7 @@ export default function OrderCard({ order, showActions = false, counterOpenedTod
     }
     setPaymentSubmitting(true);
     try {
-      await setPaymentType(order.id, pt, billerName);
+      await setPaymentType(order.id, pt, billerName, undefined, gstEnabled);
       // Only move to 'served' if the kitchen has already finished (status === 'ready').
       // If payment is collected before cooking starts (pending/preparing), keep the
       // current kitchen status so the chef's card stays visible on the Kitchen screen.
@@ -189,7 +194,7 @@ export default function OrderCard({ order, showActions = false, counterOpenedTod
     const upiAmt = field === 'upi' ? 0 : parseFloat(splitUpi) || 0;
     const cardAmt = field === 'card' ? 0 : parseFloat(splitCard) || 0;
     const filled = cashAmt + upiAmt + cardAmt;
-    const remaining = order.total - filled;
+    const remaining = paymentTotal - filled;
     return remaining > 0 ? String(remaining) : '';
   };
 
@@ -211,7 +216,7 @@ export default function OrderCard({ order, showActions = false, counterOpenedTod
         if (thirdField === 'upi') thirdAmt = parseFloat(splitUpi) || 0;
         if (thirdField === 'card') thirdAmt = parseFloat(splitCard) || 0;
       }
-      const remaining = Math.max(0, order.total - numVal - thirdAmt);
+      const remaining = Math.max(0, paymentTotal - numVal - thirdAmt);
       if (otherField === 'cash') setSplitCash(remaining > 0 ? String(remaining) : '');
       if (otherField === 'upi') setSplitUpi(remaining > 0 ? String(remaining) : '');
       if (otherField === 'card') setSplitCard(remaining > 0 ? String(remaining) : '');
@@ -230,11 +235,11 @@ export default function OrderCard({ order, showActions = false, counterOpenedTod
     const cardAmt = splitMethods.includes('card') ? (parseFloat(splitCard) || 0) : 0;
     const totalPaid = cashAmt + upiAmt + cardAmt;
 
-    if (Math.round(totalPaid * 100) !== Math.round(order.total * 100)) {
-      if (totalPaid < order.total) {
-        setSplitError(`Short by ${formatCurrency(order.total - totalPaid)}. Total: ${formatCurrency(order.total)}`);
+    if (Math.round(totalPaid * 100) !== Math.round(paymentTotal * 100)) {
+      if (totalPaid < paymentTotal) {
+        setSplitError(`Short by ${formatCurrency(paymentTotal - totalPaid)}. Total: ${formatCurrency(paymentTotal)}`);
       } else {
-        setSplitError(`Over by ${formatCurrency(totalPaid - order.total)}. Total: ${formatCurrency(order.total)}`);
+        setSplitError(`Over by ${formatCurrency(totalPaid - paymentTotal)}. Total: ${formatCurrency(paymentTotal)}`);
       }
       return;
     }
@@ -244,7 +249,7 @@ export default function OrderCard({ order, showActions = false, counterOpenedTod
     const breakdown: PaymentBreakdown = { cash: cashAmt, upi: upiAmt, card: cardAmt };
     setPaymentSubmitting(true);
     try {
-      await setPaymentType(order.id, 'part_payment', billerName, breakdown);
+      await setPaymentType(order.id, 'part_payment', billerName, breakdown, gstEnabled);
       // Only mark served once the kitchen is done — same logic as handleSinglePayment.
       if (order.status === 'ready') {
         await updateOrderStatus(order.id, 'served');
@@ -399,7 +404,7 @@ export default function OrderCard({ order, showActions = false, counterOpenedTod
           )}
           <div className="flex justify-between">
             <span className="text-sm font-body font-semibold">Total</span>
-            <span className="font-display text-lg font-bold text-foreground tabular-nums">{formatCurrency(order.total)}</span>
+            <span className="font-display text-lg font-bold text-foreground tabular-nums">{formatCurrency(order.paymentType === 'unpaid' ? paymentTotal : order.total)}</span>
           </div>
         </div>
         )}
@@ -629,10 +634,11 @@ export default function OrderCard({ order, showActions = false, counterOpenedTod
         {/* Payment Panel */}
         {showPayment && (
           <div className="px-3.5 py-3 border-t border-border bg-emerald-50/50 space-y-3">
+            <CafeGstControl enabled={gstEnabled} onChange={setGstEnabled} disabled={paymentSubmitting} tax={gst} />
             {!splitMode ? (
               <>
                 <p className="text-xs font-body font-semibold text-foreground">Select Payment Method</p>
-                <p className="text-lg font-display font-bold text-primary tabular-nums">{formatCurrency(order.total)}</p>
+                <p className="text-lg font-display font-bold text-primary tabular-nums">{formatCurrency(paymentTotal)}</p>
                 <div className="grid grid-cols-2 gap-2">
                   {(['cash', 'upi', 'card'] as PaymentType[]).map((pt) => (
                     <button
@@ -656,7 +662,7 @@ export default function OrderCard({ order, showActions = false, counterOpenedTod
               <>
                 <div className="flex items-center justify-between">
                   <p className="text-xs font-body font-semibold text-foreground">Split Payment</p>
-                  <p className="text-xs font-body font-bold text-primary tabular-nums">Total: {formatCurrency(order.total)}</p>
+                  <p className="text-xs font-body font-bold text-primary tabular-nums">Total: {formatCurrency(paymentTotal)}</p>
                 </div>
 
                 <p className="text-[10px] font-body text-muted-foreground uppercase font-semibold">Select payment methods</p>
@@ -710,7 +716,7 @@ export default function OrderCard({ order, showActions = false, counterOpenedTod
                     <span className={`font-bold tabular-nums ${
                       Math.abs(((splitMethods.includes('cash') ? parseFloat(splitCash) || 0 : 0) +
                         (splitMethods.includes('upi') ? parseFloat(splitUpi) || 0 : 0) +
-                        (splitMethods.includes('card') ? parseFloat(splitCard) || 0 : 0)) - order.total) < 0.5
+                        (splitMethods.includes('card') ? parseFloat(splitCard) || 0 : 0)) - paymentTotal) < 0.5
                         ? 'text-emerald-600'
                         : 'text-destructive'
                     }`}>
@@ -720,7 +726,7 @@ export default function OrderCard({ order, showActions = false, counterOpenedTod
                         (splitMethods.includes('card') ? parseFloat(splitCard) || 0 : 0)
                       )}
                       {' / '}
-                      {formatCurrency(order.total)}
+                      {formatCurrency(paymentTotal)}
                     </span>
                   </div>
                 )}
