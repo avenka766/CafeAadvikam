@@ -1,3 +1,5 @@
+import { calculateCafeGst, savedCafeGst, CAFE_GST_COLUMNS } from '@/lib/cafeGst';
+import { CafeGstControl } from '@/components/features/CafeGstControl';
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { useOrderStore, dbRowToOrder } from '@/stores/orderStore';
 import { useShallow } from 'zustand/react/shallow'; // STORE-01 FIX: granular selectors
@@ -594,14 +596,16 @@ function receiptTotals(order: Order, payable: number, extraRows = ''): string {
   // left after subtracting that combined discount from items+parcel doesn't
   // exactly equal the final whole-rupee `payable` — surface it explicitly
   // rather than let the printed subtotal/discount silently not add up.
-  const preRoundOff = itemsTotal + parcelCharges - Number(order.discount || 0);
+  const tax = savedCafeGst(order);
+  const preRoundOff = itemsTotal + parcelCharges - Number(order.discount || 0) + tax.gstAmount;
   const roundOff = Math.round((payable - preRoundOff) * 100) / 100;
   return `
     <div class="solid"></div>
     ${kvRow([`Total Qty: ${totalQty}`, 'Sub Total', String(Math.round(itemsTotal))])}
     ${parcelCharges > 0 ? kvRow(['', 'Parcel', String(Math.round(parcelCharges))]) : ''}
     ${Number(order.discount || 0) > 0 ? kvRow(['', 'Discount', `-${Math.round(Number(order.discount))}`]) : ''}
-    ${Math.abs(roundOff) >= 0.005 ? kvRow(['', 'Round off', `${roundOff >= 0 ? '+' : ''}${Math.round(roundOff)}`]) : ''}
+    ${Math.abs(roundOff) >= 0.005 ? kvRow(['', 'Round off', `${roundOff >= 0 ? '+' : ''}${roundOff.toFixed(2)}`]) : ''}
+    ${tax.gstEnabled ? kvRow(['', 'CGST (2.5%)', tax.cgstAmount.toFixed(2)]) + kvRow(['', 'SGST (2.5%)', tax.sgstAmount.toFixed(2)]) + kvRow(['', 'Total GST (5%)', tax.gstAmount.toFixed(2)]) : order.gstRate === 0 ? kvRow(['', 'GST', 'Off']) : ''}
     ${extraRows}
     <div class="solid"></div>
     ${kvRow(['Grand Total', moneyHtml(payable)], { big: true })}
@@ -1803,6 +1807,9 @@ function NewBillPanel() {
   const [submitting, setSubmitting] = useState(false);
   const [showSuccess, setShowSuccess] = useState(false);
   const [showBillModal, setShowBillModal] = useState(false);
+  const [gstEnabled, setGstEnabled] = useState(true);
+  const [lastBill, setLastBill] = useState<Pick<Order, 'total' | 'gstAmount' | 'gstEnabled'> | null>(null);
+  useEffect(() => { setGstEnabled(true); }, [orderType, tableNumber, activeTakeawayId]);
   const [billMethod, setBillMethod] = useState<BillPaymentMethod>('cash');
   const [splitPayment, setSplitPayment] = useState<SplitPaymentInputs>({ cash: '', upi: '', card: '' });
   // Cash Tendered / Change — was never collected anywhere in cafe billing at
@@ -2389,13 +2396,13 @@ function NewBillPanel() {
       // stale immediately after the KOT above.
       const { data: runningRow, error: runningErr } = await supabase
         .from('orders')
-        .select('id, order_number, table_number, order_type, items, subtotal, discount, discount_type, discount_value, total, status, created_by, created_at, updated_at, notes, customer_name, payment_type, payment_breakdown, billed_by, order_source, parcel_charges')
+        .select('id, order_number, table_number, order_type, items, subtotal, discount, discount_type, discount_value, total, status, created_by, created_at, updated_at, notes, customer_name, payment_type, payment_breakdown, billed_by, order_source, parcel_charges, ' + CAFE_GST_COLUMNS)
         .eq('table_number', tableNumber)
         .eq('order_type', 'dine_in')
         .eq('status', 'running')
         .maybeSingle();
       if (runningErr) throw new Error(runningErr.message);
-      const freshRunning = runningRow ? dbRowToOrder(runningRow as Record<string, unknown>) : null;
+      const freshRunning = runningRow ? dbRowToOrder(runningRow as unknown as Record<string, unknown>) : null;
 
       // BUG FIX (audit 2026-09-02): freshRunning above is a genuine fresh DB read (per the
       // comment above it — "don't trust closures that may be stale"), but freshIncoming was
@@ -2406,14 +2413,14 @@ function NewBillPanel() {
       // Fetch these fresh too, same filter the cache-based version used.
       const { data: incomingRows, error: incomingErr } = await supabase
         .from('orders')
-        .select('id, order_number, table_number, order_type, items, subtotal, discount, discount_type, discount_value, total, status, created_by, created_at, updated_at, notes, customer_name, payment_type, payment_breakdown, billed_by, order_source, parcel_charges')
+        .select('id, order_number, table_number, order_type, items, subtotal, discount, discount_type, discount_value, total, status, created_by, created_at, updated_at, notes, customer_name, payment_type, payment_breakdown, billed_by, order_source, parcel_charges, ' + CAFE_GST_COLUMNS)
         .eq('table_number', tableNumber)
         .eq('order_type', 'dine_in')
         .eq('payment_type', 'unpaid')
         .in('order_source', ['staff', 'qr'])
         .in('status', ['pending', 'preparing', 'ready']);
       if (incomingErr) throw new Error(incomingErr.message);
-      const freshIncoming = (incomingRows || []).map(row => dbRowToOrder(row as Record<string, unknown>));
+      const freshIncoming = (incomingRows || []).map(row => dbRowToOrder(row as unknown as Record<string, unknown>));
 
       const allSources = [...(freshRunning ? [freshRunning] : []), ...freshIncoming];
       if (allSources.length === 0) {
@@ -2425,7 +2432,18 @@ function NewBillPanel() {
       const combinedItems = allSources.flatMap(o => o.items);
       const combinedSubtotal = combinedItems.reduce((s, ci) => s + ci.menuItem.price * ci.quantity, 0);
       const combinedParcel = allSources.reduce((s, o) => s + (o.parcelCharges || 0), 0);
-      const combinedTotal = combinedSubtotal + combinedParcel;
+      const sourceTaxes = allSources.map(o => calculateCafeGst(
+        o.items.reduce((sum, i) => sum + i.menuItem.price * i.quantity, 0),
+        o === freshRunning ? 0 : o.discount, o.parcelCharges || 0, gstEnabled));
+      const combinedTax = {
+        gstEnabled, gstRate: gstEnabled ? 5 : 0,
+        taxableAmount: sourceTaxes.reduce((sum, t) => sum + t.taxableAmount, 0),
+        gstAmount: sourceTaxes.reduce((sum, t) => sum + t.gstAmount, 0),
+        cgstAmount: sourceTaxes.reduce((sum, t) => sum + t.cgstAmount, 0),
+        sgstAmount: sourceTaxes.reduce((sum, t) => sum + t.sgstAmount, 0),
+      };
+      const combinedTotal = sourceTaxes.reduce((sum, t) => sum + t.total, 0);
+      const combinedDiscount = freshIncoming.reduce((sum, o) => sum + o.discount, 0);
 
       // BUG FIX (audit 2026-08-10): recordCreditSale used to run AFTER the
       // orders below were already marked paid/served. Every field this
@@ -2451,9 +2469,9 @@ function NewBillPanel() {
           customerName: customerName.trim(),
           customerPhone: combineCreditPhone.trim(),
           items: creditItems,
-          subtotal: combinedSubtotal,
+          subtotal: combinedTotal,
           amountPaid: 0,
-          creditAmount: combinedSubtotal,
+          creditAmount: combinedTotal,
           dueDate: combineCreditDueDate,
           soldBy: billedBy,
           notes: `Combined Table ${tableNumber} bill (orders ${allSources.map(o => o.orderNumber).join(', ')})`,
@@ -2466,7 +2484,9 @@ function NewBillPanel() {
       // independently safe/atomic; if one fails partway we stop and surface
       // it rather than printing a receipt for a partially-settled table.
       if (freshRunning) {
-        const { error } = await supabase.rpc('finalize_table_bill_v1', {
+        const { error } = await supabase.rpc('finalize_table_bill_v2', {
+          p_apply_promotions: false,
+          p_gst_enabled: gstEnabled,
           p_order_id: freshRunning.id,
           p_payment_type: combineBillMethod,
           p_payment_breakdown: null,
@@ -2476,7 +2496,7 @@ function NewBillPanel() {
         if (error) throw new Error(`Running tab: ${error.message}`);
       }
       for (const o of freshIncoming) {
-        await setPaymentType(o.id, combineBillMethod, billedBy);
+        await setPaymentType(o.id, combineBillMethod, billedBy, undefined, gstEnabled);
         // BUG FIX: setPaymentType only stamps payment_type - it deliberately
         // never touches status (see OrderCard.tsx's single-order payment flow,
         // which only advances to 'served' once the kitchen has separately
@@ -2501,7 +2521,8 @@ function NewBillPanel() {
         ...primary,
         items: combinedItems,
         subtotal: combinedSubtotal,
-        discount: 0, discountType: 'flat', discountValue: 0,
+        ...combinedTax,
+        discount: combinedDiscount, discountType: 'flat', discountValue: combinedDiscount,
         total: combinedTotal,
         parcelCharges: combinedParcel,
         paymentType: combineBillMethod,
@@ -2510,6 +2531,7 @@ function NewBillPanel() {
         customerName: customerName.trim() || primary.customerName,
         notes: `Combined bill — orders ${allSources.map(o => o.orderNumber).join(', ')}`,
       };
+      setLastBill(combinedOrderForPrint);
       if (combineBillMethod === 'credit') printCreditBill(combinedOrderForPrint, combineCreditPhone.trim(), combineCreditDueDate);
       else printPaidBill(combinedOrderForPrint, 'original');
 
@@ -2522,7 +2544,7 @@ function NewBillPanel() {
       setCustomItems([]); setCustomName(''); setCustomPrice(''); setCustomQty('1');
       setShowCombineBillModal(false);
       setCombineCreditPhone(''); setCombineCreditDueDate(''); setCombineBillMethod('cash');
-      setShowSuccess(true);
+      setGstEnabled(true); setShowSuccess(true);
       setCustomerName(''); setTableNumber(null);
       setTimeout(() => setShowSuccess(false), 2200);
     } catch (err) {
@@ -2616,12 +2638,17 @@ function NewBillPanel() {
     ? 0
     : Math.min(Math.max(0, itemsSubtotal - manualDiscountAmount), Number(promotionEvaluation.discount || 0));
   const combinedDiscount = Math.min(itemsSubtotal, manualDiscountAmount + promotionDiscount);
-  const grossTotal = itemsSubtotal + parcelCharges;
-  const amountBeforeRoundOff = Math.max(0, grossTotal - combinedDiscount);
-  // FEATURE: round the final payable amount to the nearest whole rupee once
-  // the discount is applied.
-  const total = Math.round(amountBeforeRoundOff);
-  const roundOff = Math.round((total - amountBeforeRoundOff) * 100) / 100;
+  const gst = calculateCafeGst(itemsSubtotal, combinedDiscount, parcelCharges, gstEnabled);
+  const { total, roundOff } = gst;
+  const combinedPreviewTaxes = [
+    ...(runningOrder || !allEmptyForGst() ? [calculateCafeGst(itemsSubtotal, 0, parcelCharges, gstEnabled)] : []),
+    ...incomingTableOrders.map(o => calculateCafeGst(o.subtotal, o.discount, o.parcelCharges || 0, gstEnabled)),
+  ];
+  function allEmptyForGst() { return cart.length === 0 && customItems.length === 0; }
+  const combinedPreview = combinedPreviewTaxes.reduce((sum, tax) => ({
+    total: sum.total + tax.total, cgstAmount: sum.cgstAmount + tax.cgstAmount,
+    sgstAmount: sum.sgstAmount + tax.sgstAmount, gstAmount: sum.gstAmount + tax.gstAmount,
+  }), { total: 0, cgstAmount: 0, sgstAmount: 0, gstAmount: 0 });
   const walletRemainder = Math.max(0, total - walletAmount);
   const cartCount     = getCartCount();
   const allEmpty      = cartCount === 0 && customItems.length === 0;
@@ -2787,7 +2814,8 @@ function NewBillPanel() {
           const idempotencyKey = checkoutIdempotencyRef.current
             ?? `cafe-table-wallet:${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`}`;
           checkoutIdempotencyRef.current = idempotencyKey;
-          const { data, error } = await supabase.rpc('finalize_table_bill_wallet_v1', {
+          const { data, error } = await supabase.rpc('finalize_table_bill_wallet_v2', {
+          p_gst_enabled: gstEnabled,
             p_order_id: orderId,
             p_wallet_id: selectedWallet.id,
             p_wallet_amount: walletAmount,
@@ -2802,7 +2830,7 @@ function NewBillPanel() {
             p_discount_value: manualDiscountAmount > 0 ? manualDiscountInput : 0,
           });
           if (error) throw new Error(error.message);
-          const result = data as { orderNumber: number; total: number; walletBalanceRemaining?: number | string; cashback?: number; items: Order['items'] };
+          const result = data as Partial<Order> & { orderNumber: number; total: number; walletBalanceRemaining?: number | string; cashback?: number; items: Order['items'] };
           if (walletOtherMode === 'credit' && walletRemainder > 0) {
             const { recordCreditSale } = useBranchStore.getState();
             const creditItems = result.items.map((c) => ({ itemName: c.menuItem.name, quantity: c.quantity, sellUnit: 'pcs' as const, price: c.menuItem.price, lineTotal: c.menuItem.price * c.quantity }));
@@ -2841,7 +2869,11 @@ function NewBillPanel() {
           // wrongly using printKotThenBill, silently re-printing a duplicate
           // KOT for items the kitchen already has. Dine-in should only ever
           // get a KOT from the explicit Send to Kitchen button.
-          if (loaded) printPaidBill({ ...loaded, walletBalanceRemaining: Number(result.walletBalanceRemaining || 0) }, 'original');
+          const settled: Order = { ...(loaded || runningOrder!), ...result,
+            ...savedCafeGst(result), total: Number(result.total), status: 'served',
+            walletBalanceRemaining: Number(result.walletBalanceRemaining || 0) };
+          setLastBill(settled);
+          printPaidBill(settled, 'original');
           checkoutIdempotencyRef.current = null;
           setSelectedWallet(null); setWalletAmount(0); setWalletOtherMode(null); setWalletAuthorizationSecret(''); setCouponCode('');
           await loadOrders(60);
@@ -2851,7 +2883,7 @@ function NewBillPanel() {
           clearCart();
           setParcelCount(0);
           setShowBillModal(false);
-          setShowSuccess(true);
+          setGstEnabled(true); setShowSuccess(true);
           setNotes(''); setCustomerName(''); setTableNumber(null);
           setCustomItems([]); setCustomName(''); setCustomPrice(''); setCustomQty('1');
           setBillMethod('cash'); setSplitPayment({ cash: '', upi: '', card: '' }); setCashTendered(''); setManualDiscountValue('');
@@ -2863,7 +2895,10 @@ function NewBillPanel() {
 
         const finalPaymentType: PaymentType = paymentMode === 'credit' ? 'credit' : billMethod;
         const finalBreakdown = billMethod === 'part_payment' && paymentMode !== 'credit' ? splitBreakdown : null;
-        const { data, error } = await supabase.rpc('finalize_table_bill_v1', {
+        const { data, error } = await supabase.rpc('finalize_table_bill_v2', {
+          p_coupon_code: couponCode || null,
+          p_selected_campaign_ids: promotionEvaluation.applied.map((item) => item.campaignId),
+          p_gst_enabled: gstEnabled,
           p_order_id: orderId,
           p_payment_type: finalPaymentType,
           p_payment_breakdown: finalBreakdown,
@@ -2904,8 +2939,10 @@ function NewBillPanel() {
             window.alert(msg);
             throw new Error(msg);
           }
+          setLastBill(finalized);
           printCreditBill(finalized, creditCustomerPhone.trim(), creditDueDate);
         } else {
+          setLastBill(finalized);
           printPaidBill(finalized, 'original', billMethod === 'cash' ? Number(cashTendered || 0) || undefined : undefined);
         }
 
@@ -2916,7 +2953,7 @@ function NewBillPanel() {
         clearCart();
         setParcelCount(0);
         setShowBillModal(false);
-        setShowSuccess(true);
+        setGstEnabled(true); setShowSuccess(true);
         setNotes(''); setCustomerName(''); setTableNumber(null);
         setCustomItems([]); setCustomName(''); setCustomPrice(''); setCustomQty('1');
         setBillMethod('cash'); setSplitPayment({ cash: '', upi: '', card: '' }); setCashTendered(''); setManualDiscountValue('');
@@ -2965,6 +3002,7 @@ function NewBillPanel() {
           createdBy: currentUser.username,
           orderSource: 'staff',
           parcelCharges: parcelCharges > 0 ? parcelCharges : undefined,
+          gstEnabled,
           paymentType: 'credit',
           billedBy: currentUser.displayName || currentUser.username,
           status: 'served',
@@ -2990,6 +3028,7 @@ function NewBillPanel() {
         // `total` here could diverge from the real order.total now sitting in the DB,
         // recording a credit debt that doesn't match the actual order. savedOrder is the
         // real committed row (already fetched above) — use its total instead.
+        if (savedOrder) setLastBill(savedOrder);
         const creditTotal = savedOrder ? savedOrder.total : total;
         const err = await recordCreditSale(branch, {
           billNo,
@@ -3051,7 +3090,7 @@ function NewBillPanel() {
         // tableDrafts). Matches "Table 1 items not clearing after billing."
         if (orderType === 'dine_in' && tableNumber != null) clearTableDraft(tableNumber);
         void loadTableBoard();
-        setShowSuccess(true);
+        setGstEnabled(true); setShowSuccess(true);
         setNotes(''); setCustomerName(''); setTableNumber(null);
         setCustomItems([]); setCustomName(''); setCustomPrice(''); setCustomQty('1');
         syncedCustomItemsRef.current.clear();
@@ -3106,7 +3145,8 @@ function NewBillPanel() {
       checkoutIdempotencyRef.current = idempotencyKey;
       try {
         const billedBy = currentUser.displayName || currentUser.username;
-        const { data, error } = await supabase.rpc('complete_cafe_wallet_checkout_v1', {
+        const { data, error } = await supabase.rpc('complete_cafe_wallet_checkout_v2', {
+          p_gst_enabled: gstEnabled,
           p_items: checkoutItems,
           p_table_number: orderType === 'dine_in' ? tableNumber : null,
           p_order_type: orderType,
@@ -3125,7 +3165,7 @@ function NewBillPanel() {
           p_discount_value: manualDiscountAmount > 0 ? manualDiscountInput : 0,
         });
         if (error) throw new Error(error.message);
-        const result = data as {
+        const result = data as Partial<Order> & {
           orderId: string; orderNumber: number; subtotal: number; discount: number; promotionDiscount?: number; total: number;
           walletTransactionId?: string; walletBalanceRemaining?: number | string; cashback?: number;
           promotionIds?: string[]; items: Order['items']; otherAmount?: number;
@@ -3175,7 +3215,7 @@ function NewBillPanel() {
 
         await loadOrders(60);
         const loaded = useOrderStore.getState().orders.find((order) => order.id === result.orderId);
-        const printable: Order = loaded ?? {
+        const printable: Order = loaded?.gstRate != null ? loaded : {
           id: result.orderId,
           orderNumber: result.orderNumber,
           tableNumber: orderType === 'dine_in' ? tableNumber ?? undefined : undefined,
@@ -3185,6 +3225,7 @@ function NewBillPanel() {
           discount: Number(result.discount || 0),
           discountType: manualDiscountAmount > 0 ? manualDiscountType : 'flat',
           discountValue: manualDiscountAmount > 0 ? manualDiscountInput : 0,
+          ...savedCafeGst(result),
           total: Number(result.total),
           status: 'served',
           createdBy: currentUser.username,
@@ -3205,6 +3246,7 @@ function NewBillPanel() {
           promotionIds: result.promotionIds || [],
           walletCashback: Number(result.cashback || 0),
         };
+        setLastBill(printable);
         printKotThenBill({ ...printable, walletBalanceRemaining: Number(result.walletBalanceRemaining || printable.walletBalanceRemaining || 0) }, 'original');
         checkoutIdempotencyRef.current = null;
         clearCart();
@@ -3216,7 +3258,7 @@ function NewBillPanel() {
         if (orderType === 'dine_in' && tableNumber != null) clearTableDraft(tableNumber);
         void loadTableBoard();
         setShowBillModal(false);
-        setShowSuccess(true);
+        setGstEnabled(true); setShowSuccess(true);
         setNotes(''); setCustomerName(''); setTableNumber(null);
         setCustomItems([]); setCustomName(''); setCustomPrice(''); setCustomQty('1');
         setSelectedWallet(null); setWalletAmount(0); setWalletOtherMode(null); setWalletAuthorizationSecret(''); setCouponCode('');
@@ -3254,7 +3296,8 @@ function NewBillPanel() {
     checkoutIdempotencyRef.current = idempotencyKey;
     try {
       const billedBy = currentUser.displayName || currentUser.username;
-      const { data, error } = await supabase.rpc('complete_cafe_promotional_checkout_v1', {
+      const { data, error } = await supabase.rpc('complete_cafe_promotional_checkout_v2', {
+          p_gst_enabled: gstEnabled,
         p_items: checkoutItems,
         p_table_number: orderType === 'dine_in' ? tableNumber : null,
         p_order_type: orderType,
@@ -3271,11 +3314,11 @@ function NewBillPanel() {
         p_discount_value: manualDiscountAmount > 0 ? manualDiscountInput : 0,
       });
       if (error) throw new Error(error.message);
-      const result = data as { orderId: string; orderNumber: number; subtotal: number; discount: number; promotionDiscount?: number; total: number; cashback?: number; promotionIds?: string[]; items: Order['items'] };
+      const result = data as Partial<Order> & { orderId: string; orderNumber: number; subtotal: number; discount: number; promotionDiscount?: number; total: number; cashback?: number; promotionIds?: string[]; items: Order['items'] };
       if (!result?.orderId || !result.orderNumber) throw new Error('Checkout completed without an order number.');
       await loadOrders(60);
       const loaded = useOrderStore.getState().orders.find((order) => order.id === result.orderId);
-      const printable: Order = loaded ?? {
+      const printable: Order = loaded?.gstRate != null ? loaded : {
         id: result.orderId,
         orderNumber: result.orderNumber,
         tableNumber: orderType === 'dine_in' ? tableNumber ?? undefined : undefined,
@@ -3285,6 +3328,7 @@ function NewBillPanel() {
         discount: Number(result.discount || 0),
         discountType: manualDiscountAmount > 0 ? manualDiscountType : 'flat',
         discountValue: manualDiscountAmount > 0 ? manualDiscountInput : 0,
+        ...savedCafeGst(result),
         total: Number(result.total),
         status: 'served',
         createdBy: currentUser.username,
@@ -3301,6 +3345,7 @@ function NewBillPanel() {
         promotionIds: result.promotionIds || [],
         walletCashback: Number(result.cashback || 0),
       };
+      setLastBill(printable);
       printKotThenBill(printable, 'original', billMethod === 'cash' ? Number(cashTendered || 0) || undefined : undefined);
       checkoutIdempotencyRef.current = null;
       clearCart();
@@ -3314,7 +3359,7 @@ function NewBillPanel() {
       if (orderType === 'dine_in' && tableNumber != null) clearTableDraft(tableNumber);
       void loadTableBoard();
       setShowBillModal(false);
-      setShowSuccess(true);
+      setGstEnabled(true); setShowSuccess(true);
       setNotes(''); setCustomerName(''); setTableNumber(null);
       setCustomItems([]); setCustomName(''); setCustomPrice(''); setCustomQty('1');
       setBillMethod('cash'); setSplitPayment({ cash: '', upi: '', card: '' }); setCouponCode(''); setCashTendered(''); setManualDiscountValue('');
@@ -3351,9 +3396,13 @@ function NewBillPanel() {
           <p className="text-muted-foreground font-body mt-1 text-sm">
             {paymentMode === 'credit'
               ? 'VRSNB Admin & Admin have been notified.'
-              : 'Bill saved and print command opened.'
+              : 'Bill saved and sent to print.'
             }
           </p>
+          {lastBill && <div className="mt-3 space-y-1 text-sm">
+            <p>GST (5%): ₹{Number(lastBill.gstAmount || 0).toFixed(2)}{!lastBill.gstEnabled ? ' — Off' : ''}</p>
+            <p className="font-bold text-lg">Final total: {formatCurrency(lastBill.total)}</p>
+          </div>}
         </div>
       </div>
     );
@@ -3368,7 +3417,7 @@ function NewBillPanel() {
     )}
     {showBillModal && (
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 px-4" onClick={() => !submitting && setShowBillModal(false)}>
-        <div className="w-full max-w-md rounded-3xl bg-background border border-border shadow-2xl overflow-hidden" onClick={e => e.stopPropagation()}>
+        <div className="w-full max-w-md max-h-[90vh] overflow-y-auto rounded-3xl bg-background border border-border shadow-2xl" onClick={e => e.stopPropagation()}>
           <div className="px-5 py-4 border-b border-border bg-emerald-50">
             <div className="flex items-center justify-between">
               <p className="text-[10px] font-black uppercase tracking-widest text-emerald-700">Final billing</p>
@@ -3385,7 +3434,8 @@ function NewBillPanel() {
               {parcelCharges > 0 && <div className="flex justify-between text-sm text-amber-700"><span>Parcel charges</span><span className="font-black tabular-nums">+{formatCurrency(parcelCharges)}</span></div>}
               {manualDiscountAmount > 0 && <div className="flex justify-between text-sm text-rose-700"><span>Discount</span><span className="font-black tabular-nums">-{formatCurrency(manualDiscountAmount)}</span></div>}
               {promotionDiscount > 0 && <div className="flex justify-between text-sm text-emerald-700"><span>Promotion</span><span className="font-black tabular-nums">-{formatCurrency(promotionDiscount)}</span></div>}
-              {roundOff !== 0 && <div className="flex justify-between text-sm text-muted-foreground"><span>Round off</span><span className="font-black tabular-nums">{roundOff > 0 ? '+' : ''}{formatCurrency(roundOff)}</span></div>}
+              <CafeGstControl enabled={gstEnabled} onChange={setGstEnabled} disabled={submitting} tax={gst} />
+              {roundOff !== 0 && <div className="flex justify-between text-sm text-muted-foreground"><span>Round off</span><span className="font-black tabular-nums">{roundOff > 0 ? '+' : ''}₹{roundOff.toFixed(2)}</span></div>}
               <div className="flex justify-between items-center pt-2 border-t border-border"><span className="font-bold">Payable</span><span className="font-display text-3xl font-black tabular-nums">{formatCurrency(total)}</span></div>
             </div>
             <div>
@@ -4244,6 +4294,7 @@ function NewBillPanel() {
                   </div>
                 </div>
               )}
+              <CafeGstControl enabled={gstEnabled} onChange={setGstEnabled} disabled={submitting} tax={gst} />
               <div className="flex items-center justify-between">
                 <span className="font-body text-base font-bold text-foreground">Total</span>
                 <span className="font-display text-3xl font-bold text-foreground tabular-nums">{formatCurrency(total)}</span>
@@ -4299,6 +4350,8 @@ function NewBillPanel() {
           </div>
 
           <div className="p-5 space-y-4 overflow-y-auto">
+            <CafeGstControl enabled={gstEnabled} onChange={setGstEnabled} disabled={combineSubmitting} tax={combinedPreview} />
+            <p className="flex justify-between font-bold"><span>Payable</span><span>{formatCurrency(combinedPreview.total)}</span></p>
             <div className="rounded-2xl border border-border bg-muted/30 p-4 space-y-1.5">
               {runningOrder && (
                 <div className="flex justify-between text-sm text-muted-foreground">

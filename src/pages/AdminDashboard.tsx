@@ -1,5 +1,10 @@
+import { cafeGstCollection, summarizeCafeGst } from '@/lib/cafeGst';
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ElementType, type ReactNode } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useAdminBillReferences } from '@/hooks/useAdminBillReferences';
+import ReportPager from '@/components/admin/ReportPager';
+import { useAdminCafeOrders } from '@/hooks/useAdminCafeOrders';
+import { fetchAdminRows } from '@/lib/adminReportData';
 import { useOrderStore } from '@/stores/orderStore';
 import { useShallow } from 'zustand/react/shallow';
 import { useBranchStore } from '@/branch/branchStore';
@@ -104,17 +109,17 @@ function todayInput(d = new Date()) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 function lastWeekInput() { const d = new Date(); d.setDate(d.getDate() - 6); return todayInput(d); }
-function startOfDay(value: string) { const d = value ? new Date(`${value}T00:00:00`) : new Date(0); d.setHours(0,0,0,0); return d; }
-function endOfDay(value: string) { const d = value ? new Date(`${value}T23:59:59`) : new Date('2999-12-31T23:59:59'); d.setHours(23,59,59,999); return d; }
+function startOfDay(value: string) { return value ? new Date(`${value}T00:00:00+05:30`) : new Date(0); }
+function endOfDay(value: string) { return new Date(`${value || '2999-12-31'}T23:59:59.999+05:30`); }
 function inRange(iso: string, fromDate: string, toDate: string) { const t = new Date(iso).getTime(); return t >= startOfDay(fromDate).getTime() && t <= endOfDay(toDate).getTime(); }
-function localDateKey(iso: string) { return todayInput(new Date(iso)); }
-function fmtDate(iso: string) { return new Date(iso).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }); }
-function fmtDateTime(iso: string) { return new Date(iso).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }); }
+function localDateKey(iso: string) { return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(iso)); }
+function fmtDate(iso: string) { return new Date(iso).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', year: 'numeric' }); }
+function fmtDateTime(iso: string) { return new Date(iso).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }); }
 // FEATURE (2026-09-04): bill-wise Excel sheets need Date and Time as their
 // own columns (not one combined string) — added alongside fmtDate/fmtDateTime
 // rather than reformatting those, since several existing sheets/PDFs still
 // rely on the combined form.
-function fmtTime(iso: string) { return new Date(iso).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }); }
+function fmtTime(iso: string) { return new Date(iso).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' }); }
 // Cafe orders carry a single paymentType + an optional paymentBreakdown
 // (only populated for 'part_payment') rather than the per-payment-row table
 // branch/Hosur bills use — this derives the same {cash, upi, card} shape so
@@ -501,10 +506,11 @@ function AdminDashboard() {
     {
       setRealSalesLoading(true);
       setRealSalesError('');
-      const fromTs = `${fromDate}T00:00:00`;
-      const toTs = `${toDate}T23:59:59.999`;
+      const fromTs = `${fromDate}T00:00:00+05:30`;
+      const toTs = `${toDate}T23:59:59.999+05:30`;
       const fromMs = new Date(fromTs).getTime();
       const toMs = new Date(toTs).getTime();
+      const untilTs = new Date(toMs + 1).toISOString();
       // BUG FIX (2026-09-30): a Hosur bill's confirmed_at (when the shop's
       // credit got settled) can trail its dispatch date by days or weeks
       // (confirmed live: SALES/26-27/272 dispatched 15 Sept, confirmed 25
@@ -531,58 +537,8 @@ function AdminDashboard() {
       // that ran in ~0.4-0.8s standalone timed out here under combined
       // load). One retry after a short backoff clears a transient
       // contention spike without needing to throttle overall concurrency.
-      // BUG FIX (2026-09-29): "All Time keeps giving multiple errors, data
-      // not loading" — shrinking the All Time window (see DATE_PRESETS)
-      // didn't fix this because real data barely predates that window
-      // anyway, so row counts were unchanged. The actual cause: this used
-      // OFFSET pagination (`.range(from, from+999)`), which forces Postgres
-      // to re-run the FULL filter+sort from scratch on every single page —
-      // confirmed live that branch_bill_items alone (no created_at index,
-      // ~107k matching rows) did a full sequential scan on EVERY one of its
-      // ~40-100+ pages, and that cost is paid again independently for each
-      // of the 9 concurrent streams. Switched to keyset/cursor pagination
-      // (`created_at < last-seen-value`, same technique as the shared
-      // fetchAllRows in lib/supabase.ts) — each page seeks directly to its
-      // starting point instead of re-scanning everything before it, so the
-      // total work across all pages is O(matching rows) instead of
-      // O(pages × matching rows). Cursors purely on created_at regardless of
-      // which column a given query's own range filter uses — pagination
-      // correctness only needs a monotonic column to walk, not the same one
-      // as the WHERE clause.
-      const fetchAllRows = async <T,>(
-        build: () => any,
-        pageSize = 1000,
-        maxRows = 50000,
-      ): Promise<{ data: T[]; error: { message: string } | null }> => {
-        const rows: T[] = [];
-        let cursor: string | null = null;
-        const page = () => {
-          let q = build().order('created_at', { ascending: false });
-          if (cursor !== null) q = q.lt('created_at', cursor);
-          return q.limit(pageSize);
-        };
-        for (let i = 0; i < maxRows / pageSize; i++) {
-          let { data, error } = await page();
-          for (let attempt = 1; error && attempt <= 2; attempt++) {
-            await new Promise((resolve) => setTimeout(resolve, attempt * 800));
-            ({ data, error } = await page());
-          }
-          if (error) return { data: rows, error };
-          const rowsPage = (data || []) as T[];
-          rows.push(...rowsPage);
-          if (rowsPage.length < pageSize) break;
-          const nextCursor = (rowsPage[rowsPage.length - 1] as Record<string, unknown>).created_at as string | undefined;
-          // SAFETY (2026-09-29): a call site whose .select() doesn't include
-          // created_at would otherwise cursor on `undefined` forever — every
-          // later page then fails with a real, confirmed-live 400
-          // ("created_at=lt.undefined"), retries, still fails, and loops all
-          // the way to maxRows. Bail out with what's been fetched so far
-          // instead of hammering the DB with guaranteed-broken requests.
-          if (!nextCursor) return { data: rows, error: { message: 'Pagination cursor missing — select() must include created_at.' } };
-          cursor = nextCursor;
-        }
-        return { data: rows, error: null };
-      };
+      // Page by unique IDs: a timestamp-only cursor skips tied records.
+      const fetchAllRows = fetchAdminRows;
 
       // BUG FIX (2026-09-29): "All Time keeps giving multiple errors" (cont'd)
       // — even with keyset pagination + supporting indexes, some of these
@@ -607,15 +563,12 @@ function AdminDashboard() {
         return results;
       };
 
-      const [headersRes, itemsRes, paymentsRes, hosurRes, unbilledRes, expensesRes, purchasesRes, salesInvoicesRes, walkinBillsRes] = await runLimited([
+      let [headersRes, itemsRes, paymentsRes, hosurRes, unbilledRes, expensesRes, purchasesRes, salesInvoicesRes, walkinBillsRes] = await runLimited([
         () => fetchAllRows(() => supabase.from('branch_bill_headers')
           .select('id, branch, bill_no, subtotal, discount, total, status, created_at, salesperson, biller, notes')
           .in('branch', ['SNB', 'VRSNB'])
-          .gte('created_at', fromTs).lte('created_at', toTs)),
-        () => fetchAllRows(() => supabase.from('branch_bill_items')
-          .select('bill_id, branch, item_name, quantity, unit, unit_price, line_total, created_at')
-          .in('branch', ['SNB', 'VRSNB'])
-          .gte('created_at', fromTs).lte('created_at', toTs)),
+          .gte('created_at', fromTs).lt('created_at', untilTs)),
+        async () => ({ data: [], error: null }),
         // BUG FIX (2026-09-05): "the payment mode ... is not displaying" for
         // a handful of Branch Sales bills in the Excel export — those bills'
         // real payment rows exist in branch_sale_payments with purpose
@@ -626,10 +579,10 @@ function AdminDashboard() {
         // so billPaidByMode's lookup missed them and every cash/UPI/card
         // column silently fell back to 0 despite a real, nonzero bill total.
         () => fetchAllRows(() => supabase.from('branch_sale_payments')
-          .select('bill_id, payment_mode, amount, payment_purpose, created_at')
+          .select('id, bill_id, payment_mode, amount, payment_purpose, created_at')
           .in('branch', ['SNB', 'VRSNB'])
           .in('payment_purpose', ['bill_collection', 'credit_upfront', 'advance_balance', 'credit_settlement'])
-          .gte('created_at', fromTs).lte('created_at', toTs)),
+          .gte('created_at', fromTs).lt('created_at', untilTs)),
         // FEATURE (2026-09-05): "dont use bill number anywhere ... use
         // invoice number" — invoice_no is the real GST-sequence number
         // (SALES/26-27/N), written directly onto the bill by
@@ -643,7 +596,7 @@ function AdminDashboard() {
         () => fetchAllRows(() => supabase.from('hosur_orders')
           .select('id, order_number, shop_name, subtotal, created_at')
           .eq('status', 'dispatched').is('bill_id', null)
-          .gte('created_at', fromTs).lte('created_at', toTs)),
+          .gte('created_at', fromTs).lt('created_at', untilTs)),
         // BUG FIX (2026-09-03): this used to also query
         // hosur_orders_archive_20260827 (a one-time snapshot table from an
         // 2026-08-27 archival pass) for the same "dispatched, never billed"
@@ -660,13 +613,13 @@ function AdminDashboard() {
         // that should be included here, add it deliberately — don't leave a
         // stale reference like this one behind when a table gets dropped.
         () => fetchAllRows(() => supabase.from('branch_operation_records')
-          .select('payload, created_at')
+          .select('id, payload, created_at')
           .eq('record_type', 'expense')
-          .gte('created_at', fromTs).lte('created_at', toTs)),
+          .gte('created_at', fromTs).lt('created_at', untilTs)),
         () => fetchAllRows(() => supabase.from('branch_operation_records')
-          .select('payload, created_at')
+          .select('id, payload, created_at')
           .eq('record_type', 'purchase_invoice')
-          .gte('created_at', fromTs).lte('created_at', toTs)),
+          .gte('created_at', fromTs).lt('created_at', untilTs)),
         // FEATURE: "All the invoices that start with Sales I need them in
         // Hosur sales tab" — the SALES/26-27/N sequence isn't Hosur-exclusive
         // (a VRSNB "Custom"/Planned-sale dispatch, or a Planner walk-in sale,
@@ -681,12 +634,21 @@ function AdminDashboard() {
         () => fetchAllRows(() => supabase.from('dispatch_invoices')
           .select('id, invoice_no, scope, status, total, items, hosur_shop_name, customer_name, created_at, dispatch_entry_ids')
           .ilike('invoice_no', 'SALES/%')
-          .gte('created_at', fromTs).lte('created_at', toTs)),
+          .gte('created_at', fromTs).lt('created_at', untilTs)),
         () => fetchAllRows(() => supabase.from('bakery_walkin_bills')
           .select('id, bill_no, items, total, payment_mode, cashier_name, status, customer_name, created_at')
           .ilike('bill_no', 'SALES/%')
-          .gte('created_at', fromTs).lte('created_at', toTs)),
+          .gte('created_at', fromTs).lt('created_at', untilTs)),
       ], 1);
+      // Items belong to the selected bills even if their sync timestamp is later.
+      const branchItemRows: Record<string, unknown>[] = [];
+      const selectedBillIds = (headersRes.data as Record<string, unknown>[]).map(r => String(r.id));
+      for (let offset = 0; offset < selectedBillIds.length; offset += 200) {
+        const result = await fetchAllRows<Record<string, unknown>>(() => supabase.from('branch_bill_items').select('id, bill_id, branch, item_name, quantity, unit, unit_price, line_total, created_at').in('bill_id', selectedBillIds.slice(offset, offset + 200)));
+        if (result.error) { itemsRes = result; break; }
+        branchItemRows.push(...result.data);
+        itemsRes = { data: branchItemRows, error: null };
+      }
       if (realSalesRequestRef.current !== requestId) return;
       const err = headersRes.error || itemsRes.error || paymentsRes.error || hosurRes.error || unbilledRes.error || expensesRes.error || purchasesRes.error || salesInvoicesRes.error || walkinBillsRes.error;
       if (err) { setRealSalesError(err.message); setRealSalesLoading(false); return; }
@@ -703,7 +665,7 @@ function AdminDashboard() {
       for (let i = 0; i < hosurBillIdList.length; i += CHUNK_SIZE) {
         const chunk = hosurBillIdList.slice(i, i + CHUNK_SIZE);
         const chunkRes = await fetchAllRows<Record<string, unknown>>(() => supabase.from('hosur_bill_items')
-          .select('bill_id, item_name, quantity, unit, unit_price, line_total, created_at')
+          .select('id, bill_id, item_name, quantity, unit, unit_price, line_total, created_at')
           .in('bill_id', chunk));
         if (chunkRes.error) { setRealSalesError(chunkRes.error.message); setRealSalesLoading(false); return; }
         hosurItemsChunks.push(...chunkRes.data);
@@ -942,10 +904,15 @@ function AdminDashboard() {
   }, [allowedNavItems, requestedTab, setSearchParams]);
 
   const rangeLabel = fromDate === toDate
-    ? new Date(`${fromDate}T00:00:00`).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
-    : `${new Date(`${fromDate}T00:00:00`).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })} – ${new Date(`${toDate}T00:00:00`).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}`;
+    ? new Date(`${fromDate}T00:00:00`).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', year: 'numeric' })
+    : `${new Date(`${fromDate}T00:00:00`).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short' })} – ${new Date(`${toDate}T00:00:00`).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', year: 'numeric' })}`;
 
-  const cafeOrdersInRange = useMemo(() => orders.filter(o => inRange(o.createdAt, fromDate, toDate)), [orders, fromDate, toDate]);
+  const cafeRegister = useAdminCafeOrders(fromDate, toDate);
+  const cafeOrdersInRange = cafeRegister.orders;
+  const [cafePage, setCafePage] = useState(1);
+  const [branchPage, setBranchPage] = useState(1);
+  useEffect(() => { setCafePage(1); setBranchPage(1); }, [fromDate, toDate, branchFilter, billSearch]);
+  const cafeOriginalBill = useMemo(() => new Map(cafeOrdersInRange.filter(o => o.balanceOrderId).map(o => [o.balanceOrderId, o.orderNumber])), [cafeOrdersInRange]);
   // GUARDRAIL (2026-09-30): "make sure this issue won't occur in future" —
   // three real advance/pre-orders (#2216, #2207, #2208) were marked
   // fullyPaidAt (balance collected in cash, confirmed by the owner) but had
@@ -980,9 +947,10 @@ function AdminDashboard() {
       }
     },
     'date',
-    'desc',
+    'asc',
   );
   const cafeServedOrders = useMemo(() => cafeOrdersInRange.filter(o => o.status === 'served'), [cafeOrdersInRange]);
+  const cafeGstTotals = useMemo(() => summarizeCafeGst(cafeOrdersInRange), [cafeOrdersInRange]);
   const cafeCancelledOrders = useMemo(() => cafeOrdersInRange.filter(o => o.status === 'cancelled'), [cafeOrdersInRange]);
   const cafeSalesTotal = useMemo(() => cafeServedOrders.reduce((sum, o) => sum + Number(o.total || 0), 0), [cafeServedOrders]);
 
@@ -1025,7 +993,7 @@ function AdminDashboard() {
   // Real, non-returned bills for the selected range — see the fetch effect
   // above for why this replaces opsBillsInRange/branchTransactions as the
   // source of truth for every branch-sales figure below.
-  const realBillsInRange = useMemo(() => realBills.filter(b => b.status !== 'returned'), [realBills]);
+  const realBillsInRange = useMemo(() => realBills.filter(b => !/returned|cancelled|void|deleted/i.test(b.status)), [realBills]);
 
   const branchSalesByBranch = useMemo(() => {
     return BRANCHES.map(branch => {
@@ -1080,7 +1048,7 @@ function AdminDashboard() {
     const days: Record<string, { date: string; Cafe: number; SNB: number; VRSNB: number; Hosur: number; Total: number }> = {};
     for (let d = new Date(`${fromDate}T00:00:00`); d <= endOfDay(toDate); d.setDate(d.getDate() + 1)) {
       const key = todayInput(d);
-      days[key] = { date: d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }), Cafe: 0, SNB: 0, VRSNB: 0, Hosur: 0, Total: 0 };
+      days[key] = { date: d.toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short' }), Cafe: 0, SNB: 0, VRSNB: 0, Hosur: 0, Total: 0 };
     }
     cafeServedOrders.forEach(o => { const key = localDateKey(o.createdAt); if (!days[key]) return; days[key].Cafe += Number(o.total || 0); days[key].Total += Number(o.total || 0); });
     realBillsInRange.forEach((bill) => {
@@ -1596,7 +1564,13 @@ function AdminDashboard() {
       name: 'Total Sales', title: `Cafe Control — Total Sales (${fromDate} to ${toDate})`,
       columns: [{ header: 'Metric', key: 'metric' }, { header: 'Amount', key: 'amount' }],
       rows: [
-        { metric: 'Total Sales', amount: cafeSalesTotal },
+        { metric: 'Total Sales (includes GST)', amount: cafeSalesTotal },
+        { metric: 'GST charged on bills', amount: cafeGstTotals.billed },
+        { metric: 'GST collected at billing', amount: cafeGstTotals.collected },
+        { metric: 'CGST collected at billing', amount: cafeGstTotals.cgst },
+        { metric: 'SGST collected at billing', amount: cafeGstTotals.sgst },
+        { metric: 'GST on credit portion at billing', amount: cafeGstTotals.credit },
+        { metric: 'Extra collected after rounding due to GST', amount: cafeGstTotals.extraCollected },
         { metric: 'Cash', amount: cafePaymentSplit.cash },
         { metric: 'UPI', amount: cafePaymentSplit.upi },
         { metric: 'Card', amount: cafePaymentSplit.card },
@@ -1619,15 +1593,18 @@ function AdminDashboard() {
       columns: [
         { header: 'Branch', key: 'branch' }, { header: 'Bill No', key: 'billNo' }, { header: 'Date', key: 'date', width: 14 }, { header: 'Time', key: 'time', width: 12 },
         { header: 'Total Sales', key: 'totalSales' }, { header: 'Cash', key: 'cash' }, { header: 'UPI', key: 'upi' }, { header: 'Card', key: 'card' },
+        { header: 'GST Enabled', key: 'gstEnabled' }, { header: 'Taxable Amount', key: 'taxableAmount' },
+        { header: 'CGST', key: 'cgst' }, { header: 'SGST', key: 'sgst' }, { header: 'GST Charged', key: 'gst' },
+        { header: 'GST Collected at Billing', key: 'gstCollected' }, { header: 'GST on Credit', key: 'gstCredit' },
         { header: 'Salesperson', key: 'salesperson', width: 18 }, { header: 'Biller', key: 'biller', width: 18 },
         // GUARDRAIL (2026-09-30): see cafeDataIntegrityIssues above.
-        { header: 'Data Check', key: 'dataCheck', width: 14 },
+        { header: 'Data Check', key: 'dataCheck', width: 34 }, { header: 'Status', key: 'status' }, { header: 'Original Advance Bill', key: 'originalBill' }, { header: 'Payment Recorded At (IST)', key: 'paidAt', width: 24 }, { header: 'Cancellation Reason', key: 'cancelReason', width: 32 },
       ],
       rows: cafeOrdersInRange.map(o => {
-        const paid = cafePaidByMode(o.paymentType, o.paymentBreakdown, o.total || 0);
+        const paid = o.status === 'served' ? cafePaidByMode(o.paymentType, o.paymentBreakdown, o.total || 0) : { cash: 0, upi: 0, card: 0 };
         const dataCheck = o.paymentType === 'advance' && o.fullyPaidAt && !o.balanceOrderId && Math.abs((o.total || 0) - (o.fullAmount ?? o.subtotal ?? 0)) > 1
           ? 'MISMATCH — verify before use' : 'OK';
-        return { branch: 'Cafe', billNo: o.orderNumber, date: fmtDate(o.createdAt), time: fmtTime(o.createdAt), totalSales: o.total || 0, cash: paid.cash, upi: paid.upi, card: paid.card, salesperson: o.createdBy || '-', biller: o.billedBy || o.createdBy || '-', dataCheck };
+        return { gstEnabled: o.gstEnabled ? 'Yes' : o.gstRate === 0 ? 'Off' : 'Legacy bill', taxableAmount: o.taxableAmount ?? '', cgst: o.status === 'cancelled' ? 0 : o.cgstAmount || 0, sgst: o.status === 'cancelled' ? 0 : o.sgstAmount || 0, gst: cafeGstCollection(o).billed, gstCollected: cafeGstCollection(o).collected, gstCredit: cafeGstCollection(o).credit, branch: 'Cafe', billNo: o.orderNumber, date: fmtDate(o.createdAt), time: fmtTime(o.createdAt), totalSales: o.status === 'served' ? o.total || 0 : 0, cash: paid.cash, upi: paid.upi, card: paid.card, salesperson: o.createdBy || '-', biller: o.billedBy || o.createdBy || '-', dataCheck: cafeOriginalBill.has(o.id) ? 'Linked balance receipt — see original bill and payment date' : dataCheck, status: o.status, originalBill: cafeOriginalBill.get(o.id) || '', paidAt: o.fullyPaidAt ? fmtDateTime(o.fullyPaidAt) : '', cancelReason: o.cancelReason || '' };
       }),
     },
     {
@@ -1637,12 +1614,29 @@ function AdminDashboard() {
       name: 'Bill Items', title: `Cafe Control — Bill Items (${fromDate} to ${toDate})`,
       columns: [
         { header: 'Bill No', key: 'billNo' }, { header: 'Date', key: 'date', width: 14 }, { header: 'Item Name', key: 'itemName', width: 28 },
-        { header: 'Qty', key: 'qty' }, { header: 'Unit Price', key: 'unitPrice' }, { header: 'Line Total', key: 'lineTotal' },
+        { header: 'Status', key: 'status' }, { header: 'Qty', key: 'qty' }, { header: 'Unit Price', key: 'unitPrice' }, { header: 'Line Total', key: 'lineTotal' },
       ],
       rows: cafeOrdersInRange.flatMap(o => o.items.map(i => ({
-        billNo: o.orderNumber, date: fmtDate(o.createdAt), itemName: i.menuItem.name, qty: i.quantity,
+        billNo: o.orderNumber, status: o.status, date: fmtDate(o.createdAt), itemName: i.menuItem.name, qty: i.quantity,
         unitPrice: Number(i.menuItem.price || 0), lineTotal: Number(i.menuItem.price || 0) * Number(i.quantity || 0),
       }))),
+    },
+    { name: 'Cancelled Orders', title: 'Cancelled Cafe orders — excluded from sales', columns: [{ header: 'Bill No', key: 'billNo' }, { header: 'Date (IST)', key: 'date', width: 24 }, { header: 'Status', key: 'status' }, { header: 'Reason', key: 'reason', width: 32 }, { header: 'Items', key: 'items', width: 60 }], rows: cafeCancelledOrders.map(o => ({ billNo: o.orderNumber, date: fmtDateTime(o.createdAt), status: o.status, reason: o.cancelReason || 'Not recorded', items: o.items.map(i => `${i.menuItem.name} x ${i.quantity}`).join('; ') })) },
+    {
+      name: 'GST Details', title: 'New GST addition — paid and credit portions at billing',
+      columns: [
+        { header: 'Bill No', key: 'billNo' }, { header: 'Date (IST)', key: 'date', width: 24 },
+        { header: 'Payment', key: 'payment' }, { header: 'Taxable Amount', key: 'taxableAmount' },
+        { header: 'GST Charged', key: 'gst' }, { header: 'CGST Collected', key: 'cgst' },
+        { header: 'SGST Collected', key: 'sgst' }, { header: 'GST Collected', key: 'collected' },
+        { header: 'GST on Credit Portion', key: 'credit' }, { header: 'Extra Collected After Rounding', key: 'extraCollected' },
+        { header: 'Bill Total Including GST', key: 'total' },
+      ],
+      rows: cafeOrdersInRange.filter(o => cafeGstCollection(o).billed > 0).map(o => ({
+        billNo: o.orderNumber, date: fmtDateTime(o.createdAt), payment: o.paymentType,
+        taxableAmount: o.taxableAmount || 0, gst: o.gstAmount || 0, total: o.total,
+        ...cafeGstCollection(o),
+      })),
     },
   ]);
 
@@ -1652,6 +1646,7 @@ function AdminDashboard() {
     subtitle: `${fromDate} to ${toDate}`,
     kpis: [
       { label: 'Total Sales', value: formatCurrency(cafeSalesTotal) },
+      { label: 'GST Collected at Billing', value: '₹' + cafeGstTotals.collected.toFixed(2) },
       { label: 'Served Orders', value: String(cafeServedOrders.length) },
       { label: 'Cancelled', value: String(cafeCancelledOrders.length) },
       { label: 'Cash', value: formatCurrency(cafePaymentSplit.cash) },
@@ -1685,12 +1680,12 @@ function AdminDashboard() {
               right now. loadOrders always does a real re-fetch (not a
               throttled/cached call). */}
           <button
-            onClick={() => void loadOrders(90)}
-            disabled={ordersLoading}
+            onClick={cafeRegister.refresh}
+            disabled={cafeRegister.loading}
             className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700 hover:bg-slate-50 disabled:opacity-60">
-            <RefreshCw className={cn('size-3.5', ordersLoading && 'animate-spin')} />Refresh
+            <RefreshCw className={cn('size-3.5', cafeRegister.loading && 'animate-spin')} />Refresh
           </button>
-          <button onClick={exportCafeExcel}
+          <button disabled={cafeRegister.loading || !!cafeRegister.error} onClick={exportCafeExcel}
             className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-3 py-2 text-xs font-black text-white">
             <FileSpreadsheet className="size-3.5" /> Excel
           </button>
@@ -1708,6 +1703,16 @@ function AdminDashboard() {
         <KpiCard label="Cash Collected" value={formatCurrency(cafePaymentSplit.cash)} icon={<Banknote className="size-5" />} tone="blue" />
         <KpiCard label="UPI Collected" value={formatCurrency(cafePaymentSplit.upi)} icon={<Smartphone className="size-5" />} tone="purple" />
       </div>
+
+      <Panel title="New GST addition" subtitle="Amounts from bills created in the selected date range. Cancelled bills and GST-off bills are excluded. Credit collections made later are not included here.">
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <KpiCard label="GST collected at billing" value={'₹' + cafeGstTotals.collected.toFixed(2)} icon={<IndianRupee className="size-5" />} tone="green" sub="Cash, UPI, card and wallet portions" />
+          <KpiCard label="CGST collected (2.5%)" value={'₹' + cafeGstTotals.cgst.toFixed(2)} icon={<IndianRupee className="size-5" />} tone="blue" />
+          <KpiCard label="SGST collected (2.5%)" value={'₹' + cafeGstTotals.sgst.toFixed(2)} icon={<IndianRupee className="size-5" />} tone="purple" />
+          <KpiCard label="GST on credit portion" value={'₹' + cafeGstTotals.credit.toFixed(2)} icon={<IndianRupee className="size-5" />} tone="amber" sub="Not collected at billing" />
+        </div>
+        <p className="mt-3 text-sm text-slate-600">GST charged: <b>₹{cafeGstTotals.billed.toFixed(2)}</b> · Extra collected after bill rounding: <b>₹{cafeGstTotals.extraCollected.toFixed(2)}</b>. GST is shown separately from sales income.</p>
+      </Panel>
 
       {/* GUARDRAIL (2026-09-30): see cafeDataIntegrityIssues above. */}
       {cafeDataIntegrityIssues.length > 0 && (
@@ -1756,7 +1761,10 @@ function AdminDashboard() {
         </Panel>
       </div>
 
-      <Panel title="Recent Cafe Orders" subtitle="Served and cancelled orders in selected range">
+      {cafeRegister.error && <p role="alert" className="rounded-xl bg-red-50 p-3 text-red-700">Cafe register could not load: {cafeRegister.error}</p>}
+      {cafeRegister.loading && <p>Loading the complete Cafe register…</p>}
+      <Panel title="Cafe Bill Register" subtitle="All statuses in the selected range. Dates are India time; bill numbers can be assigned later for linked balance receipts.">
+        <ReportPager count={sortedCafeOrders.length} page={cafePage} onPage={setCafePage} />
         {cafeOrdersInRange.length === 0 ? <EmptyState label="No cafe orders in this range." /> : (
           <div className="overflow-x-auto">
             <table className="w-full min-w-[720px] text-sm">
@@ -1766,17 +1774,20 @@ function AdminDashboard() {
                 <SortableTh label="Items" sortKey="items" activeKey={cafeOrdersSortKey} dir={cafeOrdersSortDir} onSort={toggleCafeOrdersSort} />
                 <SortableTh label="Payment" sortKey="payment" activeKey={cafeOrdersSortKey} dir={cafeOrdersSortDir} onSort={toggleCafeOrdersSort} />
                 <SortableTh label="Total" sortKey="total" activeKey={cafeOrdersSortKey} dir={cafeOrdersSortDir} onSort={toggleCafeOrdersSort} align="right" />
+                <th className="p-3 text-right">GST charged</th><th className="p-3 text-right">GST collected</th>
                 <SortableTh label="Status" sortKey="status" activeKey={cafeOrdersSortKey} dir={cafeOrdersSortDir} onSort={toggleCafeOrdersSort} />
                 <SortableTh label="Time" sortKey="date" activeKey={cafeOrdersSortKey} dir={cafeOrdersSortDir} onSort={toggleCafeOrdersSort} />
               </tr></thead>
               <tbody className="divide-y">
-                {sortedCafeOrders.slice(0, 60).map(o => (
+                {sortedCafeOrders.slice((Math.min(cafePage, Math.max(1, Math.ceil(sortedCafeOrders.length / 100))) - 1) * 100, Math.min(cafePage, Math.max(1, Math.ceil(sortedCafeOrders.length / 100))) * 100).map(o => (
                   <tr key={o.id} className="hover:bg-slate-50">
-                    <td className="p-3 font-bold">#{String(o.orderNumber).padStart(3, '0')}</td>
+                    <td className="p-3 font-bold">#{String(o.orderNumber).padStart(3, '0')}{cafeOriginalBill.has(o.id) && <div className="mt-1 text-xs font-normal text-amber-700">Balance of #{cafeOriginalBill.get(o.id)}{o.fullyPaidAt && <div>Payment recorded: {fmtDateTime(o.fullyPaidAt)}</div>}</div>}</td>
                     <td className="p-3">{o.customerName || '-'}</td>
                     <td className="p-3 text-slate-500">{o.items.reduce((s, i) => s + i.quantity, 0)} item(s)</td>
                     <td className="p-3 uppercase">{o.paymentType || '-'}</td>
                     <td className="p-3 text-right font-black">{formatCurrency(o.total || 0)}</td>
+                    <td className="p-3 text-right">₹{cafeGstCollection(o).billed.toFixed(2)}</td>
+                    <td className="p-3 text-right">₹{cafeGstCollection(o).collected.toFixed(2)}</td>
                     <td className="p-3"><Badge tone={o.status === 'served' ? 'green' : o.status === 'cancelled' ? 'red' : 'amber'}>{o.status}</Badge></td>
                     <td className="p-3 text-slate-500">{fmtDateTime(o.createdAt)}</td>
                   </tr>
@@ -1794,7 +1805,7 @@ function AdminDashboard() {
         {cafeCancelledOrders.length === 0 ? <EmptyState label="No cancelled orders in this range." /> : (
           <div className="overflow-x-auto">
             <table className="w-full min-w-[720px] text-sm">
-              <thead><tr className="border-b bg-slate-50 text-left text-xs uppercase text-slate-500"><th className="p-3">Order</th><th className="p-3">Customer</th><th className="p-3">Items</th><th className="p-3 text-right">Value</th><th className="p-3">Time</th></tr></thead>
+              <thead><tr className="border-b bg-slate-50 text-left text-xs uppercase text-slate-500"><th className="p-3">Order</th><th className="p-3">Customer</th><th className="p-3">Items</th><th className="p-3 text-right">Value</th><th className="p-3">Reason</th><th className="p-3">Time</th></tr></thead>
               <tbody className="divide-y">
                 {cafeCancelledOrders.map(o => {
                   // BUG FIX: a cancelled order's `total` is never actually
@@ -1807,10 +1818,10 @@ function AdminDashboard() {
                   const itemsValue = o.items.reduce((sum, i) => sum + Number(i.menuItem.price || 0) * Number(i.quantity || 0), 0);
                   return (
                     <tr key={o.id} className="hover:bg-red-50/40">
-                      <td className="p-3 font-bold">#{String(o.orderNumber).padStart(3, '0')}</td>
+                      <td className="p-3 font-bold">#{String(o.orderNumber).padStart(3, '0')}{cafeOriginalBill.has(o.id) && <div className="mt-1 text-xs font-normal text-amber-700">Balance of #{cafeOriginalBill.get(o.id)}{o.fullyPaidAt && <div>Payment recorded: {fmtDateTime(o.fullyPaidAt)}</div>}</div>}</td>
                       <td className="p-3">{o.customerName || '-'}</td>
                       <td className="p-3 text-slate-500">{o.items.map(i => `${i.menuItem.name} × ${i.quantity}`).join(', ')}</td>
-                      <td className="p-3 text-right font-black text-red-600">{formatCurrency(o.total || itemsValue)}</td>
+                      <td className="p-3 text-right font-black text-red-600">{formatCurrency(o.total || itemsValue)}</td><td className="p-3">{o.cancelReason || 'Not recorded'}</td>
                       <td className="p-3 text-slate-500">{fmtDateTime(o.createdAt)}</td>
                     </tr>
                   );
@@ -1831,16 +1842,17 @@ function AdminDashboard() {
   // into the same branch comparison charts/table was more confusing than
   // useful. See the 'hosur' tab below for its dedicated view.
   const BRANCH_ONLY_OPTIONS: Branch[] = ['VRSNB', 'SNB'];
+  const billReferences = useAdminBillReferences(fromDate, toDate);
   const branchOnlyFilter = (branchFilter === 'Cafe' || branchFilter === 'Hosur' ? 'all' : branchFilter) as Branch | 'all';
   // Real bills for the "Branch Sales Transactions" drill-down below — see
   // realBillsInRange for why this replaced the old per-item branchTransactions list.
   const filteredRealBills = useMemo(() => {
-    const snbVrsnb = realBillsInRange.filter(b => b.branch === 'VRSNB' || b.branch === 'SNB');
+    const snbVrsnb = realBills.filter(b => b.branch === 'VRSNB' || b.branch === 'SNB');
     const scoped = branchOnlyFilter === 'all' ? snbVrsnb : snbVrsnb.filter(b => b.branch === branchOnlyFilter);
     const q = billSearch.trim().toLowerCase();
     const searched = q ? scoped.filter(b => b.billNo.toLowerCase().includes(q) || b.biller.toLowerCase().includes(q) || b.salesperson.toLowerCase().includes(q)) : scoped;
-    return [...searched].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-  }, [realBillsInRange, branchOnlyFilter, billSearch]);
+    return [...searched].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+  }, [realBills, branchOnlyFilter, billSearch]);
   const realBillItemsByBillId = useMemo(() => {
     const map = new Map<string, typeof realBillItems>();
     realBillItems.forEach(item => {
@@ -1863,7 +1875,7 @@ function AdminDashboard() {
       }
     },
     'date',
-    'desc',
+    'asc',
   );
   const billPaidByMode = useMemo(() => {
     const map = new Map<string, { cash: number; upi: number; card: number }>();
@@ -1888,7 +1900,7 @@ function AdminDashboard() {
   // of repeating the bill total on every item line.
   const branchItemWiseSales = useMemo(() => {
     const map = new Map<string, { itemName: string; qty: number; revenue: number; bills: number }>();
-    filteredRealBills.forEach(b => (realBillItemsByBillId.get(b.id) ?? []).forEach(i => {
+    filteredRealBills.filter(b => !/returned|cancelled|void|deleted/i.test(b.status)).forEach(b => (realBillItemsByBillId.get(b.id) ?? []).forEach(i => {
       const row = map.get(i.itemName) ?? { itemName: i.itemName, qty: 0, revenue: 0, bills: 0 };
       row.qty += i.quantity;
       row.revenue += i.lineTotal;
@@ -1898,6 +1910,14 @@ function AdminDashboard() {
     return Array.from(map.values()).sort((a, b) => b.revenue - a.revenue);
   }, [filteredRealBills, realBillItemsByBillId]);
 
+  const unmatchedBillReferences = useMemo(() => {
+    const ledger = new Map(realBills.map(b => [`${b.branch}|${b.billNo}`, b]));
+    return billReferences.rows.filter(r => branchOnlyFilter === 'all' || r.branch === branchOnlyFilter).map(r => {
+      const saved = ledger.get(`${r.branch}|${r.billNo}`);
+      const check = !saved ? 'No matching main-ledger bill number' : Math.abs(saved.total - r.total) > 0.01 ? 'Amount differs from main ledger' : localDateKey(saved.createdAt) !== localDateKey(r.createdAt) ? 'Date differs from main ledger' : '';
+      return { ...r, check, ledgerTotal: saved?.total ?? '', ledgerDate: saved ? fmtDateTime(saved.createdAt) : '' };
+    }).filter(r => r.check);
+  }, [billReferences.rows, realBills, branchOnlyFilter]);
   const exportBranchSalesExcel = () => exportWorkbook(`Admin_BranchSales_${fromDate}_${toDate}`, [
     {
       name: 'Total Sales', title: `Branch Sales — Total Sales (${fromDate} to ${toDate})`,
@@ -1921,11 +1941,11 @@ function AdminDashboard() {
       columns: [
         { header: 'Branch', key: 'branch' }, { header: 'Bill No', key: 'billNo' }, { header: 'Date', key: 'date', width: 14 }, { header: 'Time', key: 'time', width: 12 },
         { header: 'Total Sales', key: 'totalSales' }, { header: 'Cash', key: 'cash' }, { header: 'UPI', key: 'upi' }, { header: 'Card', key: 'card' },
-        { header: 'Salesperson', key: 'salesperson' }, { header: 'Biller', key: 'biller' },
+        { header: 'Status', key: 'status' }, { header: 'Recorded Bill Amount', key: 'recordedAmount' }, { header: 'Salesperson', key: 'salesperson' }, { header: 'Biller', key: 'biller' },
       ],
       rows: filteredRealBills.map(b => {
         const paid = billPaidByMode.get(b.id) ?? { cash: 0, upi: 0, card: 0 };
-        return { branch: b.branch, billNo: b.billNo, date: fmtDate(b.createdAt), time: fmtTime(b.createdAt), totalSales: b.total, cash: paid.cash, upi: paid.upi, card: paid.card, salesperson: b.salesperson, biller: b.biller };
+        return { branch: b.branch, billNo: b.billNo, date: fmtDate(b.createdAt), time: fmtTime(b.createdAt), totalSales: /returned|cancelled|void|deleted/i.test(b.status) ? 0 : b.total, recordedAmount: b.total, status: b.status, cash: paid.cash, upi: paid.upi, card: paid.card, salesperson: b.salesperson, biller: b.biller };
       }),
     },
     {
@@ -1940,6 +1960,7 @@ function AdminDashboard() {
         branch: b.branch, billNo: b.billNo, date: fmtDate(b.createdAt), itemName: i.itemName, qty: i.quantity, lineTotal: i.lineTotal,
       }))),
     },
+    { name: 'Unmatched Bill References', title: 'Secondary register discrepancies — not added to sales; reconciliation required', columns: [{ header: 'Branch', key: 'branch' }, { header: 'Bill No', key: 'billNo' }, { header: 'Date (IST)', key: 'date', width: 24 }, { header: 'Recorded Amount', key: 'total' }, { header: 'Main Ledger Amount', key: 'ledgerTotal' }, { header: 'Main Ledger Date (IST)', key: 'ledgerDate', width: 24 }, { header: 'Check', key: 'check', width: 35 }, { header: 'Status', key: 'status' }, { header: 'Items', key: 'items', width: 60 }], rows: unmatchedBillReferences.map(r => ({ ...r, date: fmtDateTime(r.createdAt) })) },
   ]);
 
   const exportBranchSalesPdf = () => {
@@ -1992,12 +2013,12 @@ function AdminDashboard() {
               below (realBills/realBillItems/realPayments/adminLedger) only
               ever re-fetch on a fromDate/toDate change — no manual refresh. */}
           <button
-            onClick={() => { void fetchRealSalesData(); adminLedger.refresh(); }}
+            onClick={() => { void fetchRealSalesData(); billReferences.refresh(); adminLedger.refresh(); }}
             disabled={realSalesLoading}
             className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700 hover:bg-slate-50 disabled:opacity-60">
             <RefreshCw className={cn('size-3.5', realSalesLoading && 'animate-spin')} />Refresh
           </button>
-          <button onClick={exportBranchSalesExcel}
+          <button disabled={realSalesLoading || billReferences.loading || !!realSalesError || !!billReferences.error} onClick={exportBranchSalesExcel}
             className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-3 py-2 text-xs font-black text-white">
             <FileSpreadsheet className="size-3.5" /> Excel
           </button>
@@ -2092,7 +2113,11 @@ function AdminDashboard() {
         </Panel>
       </div>
 
+      <Panel title="Bill reference reconciliation" subtitle="These secondary register entries have a missing bill number or a different amount/date in the main ledger. They are not added to sales totals, to avoid counting the same sale twice. Review before treating them as missing sales.">
+        {billReferences.loading ? <p>Checking bill references…</p> : billReferences.error ? <p role="alert">{billReferences.error}</p> : <details><summary className="cursor-pointer font-bold">{unmatchedBillReferences.length} references to review</summary><div className="max-h-96 overflow-auto"><table className="w-full text-sm"><thead><tr><th>Branch</th><th>Bill No</th><th>Recorded date (IST)</th><th>Amount</th><th>Status</th><th>Check</th><th>Items</th></tr></thead><tbody>{unmatchedBillReferences.map(r => <tr key={r.id}><td>{r.branch}</td><td>{r.billNo}</td><td>{fmtDateTime(r.createdAt)}</td><td>{formatCurrency(r.total)}</td><td>{r.status}</td><td>{r.check}</td><td>{r.items}</td></tr>)}</tbody></table></div></details>}
+      </Panel>
       <Panel title="Bills" subtitle={`SNB and VRSNB bills — every bill and its line items, real source of truth${realSalesLoading ? ' (loading…)' : ''}`}>
+        <ReportPager count={sortedBranchBills.length} page={branchPage} onPage={setBranchPage} />
         <div className="mb-3 flex items-center gap-2">
           <Search className="size-4 text-slate-400" />
           <input value={billSearch} onChange={e => setBillSearch(e.target.value)} placeholder="Search bill no, biller or salesperson…"
@@ -2113,7 +2138,7 @@ function AdminDashboard() {
                 <SortableTh label="Time" sortKey="date" activeKey={branchBillsSortKey} dir={branchBillsSortDir} onSort={toggleBranchBillsSort} />
               </tr></thead>
               <tbody className="divide-y">
-                {sortedBranchBills.slice(0, 200).map(b => {
+                {sortedBranchBills.slice((Math.min(branchPage, Math.max(1, Math.ceil(sortedBranchBills.length / 100))) - 1) * 100, Math.min(branchPage, Math.max(1, Math.ceil(sortedBranchBills.length / 100))) * 100).map(b => {
                   const items = realBillItemsByBillId.get(b.id) ?? [];
                   const paid = billPaidByMode.get(b.id);
                   const expanded = expandedBillId === b.id;
@@ -2314,7 +2339,7 @@ function AdminDashboard() {
         { header: 'Salesperson', key: 'salesperson', width: 18 }, { header: 'Biller', key: 'biller' },
         // GUARDRAIL (2026-09-30): travels with the file itself, not just the
         // on-screen banner — see hosurDataIntegrityIssues above.
-        { header: 'Data Check', key: 'dataCheck', width: 14 },
+        { header: 'Data Check', key: 'dataCheck', width: 34 }, { header: 'Status', key: 'status' }, { header: 'Original Advance Bill', key: 'originalBill' }, { header: 'Payment Recorded At (IST)', key: 'paidAt', width: 24 }, { header: 'Cancellation Reason', key: 'cancelReason', width: 32 },
       ],
       // FEATURE (2026-09-28): same batch-split as the table (see
       // hosurBillsSplitForDisplay) — a multi-batch bill is now N rows here

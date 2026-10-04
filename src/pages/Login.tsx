@@ -40,6 +40,7 @@ export default function Login() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    if (!navigator.onLine) { setError('Connect to the internet to sign in. Offline access requires an existing, unexpired session on this computer.'); return; }
     if (!username.trim() || !password) { setError('Please enter both username and password'); return; }
 
     // C-03: reject immediately if locked out
@@ -55,7 +56,13 @@ export default function Login() {
     }
 
     setLoading(true);
-    const ok = await login(username.trim(), password);
+    let ok: boolean;
+    try { ok = await login(username.trim(), password); }
+    catch (error) {
+      setError(error instanceof Error ? error.message : 'Unable to reach the sign-in service. Please try again.');
+      setLoading(false);
+      return;
+    }
     if (ok) {
       // Reset all rate-limit counters on success
       setFailCount(0); setLockUntil(null); setBackoffMs(0);
