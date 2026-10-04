@@ -68,6 +68,7 @@ function triggerPrintWithFallback(target: Window) {
   // when its own .print() is never called.
   const silent = desktopSilentPrint(target.document.documentElement.outerHTML.replace(PRINT_TRIGGER, ''));
   if (silent) {
+    (target as unknown as { __printed?: boolean }).__printed = true;
     // A couple of callers (printAccountingVoucher, printBranchCashierClosure)
     // pass a real, visible window.open() popup rather than a hidden iframe —
     // now that it's never going to show a print dialog of its own, close it
