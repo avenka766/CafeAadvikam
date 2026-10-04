@@ -2,6 +2,9 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
 import './index.css';
+import { installDesktopPrinting } from './lib/desktopPrinting';
+
+installDesktopPrinting();
 
 // BUG FIX (2026-08-09): "Owner Dashboard page is keep on refreshing 10
 // times per sec, we are unable to do anything" — root cause, found after

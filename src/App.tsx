@@ -310,7 +310,7 @@ function AppRoutes() {
   // deliberately built to show a real login screen instead — would otherwise
   // open on the customer-facing Landing page on a fresh install. Scoped to
   // `native` only, so the real web deployment's `/` behavior is untouched.
-  const rootElement = skipLandingPage && !currentUser ? <Navigate to="/login" replace /> : <Landing />;
+  const rootElement = skipLandingPage ? <Navigate to={currentUser ? getDefaultRoute() : '/login'} replace /> : <Landing />;
 
   const routes = (
     <Suspense fallback={<div className="flex min-h-[40vh] items-center justify-center text-sm text-muted-foreground">Loading workspace…</div>}>
