@@ -85,6 +85,12 @@ export interface Order {
   balancePaidBy?: string;
   balanceOrderId?: string;   // id of the balance-collection order row
   parcelCharges?: number;
+  gstEnabled?: boolean;
+  gstRate?: number;
+  taxableAmount?: number;
+  cgstAmount?: number;
+  sgstAmount?: number;
+  gstAmount?: number;
   deliveryDate?: string;     // ISO date string — mandatory for advance orders
   walletId?: string;
   walletAmount?: number;
