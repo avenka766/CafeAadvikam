@@ -1,7 +1,7 @@
 {
   "name": "vite_react_shadcn_ts",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.0.2",
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
@@ -19,7 +19,7 @@
     "android:open": "npx cap open android",
     "electron:dev": "cross-env ELECTRON_DEV_URL=http://localhost:8080 concurrently -k \"npm:dev\" \"wait-on tcp:8080 && electron .\"",
     "electron:start": "npm run build && electron .",
-    "electron:build": "npm run build && electron-builder --win"
+    "electron:build": "node scripts/check-desktop-config.mjs && npm run build && node scripts/prepare-desktop.cjs && electron-builder --win"
   },
   "dependencies": {
     "@capacitor/android": "^8.0.0",
@@ -127,16 +127,30 @@
     "files": [
       "electron/**/*",
       "dist/**/*",
-      "package.json"
+      "package.json",
+      "build/icon.ico",
+      "!electron/smoke.cjs",
+      "!electron/*.test.cjs"
     ],
     "directories": {
       "output": "release",
-      "buildResources": "build"
+      "buildResources": "build",
+      "app": "desktop-app"
     },
     "win": {
       "target": [
-        { "target": "nsis", "arch": ["x64"] },
-        { "target": "portable", "arch": ["x64"] }
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
       ],
       "icon": "build/icon.ico"
     },
@@ -145,8 +159,13 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Sri Nanjundeshwara Bakery"
-    }
+      "shortcutName": "Sri Nanjundeshwara Bakery",
+      "artifactName": "SNB-Sweets-and-Bakes-Setup-${version}.${ext}"
+    },
+    "portable": {
+      "artifactName": "SNB-Sweets-and-Bakes-Portable-${version}.${ext}"
+    },
+    "electronVersion": "33.4.11"
   },
   "engines": {
     "node": ">=20.0.0",
