@@ -1,3 +1,4 @@
+import { calculateCafeGst, cafeGstColumns, CAFE_GST_COLUMNS } from '@/lib/cafeGst';
 import { create } from 'zustand';
 import { supabase } from '@/lib/supabase';
 import type { CartItem, MenuItem, Order, OrderType, OrderStatus, PaymentType, PaymentBreakdown, OrderSource } from '@/types';
@@ -182,12 +183,12 @@ interface OrderState {
   // refresh used for the recurring background poll instead of loadOrders,
   // which always re-fetches and replaces the entire requested window.
   refreshRecentOrders: (days: number) => Promise<void>;
-  submitOrder: (params: { tableNumber?: number; orderType: OrderType; notes?: string; customerName?: string; createdBy: string; orderSource?: OrderSource; parcelCharges?: number; paymentType?: PaymentType; paymentBreakdown?: PaymentBreakdown; billedBy?: string; status?: OrderStatus; discount?: number; discountType?: 'flat' | 'percentage'; discountValue?: number; }) => Promise<string>;
+  submitOrder: (params: { tableNumber?: number; orderType: OrderType; notes?: string; customerName?: string; createdBy: string; orderSource?: OrderSource; parcelCharges?: number; paymentType?: PaymentType; paymentBreakdown?: PaymentBreakdown; billedBy?: string; status?: OrderStatus; gstEnabled?: boolean; discount?: number; discountType?: 'flat' | 'percentage'; discountValue?: number; }) => Promise<string>;
   submitAdvanceOrder: (params: { tableNumber?: number; orderType: OrderType; notes?: string; customerName?: string; createdBy: string; advanceAmount: number; advancePaidBy: string; deliveryDate: string; isFullPayment?: boolean; }) => Promise<string>;
   updateOrderStatus: (orderId: string, status: OrderStatus, cancelReason?: string) => Promise<void>;
   refundAndCancel: (orderId: string, cancelReason: string, refundedBy: string, password: string) => Promise<void>;
   applyDiscount: (orderId: string, discountType: 'percentage' | 'flat', discountValue: number) => Promise<void>;
-  setPaymentType: (orderId: string, paymentType: PaymentType, billedBy: string, breakdown?: PaymentBreakdown) => Promise<void>;
+  setPaymentType: (orderId: string, paymentType: PaymentType, billedBy: string, breakdown?: PaymentBreakdown, gstEnabled?: boolean) => Promise<void>;
   setAdvancePayment: (orderId: string, advanceAmount: number, advancePaidBy: string, billedBy: string) => Promise<void>;
   collectBalance: (orderId: string, balancePaymentType: PaymentType, billedBy: string, breakdown?: PaymentBreakdown) => Promise<void>;
 
@@ -206,6 +207,12 @@ export function dbRowToOrder(row: Record<string, unknown>): Order {
     discount: Number(row.discount),
     discountType: row.discount_type as 'percentage' | 'flat',
     discountValue: Number(row.discount_value),
+    gstEnabled: row.gst_enabled === true,
+    gstRate: row.gst_rate == null ? undefined : Number(row.gst_rate),
+    taxableAmount: Number(row.taxable_amount || 0),
+    cgstAmount: Number(row.cgst_amount || 0),
+    sgstAmount: Number(row.sgst_amount || 0),
+    gstAmount: Number(row.gst_amount || 0),
     total: Number(row.total),
     status: row.status as OrderStatus,
     createdBy: row.created_by as string,
@@ -308,7 +315,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       // request silently gets capped well below 8000 by PostgREST itself.
       const { data, error } = await fetchAllOrderRows(() => supabase
         .from('orders')
-        .select('id, order_number, table_number, order_type, items, subtotal, discount, discount_type, discount_value, total, status, created_by, created_at, updated_at, notes, customer_name, payment_type, payment_breakdown, billed_by, cancel_reason, order_source, advance_amount, advance_paid_by, balance_due, full_amount, fully_paid_at, balance_payment_type, balance_paid_by, balance_order_id, parcel_charges, delivery_date, wallet_id, wallet_amount, wallet_transaction_id, promotion_discount, promotion_ids, wallet_cashback')
+        .select('id, order_number, table_number, order_type, items, subtotal, discount, discount_type, discount_value, total, status, created_by, created_at, updated_at, notes, customer_name, payment_type, payment_breakdown, billed_by, cancel_reason, order_source, advance_amount, advance_paid_by, balance_due, full_amount, fully_paid_at, balance_payment_type, balance_paid_by, balance_order_id, parcel_charges, delivery_date, wallet_id, wallet_amount, wallet_transaction_id, promotion_discount, promotion_ids, wallet_cashback, ' + CAFE_GST_COLUMNS)
         .gte('created_at', cutoff.toISOString())
         .order('created_at', { ascending: false }), 8000);
 
@@ -382,7 +389,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       // 1-3 day window (POLL_REFRESH_DAYS) can't silently lose orders either.
       const { data, error } = await fetchAllOrderRows(() => supabase
         .from('orders')
-        .select('id, order_number, table_number, order_type, items, subtotal, discount, discount_type, discount_value, total, status, created_by, created_at, updated_at, notes, customer_name, payment_type, payment_breakdown, billed_by, cancel_reason, order_source, advance_amount, advance_paid_by, balance_due, full_amount, fully_paid_at, balance_payment_type, balance_paid_by, balance_order_id, parcel_charges, delivery_date, wallet_id, wallet_amount, wallet_transaction_id, promotion_discount, promotion_ids, wallet_cashback')
+        .select('id, order_number, table_number, order_type, items, subtotal, discount, discount_type, discount_value, total, status, created_by, created_at, updated_at, notes, customer_name, payment_type, payment_breakdown, billed_by, cancel_reason, order_source, advance_amount, advance_paid_by, balance_due, full_amount, fully_paid_at, balance_payment_type, balance_paid_by, balance_order_id, parcel_charges, delivery_date, wallet_id, wallet_amount, wallet_transaction_id, promotion_discount, promotion_ids, wallet_cashback, ' + CAFE_GST_COLUMNS)
         .gte('created_at', cutoff.toISOString())
         .order('created_at', { ascending: false }), 2000);
       if (error) throw error;
@@ -428,7 +435,8 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     // capped/rounded `discount` sensibly; this just folds it into the order
     // record so it isn't silently dropped from the bill total.
     const discount = Math.max(0, Math.min(subtotal, Number(params.discount ?? 0)));
-    const total = Math.round(Math.max(0, subtotal + parcelCharges - discount));
+    const gst = params.gstEnabled === undefined ? undefined : calculateCafeGst(subtotal, discount, parcelCharges, params.gstEnabled);
+    const total = gst?.total ?? Math.round(Math.max(0, subtotal + parcelCharges - discount));
     const orderId = generateId();
     const now = new Date().toISOString();
     const orderSource = params.orderSource || 'staff';
@@ -456,6 +464,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
 
     const order: Order = {
       id: orderId, orderNumber, tableNumber: params.tableNumber, orderType: params.orderType,
+      ...gst,
       items: [...cart], subtotal, discount, discountType: params.discountType || 'flat', discountValue: Number(params.discountValue ?? 0), total,
       status: orderStatus, createdBy: params.createdBy, createdAt: now, updatedAt: now,
       notes: params.notes, customerName: params.customerName, paymentType, orderSource,
@@ -478,7 +487,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
         subtotal, discount, discountType: params.discountType || 'flat', discountValue: Number(params.discountValue ?? 0),
         total, status: orderStatus, createdBy: params.createdBy, notes: params.notes || null,
         customerName: params.customerName || null, paymentType, paymentBreakdown: params.paymentBreakdown || null,
-        billedBy: params.billedBy || null, orderSource, createdAt: now, parcelCharges,
+        billedBy: params.billedBy || null, orderSource, createdAt: now, parcelCharges, gst,
       });
       return orderId;
     }
@@ -490,6 +499,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       notes: params.notes || null, customer_name: params.customerName || null,
       payment_type: paymentType, payment_breakdown: params.paymentBreakdown || null, billed_by: params.billedBy || null, order_source: orderSource, created_at: now, updated_at: now,
       parcel_charges: parcelCharges,
+      ...(gst ? cafeGstColumns(gst) : {}),
     };
 
     const { error } = await supabase.from('orders').insert(payload);
@@ -747,7 +757,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     }
   },
 
-  setPaymentType: async (orderId, paymentType, billedBy, breakdown) => {
+  setPaymentType: async (orderId, paymentType, billedBy, breakdown, gstEnabled = true) => {
     const order = get().orders.find((o) => o.id === orderId);
     if (!order) return;
     // LOGIC FIX: block re-billing an order that's already been given a payment type
@@ -759,17 +769,19 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       console.warn('[setPaymentType] order already billed or cancelled; aborting', orderId);
       return;
     }
-    if (paymentType === 'part_payment') validatePaymentBreakdown(breakdown, order.total);
+    const gst = calculateCafeGst(order.subtotal, order.discount, order.parcelCharges || 0, gstEnabled);
+    if (paymentType === 'part_payment') validatePaymentBreakdown(breakdown, gst.total);
     const prev = get().orders;
     const now = new Date().toISOString();
     const updates: Record<string, unknown> = {
       payment_type: paymentType, billed_by: billedBy, updated_at: now,
+      ...cafeGstColumns(gst), total: gst.total,
     };
     if (breakdown) updates.payment_breakdown = breakdown;
 
     set((state) => ({
       orders: state.orders.map((o) =>
-        o.id === orderId ? { ...o, paymentType, billedBy, updatedAt: now, ...(breakdown ? { paymentBreakdown: breakdown } : {}) } : o,
+        o.id === orderId ? { ...o, ...gst, paymentType, billedBy, updatedAt: now, ...(breakdown ? { paymentBreakdown: breakdown } : {}) } : o,
       ),
     }));
 
@@ -1069,7 +1081,7 @@ type QueuedCafeOrder = {
   subtotal: number; discount: number; discountType: 'percentage' | 'flat'; discountValue: number;
   total: number; status: OrderStatus; createdBy: string; notes: string | null; customerName: string | null;
   paymentType: PaymentType; paymentBreakdown: PaymentBreakdown | null; billedBy: string | null;
-  orderSource: OrderSource; createdAt: string; parcelCharges: number;
+  orderSource: OrderSource; createdAt: string; parcelCharges: number; gst?: ReturnType<typeof calculateCafeGst>;
 };
 
 registerReplayHandler('cafe_order_submit', async (_kind, payload) => {
@@ -1084,6 +1096,7 @@ registerReplayHandler('cafe_order_submit', async (_kind, payload) => {
     notes: p.notes, customer_name: p.customerName, payment_type: p.paymentType, payment_breakdown: p.paymentBreakdown,
     billed_by: p.billedBy, order_source: p.orderSource, created_at: p.createdAt, updated_at: new Date().toISOString(),
     parcel_charges: p.parcelCharges,
+    ...(p.gst ? cafeGstColumns(p.gst) : {}),
   };
   const { error } = await supabase.from('orders').insert(row);
   if (error) return { ok: false, error: error.message };

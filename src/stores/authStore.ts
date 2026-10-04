@@ -4,7 +4,7 @@ import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import { supabase } from '@/lib/supabase';
 import { clearAppSession, saveAppSession } from '@/lib/appSession';
-import { isNativeApp } from '@/lib/platform';
+import { isNativeApp, isElectronApp } from '@/lib/platform';
 import type { User, UserRole } from '@/types';
 
 const SESSION_TIMEOUT_MS = 8 * 60 * 60 * 1000; // 8 hours — web
@@ -89,11 +89,12 @@ export const useAuthStore = create<AuthState>()(
           p_device_info: navigator.userAgent,
         });
         const row = Array.isArray(data) ? data[0] : data;
-        if (error || !row) return false;
+        if (error) throw new Error('Unable to connect to the sign-in service. Check your internet connection and try again.');
+        if (!row) return false;
         const record = row as Record<string, unknown>;
         const token = String(record.session_token ?? '');
         const expiresAt = String(record.expires_at ?? '');
-        if (!token || !expiresAt) return false;
+        if (!token || !expiresAt) throw new Error('The sign-in service returned an incomplete session. Please try again.');
         const user = rowToUser(record);
         saveAppSession(token, expiresAt);
         set({ currentUser: user, sessionExpiresAt: expiresAt });
@@ -268,7 +269,7 @@ export const useAuthStore = create<AuthState>()(
       // localStorage only when actually running inside the native shell —
       // the web app (including this exact same bundle on Vercel) keeps
       // using sessionStorage exactly as before.
-      storage: createJSONStorage(() => (isNativeApp() ? localStorage : sessionStorage)),
+      storage: createJSONStorage(() => (isNativeApp() || isElectronApp() ? localStorage : sessionStorage)),
       partialize: (state) => ({ currentUser: state.currentUser ? { ...state.currentUser, password: '' } : null, sessionExpiresAt: state.sessionExpiresAt }),
       // BUG #21 FIX: _sessionTimer is not persisted (correctly excluded by partialize),
       // but that means after a page reload the 8-hour auto-logout timer is never restarted.
