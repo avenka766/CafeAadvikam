@@ -174,7 +174,7 @@ function getLedgerBundle(fromDate: string, toDate: string, branchesKey: string, 
   return promise;
 }
 
-export function useBranchLedger(fromDate: string, toDate: string, branches?: Branch[]) {
+export function useBranchLedger(fromDate: string, toDate: string, branches?: Branch[], enabled = true) {
   const [closureRows, setClosureRows] = useState<LedgerClosureRow[]>([]);
   const [savedClosures, setSavedClosures] = useState<LedgerSavedClosure[]>([]);
   const [loading, setLoading] = useState(false);
@@ -197,6 +197,7 @@ export function useBranchLedger(fromDate: string, toDate: string, branches?: Bra
 
   useEffect(() => {
     let active = true;
+    if (!enabled) { setLoading(false); return; }
     const load = async () => {
       setClosureRows([]);
       setSavedClosures([]);
@@ -238,7 +239,7 @@ export function useBranchLedger(fromDate: string, toDate: string, branches?: Bra
   // branch_operation_records, branch_bill_headers) in an infinite loop.
   // `branchesKey` is already a stable sorted-join string that captures the
   // same information, so `branches` must be removed from deps here.
-  }, [fromDate, toDate, branchesKey, refreshToken]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [fromDate, toDate, branchesKey, refreshToken, enabled]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const closureByBranchDate = useMemo(() => {
     const map = new Map<string, LedgerClosureRow>();
