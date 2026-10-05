@@ -1,3 +1,4 @@
+import { fetchVerifiedAdminRows } from '@/lib/adminReportPaging';
 import { cafeGstCollection, summarizeCafeGst } from '@/lib/cafeGst';
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ElementType, type ReactNode } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
@@ -330,15 +331,16 @@ function AdminDashboard() {
   // AdminVRSNBDashboard already does, keeps every request branch-scoped and
   // fast (~390ms even at the same depth) without changing what data loads.
   useEffect(() => {
+    if (!['overview', 'audit'].includes(activeTab)) return;
     void Promise.all((['SNB', 'VRSNB'] as const).map((b) => fetchBillsInRange(fromDate, toDate, b)));
-  }, [fromDate, toDate, fetchBillsInRange]);
+  }, [fromDate, toDate, fetchBillsInRange, activeTab]);
   const { notifications: adminNotifications, load: loadAdminNotifications, markRead } = useNotificationStore();
-  const adminLedger = useBranchLedger(fromDate, toDate, ['VRSNB', 'SNB', 'Hosur']);
+  const adminLedger = useBranchLedger(fromDate, toDate, ['VRSNB', 'SNB', 'Hosur'], ['overview', 'branches'].includes(activeTab));
   // Daily Closure tab has its own independent date picker (closureDate), separate
   // from the Overview's fromDate/toDate range — needs its own ledger fetch scoped
   // to that exact date, or it silently misses whenever closureDate falls outside
   // the Overview range (see BUG FIX note in closureRows below).
-  const closureLedger = useBranchLedger(closureDate, closureDate, ['VRSNB', 'SNB', 'Hosur']);
+  const closureLedger = useBranchLedger(closureDate, closureDate, ['VRSNB', 'SNB', 'Hosur'], activeTab === 'daily-closure');
   const selectTab = (next: AdminTab) => {
     setSearchParams(next === 'overview' ? {} : { tab: next });
   };
@@ -500,12 +502,18 @@ function AdminDashboard() {
   // pattern) also correctly supersedes an in-flight run when the button is
   // clicked again before the first call resolves.
   const realSalesRequestRef = useRef(0);
+  const realSalesAbortRef = useRef<AbortController | null>(null);
   const fetchRealSalesData = useCallback(async () => {
     if (!fromDate || !toDate) return;
     const requestId = ++realSalesRequestRef.current;
+    realSalesAbortRef.current?.abort();
+    const controller = new AbortController(); realSalesAbortRef.current = controller;
+    const needHosur = activeTab === 'hosur' || activeTab === 'overview';
+    const empty = () => Promise.resolve({ data: [], error: null });
     {
       setRealSalesLoading(true);
       setRealSalesError('');
+      setRealBills([]); setRealBillItems([]); setRealPayments([]);
       const fromTs = `${fromDate}T00:00:00+05:30`;
       const toTs = `${toDate}T23:59:59.999+05:30`;
       const fromMs = new Date(fromTs).getTime();
@@ -564,10 +572,7 @@ function AdminDashboard() {
       };
 
       let [headersRes, itemsRes, paymentsRes, hosurRes, unbilledRes, expensesRes, purchasesRes, salesInvoicesRes, walkinBillsRes] = await runLimited([
-        () => fetchAllRows(() => supabase.from('branch_bill_headers')
-          .select('id, branch, bill_no, subtotal, discount, total, status, created_at, salesperson, biller, notes')
-          .in('branch', ['SNB', 'VRSNB'])
-          .gte('created_at', fromTs).lt('created_at', untilTs)),
+        () => fetchVerifiedAdminRows('branch_headers', fromTs, untilTs, { signal: controller.signal }),
         async () => ({ data: [], error: null }),
         // BUG FIX (2026-09-05): "the payment mode ... is not displaying" for
         // a handful of Branch Sales bills in the Excel export — those bills'
@@ -578,22 +583,18 @@ function AdminDashboard() {
         // this filter only ever allowed 'bill_collection'/'credit_upfront',
         // so billPaidByMode's lookup missed them and every cash/UPI/card
         // column silently fell back to 0 despite a real, nonzero bill total.
-        () => fetchAllRows(() => supabase.from('branch_sale_payments')
-          .select('id, bill_id, payment_mode, amount, payment_purpose, created_at')
-          .in('branch', ['SNB', 'VRSNB'])
-          .in('payment_purpose', ['bill_collection', 'credit_upfront', 'advance_balance', 'credit_settlement'])
-          .gte('created_at', fromTs).lt('created_at', untilTs)),
+        () => fetchVerifiedAdminRows('branch_payments', fromTs, untilTs, { signal: controller.signal }),
         // FEATURE (2026-09-05): "dont use bill number anywhere ... use
         // invoice number" — invoice_no is the real GST-sequence number
         // (SALES/26-27/N), written directly onto the bill by
         // dispatchReceiveAndBill at billing time (see hosurBillingBridge.ts)
         // rather than inferred here — no join needed.
-        () => fetchAllRows(() => supabase.from('hosur_bills')
+        () => !needHosur ? empty() : fetchAllRows(() => supabase.from('hosur_bills')
           .select('id, bill_no, invoice_no, shop_id, shop_name, subtotal, paid_amount, credit_amount, payment_mode, confirmed_at, status, created_at, updated_at')
           .not('confirmed_at', 'is', null)
           .neq('status', 'cancelled')
           .gte('confirmed_at', fromTs).lte('confirmed_at', hosurConfirmedFetchToTs)),
-        () => fetchAllRows(() => supabase.from('hosur_orders')
+        () => !needHosur ? empty() : fetchAllRows(() => supabase.from('hosur_orders')
           .select('id, order_number, shop_name, subtotal, created_at')
           .eq('status', 'dispatched').is('bill_id', null)
           .gte('created_at', fromTs).lt('created_at', untilTs)),
@@ -612,11 +613,11 @@ function AdminDashboard() {
         // (orderStore). If a future archive round adds a new dated table
         // that should be included here, add it deliberately — don't leave a
         // stale reference like this one behind when a table gets dropped.
-        () => fetchAllRows(() => supabase.from('branch_operation_records')
+        () => activeTab !== 'overview' ? empty() : fetchAllRows(() => supabase.from('branch_operation_records')
           .select('id, payload, created_at')
           .eq('record_type', 'expense')
           .gte('created_at', fromTs).lt('created_at', untilTs)),
-        () => fetchAllRows(() => supabase.from('branch_operation_records')
+        () => activeTab !== 'overview' ? empty() : fetchAllRows(() => supabase.from('branch_operation_records')
           .select('id, payload, created_at')
           .eq('record_type', 'purchase_invoice')
           .gte('created_at', fromTs).lt('created_at', untilTs)),
@@ -631,11 +632,11 @@ function AdminDashboard() {
         // nothing like that can hide again; scope='Hosur' rows are
         // deduplicated against hosur_bills below rather than dropped, so an
         // orphaned one like /272 still surfaces.
-        () => fetchAllRows(() => supabase.from('dispatch_invoices')
+        () => !needHosur ? empty() : fetchAllRows(() => supabase.from('dispatch_invoices')
           .select('id, invoice_no, scope, status, total, items, hosur_shop_name, customer_name, created_at, dispatch_entry_ids')
           .ilike('invoice_no', 'SALES/%')
           .gte('created_at', fromTs).lt('created_at', untilTs)),
-        () => fetchAllRows(() => supabase.from('bakery_walkin_bills')
+        () => !needHosur ? empty() : fetchAllRows(() => supabase.from('bakery_walkin_bills')
           .select('id, bill_no, items, total, payment_mode, cashier_name, status, customer_name, created_at')
           .ilike('bill_no', 'SALES/%')
           .gte('created_at', fromTs).lt('created_at', untilTs)),
@@ -644,7 +645,7 @@ function AdminDashboard() {
       const branchItemRows: Record<string, unknown>[] = [];
       const selectedBillIds = (headersRes.data as Record<string, unknown>[]).map(r => String(r.id));
       for (let offset = 0; offset < selectedBillIds.length; offset += 200) {
-        const result = await fetchAllRows<Record<string, unknown>>(() => supabase.from('branch_bill_items').select('id, bill_id, branch, item_name, quantity, unit, unit_price, line_total, created_at').in('bill_id', selectedBillIds.slice(offset, offset + 200)));
+        const result = await fetchVerifiedAdminRows<Record<string, unknown>>('branch_items', fromTs, untilTs, { billIds: selectedBillIds.slice(offset, offset + 200), signal: controller.signal });
         if (result.error) { itemsRes = result; break; }
         branchItemRows.push(...result.data);
         itemsRes = { data: branchItemRows, error: null };
@@ -887,9 +888,13 @@ function AdminDashboard() {
       ]);
       setRealSalesLoading(false);
     }
-  }, [fromDate, toDate]);
+  }, [fromDate, toDate, activeTab]);
 
-  useEffect(() => { void fetchRealSalesData(); }, [fetchRealSalesData]);
+  useEffect(() => {
+    if (['overview', 'branches', 'hosur'].includes(activeTab)) void fetchRealSalesData();
+    else { ++realSalesRequestRef.current; setRealSalesLoading(false); }
+    return () => { ++realSalesRequestRef.current; realSalesAbortRef.current?.abort(); };
+  }, [fetchRealSalesData, activeTab]);
 
   useEffect(() => { void loadAdminNotifications(); }, [loadAdminNotifications]);
   useEffect(() => {
@@ -907,7 +912,7 @@ function AdminDashboard() {
     ? new Date(`${fromDate}T00:00:00`).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', year: 'numeric' })
     : `${new Date(`${fromDate}T00:00:00`).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short' })} – ${new Date(`${toDate}T00:00:00`).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', year: 'numeric' })}`;
 
-  const cafeRegister = useAdminCafeOrders(fromDate, toDate);
+  const cafeRegister = useAdminCafeOrders(fromDate, toDate, activeTab === 'cafe' || activeTab === 'overview');
   const cafeOrdersInRange = cafeRegister.orders;
   const [cafePage, setCafePage] = useState(1);
   const [branchPage, setBranchPage] = useState(1);
@@ -1621,6 +1626,13 @@ function AdminDashboard() {
         unitPrice: Number(i.menuItem.price || 0), lineTotal: Number(i.menuItem.price || 0) * Number(i.quantity || 0),
       }))),
     },
+    { name: 'Unresolved Number Gaps', title: 'No saved Cafe bill found — amounts unknown and excluded from sales',
+      columns: [{ header: 'Missing From', key: 'missing_from' }, { header: 'Missing To', key: 'missing_to' },
+        { header: 'Previous Bill', key: 'previous_bill' }, { header: 'Next Bill', key: 'next_bill' },
+        { header: 'Previous Bill Date (IST)', key: 'previous_date', width: 25 }, { header: 'Next Bill Date (IST)', key: 'next_date', width: 25 },
+        { header: 'Finding', key: 'finding', width: 65 }],
+      rows: cafeRegister.gaps.map(g => ({ ...g, previous_date: fmtDateTime(g.previous_date), next_date: fmtDateTime(g.next_date),
+        finding: 'No saved bill exists for this number. Could be an unused allocation or failed save; amount unknown.' })) },
     { name: 'Cancelled Orders', title: 'Cancelled Cafe orders — excluded from sales', columns: [{ header: 'Bill No', key: 'billNo' }, { header: 'Date (IST)', key: 'date', width: 24 }, { header: 'Status', key: 'status' }, { header: 'Reason', key: 'reason', width: 32 }, { header: 'Items', key: 'items', width: 60 }], rows: cafeCancelledOrders.map(o => ({ billNo: o.orderNumber, date: fmtDateTime(o.createdAt), status: o.status, reason: o.cancelReason || 'Not recorded', items: o.items.map(i => `${i.menuItem.name} x ${i.quantity}`).join('; ') })) },
     {
       name: 'GST Details', title: 'New GST addition — paid and credit portions at billing',
@@ -1689,13 +1701,20 @@ function AdminDashboard() {
             className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-3 py-2 text-xs font-black text-white">
             <FileSpreadsheet className="size-3.5" /> Excel
           </button>
-          <button onClick={exportCafePdf}
+          <button disabled={cafeRegister.loading || !!cafeRegister.error} onClick={exportCafePdf}
             className="inline-flex items-center gap-2 rounded-2xl bg-slate-950 px-3 py-2 text-xs font-black text-white">
             <FileDown className="size-3.5" /> PDF
           </button>
         </div>
       </div>
 
+      {cafeRegister.gaps.length > 0 && <Panel title="Unresolved Cafe bill numbers" subtitle="These numbers have no saved bill in the database. They are included in the Excel exception sheet, not in sales totals.">
+        <div className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-amber-950">
+          <p className="font-bold">{cafeRegister.gaps.map(g => g.missing_from === g.missing_to ? String(g.missing_from) : `${g.missing_from}–${g.missing_to}`).join(', ')}</p>
+          <p className="mt-1 text-sm">A number gap does not prove a sale or cancellation. Original receipts or payment records are needed to establish the amount.</p>
+        </div>
+      </Panel>}
+      {!cafeRegister.loading && !cafeRegister.error && <p className="text-sm text-emerald-800">Complete register verified: {cafeOrdersInRange.length} saved records. Cancelled records are included; unresolved number gaps are listed separately.</p>}
       {/* KPI Summary Cards */}
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <KpiCard label="Total Sales" value={formatCurrency(cafeSalesTotal)} icon={<IndianRupee className="size-5" />} tone="green" sub={`${cafeServedOrders.length} orders`} />
@@ -1842,7 +1861,7 @@ function AdminDashboard() {
   // into the same branch comparison charts/table was more confusing than
   // useful. See the 'hosur' tab below for its dedicated view.
   const BRANCH_ONLY_OPTIONS: Branch[] = ['VRSNB', 'SNB'];
-  const billReferences = useAdminBillReferences(fromDate, toDate);
+  const billReferences = useAdminBillReferences(fromDate, toDate, activeTab === 'branches');
   const branchOnlyFilter = (branchFilter === 'Cafe' || branchFilter === 'Hosur' ? 'all' : branchFilter) as Branch | 'all';
   // Real bills for the "Branch Sales Transactions" drill-down below — see
   // realBillsInRange for why this replaced the old per-item branchTransactions list.
@@ -1913,8 +1932,8 @@ function AdminDashboard() {
   const unmatchedBillReferences = useMemo(() => {
     const ledger = new Map(realBills.map(b => [`${b.branch}|${b.billNo}`, b]));
     return billReferences.rows.filter(r => branchOnlyFilter === 'all' || r.branch === branchOnlyFilter).map(r => {
-      const saved = ledger.get(`${r.branch}|${r.billNo}`);
-      const check = !saved ? 'No matching main-ledger bill number' : Math.abs(saved.total - r.total) > 0.01 ? 'Amount differs from main ledger' : localDateKey(saved.createdAt) !== localDateKey(r.createdAt) ? 'Date differs from main ledger' : '';
+      const saved = (r.sourceBillId ? realBills.find(b => b.id === r.sourceBillId && b.branch === r.branch) : undefined) ?? ledger.get(`${r.branch}|${r.recordNo || r.billNo}`) ?? ledger.get(`${r.branch}|${r.billNo}`);
+      const check = !saved ? 'No matching main-ledger bill number' : saved.billNo !== r.billNo ? `Number differs from main ledger (${saved.billNo})` : Math.abs(saved.total - r.total) > 0.01 ? 'Amount differs from main ledger' : localDateKey(saved.createdAt) !== localDateKey(r.createdAt) ? 'Date differs from main ledger' : '';
       return { ...r, check, ledgerTotal: saved?.total ?? '', ledgerDate: saved ? fmtDateTime(saved.createdAt) : '' };
     }).filter(r => r.check);
   }, [billReferences.rows, realBills, branchOnlyFilter]);
@@ -1960,6 +1979,7 @@ function AdminDashboard() {
         branch: b.branch, billNo: b.billNo, date: fmtDate(b.createdAt), itemName: i.itemName, qty: i.quantity, lineTotal: i.lineTotal,
       }))),
     },
+    { name: 'Branch Number Gaps', title: 'Numbers absent from the main ledger � amounts unknown', columns: [{ header: 'Branch', key: 'branch' }, { header: 'Missing From', key: 'missing_from' }, { header: 'Missing To', key: 'missing_to' }], rows: billReferences.gaps.filter(g => branchOnlyFilter === 'all' || g.branch === branchOnlyFilter) },
     { name: 'Unmatched Bill References', title: 'Secondary register discrepancies — not added to sales; reconciliation required', columns: [{ header: 'Branch', key: 'branch' }, { header: 'Bill No', key: 'billNo' }, { header: 'Date (IST)', key: 'date', width: 24 }, { header: 'Recorded Amount', key: 'total' }, { header: 'Main Ledger Amount', key: 'ledgerTotal' }, { header: 'Main Ledger Date (IST)', key: 'ledgerDate', width: 24 }, { header: 'Check', key: 'check', width: 35 }, { header: 'Status', key: 'status' }, { header: 'Items', key: 'items', width: 60 }], rows: unmatchedBillReferences.map(r => ({ ...r, date: fmtDateTime(r.createdAt) })) },
   ]);
 
@@ -2018,11 +2038,11 @@ function AdminDashboard() {
             className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700 hover:bg-slate-50 disabled:opacity-60">
             <RefreshCw className={cn('size-3.5', realSalesLoading && 'animate-spin')} />Refresh
           </button>
-          <button disabled={realSalesLoading || billReferences.loading || !!realSalesError || !!billReferences.error} onClick={exportBranchSalesExcel}
+          <button disabled={realSalesLoading || billReferences.loading || adminLedger.loading || !!realSalesError || !!billReferences.error || !!adminLedger.error} onClick={exportBranchSalesExcel}
             className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-3 py-2 text-xs font-black text-white">
             <FileSpreadsheet className="size-3.5" /> Excel
           </button>
-          <button onClick={exportBranchSalesPdf}
+          <button disabled={realSalesLoading || billReferences.loading || adminLedger.loading || !!realSalesError || !!billReferences.error || !!adminLedger.error} onClick={exportBranchSalesPdf}
             className="inline-flex items-center gap-2 rounded-2xl bg-slate-950 px-3 py-2 text-xs font-black text-white">
             <FileDown className="size-3.5" /> PDF
           </button>
@@ -2114,7 +2134,8 @@ function AdminDashboard() {
       </div>
 
       <Panel title="Bill reference reconciliation" subtitle="These secondary register entries have a missing bill number or a different amount/date in the main ledger. They are not added to sales totals, to avoid counting the same sale twice. Review before treating them as missing sales.">
-        {billReferences.loading ? <p>Checking bill references…</p> : billReferences.error ? <p role="alert">{billReferences.error}</p> : <details><summary className="cursor-pointer font-bold">{unmatchedBillReferences.length} references to review</summary><div className="max-h-96 overflow-auto"><table className="w-full text-sm"><thead><tr><th>Branch</th><th>Bill No</th><th>Recorded date (IST)</th><th>Amount</th><th>Status</th><th>Check</th><th>Items</th></tr></thead><tbody>{unmatchedBillReferences.map(r => <tr key={r.id}><td>{r.branch}</td><td>{r.billNo}</td><td>{fmtDateTime(r.createdAt)}</td><td>{formatCurrency(r.total)}</td><td>{r.status}</td><td>{r.check}</td><td>{r.items}</td></tr>)}</tbody></table></div></details>}
+        {billReferences.gaps.filter(g => branchOnlyFilter === 'all' || g.branch === branchOnlyFilter).length > 0 && <div className="mb-4 rounded-xl bg-amber-50 p-4 text-amber-950"><p className="font-bold">Unresolved numbers in the main ledger</p><p>{billReferences.gaps.filter(g => branchOnlyFilter === 'all' || g.branch === branchOnlyFilter).map(g => `${g.branch}-${g.missing_from}${g.missing_to !== g.missing_from ? ` to ${g.missing_to}` : ''}`).join(', ')}</p><p className="mt-2 text-sm">These gaps are listed in Excel. They do not establish a sale or an amount; compare original receipts with the secondary references below.</p></div>}
+        {billReferences.loading ? <p>Checking bill references…</p> : billReferences.error ? <p role="alert">{billReferences.error}</p> : <details open><summary className="cursor-pointer font-bold">{unmatchedBillReferences.length} references to review</summary><div className="max-h-96 overflow-auto"><table className="w-full text-sm"><thead><tr><th>Branch</th><th>Bill No</th><th>Recorded date (IST)</th><th>Amount</th><th>Status</th><th>Check</th><th>Items</th></tr></thead><tbody>{unmatchedBillReferences.map(r => <tr key={r.id}><td>{r.branch}</td><td>{r.billNo}</td><td>{fmtDateTime(r.createdAt)}</td><td>{formatCurrency(r.total)}</td><td>{r.status}</td><td>{r.check}</td><td>{r.items}</td></tr>)}</tbody></table></div></details>}
       </Panel>
       <Panel title="Bills" subtitle={`SNB and VRSNB bills — every bill and its line items, real source of truth${realSalesLoading ? ' (loading…)' : ''}`}>
         <ReportPager count={sortedBranchBills.length} page={branchPage} onPage={setBranchPage} />
@@ -3555,3 +3576,4 @@ function AdminDashboard() {
 }
 
 export default AdminDashboard;
+
