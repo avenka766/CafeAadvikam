@@ -41,6 +41,8 @@ export interface BranchBillItem {
 
 export interface BranchBillRecord {
   id: string;
+  /** Immutable main-ledger identity used to reconcile secondary references. */
+  sourceBillId?: string;
   branch: Branch;
   billNo: string;
   invoiceNo: number;
