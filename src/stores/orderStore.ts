@@ -444,23 +444,9 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     const orderStatus = params.status || 'pending';
     if (paymentType === 'part_payment') validatePaymentBreakdown(params.paymentBreakdown, total);
 
-    const { data: numData, error: numError } = await supabase.rpc('get_next_order_number');
-    // OFFLINE FIX (2026-09-01): per the offline-checkout decision — when the
-    // number RPC fails specifically because the browser has no network, this
-    // no longer throws and refuses the sale. Instead it completes locally
-    // with a provisional (non-final) order number, queues the real
-    // submission for replay on reconnect, and the actual GST-relevant bill
-    // number only gets assigned once that replay runs. Any genuine
-    // server-side failure (not a connectivity problem) still throws exactly
-    // as before — this is deliberately narrow, not "always allow offline."
-    const offline = (numError || !numData) && !navigator.onLine;
-    if ((numError || !numData) && !offline) {
-      throw new Error('Failed to get order number. Please try again.');
-    }
-    // Provisional placeholder — never treat this as a real bill number.
-    // Every print/display surface for this order MUST check `pendingSync`
-    // first (see the Order type's own comment) rather than trust this value.
-    const orderNumber = offline ? 0 : (numData as number);
+    // The server assigns the final number in the same transaction as the save.
+    const offline = !navigator.onLine;
+    const orderNumber = 0;
 
     const order: Order = {
       id: orderId, orderNumber, tableNumber: params.tableNumber, orderType: params.orderType,
@@ -502,7 +488,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       ...(gst ? cafeGstColumns(gst) : {}),
     };
 
-    const { error } = await supabase.from('orders').insert(payload);
+    const { data: saved, error } = await supabase.rpc('save_cafe_order_v1', { p_order: payload });
     if (error) {
       const inflightCart = get().cart;
       const mergedCart = [...cartSnapshot];
@@ -519,6 +505,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       throw new Error(`Failed to submit order: ${error.message}`);
     }
 
+    set(state => ({ orders: state.orders.map(o => o.id === orderId ? { ...o, orderNumber: Number(saved.order_number) } : o) }));
     return orderId;
   },
 
@@ -555,17 +542,8 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       throw new Error('Delivery date must be in the future.');
     }
 
-    const { data: numData, error: numError } = await supabase.rpc('get_next_order_number');
-    // OFFLINE FIX (2026-09-03): submitOrder (just above) got the offline
-    // provisional-number/enqueue treatment on 2026-09-01 — this sibling
-    // function (Cafe's advance/pre-order path, same screen, same counter)
-    // was missed and still just threw "Failed to get order number" with no
-    // way to complete offline. Same narrow policy as submitOrder: only a
-    // genuine connectivity failure degrades to offline, any real server
-    // error still throws exactly as before.
-    const offline = (numError || !numData) && !navigator.onLine;
-    if ((numError || !numData) && !offline) throw new Error('Failed to get order number. Please try again.');
-    const orderNumber = offline ? 0 : (numData as number);
+    const offline = !navigator.onLine;
+    const orderNumber = 0;
 
     const cartSnapshot = [...cart];
     set({ advanceCart: [] });
@@ -624,12 +602,13 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       ...(isFullPayment ? { fully_paid_at: now, balance_payment_type: params.advancePaidBy, balance_paid_by: params.createdBy } : {}),
     };
 
-    const { error } = await supabase.from('orders').insert(payload);
+    const { data: saved, error } = await supabase.rpc('save_cafe_order_v1', { p_order: payload });
     if (error) {
       set((state) => ({ orders: state.orders.filter((o) => o.id !== orderId), advanceCart: cartSnapshot }));
       console.error('[submitAdvanceOrder] Supabase insert failed:', error);
       throw new Error(`Failed to submit advance order: ${error.message}`);
     }
+    set(state => ({ orders: state.orders.map(o => o.id === orderId ? { ...o, orderNumber: Number(saved.order_number) } : o) }));
     return orderId;
   },
 
@@ -848,9 +827,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     if (balancePaymentType === 'part_payment') validatePaymentBreakdown(breakdown, balanceAmount);
 
     const balanceOrderId = generateId();
-    const { data: numData, error: numError } = await supabase.rpc('get_next_order_number');
-    if (numError || !numData) throw new Error('Failed to get order number. Please try again.');
-    const balanceOrderNumber = numData as number;
+    const balanceOrderNumber = 0;
 
     const balanceOrder: Order = {
       id: balanceOrderId,
@@ -892,15 +869,6 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       ...(breakdown ? { payment_breakdown: breakdown } : {}),
     };
 
-    const closeUpdates: Record<string, unknown> = {
-      balance_due: 0,
-      fully_paid_at: now,
-      balance_payment_type: balancePaymentType,
-      balance_paid_by: billedBy,
-      balance_order_id: balanceOrderId,
-      updated_at: now,
-    };
-
     set((state) => ({
       orders: [
         balanceOrder,
@@ -912,42 +880,15 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       ],
     }));
 
-    const { error: insertError } = await supabase.from('orders').insert(balancePayload);
-    if (insertError) {
+    const { data: saved, error } = await supabase.rpc('save_cafe_order_v1', {
+      p_order: balancePayload, p_parent_id: orderId, p_parent_updated_at: order.updatedAt,
+    });
+    if (error) {
       set({ orders: prev });
-      console.error('[collectBalance] insert balance order failed:', insertError);
-      throw new Error(`Failed to record balance payment: ${insertError.message}`);
+      throw new Error(`Failed to record balance payment: ${error.message}`);
     }
+    set(state => ({ orders: state.orders.map(o => o.id === balanceOrderId ? { ...o, orderNumber: Number(saved.order_number) } : o) }));
 
-    // BUG FIX: every sibling payment mutator (updateOrderStatus, applyDiscount,
-    // setPaymentType, setAdvancePayment) closes with an optimistic-lock check
-    // on updated_at so a concurrent write from another terminal is detected
-    // instead of silently overwritten. This function's closing update was
-    // missing that check — two billers collecting the same advance order's
-    // balance around the same time could both pass the earlier in-memory
-    // guard (each only sees their own client's stale order state), both
-    // insert their own balance order (fresh id each time, so both inserts
-    // succeed), and both close updates would succeed too, producing two
-    // duplicate paid "balance" orders and double-counted revenue for one
-    // advance sale.
-    const { data: balanceLock, error: updateError } = await supabase
-      .from('orders')
-      .update(closeUpdates)
-      .eq('id', orderId)
-      .eq('updated_at', order.updatedAt)
-      .select('id');
-
-    if (updateError || !balanceLock || balanceLock.length === 0) {
-      const updateErrorMessage = updateError ? updateError.message : null;
-      await supabase.from('orders').delete().eq('id', balanceOrderId);
-      set({ orders: prev });
-      console.error('[collectBalance] close advance order failed, compensated:', updateError);
-      throw new Error(
-        !balanceLock || balanceLock.length === 0
-          ? 'This order was already updated (possibly by another terminal). Please refresh and check the balance before retrying.'
-          : `Failed to close advance order: ${updateErrorMessage}`,
-      );
-    }
   },
 
   startPolling: (days = 60) => {
@@ -1086,9 +1027,7 @@ type QueuedCafeOrder = {
 
 registerReplayHandler('cafe_order_submit', async (_kind, payload) => {
   const p = payload as QueuedCafeOrder;
-  const { data: numData, error: numError } = await supabase.rpc('get_next_order_number');
-  if (numError || !numData) return { ok: false, error: numError?.message ?? 'Failed to get a real order number.' };
-  const orderNumber = numData as number;
+  const orderNumber = 0;
   const row = {
     id: p.orderId, order_number: orderNumber, table_number: p.tableNumber, order_type: p.orderType,
     items: p.items, subtotal: p.subtotal, discount: p.discount, discount_type: p.discountType,
@@ -1098,10 +1037,10 @@ registerReplayHandler('cafe_order_submit', async (_kind, payload) => {
     parcel_charges: p.parcelCharges,
     ...(p.gst ? cafeGstColumns(p.gst) : {}),
   };
-  const { error } = await supabase.from('orders').insert(row);
+  const { data: saved, error } = await supabase.rpc('save_cafe_order_v1', { p_order: row });
   if (error) return { ok: false, error: error.message };
   useOrderStore.setState((state) => ({
-    orders: state.orders.map((o) => o.id === p.orderId ? { ...o, orderNumber, pendingSync: false, needsReprint: true } : o),
+    orders: state.orders.map((o) => o.id === p.orderId ? { ...o, orderNumber: Number(saved.order_number), pendingSync: false, needsReprint: true } : o),
   }));
   return { ok: true };
 });
@@ -1119,9 +1058,7 @@ type QueuedCafeAdvanceOrder = {
 
 registerReplayHandler('cafe_advance_order_submit', async (_kind, payload) => {
   const p = payload as QueuedCafeAdvanceOrder;
-  const { data: numData, error: numError } = await supabase.rpc('get_next_order_number');
-  if (numError || !numData) return { ok: false, error: numError?.message ?? 'Failed to get a real order number.' };
-  const orderNumber = numData as number;
+  const orderNumber = 0;
   const nowIso = new Date().toISOString();
   const row = {
     id: p.orderId, order_number: orderNumber, table_number: p.tableNumber, order_type: p.orderType,
@@ -1132,10 +1069,10 @@ registerReplayHandler('cafe_advance_order_submit', async (_kind, payload) => {
     delivery_date: p.deliveryDate, created_at: p.createdAt, updated_at: nowIso,
     ...(p.isFullPayment ? { fully_paid_at: nowIso, balance_payment_type: p.advancePaidBy, balance_paid_by: p.createdBy } : {}),
   };
-  const { error } = await supabase.from('orders').insert(row);
+  const { data: saved, error } = await supabase.rpc('save_cafe_order_v1', { p_order: row });
   if (error) return { ok: false, error: error.message };
   useOrderStore.setState((state) => ({
-    orders: state.orders.map((o) => o.id === p.orderId ? { ...o, orderNumber, pendingSync: false, needsReprint: true } : o),
+    orders: state.orders.map((o) => o.id === p.orderId ? { ...o, orderNumber: Number(saved.order_number), pendingSync: false, needsReprint: true } : o),
   }));
   return { ok: true };
 });
