@@ -3,15 +3,24 @@ import type { Order } from '@/types';
 export const CAFE_GST_COLUMNS = 'gst_enabled, gst_rate, taxable_amount, cgst_amount, sgst_amount, gst_amount';
 const money = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100;
 
-/** Additional GST on the discounted food and parcel amount. Round the payable once. */
-export function calculateCafeGst(subtotal: number, discount = 0, parcelCharges = 0, enabled = true) {
-  const taxableAmount = money(Math.max(0, subtotal + parcelCharges - discount));
+/** GST is added only to items marked taxable; discounts are shared proportionally. */
+export function calculateCafeGst(subtotal: number, discount = 0, parcelCharges = 0, enabled = true, eligibleSubtotal = subtotal) {
+  const baseAmount = money(Math.max(0, subtotal + parcelCharges - discount));
+  const eligible = Math.min(Math.max(0, eligibleSubtotal), Math.max(0, subtotal));
+  const eligibleDiscount = subtotal > 0 ? money(discount * eligible / subtotal) : 0;
+  const taxableAmount = money(Math.max(0, eligible - eligibleDiscount + parcelCharges));
   const gstAmount = enabled ? money(taxableAmount * 0.05) : 0;
   const cgstAmount = money(gstAmount / 2);
   const sgstAmount = money(gstAmount - cgstAmount);
-  const total = Math.round(money(taxableAmount + gstAmount));
+  const total = Math.round(money(baseAmount + gstAmount));
   return { gstEnabled: enabled, gstRate: enabled ? 5 : 0, taxableAmount, cgstAmount, sgstAmount, gstAmount, total,
-    roundOff: money(total - taxableAmount - gstAmount) };
+    roundOff: money(total - baseAmount - gstAmount) };
+}
+
+/** Use the latest menu flag for a draft; saved bills keep their item snapshot. */
+export function cafeEligibleSubtotal(items: Array<{ menuItem: { id: string; price: number; gstApplicable?: boolean }; quantity: number }>, menu?: Array<{ id: string; gstApplicable?: boolean }>) {
+  const current = menu ? new Map(menu.map(item => [item.id, item.gstApplicable !== false])) : null;
+  return money(items.reduce((sum, item) => sum + ((current?.get(item.menuItem.id) ?? (item.menuItem.gstApplicable !== false)) ? item.menuItem.price * item.quantity : 0), 0));
 }
 
 export function cafeGstColumns(tax: ReturnType<typeof calculateCafeGst>) {
@@ -41,7 +50,7 @@ export function cafeGstCollection(order: Order) {
   const cgst = money(tax.cgstAmount * fraction);
   return { billed: tax.gstAmount, collected, credit: money(tax.gstAmount - collected),
     cgst, sgst: money(collected - cgst),
-    extraCollected: money((order.total - Math.round(tax.taxableAmount)) * fraction) };
+    extraCollected: money((order.total - Math.round(Math.max(0, Number(order.subtotal || 0) + Number(order.parcelCharges || 0) - Number(order.discount || 0)))) * fraction) };
 }
 
 export function summarizeCafeGst(orders: Order[]) {

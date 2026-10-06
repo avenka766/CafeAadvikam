@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { calculateCafeGst, savedCafeGst, summarizeCafeGst, cafeGstCollection } from './cafeGst';
+import { calculateCafeGst, cafeEligibleSubtotal, savedCafeGst, summarizeCafeGst, cafeGstCollection } from './cafeGst';
 import type { Order } from '@/types';
 
 const bill = (overrides: Partial<Order> = {}): Order => ({
@@ -24,6 +24,16 @@ describe('Additional Cafe GST', () => {
     expect(tax.total).toBe(21);
     expect(calculateCafeGst(1, 1)).toMatchObject({ total: 0, gstAmount: 0 });
   });
+  it('does not add GST again to prices marked inclusive, including mixed bills and discounts', () => {
+    const items = [
+      { menuItem: { id: 'coffee', price: 40, gstApplicable: false }, quantity: 1 },
+      { menuItem: { id: 'food', price: 100, gstApplicable: true }, quantity: 1 },
+    ];
+    expect(cafeEligibleSubtotal(items)).toBe(100);
+    expect(calculateCafeGst(40, 0, 0, true, 0)).toMatchObject({ total: 40, gstAmount: 0, taxableAmount: 0 });
+    expect(calculateCafeGst(140, 14, 0, true, cafeEligibleSubtotal(items))).toMatchObject({ total: 131, gstAmount: 4.5, taxableAmount: 90 });
+    expect(cafeEligibleSubtotal(items, [{ id: 'coffee', gstApplicable: true }, { id: 'food', gstApplicable: true }])).toBe(140);
+  });
   it('does not invent GST on a legacy receipt or recompute a saved snapshot', () => {
     expect(savedCafeGst({})).toMatchObject({ gstEnabled: false, gstAmount: 0 });
     expect(savedCafeGst({ gstEnabled: true, gstRate: 5, gstAmount: 8, cgstAmount: 4, sgstAmount: 4 })).toMatchObject({ gstAmount: 8 });
@@ -45,3 +55,4 @@ describe('Additional Cafe GST', () => {
     expect(cafeGstCollection(bill({ subtotal: 10, ...calculateCafeGst(10) }))).toMatchObject({ collected: 0.5, extraCollected: 1 });
   });
 });
+
