@@ -33,6 +33,8 @@ export interface MenuItem {
   timing: string;
   enabled: boolean;
   imageUrl?: string;
+  /** Whether Cafe checkout adds 5% GST to this item. */
+  gstApplicable?: boolean;
 }
 
 export interface CartItem {
