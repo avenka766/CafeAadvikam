@@ -205,12 +205,13 @@ function AddItemSheet({ open, onClose }: { open: boolean; onClose: () => void })
   const [name,     setName]     = useState('');
   const [price,    setPrice]    = useState('');
   const [category, setCategory] = useState('');
+  const [gstApplicable, setGstApplicable] = useState(true);
   const [saving,   setSaving]   = useState(false);
   const [error,    setError]    = useState<string | null>(null);
 
   // Reset form when opened
   useEffect(() => {
-    if (open) { setName(''); setPrice(''); setCategory(menuCategories[0]?.id ?? ''); setError(null); }
+    if (open) { setName(''); setPrice(''); setCategory(menuCategories[0]?.id ?? ''); setGstApplicable(true); setError(null); }
   }, [open, menuCategories]);
 
   const selectedCat = menuCategories.find(c => c.id === category);
@@ -233,6 +234,7 @@ function AddItemSheet({ open, onClose }: { open: boolean; onClose: () => void })
       price:    parsedPrice,
       category: category,
       timing:   selectedCat?.timing ?? '',
+      gstApplicable,
     });
 
     setSaving(false);
@@ -327,6 +329,12 @@ function AddItemSheet({ open, onClose }: { open: boolean; onClose: () => void })
             )}
           </div>
 
+          <label className="flex items-center justify-between rounded-xl border border-border bg-card px-3 py-2.5 text-sm font-semibold">
+            <span>Add 5% GST at billing</span>
+            <input type="checkbox" role="switch" aria-label="Add 5% GST at billing for new item" checked={gstApplicable} onChange={e => setGstApplicable(e.target.checked)} className="size-4 accent-primary" />
+          </label>
+          <p className="text-xs text-muted-foreground">Turn off when this item's displayed price already includes GST.</p>
+
           {/* Error */}
           {error && (
             <p className="text-sm text-destructive font-medium bg-destructive/10 rounded-xl px-3 py-2">
@@ -367,6 +375,8 @@ export default function MenuManagement({ embedded = false }: { embedded?: boolea
   const [uploadingImageFor, setUploadingImageFor] = useState<string | null>(null);
   const [imageUploadError, setImageUploadError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [savingGstId, setSavingGstId] = useState<string | null>(null);
+  const [gstError, setGstError] = useState<string | null>(null);
   const menuCategories = useMenuCategories();
 
   useEffect(() => { loadMenu(); }, [loadMenu]);
@@ -427,6 +437,13 @@ export default function MenuManagement({ embedded = false }: { embedded?: boolea
     } finally {
       setSavingPrice(false);
     }
+  };
+
+  const saveGst = async (id: string, applicable: boolean) => {
+    setSavingGstId(id); setGstError(null);
+    try { await updateItem(id, { gstApplicable: applicable }); }
+    catch (err) { setGstError(err instanceof Error ? err.message : 'Could not save GST setting.'); }
+    finally { setSavingGstId(null); }
   };
 
   const enabledCount  = items.filter(i => i.enabled).length;
@@ -506,6 +523,7 @@ export default function MenuManagement({ embedded = false }: { embedded?: boolea
 
       {/* Item list */}
       <div className="px-4 py-4 space-y-2">
+        {gstError && <p role="alert" className="rounded-xl bg-red-50 p-3 text-xs font-semibold text-red-700">{gstError}</p>}
         {imageUploadError && (
           <div className="flex items-center justify-between gap-2 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-xs font-bold text-red-700">
             <span>{imageUploadError}</span>
@@ -604,6 +622,11 @@ export default function MenuManagement({ embedded = false }: { embedded?: boolea
                 )}
               </div>
             </div>
+
+            <label className="flex shrink-0 flex-col items-center gap-1 text-[10px] font-semibold text-muted-foreground">
+              <span>Add GST</span>
+              <input type="checkbox" role="switch" aria-label={`Add 5% GST at billing for ${item.name} ₹${item.price}`} checked={item.gstApplicable !== false} disabled={savingGstId === item.id} onChange={e => void saveGst(item.id, e.target.checked)} className="size-4 accent-primary disabled:opacity-50" />
+            </label>
 
             {/* Toggle */}
             <button

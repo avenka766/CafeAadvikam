@@ -221,8 +221,8 @@ export default function SalesReport() {
 
     // ── Sheet 1: Sales Report (all served orders) ─────────────────────────────
     const mainRows = dayOrders.map((o, i) => {
-      const gstBase = Math.round((o.total / 1.05) * 100) / 100;
-      const gst5    = Math.round((o.total - gstBase) * 100) / 100;
+      const gstBase = Number(o.taxableAmount || 0);
+      const gst5    = Number(o.gstAmount || 0);
       const cashAmt = o.paymentType === 'cash'  ? o.total : o.paymentType === 'part_payment' ? (o.paymentBreakdown?.cash || 0) : 0;
       const upiAmt  = o.paymentType === 'upi'   ? o.total : o.paymentType === 'part_payment' ? (o.paymentBreakdown?.upi  || 0) : 0;
       const cardAmt = o.paymentType === 'card'  ? o.total : o.paymentType === 'part_payment' ? (o.paymentBreakdown?.card || 0) : 0;
@@ -255,8 +255,8 @@ export default function SalesReport() {
 
     // ── Sheet 2: Cancelled Orders ─────────────────────────────────────────────
     const cancelRows = cancelledOrders.map((o, i) => {
-      const gstBase = Math.round((o.total / 1.05) * 100) / 100;
-      const gst5    = Math.round((o.total - gstBase) * 100) / 100;
+      const gstBase = Number(o.taxableAmount || 0);
+      const gst5    = Number(o.gstAmount || 0);
       return {
         'S.No':             i + 1,
         'Order ID':         `#${String(o.orderNumber).padStart(3, '0')}`,
@@ -279,46 +279,46 @@ export default function SalesReport() {
 
     // ── Sheet 3: CGST ─────────────────────────────────────────────────────────
     const cgstRows = dayOrders.map((o, i) => {
-      const gstBase = Math.round((o.total / 1.05) * 100) / 100;
+      const gstBase = Number(o.taxableAmount || 0);
       return {
         'S.No':             i + 1,
         'Order ID':         `#${String(o.orderNumber).padStart(3, '0')}`,
         'Date':             new Date(o.createdAt).toLocaleDateString('en-IN'),
         'Total Amount (₹)': o.total,
         'Taxable Amt (₹)':  gstBase,
-        'CGST 2.5% (₹)':   Math.round(((o.total - gstBase) / 2) * 100) / 100,
+        'CGST 2.5% (₹)':   Number(o.cgstAmount || 0),
         'Biller':           o.billedBy || '-',
       };
     });
 
     // ── Sheet 4: SGST ─────────────────────────────────────────────────────────
     const sgstRows = dayOrders.map((o, i) => {
-      const gstBase = Math.round((o.total / 1.05) * 100) / 100;
+      const gstBase = Number(o.taxableAmount || 0);
       return {
         'S.No':             i + 1,
         'Order ID':         `#${String(o.orderNumber).padStart(3, '0')}`,
         'Date':             new Date(o.createdAt).toLocaleDateString('en-IN'),
         'Total Amount (₹)': o.total,
         'Taxable Amt (₹)':  gstBase,
-        'SGST 2.5% (₹)':   Math.round(((o.total - gstBase) / 2) * 100) / 100,
+        'SGST 2.5% (₹)':   Number(o.sgstAmount || 0),
         'Biller':           o.billedBy || '-',
       };
     });
 
     // ── Sheet 5: GST Summary ──────────────────────────────────────────────────
-    const taxableTotal  = Math.round((totalRevenue / 1.05) * 100) / 100;
-    const gstCollected  = Math.round((totalRevenue - taxableTotal) * 100) / 100;
-    const cgstTotal     = Math.round((gstCollected / 2) * 100) / 100;
-    const sgstTotal     = cgstTotal;
+    const taxableTotal = dayOrders.reduce((sum,o)=>sum+Number(o.taxableAmount || 0),0);
+    const gstCollected = dayOrders.reduce((sum,o)=>sum+Number(o.gstAmount || 0),0);
+    const cgstTotal = dayOrders.reduce((sum,o)=>sum+Number(o.cgstAmount || 0),0);
+    const sgstTotal = dayOrders.reduce((sum,o)=>sum+Number(o.sgstAmount || 0),0);
 
     // GST by order rows
     const gstSummaryRows = [
       { 'Metric': 'Period', 'Value': filterMode === 'today' ? formatDisplayDate(new Date()) : `${startDate} to ${endDate}` },
       { 'Metric': 'Total Orders (Served)', 'Value': orderCount },
       { 'Metric': '', 'Value': '' },
-      { 'Metric': 'Total Revenue (incl. GST)', 'Value': totalRevenue },
+      { 'Metric': 'Total Revenue', 'Value': totalRevenue },
       { 'Metric': 'Taxable Amount', 'Value': taxableTotal },
-      { 'Metric': 'Total GST @ 5%', 'Value': gstCollected },
+      { 'Metric': 'Total Additional GST @ 5%', 'Value': gstCollected },
       { 'Metric': 'CGST @ 2.5%', 'Value': cgstTotal },
       { 'Metric': 'SGST @ 2.5%', 'Value': sgstTotal },
     ];
@@ -685,13 +685,13 @@ export default function SalesReport() {
         <div className="bg-card border border-border rounded-xl p-4">
           <h3 className="font-display text-lg font-bold text-foreground mb-3">GST Summary</h3>
           {orderCount === 0 ? <p className="text-sm font-body text-muted-foreground text-center py-4">No data</p> : (() => {
-            const taxableAmount = Math.round((totalRevenue / 1.05) * 100) / 100;
-            const totalGST = Math.round((totalRevenue - taxableAmount) * 100) / 100;
+            const taxableAmount = dayOrders.reduce((sum,o)=>sum+Number(o.taxableAmount || 0),0);
+            const totalGST = dayOrders.reduce((sum,o)=>sum+Number(o.gstAmount || 0),0);
             return (
               <div className="space-y-2">
-                <GSTRow label="Total Revenue (incl. GST)" value={formatCurrency(totalRevenue)} bold />
+                <GSTRow label="Total Revenue" value={formatCurrency(totalRevenue)} bold />
                 <GSTRow label="Taxable Amount" value={formatCurrency(taxableAmount)} />
-                <GSTRow label="GST @ 5%" value={formatCurrency(totalGST)} />
+                <GSTRow label="Additional GST @ 5%" value={formatCurrency(totalGST)} />
                 <div className="border-t border-border pt-2 mt-2">
                   <GSTRow label="CGST @ 2.5%" value={formatCurrency(Math.round((totalGST / 2) * 100) / 100)} highlight />
                   <GSTRow label="SGST @ 2.5%" value={formatCurrency(Math.round((totalGST / 2) * 100) / 100)} highlight />

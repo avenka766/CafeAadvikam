@@ -18,6 +18,7 @@ import type { Branch } from '@/branch/types';
 import { BRANCHES, BRANCH_LABELS, BRANCH_COLORS } from '@/branch/types';
 import SnbItemsTab from '@/components/admin/SnbItemsTab';
 import VrsnbItemsTab from '@/components/admin/VrsnbItemsTab';
+import MenuManagement from '@/pages/MenuManagement';
 import AdminCreditTab from '@/components/admin/AdminCreditTab';
 import AdminDispatchDetailsTab from '@/components/admin/AdminDispatchDetailsTab';
 import { useSortableRows, SortableTh } from '@/components/admin/SortableTable';
@@ -307,7 +308,7 @@ function AdminDashboard() {
   }, []);
   const [expandedBillId, setExpandedBillId] = useState<string | null>(null);
   const [billSearch, setBillSearch] = useState('');
-  const [itemsSection, setItemsSection] = useState<'snb' | 'vrsnb'>('snb');
+  const [itemsSection, setItemsSection] = useState<'snb' | 'vrsnb' | 'cafe'>('cafe');
   // Audit tab filters
   const [auditSearch, setAuditSearch] = useState('');
   const [auditBranchFilter, setAuditBranchFilter] = useState<Branch | 'all'>('all');
@@ -2663,7 +2664,11 @@ function AdminDashboard() {
   const ItemsTab = (
     <div className="space-y-5">
       <Panel title="Item Controls" subtitle="Items without stock are marked unavailable and cannot be billed from the branch billing flow.">
-        <div className="mb-4 grid gap-2 sm:grid-cols-2">
+        <div className="mb-4 grid gap-2 sm:grid-cols-3">
+          <button onClick={() => setItemsSection('cafe')} className={cn('rounded-2xl border p-4 text-left transition', itemsSection === 'cafe' ? 'border-slate-950 bg-slate-950 text-white' : 'border-slate-200 bg-white hover:bg-slate-50')}>
+            <p className="font-black">Cafe Items</p>
+            <p className={cn('mt-1 text-xs', itemsSection === 'cafe' ? 'text-white/70' : 'text-slate-500')}>Price and item GST controls for Cafe billing</p>
+          </button>
           <button onClick={() => setItemsSection('snb')} className={cn('rounded-2xl border p-4 text-left transition', itemsSection === 'snb' ? 'border-slate-950 bg-slate-950 text-white' : 'border-slate-200 bg-white hover:bg-slate-50')}>
             <p className="font-black">SNB Items</p>
             <p className={cn('mt-1 text-xs', itemsSection === 'snb' ? 'text-white/70' : 'text-slate-500')}>Shared SNB and Hosur bakery price list with stock badges</p>
@@ -2673,7 +2678,7 @@ function AdminDashboard() {
             <p className={cn('mt-1 text-xs', itemsSection === 'vrsnb' ? 'text-white/70' : 'text-slate-500')}>VRSNB item list with stock validation visibility</p>
           </button>
         </div>
-        {itemsSection === 'snb' ? <SnbItemsTab /> : <VrsnbItemsTab />}
+        {itemsSection === 'cafe' ? <MenuManagement embedded /> : itemsSection === 'snb' ? <SnbItemsTab /> : <VrsnbItemsTab />}
       </Panel>
     </div>
   );

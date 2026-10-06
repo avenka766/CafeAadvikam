@@ -1,4 +1,4 @@
-import { calculateCafeGst, savedCafeGst, CAFE_GST_COLUMNS } from '@/lib/cafeGst';
+import { calculateCafeGst, cafeEligibleSubtotal, savedCafeGst, CAFE_GST_COLUMNS } from '@/lib/cafeGst';
 import { CafeGstControl } from '@/components/features/CafeGstControl';
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { useOrderStore, dbRowToOrder } from '@/stores/orderStore';
@@ -605,7 +605,7 @@ function receiptTotals(order: Order, payable: number, extraRows = ''): string {
     ${parcelCharges > 0 ? kvRow(['', 'Parcel', String(Math.round(parcelCharges))]) : ''}
     ${Number(order.discount || 0) > 0 ? kvRow(['', 'Discount', `-${Math.round(Number(order.discount))}`]) : ''}
     ${Math.abs(roundOff) >= 0.005 ? kvRow(['', 'Round off', `${roundOff >= 0 ? '+' : ''}${roundOff.toFixed(2)}`]) : ''}
-    ${tax.gstEnabled ? kvRow(['', 'CGST (2.5%)', tax.cgstAmount.toFixed(2)]) + kvRow(['', 'SGST (2.5%)', tax.sgstAmount.toFixed(2)]) + kvRow(['', 'Total GST (5%)', tax.gstAmount.toFixed(2)]) : order.gstRate === 0 ? kvRow(['', 'GST', 'Off']) : ''}
+    ${tax.gstEnabled ? kvRow(['', 'CGST (2.5%)', tax.cgstAmount.toFixed(2)]) + kvRow(['', 'SGST (2.5%)', tax.sgstAmount.toFixed(2)]) + kvRow(['', 'Additional GST (5%)', tax.gstAmount.toFixed(2)]) : order.gstRate === 0 ? kvRow(['', 'GST', 'Off']) : ''}
     ${extraRows}
     <div class="solid"></div>
     ${kvRow(['Grand Total', moneyHtml(payable)], { big: true })}
@@ -2434,7 +2434,7 @@ function NewBillPanel() {
       const combinedParcel = allSources.reduce((s, o) => s + (o.parcelCharges || 0), 0);
       const sourceTaxes = allSources.map(o => calculateCafeGst(
         o.items.reduce((sum, i) => sum + i.menuItem.price * i.quantity, 0),
-        o === freshRunning ? 0 : o.discount, o.parcelCharges || 0, gstEnabled));
+        o === freshRunning ? 0 : o.discount, o.parcelCharges || 0, gstEnabled, cafeEligibleSubtotal(o.items, items)));
       const combinedTax = {
         gstEnabled, gstRate: gstEnabled ? 5 : 0,
         taxableAmount: sourceTaxes.reduce((sum, t) => sum + t.taxableAmount, 0),
@@ -2638,11 +2638,17 @@ function NewBillPanel() {
     ? 0
     : Math.min(Math.max(0, itemsSubtotal - manualDiscountAmount), Number(promotionEvaluation.discount || 0));
   const combinedDiscount = Math.min(itemsSubtotal, manualDiscountAmount + promotionDiscount);
-  const gst = calculateCafeGst(itemsSubtotal, combinedDiscount, parcelCharges, gstEnabled);
+  const taxableDraftItems = [
+    ...cart,
+    ...(orderType === 'dine_in' && runningOrder ? runningOrder.items : []),
+    ...customItems.map(ci => ({ menuItem: { id: ci.id, price: ci.price, gstApplicable: true }, quantity: ci.qty })),
+  ];
+  const eligibleSubtotal = cafeEligibleSubtotal(taxableDraftItems, items);
+  const gst = calculateCafeGst(itemsSubtotal, combinedDiscount, parcelCharges, gstEnabled, eligibleSubtotal);
   const { total, roundOff } = gst;
   const combinedPreviewTaxes = [
-    ...(runningOrder || !allEmptyForGst() ? [calculateCafeGst(itemsSubtotal, 0, parcelCharges, gstEnabled)] : []),
-    ...incomingTableOrders.map(o => calculateCafeGst(o.subtotal, o.discount, o.parcelCharges || 0, gstEnabled)),
+    ...(runningOrder || !allEmptyForGst() ? [calculateCafeGst(itemsSubtotal, 0, parcelCharges, gstEnabled, eligibleSubtotal)] : []),
+    ...incomingTableOrders.map(o => calculateCafeGst(o.subtotal, o.discount, o.parcelCharges || 0, gstEnabled, cafeEligibleSubtotal(o.items, items))),
   ];
   function allEmptyForGst() { return cart.length === 0 && customItems.length === 0; }
   const combinedPreview = combinedPreviewTaxes.reduce((sum, tax) => ({
@@ -3400,7 +3406,7 @@ function NewBillPanel() {
             }
           </p>
           {lastBill && <div className="mt-3 space-y-1 text-sm">
-            <p>GST (5%): ₹{Number(lastBill.gstAmount || 0).toFixed(2)}{!lastBill.gstEnabled ? ' — Off' : ''}</p>
+            <p>Additional GST (5%): ₹{Number(lastBill.gstAmount || 0).toFixed(2)}{!lastBill.gstEnabled ? ' — Off' : ''}</p>
             <p className="font-bold text-lg">Final total: {formatCurrency(lastBill.total)}</p>
           </div>}
         </div>
@@ -5148,3 +5154,4 @@ export default function BillingDashboard() {
   );
 
 }
+
