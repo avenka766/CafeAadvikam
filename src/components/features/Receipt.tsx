@@ -216,7 +216,7 @@ table{width:100%;border-collapse:collapse}td{padding:1px 2px;vertical-align:top}
               {tax.gstEnabled && <>
                 <tr><td /><td className="text-right">CGST (2.5%)</td><td className="text-right tabular-nums pl-3">{fmt(tax.cgstAmount)}</td></tr>
                 <tr><td /><td className="text-right">SGST (2.5%)</td><td className="text-right tabular-nums pl-3">{fmt(tax.sgstAmount)}</td></tr>
-                <tr><td /><td className="text-right">Total GST (5%)</td><td className="text-right tabular-nums pl-3">{fmt(tax.gstAmount)}</td></tr>
+                <tr><td /><td className="text-right">Additional GST (5%)</td><td className="text-right tabular-nums pl-3">{fmt(tax.gstAmount)}</td></tr>
               </>}
               {order.gstRate === 0 && <tr><td /><td className="text-right">GST</td><td className="text-right">Off</td></tr>}
               {order.discount > 0 && <tr><td /><td className="text-right">Discount</td><td className="text-right">-{fmt(order.discount)}</td></tr>}
@@ -257,3 +257,4 @@ table{width:100%;border-collapse:collapse}td{padding:1px 2px;vertical-align:top}
     </div>
   );
 }
+

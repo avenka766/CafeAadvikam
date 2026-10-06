@@ -1,8 +1,9 @@
-import { calculateCafeGst } from '@/lib/cafeGst';
+import { calculateCafeGst, cafeEligibleSubtotal } from '@/lib/cafeGst';
 import { CafeGstControl } from './CafeGstControl';
 import { useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useOrderStore } from '@/stores/orderStore';
+import { useMenuStore } from '@/stores/menuStore';
 import { useAuthStore } from '@/stores/authStore';
 import { formatCurrency, formatTime } from '@/lib/utils';
 import { ORDER_STATUS_LABELS, ORDER_STATUS_COLORS } from '@/constants/config';
@@ -52,7 +53,9 @@ export default function OrderCard({ order, showActions = false, counterOpenedTod
   const [discValue, setDiscValue] = useState('');
   const [showPayment, setShowPayment] = useState(false);
   const [gstEnabled, setGstEnabled] = useState(true);
-  const gst = calculateCafeGst(order.subtotal, order.discount, order.parcelCharges || 0, gstEnabled);
+  const menuItems = useMenuStore(state => state.items);
+  const eligibleSubtotal = cafeEligibleSubtotal(order.items, order.paymentType === 'unpaid' ? menuItems : undefined);
+  const gst = calculateCafeGst(order.subtotal, order.discount, order.parcelCharges || 0, gstEnabled, eligibleSubtotal);
   const paymentTotal = order.paymentType === 'unpaid' ? gst.total : order.total;
   const [showCancelPrompt, setShowCancelPrompt] = useState(false);
   const [cancelReason, setCancelReason] = useState('');

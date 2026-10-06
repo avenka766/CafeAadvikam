@@ -48,7 +48,7 @@ describe('Cafe GST display and receipts', () => {
     const html = renderToStaticMarkup(<Receipt order={order} onClose={() => {}} />);
     expect(html).toContain('CGST (2.5%)');
     expect(html).toContain('SGST (2.5%)');
-    expect(html).toContain('Total GST (5%)');
+    expect(html).toContain('Additional GST (5%)');
     expect(html).toContain('>5.00<');
     expect(html).toContain('>2.50<');
     expect(html).toContain('₹105');
@@ -64,3 +64,4 @@ describe('Cafe GST display and receipts', () => {
     expect(old).toContain('₹100');
   });
 });
+
