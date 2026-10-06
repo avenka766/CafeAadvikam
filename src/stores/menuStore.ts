@@ -36,7 +36,7 @@ export const useMenuStore = create<MenuState>()((set, get) => ({
     try {
       const { data, error } = await supabase
         .from('menu_items')
-        .select('id, name, price, category, timing, enabled, image_url')
+        .select('id, name, price, category, timing, enabled, image_url, gst_applicable')
         .order('id', { ascending: true });
 
       if (!error && data) {
@@ -48,6 +48,7 @@ export const useMenuStore = create<MenuState>()((set, get) => ({
           timing: d.timing,
           enabled: d.enabled,
           imageUrl: d.image_url || undefined,
+          gstApplicable: d.gst_applicable !== false,
         }));
         set({ items, loaded: true, loadedAt: Date.now() });
       }
@@ -88,8 +89,9 @@ export const useMenuStore = create<MenuState>()((set, get) => ({
     if (updates.price !== undefined) dbUpdates.price = updates.price;
     if (updates.name !== undefined) dbUpdates.name = updates.name;
     if (updates.enabled !== undefined) dbUpdates.enabled = updates.enabled;
+    if (updates.gstApplicable !== undefined) dbUpdates.gst_applicable = updates.gstApplicable;
     if (Object.keys(dbUpdates).length === 0) return;
-    const { error } = await supabase.from('menu_items').update(dbUpdates).eq('id', id);
+    const { error } = await supabase.from('menu_items').update(dbUpdates).eq('id', id).select('id').single();
     if (error) {
       // Rollback on DB failure
       set((state) => ({
@@ -150,6 +152,7 @@ export const useMenuStore = create<MenuState>()((set, get) => ({
         category:   item.category,
         timing:     item.timing,
         enabled:    true,
+        gst_applicable: item.gstApplicable !== false,
       })
       .select()
       .single();
@@ -162,6 +165,7 @@ export const useMenuStore = create<MenuState>()((set, get) => ({
       timing:   data.timing,
       enabled:  data.enabled,
       imageUrl: data.image_url || undefined,
+      gstApplicable: data.gst_applicable !== false,
     };
     set((s) => ({ items: [...s.items, newItem] }));
     return null;
@@ -199,6 +203,7 @@ export const useMenuStore = create<MenuState>()((set, get) => ({
           timing: d.timing as MenuItem['timing'],
           enabled: Boolean(d.enabled),
           imageUrl: (d.image_url as string | null) || undefined,
+          gstApplicable: d.gst_applicable !== false,
         };
         set((state) => ({
           items: state.items.some((item) => item.id === id)
@@ -229,3 +234,4 @@ export const useMenuStore = create<MenuState>()((set, get) => ({
     }
   },
 }));
+

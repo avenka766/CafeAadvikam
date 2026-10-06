@@ -1,4 +1,4 @@
-import { calculateCafeGst, cafeGstColumns, CAFE_GST_COLUMNS } from '@/lib/cafeGst';
+import { calculateCafeGst, cafeEligibleSubtotal, cafeGstColumns, CAFE_GST_COLUMNS } from '@/lib/cafeGst';
 import { create } from 'zustand';
 import { supabase } from '@/lib/supabase';
 import type { CartItem, MenuItem, Order, OrderType, OrderStatus, PaymentType, PaymentBreakdown, OrderSource } from '@/types';
@@ -435,7 +435,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     // capped/rounded `discount` sensibly; this just folds it into the order
     // record so it isn't silently dropped from the bill total.
     const discount = Math.max(0, Math.min(subtotal, Number(params.discount ?? 0)));
-    const gst = params.gstEnabled === undefined ? undefined : calculateCafeGst(subtotal, discount, parcelCharges, params.gstEnabled);
+    const gst = params.gstEnabled === undefined ? undefined : calculateCafeGst(subtotal, discount, parcelCharges, params.gstEnabled, cafeEligibleSubtotal(cart, useMenuStore.getState().items));
     const total = gst?.total ?? Math.round(Math.max(0, subtotal + parcelCharges - discount));
     const orderId = generateId();
     const now = new Date().toISOString();
@@ -505,7 +505,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       throw new Error(`Failed to submit order: ${error.message}`);
     }
 
-    set(state => ({ orders: state.orders.map(o => o.id === orderId ? { ...o, orderNumber: Number(saved.order_number) } : o) }));
+    set(state => ({ orders: state.orders.map(o => o.id === orderId ? { ...o, ...dbRowToOrder(saved as Record<string, unknown>), orderNumber: Number(saved.order_number) } : o) }));
     return orderId;
   },
 
@@ -608,7 +608,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       console.error('[submitAdvanceOrder] Supabase insert failed:', error);
       throw new Error(`Failed to submit advance order: ${error.message}`);
     }
-    set(state => ({ orders: state.orders.map(o => o.id === orderId ? { ...o, orderNumber: Number(saved.order_number) } : o) }));
+    set(state => ({ orders: state.orders.map(o => o.id === orderId ? { ...o, ...dbRowToOrder(saved as Record<string, unknown>), orderNumber: Number(saved.order_number) } : o) }));
     return orderId;
   },
 
@@ -748,19 +748,23 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       console.warn('[setPaymentType] order already billed or cancelled; aborting', orderId);
       return;
     }
-    const gst = calculateCafeGst(order.subtotal, order.discount, order.parcelCharges || 0, gstEnabled);
+    const currentMenu = new Map(useMenuStore.getState().items.map(i => [i.id, i.gstApplicable !== false]));
+    const refreshedItems = order.items.map(line => ({ ...line, menuItem: {
+      ...line.menuItem, gstApplicable: currentMenu.get(line.menuItem.id) ?? line.menuItem.gstApplicable !== false,
+    } }));
+    const gst = calculateCafeGst(order.subtotal, order.discount, order.parcelCharges || 0, gstEnabled, cafeEligibleSubtotal(refreshedItems));
     if (paymentType === 'part_payment') validatePaymentBreakdown(breakdown, gst.total);
     const prev = get().orders;
     const now = new Date().toISOString();
     const updates: Record<string, unknown> = {
       payment_type: paymentType, billed_by: billedBy, updated_at: now,
-      ...cafeGstColumns(gst), total: gst.total,
+      ...cafeGstColumns(gst), items: refreshedItems, total: gst.total,
     };
     if (breakdown) updates.payment_breakdown = breakdown;
 
     set((state) => ({
       orders: state.orders.map((o) =>
-        o.id === orderId ? { ...o, ...gst, paymentType, billedBy, updatedAt: now, ...(breakdown ? { paymentBreakdown: breakdown } : {}) } : o,
+        o.id === orderId ? { ...o, ...gst, items: refreshedItems, paymentType, billedBy, updatedAt: now, ...(breakdown ? { paymentBreakdown: breakdown } : {}) } : o,
       ),
     }));
 
@@ -768,7 +772,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       .update(updates)
       .eq('id', orderId)
       .eq('updated_at', order.updatedAt)
-      .select('id');
+      .select('*');
 
     if (error || !lockData || lockData.length === 0) {
       set({ orders: prev });
@@ -776,6 +780,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
         ? 'Order was modified by someone else. Please refresh.'
         : 'Failed to set payment type');
     }
+    set(state => ({ orders: state.orders.map(o => o.id === orderId ? dbRowToOrder(lockData[0] as Record<string, unknown>) : o) }));
   },
 
   setAdvancePayment: async (orderId, advanceAmount, advancePaidBy, billedBy) => {
@@ -887,7 +892,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       set({ orders: prev });
       throw new Error(`Failed to record balance payment: ${error.message}`);
     }
-    set(state => ({ orders: state.orders.map(o => o.id === balanceOrderId ? { ...o, orderNumber: Number(saved.order_number) } : o) }));
+    set(state => ({ orders: state.orders.map(o => o.id === balanceOrderId ? { ...o, ...dbRowToOrder(saved as Record<string, unknown>), orderNumber: Number(saved.order_number) } : o) }));
 
   },
 
@@ -1076,3 +1081,4 @@ registerReplayHandler('cafe_advance_order_submit', async (_kind, payload) => {
   }));
   return { ok: true };
 });
+
