@@ -579,7 +579,7 @@ export default function AdminSNBDashboard() {
   const [lowSearch, setLowSearch] = useState("");
   const [notice, setNotice] = useState("");
   const adminLedger = useBranchLedger(fromDate, toDate, [BRANCH]);
-  const dbReports = useSnbAdminReports(fromDate, toDate);
+  const dbReports = useSnbAdminReports(fromDate, toDate, tab);
 
   const userName =
     currentUser?.username || currentUser?.displayName || "SNB Admin";
