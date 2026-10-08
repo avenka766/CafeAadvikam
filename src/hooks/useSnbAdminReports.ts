@@ -1,3 +1,4 @@
+import { loadSnbCanonicalHistory } from "@/lib/snbCanonicalHistory";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import type { BranchBillRecord, ReturnRecord } from "@/branch/branchOpsStore";
@@ -304,50 +305,7 @@ type SnbOperationHistory = {
   operationReturns: ReturnRecord[];
 };
 
-async function fetchSnbOperationHistory(fromDate: string, toDate: string): Promise<SnbOperationHistory> {
-  const pageSize = 1000;
-  const maxRows = 30000;
-  const rows: Array<{ record_type: string; payload: unknown; created_at: string }> = [];
-  const fromIso = new Date(`${fromDate}T00:00:00+05:30`).toISOString();
-  const toExclusive = new Date(`${toDate}T00:00:00+05:30`);
-  toExclusive.setDate(toExclusive.getDate() + 1);
-
-  for (let from = 0; from < maxRows; from += pageSize) {
-    // EGRESS FIX (2026-08-15): this used to select the full payload JSONB
-    // from branch_operation_records directly — up to 30,000 rows per date
-    // range, each carrying ~35 fields (wallet/promotion/tax breakdown/print
-    // count/etc.) even though only ~10 are ever read below. Querying the
-    // branch_operation_records_sales_slim view instead returns the exact
-    // same {record_type, payload, created_at} shape, pre-trimmed
-    // server-side to just the fields this function's callers use — see the
-    // view definition for the full field list and the measured size
-    // reduction (roughly half, on real data).
-    const { data, error } = await supabase
-      .from('branch_operation_records_sales_slim')
-      .select('record_type,payload,created_at')
-      .eq('branch', 'SNB')
-      .in('record_type', ['bill', 'advance_final_bill', 'return'])
-      .gte('created_at', fromIso)
-      .lt('created_at', toExclusive.toISOString())
-      .order('created_at', { ascending: false })
-      .range(from, from + pageSize - 1);
-    if (error) throw new Error(`branch_operation_records history: ${error.message}`);
-    const page = (data || []) as Array<{ record_type: string; payload: unknown; created_at: string }>;
-    rows.push(...page);
-    if (page.length < pageSize) break;
-  }
-
-  const bills = new Map<string, BranchBillRecord>();
-  const returns = new Map<string, ReturnRecord>();
-  rows.forEach((row) => {
-    const payload = row.payload as Partial<BranchBillRecord & ReturnRecord> | null;
-    if (!payload?.id) return;
-    const hydrated = { ...payload, createdAt: payload.createdAt || row.created_at };
-    if (row.record_type === 'return') returns.set(String(payload.id), hydrated as ReturnRecord);
-    else bills.set(String(payload.id), hydrated as BranchBillRecord);
-  });
-  return { operationBills: Array.from(bills.values()), operationReturns: Array.from(returns.values()) };
-}
+const fetchSnbOperationHistory = loadSnbCanonicalHistory;
 
 async function fetchPaged(
   table: string,
