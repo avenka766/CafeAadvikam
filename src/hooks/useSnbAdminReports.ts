@@ -1,3 +1,4 @@
+import { snbReportSources } from "@/lib/snbReportSources";
 import { loadSnbCanonicalHistory } from "@/lib/snbCanonicalHistory";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase";
@@ -411,7 +412,7 @@ export function asNumber(value: unknown) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-export function useSnbAdminReports(fromDate: string, toDate: string) {
+export function useSnbAdminReports(fromDate: string, toDate: string, tab = "reports") {
   const [data, setData] = useState<ReportState>(EMPTY);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -432,35 +433,42 @@ export function useSnbAdminReports(fromDate: string, toDate: string) {
     setError("");
     setData(EMPTY);
     const range = { fromDate, toDate };
-    const results = await Promise.allSettled([
-      fetchPaged("snb_counter_calculated_totals", { ...range, dateColumn: "business_date", orderColumn: "business_date", columns: "counter_session_id,business_date,cashier_user_id,cashier_username,opening_cash,bill_count,gross_sales,billed_total,discounts,cash_sales,upi_sales,card_sales,credit_sales,credit_collected,credit_cash_collected,credit_upi_collected,credit_card_collected,credit_bank_collected,advance_collected,advance_cash_collected,returns,cash_refunds,net_sales,expected_cash_before_outflows" }),
-      fetchPaged("branch_counter_sessions", { ...range, dateColumn: "business_date", orderColumn: "opened_at", branchColumn: "branch", columns: "id,branch,business_date,cashier_user_id,cashier_username,cashier_display_name,opening_cash,opened_at,status,gross_sales,discounts,returns,net_sales,cash_sales,upi_sales,card_sales,credit_sales,credit_collected,advance_collected,refunds,expenses,supplier_payments,bank_deposits,expected_cash,counted_cash,difference,bill_count,notes,closed_at,closed_by_username,credit_cash_collected,credit_upi_collected,credit_card_collected,credit_bank_collected,advance_cash_collected,advance_upi_collected,advance_card_collected,cash_refunds,opening_denominations,closing_denominations" }),
-      fetchPaged("snb_daily_counter_summary", { ...range, dateColumn: "business_date", orderColumn: "business_date", columns: "business_date,closed_counter_count,open_counter_count,gross_sales,discounts,returns,net_sales,cash_sales,upi_sales,card_sales,credit_sales,credit_collected,advance_collected,expected_cash,counted_cash,difference" }),
-      fetchPaged("snb_cashier_bill_report", { ...range, dateColumn: "created_at", orderColumn: "created_at", columns: "id,bill_no,created_at,cashier_user_id,cashier_username,counter_session_id,total,discount,balance,status" }),
-      fetchPaged("snb_salesperson_bill_report", { ...range, dateColumn: "business_date", orderColumn: "created_at", columns: "bill_id,bill_no,created_at,business_date,salesperson,subtotal,discount,total,balance,status,cashier_username,counter_session_id" }),
-      fetchRangedRpc<SnbItemSalesRow>("snb_item_wise_sales_report_ranged", fromDate, toDate),
-      fetchRangedRpc<SnbCategorySalesRow>("snb_category_wise_sales_report_ranged", fromDate, toDate),
-      fetchPaged("snb_bill_discount_report", { ...range, dateColumn: "business_date", orderColumn: "bill_datetime", columns: "bill_id,bill_no,business_date,bill_datetime,cashier,salesperson,customer_name,subtotal,discount,discount_percent,tax,round_off,total,effective_discount_percent" }),
+    const tasks = [
+      () => fetchPaged("snb_counter_calculated_totals", { ...range, dateColumn: "business_date", orderColumn: "business_date", columns: "counter_session_id,business_date,cashier_user_id,cashier_username,opening_cash,bill_count,gross_sales,billed_total,discounts,cash_sales,upi_sales,card_sales,credit_sales,credit_collected,credit_cash_collected,credit_upi_collected,credit_card_collected,credit_bank_collected,advance_collected,advance_cash_collected,returns,cash_refunds,net_sales,expected_cash_before_outflows" }),
+      () => fetchPaged("branch_counter_sessions", { ...range, dateColumn: "business_date", orderColumn: "opened_at", branchColumn: "branch", columns: "id,branch,business_date,cashier_user_id,cashier_username,cashier_display_name,opening_cash,opened_at,status,gross_sales,discounts,returns,net_sales,cash_sales,upi_sales,card_sales,credit_sales,credit_collected,advance_collected,refunds,expenses,supplier_payments,bank_deposits,expected_cash,counted_cash,difference,bill_count,notes,closed_at,closed_by_username,credit_cash_collected,credit_upi_collected,credit_card_collected,credit_bank_collected,advance_cash_collected,advance_upi_collected,advance_card_collected,cash_refunds,opening_denominations,closing_denominations" }),
+      () => fetchPaged("snb_daily_counter_summary", { ...range, dateColumn: "business_date", orderColumn: "business_date", columns: "business_date,closed_counter_count,open_counter_count,gross_sales,discounts,returns,net_sales,cash_sales,upi_sales,card_sales,credit_sales,credit_collected,advance_collected,expected_cash,counted_cash,difference" }),
+      () => fetchPaged("snb_cashier_bill_report", { ...range, dateColumn: "created_at", orderColumn: "created_at", columns: "id,bill_no,created_at,cashier_user_id,cashier_username,counter_session_id,total,discount,balance,status" }),
+      () => fetchPaged("snb_salesperson_bill_report", { ...range, dateColumn: "business_date", orderColumn: "created_at", columns: "bill_id,bill_no,created_at,business_date,salesperson,subtotal,discount,total,balance,status,cashier_username,counter_session_id" }),
+      () => fetchRangedRpc<SnbItemSalesRow>("snb_item_wise_sales_report_ranged", fromDate, toDate),
+      () => fetchRangedRpc<SnbCategorySalesRow>("snb_category_wise_sales_report_ranged", fromDate, toDate),
+      () => fetchPaged("snb_bill_discount_report", { ...range, dateColumn: "business_date", orderColumn: "bill_datetime", columns: "bill_id,bill_no,business_date,bill_datetime,cashier,salesperson,customer_name,subtotal,discount,discount_percent,tax,round_off,total,effective_discount_percent" }),
       // EGRESS FIX: these two are deliberately NOT scoped to the selected date
       // range — an invoice from months ago that's still unpaid must keep
       // showing up as outstanding even when the admin is only looking at
       // "today". They previously had no bound at all though (up to 30,000
       // rows paginated, unconditionally, every refresh); capped instead so a
       // growing multi-year history can't balloon this call indefinitely.
-      fetchPaged("snb_supplier_outstanding_report", { orderColumn: "created_at", columns: "purchase_invoice_id,supplier_name,invoice_number,invoice_date,total_amount,paid_amount,balance_amount,payment_method,sync_status,created_at,updated_at", maxRows: 4000 }),
-      fetchPaged("snb_purchase_invoices", { orderColumn: "created_at", columns: "id,supplier_name,invoice_number,invoice_date,total_amount,paid_amount,balance_amount,return_amount,payment_method,sync_status,synced_at,synced_by,remarks,created_by,created_at,updated_at,revision_number,revision_pending,last_edit_reason", maxRows: 4000 }),
-      fetchPaged("snb_supplier_payments", { ...range, dateColumn: "payment_date", orderColumn: "payment_date", columns: "id,purchase_invoice_id,supplier_name,payment_date,amount,payment_method,reference_no,remarks,paid_by,paid_by_user_id,counter_session_id,payment_batch_id,batch_total,allocation_order,created_at" }),
-      fetchPaged("snb_purchase_returns", { ...range, dateColumn: "return_date", orderColumn: "created_at", columns: "id,return_no,purchase_invoice_id,supplier_name,invoice_number,return_date,reason_type,settlement_type,credit_note_no,reference_no,remarks,total_amount,entered_by,status,created_at" }),
-      fetchPaged("snb_purchase_return_items", { orderColumn: "created_at", columns: "id,purchase_return_id,purchase_invoice_item_id,item_name,quantity,unit,rate,tax,discount,line_total,item_reason,batch_no,expiry_date,stock_before,stock_after,created_at" }),
-      fetchSnbPurchaseWorkflowSnapshot(fromDate, toDate),
-      fetchSnbOperationHistory(fromDate, toDate),
-    ]);
+      () => fetchPaged("snb_supplier_outstanding_report", { orderColumn: "created_at", columns: "purchase_invoice_id,supplier_name,invoice_number,invoice_date,total_amount,paid_amount,balance_amount,payment_method,sync_status,created_at,updated_at", maxRows: 4000 }),
+      () => fetchPaged("snb_purchase_invoices", { orderColumn: "created_at", columns: "id,supplier_name,invoice_number,invoice_date,total_amount,paid_amount,balance_amount,return_amount,payment_method,sync_status,synced_at,synced_by,remarks,created_by,created_at,updated_at,revision_number,revision_pending,last_edit_reason", maxRows: 4000 }),
+      () => fetchPaged("snb_supplier_payments", { ...range, dateColumn: "payment_date", orderColumn: "payment_date", columns: "id,purchase_invoice_id,supplier_name,payment_date,amount,payment_method,reference_no,remarks,paid_by,paid_by_user_id,counter_session_id,payment_batch_id,batch_total,allocation_order,created_at" }),
+      () => fetchPaged("snb_purchase_returns", { ...range, dateColumn: "return_date", orderColumn: "created_at", columns: "id,return_no,purchase_invoice_id,supplier_name,invoice_number,return_date,reason_type,settlement_type,credit_note_no,reference_no,remarks,total_amount,entered_by,status,created_at" }),
+      () => fetchPaged("snb_purchase_return_items", { orderColumn: "created_at", columns: "id,purchase_return_id,purchase_invoice_item_id,item_name,quantity,unit,rate,tax,discount,line_total,item_reason,batch_no,expiry_date,stock_before,stock_after,created_at" }),
+      () => fetchSnbPurchaseWorkflowSnapshot(fromDate, toDate),
+      () => fetchSnbOperationHistory(fromDate, toDate),
+    ];
+    const results: PromiseSettledResult<any>[] = tasks.map(() => ({ status: "fulfilled", value: [] }));
+    results[14] = { status: 'fulfilled', value: { operationBills: [], operationReturns: [] } };
+    for (const index of snbReportSources(tab)) {
+      if (requestId !== requestIdRef.current) return;
+      try { results[index] = { status: "fulfilled", value: await tasks[index]() }; }
+      catch (reason) { results[index] = { status: "rejected", reason }; }
+    }
 
     // A slower request for an earlier date range must not replace the latest report.
     if (requestId !== requestIdRef.current) return;
 
     const workflowResult = results[13];
-    const operationHistoryResult = results[14];
+    const operationHistoryResult = results.slice(14, 15)[0];
     const workflow = workflowResult.status === "fulfilled"
       ? workflowResult.value as SnbPurchaseWorkflowSnapshot
       : null;
@@ -478,7 +486,7 @@ export function useSnbAdminReports(fromDate: string, toDate: string) {
         ? workflowResult.reason.message
         : String(workflowResult.reason);
       const directPurchaseSourcesFailed = results[8].status === "rejected" || results[9].status === "rejected";
-      if (directPurchaseSourcesFailed && !isMissingOptionalWorkflowRpc(workflowError)) errors.push(workflowError);
+      if ((snbReportSources(tab).includes(13) || directPurchaseSourcesFailed) && !isMissingOptionalWorkflowRpc(workflowError)) errors.push(workflowError);
     }
     if (operationHistoryResult.status === 'rejected') {
       errors.push(operationHistoryResult.reason instanceof Error
@@ -545,7 +553,7 @@ export function useSnbAdminReports(fromDate: string, toDate: string) {
     setError(errors.join(" | "));
     setRefreshedAt(new Date().toISOString());
     setLoading(false);
-  }, [fromDate, toDate]);
+  }, [fromDate, toDate, tab]);
 
   useEffect(() => {
     void refresh();
