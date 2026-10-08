@@ -1,3 +1,4 @@
+import { allocateReportItems } from "@/lib/reportItemAllocation";
 // src/pages/AdminSNBDashboard.tsx
 // SNB Admin Dashboard – manager control center for sales, returns, stock, purchase, balance, salesperson, closure and reports.
 import {
@@ -7251,12 +7252,34 @@ function DailyClosureTab({ userName, ...props }: any) {
 
 function HistoryTab(props: any) {
   const db = props.dbReports as ReturnType<typeof useSnbAdminReports>;
-  const historyRows = buildSalesRows(props);
-  const itemsSoldRows = db.itemSales || [];
+  const historyRows = buildSalesRows({ ...props, branchBills: db.operationBills, branchReturns: db.operationReturns,
+    legacySalesRows: [], movementInRange: [], creditPaymentsInRange: [] })
+    .filter((r: any) => r.type === 'Sale')
+    .sort((a: any, b: any) => new Date(a.date).getTime() - new Date(b.date).getTime());
+  const itemMap = new Map<string, any>();
+  historyRows.forEach((r: any) => allocateReportItems(r.items || [], r.net).forEach((i: any) => {
+    const day = new Date(r.date).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+    const key = `${day}|${i.itemName}|${i.unit || ''}`;
+    const row = itemMap.get(key) || { business_date: day, item_name: i.itemName, unit: i.unit, quantity_sold: 0, gross_sales: 0, item_discount: 0, tax: 0, net_item_sales: 0, bill_count: 0 };
+    row.quantity_sold += (r.type === 'Return' ? -1 : 1) * asNumber(i.quantity);
+    row.gross_sales += (r.type === 'Return' ? -1 : 1) * asNumber(i.lineTotal);
+    row.net_item_sales += i.allocatedSales;
+    row.bill_count += 1;
+    itemMap.set(key, row);
+  }));
+  const itemsSoldRows = Array.from(itemMap.values());
   const [expandedRow, setExpandedRow] = useState<string | null>(null);
 
   const exportAll = () =>
     downloadExcelWorkbook(`SNB_History_${props.fromDate}_to_${props.toDate}.xls`, [
+      { name: 'Sales Summary', rows: [{ From: props.fromDate, To: props.toDate,
+        SalesBeforeReturns: db.operationBills.reduce((s, b) => s + b.total, 0),
+        Returns: db.operationReturns.reduce((s, r) => s + r.total, 0),
+        NetSales: historyRows.reduce((s: number, r: any) => s + r.net, 0) - db.operationReturns.reduce((s, r) => s + r.total, 0),
+        CreditSalesIncluded: db.operationBills.filter(b => b.paymentMode === 'credit').reduce((s, b) => s + b.total, 0),
+        Bills: db.operationBills.length,
+        Notes: 'Main billing ledger. Branch History and Bill Items SalesContribution sum to sales before returns. Returns are separate. Credit collections and advances are not additional sales.' }] },
+      { name: 'Returns', rows: db.operationReturns.map(r => ({ ReturnNo: r.returnNo, OriginalBill: r.originalBillNo, Date: fmtDateTime(r.createdAt), Amount: r.total, Reason: r.reason })) },
       {
         name: "Branch History",
         rows: historyRows.map((r: any) => ({
@@ -7265,7 +7288,7 @@ function HistoryTab(props: any) {
           Date: fmtDateTime(r.date),
           Salesperson: r.person,
           Cashier: r.cashier,
-          GrossSales: r.gross,
+          SalesBeforeReturns: r.gross,
           ReturnAmount: r.returns,
           NetSales: r.net,
           Payment: r.payment,
@@ -7274,7 +7297,7 @@ function HistoryTab(props: any) {
       {
         name: "Bill Items",
         rows: historyRows.flatMap((r: any) =>
-          (r.items || []).map((item: any) => ({
+          allocateReportItems(r.items || [], r.net).map((item: any) => ({
             Type: r.type,
             BillNo: r.no,
             Date: fmtDateTime(r.date),
@@ -7286,7 +7309,10 @@ function HistoryTab(props: any) {
             UnitPrice: item.price,
             Discount: item.discount || 0,
             Tax: item.tax || 0,
-            LineTotal: item.lineTotal,
+            RecordedLineAmount: item.lineTotal,
+            BillAdjustment: item.billAdjustment,
+            Payment: r.payment,
+            SalesContribution: item.allocatedSales,
           })),
         ),
       },
@@ -7297,10 +7323,9 @@ function HistoryTab(props: any) {
           Item: row.item_name,
           Unit: row.unit || "",
           Quantity: asNumber(row.quantity_sold),
-          Gross: asNumber(row.gross_sales),
-          Discount: asNumber(row.item_discount),
-          Tax: asNumber(row.tax),
-          Net: asNumber(row.net_item_sales),
+          RecordedItemAmount: asNumber(row.gross_sales),
+          BillAdjustment: asNumber(row.net_item_sales) - asNumber(row.gross_sales),
+          SalesContribution: asNumber(row.net_item_sales),
           Bills: asNumber(row.bill_count),
         })),
       },
@@ -7309,14 +7334,14 @@ function HistoryTab(props: any) {
   return (
     <div className="space-y-4">
       <Panel
-        title="SNB Branch History"
+        title="SNB Branch History — includes credit sales; refunds shown separately"
         icon={<History className="size-4" />}
         action={
           <div className="flex flex-wrap gap-2">
             <button disabled={db.loading} className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200 disabled:opacity-50")} onClick={() => void db.refresh()}>
               <RefreshCcw className={cn("size-4", db.loading && "animate-spin")} /> Refresh
             </button>
-            <button className={cn(btnCls, "bg-slate-950 text-white")} onClick={exportAll}>
+            <button disabled={db.loading || !!db.error || !db.refreshedAt} className={cn(btnCls, "bg-slate-950 text-white disabled:opacity-50")} onClick={exportAll}>
               <Download className="size-4" />
               Export Excel
             </button>
@@ -7433,17 +7458,19 @@ function HistoryTab(props: any) {
           </table>
         </div>
       </Panel>
+      <Panel title="Refunds — deducted in Sales Summary" icon={<RotateCcw className="size-4" />}>
+        <DataTable headers={['Return No', 'Original Bill', 'Date', 'Amount']} rows={db.operationReturns.map(r => [r.returnNo, r.originalBillNo, fmtDateTime(r.createdAt), money(r.total)])} empty="No refunds in this range." />
+      </Panel>
       <Panel title="Items Sold" icon={<Package className="size-4" />}>
         <DataTable
-          headers={["Date", "Item", "Unit", "Qty", "Gross", "Discount", "Tax", "Net", "Bills"]}
+          headers={["Date", "Item", "Unit", "Qty", "Recorded Amount", "Bill Adjustment", "Sales Contribution", "Bills"]}
           rows={itemsSoldRows.map((row: any) => [
             row.business_date,
             row.item_name,
             row.unit || "-",
             asNumber(row.quantity_sold),
             money(asNumber(row.gross_sales)),
-            money(asNumber(row.item_discount)),
-            money(asNumber(row.tax)),
+            money(asNumber(row.net_item_sales) - asNumber(row.gross_sales)),
             money(asNumber(row.net_item_sales)),
             asNumber(row.bill_count),
           ])}

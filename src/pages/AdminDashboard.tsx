@@ -1,4 +1,6 @@
 import { fetchVerifiedAdminRows } from '@/lib/adminReportPaging';
+import { branchReportTotals } from '@/lib/branchReportTotals';
+import { allocateReportItems } from '@/lib/reportItemAllocation';
 import { cafeGstCollection, summarizeCafeGst } from '@/lib/cafeGst';
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ElementType, type ReactNode } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
@@ -449,6 +451,7 @@ function AdminDashboard() {
   const [realPayments, setRealPayments] = useState<Array<{ billId: string; mode: string; amount: number }>>([]);
   const [realSalesLoading, setRealSalesLoading] = useState(false);
   const [realSalesError, setRealSalesError] = useState('');
+  const [reportReturns, setReportReturns] = useState<Array<{ branch: string; amount: number }>>([]);
   // FEATURE: "Hosur Sales" tab — orders Planner has already dispatched to a
   // shop but that never got billed (bill_id still null). Found while
   // investigating why Hosur revenue always showed ₹0: Planner's Dispatch &
@@ -514,7 +517,7 @@ function AdminDashboard() {
     {
       setRealSalesLoading(true);
       setRealSalesError('');
-      setRealBills([]); setRealBillItems([]); setRealPayments([]);
+      setRealBills([]); setRealBillItems([]); setRealPayments([]); setReportReturns([]);
       const fromTs = `${fromDate}T00:00:00+05:30`;
       const toTs = `${toDate}T23:59:59.999+05:30`;
       const fromMs = new Date(fromTs).getTime();
@@ -584,7 +587,7 @@ function AdminDashboard() {
         // this filter only ever allowed 'bill_collection'/'credit_upfront',
         // so billPaidByMode's lookup missed them and every cash/UPI/card
         // column silently fell back to 0 despite a real, nonzero bill total.
-        () => fetchVerifiedAdminRows('branch_payments', fromTs, untilTs, { signal: controller.signal }),
+        () => empty(),
         // FEATURE (2026-09-05): "dont use bill number anywhere ... use
         // invoice number" — invoice_no is the real GST-sequence number
         // (SALES/26-27/N), written directly onto the bill by
@@ -654,6 +657,19 @@ function AdminDashboard() {
       if (realSalesRequestRef.current !== requestId) return;
       const err = headersRes.error || itemsRes.error || paymentsRes.error || hosurRes.error || unbilledRes.error || expensesRes.error || purchasesRes.error || salesInvoicesRes.error || walkinBillsRes.error;
       if (err) { setRealSalesError(err.message); setRealSalesLoading(false); return; }
+      const billsWithItems = new Set(branchItemRows.map(i => String(i.bill_id)));
+      const missingBreakdown = (headersRes.data as Record<string, any>[]).find(h =>
+        h.bill_type !== 'return' && !/returned|cancelled|void|deleted/i.test(h.status) && Number(h.total) !== 0 && !billsWithItems.has(String(h.id)));
+      if (missingBreakdown) {
+        setRealSalesError(`Missing item breakdown for ${missingBreakdown.bill_no}. Reconcile before exporting.`);
+        setRealSalesLoading(false); return;
+      }
+      const refundResult = await fetchAllRows<Record<string, unknown>>(() => supabase.from('branch_return_records')
+        .select('id, branch, amount, created_at').in('branch', ['SNB', 'VRSNB'])
+        .gte('created_at', fromTs).lt('created_at', untilTs).abortSignal(controller.signal));
+      if (realSalesRequestRef.current !== requestId) return;
+      if (refundResult.error) { setRealSalesError(refundResult.error.message); setRealSalesLoading(false); return; }
+      setReportReturns(refundResult.data.map(r => ({ branch: String(r.branch), amount: Number(r.amount || 0) })));
 
       // BUG FIX (audit 2026-09-02): hosur_bill_items has no branch/date column of its own,
       // so this used to fetch the ENTIRE table (up to fetchAllRows' 50,000-row cap) on
@@ -839,7 +855,18 @@ function AdminDashboard() {
         ...extraItemsFromJsonb(activeWalkinBills, 'id'),
       ]);
 
-      const payments = (paymentsRes.data || []) as Array<Record<string, unknown>>;
+      // Collections belong to these bills even when paid outside the selected dates.
+      const payments: Array<Record<string, unknown>> = [];
+      for (let offset = 0; offset < selectedBillIds.length; offset += 200) {
+        const result = await fetchAllRows<Record<string, unknown>>(() => supabase.from('branch_sale_payments')
+          .select('id, bill_id, payment_mode, amount, created_at')
+          .in('bill_id', selectedBillIds.slice(offset, offset + 200))
+          .in('payment_purpose', ['bill_collection', 'credit_upfront', 'advance_balance', 'credit_settlement'])
+          .abortSignal(controller.signal));
+        if (realSalesRequestRef.current !== requestId) return;
+        if (result.error) { setRealSalesError(result.error.message); setRealSalesLoading(false); return; }
+        payments.push(...result.data);
+      }
 
       // BUG FIX (2026-09-05): "this Excel is used for GST filing" — even
       // after including 'advance_balance'/'credit_settlement' above, an
@@ -865,10 +892,11 @@ function AdminDashboard() {
       let advanceDeposits: Array<Record<string, unknown>> = [];
       if (advanceTags.length > 0) {
         const depositRes = await fetchAllRows<Record<string, unknown>>(() => supabase.from('branch_sale_payments')
-          .select('bill_no, payment_mode, amount, created_at')
+          .select('id, bill_no, payment_mode, amount, created_at')
           .eq('payment_purpose', 'advance_paid')
           .in('bill_no', advanceTags));
-        if (!depositRes.error) advanceDeposits = depositRes.data;
+        if (depositRes.error) { setRealSalesError(depositRes.error.message); setRealSalesLoading(false); return; }
+        advanceDeposits = depositRes.data;
       }
       const depositsByTag = new Map<string, Array<{ mode: string; amount: number }>>();
       advanceDeposits.forEach((d) => {
@@ -878,6 +906,7 @@ function AdminDashboard() {
         depositsByTag.set(tag, list);
       });
 
+      if (realSalesRequestRef.current !== requestId) return;
       setRealPayments([
         ...payments.map((p) => ({ billId: String(p.bill_id), mode: String(p.payment_mode ?? '').toLowerCase(), amount: Number(p.amount || 0) })),
         // The matched deposit is attributed to the FINAL bill's id (from the
@@ -1023,13 +1052,14 @@ function AdminDashboard() {
     return BRANCHES.map((branch) => {
       if (branch === 'Cafe') {
         return {
-          branch, totalSales: cafeSalesTotal, advanceCollected: 0, advanceBalanceCollected: 0,
+          branch, totalSales: cafeSalesTotal, netSales: cafeSalesTotal, advanceCollected: 0, advanceBalanceCollected: 0,
           cash: cafePaymentSplit.cash, upi: cafePaymentSplit.upi, card: cafePaymentSplit.card, credit: cafePaymentSplit.credit,
           expenses: 0, purchases: 0, returns: 0, orderCount: cafeServedOrders.length,
         };
       }
       const ledgerRows = adminLedger.closureRows.filter((row) => row.branch === branch);
-      const totalSales = ledgerRows.reduce((sum, row) => sum + adminLedger.toNumber(row.sales_total), 0);
+      const refunds = reportReturns.filter(r => r.branch === branch).reduce((sum, r) => sum + r.amount, 0);
+      const reconciled = branchReportTotals(realBills.filter(b => b.branch === branch), refunds);
       const advanceCollected = ledgerRows.reduce((sum, row) => sum + adminLedger.toNumber(row.advance_collected), 0);
       const advanceBalanceCollected = ledgerRows.reduce((sum, row) => sum + adminLedger.toNumber(row.advance_balance_collected), 0);
       const cash = ledgerRows.reduce((sum, row) => sum + adminLedger.toNumber(row.cash_total), 0);
@@ -1044,11 +1074,9 @@ function AdminDashboard() {
       // page.
       const expensesForBranch = realExpenses.filter((e) => e.branch === branch).reduce((sum, e) => sum + e.amount, 0);
       const purchasesForBranch = realPurchases.filter((p) => p.branch === branch).reduce((sum, p) => sum + p.total, 0);
-      const returnsForBranch = returns.filter((r) => r.branch === branch && inRange(r.createdAt, fromDate, toDate)).reduce((sum, r) => sum + Number(r.total || 0), 0);
-      const orderCount = ledgerRows.reduce((sum, row) => sum + Number(row.bill_count || 0), 0);
-      return { branch, totalSales, advanceCollected, advanceBalanceCollected, cash, upi, card, credit, expenses: expensesForBranch, purchases: purchasesForBranch, returns: returnsForBranch, orderCount };
+      return { branch, ...reconciled, advanceCollected, advanceBalanceCollected, cash, upi, card, credit, expenses: expensesForBranch, purchases: purchasesForBranch };
     });
-  }, [adminLedger, cafeSalesTotal, cafeServedOrders.length, cafePaymentSplit, realExpenses, realPurchases, returns, fromDate, toDate]);
+  }, [realBills, reportReturns, adminLedger, cafeSalesTotal, cafeServedOrders.length, cafePaymentSplit, realExpenses, realPurchases, returns, fromDate, toDate]);
 
   const dailySalesTrend = useMemo(() => {
     const days: Record<string, { date: string; Cafe: number; SNB: number; VRSNB: number; Hosur: number; Total: number }> = {};
@@ -1587,7 +1615,7 @@ function AdminDashboard() {
     },
     {
       name: 'Item-wise Sales', title: `Cafe Control — Item-wise Sales (${fromDate} to ${toDate})`,
-      columns: [{ header: 'Item Name', key: 'itemName', width: 28 }, { header: 'Qty Sold', key: 'qty' }, { header: 'Revenue', key: 'revenue' }, { header: 'Bills', key: 'bills' }],
+      columns: [{ header: 'Item Name', key: 'itemName', width: 28 }, { header: 'Qty Sold', key: 'qty' }, { header: 'Sales Contribution (after bill adjustments)', key: 'revenue', width: 35 }, { header: 'Bills', key: 'bills' }],
       rows: cafeItemWiseSales,
     },
     {
@@ -1920,10 +1948,10 @@ function AdminDashboard() {
   // of repeating the bill total on every item line.
   const branchItemWiseSales = useMemo(() => {
     const map = new Map<string, { itemName: string; qty: number; revenue: number; bills: number }>();
-    filteredRealBills.filter(b => !/returned|cancelled|void|deleted/i.test(b.status)).forEach(b => (realBillItemsByBillId.get(b.id) ?? []).forEach(i => {
+    filteredRealBills.filter(b => !/returned|cancelled|void|deleted/i.test(b.status)).forEach(b => allocateReportItems(realBillItemsByBillId.get(b.id) ?? [], b.total).forEach(i => {
       const row = map.get(i.itemName) ?? { itemName: i.itemName, qty: 0, revenue: 0, bills: 0 };
       row.qty += i.quantity;
-      row.revenue += i.lineTotal;
+      row.revenue += i.allocatedSales;
       row.bills += 1;
       map.set(i.itemName, row);
     }));
@@ -1940,9 +1968,9 @@ function AdminDashboard() {
   }, [billReferences.rows, realBills, branchOnlyFilter]);
   const exportBranchSalesExcel = () => exportWorkbook(`Admin_BranchSales_${fromDate}_${toDate}`, [
     {
-      name: 'Total Sales', title: `Branch Sales — Total Sales (${fromDate} to ${toDate})`,
+      name: 'Total Sales', title: `Branch Sales — ${fromDate} to ${toDate}; cash/UPI/card are collections within these dates after refunds`,
       columns: [
-        { header: 'Branch', key: 'branch' }, { header: 'Total Sales', key: 'totalSales' }, { header: 'Advance Collected', key: 'advanceCollected' },
+        { header: 'Branch', key: 'branch' }, { header: 'Sales Before Returns', key: 'totalSales' }, { header: 'Net Sales After Returns', key: 'netSales' }, { header: 'Advance Collected', key: 'advanceCollected' },
         { header: 'Advance Balance Collected', key: 'advanceBalanceCollected', width: 22 }, { header: 'Cash', key: 'cash' }, { header: 'UPI', key: 'upi' },
         { header: 'Card', key: 'card' }, { header: 'Credit', key: 'credit' }, { header: 'Expenses', key: 'expenses' }, { header: 'Purchases', key: 'purchases' },
         { header: 'Returns', key: 'returns' }, { header: 'Bills', key: 'orderCount' },
@@ -1957,15 +1985,15 @@ function AdminDashboard() {
     {
       // FEATURE (2026-09-04): standardized bill-wise column set across
       // Cafe Control / Branch Sales / Hosur Sales / Dispatch Details.
-      name: 'Bill-wise Sales', title: `Branch Sales — Bill-wise Sales (${fromDate} to ${toDate})`,
+      name: 'Bill-wise Sales', title: `Branch Sales — Bills dated ${fromDate} to ${toDate}; payments include linked collections from all dates`,
       columns: [
         { header: 'Branch', key: 'branch' }, { header: 'Bill No', key: 'billNo' }, { header: 'Date', key: 'date', width: 14 }, { header: 'Time', key: 'time', width: 12 },
         { header: 'Total Sales', key: 'totalSales' }, { header: 'Cash', key: 'cash' }, { header: 'UPI', key: 'upi' }, { header: 'Card', key: 'card' },
-        { header: 'Status', key: 'status' }, { header: 'Recorded Bill Amount', key: 'recordedAmount' }, { header: 'Salesperson', key: 'salesperson' }, { header: 'Biller', key: 'biller' },
+        { header: 'Status', key: 'status' }, { header: 'Subtotal', key: 'subtotal' }, { header: 'Discount', key: 'discount' }, { header: 'Recorded Bill Amount', key: 'recordedAmount' }, { header: 'Salesperson', key: 'salesperson' }, { header: 'Biller', key: 'biller' },
       ],
       rows: filteredRealBills.map(b => {
         const paid = billPaidByMode.get(b.id) ?? { cash: 0, upi: 0, card: 0 };
-        return { branch: b.branch, billNo: b.billNo, date: fmtDate(b.createdAt), time: fmtTime(b.createdAt), totalSales: /returned|cancelled|void|deleted/i.test(b.status) ? 0 : b.total, recordedAmount: b.total, status: b.status, cash: paid.cash, upi: paid.upi, card: paid.card, salesperson: b.salesperson, biller: b.biller };
+        return { branch: b.branch, billNo: b.billNo, date: fmtDate(b.createdAt), time: fmtTime(b.createdAt), totalSales: /returned|cancelled|void|deleted/i.test(b.status) ? 0 : b.total, subtotal: b.subtotal, discount: b.discount, recordedAmount: b.total, status: b.status, cash: paid.cash, upi: paid.upi, card: paid.card, salesperson: b.salesperson, biller: b.biller };
       }),
     },
     {
@@ -1974,10 +2002,10 @@ function AdminDashboard() {
       name: 'Bill Items', title: `Branch Sales — Bill Items (${fromDate} to ${toDate})`,
       columns: [
         { header: 'Branch', key: 'branch' }, { header: 'Bill No', key: 'billNo' }, { header: 'Date', key: 'date', width: 14 }, { header: 'Item Name', key: 'itemName', width: 28 },
-        { header: 'Qty', key: 'qty' }, { header: 'Line Total', key: 'lineTotal' },
+        { header: 'Qty', key: 'qty' }, { header: 'Recorded Line Total', key: 'lineTotal' }, { header: 'Bill Adjustment', key: 'billAdjustment' }, { header: 'Sales Contribution', key: 'allocatedSales' },
       ],
-      rows: filteredRealBills.flatMap(b => (realBillItemsByBillId.get(b.id) ?? []).map(i => ({
-        branch: b.branch, billNo: b.billNo, date: fmtDate(b.createdAt), itemName: i.itemName, qty: i.quantity, lineTotal: i.lineTotal,
+      rows: filteredRealBills.flatMap(b => allocateReportItems(realBillItemsByBillId.get(b.id) ?? [], /returned|cancelled|void|deleted/i.test(b.status) ? 0 : b.total).map(i => ({
+        branch: b.branch, billNo: b.billNo, date: fmtDate(b.createdAt), itemName: i.itemName, qty: i.quantity, lineTotal: i.lineTotal, billAdjustment: i.billAdjustment, allocatedSales: i.allocatedSales,
       }))),
     },
     { name: 'Branch Number Gaps', title: 'Numbers absent from the main ledger � amounts unknown', columns: [{ header: 'Branch', key: 'branch' }, { header: 'Missing From', key: 'missing_from' }, { header: 'Missing To', key: 'missing_to' }], rows: billReferences.gaps.filter(g => branchOnlyFilter === 'all' || g.branch === branchOnlyFilter) },
@@ -2058,13 +2086,14 @@ function AdminDashboard() {
         <KpiCard label="Total Branch Revenue" value={formatCurrency(branchSalesByBranch.filter(b => b.branch === 'VRSNB' || b.branch === 'SNB').reduce((sum, b) => sum + b.sales, 0))} icon={<TrendingUp className="size-5" />} tone="amber" />
       </div>
 
-      <Panel title="Branch Financial Detail" subtitle="Total sales, advance, expenses, purchases and returns — SNB and VRSNB, for the selected range">
+      <Panel title="Branch Financial Detail" subtitle="Sales before returns match the bill list. Net sales deduct refunds. Cash, UPI and card here are collections during the selected dates after refunds; bill rows include linked payments from all dates.">
         <div className="overflow-x-auto">
           <table className="w-full min-w-[1100px] text-sm">
             <thead>
               <tr className="border-b bg-slate-50 text-left text-xs uppercase text-slate-500">
                 <th className="p-3">Branch</th>
-                <th className="p-3 text-right">Total Sales</th>
+                <th className="p-3 text-right">Sales Before Returns</th>
+                <th className="p-3 text-right">Net Sales After Returns</th>
                 <th className="p-3 text-right">Advance Collected</th>
                 <th className="p-3 text-right">Advance Balance Collected</th>
                 <th className="p-3 text-right">Cash</th>
@@ -2082,6 +2111,7 @@ function AdminDashboard() {
                 <tr key={row.branch} className="hover:bg-slate-50">
                   <td className="p-3"><BranchPill branch={row.branch} /></td>
                   <td className="p-3 text-right font-black">{formatCurrency(row.totalSales)}</td>
+                  <td className="p-3 text-right tabular-nums">{formatCurrency(row.netSales)}</td>
                   <td className="p-3 text-right tabular-nums">{formatCurrency(row.advanceCollected)}</td>
                   <td className="p-3 text-right tabular-nums">{formatCurrency(row.advanceBalanceCollected)}</td>
                   <td className="p-3 text-right tabular-nums">{formatCurrency(row.cash)}</td>
@@ -2169,7 +2199,7 @@ function AdminDashboard() {
                       <tr onClick={() => setExpandedBillId(expanded ? null : b.id)} className="cursor-pointer hover:bg-slate-50">
                         <td className="p-3"><ChevronDown className={cn('size-4 text-slate-400 transition-transform', expanded && 'rotate-180')} /></td>
                         <td className="p-3"><BranchPill branch={b.branch} /></td>
-                        <td className="p-3 font-semibold">{b.billNo || '—'}{b.status === 'returned' && <span className="ml-2 rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-black uppercase text-red-700">Returned</span>}</td>
+                        <td className="p-3 font-semibold">{b.billNo || '—'}{/returned|cancelled|void|deleted/i.test(b.status) && <span className="ml-2 rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-black uppercase text-red-700">{b.status} — excluded from sales</span>}</td>
                         <td className="p-3 text-right tabular-nums text-slate-500">{items.length}</td>
                         <td className="p-3 text-right font-black">{formatCurrency(b.total)}</td>
                         <td className="p-3 text-slate-500">{b.biller || b.salesperson || '—'}</td>
