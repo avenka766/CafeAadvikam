@@ -1851,7 +1851,7 @@ export function QuotationTab({ branch, branchStock, onOpenTab }: ModuleProps) {
 
 export function ReturnsTab({ branch, branchStock }: ModuleProps) {
   const { currentUser } = useAuthStore();
-  const { bills, returns, addReturn } = useBranchOpsStore();
+  const { returns, addReturn } = useBranchOpsStore();
   const { fetchBranchData } = useBranchStore();
   const [billNo, setBillNo] = useState('');
   const [selected, setSelected] = useState<BranchBillRecord | null>(null);
@@ -1863,17 +1863,22 @@ export function ReturnsTab({ branch, branchStock }: ModuleProps) {
 
   const find = async () => {
     const normalizedBillNo = billNo.trim();
-    let bill = bills.find((row)=>row.branch===branch && row.billNo.toLowerCase()===normalizedBillNo.toLowerCase()) || null;
-    if (!bill && normalizedBillNo) {
+    let bill: BranchBillRecord | null = null;
+    if (normalizedBillNo) {
       const { data, error } = await supabase
-        .from('branch_operation_records')
-        .select('payload')
+        .from('branch_bill_headers')
+        .select('*, branch_bill_items(*), branch_sale_payments(*)')
         .eq('branch', branch)
-        .in('record_type', ['bill', 'advance_final_bill'])
-        .ilike('record_no', normalizedBillNo)
-        .limit(1)
+        .neq('bill_type', 'return')
+        .ilike('bill_no', normalizedBillNo)
         .maybeSingle();
-      if (!error && data?.payload) bill = data.payload as BranchBillRecord;
+      if (error) { setSelected(null); setReturnError(`Bill could not load: ${error.message}`); return; }
+      if (data) {
+        bill = mapLedgerBillRow(data as LedgerBillRow, branch);
+        if (!Number.isFinite(Number(data.total)) || !bill.items.length || /cancelled|returned/i.test(data.status)) {
+          setSelected(null); setReturnError('This bill is cancelled, returned or has an incomplete item breakdown.'); return;
+        }
+      }
     }
     setSelected(bill);
     setQtys({});
@@ -1890,6 +1895,9 @@ export function ReturnsTab({ branch, branchStock }: ModuleProps) {
       return quantity > 0 ? [{ ...item, quantity, lineTotal: roundMoney(quantity * item.price) }] : [];
     });
     if (!lines.length) { setReturnError('Enter at least one return quantity.'); setReturning(false); return; }
+    if (lines.some(line => !Number.isFinite(line.quantity) || !Number.isFinite(line.lineTotal) || line.quantity > (selected.items.find(item => item.itemName === line.itemName)?.quantity || 0))) {
+      setReturnError('Return quantities must be valid and cannot exceed the sold quantities.'); setReturning(false); return;
+    }
     if (!reason.trim()) { setReturnError('Return reason is mandatory.'); setReturning(false); return; }
     try {
       const ret = await addReturn({
