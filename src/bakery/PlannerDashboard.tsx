@@ -11973,6 +11973,7 @@ function StoreAdvanceOrdersPanel({ compact = false }: { compact?: boolean }) {
   const currentUser = useAuthStore(s => s.currentUser);
   const dispatchedBy = currentUser?.displayName || currentUser?.username || 'Planner';
   const advanceOrdersByBranch = useBranchStore(s => s.advanceOrders);
+  const bakeryAdvanceOrders = useBakeryStore(s => s.orders);
   const fetchBranchData = useBranchStore(s => s.fetchBranchData);
   const [loading, setLoading] = useState(true);
   const [storeView, setStoreView] = useState<'active' | 'history'>('active');
@@ -12004,9 +12005,9 @@ function StoreAdvanceOrdersPanel({ compact = false }: { compact?: boolean }) {
   const orders = useMemo(() => {
     return (['SNB', 'VRSNB'] as const)
       .flatMap(b => advanceOrdersByBranch[b].map(o => ({ ...o, branch: b })))
-      .filter(o => (o.status === 'pending' || !!o.dispatchedAt) && o.items[0]?.orderType !== 'cake')
+      .filter(o => (o.status === 'pending' || !!o.dispatchedAt) && o.items[0]?.orderType !== 'cake' && !bakeryAdvanceOrders.some(b => parseAdvanceOrderNotes(b.notes)?.orderNo === o.orderNo))
       .sort((a, b) => (a.deliveryDate || a.createdAt).localeCompare(b.deliveryDate || b.createdAt));
-  }, [advanceOrdersByBranch]);
+  }, [advanceOrdersByBranch, bakeryAdvanceOrders]);
 
   const [dispatchingId, setDispatchingId] = useState<string | null>(null);
   const [notice, setNotice] = useState<Record<string, string>>({});
@@ -12196,7 +12197,7 @@ function AdvancePlannerOrdersTab({ orders }: { orders: BakeryOrder[] }) {
   // stock item is, since that would blur which customer's order actually
   // went out.
   const buildActionsFor = (order: BakeryOrder): PendingDispatchAction[] => {
-    return advanceDispatchProgress(order).filter(line => line.ready > 0.001).map(line => ({ orderId: order.id, itemName: line.itemName, quantity: line.ready, unit: line.unit, dispatchEntryId: crypto.randomUUID() }));
+    return advanceDispatchProgress(order).filter(line => line.ready > 0.001).map(line => ({ orderId: order.id, itemName: line.itemName, quantity: line.ready, unit: line.unit, dispatchEntryId: crypto.randomUUID(), unitPrice: order.items.find(item => item.itemName === line.itemName && (item.dispatchUnit || 'kg') === line.unit)?.advanceUnitPrice }));
 
   };
 
@@ -12336,6 +12337,7 @@ function AdvancePlannerOrdersTab({ orders }: { orders: BakeryOrder[] }) {
 // table) so it can be reprinted later — the same batch can be printed 2-3
 // times if needed, per "sometimes I should print the bill 3 times."
 export interface PendingDispatchAction {
+  unitPrice?: number;
   orderId: string;
   itemName: string;
   quantity: number;
@@ -12715,6 +12717,8 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
   }, [effectiveActions]);
 
   const priceFor = (itemName: string): number | null => {
+    const agreedPrice = actions.find(action => action.itemName === itemName && action.unitPrice != null)?.unitPrice;
+    if (agreedPrice != null) return agreedPrice;
     const override = priceOverrides[itemName];
     // BUG FIX (2026-09-03, found before deploy): this had no floor — typing
     // a negative number into the price-override box (the input itself only
@@ -13323,7 +13327,8 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
                         <td className="px-3 py-2 text-right">
                           <input
                             type="number" min={0} placeholder={loadingPrices ? '…' : '0.00'}
-                            value={priceOverrides[d.itemName] ?? (price !== null ? String(price) : '')}
+                            disabled={actions.some(action => action.itemName === d.itemName && action.unitPrice != null)}
+                            value={actions.some(action => action.itemName === d.itemName && action.unitPrice != null) ? String(price ?? '') : priceOverrides[d.itemName] ?? (price !== null ? String(price) : '')}
                             onChange={e => setPriceOverrides(v => ({ ...v, [d.itemName]: e.target.value }))}
                             className={cn('w-20 rounded-lg border px-2 py-1 text-right', missing ? 'border-red-400 bg-white' : 'border-border')}
                           />

@@ -7,6 +7,8 @@ export type WorkflowStatus = 'pending' | 'accepted' | 'store_confirmed' | 'produ
 
 export interface BakeryOrderItem {
   itemId: string;
+  /** Agreed booking rate, preserved when dispatching an advance order. */
+  advanceUnitPrice?: number;
   itemName: string;
   quantity: number;       // always in kg (for VRSNB Nos items, already converted) or natural unit
   isCustom?: boolean;
