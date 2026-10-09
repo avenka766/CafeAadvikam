@@ -1537,6 +1537,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch', c
   </div>
   {closingOrder && (
     <ClosingConfirmModal
+      key={closingOrder.order.id}
       order={closingOrder.order}
       payMode={closingOrder.payMode}
       onCancel={() => setClosingOrder(null)}
