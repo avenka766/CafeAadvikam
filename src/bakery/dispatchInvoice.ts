@@ -77,24 +77,15 @@ const SNB_BUSINESS: DispatchInvoiceBusiness = {
 // matches the owner-supplied reference invoice exactly (VRSNB FOODS LLP
 // letterhead was used there for a Hosur shop's credit bill).
 const VRSNB_FOODS_BUSINESS: DispatchInvoiceBusiness = {
-  name: 'VRSNB FOODS LLP - HO',
+  name: 'VRSNB Foods LLP',
   lines: ['109/1C, Bagalur Main Road, Berigai', 'Hosur-635105', 'Phone: 9095445444'],
   gstin: '33AAZFV1266C1ZZ',
   fssai: '12425011000098',
 };
 
 export function businessFor(scope: DispatchInvoiceScope): DispatchInvoiceBusiness {
-  // SIMPLIFICATION (2026-09-03): a cake dispatch can, in principle, belong to
-  // either SNB or VRSNB (see PackingCakeOrdersTab.tsx's per-branch grouping),
-  // but the letterhead choice isn't worth threading a second "real source
-  // branch" field through the invoice record for — in practice virtually
-  // every cake order is SNB-attributed, so 'Cake' prints SNB's letterhead.
-  // Revisit if VRSNB-branded cake invoices turn out to matter.
-  // CHANGE (2026-10-03): "In Planner Dispatch tab, for VRSNB and SNB the bill
-  // should show the VRSNB one, not Sri Nanjundeshwara Bakery" — SNB dispatch
-  // invoices now use the VRSNB FOODS LLP letterhead like VRSNB and Hosur.
-  // Only cake invoices still print the Sri Nanjundeshwara Bakery letterhead.
-  return scope === 'Cake' ? SNB_BUSINESS : VRSNB_FOODS_BUSINESS;
+  // Planner dispatch invoices use the same legal entity, including cakes.
+  return VRSNB_FOODS_BUSINESS;
 }
 
 // Default discount policy (2026-08-08): only SNB's catalog prices are
@@ -119,7 +110,7 @@ export async function nextDispatchInvoiceNo(scope: DispatchInvoiceScope): Promis
     // consistently with the rest, rather than reverting to an unrelated
     // date-stamp format. Mirrors the RPC's own prefix mapping exactly.
     const now = new Date();
-    const prefix = scope === 'SNB' || scope === 'VRSNB' ? 'TO' : scope === 'Hosur' ? 'SALES' : scope;
+    const prefix = scope === 'SNB' || scope === 'VRSNB' || scope === 'Cake' ? 'TO' : scope === 'Hosur' ? 'SALES' : scope;
     const fyStartYear = now.getMonth() + 1 >= 4 ? now.getFullYear() : now.getFullYear() - 1;
     const fy = `${String(fyStartYear % 100).padStart(2, '0')}-${String((fyStartYear + 1) % 100).padStart(2, '0')}`;
     return `${prefix}/${fy}/${String(now.getTime()).slice(-4)}`;
@@ -290,7 +281,7 @@ export async function saveDispatchInvoice(input: {
     p_is_gst_invoice: input.isGstInvoice ?? false,
     p_gst_supply_type: input.gstSupplyType ?? 'intra',
     p_invoice_no: input.invoiceNo ?? null,
-    p_number_scope: input.numberScope ?? null,
+    p_number_scope: input.numberScope ?? (input.scope === 'Cake' ? 'SNB' : null),
   }).single();
   if (error) throw error;
   const row = data as { id: string; invoice_no: string; created_at: string; paid_at: string | null };

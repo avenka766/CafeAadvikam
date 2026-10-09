@@ -1,5 +1,6 @@
 // src/bakery/PackingCakeOrdersTab.tsx
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useDispatchHistoryInvoices } from './useDispatchHistoryInvoices';
 import { Cake, Loader2, Package, Send, AlertTriangle, RefreshCcw, Receipt, Printer, RotateCcw, X, CheckCircle2, Truck, FileText, Percent, ClipboardList } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuthStore } from '@/stores/authStore';
@@ -163,6 +164,8 @@ export default function PackingCakeOrdersTab({ mode = 'packing' }: { mode?: 'pac
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [view, setView] = useState<'ready' | 'in_progress' | 'corrections' | 'custom' | 'history'>('ready');
+  const [invoiceSearch, setInvoiceSearch] = useState('');
+  const historyInvoices = useDispatchHistoryInvoices(view === 'history', orders);
   const [returnId, setReturnId] = useState<string | null>(null);
   const [returnReason, setReturnReason] = useState('');
   // FEATURE (2026-09-03): "the cake invoice should be next to that cake" —
@@ -409,7 +412,9 @@ export default function PackingCakeOrdersTab({ mode = 'packing' }: { mode?: 'pac
           so no buttons here, just the record of who dispatched it and when. */}
       {view === 'history' && (
         <div className="space-y-2.5">
-          {dispatchedOrders.map(order => (
+          <input aria-label="Search cake dispatch invoices" value={invoiceSearch} onChange={e => setInvoiceSearch(e.target.value)} placeholder="Search invoice, order, customer or flavour" className="w-full rounded-xl border p-2 text-sm" />
+          {historyInvoices.error && <p className="text-red-700">{historyInvoices.error}</p>}
+          {dispatchedOrders.filter(order => [order.order_no, order.customer_name, order.flavor, ...(historyInvoices.byOrder.get(order.id) || []).map(i => i.invoiceNo)].join(' ').toLowerCase().includes(invoiceSearch.toLowerCase())).map(order => (
             <div key={order.id} className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-emerald-200 bg-emerald-50/40 p-3.5">
               <div className="flex min-w-0 items-center gap-3">
                 <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-emerald-100">
@@ -423,6 +428,7 @@ export default function PackingCakeOrdersTab({ mode = 'packing' }: { mode?: 'pac
                     <span className="rounded-md bg-emerald-600 px-1.5 py-0.5 text-[10px] font-black text-white">Dispatched</span>
                   </div>
                   <p className="mt-0.5 truncate text-sm font-black text-foreground">{order.customer_name || 'Customer'}</p>
+                  <p className="text-xs font-bold">Invoice: {(historyInvoices.byOrder.get(order.id) || []).map(i => i.invoiceNo).join(', ') || 'Not recorded for this historical dispatch'}</p>
                   <p className="truncate text-[11px] font-bold text-muted-foreground">
                     Dispatched: <span className="font-black text-foreground">{order.prepared_quantity ?? order.cake_kg ?? '—'}</span> · {order.flavor || '—'} · {order.shape || '—'} · Delivery {fmtDate(order.delivery_date)} {order.delivery_time || ''}
                   </p>

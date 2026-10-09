@@ -1,3 +1,4 @@
+import { useDispatchHistoryInvoices } from "./useDispatchHistoryInvoices";
 // src/bakery/PlannerDashboard.tsx
 // Replaces the old Production stage (baker/sweet_master/savouries_master/
 // cookies_master/puffs_master/bakery_master) and the standalone Packing
@@ -5065,7 +5066,7 @@ const INVOICE_BUCKET_TONE: Record<InvoiceBucket, string> = {
 };
 function invoiceBucketFor(scope: string): InvoiceBucket {
   if (scope === 'SNB' || scope === 'VRSNB') return 'TO';
-  if (scope === 'Cake') return 'Cake';
+  if (scope === 'Cake') return 'TO';
   return 'SALES'; // Hosur (dispatch invoices) + Sales (walk-in bills)
 }
 interface AllInvoiceRow {
@@ -5079,6 +5080,7 @@ interface AllInvoiceRow {
   total: number;
   dispatchedBy: string;
   status: DispatchInvoiceRecord['status'];
+  searchText?: string;
   paymentMode?: string;
   paymentStatus?: string;
 }
@@ -5132,6 +5134,7 @@ function PlannerAllInvoicesTab({ active }: { active: boolean }) {
   const [fromDate, setFromDate] = useState(allInvoicesTodayInput());
   const [toDate, setToDate] = useState(allInvoicesTodayInput());
   const [invoices, setInvoices] = useState<DispatchInvoiceRecord[]>([]);
+  const [invoiceOrderSearch, setInvoiceOrderSearch] = useState(new Map<string, string>());
   const [sales, setSales] = useState<WalkinBillRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -5174,7 +5177,16 @@ function PlannerAllInvoicesTab({ active }: { active: boolean }) {
         fetchAllRows<Record<string, unknown>>('bakery_walkin_bills', (q) => q.select('*').gte('created_at', fromIso).lt('created_at', toIso).order('created_at', { ascending: false })),
         fetchAllRows<{ invoice_no: string | null; status: string }>('hosur_bills', (q) => q.select('invoice_no, status').not('invoice_no', 'is', null)),
       ]);
+      const orderSearch = new Map<string, string>();
+      const linkedIds = [...new Set(invoiceRows.filter(r => r.scope !== 'Cake').flatMap(r => (r.dispatchEntryIds || []).map(e => e.orderId)))].filter(id => /^[0-9a-f-]{36}$/i.test(id));
+      for (let offset = 0; offset < linkedIds.length; offset += 200) {
+        const { data: linkedOrders, error: linkError } = await supabase.from('bakery_orders').select('id,order_number,notes').in('id', linkedIds.slice(offset, offset + 200));
+        if (linkError) throw new Error(linkError.message);
+        (linkedOrders || []).forEach(o => orderSearch.set(o.id, `${isAdvanceOrderTagged(o.notes) ? 'Advance order' : 'Order'} ${o.order_number} ${o.notes || ''}`));
+      }
       if (loadRequestRef.current !== requestId) return;
+      setInvoiceOrderSearch(orderSearch);
+
       if (salesRes.error) throw new Error(salesRes.error);
       setInvoices(invoiceRows);
       setSales(((salesRes.data ?? []) as Record<string, unknown>[]).map(mapWalkinBill));
@@ -5217,7 +5229,7 @@ function PlannerAllInvoicesTab({ active }: { active: boolean }) {
     const fromInvoices: AllInvoiceRow[] = invoices.map(r => ({
       key: r.id, bucket: invoiceBucketFor(r.scope), scopeLabel: r.scope, invoiceNo: r.invoiceNo,
       party: r.hosurShopName || r.customerName || `${r.scope} Branch`,
-      date: r.createdAt, itemCount: r.items.length, total: r.total, dispatchedBy: r.dispatchedBy, status: r.status,
+      date: r.createdAt, itemCount: r.items.length, total: r.total, dispatchedBy: r.dispatchedBy, status: r.status, searchText: [r.scope, r.notes, ...r.items.map(i => i.itemName), ...(r.dispatchEntryIds || []).map(e => invoiceOrderSearch.get(e.orderId) || '')].join(" "),
       paymentStatus: r.scope === 'Hosur' ? hosurPaymentByInvoiceNo.get(r.invoiceNo) : undefined,
     }));
     const fromSales: AllInvoiceRow[] = sales.map(b => ({
@@ -5227,7 +5239,7 @@ function PlannerAllInvoicesTab({ active }: { active: boolean }) {
       status: b.status === 'cancelled' ? 'cancelled' : 'paid', paymentMode: b.paymentMode,
     }));
     return [...fromInvoices, ...fromSales].sort((a, b) => b.invoiceNo.localeCompare(a.invoiceNo, undefined, { numeric: true, sensitivity: 'base' }));
-  }, [invoices, sales, hosurPaymentByInvoiceNo]);
+  }, [invoices, sales, hosurPaymentByInvoiceNo, invoiceOrderSearch]);
 
   const partyOptions = useMemo(() => Array.from(new Set(rows.map(r => r.party))).sort((a, b) => a.localeCompare(b)), [rows]);
   const filteredPartyOptions = useMemo(() => {
@@ -5244,7 +5256,7 @@ function PlannerAllInvoicesTab({ active }: { active: boolean }) {
     let list = bucketFilter === 'All' ? rows : rows.filter(r => r.bucket === bucketFilter);
     if (selectedParties.size > 0) list = list.filter(r => selectedParties.has(r.party));
     const q = search.trim().toLowerCase();
-    if (q) list = list.filter(r => r.invoiceNo.toLowerCase().includes(q) || r.party.toLowerCase().includes(q) || r.dispatchedBy.toLowerCase().includes(q));
+    if (q) list = list.filter(r => r.invoiceNo.toLowerCase().includes(q) || r.party.toLowerCase().includes(q) || r.dispatchedBy.toLowerCase().includes(q) || (r.searchText || "").toLowerCase().includes(q));
     return list;
   }, [rows, bucketFilter, selectedParties, search]);
 
@@ -5303,7 +5315,6 @@ function PlannerAllInvoicesTab({ active }: { active: boolean }) {
         rows: [
           { group: 'TO — SNB & VRSNB', count: totalsByBucket.TO.count, value: totalsByBucket.TO.value },
           { group: 'SALES — Hosur & Sales', count: totalsByBucket.SALES.count, value: totalsByBucket.SALES.value },
-          { group: 'Cake', count: totalsByBucket.Cake.count, value: totalsByBucket.Cake.value },
           { group: 'Grand Total', count: grandCount, value: grandTotal },
         ],
       },
@@ -5322,7 +5333,6 @@ function PlannerAllInvoicesTab({ active }: { active: boolean }) {
         { label: 'Total Value', value: pdfMoney(grandTotal) },
         { label: 'TO (SNB/VRSNB)', value: pdfMoney(totalsByBucket.TO.value) },
         { label: 'SALES (Hosur/Sales)', value: pdfMoney(totalsByBucket.SALES.value) },
-        { label: 'Cake', value: pdfMoney(totalsByBucket.Cake.value) },
       ],
       sections: [
         {
@@ -5397,11 +5407,10 @@ function PlannerAllInvoicesTab({ active }: { active: boolean }) {
         <StatCard label="Total Invoices" value={formatCurrency(grandTotal)} icon={<IndianRupee className="size-5" />} tone="slate" helper={`${grandCount} invoices`} />
         <StatCard label="TO — SNB & VRSNB" value={formatCurrency(totalsByBucket.TO.value)} icon={<Truck className="size-5" />} tone="blue" helper={`${totalsByBucket.TO.count} invoices`} />
         <StatCard label="SALES — Hosur & Sales" value={formatCurrency(totalsByBucket.SALES.value)} icon={<Receipt className="size-5" />} tone="emerald" helper={`${totalsByBucket.SALES.count} invoices`} />
-        <StatCard label="Cake" value={formatCurrency(totalsByBucket.Cake.value)} icon={<Cake className="size-5" />} tone="amber" helper={`${totalsByBucket.Cake.count} invoices`} />
       </div>
 
       <div className="flex flex-wrap items-center gap-2 rounded-3xl border border-border bg-card p-3 shadow-sm">
-        {(['All', 'TO', 'SALES', 'Cake'] as const).map(b => (
+        {(['All', 'TO', 'SALES'] as const).map(b => (
           <button key={b} onClick={() => setBucketFilter(b)}
             className={cn('rounded-full border px-3 py-1.5 text-xs font-black transition', bucketFilter === b ? 'border-slate-950 bg-slate-950 text-white' : 'border-border bg-card text-muted-foreground hover:bg-muted')}>
             {b === 'All' ? 'All' : INVOICE_BUCKET_LABEL[b]}
@@ -11982,6 +11991,9 @@ function StoreAdvanceOrdersPanel({ compact = false }: { compact?: boolean }) {
   const advanceOrdersByBranch = useBranchStore(s => s.advanceOrders);
   const fetchBranchData = useBranchStore(s => s.fetchBranchData);
   const [loading, setLoading] = useState(true);
+  const [storeView, setStoreView] = useState<'active' | 'history'>('active');
+  const [historySearch, setHistorySearch] = useState('');
+  const historyInvoices = useDispatchHistoryInvoices(storeView === 'history', advanceOrdersByBranch);
   const refresh = useCallback(async () => {
     setLoading(true);
     try { await Promise.all([fetchBranchData('SNB', false, ['advance']), fetchBranchData('VRSNB', false, ['advance'])]); }
@@ -12008,7 +12020,7 @@ function StoreAdvanceOrdersPanel({ compact = false }: { compact?: boolean }) {
   const orders = useMemo(() => {
     return (['SNB', 'VRSNB'] as const)
       .flatMap(b => advanceOrdersByBranch[b].map(o => ({ ...o, branch: b })))
-      .filter(o => o.status === 'pending' && o.items[0]?.orderType !== 'cake')
+      .filter(o => (o.status === 'pending' || !!o.dispatchedAt) && o.items[0]?.orderType !== 'cake')
       .sort((a, b) => (a.deliveryDate || a.createdAt).localeCompare(b.deliveryDate || b.createdAt));
   }, [advanceOrdersByBranch]);
 
@@ -12027,34 +12039,13 @@ function StoreAdvanceOrdersPanel({ compact = false }: { compact?: boolean }) {
     setDispatchingId(order.id);
     setNotice(n => ({ ...n, [order.id]: '' }));
     try {
-      // Defense in depth: re-check against the DB, not local/cached state,
-      // right before writing. Catches the case where the screen shows a
-      // stale "not yet dispatched" order (e.g. left open across days) and a
-      // second dispatch is attempted for a row already dispatched earlier.
-      const { data: fresh, error: freshErr } = await supabase
-        .from('branch_advance_orders').select('dispatched_at').eq('id', order.id).maybeSingle();
-      if (freshErr) { setNotice(n => ({ ...n, [order.id]: `Could not verify order status: ${freshErr.message}` })); return; }
-      if (fresh?.dispatched_at) { setNotice(n => ({ ...n, [order.id]: 'Already dispatched — refreshing…' })); void refresh(); return; }
-      const errors: string[] = [];
-      for (const item of order.items) {
-        const ledgerResult = await recordLeftoverMovement({
-          itemName: item.itemName, unit: item.sellUnit, delta: -Math.abs(item.quantity),
-          businessDate: kolkataToday(), reason: 'dispatch', recordedBy: dispatchedBy,
-          branch: order.branch, notes: `Store advance order ${order.orderNo || order.id.slice(0, 8)}`,
-        });
-        if ('error' in ledgerResult) errors.push(`${item.itemName}: ${ledgerResult.error}`);
-        const { error: incomingErr } = await supabase.from('branch_incoming').insert({
-          dispatch_id: crypto.randomUUID(), branch: order.branch, item_name: item.itemName,
-          quantity: item.quantity, unit: item.sellUnit, received_at: new Date().toISOString(),
-          dispatched_by: dispatchedBy, confirmed: false, advance_order_no: order.orderNo || null,
-        });
-        if (incomingErr) errors.push(`${item.itemName}: ${incomingErr.message}`);
-      }
-      if (errors.length > 0) { setNotice(n => ({ ...n, [order.id]: `Dispatch incomplete — ${errors.join('; ')}` })); return; }
-      const { error: markErr } = await supabase.from('branch_advance_orders')
-        .update({ dispatched_at: new Date().toISOString(), dispatched_by: dispatchedBy })
-        .eq('id', order.id);
-      if (markErr) { setNotice(n => ({ ...n, [order.id]: `Sent, but could not mark as dispatched: ${markErr.message}. Retry so the branch sees it as delivered.` })); return; }
+      const { data: invoiceRow, error: dispatchError } = await supabase.rpc('planner_dispatch_store_advance_v1', {
+        p_order_id: order.id, p_dispatched_by: dispatchedBy,
+        p_item_slugs: order.items.map(item => closingStockItemSlug(item.itemName)),
+      });
+      if (dispatchError) throw new Error(dispatchError.message);
+      const invoice = recordFromRow(invoiceRow);
+      setNotice(n => ({ ...n, [order.id]: `Dispatched — Invoice ${invoice.invoiceNo}` }));
       // BUG FIX (2026-09-28, live incident — SNB-ADV-376): the branch's OWN
       // completion screen (BranchBusinessModules.tsx "Advance Orders" card,
       // used via "Send to Store") gates its "Confirm & Print Final Bill"
@@ -12068,8 +12059,10 @@ function StoreAdvanceOrdersPanel({ compact = false }: { compact?: boolean }) {
       // branch_advance_orders.dispatched_at was correctly set. Sync it here
       // too so both completion screens agree once this dispatch lands.
       if (order.orderNo) useBranchOpsStore.getState().updateAdvanceStoreStatusByOrderNo(order.orderNo, 'dispatched', dispatchedBy);
-      setNotice(n => ({ ...n, [order.id]: 'Dispatched — sent to branch Incoming, ready to complete.' }));
+      setNotice(n => ({ ...n, [order.id]: 'Dispatched — Invoice ' + invoice.invoiceNo }));
       void refresh();
+    } catch (error) {
+      setNotice(n => ({ ...n, [order.id]: error instanceof Error ? error.message : 'Dispatch failed.' }));
     } finally {
       dispatchLockRef.current.delete(order.id);
       setDispatchingId(null);
@@ -12100,8 +12093,14 @@ function StoreAdvanceOrdersPanel({ compact = false }: { compact?: boolean }) {
           <RefreshCw className={cn('size-3.5', loading && 'animate-spin')} />
         </button>
       </div>
+      <div className="flex flex-wrap gap-2">
+        <button onClick={() => { setStoreView('active'); setHistorySearch(''); }}>Pending</button>
+        <button onClick={() => setStoreView('history')}>Dispatched</button>
+        {storeView === 'history' && <input aria-label="Search store advance invoices" value={historySearch} onChange={e => setHistorySearch(e.target.value)} placeholder="Search invoice, order or customer" className="rounded-xl border p-2 text-sm" />}
+        {historyInvoices.error && <p className="text-red-700">{historyInvoices.error}</p>}
+      </div>
       <div className="space-y-2.5">
-        {[...pendingDispatch, ...alreadyDispatched].map(order => {
+        {(storeView === 'active' ? pendingDispatch : alreadyDispatched).filter(order => [order.orderNo, order.customerName, ...(historyInvoices.byOrder.get(order.id) || []).map(i => i.invoiceNo)].join(' ').toLowerCase().includes(historySearch.toLowerCase())).map(order => {
           const isOverdue = !!order.deliveryDate && order.deliveryDate < kolkataToday() && !order.dispatchedAt;
           return (
             <div key={order.id} className={cn(
@@ -12116,6 +12115,8 @@ function StoreAdvanceOrdersPanel({ compact = false }: { compact?: boolean }) {
                   <span className={cn('rounded-md px-1.5 py-0.5 text-[10px] font-black', order.dispatchedAt ? 'bg-emerald-600 text-white' : 'bg-teal-600 text-white')}>{order.dispatchedAt ? 'Dispatched' : 'Ready to dispatch'}</span>
                 </div>
                 <p className="mt-0.5 truncate text-sm font-black text-foreground">{order.customerName || 'Customer'}</p>
+                {order.dispatchedAt && <p className="text-xs font-bold">Invoice: {(historyInvoices.byOrder.get(order.id) || []).map(i => i.invoiceNo).join(', ') || 'Not recorded for this historical dispatch'}</p>}
+                {(historyInvoices.byOrder.get(order.id) || []).map(i => <button key={i.id} onClick={() => void printDispatchInvoice(i, 'a4')} className="mr-2 text-xs font-bold">Print {i.invoiceNo}</button>)}
                 <p className="truncate text-[11px] font-bold text-muted-foreground">Delivery {order.deliveryDate ? fmtAdvDate(order.deliveryDate) : '—'} · Balance due {formatCurrency(order.balanceDue)}</p>
                 <p className="mt-1 truncate text-[11px] font-bold text-muted-foreground">{order.items.map(i => `${i.itemName} (${i.quantity} ${i.sellUnit})`).join(', ')}</p>
               </div>
@@ -12197,7 +12198,10 @@ function AdvancePlannerOrdersTab({ orders }: { orders: BakeryOrder[] }) {
   // first, flagged Overdue on the card) so none go missing from the Planner.
   const activeOrders = advanceOrders.filter(x => x.order.status !== 'dispatched');
   const historyOrders = advanceOrders.filter(x => x.order.status === 'dispatched');
-  const visible = view === 'active' ? activeOrders : historyOrders;
+  const [invoiceSearch, setInvoiceSearch] = useState('');
+  const historyInvoices = useDispatchHistoryInvoices(view === 'history', orders);
+  const visible = view === 'active' ? activeOrders : historyOrders.filter(({ order, parsed }) =>
+    [order.orderNumber, parsed.customerName, ...order.items.map(i => i.itemName), ...(historyInvoices.byOrder.get(order.id) || []).map(i => i.invoiceNo)].join(' ').toLowerCase().includes(invoiceSearch.toLowerCase()));
 
   const [dispatchReview, setDispatchReview] = useState<{ scope: Branch; actions: PendingDispatchAction[]; orderId: string } | null>(null);
   const [dispatchNotice, setDispatchNotice] = useState<Record<string, string>>({});
@@ -12264,6 +12268,7 @@ function AdvancePlannerOrdersTab({ orders }: { orders: BakeryOrder[] }) {
         </div>
       </div>
 
+      {view === 'history' && <div className="space-y-2"><input aria-label="Search advance dispatch invoices" value={invoiceSearch} onChange={e => setInvoiceSearch(e.target.value)} placeholder="Search invoice, order, customer or item" className="w-full rounded-xl border p-2 text-sm" />{historyInvoices.error && <p className="text-red-700">{historyInvoices.error}</p>}</div>}
       {visible.length === 0 && (
         <div className="flex flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-border py-16 text-center">
           <Clock3 className="size-8 text-muted-foreground/40" />
@@ -12321,6 +12326,8 @@ function AdvancePlannerOrdersTab({ orders }: { orders: BakeryOrder[] }) {
                     <Send className="size-4" /> Dispatch to {order.targetBranch}
                   </button>
                 )}
+                {order.status === 'dispatched' && <p className="text-xs font-bold">Invoice: {(historyInvoices.byOrder.get(order.id) || []).map(i => i.invoiceNo).join(', ') || 'Not recorded for this historical dispatch'}</p>}
+                {(historyInvoices.byOrder.get(order.id) || []).map(i => <button key={i.id} onClick={() => void printDispatchInvoice(i, 'a4')} className="text-xs font-bold">Print {i.invoiceNo}</button>)}
                 {dispatchNotice[order.id] && <p className="max-w-[16rem] text-right text-[11px] font-bold text-teal-700">{dispatchNotice[order.id]}</p>}
               </div>
             </div>
@@ -12331,6 +12338,7 @@ function AdvancePlannerOrdersTab({ orders }: { orders: BakeryOrder[] }) {
       {dispatchReview && (
         <DispatchReviewModal
           scope={dispatchReview.scope}
+          invoiceNotes={`Advance order ${advanceOrders.find(x => x.order.id === dispatchReview.orderId)?.order.orderNumber || dispatchReview.orderId}`}
           actions={dispatchReview.actions}
           dispatchedBy={dispatchedBy}
           onDispatch={submitDispatch}
@@ -12489,8 +12497,9 @@ registerReplayHandler('planner_dispatch_and_invoice', async (_kind, payload) => 
   }
 });
 
-function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber, customer, actions, skippedItems, dispatchedBy, onDispatch, onClose, onDone }: {
+function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber, customer, actions, skippedItems, dispatchedBy, invoiceNotes, onDispatch, onClose, onDone }: {
   scope: Branch;
+  invoiceNotes?: string;
   hosurShop?: { id: string; name: string; phone: string } | null;
   // FEATURE (2026-09-02): "dispatch and bill and send the WhatsApp bill
   // directly when we dispatch" — the hosur_orders row id/number this review
@@ -13012,6 +13021,7 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
       const record = await saveDispatchInvoice({
         scope,
         numberScope: customer ? 'Hosur' : undefined,
+        notes: invoiceNotes,
         hosurShopId: hosurShop?.id ?? null,
         hosurShopName: hosurShop?.name ?? null,
         hosurShopPhone: hosurShop?.phone ?? null,
