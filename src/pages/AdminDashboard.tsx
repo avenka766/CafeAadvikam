@@ -451,7 +451,7 @@ function AdminDashboard() {
   const [realPayments, setRealPayments] = useState<Array<{ billId: string; mode: string; amount: number }>>([]);
   const [realSalesLoading, setRealSalesLoading] = useState(false);
   const [realSalesError, setRealSalesError] = useState('');
-  const [reportReturns, setReportReturns] = useState<Array<{ branch: string; amount: number }>>([]);
+  const [reportReturns, setReportReturns] = useState<Array<{ branch: string; amount: number; returnNo: string; originalBillNo: string; createdAt: string; reason: string; paymentMode: string; items: unknown }>>([]);
   // FEATURE: "Hosur Sales" tab — orders Planner has already dispatched to a
   // shop but that never got billed (bill_id still null). Found while
   // investigating why Hosur revenue always showed ₹0: Planner's Dispatch &
@@ -665,11 +665,11 @@ function AdminDashboard() {
         setRealSalesLoading(false); return;
       }
       const refundResult = await fetchAllRows<Record<string, unknown>>(() => supabase.from('branch_return_records')
-        .select('id, branch, amount, created_at').in('branch', ['SNB', 'VRSNB'])
+        .select('id, branch, amount, created_at, return_no, bill_no, reason, payment_mode, items').in('branch', ['SNB', 'VRSNB'])
         .gte('created_at', fromTs).lt('created_at', untilTs).abortSignal(controller.signal));
       if (realSalesRequestRef.current !== requestId) return;
       if (refundResult.error) { setRealSalesError(refundResult.error.message); setRealSalesLoading(false); return; }
-      setReportReturns(refundResult.data.map(r => ({ branch: String(r.branch), amount: Number(r.amount || 0) })));
+      setReportReturns(refundResult.data.map(r => ({ branch: String(r.branch), amount: Number(r.amount || 0), returnNo: String(r.return_no), originalBillNo: String(r.bill_no), createdAt: String(r.created_at), reason: String(r.reason || ''), paymentMode: String(r.payment_mode || ''), items: r.items })));
 
       // BUG FIX (audit 2026-09-02): hosur_bill_items has no branch/date column of its own,
       // so this used to fetch the ENTIRE table (up to fetchAllRows' 50,000-row cap) on
@@ -776,7 +776,7 @@ function AdminDashboard() {
       })));
 
       setRealBills([
-        ...headers.map((h) => ({
+        ...headers.filter(h => h.bill_type !== 'return').map((h) => ({
           id: String(h.id), billNo: String(h.bill_no ?? ''), branch: h.branch as Branch,
           total: Number(h.total || 0), subtotal: Number(h.subtotal || 0), discount: Number(h.discount || 0),
           createdAt: String(h.created_at), status: (h.status as 'original' | 'returned' | 'duplicate_printed') || 'original',
@@ -1966,7 +1966,13 @@ function AdminDashboard() {
       return { ...r, check, ledgerTotal: saved?.total ?? '', ledgerDate: saved ? fmtDateTime(saved.createdAt) : '' };
     }).filter(r => r.check);
   }, [billReferences.rows, realBills, branchOnlyFilter]);
+  const scopedReportReturns = [...reportReturns].filter(r => branchOnlyFilter === 'all' || r.branch === branchOnlyFilter).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   const exportBranchSalesExcel = () => exportWorkbook(`Admin_BranchSales_${fromDate}_${toDate}`, [
+    {
+      name: 'Returns', title: 'Separate return receipts — deducted once from net sales',
+      columns: [{ header: 'Branch', key: 'branch' }, { header: 'Return No', key: 'returnNo' }, { header: 'Original Bill No', key: 'originalBillNo' }, { header: 'Date', key: 'date' }, { header: 'Amount', key: 'amount' }, { header: 'Refund Mode', key: 'paymentMode' }, { header: 'Reason', key: 'reason' }, { header: 'Items', key: 'items', width: 60 }],
+      rows: scopedReportReturns.map(r => ({ ...r, date: fmtDateTime(r.createdAt), items: JSON.stringify(r.items || []) })),
+    },
     {
       name: 'Total Sales', title: `Branch Sales — ${fromDate} to ${toDate}; cash/UPI/card are collections within these dates after refunds`,
       columns: [
@@ -2032,6 +2038,11 @@ function AdminDashboard() {
           heading: 'Branch Financial Detail',
           columns: [{ header: 'Branch', width: 25 }, { header: 'Total Sales', width: 28, align: 'right' }, { header: 'Advance', width: 25, align: 'right' }, { header: 'Cash', width: 25, align: 'right' }, { header: 'UPI', width: 25, align: 'right' }, { header: 'Card', width: 22, align: 'right' }, { header: 'Credit', width: 25, align: 'right' }, { header: 'Expenses', width: 25, align: 'right' }, { header: 'Purchases', width: 25, align: 'right' }, { header: 'Returns', width: 25, align: 'right' }, { header: 'Bills', width: 18, align: 'right' }],
           rows: branchFinancialDetailScoped.map(r => [BRANCH_LABELS[r.branch], pdfMoney(r.totalSales), pdfMoney(r.advanceCollected), pdfMoney(r.cash), pdfMoney(r.upi), pdfMoney(r.card), pdfMoney(r.credit), pdfMoney(r.expenses), pdfMoney(r.purchases), pdfMoney(r.returns), String(r.orderCount)]),
+        },
+        {
+          heading: 'Return Receipts',
+          columns: [{ header: 'Branch', width: 20 }, { header: 'Return No', width: 28 }, { header: 'Original Bill', width: 28 }, { header: 'Amount', width: 25, align: 'right' }, { header: 'Date', width: 40 }],
+          rows: scopedReportReturns.map(r => [r.branch, r.returnNo, r.originalBillNo, pdfMoney(r.amount), fmtDateTime(r.createdAt)]),
         },
         {
           heading: filteredRealBills.length > PDF_BILL_CAP ? `Bills (first ${PDF_BILL_CAP} of ${filteredRealBills.length} — full list in Excel export)` : 'Bills',
@@ -2168,7 +2179,11 @@ function AdminDashboard() {
         {billReferences.gaps.filter(g => branchOnlyFilter === 'all' || g.branch === branchOnlyFilter).length > 0 && <div className="mb-4 rounded-xl bg-amber-50 p-4 text-amber-950"><p className="font-bold">Unresolved numbers in the main ledger</p><p>{billReferences.gaps.filter(g => branchOnlyFilter === 'all' || g.branch === branchOnlyFilter).map(g => `${g.branch}-${g.missing_from}${g.missing_to !== g.missing_from ? ` to ${g.missing_to}` : ''}`).join(', ')}</p><p className="mt-2 text-sm">These gaps are listed in Excel. They do not establish a sale or an amount; compare original receipts with the secondary references below.</p></div>}
         {billReferences.loading ? <p>Checking bill references…</p> : billReferences.error ? <p role="alert">{billReferences.error}</p> : <details open><summary className="cursor-pointer font-bold">{unmatchedBillReferences.length} references to review</summary><div className="max-h-96 overflow-auto"><table className="w-full text-sm"><thead><tr><th>Branch</th><th>Bill No</th><th>Recorded date (IST)</th><th>Amount</th><th>Status</th><th>Check</th><th>Items</th></tr></thead><tbody>{unmatchedBillReferences.map(r => <tr key={r.id}><td>{r.branch}</td><td>{r.billNo}</td><td>{fmtDateTime(r.createdAt)}</td><td>{formatCurrency(r.total)}</td><td>{r.status}</td><td>{r.check}</td><td>{r.items}</td></tr>)}</tbody></table></div></details>}
       </Panel>
-      <Panel title="Bills" subtitle={`SNB and VRSNB bills — every bill and its line items, real source of truth${realSalesLoading ? ' (loading…)' : ''}`}>
+      <Panel title="Return Receipts" subtitle="Separate return numbers linked to the original sales bill; deducted once from net sales.">
+        <div className="max-h-96 overflow-auto"><table className="w-full text-sm"><thead><tr className="text-left"><th className="p-3">Branch</th><th className="p-3">Return No</th><th className="p-3">Original Bill</th><th className="p-3">Date</th><th className="p-3">Amount</th><th className="p-3">Reason</th></tr></thead><tbody>{scopedReportReturns.map(r => <tr key={`${r.branch}|${r.returnNo}`} className="border-t"><td className="p-3">{r.branch}</td><td className="p-3">{r.returnNo}</td><td className="p-3">{r.originalBillNo}</td><td className="p-3">{fmtDateTime(r.createdAt)}</td><td className="p-3">{formatCurrency(r.amount)}</td><td className="p-3">{r.reason}</td></tr>)}</tbody></table></div>
+        {!scopedReportReturns.length && <EmptyState label="No returns in this range." />}
+      </Panel>
+      <Panel title="Bills" subtitle={`SNB and VRSNB sales bills — returns appear in their separate register${realSalesLoading ? ' (loading…)' : ''}`}>
         <ReportPager count={sortedBranchBills.length} page={branchPage} onPage={setBranchPage} />
         <div className="mb-3 flex items-center gap-2">
           <Search className="size-4 text-slate-400" />
