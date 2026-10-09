@@ -1,4 +1,5 @@
 import { useDispatchHistoryInvoices } from "./useDispatchHistoryInvoices";
+import { advanceDispatchComplete, advanceDispatchProgress } from './advanceDispatchProgress';
 // src/bakery/PlannerDashboard.tsx
 // Replaces the old Production stage (baker/sweet_master/savouries_master/
 // cookies_master/puffs_master/bakery_master) and the standalone Packing
@@ -838,6 +839,7 @@ function autoSplitForItemByBranch(orders: BakeryOrder[], itemName: string, branc
   type Share = { orderId: string; requested: number; isPcs: boolean; remaining: number; isAdvance: boolean; createdAt: string };
   const shares: Share[] = [];
   for (const o of orders) {
+    if (isAdvanceOrderTagged(o.notes)) continue;
     const item = o.items.find(i => sameItem(i.itemName, itemName));
     if (!item) continue;
     const isPcs = item.dispatchUnit === 'pcs';
@@ -1157,27 +1159,7 @@ export default function PlannerDashboard({ embedded = false }: { embedded?: bool
   // (PackingCakeOrdersTab owns its own fetch from cake_master_orders) — see
   // useCakeReadyCount for why a tiny shared count-only query was added
   // instead of duplicating that fetch here.
-  const advanceReadyCount = useMemo(() => {
-    let n = 0;
-    for (const order of orders) {
-      if (order.status === 'dispatched') continue;
-      if (!isAdvanceOrderTagged(order.notes)) continue;
-      const hasRemaining = order.items.some((item) => {
-        const producedKg = (order.producedItems ?? [])
-          .filter(p => sameItem(p.itemName, item.itemName))
-          .reduce((s, p) => s + p.quantityPrepared, 0);
-        const producedInUnit = item.dispatchUnit === 'pcs' && item.weightGrams != null
-          ? (kgToPcs(producedKg, item.weightGrams) ?? 0)
-          : producedKg;
-        const alreadyDispatched = (order.dispatchLog ?? [])
-          .filter(d => sameItem(d.itemName, item.itemName) && !d.isExtra)
-          .reduce((s, d) => s + d.quantity, 0);
-        return Math.round((producedInUnit - alreadyDispatched) * 1000) / 1000 > 0.001;
-      });
-      if (hasRemaining) n++;
-    }
-    return n;
-  }, [orders]);
+  const advanceReadyCount = useMemo(() => orders.filter(order => isAdvanceOrderTagged(order.notes) && advanceDispatchProgress(order).some(line => line.ready > 0.001)).length, [orders]);
   const cakeReadyCount = useCakeReadyCount(true);
   const tabBadgeCounts: Partial<Record<PlannerTab, number>> = {
     incoming: incomingOrders.length,
@@ -9651,7 +9633,8 @@ function plannedDispatchedForRow(row: ProductionRow, orders: BakeryOrder[]): num
 // dispatch line (computeProductionRows already does this per date-bucket) —
 // only the cross-date merge is removed, so yesterday's still-pending items
 // stay under "Yesterday" instead of silently folding into "Today".
-function DispatchTab({ orders, allOrders, productionCutoff }: { orders: BakeryOrder[]; allOrders: BakeryOrder[]; productionCutoff?: string | null }) {
+function DispatchTab({ orders: sourceOrders, allOrders, productionCutoff }: { orders: BakeryOrder[]; allOrders: BakeryOrder[]; productionCutoff?: string | null }) {
+  const orders = sourceOrders.filter(order => !isAdvanceOrderTagged(order.notes));
   // FEATURE (2026-09-06): "In dispatch tab: create a new sub tab called
   // Return — search the invoice number, show items+qty, let them edit the
   // return qty, save should send items back to stock and the updated bill on
@@ -9660,7 +9643,7 @@ function DispatchTab({ orders, allOrders, productionCutoff }: { orders: BakeryOr
   // own active/completed/planned subTab — Return works off an invoice number
   // directly, with no branch/date scoping needed, so it doesn't belong
   // nested inside that branch-filtered view.
-  const [topTab, setTopTab] = useState<'queue' | 'return'>('queue');
+  const [topTab, setTopTab] = useState<'queue' | 'return' | 'advance'>('queue');
   const [search, setSearch] = useState('');
   // BUG FIX (2026-08-11): the Printer Setup entry point used to be a
   // position:fixed button floating at the top-right of the whole page —
@@ -9696,6 +9679,7 @@ function DispatchTab({ orders, allOrders, productionCutoff }: { orders: BakeryOr
           <h2 className="text-sm font-black text-foreground">Dispatch</h2>
           <div className="flex gap-1 rounded-xl bg-muted p-1">
             <button type="button" onClick={() => setTopTab('queue')} className={cn('rounded-lg px-3 py-1 text-[11px] font-black', topTab === 'queue' ? 'bg-white text-foreground shadow-sm' : 'text-muted-foreground')}>Dispatch Queue</button>
+            <button type="button" onClick={() => setTopTab('advance')} className={cn('rounded-lg px-3 py-1 text-[11px] font-black', topTab === 'advance' ? 'bg-white text-foreground shadow-sm' : 'text-muted-foreground')}>Advance Orders</button>
             <button type="button" onClick={() => setTopTab('return')} className={cn('flex items-center gap-1 rounded-lg px-3 py-1 text-[11px] font-black', topTab === 'return' ? 'bg-white text-foreground shadow-sm' : 'text-muted-foreground')}><RotateCcw className="size-3" /> Return</button>
           </div>
         </div>
@@ -9726,7 +9710,7 @@ function DispatchTab({ orders, allOrders, productionCutoff }: { orders: BakeryOr
           </div>
         )}
       </div>
-      {topTab === 'return' ? (
+      {topTab === 'advance' ? <AdvancePlannerOrdersTab orders={allOrders} /> : topTab === 'return' ? (
         <DispatchReturnPanel />
       ) : (
         <>
@@ -12196,10 +12180,10 @@ function AdvancePlannerOrdersTab({ orders }: { orders: BakeryOrder[] }) {
   // (which already lives in History, not here) is completely untouched.
   // UPDATE (2026-10-04): overdue undispatched orders are shown again (sorted
   // first, flagged Overdue on the card) so none go missing from the Planner.
-  const activeOrders = advanceOrders.filter(x => x.order.status !== 'dispatched');
-  const historyOrders = advanceOrders.filter(x => x.order.status === 'dispatched');
+  const activeOrders = advanceOrders.filter(x => !advanceDispatchComplete(x.order));
+  const historyOrders = advanceOrders.filter(x => advanceDispatchComplete(x.order));
   const [invoiceSearch, setInvoiceSearch] = useState('');
-  const historyInvoices = useDispatchHistoryInvoices(view === 'history', orders);
+  const historyInvoices = useDispatchHistoryInvoices(true, orders, orders);
   const visible = view === 'active' ? activeOrders : historyOrders.filter(({ order, parsed }) =>
     [order.orderNumber, parsed.customerName, ...order.items.map(i => i.itemName), ...(historyInvoices.byOrder.get(order.id) || []).map(i => i.invoiceNo)].join(' ').toLowerCase().includes(invoiceSearch.toLowerCase()));
 
@@ -12212,26 +12196,8 @@ function AdvancePlannerOrdersTab({ orders }: { orders: BakeryOrder[] }) {
   // stock item is, since that would blur which customer's order actually
   // went out.
   const buildActionsFor = (order: BakeryOrder): PendingDispatchAction[] => {
-    const actions: PendingDispatchAction[] = [];
-    for (const item of order.items) {
-      const producedKg = (order.producedItems ?? [])
-        .filter(p => sameItem(p.itemName, item.itemName))
-        .reduce((s, p) => s + p.quantityPrepared, 0);
-      const producedInUnit = item.dispatchUnit === 'pcs' && item.weightGrams != null
-        ? (kgToPcs(producedKg, item.weightGrams) ?? 0)
-        : producedKg;
-      const alreadyDispatched = (order.dispatchLog ?? [])
-        .filter(d => sameItem(d.itemName, item.itemName) && !d.isExtra)
-        .reduce((s, d) => s + d.quantity, 0);
-      const remaining = Math.round((producedInUnit - alreadyDispatched) * 1000) / 1000;
-      if (remaining > 0.001) {
-        actions.push({
-          orderId: order.id, itemName: item.itemName, quantity: remaining,
-          unit: item.dispatchUnit || 'kg', dispatchEntryId: crypto.randomUUID(),
-        });
-      }
-    }
-    return actions;
+    return advanceDispatchProgress(order).filter(line => line.ready > 0.001).map(line => ({ orderId: order.id, itemName: line.itemName, quantity: line.ready, unit: line.unit, dispatchEntryId: crypto.randomUUID() }));
+
   };
 
   const openDispatch = (order: BakeryOrder) => {
@@ -12278,9 +12244,9 @@ function AdvancePlannerOrdersTab({ orders }: { orders: BakeryOrder[] }) {
 
       <div className="space-y-2.5">
         {visible.map(({ order, parsed }) => {
-          const isOverdue = !!parsed.deliveryDate && parsed.deliveryDate < todayKey && order.status !== 'dispatched';
-          const readyActions = order.status !== 'dispatched' ? buildActionsFor(order) : [];
-          const stage = order.status === 'dispatched' ? 'Dispatched'
+          const isOverdue = !!parsed.deliveryDate && parsed.deliveryDate < todayKey && !advanceDispatchComplete(order);
+          const readyActions = !advanceDispatchComplete(order) ? buildActionsFor(order) : [];
+          const stage = advanceDispatchComplete(order) ? 'Dispatched'
             : readyActions.length > 0 ? 'Ready to dispatch'
             : order.status === 'produced' ? 'Produced — nothing pending dispatch'
             : order.status === 'store_confirmed' ? 'Awaiting production'
@@ -12290,11 +12256,11 @@ function AdvancePlannerOrdersTab({ orders }: { orders: BakeryOrder[] }) {
           return (
             <div key={order.id} className={cn(
               'flex flex-wrap items-start justify-between gap-3 rounded-2xl border bg-card p-3.5',
-              order.status === 'dispatched' ? 'border-emerald-200 bg-emerald-50/30' : isOverdue ? 'border-red-300' : 'border-border',
+              advanceDispatchComplete(order) ? 'border-emerald-200 bg-emerald-50/30' : isOverdue ? 'border-red-300' : 'border-border',
             )}>
               <div className="flex min-w-0 items-start gap-3">
-                <div className={cn('flex size-10 shrink-0 items-center justify-center rounded-xl', order.status === 'dispatched' ? 'bg-emerald-100' : 'bg-amber-50')}>
-                  <Clock3 className={cn('size-5', order.status === 'dispatched' ? 'text-emerald-600' : 'text-amber-500')} />
+                <div className={cn('flex size-10 shrink-0 items-center justify-center rounded-xl', advanceDispatchComplete(order) ? 'bg-emerald-100' : 'bg-amber-50')}>
+                  <Clock3 className={cn('size-5', advanceDispatchComplete(order) ? 'text-emerald-600' : 'text-amber-500')} />
                 </div>
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-1.5">
@@ -12302,7 +12268,7 @@ function AdvancePlannerOrdersTab({ orders }: { orders: BakeryOrder[] }) {
                     <span className="flex items-center gap-1 rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-bold text-muted-foreground"><Receipt className="size-3" />{parsed.orderNo}</span>
                     <span className="rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-bold text-muted-foreground">Order #{order.orderNumber}</span>
                     {isOverdue && <span className="rounded-md bg-red-600 px-1.5 py-0.5 text-[10px] font-black text-white">OVERDUE</span>}
-                    <span className={cn('rounded-md px-1.5 py-0.5 text-[10px] font-black', order.status === 'dispatched' ? 'bg-emerald-600 text-white' : readyActions.length > 0 ? 'bg-teal-600 text-white' : 'bg-slate-200 text-slate-600')}>{stage}</span>
+                    <span className={cn('rounded-md px-1.5 py-0.5 text-[10px] font-black', advanceDispatchComplete(order) ? 'bg-emerald-600 text-white' : readyActions.length > 0 ? 'bg-teal-600 text-white' : 'bg-slate-200 text-slate-600')}>{stage}</span>
                   </div>
                   <p className="mt-0.5 truncate text-sm font-black text-foreground">
                     {parsed.detailsLost ? `Advance order${splitFromMatch ? ` (split from order #${splitFromMatch[1]})` : ''}` : (parsed.customerName || 'Customer')}
@@ -12318,15 +12284,16 @@ function AdvancePlannerOrdersTab({ orders }: { orders: BakeryOrder[] }) {
                   <p className="mt-1 truncate text-[11px] font-bold text-muted-foreground">
                     {order.items.map(i => `${i.itemName} (${i.dispatchUnit === 'pcs' && i.originalPcs != null ? i.originalPcs : i.quantity} ${i.dispatchUnit || 'kg'})`).join(', ')}
                   </p>
+                  {advanceDispatchProgress(order).map((line, index) => <p key={index} className="mt-1 text-xs text-muted-foreground">{line.itemName}: requested {line.requested}, dispatched {line.sent}, remaining {line.pending} {line.unit}{line.sent > line.requested + 0.001 && <span className="ml-2 font-bold text-red-700">Recorded dispatch exceeds request — review existing invoices.</span>}</p>)}
                 </div>
               </div>
               <div className="flex shrink-0 flex-col items-end gap-1.5">
-                {order.status !== 'dispatched' && readyActions.length > 0 && (
+                {!advanceDispatchComplete(order) && readyActions.length > 0 && (
                   <button type="button" onClick={() => openDispatch(order)} className="flex items-center gap-2 rounded-xl bg-foreground px-4 py-2.5 text-sm font-black text-white active:scale-95">
                     <Send className="size-4" /> Dispatch to {order.targetBranch}
                   </button>
                 )}
-                {order.status === 'dispatched' && <p className="text-xs font-bold">Invoice: {(historyInvoices.byOrder.get(order.id) || []).map(i => i.invoiceNo).join(', ') || 'Not recorded for this historical dispatch'}</p>}
+                {advanceDispatchComplete(order) && <p className="text-xs font-bold">Invoice: {(historyInvoices.byOrder.get(order.id) || []).map(i => i.invoiceNo).join(', ') || 'Not recorded for this historical dispatch'}</p>}
                 {(historyInvoices.byOrder.get(order.id) || []).map(i => <button key={i.id} onClick={() => void printDispatchInvoice(i, 'a4')} className="text-xs font-bold">Print {i.invoiceNo}</button>)}
                 {dispatchNotice[order.id] && <p className="max-w-[16rem] text-right text-[11px] font-bold text-teal-700">{dispatchNotice[order.id]}</p>}
               </div>
@@ -12344,7 +12311,8 @@ function AdvancePlannerOrdersTab({ orders }: { orders: BakeryOrder[] }) {
           onDispatch={submitDispatch}
           onClose={() => setDispatchReview(null)}
           onDone={() => {
-            setDispatchNotice(v => ({ ...v, [dispatchReview.orderId]: 'Dispatched — see the Dispatched tab.' }));
+            setDispatchNotice(v => ({ ...v, [dispatchReview.orderId]: 'Dispatch saved. Any remaining quantities stay under Active.' }));
+            void fetchOrders(true, true);
             setDispatchReview(null);
           }}
         />

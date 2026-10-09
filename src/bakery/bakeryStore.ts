@@ -4,6 +4,7 @@ import { makeSingletonSubscriber } from '@/lib/realtimeChannel';
 import { getCached, setCached } from '@/lib/localCache';
 import type { BakeryOrder, BakeryOrderItem, PreparedItem, DispatchEntry, WorkflowStatus, Branch } from './types';
 import { useNotificationStore } from './notificationStore'; // BUG #16 FIX: needed to fire baker shortage notifications
+import { advanceDispatchComplete, advanceDispatchProgress } from './advanceDispatchProgress';
 // CLOSING STOCK LINK (2026-08-06): submitDispatch is the single shared path
 // every dispatch button in the app goes through (regular dispatch, bulk
 // dispatch, planned-batch dispatch, and the "use leftover" button) — wiring
@@ -586,6 +587,16 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
       .map(id => get().orders.find(o => o.id === id))
       .filter((o): o is BakeryOrder => Boolean(o));
     if (group.length === 0) return;
+    // Keep each customer's advance order and its invoice links intact.
+    // Merging advances used to discard every customer's notes except one.
+    if (group.length > 1 && group.some(order => isAdvanceOrderTagged(order.notes))) {
+      for (const order of group.filter(order => isAdvanceOrderTagged(order.notes))) {
+        await get().mergeOrdersForStore([order.id]);
+      }
+      const regularIds = group.filter(order => !isAdvanceOrderTagged(order.notes)).map(order => order.id);
+      if (regularIds.length) await get().mergeOrdersForStore(regularIds);
+      return;
+    }
 
     // AUTO-CONFIRM (2026-08-06): sending (merged or single) orders to Store
     // used to stop at status 'accepted', requiring a separate manual
@@ -1086,6 +1097,12 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     // on retries within a single session.
     // Server-side RPC appends the dispatch entry atomically so concurrent packers do not overwrite each other.
     const alreadyAppended = existingLog.some(e => e.id === newEntry.id);
+    if (!alreadyAppended && !newEntry.isExtra && isAdvanceOrderTagged(freshOrder.notes)) {
+      const line = advanceDispatchProgress({ items: freshOrder.items as BakeryOrderItem[], dispatchLog: existingLog, producedItems: freshOrder.produced_items as PreparedItem[], status: freshOrder.status as WorkflowStatus, targetBranch: freshOrder.target_branch as Branch }).find(item => item.itemName.trim().toLowerCase() === newEntry.itemName.trim().toLowerCase() && item.unit === newEntry.unit);
+      if (!line || newEntry.branch !== freshOrder.target_branch || newEntry.quantity > line.pending + 0.001) {
+        throw new Error('This advance order has already received this quantity or the destination/item does not match. Refresh the order before dispatching.');
+      }
+    }
     const updatedLog: DispatchEntry[] = alreadyAppended
       ? existingLog
       : [...existingLog, newEntry];
@@ -1127,7 +1144,9 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     // the order (and its still-pending items) remains visible to the baker.
     const isOrderFullyPrepared = orderItems.length > 0 &&
       orderItems.every(oi => preparedItems.some(p => p.itemId === oi.itemId));
-    const newStatus: WorkflowStatus = allFullyDispatched && isOrderFullyPrepared ? 'dispatched' : 'produced';
+    const isAdvanceDispatch = isAdvanceOrderTagged(freshOrder.notes);
+    const advanceComplete = isAdvanceDispatch && advanceDispatchComplete({ items: orderItems, dispatchLog: updatedLog, producedItems: preparedItems, status: 'produced', targetBranch: freshOrder.target_branch as Branch });
+    const newStatus: WorkflowStatus = (isAdvanceDispatch ? advanceComplete : allFullyDispatched && isOrderFullyPrepared) ? 'dispatched' : 'produced';
 
     const { data: appendResult, error } = await supabase.rpc('append_bakery_dispatch_log', {
       p_order_id: orderId,
