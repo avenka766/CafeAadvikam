@@ -494,7 +494,7 @@ export function renderDispatchInvoiceHtml(record: DispatchInvoiceRecord, mode: '
     ? `${esc(record.customerName)}${record.customerPhone ? ` ${esc(record.customerPhone)}` : ''}`
     : record.scope === 'Hosur'
     ? `${esc(record.hosurShopName || 'Hosur Shop')}${record.hosurShopPhone ? ` ${esc(record.hosurShopPhone)}` : ''}`
-    : `${esc(record.scope)} Branch`;
+    : record.scope === 'VRSNB' ? 'Cafe Aadvikam' : `${esc(record.scope)} Branch`;
   const addressLine = record.customerName && record.customerAddress ? `<div class="row small"><span>${esc(record.customerAddress)}</span></div>` : '';
   // BUG FIX (2026-09-10): "other charges getting added with the item list —
   // should be mentioned separately, and the quantity should not be shown."
@@ -1631,7 +1631,7 @@ export async function createDispatchInvoiceWhatsappPdf(
   divider();
   line(`Invoice No: ${record.invoiceNo}`, 8, true);
   line(`Date: ${new Date(record.createdAt).toLocaleString('en-IN')}`, 7.5);
-  const who = record.customerName || record.hosurShopName || `${record.scope} Branch`;
+  const who = record.customerName || record.hosurShopName || (record.scope === 'VRSNB' ? 'Cafe Aadvikam' : `${record.scope} Branch`);
   line(`To: ${who}`, 8, true);
   divider();
 
