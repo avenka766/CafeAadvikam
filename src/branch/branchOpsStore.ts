@@ -2717,7 +2717,8 @@ export const useBranchOpsStore = create<BranchOpsState>()(
           ledgerResult = (result.data ?? null) as { creditAdjusted?: number; refundAmount?: number; refundMode?: string; returnNo?: string } | null;
         } catch (rpcErr) {
           console.error('[addReturn] process_branch_return failed; return was not recorded in ledger:', rpcErr);
-          throw new Error('Return could not be recorded in Supabase ledger. Please run the branch returns migration and try again.');
+          const message = rpcErr instanceof Error ? rpcErr.message : String((rpcErr as { message?: string })?.message || 'Unknown database error');
+          throw new Error(`Return was not recorded: ${message}`);
         }
 
         // The server may have renumbered this return (see fix above) if our
