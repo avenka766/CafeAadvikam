@@ -25,6 +25,17 @@ function fixture(): ReportSnapshot {
 }
 
 describe('Sales report integrity', () => {
+  it('keeps return headers and their items out of sales while retaining a separate return register', () => {
+    const snapshot = fixture();
+    snapshot.bills.rows.push({ id: 'return-header', branch: 'VRSNB', bill_no: 'VRSNB-RET-0001', bill_type: 'return', total: 45, status: 'returned' });
+    snapshot.billItems.rows.push({ bill_id: 'return-header', bill_no: 'VRSNB-RET-0001', item_name: 'Laddu', quantity: 1, line_total: 45 });
+    const sections = buildReportSections(snapshot, ['VRSNB']);
+    expect(sections[0].rows[0]['Recorded sales (INR)']).toBe(90);
+    expect(sections[0].rows[0]['Sales less returns (INR)']).toBe(45);
+    expect(sections.find(s => s.id === 'bills')!.rows).toHaveLength(1);
+    expect(sections.find(s => s.id === 'billItems')!.rows).toHaveLength(1);
+    expect(sections.find(s => s.id === 'returns')!.rows).toHaveLength(1);
+  });
   it('reconciles category/item revenue with discounted bills and refunds, without duplicate sales', () => {
     const sections = buildReportSections(fixture(), ['Cafe', 'VRSNB']);
     const summary = sections[0].rows;

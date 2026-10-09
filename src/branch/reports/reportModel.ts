@@ -77,7 +77,7 @@ function canonicalSales(snapshot: ReportSnapshot): SourceRow[] {
     bills.set(`${row.branch}|${p.billNo}`, { branch: row.branch, date: p.createdAt, reference: p.billNo, total: n(p.total),
       discount: n(p.discount), status: p.status, customer: p.creditCustomerName, cashier: p.biller, source: 'Branch bill history', id: p.id });
   }
-  for (const row of snapshot.bills?.rows || []) bills.set(`${row.branch}|${row.bill_no}`, {
+  for (const row of (snapshot.bills?.rows || []).filter(row => row.bill_type !== 'return')) bills.set(`${row.branch}|${row.bill_no}`, {
     branch: row.branch, date: row.created_at, reference: row.bill_no, total: n(row.total), discount: n(row.discount),
     status: row.status || 'Recorded', customer: row.customer_name, cashier: row.biller || row.cashier_username,
     source: 'Branch bill', id: row.id,
@@ -95,7 +95,7 @@ function canonicalSales(snapshot: ReportSnapshot): SourceRow[] {
       total: n(row.quantity_sold) * n(row.unit_price), discount: 0, status: 'Legacy item', cashier: row.sold_by,
       source: 'Legacy sale item', id: row.id });
   }
-  return result.filter(row => !/cancel|void|deleted/i.test(String(row.status)));
+  return result.filter(row => !/cancel|void|deleted|returned/i.test(String(row.status)));
 }
 
 export function buildReportSections(snapshot: ReportSnapshot, branches: string[]): ReportSection[] {
@@ -137,7 +137,8 @@ export function buildReportSections(snapshot: ReportSnapshot, branches: string[]
   else for (const [id, title] of [['topItems', 'Top items by revenue'], ['categories', 'Category revenue']]) result.push({ id, title, group: 'Overview', sourceId: 'analytics', description: 'Revenue rankings require complete sales, item and category data.', rows: [{ Status: 'Waiting for complete source data. Check Data coverage.' }] });
   result.push(...expandSection({ id: 'sales', title: 'Sales summary detail', group: 'Sales', sourceId: 'summary', description: 'These records make up the recorded sales summary. Legacy item rows are not counted as separate invoices.' }, sales));
   for (const source of REPORT_SOURCES) {
-    const records = snapshot[source.id]?.rows || [];
+    const returnIds = new Set((snapshot.bills?.rows || []).filter(row => row.bill_type === 'return').map(row => row.id));
+    const records = (snapshot[source.id]?.rows || []).filter(row => source.id === 'bills' ? row.bill_type !== 'return' : source.id === 'billItems' ? !returnIds.has(row.bill_id) : true);
     const description = source.scope === 'current' ? 'Current register across all dates, as at the report refresh. This is not a historical closing balance.' : 'Activity in the selected date range. All values are preserved as recorded.';
     if (source.table === 'branch_operation_records') {
       const defaults = source.types || [];
