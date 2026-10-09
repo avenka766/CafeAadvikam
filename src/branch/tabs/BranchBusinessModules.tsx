@@ -321,6 +321,7 @@ export function BranchBillHistoryProTab({ branch }: ModuleProps) {
           .from('branch_bill_headers')
           .select('id, bill_no, invoice_no, bill_type, customer_name, customer_phone, salesperson, biller, subtotal, discount, discount_percent, tax, round_off, total, tendered, balance, status, created_at, branch_bill_items(item_name, quantity, unit, unit_price, discount, tax, line_total), branch_sale_payments(payment_mode, amount)')
           .eq('branch', branch)
+          .neq('bill_type', 'return')
           .gte('created_at', historyCutoffIso)
           .order('created_at', { ascending: false })
           .range(from, from + 999);
@@ -354,7 +355,7 @@ export function BranchBillHistoryProTab({ branch }: ModuleProps) {
   const sourceRows = ledgerBills.length > 0 ? ledgerBills : bills.filter((b) => b.branch === branch);
   const rows = sourceRows.filter((b) => {
     const q = query.trim().toLowerCase();
-    return b.branch === branch && (!q || b.billNo.toLowerCase().includes(q) || b.biller.toLowerCase().includes(q) || (!isVRSNB && b.salesperson.toLowerCase().includes(q)));
+    return b.branch === branch && !b.billNo.includes('-RET-') && (!q || b.billNo.toLowerCase().includes(q) || b.biller.toLowerCase().includes(q) || (!isVRSNB && b.salesperson.toLowerCase().includes(q)));
   });
   const historyPageSize = 50;
   const historyPageCount = Math.max(1, Math.ceil(rows.length / historyPageSize));

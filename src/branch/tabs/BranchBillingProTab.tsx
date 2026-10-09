@@ -212,7 +212,7 @@ registerReplayHandler('branch_checkout', async (_kind, payload) => {
 
   useBranchOpsStore.setState((state) => ({
     bills: state.bills.map((bill) => bill.id === p.provisionalBillId
-      ? { ...bill, billNo: result.billNo, invoiceNo: result.invoiceNo, pendingSync: false, needsReprint: true }
+      ? { ...bill, sourceBillId: result.billId, billNo: result.billNo, invoiceNo: result.invoiceNo, pendingSync: false, needsReprint: true }
       : bill),
   }));
   return { ok: true };
@@ -1310,7 +1310,7 @@ export default function BranchBillingProTab({
           }
         : undefined;
       const saved = existingBill ?? addBill({
-        branch, billNo: result.billNo, invoiceNo: result.invoiceNo, items: billedItems, subtotal: canonicalSubtotal, discount: serverCombinedDiscount, discountPercent, tax: canonicalTax, roundOff: localRoundOff, amountBeforeRoundOff: localAmountBeforeRoundOff, total: localTotal,
+        branch, sourceBillId: result.billId, billNo: result.billNo, invoiceNo: result.invoiceNo, items: billedItems, subtotal: canonicalSubtotal, discount: serverCombinedDiscount, discountPercent, tax: canonicalTax, roundOff: localRoundOff, amountBeforeRoundOff: localAmountBeforeRoundOff, total: localTotal,
         additionalCharges: extraChargesValue || undefined,
         tendered: paymentMode === 'cash' || paymentMode === 'split' || paymentMode === 'credit' ? tendered : localTotal,
         balance: paymentMode === 'cash' || paymentMode === 'split' || paymentMode === 'credit' ? balance : 0,
