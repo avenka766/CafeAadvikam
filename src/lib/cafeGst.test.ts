@@ -10,9 +10,12 @@ const bill = (overrides: Partial<Order> = {}): Order => ({
   ...calculateCafeGst(100), ...overrides,
 });
 describe('Additional Cafe GST', () => {
-  it('defaults to 5% additional GST and applies it after discount including parcels', () => {
+  it('defaults to 5% GST on items after discount, excluding parcel charges', () => {
     expect(calculateCafeGst(100)).toMatchObject({ total: 105, gstAmount: 5, cgstAmount: 2.5, sgstAmount: 2.5 });
-    expect(calculateCafeGst(100, 20, 10)).toMatchObject({ taxableAmount: 90, gstAmount: 4.5, total: 95, roundOff: 0.5 });
+    expect(calculateCafeGst(100, 20, 10)).toMatchObject({ taxableAmount: 80, gstAmount: 4, total: 94, roundOff: 0 });
+    expect(calculateCafeGst(100, 0, 10)).toMatchObject({ taxableAmount: 100, gstAmount: 5, total: 115 });
+    expect(calculateCafeGst(40, 0, 10, true, 0)).toMatchObject({ taxableAmount: 0, gstAmount: 0, total: 50 });
+    expect(calculateCafeGst(0, 0, 10)).toMatchObject({ taxableAmount: 0, gstAmount: 0, total: 10 });
   });
   it('turns GST off without changing the base amount', () => {
     expect(calculateCafeGst(100, 20, 10, false)).toMatchObject({ total: 90, gstEnabled: false, gstRate: 0, gstAmount: 0 });

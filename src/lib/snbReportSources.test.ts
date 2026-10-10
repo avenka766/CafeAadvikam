@@ -9,3 +9,6 @@ it('operational tabs do not start financial reports in the background', () => {
 it('closure loads sessions and daily closure without item/category scans', () => {
   expect(snbReportSources('closure')).toEqual([1,2]);
 });
+it('cashier accountability loads calculated totals used by its UI and Excel', () => {
+  expect(snbReportSources('cashier-report')).toEqual([0,1]);
+});

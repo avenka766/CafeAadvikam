@@ -3,12 +3,12 @@ import type { Order } from '@/types';
 export const CAFE_GST_COLUMNS = 'gst_enabled, gst_rate, taxable_amount, cgst_amount, sgst_amount, gst_amount';
 const money = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100;
 
-/** GST is added only to items marked taxable; discounts are shared proportionally. */
+/** GST is added only to taxable items; parcel charges stay outside the tax base. */
 export function calculateCafeGst(subtotal: number, discount = 0, parcelCharges = 0, enabled = true, eligibleSubtotal = subtotal) {
   const baseAmount = money(Math.max(0, subtotal + parcelCharges - discount));
   const eligible = Math.min(Math.max(0, eligibleSubtotal), Math.max(0, subtotal));
   const eligibleDiscount = subtotal > 0 ? money(discount * eligible / subtotal) : 0;
-  const taxableAmount = money(Math.max(0, eligible - eligibleDiscount + parcelCharges));
+  const taxableAmount = money(Math.max(0, eligible - eligibleDiscount));
   const gstAmount = enabled ? money(taxableAmount * 0.05) : 0;
   const cgstAmount = money(gstAmount / 2);
   const sgstAmount = money(gstAmount - cgstAmount);
