@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { fetchAllRows } from '@/lib/supabase';
+import { uniqueBranchBills } from '@/lib/uniqueBranchBills';
 import type { useBranchOpsStore } from '@/branch/branchOpsStore';
 import type { Branch } from '@/branch/types';
 import type { SaleRecord } from '@/branch/branchStore';
@@ -42,7 +43,8 @@ export function buildReportRecords(rows: ReportRecord[]): Records {
       if (row.status === 'Deleted') records.delete(key);
       else if (row.payload?.id) records.set(key, { ...row.payload, branch: row.branch });
     });
-    return [bucket, [...records.values()]];
+    const values = [...records.values()];
+    return [bucket, bucket === 'bills' ? uniqueBranchBills(values) : values];
   })) as Records;
 }
 
