@@ -54,6 +54,13 @@ describe('Cafe GST display and receipts', () => {
     expect(html).toContain('₹105');
     expect(html).not.toContain('>95<');
   });
+  it('prints parcel charges separately without adding GST to them', () => {
+    const html = renderToStaticMarkup(<Receipt order={{ ...order, parcelCharges: 10, ...calculateCafeGst(100, 0, 10) }} onClose={() => {}} />);
+    expect(html).toContain('₹115');
+    expect(html).toContain('>5.00<');
+    expect(html).toContain('>2.50<');
+    expect(html).not.toContain('>5.50<');
+  });
   it('does not print tax on disabled or historical bills', () => {
     const off = renderToStaticMarkup(<Receipt order={{ ...order, ...calculateCafeGst(100, 0, 0, false) }} onClose={() => {}} />);
     expect(off).not.toContain('CGST (2.5%)');
