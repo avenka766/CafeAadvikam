@@ -15,6 +15,7 @@ import { cn, roundQty, sanitizeDecimalInput } from "@/lib/utils";
 import { useBranchLedger } from "@/hooks/useBranchLedger";
 import { useCafeOrderSales } from "@/hooks/useCafeOrderSales";
 import { useVrsnbReportRecords, mergeReportClosures } from '@/hooks/useVrsnbReportRecords';
+import { uniqueBranchBills } from '@/lib/uniqueBranchBills';
 import { useCafeOrderRows } from "@/hooks/useCafeOrderRows";
 import { supabase, fetchAllRows } from "@/lib/supabase";
 import { useAuthStore } from "@/stores/authStore";
@@ -541,9 +542,9 @@ export default function AdminVRSNBDashboard() {
   );
   const branchBills = useMemo(
     () =>
-      bills.filter(
+      uniqueBranchBills(bills.filter(
         (b) => viewBranches.includes(b.branch) && inRange(b.createdAt, fromDate, toDate),
-      ),
+      )),
     [bills, fromDate, toDate, viewBranches],
   );
   const branchReturns = useMemo(
