@@ -33,3 +33,10 @@ pnpm-debug.log*
 
 # OS
 Thumbs.db
+mobile-apps/**/android/.gradle/
+mobile-apps/**/android/build/
+mobile-apps/**/android/app/build/
+mobile-apps/**/android/capacitor-cordova-android-plugins/build/
+mobile-apps/**/android/local.properties
+mobile-apps/**/android/app/src/main/assets/public/
+*.jks
