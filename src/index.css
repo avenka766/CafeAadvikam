@@ -4085,3 +4085,66 @@
   .owner-native-brand span { display: none; }
   .owner-native-body { padding-left: .7rem; padding-right: .7rem; }
 }
+/* Android admin navigation uses the header menu; the native view handles insets. */
+html.android-admin-app .workspace-redesign { padding-bottom: 0; }
+
+.workspace-redesign .admin-range-control {
+  width: 100%; min-width: 0; padding: 1rem; border: 1px solid #dce5e1;
+  border-radius: 1rem; background: #fff; box-shadow: none !important;
+}
+.admin-range-heading { display: flex; flex-direction: column; gap: .3rem; margin-bottom: .85rem; }
+.admin-range-heading > span { font-size: .6rem; letter-spacing: .12em; font-weight: 700; color: #64756e; }
+.admin-range-heading strong { font-family: inherit; font-size: .9rem; font-weight: 700; color: #152c23; }
+.admin-range-presets { display: flex; gap: .2rem; padding: .25rem; border-radius: .65rem; background: #f0f4f2; }
+.workspace-redesign .admin-range-presets button {
+  flex: 1; min-width: 0; min-height: 2.3rem; padding: .45rem .25rem; border: 0;
+  border-radius: .5rem; background: transparent; color: #53665d; font-size: .72rem;
+  font-weight: 650; white-space: nowrap; box-shadow: none !important;
+}
+.workspace-redesign .admin-range-presets button[aria-pressed="true"] { background: #125440; color: #fff; }
+.admin-range-dates { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .6rem; margin-top: .8rem; }
+.admin-range-dates label { display: flex; flex-direction: column; gap: .35rem; min-width: 0; }
+.admin-range-dates label > span { font-size: .7rem; color: #63746c; font-weight: 600; }
+.workspace-redesign .admin-range-dates input { width: 100%; min-width: 0; min-height: 2.65rem; border: 1px solid #dce5e1; border-radius: .6rem; padding: .5rem .6rem; background: #fafcfb; font-size: .8rem; font-weight: 600; color: #18382b; }
+.admin-range-control button:focus-visible, .admin-range-control input:focus-visible { outline: 2px solid #138763; outline-offset: 2px; }
+.workspace-redesign .admin-summary-card { min-width: 0; padding: 1rem; border: 1px solid #dce5e1; border-radius: 1rem; background: #fff; box-shadow: none !important; }
+.admin-summary-heading { display: flex; align-items: center; justify-content: space-between; gap: .5rem; }
+.admin-summary-heading > span { font-size: .75rem; font-weight: 600; line-height: 1.3; color: #596d62; }
+.admin-summary-icon { flex-shrink: 0; display: grid; place-items: center; width: 1.8rem; height: 1.8rem; border-radius: .5rem; background: #f1f5f3; color: #64776c; }
+.admin-summary-icon svg { width: 1rem; height: 1rem; }
+.admin-summary-value { margin-top: .6rem; color: #18382b; font-size: clamp(1.2rem, 4.8vw, 1.85rem); line-height: 1.2; font-weight: 750; letter-spacing: -.03em; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.admin-summary-note { margin-top: .4rem; font-size: .68rem; line-height: 1.4; color: #76837c; }
+.admin-summary-green .admin-summary-icon { background: #e5f5ec; color: #187449; }
+.admin-summary-red .admin-summary-icon { background: #fceceb; color: #b9443c; }
+.admin-summary-amber .admin-summary-icon { background: #fff4dd; color: #a66b11; }
+.admin-summary-blue .admin-summary-icon { background: #eaf0fc; color: #426abb; }
+.admin-summary-purple .admin-summary-icon { background: #f1ebfb; color: #8157ae; }
+@media (max-width: 767px) {
+  .workspace-redesign .grid:has(> .admin-summary-card) { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .65rem; }
+  .workspace-redesign .admin-summary-card { padding: .85rem; border-radius: .85rem; }
+  .admin-summary-heading > span { font-size: .68rem; }
+  html.android-admin-app .workspace-content-frame { border: 0; background: transparent; box-shadow: none; }
+  .workspace-redesign .admin-range-control { padding: .65rem; border-radius: .75rem; }
+  .admin-range-heading { margin-bottom: .5rem; gap: .15rem; }
+  .admin-range-heading > span { display: none; }
+  .admin-range-heading strong { font-size: .75rem; }
+  .admin-range-presets { padding: .15rem; gap: .1rem; }
+  .workspace-redesign .admin-range-presets button { min-height: 2rem; padding: .3rem .15rem; font-size: .65rem; }
+  .admin-range-dates { margin-top: .5rem; gap: .5rem; }
+  .admin-range-dates label { gap: .2rem; }
+  .admin-range-dates label > span { font-size: .62rem; }
+  .workspace-redesign .admin-range-dates input { min-height: 2.25rem; padding: .35rem .45rem; font-size: .75rem; border-radius: .45rem; }
+}
+
+@media (max-width: 767px) {
+  html.android-admin-app .workspace-main-shell { padding-top: .75rem; }
+  .admin-date-filter { border-radius: 1.15rem; }
+  .admin-date-filter > div:first-child { padding: .65rem .85rem; }
+  .admin-date-filter > div:last-child { padding: .85rem; }
+  .admin-date-filter-grid { gap: .6rem; }
+  .admin-date-filter-grid label { min-width: 0; font-size: .65rem; }
+  .admin-date-filter-grid input { min-width: 0; min-height: 2.5rem; padding: .5rem; font-size: .8rem; border-radius: .65rem; }
+  .admin-date-filter-grid button { min-height: 2.25rem; padding: .4rem .6rem; border-radius: .65rem; font-size: .75rem; box-shadow: none; }
+  .admin-date-filter-grid button:focus-visible { outline: 2px solid #047857; outline-offset: 2px; }
+}
+

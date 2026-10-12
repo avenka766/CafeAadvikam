@@ -95,8 +95,8 @@ const AdminAlertsPage = lazy(() => import('@/pages/AdminAlertsPage'));
 // Only wired in for the native build; the web dashboard (used by every
 // other role, on shared/less-trusted devices) is completely unaffected and
 // still requires a real login.
-const OWNER_AUTOLOGIN_USERNAME = 'owner-app-device';
-const OWNER_AUTOLOGIN_PASSWORD = 'UaUs36zfZmL-MYxlMsYMRMYwE4zP3kKU';
+const OWNER_AUTOLOGIN_USERNAME = import.meta.env.VITE_ANDROID_ADMIN_BUILD === 'true' ? '' : 'owner-app-device';
+const OWNER_AUTOLOGIN_PASSWORD = import.meta.env.VITE_ANDROID_ADMIN_BUILD === 'true' ? '' : 'UaUs36zfZmL-MYxlMsYMRMYwE4zP3kKU';
 // BUG FIX (2026-09-03): this used to fire for ANY native build (`isNativeApp()`
 // alone), not just Owner's app specifically. That was safe as long as Owner's
 // app was the only native build that existed, but a second native app (the
@@ -123,6 +123,7 @@ const OWNER_APP_ID = 'com.cafeaadvikam.owner';
 // four native apps compiling from this SAME dist/ can still tell each other
 // apart). Not present in this map (e.g. Owner's or the web app) -> no gate.
 const NATIVE_APP_ROLE_GATE: Record<string, UserRole[]> = {
+  'com.cafeaadvikam.admin': ['admin', 'admin_snb', 'admin_vrsnb'],
   'com.cafeaadvikam.planner': ['planner'],
   'com.cafeaadvikam.store': ['store'],
   'com.cafeaadvikam.branchstaff': ['receiver_snb', 'receiver_vrsnb'],
@@ -160,6 +161,7 @@ function AppRoutes() {
   const isPublicRoute = publicRoutes.includes(location.pathname);
   const { currentUser } = useAuthStore();
   const native = isNativeApp();
+  const useWorkspaceChrome = !native || import.meta.env.VITE_ANDROID_ADMIN_BUILD === 'true';
   // BUG FIX (2026-09-30): "the .exe should not show the landing page, only
   // the login page" — deliberately NOT folded into `native` itself (see
   // isElectronApp()'s own comment in platform.ts for why): the Windows app
@@ -380,11 +382,11 @@ function AppRoutes() {
 
   return (
     <>
-      {!native && !isLandingRoute && location.pathname !== '/order' && <Header />}
-      {!native && currentUser && !isPublicRoute ? (
+      {useWorkspaceChrome && !isLandingRoute && location.pathname !== '/order' && <Header />}
+      {useWorkspaceChrome && currentUser && !isPublicRoute ? (
         <WorkspaceChrome>{routes}</WorkspaceChrome>
       ) : routes}
-      {!native && currentUser && <BottomNav />}
+      {useWorkspaceChrome && currentUser && !(native && import.meta.env.VITE_ANDROID_ADMIN_BUILD === 'true') && <BottomNav />}
     </>
   );
 }
