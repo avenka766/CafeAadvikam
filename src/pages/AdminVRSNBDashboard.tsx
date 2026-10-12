@@ -1,3 +1,4 @@
+import { AdminReportDateRange, AdminSummaryCard } from '@/components/admin/AdminReportControls';
 // src/pages/AdminVRSNBDashboard.tsx
 // VRSNB Admin Dashboard – manager control center for sales, returns, stock, purchase, balance, salesperson, closure and reports.
 import {
@@ -286,36 +287,7 @@ function Kpi({
   icon: ReactNode;
   tone?: "slate" | "green" | "amber" | "red" | "blue" | "purple";
 }) {
-  const tones = {
-    slate: "bg-slate-50 text-slate-700 ring-slate-200",
-    green: "bg-emerald-50 text-emerald-700 ring-emerald-200",
-    amber: "bg-amber-50 text-amber-700 ring-amber-200",
-    red: "bg-red-50 text-red-700 ring-red-200",
-    blue: "bg-blue-50 text-blue-700 ring-blue-200",
-    purple: "bg-purple-50 text-purple-700 ring-purple-200",
-  }[tone];
-  return (
-    <div className="relative overflow-hidden rounded-3xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
-      <div className="absolute -right-6 -top-6 size-20 rounded-full bg-slate-950/5" />
-      <div
-        className={cn(
-          "mb-3 flex size-10 items-center justify-center rounded-2xl ring-1",
-          tones,
-        )}
-      >
-        {icon}
-      </div>
-      <p className="text-2xl font-black tracking-tight text-slate-950 tabular-nums">
-        {value}
-      </p>
-      <p className="mt-1 text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">
-        {label}
-      </p>
-      {sub && (
-        <p className="mt-1 text-xs font-semibold text-slate-500">{sub}</p>
-      )}
-    </div>
-  );
+  return <AdminSummaryCard label={label} value={value} sub={sub} icon={icon} tone={tone} />;
 }
 
 function Panel({
@@ -1304,87 +1276,8 @@ function HeroPill({
   );
 }
 
-function DateFilters({
-  fromDate,
-  toDate,
-  setFromDate,
-  setToDate,
-}: {
-  fromDate: string;
-  toDate: string;
-  setFromDate: (v: string) => void;
-  setToDate: (v: string) => void;
-}) {
-  const today = dateInput();
-  const seven = new Date();
-  seven.setDate(seven.getDate() - 6);
-  const thirty = new Date();
-  thirty.setDate(thirty.getDate() - 29);
-  const isToday = fromDate === today && toDate === today;
-  const isSeven = fromDate === dateInput(seven) && toDate === today;
-  const isThirty = fromDate === dateInput(thirty) && toDate === today;
-  const quickCls = (active: boolean) =>
-    cn(
-      btnCls,
-      "self-end ring-1",
-      active
-        ? "bg-orange-500 text-white shadow-lg shadow-orange-200 ring-orange-500"
-        : "bg-white text-slate-700 ring-slate-200",
-    );
-  return (
-    <Panel title="Filters" icon={<Filter className="size-4" />}>
-      <div className="grid gap-3 sm:grid-cols-[1fr_1fr_auto_auto_auto]">
-        <Field label="From Date">
-          <input
-            type="date"
-            value={fromDate}
-            onChange={(e) => setFromDate(e.target.value)}
-            className={inputCls}
-          />
-        </Field>
-        <Field label="To Date">
-          <input
-            type="date"
-            value={toDate}
-            onChange={(e) => setToDate(e.target.value)}
-            className={inputCls}
-          />
-        </Field>
-        <button
-          className={quickCls(isToday)}
-          onClick={() => {
-            const t = dateInput();
-            setFromDate(t);
-            setToDate(t);
-          }}
-        >
-          Today
-        </button>
-        <button
-          className={quickCls(isSeven)}
-          onClick={() => {
-            const d = new Date();
-            d.setDate(d.getDate() - 6);
-            setFromDate(dateInput(d));
-            setToDate(dateInput());
-          }}
-        >
-          7 Days
-        </button>
-        <button
-          className={quickCls(isThirty)}
-          onClick={() => {
-            const d = new Date();
-            d.setDate(d.getDate() - 29);
-            setFromDate(dateInput(d));
-            setToDate(dateInput());
-          }}
-        >
-          30 Days
-        </button>
-      </div>
-    </Panel>
-  );
+function DateFilters(props: { fromDate: string; toDate: string; setFromDate: (value: string) => void; setToDate: (value: string) => void }) {
+  return <AdminReportDateRange {...props} thirtyDays />;
 }
 
 function printOverview(props: any, branchLabel: string) {

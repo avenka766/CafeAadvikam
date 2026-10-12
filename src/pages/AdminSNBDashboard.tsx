@@ -1,3 +1,4 @@
+import { AdminReportDateRange, AdminSummaryCard } from '@/components/admin/AdminReportControls';
 import { allocateReportItems } from "@/lib/reportItemAllocation";
 // src/pages/AdminSNBDashboard.tsx
 // SNB Admin Dashboard – manager control center for sales, returns, stock, purchase, balance, salesperson, closure and reports.
@@ -413,36 +414,7 @@ function Kpi({
   icon: ReactNode;
   tone?: "slate" | "green" | "amber" | "red" | "blue" | "purple";
 }) {
-  const tones = {
-    slate: "bg-slate-50 text-slate-700 ring-slate-200",
-    green: "bg-emerald-50 text-emerald-700 ring-emerald-200",
-    amber: "bg-amber-50 text-amber-700 ring-amber-200",
-    red: "bg-red-50 text-red-700 ring-red-200",
-    blue: "bg-blue-50 text-blue-700 ring-blue-200",
-    purple: "bg-purple-50 text-purple-700 ring-purple-200",
-  }[tone];
-  return (
-    <div className="relative overflow-hidden rounded-3xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
-      <div className="absolute -right-6 -top-6 size-20 rounded-full bg-slate-950/5" />
-      <div
-        className={cn(
-          "mb-3 flex size-10 items-center justify-center rounded-2xl ring-1",
-          tones,
-        )}
-      >
-        {icon}
-      </div>
-      <p className="text-2xl font-black tracking-tight text-slate-950 tabular-nums">
-        {value}
-      </p>
-      <p className="mt-1 text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">
-        {label}
-      </p>
-      {sub && (
-        <p className="mt-1 text-xs font-semibold text-slate-500">{sub}</p>
-      )}
-    </div>
-  );
+  return <AdminSummaryCard label={label} value={value} sub={sub} icon={icon} tone={tone} />;
 }
 
 function Panel({
@@ -1255,55 +1227,8 @@ function HeroPill({
   );
 }
 
-function DateFilters({
-  fromDate,
-  toDate,
-  setFromDate,
-  setToDate,
-}: {
-  fromDate: string;
-  toDate: string;
-  setFromDate: (v: string) => void;
-  setToDate: (v: string) => void;
-}) {
-  const today = dateInput();
-  const yesterdayDate = new Date();
-  yesterdayDate.setDate(yesterdayDate.getDate() - 1);
-  const yesterday = dateInput(yesterdayDate);
-  const sevenDate = new Date();
-  sevenDate.setDate(sevenDate.getDate() - 6);
-  const seven = dateInput(sevenDate);
-  const preset = fromDate === today && toDate === today
-    ? "today"
-    : fromDate === yesterday && toDate === yesterday
-      ? "yesterday"
-      : fromDate === seven && toDate === today
-        ? "seven"
-        : "custom";
-  const quickCls = (active: boolean) =>
-    cn(
-      btnCls,
-      "self-end ring-1",
-      active
-        ? "bg-orange-500 text-white shadow-lg shadow-orange-200 ring-orange-500"
-        : "bg-white text-slate-700 ring-slate-200",
-    );
-  return (
-    <Panel title="Date & Report Filters" icon={<Filter className="size-4" />}>
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-[minmax(170px,1fr)_minmax(170px,1fr)_auto_auto_auto_auto]">
-        <Field label="From Date">
-          <input type="date" value={fromDate} max={toDate || undefined} onChange={(e) => setFromDate(e.target.value)} className={inputCls} />
-        </Field>
-        <Field label="To Date">
-          <input type="date" value={toDate} min={fromDate || undefined} onChange={(e) => setToDate(e.target.value)} className={inputCls} />
-        </Field>
-        <button className={quickCls(preset === "today")} onClick={() => { setFromDate(today); setToDate(today); }}>Today</button>
-        <button className={quickCls(preset === "yesterday")} onClick={() => { setFromDate(yesterday); setToDate(yesterday); }}>Yesterday</button>
-        <button className={quickCls(preset === "seven")} onClick={() => { setFromDate(seven); setToDate(today); }}>7 Days</button>
-        <button className={quickCls(preset === "custom")} type="button">Custom</button>
-      </div>
-    </Panel>
-  );
+function DateFilters(props: { fromDate: string; toDate: string; setFromDate: (value: string) => void; setToDate: (value: string) => void }) {
+  return <AdminReportDateRange {...props}  />;
 }
 
 function printOverview(props: any, branchLabel: string) {
