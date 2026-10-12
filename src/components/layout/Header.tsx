@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { useAuthStore } from '@/stores/authStore';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { LogOut, Wifi, ShieldCheck, LayoutPanelTop, RefreshCw } from 'lucide-react';
+import { LogOut, Wifi, ShieldCheck, LayoutPanelTop, RefreshCw, Menu } from 'lucide-react';
+import { isNativeApp } from '@/lib/platform';
 import { CAFE_CONFIG } from '@/constants/config';
 import { useVenueStore } from '@/stores/venueStore';
 import { useSnbTabStripStore } from '@/stores/snbTabStripStore';
@@ -38,6 +39,7 @@ export default function Header() {
   const snbTabStripExpanded = useSnbTabStripStore((s) => s.expanded);
   const toggleSnbTabStrip = useSnbTabStripStore((s) => s.toggle);
   const [branchRefreshing, setBranchRefreshing] = useState(false);
+  const androidAdmin = isNativeApp() && import.meta.env.VITE_ANDROID_ADMIN_BUILD === 'true';
 
   const refreshBranchDashboard = () => {
     if (branchRefreshing) return;
@@ -121,6 +123,7 @@ export default function Header() {
       <div className={cn('flex items-center justify-between', isCompactCounterRoute ? 'h-11 px-3 sm:px-4' : 'h-14 px-4 sm:px-6')}>
         {/* Left — logo + name */}
         <div className={cn('flex items-center min-w-0', isCompactCounterRoute ? 'gap-2' : 'gap-2.5')}>
+          {androidAdmin && currentUser && <button type="button" aria-label="Open dashboard menu" onClick={() => window.dispatchEvent(new Event('cafe:open-admin-menu'))} className="grid size-9 shrink-0 place-items-center rounded-xl border border-white/20"><Menu className="size-5" /></button>}
           <img src={cafeLogo} alt="logo" className={cn('shrink-0 rounded-xl object-cover border border-white/20', isCompactCounterRoute ? 'size-7' : 'size-8')} />
           <div className="leading-none">
             <p className={cn('truncate font-display font-semibold text-white/95', isCompactCounterRoute ? 'text-sm' : 'text-base')}>{headerName}</p>

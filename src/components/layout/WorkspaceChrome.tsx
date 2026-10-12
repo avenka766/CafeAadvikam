@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
   BarChart3,
@@ -431,6 +431,13 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
   const location = useLocation();
   const navigate = useNavigate();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const androidAdmin = isNativeApp() && import.meta.env.VITE_ANDROID_ADMIN_BUILD === 'true';
+  useEffect(() => {
+    if (!androidAdmin) return;
+    const open = () => setMobileNavOpen(true);
+    window.addEventListener('cafe:open-admin-menu', open);
+    return () => window.removeEventListener('cafe:open-admin-menu', open);
+  }, [androidAdmin]);
   const meta = routeMeta(location.pathname);
   const isBranchBillingRoute = /^\/branch\/(snb|vrsnb)/.test(location.pathname);
   const isReceiverOrderRole = currentUser?.role === 'receiver_snb' || currentUser?.role === 'receiver_vrsnb';
@@ -554,7 +561,7 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
     )}>
       {items.length > 0 && !isFullscreenBillingRoute && (
         <>
-          <button
+          {!androidAdmin && <button
             type="button"
             aria-label="Open dashboard menu"
             aria-expanded={mobileNavOpen}
@@ -563,10 +570,10 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
           >
             <Menu className="size-5" />
             <span>Menu</span>
-          </button>
+          </button>}
 
           {mobileNavOpen && (
-            <div className="workspace-mobile-nav-layer md:hidden" role="dialog" aria-modal="true" aria-label="Dashboard navigation">
+            <div className={cn('workspace-mobile-nav-layer', !androidAdmin && 'md:hidden')} role="dialog" aria-modal="true" aria-label="Dashboard navigation">
               <button type="button" className="workspace-mobile-nav-backdrop" aria-label="Close dashboard menu" onClick={() => setMobileNavOpen(false)} />
               <aside className="workspace-mobile-drawer">
                 <div className="workspace-mobile-drawer-head">
@@ -657,3 +664,4 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
     </div>
   );
 }
+import { isNativeApp } from '@/lib/platform';
