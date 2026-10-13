@@ -250,7 +250,7 @@ interface BakeryState {
   // every idempotency guard downstream (the dispatch-log append, the
   // branch_incoming insert, and the Closing Stock ledger debit) correctly
   // recognize "this already happened" instead of double-counting it.
-  submitDispatch: (orderId: string, entry: Omit<DispatchEntry, 'id'> & { id?: string }) => Promise<void>;
+  submitDispatch: (orderId: string, entry: Omit<DispatchEntry, 'id'> & { id?: string }, source?: 'advance') => Promise<void>;
   deleteDispatchEntry: (orderId: string, entryId: string) => Promise<void>;
   markDone: (orderId: string) => Promise<void>;
   subscribe: () => () => void; // returns unsubscribe fn
@@ -1060,7 +1060,7 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
   },
 
 
-  submitDispatch: async (orderId, entry) => {
+  submitDispatch: async (orderId, entry, source) => {
     const newEntry: DispatchEntry = { ...entry, id: entry.id ?? crypto.randomUUID(), quantity: clampQtyForUnit(entry.quantity, entry.unit) };
 
     // Fetch fresh order from DB — includes order_number for notifications.
@@ -1090,6 +1090,9 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     }
 
     const existingLog: DispatchEntry[] = (freshOrder.dispatch_log as DispatchEntry[]) || [];
+    if (isAdvanceOrderTagged(freshOrder.notes) && source !== 'advance') {
+      throw new Error('Dispatch this order from the Advance Orders tab.');
+    }
     // FIX (MD Bug #18): check if this entry was already appended (idempotency guard for retries).
     // The root race condition (two different devices dispatching different items of the same order
     // concurrently) still exists at the DB level — the proper fix is a server-side RPC using
@@ -1098,7 +1101,7 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     // Server-side RPC appends the dispatch entry atomically so concurrent packers do not overwrite each other.
     const alreadyAppended = existingLog.some(e => e.id === newEntry.id);
     if (!alreadyAppended && !newEntry.isExtra && isAdvanceOrderTagged(freshOrder.notes)) {
-      const line = advanceDispatchProgress({ items: freshOrder.items as BakeryOrderItem[], dispatchLog: existingLog, producedItems: freshOrder.produced_items as PreparedItem[], status: freshOrder.status as WorkflowStatus, targetBranch: freshOrder.target_branch as Branch }).find(item => item.itemName.trim().toLowerCase() === newEntry.itemName.trim().toLowerCase() && item.unit === newEntry.unit);
+      const line = advanceDispatchProgress({ items: freshOrder.items as BakeryOrderItem[], dispatchLog: existingLog, producedItems: freshOrder.produced_items as PreparedItem[], status: freshOrder.status as WorkflowStatus, targetBranch: freshOrder.target_branch as Branch, notes: freshOrder.notes }).find(item => item.itemName.trim().toLowerCase() === newEntry.itemName.trim().toLowerCase() && item.unit === newEntry.unit);
       if (!line || newEntry.branch !== freshOrder.target_branch || newEntry.quantity > line.pending + 0.001) {
         throw new Error('This advance order has already received this quantity or the destination/item does not match. Refresh the order before dispatching.');
       }

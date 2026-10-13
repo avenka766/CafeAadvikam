@@ -1,7 +1,7 @@
 import type { BakeryOrder } from './types';
 import { kgToPcs, itemNamesMatch as sameItem } from './itemMatcher';
 
-export function advanceDispatchProgress(order: Pick<BakeryOrder, 'items' | 'dispatchLog' | 'producedItems' | 'status' | 'targetBranch'>) {
+export function advanceDispatchProgress(order: Pick<BakeryOrder, 'items' | 'dispatchLog' | 'producedItems' | 'status' | 'targetBranch' | 'notes'>) {
   return order.items.map(item => {
     const unit = item.dispatchUnit || 'kg';
     const requested = unit === 'pcs' && item.originalPcs != null ? item.originalPcs : item.quantity;
@@ -12,7 +12,10 @@ export function advanceDispatchProgress(order: Pick<BakeryOrder, 'items' | 'disp
     const prepared = unit === 'pcs' && item.weightGrams != null ? kgToPcs(kg, item.weightGrams) || 0 : kg;
     // Legacy stock dispatch orders have no production rows. Stock availability
     // is still validated by the dispatch workflow before sending anything.
-    const available = production.length ? Math.max(0, prepared - sent) : ['produced', 'dispatched'].includes(order.status) ? pending : 0;
+    const reservedStock = /\[Stock Reserved\]/i.test(order.notes || '');
+    const available = reservedStock && ['produced', 'dispatched'].includes(order.status)
+      ? pending
+      : production.length ? Math.max(0, prepared - sent) : ['produced', 'dispatched'].includes(order.status) ? pending : 0;
     return { itemName: item.itemName, unit, requested, sent, pending, ready: Math.round(Math.min(pending, available) * 1000) / 1000 };
   });
 }

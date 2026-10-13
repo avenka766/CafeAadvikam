@@ -9643,7 +9643,7 @@ function DispatchTab({ orders: sourceOrders, allOrders, productionCutoff }: { or
   // own active/completed/planned subTab — Return works off an invoice number
   // directly, with no branch/date scoping needed, so it doesn't belong
   // nested inside that branch-filtered view.
-  const [topTab, setTopTab] = useState<'queue' | 'return' | 'advance'>('queue');
+  const [topTab, setTopTab] = useState<'queue' | 'return'>('queue');
   const [search, setSearch] = useState('');
   // BUG FIX (2026-08-11): the Printer Setup entry point used to be a
   // position:fixed button floating at the top-right of the whole page —
@@ -9679,7 +9679,6 @@ function DispatchTab({ orders: sourceOrders, allOrders, productionCutoff }: { or
           <h2 className="text-sm font-black text-foreground">Dispatch</h2>
           <div className="flex gap-1 rounded-xl bg-muted p-1">
             <button type="button" onClick={() => setTopTab('queue')} className={cn('rounded-lg px-3 py-1 text-[11px] font-black', topTab === 'queue' ? 'bg-white text-foreground shadow-sm' : 'text-muted-foreground')}>Dispatch Queue</button>
-            <button type="button" onClick={() => setTopTab('advance')} className={cn('rounded-lg px-3 py-1 text-[11px] font-black', topTab === 'advance' ? 'bg-white text-foreground shadow-sm' : 'text-muted-foreground')}>Advance Orders</button>
             <button type="button" onClick={() => setTopTab('return')} className={cn('flex items-center gap-1 rounded-lg px-3 py-1 text-[11px] font-black', topTab === 'return' ? 'bg-white text-foreground shadow-sm' : 'text-muted-foreground')}><RotateCcw className="size-3" /> Return</button>
           </div>
         </div>
@@ -9710,7 +9709,7 @@ function DispatchTab({ orders: sourceOrders, allOrders, productionCutoff }: { or
           </div>
         )}
       </div>
-      {topTab === 'advance' ? <AdvancePlannerOrdersTab orders={allOrders} /> : topTab === 'return' ? (
+      {topTab === 'return' ? (
         <DispatchReturnPanel />
       ) : (
         <>
@@ -9719,7 +9718,7 @@ function DispatchTab({ orders: sourceOrders, allOrders, productionCutoff }: { or
           </div>
           {allOrders.length === 0 && <EmptyState text="Nothing waiting on dispatch." />}
           {allOrders.length > 0 && (
-            <DispatchDateGroup dateKey="all" label="Pending Dispatch" orders={orders} allOrders={allOrders} search={search} defaultOpen />
+            <DispatchDateGroup dateKey="all" label="Pending Dispatch" orders={orders} allOrders={allOrders.filter(order => !isAdvanceOrderTagged(order.notes))} search={search} defaultOpen />
           )}
         </>
       )}
@@ -12249,7 +12248,7 @@ function AdvancePlannerOrdersTab({ orders }: { orders: BakeryOrder[] }) {
           const readyActions = !advanceDispatchComplete(order) ? buildActionsFor(order) : [];
           const stage = advanceDispatchComplete(order) ? 'Dispatched'
             : readyActions.length > 0 ? 'Ready to dispatch'
-            : order.status === 'produced' ? 'Produced — nothing pending dispatch'
+            : order.status === 'produced' ? 'Waiting for remaining items'
             : order.status === 'store_confirmed' ? 'Awaiting production'
             : order.status === 'accepted' ? 'Accepted, not yet merged'
             : 'Awaiting Planner merge';
@@ -12289,11 +12288,12 @@ function AdvancePlannerOrdersTab({ orders }: { orders: BakeryOrder[] }) {
                 </div>
               </div>
               <div className="flex shrink-0 flex-col items-end gap-1.5">
-                {!advanceDispatchComplete(order) && readyActions.length > 0 && (
-                  <button type="button" onClick={() => openDispatch(order)} className="flex items-center gap-2 rounded-xl bg-foreground px-4 py-2.5 text-sm font-black text-white active:scale-95">
-                    <Send className="size-4" /> Dispatch to {order.targetBranch}
+                {!advanceDispatchComplete(order) && (
+                  <button type="button" onClick={() => openDispatch(order)} disabled={readyActions.length === 0} title={readyActions.length === 0 ? 'Prepare the remaining items before dispatching.' : 'Dispatch only the remaining ready quantities'} className="flex items-center gap-2 rounded-xl bg-foreground px-4 py-2.5 text-sm font-black text-white active:scale-95 disabled:opacity-50">
+                    <Send className="size-4" /> Dispatch remaining to {order.targetBranch}
                   </button>
                 )}
+                {!advanceDispatchComplete(order) && readyActions.length === 0 && <p className="text-xs text-muted-foreground">Remaining items need preparation before dispatch.</p>}
                 {advanceDispatchComplete(order) && <p className="text-xs font-bold">Invoice: {(historyInvoices.byOrder.get(order.id) || []).map(i => i.invoiceNo).join(', ') || 'Not recorded for this historical dispatch'}</p>}
                 {(historyInvoices.byOrder.get(order.id) || []).map(i => <button key={i.id} onClick={() => void printDispatchInvoice(i, 'a4')} className="text-xs font-bold">Print {i.invoiceNo}</button>)}
                 {dispatchNotice[order.id] && <p className="max-w-[16rem] text-right text-[11px] font-bold text-teal-700">{dispatchNotice[order.id]}</p>}
@@ -12309,7 +12309,7 @@ function AdvancePlannerOrdersTab({ orders }: { orders: BakeryOrder[] }) {
           invoiceNotes={`Advance order ${advanceOrders.find(x => x.order.id === dispatchReview.orderId)?.order.orderNumber || dispatchReview.orderId}`}
           actions={dispatchReview.actions}
           dispatchedBy={dispatchedBy}
-          onDispatch={submitDispatch}
+          onDispatch={(orderId, entry) => submitDispatch(orderId, entry, 'advance')}
           onClose={() => setDispatchReview(null)}
           onDone={() => {
             setDispatchNotice(v => ({ ...v, [dispatchReview.orderId]: 'Dispatch saved. Any remaining quantities stay under Active.' }));
