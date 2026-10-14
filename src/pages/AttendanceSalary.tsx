@@ -1,3 +1,5 @@
+import ContractTeamsPanel, { type ContractTeam } from '@/components/admin/ContractTeamsPanel';
+import { useAuthStore } from '@/stores/authStore';
 import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import {
   Users, Building2, Search, ChevronDown, ChevronUp,
@@ -891,7 +893,7 @@ function DeductToggle({ label, amount, checked, onChange }: { label: string; amo
   );
 }
 
-function AddEmpModal({ onAdd, onClose }: { onAdd: (e: Employee) => void; onClose: () => void }) {
+function AddEmpModal({ onAdd, onClose, teamNames, fixedTeam }: { onAdd: (e: Employee) => void; onClose: () => void; teamNames: string[]; fixedTeam?: string }) {
   useScrollLock(); // N-11: prevent background scroll bleed on iOS
   const [name, setName] = useState('');
   const [branch, setBranch] = useState<Branch>('VRSNB');
@@ -903,7 +905,8 @@ function AddEmpModal({ onAdd, onClose }: { onAdd: (e: Employee) => void; onClose
   const [bank, setBank] = useState('');
   const [acc, setAcc] = useState('');
   const [ifsc, setIfsc] = useState('');
-  const [paymentMode, setPaymentMode] = useState('');
+  const [paymentMode, setPaymentMode] = useState(fixedTeam || '');
+  const [addError, setAddError] = useState('');
   const [acctHolder, setAcctHolder] = useState('');
   const [bankBranchLoc, setBankBranchLoc] = useState('');
   const [saving, setSaving] = useState(false);
@@ -917,7 +920,7 @@ function AddEmpModal({ onAdd, onClose }: { onAdd: (e: Employee) => void; onClose
     // Employee modal which at least sets min="0" on the same fields.
     const result = await insertEmployee({ name: name.trim(), branch, department: dept.trim(), grossSalary: Math.max(0, parseInt(salary) || 0), salaryAdvance: Math.max(0, parseInt(advance) || 0), uniformDeduction: Math.max(0, parseInt(uniform) || 0), otherDeduction: Math.max(0, parseInt(other) || 0), bankName: bank || undefined, accountNumber: acc || undefined, ifscCode: ifsc || undefined, paymentMode: paymentMode.trim() || undefined, accountHolderName: acctHolder.trim() || undefined, bankBranchLocation: bankBranchLoc.trim() || undefined });
     setSaving(false);
-    if (result) onAdd(result);
+    if (result) onAdd(result); else setAddError('The person could not be saved. Please retry.');
   };
 
   return (
@@ -936,11 +939,10 @@ function AddEmpModal({ onAdd, onClose }: { onAdd: (e: Employee) => void; onClose
             </Field>
             <Field label="Department *"><input className={InputCls()} placeholder="e.g. Bakery" value={dept} onChange={e => setDept(e.target.value)} /></Field>
           </div>
-          <Field label="Payment Mode">
-            <select className={InputCls()} value={paymentMode} onChange={e => setPaymentMode(e.target.value)}>
+          <Field label="Contract team / Payment Mode">
+            <select disabled={!!fixedTeam} className={InputCls()} value={paymentMode} onChange={e => setPaymentMode(e.target.value)}>
               <option value="">Direct (paid normally)</option>
-              <option value="BITTU TEAM">BITTU TEAM</option>
-              <option value="BALA TEAM">BALA TEAM</option>
+              {teamNames.map(team => <option key={team} value={team}>{team}</option>)}
             </select>
           </Field>
           <div className="grid grid-cols-2 gap-3">
@@ -962,6 +964,7 @@ function AddEmpModal({ onAdd, onClose }: { onAdd: (e: Employee) => void; onClose
             <Field label="Bank Branch (location)"><input className={InputCls()} placeholder="e.g. BERIGAI" value={bankBranchLoc} onChange={e => setBankBranchLoc(e.target.value)} /></Field>
           </div>
         </div>
+        {addError && <p role="alert" className="px-5 pb-3 text-sm text-destructive">{addError}</p>}
         <div className="px-5 pb-5 flex gap-2">
           <button onClick={onClose} className="flex-1 h-11 rounded-xl border border-border text-sm font-body font-semibold hover:bg-muted transition-colors">Cancel</button>
           <button disabled={!valid || saving} onClick={handleAdd} className="flex-1 h-11 rounded-xl cafe-gradient text-primary-foreground text-sm font-body font-semibold disabled:opacity-40 active:scale-95 transition-all flex items-center justify-center gap-2">
@@ -973,7 +976,7 @@ function AddEmpModal({ onAdd, onClose }: { onAdd: (e: Employee) => void; onClose
   );
 }
 
-function EditEmpModal({ emp, onSave, onClose }: { emp: Employee; onSave: (e: Employee) => void; onClose: () => void }) {
+function EditEmpModal({ emp, onSave, onClose, teamNames }: { emp: Employee; onSave: (e: Employee) => void; onClose: () => void; teamNames: string[] }) {
   useScrollLock(); // N-11: prevent background scroll bleed on iOS
   const [name, setName] = useState(emp.name);
   const [branch, setBranch] = useState<Branch>(emp.branch);
@@ -1040,8 +1043,7 @@ function EditEmpModal({ emp, onSave, onClose }: { emp: Employee; onSave: (e: Emp
           <Field label="Payment Mode">
             <select className={InputCls()} value={paymentMode} onChange={e => setPaymentMode(e.target.value)}>
               <option value="">Direct (paid normally)</option>
-              <option value="BITTU TEAM">BITTU TEAM</option>
-              <option value="BALA TEAM">BALA TEAM</option>
+              {teamNames.map(team => <option key={team} value={team}>{team}</option>)}
             </select>
           </Field>
           <div className="grid grid-cols-2 gap-3">
@@ -1851,15 +1853,21 @@ function AdvanceTab({ employees, advanceRecords, tableReady, onAdd, onClear }: {
 
 // ─── Main Page ─────────────────────────────────────────────────────────────────
 export default function AttendanceSalary() {
+  const role = useAuthStore(state => state.currentUser?.role);
+  const canManageTeams = role === 'admin' || role === 'owner';
+  const [teams, setTeams] = useState<ContractTeam[]>([]);
+  const [teamError, setTeamError] = useState('');
+  const [addToTeam, setAddToTeam] = useState<string | undefined>();
   const TWO_MONTHS = useMemo(() => getTwoMonths(), []);
   const [monthIdx, setMonthIdx] = useState(0);
   const activeMonth = TWO_MONTHS[monthIdx];
 
   const [employees, setEmployees] = useState<Employee[]>([]);
+  const teamNames = useMemo(() => Array.from(new Set([...teams.map(team => team.name), ...employees.map(employee => employee.paymentMode?.trim()).filter((name): name is string => !!name)])).sort(), [teams, employees]);
   const [att, setAtt] = useState<MonthAttendance>({});
   const [decisions, setDecisions] = useState<DeductionDecisions>({});
   const [loading, setLoading] = useState(true);
-  const [tab, setTab] = useState<'attendance' | 'salary' | 'employees' | 'analytics' | 'advance'>('attendance');
+  const [tab, setTab] = useState<'attendance' | 'salary' | 'employees' | 'analytics' | 'advance' | 'teams'>('attendance');
   const [branch, setBranch]   = useState<'All' | Branch>('All');
   const [dept, setDept]       = useState<string>('All');
   // FEATURE (2026-08-20): contractor team filter — "BITTU TEAM, BALA TEAM,
@@ -1920,6 +1928,9 @@ export default function AttendanceSalary() {
   const loadData = useCallback(async (opts?: { silent?: boolean }) => {
     if (opts?.silent) setRefreshing(true); else setLoading(true);
     try {
+      const teamResult = await supabase.from('attendance_contract_teams').select('id,name').order('name');
+      if (teamResult.error) setTeamError('Contract teams could not load. Refresh to try again.');
+      else { setTeams(teamResult.data || []); setTeamError(''); }
       const [emps, attData, decData, advResult] = await Promise.all([
         fetchEmployees(),
         fetchAttendance(activeMonth.year, activeMonth.month),
@@ -2006,7 +2017,7 @@ export default function AttendanceSalary() {
     ));
   };
 
-  const addEmp = (emp: Employee) => { setEmployees(prev => sortByName([...prev, emp])); setShowAddModal(false); };
+  const addEmp = (emp: Employee) => { setAddToTeam(undefined); setEmployees(prev => sortByName([...prev, emp])); setShowAddModal(false); };
   const [removeEmpError, setRemoveEmpError] = useState('');
   const [removingEmpId, setRemovingEmpId]   = useState<string | null>(null);
 
@@ -2207,6 +2218,7 @@ export default function AttendanceSalary() {
           { k: 'employees', l: '👥 Employees' },
           { k: 'analytics', l: '📊 Analytics' },
           { k: 'advance', l: '💳 Advance' },
+          ...(canManageTeams ? [{ k: 'teams' as const, l: '👥 Contract Teams' }] : []),
         ] as const).map(({ k, l }) => (
           <button key={k} onClick={() => handleTabChange(k)}
             className={cn('shrink-0 px-3 py-2.5 rounded-xl text-xs font-body font-bold transition-all active:scale-95', tab === k ? 'cafe-gradient text-primary-foreground shadow-sm' : 'bg-card border border-border text-foreground')}>
@@ -2262,7 +2274,7 @@ export default function AttendanceSalary() {
       )}
 
       {/* Search + actions — hide on analytics tab */}
-      {tab !== 'analytics' && (
+      {tab !== 'analytics' && tab !== 'teams' && (
         <div className="px-4 mb-3 flex gap-2">
           {tab !== 'advance' && (
             <div className="relative flex-1">
@@ -2401,9 +2413,10 @@ export default function AttendanceSalary() {
         />
       )}
 
+      {tab === 'teams' && canManageTeams && <ContractTeamsPanel teams={teams} employees={employees} error={teamError} onCreated={team => setTeams(previous => [...previous, team].sort((a,b) => a.name.localeCompare(b.name)))} onAddNew={team => { setAddToTeam(team); setShowAddModal(true); }} onAssigned={(ids, team) => setEmployees(previous => previous.map(employee => ids.includes(employee.id) ? { ...employee, paymentMode: team } : employee))} />}
       <div className="h-6" />
-      {showAddModal && <AddEmpModal onAdd={addEmp} onClose={() => setShowAddModal(false)} />}
-      {editEmp && <EditEmpModal emp={editEmp} onSave={saveEmp} onClose={() => setEditEmp(null)} />}
+      {showAddModal && <AddEmpModal onAdd={addEmp} teamNames={teamNames} fixedTeam={addToTeam} onClose={() => { setShowAddModal(false); setAddToTeam(undefined); }} />}
+      {editEmp && <EditEmpModal emp={editEmp} teamNames={teamNames} onSave={saveEmp} onClose={() => setEditEmp(null)} />}
     </div>
   );
 }
