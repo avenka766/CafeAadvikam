@@ -6,6 +6,7 @@ export function advanceDispatchProgress(order: Pick<BakeryOrder, 'items' | 'disp
     const unit = item.dispatchUnit || 'kg';
     const requested = unit === 'pcs' && item.originalPcs != null ? item.originalPcs : item.quantity;
     const sent = (order.dispatchLog || []).filter(d => !d.isExtra && (!order.targetBranch || d.branch === order.targetBranch) && d.unit === unit && sameItem(d.itemName, item.itemName)).reduce((sum, d) => sum + d.quantity, 0);
+    const extraSent = (order.dispatchLog || []).filter(d => d.isExtra && (!order.targetBranch || d.branch === order.targetBranch) && d.unit === unit && sameItem(d.itemName, item.itemName)).reduce((sum, d) => sum + d.quantity, 0);
     const pending = Math.max(0, requested - sent);
     const production = (order.producedItems || []).filter(p => sameItem(p.itemName, item.itemName));
     const kg = production.reduce((sum, p) => sum + p.quantityPrepared, 0);
@@ -15,8 +16,8 @@ export function advanceDispatchProgress(order: Pick<BakeryOrder, 'items' | 'disp
     const reservedStock = /\[Stock Reserved\]/i.test(order.notes || '');
     const available = reservedStock && ['produced', 'dispatched'].includes(order.status)
       ? pending
-      : production.length ? Math.max(0, prepared - sent) : ['produced', 'dispatched'].includes(order.status) ? pending : 0;
-    return { itemName: item.itemName, unit, requested, sent, pending, ready: Math.round(Math.min(pending, available) * 1000) / 1000 };
+      : production.length ? Math.max(0, prepared - sent - extraSent) : ['produced', 'dispatched'].includes(order.status) ? pending : 0;
+    return { itemName: item.itemName, unit, requested, sent, extraSent, pending, ready: Math.round(Math.min(pending, available) * 1000) / 1000 };
   });
 }
 export function advanceDispatchComplete(order: Parameters<typeof advanceDispatchProgress>[0]) {

@@ -1,5 +1,6 @@
 import { useDispatchHistoryInvoices } from "./useDispatchHistoryInvoices";
 import { advanceDispatchComplete, advanceDispatchProgress } from './advanceDispatchProgress';
+import { advanceQuantityKey, buildAdvanceDispatchActions } from './advanceDispatchActions';
 // src/bakery/PlannerDashboard.tsx
 // Replaces the old Production stage (baker/sweet_master/savouries_master/
 // cookies_master/puffs_master/bakery_master) and the standalone Packing
@@ -12189,6 +12190,8 @@ function AdvancePlannerOrdersTab({ orders }: { orders: BakeryOrder[] }) {
 
   const [dispatchReview, setDispatchReview] = useState<{ scope: Branch; actions: PendingDispatchAction[]; orderId: string } | null>(null);
   const [dispatchNotice, setDispatchNotice] = useState<Record<string, string>>({});
+  const [dispatchQuantities, setDispatchQuantities] = useState<Record<string, Record<string, string>>>({});
+  const [editingOrder, setEditingOrder] = useState<string | null>(null);
 
   // Same "produced minus already dispatched" math the main Dispatch tab uses
   // per item, scoped to just this one order — an advance order is never
@@ -12196,15 +12199,17 @@ function AdvancePlannerOrdersTab({ orders }: { orders: BakeryOrder[] }) {
   // stock item is, since that would blur which customer's order actually
   // went out.
   const buildActionsFor = (order: BakeryOrder): PendingDispatchAction[] => {
-    return advanceDispatchProgress(order).filter(line => line.ready > 0.001).map(line => ({ orderId: order.id, itemName: line.itemName, quantity: line.ready, unit: line.unit, dispatchEntryId: crypto.randomUUID(), unitPrice: order.items.find(item => item.itemName === line.itemName && (item.dispatchUnit || 'kg') === line.unit)?.advanceUnitPrice }));
+    return buildAdvanceDispatchActions(order, dispatchQuantities[order.id]);
 
   };
 
   const openDispatch = (order: BakeryOrder) => {
     if (!order.targetBranch) return;
-    const actions = buildActionsFor(order);
-    if (actions.length === 0) return;
-    setDispatchReview({ scope: order.targetBranch, actions, orderId: order.id });
+    try {
+      const actions = buildActionsFor(order);
+      if (actions.length === 0) { setDispatchNotice(previous => ({...previous,[order.id]:'Enter a quantity above zero for at least one item.'})); return; }
+      setDispatchReview({ scope: order.targetBranch, actions, orderId: order.id });
+    } catch (error) { setDispatchNotice(previous => ({...previous,[order.id]:(error as Error).message})); }
   };
 
   const todayKey = kolkataToday();
@@ -12245,7 +12250,8 @@ function AdvancePlannerOrdersTab({ orders }: { orders: BakeryOrder[] }) {
       <div className="space-y-2.5">
         {visible.map(({ order, parsed }) => {
           const isOverdue = !!parsed.deliveryDate && parsed.deliveryDate < todayKey && !advanceDispatchComplete(order);
-          const readyActions = !advanceDispatchComplete(order) ? buildActionsFor(order) : [];
+          let readyActions: PendingDispatchAction[] = [];
+          try { readyActions = buildActionsFor(order); } catch { /* Validation is displayed when Review dispatch is clicked. */ }
           const stage = advanceDispatchComplete(order) ? 'Dispatched'
             : readyActions.length > 0 ? 'Ready to dispatch'
             : order.status === 'produced' ? 'Waiting for remaining items'
@@ -12284,16 +12290,24 @@ function AdvancePlannerOrdersTab({ orders }: { orders: BakeryOrder[] }) {
                   <p className="mt-1 truncate text-[11px] font-bold text-muted-foreground">
                     {order.items.map(i => `${i.itemName} (${i.dispatchUnit === 'pcs' && i.originalPcs != null ? i.originalPcs : i.quantity} ${i.dispatchUnit || 'kg'})`).join(', ')}
                   </p>
-                  {advanceDispatchProgress(order).map((line, index) => <p key={index} className="mt-1 text-xs text-muted-foreground">{line.itemName}: requested {line.requested}, dispatched {line.sent}, remaining {line.pending} {line.unit}{line.sent > line.requested + 0.001 && <span className="ml-2 font-bold text-red-700">Recorded dispatch exceeds request — review existing invoices.</span>}</p>)}
+                  {advanceDispatchProgress(order).map((line, index) => <div key={index} className="mt-2 text-xs text-muted-foreground">
+                    <p>{line.itemName}: requested {line.requested}, dispatched {line.sent}, remaining {line.pending} {line.unit}{line.extraSent > 0 && <span className="ml-2 font-semibold text-amber-700">Extra sent: {line.extraSent} {line.unit}</span>}</p>
+                    {editingOrder === order.id && <label className="mt-1 flex flex-wrap items-center gap-2 font-semibold text-foreground">Send now
+                      <input aria-label={`Dispatch quantity for ${line.itemName}`} type="number" min="0" step={line.unit === 'pcs' ? 1 : 0.001} inputMode={line.unit === 'pcs' ? 'numeric' : 'decimal'} value={dispatchQuantities[order.id]?.[advanceQuantityKey(line)] ?? String(line.ready)} onChange={event => setDispatchQuantities(previous => ({...previous,[order.id]:{...previous[order.id],[advanceQuantityKey(line)]:event.target.value}}))} className="w-28 rounded-lg border border-border bg-background px-3 py-2 text-sm" />{line.unit}
+                      {Number(dispatchQuantities[order.id]?.[advanceQuantityKey(line)] ?? line.ready) > line.pending && <span className="text-amber-700">Includes {Math.round((Number(dispatchQuantities[order.id]?.[advanceQuantityKey(line)] ?? line.ready)-line.pending)*1000)/1000} extra {line.unit}</span>}
+                    </label>}
+                  </div>)}
+                  {editingOrder === order.id && <p className="mt-2 max-w-lg text-xs text-amber-700">Enter the actual quantity being sent. Production entry is optional. Zero skips an item. Extra quantities are recorded separately; the customer’s order stays unchanged.</p>}
                 </div>
               </div>
               <div className="flex shrink-0 flex-col items-end gap-1.5">
-                {!advanceDispatchComplete(order) && (
-                  <button type="button" onClick={() => openDispatch(order)} disabled={readyActions.length === 0} title={readyActions.length === 0 ? 'Prepare the remaining items before dispatching.' : 'Dispatch only the remaining ready quantities'} className="flex items-center gap-2 rounded-xl bg-foreground px-4 py-2.5 text-sm font-black text-white active:scale-95 disabled:opacity-50">
-                    <Send className="size-4" /> Dispatch remaining to {order.targetBranch}
+                <button type="button" onClick={() => setEditingOrder(order.id === editingOrder ? null : order.id)} className="rounded-lg border px-3 py-2 text-xs font-bold">Edit dispatch quantities</button>
+                {(!advanceDispatchComplete(order) || editingOrder === order.id) && (
+                  <button type="button" onClick={() => openDispatch(order)} title="Review the selected quantities and invoice before dispatching" className="flex items-center gap-2 rounded-xl bg-foreground px-4 py-2.5 text-sm font-black text-white active:scale-95">
+                    <Send className="size-4" /> Review dispatch to {order.targetBranch}
                   </button>
                 )}
-                {!advanceDispatchComplete(order) && readyActions.length === 0 && <p className="text-xs text-muted-foreground">Remaining items need preparation before dispatch.</p>}
+                {!advanceDispatchComplete(order) && readyActions.length === 0 && <p className="text-xs text-muted-foreground">Use Edit dispatch quantities to enter what is being sent.</p>}
                 {advanceDispatchComplete(order) && <p className="text-xs font-bold">Invoice: {(historyInvoices.byOrder.get(order.id) || []).map(i => i.invoiceNo).join(', ') || 'Not recorded for this historical dispatch'}</p>}
                 {(historyInvoices.byOrder.get(order.id) || []).map(i => <button key={i.id} onClick={() => void printDispatchInvoice(i, 'a4')} className="text-xs font-bold">Print {i.invoiceNo}</button>)}
                 {dispatchNotice[order.id] && <p className="max-w-[16rem] text-right text-[11px] font-bold text-teal-700">{dispatchNotice[order.id]}</p>}
@@ -12306,12 +12320,14 @@ function AdvancePlannerOrdersTab({ orders }: { orders: BakeryOrder[] }) {
       {dispatchReview && (
         <DispatchReviewModal
           scope={dispatchReview.scope}
-          invoiceNotes={`Advance order ${advanceOrders.find(x => x.order.id === dispatchReview.orderId)?.order.orderNumber || dispatchReview.orderId}`}
+          invoiceNotes={`Advance order ${advanceOrders.find(x => x.order.id === dispatchReview.orderId)?.parsed.orderNo || dispatchReview.orderId}${dispatchReview.actions.some(action => action.isExtra) ? ' | Extra quantities: ' + dispatchReview.actions.filter(action => action.isExtra).map(action => `${action.itemName} ${action.quantity} ${action.unit}`).join(', ') : ''}`}
           actions={dispatchReview.actions}
           dispatchedBy={dispatchedBy}
           onDispatch={(orderId, entry) => submitDispatch(orderId, entry, 'advance')}
           onClose={() => setDispatchReview(null)}
           onDone={() => {
+            setDispatchQuantities(previous => { const next = {...previous}; delete next[dispatchReview.orderId]; return next; });
+            setEditingOrder(null);
             setDispatchNotice(v => ({ ...v, [dispatchReview.orderId]: 'Dispatch saved. Any remaining quantities stay under Active.' }));
             void fetchOrders(true, true);
             setDispatchReview(null);
@@ -12337,6 +12353,7 @@ function AdvancePlannerOrdersTab({ orders }: { orders: BakeryOrder[] }) {
 // table) so it can be reprinted later — the same batch can be printed 2-3
 // times if needed, per "sometimes I should print the bill 3 times."
 export interface PendingDispatchAction {
+  dispatchSource?: 'advance';
   unitPrice?: number;
   orderId: string;
   itemName: string;
@@ -12381,6 +12398,7 @@ const confirmedDispatchBatchSignatures = new Set<string>();
 // automatically. Every other case (the overwhelming majority of daily
 // dispatch — plain SNB/VRSNB, Custom without GST) queues for real.
 interface PlannerDispatchActionPayload {
+  dispatchSource?: 'advance';
   orderId: string;
   dispatchEntryId: string;
   itemName: string;
@@ -12393,6 +12411,7 @@ interface PlannerDispatchActionPayload {
 }
 
 interface PlannerDispatchAndInvoicePayload {
+  notes?: string;
   scope: Branch;
   actions: PlannerDispatchActionPayload[];
   invoiceItems: DispatchInvoiceItem[];
@@ -12420,7 +12439,7 @@ async function runPlannerDispatchAndInvoiceCore(payload: PlannerDispatchAndInvoi
       ...(a.targetHosurOrderId ? { targetHosurOrderId: a.targetHosurOrderId } : {}),
       ...(a.isExtra ? { isExtra: true } : {}),
       ...(a.isCustomSale ? { isCustomSale: true, customerName: a.customerName } : {}),
-    });
+    }, a.dispatchSource);
   }
 
   const record = await saveDispatchInvoice({
@@ -12436,6 +12455,7 @@ async function runPlannerDispatchAndInvoiceCore(payload: PlannerDispatchAndInvoi
     items: payload.invoiceItems,
     discountPct: payload.discountPct,
     dispatchEntryIds: payload.actions.map((a) => ({ orderId: a.orderId, dispatchEntryId: a.dispatchEntryId })),
+    notes: payload.notes,
   });
 
   // Same best-effort branch_incoming tagging as the online confirm() path —
@@ -12744,10 +12764,16 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
     return match && match.price > 0 ? match.price : null;
   };
 
-  const invoiceLines: DispatchInvoiceItem[] = displayItems.map(d => {
+  const invoiceLines: DispatchInvoiceItem[] = displayItems.flatMap(d => {
     const price = priceFor(d.itemName);
     const unitPrice = price ?? 0;
-    return { itemName: d.itemName, unit: d.unit, quantity: d.quantity, unitPrice, lineTotal: Math.round(d.quantity * unitPrice * 100) / 100 };
+    const extra = actions.some(action => action.dispatchSource === 'advance') ? effectiveActions.filter(action => action.isExtra && action.itemName === d.itemName && action.unit === d.unit).reduce((sum, action) => sum + action.quantity, 0) : 0;
+    const normal = Math.round((d.quantity - extra) * 1000) / 1000;
+    if (extra > 0) return [
+      ...(normal > 0 ? [{itemName:d.itemName,unit:d.unit,quantity:normal,unitPrice,lineTotal:Math.round(normal*unitPrice*100)/100}] : []),
+      {itemName:d.itemName,unit:d.unit,quantity:extra,unitPrice,lineTotal:Math.round(extra*unitPrice*100)/100,isExtra:true},
+    ];
+    return [{ itemName: d.itemName, unit: d.unit, quantity: d.quantity, unitPrice, lineTotal: Math.round(d.quantity * unitPrice * 100) / 100 }];
   });
   const missingPriceItems = displayItems.filter(d => priceFor(d.itemName) === null);
   // FEATURE (2026-09-13): "if the planner tries to send items that are not
@@ -12904,8 +12930,10 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
           .map((a) => ({ ...a, quantity: a.unit === 'pcs' ? Math.round(a.quantity) : a.quantity }))
           .filter((a) => !(a.unit === 'pcs' && a.quantity <= 0));
         await queuePlannerDispatchAndInvoice({
+          notes: invoiceNotes,
           scope,
           actions: roundedActions.map((a) => ({
+            dispatchSource: a.dispatchSource,
             orderId: a.orderId,
             dispatchEntryId: a.dispatchEntryId,
             itemName: a.itemName,

@@ -1100,9 +1100,9 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     // on retries within a single session.
     // Server-side RPC appends the dispatch entry atomically so concurrent packers do not overwrite each other.
     const alreadyAppended = existingLog.some(e => e.id === newEntry.id);
-    if (!alreadyAppended && !newEntry.isExtra && isAdvanceOrderTagged(freshOrder.notes)) {
+    if (!alreadyAppended && isAdvanceOrderTagged(freshOrder.notes)) {
       const line = advanceDispatchProgress({ items: freshOrder.items as BakeryOrderItem[], dispatchLog: existingLog, producedItems: freshOrder.produced_items as PreparedItem[], status: freshOrder.status as WorkflowStatus, targetBranch: freshOrder.target_branch as Branch, notes: freshOrder.notes }).find(item => item.itemName.trim().toLowerCase() === newEntry.itemName.trim().toLowerCase() && item.unit === newEntry.unit);
-      if (!line || newEntry.branch !== freshOrder.target_branch || newEntry.quantity > line.pending + 0.001) {
+      if (!line || newEntry.branch !== freshOrder.target_branch || !Number.isFinite(newEntry.quantity) || newEntry.quantity <= 0 || (newEntry.unit === 'pcs' && !Number.isInteger(newEntry.quantity)) || (!newEntry.isExtra && newEntry.quantity > line.pending + 0.001)) {
         throw new Error('This advance order has already received this quantity or the destination/item does not match. Refresh the order before dispatching.');
       }
     }
