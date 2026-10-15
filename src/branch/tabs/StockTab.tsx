@@ -16,6 +16,7 @@ import type { Branch } from '../types';
 import type { StockItem, IncomingStock, StockMismatch } from '../branchStore';
 import { useOperationalBranchCatalog } from '@/hooks/useOperationalBranchCatalog';
 import { sanitizeQtyForUnit } from '@/bakery/PlannerLeftoverTab';
+import { formatBranchQuantity } from '../quantityDisplay';
 
 interface Props {
   branch: Branch;
@@ -54,7 +55,7 @@ function formatQtyLabel(qty: number, itemName: string, explicitUnit?: 'pcs' | 'k
     const grams = Math.round(qty * 1000);
     return `${grams}g`;
   }
-  return `${Math.round(qty)} pcs`;
+  return formatBranchQuantity(qty, 'pcs');
 }
 
 function SmartStockBadge({ qty, threshold, itemName, unit }: { qty: number; threshold: number; itemName: string; unit?: 'pcs' | 'kg' }) {

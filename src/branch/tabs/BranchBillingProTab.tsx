@@ -1,3 +1,4 @@
+import { formatBranchQuantity } from '../quantityDisplay';
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import type { ReactNode } from 'react';
 import { BRANCH_PRINT_COMPLETE_EVENT, printCounterBill } from '../printUtils';
@@ -236,9 +237,7 @@ function stockAvailable(stock: StockItem[], map: Map<string, number>, itemName: 
 }
 
 function formatQty(qty: number, unit: 'pcs' | 'kg') {
-  const clean = (n: number) => parseFloat(n.toFixed(3)).toString();
-  if (unit === 'kg') return qty >= 1 ? `${clean(qty)} kg` : `${Math.round(qty * 1000)} g`;
-  return `${clean(qty)} pcs`;
+  return formatBranchQuantity(qty, unit);
 }
 
 function normalizeQtyInput(value: string, unit: 'pcs' | 'kg') {
@@ -658,7 +657,7 @@ export default function BranchBillingProTab({
       const existing = current.find((c) => c.barcode === item.barcode || c.itemName === item.name);
       const finalQty = Number(amount.toFixed(3));
       if (!allowInsufficientStock && finalQty > available) {
-        setError(`Only ${available} ${unit} available for ${item.name}.`);
+        setError(`Available for ${item.name}: ${formatQty(available, unit)}.`);
         return current;
       }
       if (existing) return current.map((c) => (c.barcode === item.barcode || c.itemName === item.name) ? recalcLine({ ...c, barcode: item.barcode, itemName: item.name, price: item.price }, finalQty) : c);
@@ -786,7 +785,7 @@ export default function BranchBillingProTab({
       const available = Number(stockAvailable(branchStock, stockMap, item.itemName, item.barcode));
       if (!isSnbFlexibleStockItem(branch, catalogItem)) {
         if (available <= 0) return `${item.itemName} is out of stock.`;
-        if (item.quantity > available) return `${item.itemName} has only ${available} ${item.unit} available.`;
+        if (item.quantity > available) return `${item.itemName}: ${formatQty(available, item.unit)} available.`;
       }
     }
     if (paymentMode === 'cash' && Number(cashTendered || 0) < total) return 'Cash tendered is less than bill total.';
