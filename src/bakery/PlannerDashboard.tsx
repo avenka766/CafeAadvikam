@@ -1,3 +1,4 @@
+import CustomerSuggestionsInput from './CustomerSuggestionsInput';
 import { useDispatchHistoryInvoices } from "./useDispatchHistoryInvoices";
 import { advanceDispatchComplete, advanceDispatchProgress } from './advanceDispatchProgress';
 import { advanceQuantityKey, buildAdvanceDispatchActions } from './advanceDispatchActions';
@@ -6510,7 +6511,7 @@ function AdvanceSalesTab() {
           )}
 
           <div className="grid grid-cols-2 gap-2">
-            <input value={customerName} onChange={e => setCustomerName(e.target.value)} placeholder="Customer name" className="h-10 rounded-xl border border-border bg-background px-3 text-xs font-bold" />
+            <CustomerSuggestionsInput value={customerName} onChange={setCustomerName} onSelect={customer => { setCustomerName(customer.name); setCustomerPhone(customer.mobile); }} />
             <input value={customerPhone} onChange={e => setCustomerPhone(e.target.value.replace(/\D/g, '').slice(0, 10))} placeholder="Mobile" inputMode="numeric" className="h-10 rounded-xl border border-border bg-background px-3 text-xs font-bold" />
           </div>
           <div className="grid grid-cols-2 gap-2">
@@ -7198,7 +7199,7 @@ function BillingTab() {
           )}
 
           <div className="grid grid-cols-2 gap-2">
-            <input value={customerName} onChange={e => setCustomerName(e.target.value)} placeholder="Customer name (optional)" className="h-10 rounded-xl border border-border bg-background px-3 text-xs font-bold" />
+            <CustomerSuggestionsInput value={customerName} onChange={setCustomerName} onSelect={customer => { setCustomerName(customer.name); setCustomerMobile(customer.mobile); }} placeholder="Customer name (optional)" />
             <input value={customerMobile} onChange={e => setCustomerMobile(e.target.value.replace(/\D/g, '').slice(0, 10))} placeholder="Mobile (optional)" inputMode="numeric" className="h-10 rounded-xl border border-border bg-background px-3 text-xs font-bold" />
           </div>
 
@@ -7658,7 +7659,7 @@ function EditWalkinBillModal({ bill, onClose, onSaved }: {
         </div>
 
         <div className="mt-3 grid grid-cols-2 gap-2">
-          <input value={customerName} onChange={e => setCustomerName(e.target.value)} placeholder="Customer name (optional)" className="h-10 rounded-xl border border-border bg-background px-3 text-xs font-bold" />
+          <CustomerSuggestionsInput value={customerName} onChange={setCustomerName} onSelect={customer => { setCustomerName(customer.name); setCustomerMobile(customer.mobile); }} placeholder="Customer name (optional)" />
           <input value={customerMobile} onChange={e => setCustomerMobile(e.target.value.replace(/\D/g, '').slice(0, 10))} placeholder="Mobile (optional)" inputMode="numeric" className="h-10 rounded-xl border border-border bg-background px-3 text-xs font-bold" />
         </div>
 
@@ -8201,7 +8202,7 @@ function SampleBillTab() {
           <div className="space-y-2 rounded-xl border border-amber-200 bg-amber-50 p-3">
             <label className="block space-y-1">
               <span className="text-[11px] font-black uppercase tracking-wide text-amber-800">Customer Name *</span>
-              <input value={customerName} onChange={e => setCustomerName(e.target.value)} className="w-full rounded-lg border border-amber-300 bg-white px-2.5 py-1.5 text-sm font-bold" placeholder="e.g. Ramesh Kumar" />
+              <CustomerSuggestionsInput value={customerName} onChange={setCustomerName} onSelect={customer => { setCustomerName(customer.name); setCustomerPhone(customer.mobile); setCustomerAddress(customer.address); }} className="w-full rounded-lg border border-amber-300 bg-white px-2.5 py-1.5 text-sm font-bold" placeholder="e.g. Ramesh Kumar" />
             </label>
             <label className="block space-y-1">
               <span className="text-[11px] font-black uppercase tracking-wide text-amber-800">Mobile Number *</span>
