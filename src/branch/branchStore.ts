@@ -1747,6 +1747,13 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     if (!inc) return 'Item not found';
     if (inc.confirmed) return null;
     if (inc.disputed) return 'This incoming stock is disputed and must be reviewed before confirmation.';
+    const catalogItems = useBranchCatalogStore.getState().items[branch === 'VRSNB' ? 'VRSNB' : 'SNB'];
+    const catalogItem = inc.itemBarcode != null
+      ? catalogItems.find(item => item.barcode === inc.itemBarcode)
+      : catalogItems.find(item => normalizeStockName(item.name) === normalizeStockName(inc.itemName));
+    if (catalogItem?.uom === 'Nos' && (inc.unit !== 'pcs' || !Number.isInteger(inc.quantity))) {
+      return 'This item is sold in whole pieces. Correct the incoming unit and piece count before confirming.';
+    }
 
     // Try atomic RPC first (deployed via migration)
     let canonicalConfirm = await supabase.rpc('confirm_incoming_stock_canonical', {
@@ -1762,6 +1769,9 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       await get().fetchBranchData(branch, false, ['stock', 'incoming']); // EGRESS FIX: confirming incoming adds stock and marks the row confirmed
       return null;
     }
+    // Validation/authorization errors must never retry through a weaker stock
+    // increment path. Legacy fallback is only for a genuinely missing RPC.
+    if (navigator.onLine && !isMissingRpcError(rpcErr.message ?? '')) return rpcErr.message;
 
     // OFFLINE FIX (2026-09-01): only when the failure is genuinely a
     // connectivity problem — the elaborate fallback below exists for a
