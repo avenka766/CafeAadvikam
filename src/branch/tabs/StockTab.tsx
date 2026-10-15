@@ -1,3 +1,4 @@
+import ConfirmButton from '../components/ConfirmIncomingButton';
 // src/branch/tabs/StockTab.tsx
 import { useEffect, useState } from 'react';
 import {
@@ -80,53 +81,6 @@ function SmartStockBadge({ qty, threshold, itemName, unit }: { qty: number; thre
 
 // B9 FIX: onConfirm now returns string|null (error or null on success).
 // Previously returned void and discarded the error, showing "✓ Added" even on failure.
-function ConfirmButton({ onConfirm }: { onConfirm: () => Promise<string | null> }) {
-  const [state, setState] = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
-  const [errMsg, setErrMsg] = useState('');
-
-  const handleClick = async () => {
-    setState('loading');
-    const err = await onConfirm();
-    if (err) {
-      setErrMsg(err);
-      setState('error');
-      setTimeout(() => setState('idle'), 4000);
-    } else {
-      setState('done');
-    }
-  };
-
-  if (state === 'done') {
-    return (
-      <span className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-600 bg-emerald-50 px-2.5 py-1 rounded-full">
-        <CheckCircle2 className="size-3.5" /> Added
-      </span>
-    );
-  }
-
-  if (state === 'error') {
-    return (
-      <span className="inline-flex items-center gap-1 text-xs font-semibold text-red-600 bg-red-50 px-2.5 py-1 rounded-full" title={errMsg}>
-        ✕ Failed
-      </span>
-    );
-  }
-
-  return (
-    <button
-      onClick={() => void handleClick()}
-      disabled={state === 'loading'}
-      className="inline-flex items-center gap-1 text-xs font-semibold text-white bg-primary px-3 py-1 rounded-full disabled:opacity-50 transition active:scale-95"
-    >
-      {state === 'loading'
-        ? <Loader2 className="size-3.5 animate-spin" />
-        : <CheckCircle2 className="size-3.5" />
-      }
-      Confirm
-    </button>
-  );
-}
-
 // ─── ManualStockUpdate panel ──────────────────────────────────────────────────
 
 const SNB_BRANCHES = ['SNB', 'Hosur'] as const;
