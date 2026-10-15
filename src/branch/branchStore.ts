@@ -1747,6 +1747,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     if (!inc) return 'Item not found';
     if (inc.confirmed) return null;
     if (inc.disputed) return 'This incoming stock is disputed and must be reviewed before confirmation.';
+    if (inc.returnRequested) return 'Planner must resolve the requested return before this receipt can be confirmed.';
     const catalogItems = useBranchCatalogStore.getState().items[branch === 'VRSNB' ? 'VRSNB' : 'SNB'];
     const catalogItem = inc.itemBarcode != null
       ? catalogItems.find(item => item.barcode === inc.itemBarcode)
@@ -1798,93 +1799,12 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       return null;
     }
 
-    // BUG #8 FIX: Fallback two-step path.
-    // Re-read the incoming record to guard against a retry where stock was already
-    // added but the mark-confirmed step failed. If confirmed=true in DB we skip stock add.
-    const { data: freshInc } = await supabase
-      .from('branch_incoming').select('confirmed, disputed, item_barcode').eq('id', incomingId).single();
-    const alreadyConfirmedInDb = freshInc?.confirmed === true;
-    if (freshInc?.disputed === true) return 'This incoming stock is disputed and must be reviewed before confirmation.';
-
-    if (!alreadyConfirmedInDb) {
-      const resolvedBarcode = inc.itemBarcode ?? (freshInc?.item_barcode != null ? Number(freshInc.item_barcode) : undefined);
-      let existingQuery = supabase.from('branch_stock').select('quantity,item_barcode').eq('branch', branch);
-      existingQuery = resolvedBarcode != null ? existingQuery.eq('item_barcode', resolvedBarcode) : existingQuery.eq('item_name', inc.itemName);
-      const { data: existing } = await existingQuery.maybeSingle();
-
-      if (existing) {
-        // FIX (MD Bug #14): replace non-atomic read-quantity-then-write with a server-side
-        // atomic increment RPC to prevent lost updates when two devices confirm stock
-        // for different items of the same order at nearly the same instant. If the atomic
-        // RPC is unavailable, fall back to the read-modify-write (same risk as before).
-        const { error: rpcErr } = await incrementBranchStock(branch, inc.itemName, inc.quantity, resolvedBarcode);
-        if (rpcErr) {
-          // BUG FIX (2026-09-28): this used to fall back to a client-computed
-          // `existing.quantity + inc.quantity` written via a plain .update() —
-          // a non-atomic read-modify-write. Two confirms landing close together
-          // (seen for real: a SNB THIRUPATHI LAADU delivery split into two
-          // batches confirmed ~1s apart) could both read the same starting
-          // quantity and the second write would silently clobber the first,
-          // losing an entire confirmed delivery's worth of stock while
-          // `branch_incoming.confirmed` still correctly shows true — exactly
-          // matching a live "goods confirmed but never showed up in stock"
-          // report, traced and corrected via SQL (see 2026-09-28 SNB stock
-          // sync investigation). `increment_branch_stock` is still atomic
-          // (`quantity = quantity + p_qty` inside the DB, on-conflict upsert)
-          // even when matched by name instead of barcode, so use that here
-          // instead of a client-side read-then-write, closing the same race
-          // window this fallback exists to guard against in the first place.
-          console.warn('[confirmIncoming] increment_branch_stock_by_barcode unavailable, using atomic by-name RPC:', rpcErr.message);
-          const { error: atomicErr } = await supabase.rpc('increment_branch_stock', {
-            p_branch: branch, p_item_name: inc.itemName, p_qty: inc.quantity, p_unit: inc.unit,
-          });
-          if (atomicErr) return `Failed to add to stock: ${atomicErr.message}`;
-        }
-      } else {
-        const { error: insErr } = await supabase.from('branch_stock')
-          .insert({ branch, item_name: inc.itemName, item_barcode: resolvedBarcode ?? null, quantity: inc.quantity, unit: inc.unit, min_threshold: defaultMinThreshold(inc.unit) });
-        if (insErr) return `Failed to create stock entry: ${insErr.message}`;
-      }
-    }
-
-    const { error: confErr } = await supabase
-      .from('branch_incoming').update({ confirmed: true }).eq('id', incomingId);
-    if (confErr) return `Stock added but failed to mark confirmed: ${confErr.message}`;
-
-    set((s) => {
-      const incoming = { ...s.incoming };
-      incoming[branch] = incoming[branch].map((i) => i.id === incomingId ? { ...i, confirmed: true } : i);
-      const stock = { ...s.stock };
-      const si = stock[branch].find((item) =>
-        inc.itemBarcode != null && item.itemBarcode != null
-          ? item.itemBarcode === inc.itemBarcode
-          : normalizeStockName(item.itemName) === normalizeStockName(inc.itemName),
-      );
-      if (si) {
-        stock[branch] = stock[branch].map((item) =>
-          inc.itemBarcode != null && item.itemBarcode != null
-            ? item.itemBarcode === inc.itemBarcode
-              ? { ...item, quantity: Math.round((item.quantity + inc.quantity) * 1000) / 1000, unit: inc.unit }
-              : item
-            : normalizeStockName(item.itemName) === normalizeStockName(inc.itemName)
-              ? { ...item, quantity: Math.round((item.quantity + inc.quantity) * 1000) / 1000, unit: inc.unit }
-              : item,
-        );
-      } else {
-        stock[branch] = [...stock[branch], {
-          itemBarcode: inc.itemBarcode, itemName: inc.itemName, quantity: inc.quantity,
-          reservedQuantity: 0, availableQuantity: inc.quantity,
-          unit: inc.unit, minThreshold: 10, price: null,
-        }];
-      }
-      return { incoming, stock };
-    });
-    return null;
+    return 'Safe stock confirmation is unavailable. Please refresh or contact Admin; no stock was added.';
   },
 
   // Confirm all unconfirmed incoming items at once (not restricted to today)
   confirmAllIncoming: async (branch) => {
-    const toConfirm = get().incoming[branch].filter((i) => !i.confirmed && !i.disputed);
+    const toConfirm = get().incoming[branch].filter((i) => !i.confirmed && !i.disputed && !i.returnRequested);
     if (toConfirm.length === 0) return null;
 
     for (const inc of toConfirm) {
