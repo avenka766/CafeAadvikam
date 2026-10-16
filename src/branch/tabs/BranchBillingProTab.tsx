@@ -1,3 +1,4 @@
+import {automaticDesktopBilling,captureDesktopBill,desktopCheckoutIdentity,finishDesktopCheckout} from '@/lib/desktopBilling';
 import { formatBranchQuantity } from '../quantityDisplay';
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import type { ReactNode } from 'react';
@@ -295,6 +296,7 @@ export default function BranchBillingProTab({
   beforeCheckout,
   onOpenCounter,
 }: Props) {
+  const desktopCounter=automaticDesktopBilling()&&(branch==='SNB'||branch==='VRSNB');
   const { currentUser } = useAuthStore();
   const { fetchBranchData } = useBranchStore();
   const bills = useBranchOpsStore((s) => s.bills);
@@ -333,9 +335,10 @@ export default function BranchBillingProTab({
     (async () => {
       const { data, error } = await supabase.rpc('get_my_branch_counter_session_secure', { p_branch: branch });
       if (!active) return;
-      if (error) { setDbCounterSession(null); return; }
+      const key='desktop-branch-counter:'+branch+':'+currentUser.id+':'+businessDate();
+      if(error){const cached=automaticDesktopBilling()?localStorage.getItem(key):null;setDbCounterSession(cached?JSON.parse(cached):null);return;}
       const row = data && typeof data === 'object' ? data as Record<string, unknown> : null;
-      setDbCounterSession(row?.id ? { id: String(row.id) } : null);
+      const session=row?.id?{id:String(row.id)}:null;setDbCounterSession(session);if(automaticDesktopBilling())localStorage.setItem(key,JSON.stringify(session));
     })();
     return () => { active = false; };
   }, [branch, currentUser?.id]);
@@ -569,7 +572,8 @@ export default function BranchBillingProTab({
 
   const todayKey = businessDate();
   const activeCounterRecord = counterOpenings.find((record) => record.branch === branch && record.date === todayKey && record.active !== false && (currentUser?.id ? record.cashierUserId === currentUser.id : record.cashier === userName));
-  const counterOpenedToday = Boolean(activeCounterRecord) || Boolean(dbCounterSession);
+  const localCounterRecord=counterOpenings.find(record=>record.branch===branch&&record.date===todayKey&&(currentUser?.id?record.cashierUserId===currentUser.id:record.cashier===userName));
+  const counterOpenedToday = localCounterRecord?.active===false?false:Boolean(activeCounterRecord)||Boolean(dbCounterSession);
   const isCounterOpen = useCallback(() => counterOpenedToday, [counterOpenedToday]);
   const openQtyPopup = (item: BillingItem) => {
     setQtyPopupItem(item);
@@ -874,8 +878,8 @@ export default function BranchBillingProTab({
     setSaving(true);
     setError('');
     try {
-      if (beforeCheckout) await beforeCheckout();
-      let counterSessionId = activeCounterRecord?.counterSessionId || null;
+      if (beforeCheckout && !desktopCounter) await beforeCheckout();
+      let counterSessionId = activeCounterRecord?.counterSessionId || dbCounterSession?.id || null;
 
       // OFFLINE FIX (2026-09-01): per the offline-checkout decision (same
       // policy as Cafe Biller) — a provisional receipt now, real bill number
@@ -891,7 +895,7 @@ export default function BranchBillingProTab({
       // cart exactly as already shown on screen, which the cashier and
       // customer already agreed the sale was for.
       const offlineEligible = paymentMode !== 'wallet' && promotionEvaluation.applied.length === 0 && !couponCode;
-      if (!navigator.onLine && offlineEligible) {
+      if ((!navigator.onLine && offlineEligible) || (desktopCounter && paymentMode!=='wallet')) {
         const checkoutSplit = { cash: roundMoney(Number(split.cash || 0)), upi: roundMoney(Number(split.upi || 0)), card: roundMoney(Number(split.card || 0)) };
         if (paymentMode === 'split' && roundMoney(checkoutSplit.cash + checkoutSplit.upi + checkoutSplit.card) !== roundMoney(total)) {
           throw new Error('Split payment must exactly match the bill total.');
@@ -902,7 +906,8 @@ export default function BranchBillingProTab({
         const canonicalManualDiscount = discountMode === 'percent'
           ? Math.min(canonicalSubtotal, roundMoney((canonicalSubtotal * clampPercentage(discountInput)) / 100))
           : Math.min(canonicalSubtotal, roundMoney(discountInput));
-        const canonicalCoreAmountBeforeRoundOff = roundMoney(Math.max(0, canonicalSubtotal + canonicalTax - canonicalManualDiscount));
+        const canonicalCombinedDiscount = Math.min(canonicalSubtotal,roundMoney(canonicalManualDiscount+promotionDiscount));
+        const canonicalCoreAmountBeforeRoundOff = roundMoney(Math.max(0, canonicalSubtotal + canonicalTax - canonicalCombinedDiscount));
         const canonicalCoreTotal = roundWholeRupee(canonicalCoreAmountBeforeRoundOff);
         const canonicalCoreRoundOff = roundMoney(canonicalCoreTotal - canonicalCoreAmountBeforeRoundOff);
         const localAmountBeforeRoundOff = roundMoney(canonicalCoreAmountBeforeRoundOff + extraChargesValue);
@@ -929,7 +934,7 @@ export default function BranchBillingProTab({
           })
           .filter((row) => row.amount > 0);
 
-        const idempotencyKey = checkoutIdempotencyRef.current
+        const idempotencyKey = checkoutIdempotencyRef.current ?? (automaticDesktopBilling()?desktopCheckoutIdentity('branch-counter'):null)
           ?? `branch-checkout:${branch}:${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`}`;
         checkoutIdempotencyRef.current = idempotencyKey;
         const customerName = paymentMode === 'credit' ? creditCustomerName.trim() : null;
@@ -940,9 +945,9 @@ export default function BranchBillingProTab({
           ...(packingChargeValue > 0 ? [{ itemName: 'Packing Charge', quantity: 1, unit: 'pcs' as const, price: packingChargeValue, tax: 0, discount: 0, lineTotal: packingChargeValue }] : []),
           ...(deliveryChargeValue > 0 ? [{ itemName: 'Delivery Charge', quantity: 1, unit: 'pcs' as const, price: deliveryChargeValue, tax: 0, discount: 0, lineTotal: deliveryChargeValue }] : []),
         ];
-        const saved = addBill({
+        const draftBill = {
           branch, billNo: provisionalBillNo, invoiceNo: 0, items: [...canonicalItems, ...chargeLineItems],
-          subtotal: canonicalSubtotal, discount: canonicalManualDiscount, discountPercent, tax: canonicalTax,
+          subtotal: canonicalSubtotal, discount: canonicalCombinedDiscount, discountPercent, tax: canonicalTax,
           roundOff: localRoundOff, amountBeforeRoundOff: localAmountBeforeRoundOff, total: localTotal,
           additionalCharges: extraChargesValue || undefined,
           tendered: paymentMode === 'cash' || paymentMode === 'split' || paymentMode === 'credit' ? tendered : localTotal,
@@ -958,9 +963,19 @@ export default function BranchBillingProTab({
           cashierUserId: currentUser?.id,
           counterSessionId: counterSessionId || undefined,
           pendingSync: true,
-        });
+        };
+        let desktopResult;
+        if(desktopCounter){
+          const {billNo:_number,invoiceNo:_invoice,...receipt}=draftBill;
+          const chargePayments=Object.entries(paymentRows.reduce((acc,row)=>{acc[row.mode]=(acc[row.mode]||0)+row.amount;return acc;},{} as Record<string,number>)).map(([mode,amount])=>({mode,amount:roundMoney(amount-corePaymentRows.filter(r=>r.mode===mode).reduce((sum,r)=>sum+r.amount,0))})).filter(r=>r.amount>0);
+          desktopResult=await captureDesktopBill({kind:'branch-sale',family:branch as 'SNB'|'VRSNB',key:idempotencyKey,rpc:'complete_branch_promotional_checkout_v1',receipt,
+            args:{p_branch:branch,p_items:canonicalItems,p_payments:corePaymentRows,p_customer_name:customerName,p_customer_phone:customerPhone,p_salesperson:billingStaff,p_biller:userName,p_manual_discount:canonicalManualDiscount,p_tax:canonicalTax,p_round_off:canonicalCoreRoundOff,p_payment_type:paymentMode==='credit'?'credit':'counter',p_due_date:paymentMode==='credit'?creditDueDate:null,p_notes:paymentMode==='credit'?creditRemarks.trim()||null:null,p_discount_percent:discountPercent,p_coupon_code:couponCode||null,p_idempotency_key:idempotencyKey,p_selected_campaign_ids:promotionEvaluation.applied.map(p=>p.campaignId)},
+            charges:{packing:packingChargeValue,delivery:deliveryChargeValue,payments:chargePayments,purpose:paymentMode==='credit'?'credit_upfront':'bill_collection'}});
+        }
+        const saved=addBill({...draftBill,...(desktopResult?{billNo:desktopResult.data.billNo,invoiceNo:desktopResult.data.invoiceNo,sourceBillId:desktopResult.pending?undefined:desktopResult.data.billId,pendingSync:desktopResult.pending}: {})});
         setLastBill(saved);
 
+        if(!desktopCounter){
         await useOfflineQueueStore.getState().enqueue('branch_checkout', {
           branch, items: canonicalItems, paymentMode, corePaymentRows, customerName, customerPhone,
           billingStaff, userName, canonicalManualDiscount, canonicalTax, canonicalCoreRoundOff, discountPercent,
@@ -968,8 +983,9 @@ export default function BranchBillingProTab({
           creditNotes: paymentMode === 'credit' ? creditRemarks.trim() || null : null,
           idempotencyKey, provisionalBillNo, provisionalBillId: saved.id,
         });
+        }
 
-        checkoutIdempotencyRef.current = null;
+        checkoutIdempotencyRef.current = null; finishDesktopCheckout('branch-counter');
         setCart([]); setCartQuantityDrafts({}); setSalesperson(''); setCashTendered(''); setSplit({ cash: '', upi: '', card: '' }); setCreditCustomerName(''); setCreditCustomerMobile(''); setCreditDueDate(''); setCreditAmountPaid(''); setCreditPaidMode('cash'); setCreditRemarks(''); setSelectedWallet(null); setWalletAmount(0); setWalletOtherMode(null); setWalletAuthorizationSecret(''); setCouponCode(''); setDiscount(''); setPaymentMode(null); setPackingCharge(''); setDeliveryCharge(''); setDiscountReason('');
         focusSearch(true);
         window.setTimeout(() => focusSearch(false), 150);
@@ -1160,7 +1176,7 @@ export default function BranchBillingProTab({
         .filter(([, amount]) => amount > 0)
         .map(([mode, amount]) => ({ mode, amount }));
 
-      const idempotencyKey = checkoutIdempotencyRef.current
+      const idempotencyKey = checkoutIdempotencyRef.current ?? (automaticDesktopBilling()?desktopCheckoutIdentity('branch-counter'):null)
         ?? `branch-checkout:${branch}:${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`}`;
       checkoutIdempotencyRef.current = idempotencyKey;
       const customerName = paymentMode === 'wallet' ? selectedWallet?.customerName ?? null : paymentMode === 'credit' ? creditCustomerName.trim() : null;
@@ -1394,7 +1410,7 @@ export default function BranchBillingProTab({
       // the cashier start the next bill immediately; printing and the
       // background branch refresh continue independently and any print
       // failure is still surfaced (just asynchronously, without blocking).
-      checkoutIdempotencyRef.current = null;
+      checkoutIdempotencyRef.current = null; finishDesktopCheckout('branch-counter');
       setCart([]); setCartQuantityDrafts({}); setSalesperson(''); setCashTendered(''); setSplit({ cash: '', upi: '', card: '' }); setCreditCustomerName(''); setCreditCustomerMobile(''); setCreditDueDate(''); setCreditAmountPaid(''); setCreditPaidMode('cash'); setCreditRemarks(''); setSelectedWallet(null); setWalletAmount(0); setWalletOtherMode(null); setWalletAuthorizationSecret(''); setCouponCode(''); setDiscount(''); setPaymentMode(null); setPackingCharge(''); setDeliveryCharge(''); setDiscountReason('');
       focusSearch(true);
       window.setTimeout(() => focusSearch(false), 150);
