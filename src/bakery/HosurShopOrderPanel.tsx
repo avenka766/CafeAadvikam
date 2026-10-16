@@ -1,3 +1,4 @@
+import { calculatePlannerSalesGst } from './plannerSalesGst';
 // src/bakery/HosurShopOrderPanel.tsx
 // Planner's Hosur shop-order placement (price-list dropdown + custom item)
 // and the Dispatch step that was previously missing entirely.
@@ -46,7 +47,7 @@ import { businessDate } from '@/lib/businessDate';
 
 // AUDIT FIX (2026-09-05): "the payment should be round off there should not
 // be any decimal points".
-const money = (v: number | null | undefined) => 'Rs.' + Math.round(v ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 0 });
+const money = (v: number | null | undefined) => 'Rs.' + (v ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
 const num = (v: number | null | undefined) => (v ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
 const normalize = (s: string) => s.trim().toLowerCase();
 
@@ -881,9 +882,11 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
       // FEATURE (2026-09-12): one flat GST%/HSN for the whole order (not per
       // line) — see the note above gstEnabled's declaration.
       const orderGstOn = gstEnabled[order.id] === true;
-      const orderGstPct = Math.max(0, Number(gstPct[order.id]) || 0);
+      const orderGstPct = Number(gstPct[order.id] ?? '5');
       const orderGstHsn = (gstHsnCode[order.id] || '').trim();
       const orderGstSupplyType = gstSupplyType[order.id] || 'intra';
+      if (orderGstOn && (!Number.isFinite(orderGstPct) || orderGstPct <= 0 || orderGstPct > 100)) throw new Error('Enter a valid GST percentage above 0 and up to 100.');
+      const savedGstBuyer = {name:order.shopName,address:gstBuyerAddress[order.id] || '',gstin:gstBuyerGstin[order.id] || '',stateName:gstBuyerStateName[order.id] || 'Tamil Nadu',stateCode:gstBuyerStateCode[order.id] || '33'};
       const invoiceItems = [
         ...billItems.map(i => ({
           itemName: i.itemName, unit: i.unit, quantity: i.receivedQuantity, unitPrice: i.unitPrice,
@@ -916,7 +919,7 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
           billItems, charges: orderChargesToBill,
           payment: { paymentType: 'credit', dueDate: offlineDueDate },
           userName: currentUser?.displayName || 'Planner',
-          gst: orderGstOn ? { on: true, pct: orderGstPct, hsn: orderGstHsn, supplyType: orderGstSupplyType } : null,
+          gst: orderGstOn ? { on: true, pct: orderGstPct, hsn: orderGstHsn, supplyType: orderGstSupplyType, buyer:savedGstBuyer } : null,
           appliedLeftovers: appliedForOrderSnapshot,
         });
         setResult(r => ({ ...r, [order.id]: { ok: true, message: `No connection — queued for ${order.shopName}. Will dispatch, bill, and send the WhatsApp bill automatically once you're back online.` } }));
@@ -952,7 +955,7 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
           dueDate: pType !== 'full' ? (dueDate[order.id] || null) : null,
         },
         userName: currentUser?.displayName || 'Planner',
-        gst: orderGstOn ? { on: true, pct: orderGstPct, hsn: orderGstHsn, supplyType: orderGstSupplyType } : null,
+        gst: orderGstOn ? { on: true, pct: orderGstPct, hsn: orderGstHsn, supplyType: orderGstSupplyType, buyer:savedGstBuyer } : null,
         appliedLeftovers: appliedForOrderSnapshot,
       });
       setResult(r => ({ ...r, [order.id]: {
@@ -994,6 +997,7 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
             invoiceNo: outcome.billNo, invoiceDate,
             supplyType: orderGstSupplyType,
             lines: gstLines,
+            overallSalesTax: {subtotal:invoiceItems.reduce((sum,i)=>sum+i.lineTotal,0),discountAmount:0,gstPct:orderGstPct},
             preparedBy: currentUser?.displayName || currentUser?.username || 'Planner',
           });
           setGstInvoiceResult(v => ({ ...v, [order.id]: { invoiceNo: outcome.billNo, html } }));
@@ -1043,6 +1047,8 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
   // printViaIframe. This was one of the print calls behind the "unable to
   // print any bill" report for Planner's Hosur Shops & Billing tab.
   const printPhysicalBill = (snap: { billNo: string; order: HosurOrder; items: { itemName: string; unit: string; quantity: number; unitPrice: number }[] }) => {
+    const taxInvoice = Object.values(gstInvoiceResult).find(i=>i.invoiceNo===snap.billNo);
+    if (taxInvoice) { printHtml(taxInvoice.invoiceNo,taxInvoice.html);return; }
     const rows = snap.items.map(i => `<tr><td>${i.itemName}</td><td style="text-align:right">${num(i.quantity)} ${i.unit}</td><td style="text-align:right">${money(i.unitPrice)}</td><td style="text-align:right">${money(i.quantity * i.unitPrice)}</td></tr>`).join('');
     const total = snap.items.reduce((s, i) => s + i.quantity * i.unitPrice, 0);
     printViaIframe(`<html><head><title>Bill ${snap.billNo}</title><style>
@@ -1166,7 +1172,7 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
         // actually billed/collected, adding any charges on top.
         const itemsTotal = orderTotal(order);
         const orderCharges = charges[order.id] ?? [];
-        const total = Math.round((itemsTotal + chargesTotalFor(order.id)) * 100) / 100;
+        const total = calculatePlannerSalesGst(itemsTotal + chargesTotalFor(order.id),0,gstEnabled[order.id]===true,Number(gstPct[order.id] ?? '5'),gstSupplyType[order.id] || 'intra').total;
         const res = result[order.id];
         // At-a-glance dispatch completeness for this shop's order — this is
         // the summary that used to be missing: an order can sit in this

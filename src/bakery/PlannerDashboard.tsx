@@ -1,4 +1,10 @@
 import CustomerSuggestionsInput from './CustomerSuggestionsInput';
+import FestivalSalesPanel from './FestivalSalesPanel';
+import PlannerSalesGstFields from './PlannerSalesGstFields';
+import { calculatePlannerSalesGst } from './plannerSalesGst';
+import { hosurInvoiceLedgerLines } from './hosurGstLedger';
+import { renderSavedSalesTaxInvoice, renderSavedDispatchTaxInvoice } from './dispatchInvoice';
+import { createFestivalSaleDrafts, festivalSaleCart } from './festivalSales';
 import { useDispatchHistoryInvoices } from "./useDispatchHistoryInvoices";
 import { advanceDispatchComplete, advanceDispatchProgress } from './advanceDispatchProgress';
 import { advanceQuantityKey, buildAdvanceDispatchActions } from './advanceDispatchActions';
@@ -3292,7 +3298,7 @@ function HosurUnifiedSection({ embedded = false }: { embedded?: boolean } = {}) 
 // (whose shop price lists are already discounted) default to 0%.
 // AUDIT FIX (2026-09-05): "the payment should be round off there should not
 // be any decimal points".
-const invoiceMoney = (v: number) => 'Rs. ' + Math.round(v).toLocaleString('en-IN', { maximumFractionDigits: 0 });
+const invoiceMoney = (v: number) => 'Rs. ' + v.toLocaleString('en-IN', { maximumFractionDigits: 2 });
 const normalizeItemName = (s: string) => s.trim().toLowerCase();
 const kolkataDateKey = (iso: string) =>
   new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(iso));
@@ -5556,7 +5562,8 @@ const WALKIN_PAYMENT_MODES = [
 // without pulling in this whole page module.
 
 function printWalkinBill(bill: WalkinBillRow, mode: 'thermal' | 'a4' = 'thermal') {
-  printDispatchInvoice(walkinBillToInvoiceRecord(bill), mode);
+  if (bill.isGstInvoice && bill.items.some(item => item.gstPricing === 'exclusive')) return printHtml(bill.billNo, renderSavedSalesTaxInvoice(bill));
+  return printDispatchInvoice(walkinBillToInvoiceRecord(bill), mode);
 }
 
 // ─── Tab: GST Invoice (Sales) ───────────────────────────────────────────────
@@ -6679,6 +6686,9 @@ function PendingAdvanceSaleRow({ sale, onChanged }: { sale: AdvanceSaleRecord; o
 }
 
 function BillingTab() {
+  const [festivalSales, setFestivalSales] = useState(false);
+  const [festivalDrafts, setFestivalDrafts] = useState(createFestivalSaleDrafts);
+  const festivalCart = useMemo(() => festivalSaleCart(festivalDrafts), [festivalDrafts]);
   const { items: catalogItems, loadCatalog } = useBranchCatalogStore();
   const currentUser = useAuthStore(s => s.currentUser);
   const [search, setSearch] = useState('');
@@ -6705,6 +6715,10 @@ function BillingTab() {
     setCustomItem({ name: '', unit: customItem.unit, price: '', quantity: '1' });
   };
   const setCartLinePrice = (itemName: string, value: string) => {
+    if (festivalSales) {
+      setFestivalDrafts(rows => rows.map(row => (row.name.trim() || 'Custom item') === itemName ? { ...row, price: value } : row));
+      return;
+    }
     const price = Math.max(0, Number(value) || 0);
     setCart(prev => (prev[itemName] ? { ...prev, [itemName]: { ...prev[itemName], price } } : prev));
   };
@@ -6852,6 +6866,10 @@ function BillingTab() {
   );
 
   const setQty = (item: { name: string; unit: 'pcs' | 'kg'; price: number }, value: number) => {
+    if (festivalSales) {
+      setFestivalDrafts(rows => rows.map(row => (row.name.trim() || 'Custom item') !== item.name ? row : value <= 0 ? { ...row, quantity: '', price: '', ...(row.custom ? { name: '' } : {}) } : { ...row, quantity: String(value) }));
+      return;
+    }
     const safe = clampQtyForUnit(value, item.unit);
     setCart(prev => {
       const next = { ...prev };
@@ -6861,16 +6879,19 @@ function BillingTab() {
     });
   };
 
-  const cartLines = Object.values(cart);
+  const cartLines = festivalSales ? festivalCart.lines : Object.values(cart);
   const chargesTotal = Math.round(charges.reduce((s, c) => s + (Number(c.amount) || 0), 0) * 100) / 100;
   const subtotal = Math.round((cartLines.reduce((s, l) => s + l.price * l.quantity, 0) + chargesTotal) * 100) / 100;
   const discountAmount = discountType === 'none' ? 0
     : discountType === 'percent' ? Math.round(subtotal * (Math.min(100, Math.max(0, Number(discountValue) || 0)) / 100) * 100) / 100
     : Math.round(Math.min(subtotal, Math.max(0, Number(discountValue) || 0)) * 100) / 100;
-  const total = Math.max(0, Math.round((subtotal - discountAmount) * 100) / 100);
+  const salesTax = calculatePlannerSalesGst(subtotal, discountAmount, gstEnabled, Math.max(0, Number(gstPct) || 0), gstSupplyType);
+  const total = salesTax.total;
 
   const resetCart = () => {
-    setCart({}); setDiscountType('none'); setDiscountValue(''); setCustomerName(''); setCustomerMobile('');
+    if (festivalSales) setFestivalDrafts(createFestivalSaleDrafts()); else setCart({});
+   
+    setDiscountType('none'); setDiscountValue(''); setCustomerName(''); setCustomerMobile('');
     setCustomItem({ name: '', unit: 'pcs', price: '', quantity: '1' }); setCustomItemError('');
     setCharges([]); setChargeDraft({ name: '', amount: '' }); setChargeError('');
     setGstEnabled(false); setGstBuyerName(''); setGstBuyerGstin(''); setGstBuyerAddress('');
@@ -6896,6 +6917,8 @@ function BillingTab() {
     // ANY await, same as every other in-flight guard in this file.
     if (savingInFlightRef.current) return;
     if (cartLines.length === 0) { setError('Add at least one item.'); return; }
+    if (festivalSales && festivalCart.error) { setError(festivalCart.error); return; }
+    if (gstEnabled && (!Number.isFinite(Number(gstPct)) || Number(gstPct) <= 0 || Number(gstPct) > 100)) { setError('Enter a valid GST rate between 0 and 100%.'); return; }
     savingInFlightRef.current = true;
     try {
       // Defense in depth: re-check right before saving, not just at the button
@@ -6924,7 +6947,7 @@ function BillingTab() {
       // to every cart line so renderDispatchInvoiceHtml's "take the first
       // line's rate" lookup is trivially the same value everywhere.
       const items: WalkinBillItem[] = [
-        ...cartLines.map(l => ({ itemName: l.itemName, unit: l.unit, price: l.price, quantity: l.quantity, lineTotal: Math.round(l.price * l.quantity * 100) / 100, ...(gstEnabled ? { hsnCode: gstHsnCode.trim(), gstPct: Math.max(0, Number(gstPct) || 0) } : {}) })),
+        ...cartLines.map((l, index) => ({ itemName: l.itemName, unit: l.unit, price: l.price, quantity: l.quantity, lineTotal: Math.round(l.price * l.quantity * 100) / 100, ...(gstEnabled ? { hsnCode: gstHsnCode.trim(), gstPct: Math.max(0, Number(gstPct) || 0), gstPricing: 'exclusive' as const, ...(index === 0 ? {gstBuyerDetails: {name: gstBuyerName.trim() || customerName.trim() || 'Walk-in Customer',address:gstBuyerAddress,gstin:gstBuyerGstin,stateName:gstBuyerStateName,stateCode:gstBuyerStateCode}} : {}) } : {}) })),
         ...charges.map(c => ({ itemName: c.name, unit: 'charge', price: Number(c.amount) || 0, quantity: 1, lineTotal: Math.round((Number(c.amount) || 0) * 100) / 100 })),
       ];
       const bill = await saveWalkinBillSecure({
@@ -6978,46 +7001,8 @@ function BillingTab() {
         setGstGenerating(true);
         setGstError('');
         try {
-          const invoiceDate = kolkataToday();
-          // FEATURE (2026-09-03): "Even if we check the box also they should
-          // follow their respective invoice number not the gst invoice
-          // number its should follow the sequence of SALES/26-27/..." — the
-          // GST Tax Invoice reuses this same bill's own billNo instead of
-          // drawing a second, separate number from next_gst_invoice_number.
-          // One sale, one number, on both documents.
           const gstInvoiceNo = billNo;
-          // AUDIT FIX (2026-09-03): the printed tax invoice used to ignore
-          // this cart's discount entirely — it built every line off the raw
-          // pre-discount price, so a discounted bill's real total (`total`,
-          // what the customer actually paid) never matched the "Total
-          // Amount" on its own GST invoice, sharing the same bill number.
-          // Scaling every line's rate by the same ratio the whole bill was
-          // discounted by (total/subtotal) keeps it correct for both
-          // discount types (%, or a flat ₹ amount) with no other change.
-          const discountMult = subtotal > 0 ? total / subtotal : 1;
-          // REDESIGN (2026-09-12): one flat gstPct/gstHsnCode for every line
-          // (see the note above gstPct's declaration) instead of a per-item
-          // lookup — every `items` entry already carries this same value
-          // (see its construction above), so this is just a straight map.
-          const gstLines: GstTaxInvoiceLine[] = items.map(l => ({
-            itemName: l.itemName,
-            hsnCode: gstHsnCode.trim(),
-            qty: l.quantity,
-            uom: l.unit === 'pcs' ? 'Nos' : l.unit === 'kg' ? 'Kg' : l.unit,
-            rate: Math.round(l.price * discountMult * 100) / 100,
-            gstPct: Math.max(0, Number(gstPct) || 0),
-          }));
-          const buyer = {
-            name: gstBuyerName.trim() || customerName.trim() || 'Walk-in Customer',
-            address: gstBuyerAddress, gstin: gstBuyerGstin, stateName: gstBuyerStateName, stateCode: gstBuyerStateCode,
-          };
-          const { html } = buildGstTaxInvoiceHtml({
-            buyer, consignee: buyer,
-            invoiceNo: gstInvoiceNo, invoiceDate,
-            supplyType: gstSupplyType,
-            lines: gstLines,
-            preparedBy: currentUser?.displayName || currentUser?.username || 'Planner',
-          });
+          const html = renderSavedSalesTaxInvoice(bill);
           setGstInvoiceResult({ invoiceNo: gstInvoiceNo, html });
         } catch (gstErr) {
           setGstError(gstErr instanceof Error ? gstErr.message : 'Could not generate the GST tax invoice.');
@@ -7027,7 +7012,8 @@ function BillingTab() {
       }
 
       resetCart();
-      loadRecent();
+      void loadRecent();
+      try { await printWalkinBill(bill); } catch (printError) { setError(`Bill ${bill.billNo} was saved. Printing could not start; use its reprint button. Do not save it again. ${printError instanceof Error ? printError.message : ''}`); }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save the bill.');
     } finally {
@@ -7102,6 +7088,11 @@ function BillingTab() {
         </div>
       </div>
 
+      <div className="flex items-center justify-between gap-4 rounded-2xl border border-amber-200 bg-amber-50 p-4">
+        <div><label htmlFor="festival-sales-mode" className="text-sm font-black text-amber-950">Festival Sales</label><p className="text-xs text-amber-800">Festival packs and custom items · pcs only. Normal and festival draft carts stay separate.</p></div>
+        <Switch id="festival-sales-mode" checked={festivalSales} disabled={saving} onCheckedChange={value => { setFestivalSales(value); setError(''); }} />
+      </div>
+
       {counterOpen === false && (
         <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs font-bold text-amber-900">
           <AlertTriangle className="size-4 shrink-0" />
@@ -7119,6 +7110,7 @@ function BillingTab() {
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_22rem]">
         <section className="space-y-3 card-base p-5">
+          {festivalSales ? <FestivalSalesPanel rows={festivalDrafts} onChange={setFestivalDrafts} /> : <>
           <label className="space-y-1">
             <span className="text-[11px] font-black uppercase tracking-wide text-muted-foreground">Search item</span>
             <div className="relative">
@@ -7165,6 +7157,7 @@ function BillingTab() {
               })}
             </div>
           )}
+          </>}
         </section>
 
         <aside className="space-y-3 card-base p-5">
@@ -7178,14 +7171,15 @@ function BillingTab() {
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-xs font-black text-foreground">{line.itemName}</p>
                     <div className="flex items-center gap-1 text-[11px] font-bold text-muted-foreground">
-                      <span>{line.quantity} {line.unit} ×</span>
+                      {festivalSales ? <><input aria-label={`Cart quantity for ${line.itemName}`} type="number" min="1" step="1" value={festivalDrafts.find(row => (row.name.trim() || 'Custom item') === line.itemName)?.quantity ?? ''} onChange={event => setFestivalDrafts(rows => rows.map(row => (row.name.trim() || 'Custom item') === line.itemName ? { ...row, quantity: event.target.value } : row))} placeholder="Qty" className="h-6 w-14 rounded border border-border bg-background px-1 text-right" /><span>pcs ×</span></> : <span>{line.quantity} {line.unit} ×</span>}
                       {/* FEATURE (2026-08-29): editable per-line price - see
                           setCartLinePrice above. Covers "unable to change the
                           price of items in the sales tab" for both catalog
                           items (overriding the fixed list price) and custom
                           items added via the form above. */}
                       <input
-                        type="number" min="0" step="0.01" value={line.price}
+                        type="number" min="0" step="0.01" value={festivalSales ? festivalDrafts.find(row => (row.name.trim() || 'Custom item') === line.itemName)?.price ?? '' : line.price}
+                        aria-label={`Cart price for ${line.itemName}`}
                         onChange={e => setCartLinePrice(line.itemName, e.target.value)}
                         className="h-6 w-16 rounded border border-border bg-background px-1 text-right text-[11px] font-black text-foreground"
                       />
@@ -7236,27 +7230,7 @@ function BillingTab() {
               tab's own Invoice sub-tab. REDESIGN (2026-09-12): one flat GST%/
               HSN for the WHOLE bill instead of a per-item entry — see the
               note above gstPct's declaration. */}
-          <div className="space-y-2 rounded-xl border border-dashed border-purple-300 bg-purple-50 p-3">
-            <label className="flex items-center gap-2 text-[11px] font-black uppercase tracking-wide text-purple-800">
-              <input type="checkbox" checked={gstEnabled} onChange={e => setGstEnabled(e.target.checked)} className="size-4" />
-              Also generate a GST Tax Invoice (same format as Invoice tab)
-            </label>
-            {gstEnabled && (
-              <div className="grid grid-cols-2 gap-2">
-                <input value={gstBuyerName} onChange={e => setGstBuyerName(e.target.value)} placeholder={`Buyer name (blank = ${customerName.trim() || 'Walk-in Customer'})`} className="col-span-2 h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
-                <input value={gstBuyerGstin} onChange={e => setGstBuyerGstin(e.target.value.toUpperCase())} placeholder="Buyer GSTIN (optional)" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
-                <input value={gstBuyerAddress} onChange={e => setGstBuyerAddress(e.target.value)} placeholder="Buyer address" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
-                <input value={gstBuyerStateName} onChange={e => setGstBuyerStateName(e.target.value)} placeholder="State Name" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
-                <input value={gstBuyerStateCode} onChange={e => setGstBuyerStateCode(e.target.value)} placeholder="State Code" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
-                <input type="number" min={0} max={100} value={gstPct} onChange={e => setGstPct(e.target.value)} placeholder="GST % (overall, applies to every item)" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
-                <input value={gstHsnCode} onChange={e => setGstHsnCode(e.target.value)} placeholder="HSN/SAC code (overall)" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
-                <select value={gstSupplyType} onChange={e => setGstSupplyType(e.target.value as 'intra' | 'inter')} className="col-span-2 h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold">
-                  <option value="intra">Same State (CGST + SGST)</option>
-                  <option value="inter">Different State (IGST)</option>
-                </select>
-              </div>
-            )}
-          </div>
+          <PlannerSalesGstFields enabled={gstEnabled} onEnabledChange={setGstEnabled} details={{name:gstBuyerName,gstin:gstBuyerGstin,address:gstBuyerAddress,stateName:gstBuyerStateName,stateCode:gstBuyerStateCode,hsnCode:gstHsnCode,rate:gstPct,supplyType:gstSupplyType}} onChange={patch=>{ if(patch.name!==undefined)setGstBuyerName(patch.name);if(patch.gstin!==undefined)setGstBuyerGstin(patch.gstin);if(patch.address!==undefined)setGstBuyerAddress(patch.address);if(patch.stateName!==undefined)setGstBuyerStateName(patch.stateName);if(patch.stateCode!==undefined)setGstBuyerStateCode(patch.stateCode);if(patch.hsnCode!==undefined)setGstHsnCode(patch.hsnCode);if(patch.rate!==undefined)setGstPct(patch.rate);if(patch.supplyType!==undefined)setGstSupplyType(patch.supplyType);}} />
 
           <div className="space-y-2 rounded-xl border border-border bg-muted/20 p-3">
             <div className="flex items-center gap-1.5"><Percent className="size-3.5 text-muted-foreground" /><span className="text-[11px] font-black uppercase tracking-wide text-muted-foreground">Discount</span></div>
@@ -7276,7 +7250,8 @@ function BillingTab() {
             <div className="flex justify-between font-bold text-muted-foreground"><span>Items Subtotal</span><span>{invoiceMoney(subtotal - chargesTotal)}</span></div>
             {chargesTotal > 0 && <div className="flex justify-between font-bold text-amber-700"><span>Other Charges</span><span>+ {invoiceMoney(chargesTotal)}</span></div>}
             {discountAmount > 0 && <div className="flex justify-between font-bold text-red-600"><span>Discount</span><span>- {invoiceMoney(discountAmount)}</span></div>}
-            <div className="flex justify-between border-t border-border pt-1.5 text-base font-black text-foreground"><span>Total</span><span>{invoiceMoney(total)}</span></div>
+            {gstEnabled && <><div className="flex justify-between"><span>Taxable bill value</span><span>{invoiceMoney(salesTax.taxableValue)}</span></div><div className="flex justify-between text-purple-700"><span>GST added ({gstPct}%)</span><span>+ {invoiceMoney(salesTax.totalTax)}</span></div></>}
+            <div className="flex justify-between border-t border-border pt-1.5 text-base font-black text-foreground"><span>{gstEnabled ? 'Total including GST' : 'Total'}</span><span>{invoiceMoney(total)}</span></div>
           </div>
 
           <div>
@@ -7291,7 +7266,7 @@ function BillingTab() {
           {error && <p className="rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs font-bold text-destructive">{error}</p>}
 
           <button onClick={saveBill} disabled={saving || cartLines.length === 0 || counterOpen === false} className="flex h-11 w-full items-center justify-center gap-2 rounded-xl cafe-gradient text-sm font-black text-white shadow-teal disabled:opacity-40">
-            {saving ? <Loader2 className="size-4 animate-spin" /> : <IndianRupee className="size-4" />} Save Bill{cartLines.length > 0 ? ` (${invoiceMoney(total)})` : ''}
+            {saving ? <Loader2 className="size-4 animate-spin" /> : <IndianRupee className="size-4" />} Save &amp; Print Bill{cartLines.length > 0 ? ` (${invoiceMoney(total)})` : ''}
           </button>
 
           {lastBill && (
@@ -7422,11 +7397,13 @@ function EditWalkinBillModal({ bill, onClose, onSaved }: {
   // was already a GST invoice keeps its rate/HSN/supply type when reopened).
   const firstGstLine = bill.items.find(i => i.unit !== 'charge' && i.gstPct != null);
   const [gstEnabled, setGstEnabled] = useState(bill.isGstInvoice);
-  const [gstBuyerName, setGstBuyerName] = useState('');
-  const [gstBuyerGstin, setGstBuyerGstin] = useState('');
-  const [gstBuyerAddress, setGstBuyerAddress] = useState('');
-  const [gstBuyerStateName, setGstBuyerStateName] = useState('Tamil Nadu');
-  const [gstBuyerStateCode, setGstBuyerStateCode] = useState('33');
+  const exclusiveGst = gstEnabled && (firstGstLine?.gstPricing === 'exclusive' || !bill.isGstInvoice);
+  const savedBuyer = firstGstLine?.gstBuyerDetails;
+  const [gstBuyerName, setGstBuyerName] = useState(savedBuyer?.name ?? '');
+  const [gstBuyerGstin, setGstBuyerGstin] = useState(savedBuyer?.gstin ?? '');
+  const [gstBuyerAddress, setGstBuyerAddress] = useState(savedBuyer?.address ?? '');
+  const [gstBuyerStateName, setGstBuyerStateName] = useState(savedBuyer?.stateName ?? 'Tamil Nadu');
+  const [gstBuyerStateCode, setGstBuyerStateCode] = useState(savedBuyer?.stateCode ?? '33');
   const [gstSupplyType, setGstSupplyType] = useState<'intra' | 'inter'>(bill.gstSupplyType || 'intra');
   const [gstPct, setGstPct] = useState(firstGstLine?.gstPct != null ? String(firstGstLine.gstPct) : '5');
   const [gstHsnCode, setGstHsnCode] = useState(firstGstLine?.hsnCode || '');
@@ -7457,7 +7434,7 @@ function EditWalkinBillModal({ bill, onClose, onSaved }: {
   const previewDiscountAmount = discountType === 'none' ? 0
     : discountType === 'percent' ? Math.round(previewSubtotal * (clampedDiscountPct / 100) * 100) / 100
     : Math.round(Math.min(previewSubtotal, Math.max(0, Number(discountValue) || 0)) * 100) / 100;
-  const previewTotal = Math.max(0, Math.round((previewSubtotal - previewDiscountAmount) * 100) / 100);
+  const previewTotal = calculatePlannerSalesGst(previewSubtotal, previewDiscountAmount, exclusiveGst, Math.max(0, Number(gstPct) || 0), gstSupplyType).total;
 
   const save = async () => {
     if (savingInFlightRef.current) return;
@@ -7469,12 +7446,13 @@ function EditWalkinBillModal({ bill, onClose, onSaved }: {
     // to decide whether/how to show its own "Includes GST" line.
     const cleaned: WalkinBillItem[] = lines
       .filter(l => l.itemName.trim() && l.quantity > 0 && l.price >= 0)
-      .map(l => ({
+      .map((l, index) => ({
         itemName: l.itemName.trim(), unit: l.unit, quantity: l.quantity, price: l.price,
         lineTotal: Math.round(l.price * l.quantity * 100) / 100,
-        ...(gstEnabled ? { hsnCode: gstHsnCode.trim(), gstPct: Math.max(0, Number(gstPct) || 0) } : {}),
+        ...(gstEnabled ? { hsnCode: gstHsnCode.trim(), gstPct: Math.max(0, Number(gstPct) || 0), ...(exclusiveGst ? {gstPricing:'exclusive' as const,...(index===0 ? {gstBuyerDetails:{name:gstBuyerName.trim() || customerName.trim() || 'Walk-in Customer',address:gstBuyerAddress,gstin:gstBuyerGstin,stateName:gstBuyerStateName,stateCode:gstBuyerStateCode}} : {})} : {}) } : {}),
       }));
     if (cleaned.length === 0) { setError('Add at least one item with a name, quantity above 0 and a valid price.'); return; }
+    if (gstEnabled && (!Number.isFinite(Number(gstPct)) || Number(gstPct)<=0 || Number(gstPct)>100)) {setError('Enter a valid GST percentage above 0 and up to 100.');return;}
     savingInFlightRef.current = true;
     setSaving(true);
     try {
@@ -7509,7 +7487,7 @@ function EditWalkinBillModal({ bill, onClose, onSaved }: {
       const newDiscountAmount = discountType === 'none' ? 0
         : discountType === 'percent' ? Math.round(newSubtotal * (clampedDiscountPct / 100) * 100) / 100
         : Math.round(Math.min(newSubtotal, Math.max(0, Number(discountValue) || 0)) * 100) / 100;
-      const newTotal = Math.max(0, Math.round((newSubtotal - newDiscountAmount) * 100) / 100);
+      const newTotal = calculatePlannerSalesGst(newSubtotal, newDiscountAmount, exclusiveGst, Math.max(0, Number(gstPct) || 0), gstSupplyType).total;
 
       // BUG FIX (2026-09-12): this update never touched is_gst_invoice/
       // gst_supply_type at all — checking the GST box here had no lasting
@@ -7543,6 +7521,7 @@ function EditWalkinBillModal({ bill, onClose, onSaved }: {
         setGstGenerating(true);
         setGstError('');
         try {
+          if (exclusiveGst) { setGstInvoiceResult({invoiceNo:updatedBill.billNo,html:renderSavedSalesTaxInvoice(updatedBill)}); } else {
           const invoiceDate = kolkataToday();
           const discountMult = newSubtotal > 0 ? newTotal / newSubtotal : 1;
           const gstLines: GstTaxInvoiceLine[] = cleaned.map(l => ({
@@ -7565,6 +7544,7 @@ function EditWalkinBillModal({ bill, onClose, onSaved }: {
             preparedBy: currentUser?.displayName || currentUser?.username || 'Planner',
           });
           setGstInvoiceResult({ invoiceNo: bill.billNo, html });
+          }
         } catch (gstErr) {
           setGstError(gstErr instanceof Error ? gstErr.message : 'Could not generate the GST tax invoice.');
         } finally {
@@ -10077,11 +10057,13 @@ function EditDispatchInvoiceModal({ invoice, onClose, onSaved }: {
   // carries.
   const firstGstLine = invoice.items.find(i => i.unit !== 'charge' && i.gstPct != null);
   const [gstEnabled, setGstEnabled] = useState(invoice.isGstInvoice);
-  const [gstBuyerName, setGstBuyerName] = useState('');
-  const [gstBuyerGstin, setGstBuyerGstin] = useState('');
-  const [gstBuyerAddress, setGstBuyerAddress] = useState('');
-  const [gstBuyerStateName, setGstBuyerStateName] = useState('Tamil Nadu');
-  const [gstBuyerStateCode, setGstBuyerStateCode] = useState('33');
+  const exclusiveGst = gstEnabled && (firstGstLine?.gstPricing === 'exclusive' || !invoice.isGstInvoice);
+  const savedBuyer = firstGstLine?.gstBuyerDetails;
+  const [gstBuyerName, setGstBuyerName] = useState(savedBuyer?.name || '');
+  const [gstBuyerGstin, setGstBuyerGstin] = useState(savedBuyer?.gstin || '');
+  const [gstBuyerAddress, setGstBuyerAddress] = useState(savedBuyer?.address || '');
+  const [gstBuyerStateName, setGstBuyerStateName] = useState(savedBuyer?.stateName || 'Tamil Nadu');
+  const [gstBuyerStateCode, setGstBuyerStateCode] = useState(savedBuyer?.stateCode || '33');
   const [gstSupplyType, setGstSupplyType] = useState<'intra' | 'inter'>(invoice.gstSupplyType || 'intra');
   const [gstPct, setGstPct] = useState(firstGstLine?.gstPct != null ? String(firstGstLine.gstPct) : '5');
   const [gstHsnCode, setGstHsnCode] = useState(firstGstLine?.hsnCode || '');
@@ -10121,7 +10103,7 @@ function EditDispatchInvoiceModal({ invoice, onClose, onSaved }: {
   // (Walk-in Billing, Sample Bill) that already clamp both correctly.
   const clampedDiscountPct = Math.max(0, Math.min(100, Number(discountPct) || 0));
   const discountAmount = Math.round(subtotal * (clampedDiscountPct / 100) * 100) / 100;
-  const total = Math.max(0, Math.round(subtotal - discountAmount));
+  const total = exclusiveGst ? calculatePlannerSalesGst(subtotal,discountAmount,true,Number(gstPct)||0,gstSupplyType).total : Math.max(0, Math.round(subtotal-discountAmount));
 
   const save = async () => {
     if (savingInFlightRef.current) return;
@@ -10142,6 +10124,7 @@ function EditDispatchInvoiceModal({ invoice, onClose, onSaved }: {
       setError(`Enter a price above 0 for: ${zeroPriceItems.map(l => l.itemName).join(', ')} before saving.`);
       return;
     }
+    if (gstEnabled && (!Number.isFinite(Number(gstPct)) || Number(gstPct)<=0 || Number(gstPct)>100)) {setError('Enter a valid GST percentage above 0 and up to 100.');return;}
     savingInFlightRef.current = true;
     setSaving(true);
     try {
@@ -10149,9 +10132,9 @@ function EditDispatchInvoiceModal({ invoice, onClose, onSaved }: {
       // per line) — see the note above gstEnabled's declaration. Strips any
       // OLD per-line hsnCode/gstPct first (so unchecking GST actually clears
       // them) before re-adding the current overall values when enabled.
-      const cleanedForSave = cleaned.map(({ key: _key, hsnCode: _oldHsn, gstPct: _oldGst, ...rest }) => ({
+      const cleanedForSave = cleaned.map(({ key: _key, hsnCode: _oldHsn, gstPct: _oldGst, gstPricing: _oldPricing, gstBuyerDetails: _oldBuyer, ...rest }) => ({
         ...rest,
-        ...(gstEnabled ? { hsnCode: gstHsnCode.trim(), gstPct: Math.max(0, Number(gstPct) || 0) } : {}),
+        ...(gstEnabled ? { hsnCode: gstHsnCode.trim(), gstPct: Number(gstPct), ...(exclusiveGst ? {gstPricing:'exclusive' as const,gstBuyerDetails:{name:gstBuyerName.trim() || invoice.customerName || invoice.hosurShopName || '',gstin:gstBuyerGstin,address:gstBuyerAddress,stateName:gstBuyerStateName,stateCode:gstBuyerStateCode}} : {}) } : {}),
       }));
       const result = await updateDispatchInvoice({
         invoiceId: invoice.id,
@@ -10203,13 +10186,13 @@ function EditDispatchInvoiceModal({ invoice, onClose, onSaved }: {
             name: gstBuyerName.trim() || invoice.customerName || invoice.hosurShopName || `${invoice.scope} Branch`,
             address: gstBuyerAddress, gstin: gstBuyerGstin, stateName: gstBuyerStateName, stateCode: gstBuyerStateCode,
           };
-          const { html } = buildGstTaxInvoiceHtml({
+          const html = exclusiveGst ? renderSavedDispatchTaxInvoice(result.record) : buildGstTaxInvoiceHtml({
             buyer, consignee: buyer,
             invoiceNo: invoice.invoiceNo, invoiceDate,
             supplyType: gstSupplyType,
             lines: gstLines,
             preparedBy: currentUser?.displayName || currentUser?.username || 'Planner',
-          });
+          }).html;
           setGstInvoiceResult({ invoiceNo: invoice.invoiceNo, html });
         } catch (gstErr) {
           setGstError(gstErr instanceof Error ? gstErr.message : 'Could not generate the GST tax invoice.');
@@ -10356,8 +10339,8 @@ function EditDispatchInvoiceModal({ invoice, onClose, onSaved }: {
             />
           </label>
           <div className="text-right text-xs font-bold text-muted-foreground">
-            Subtotal Rs. {Math.round(subtotal)} &nbsp;·&nbsp; Discount Rs. {Math.round(discountAmount)} &nbsp;·&nbsp;
-            <span className="text-sm font-black text-foreground"> Total Rs. {Math.round(total)}</span>
+            Subtotal Rs. {subtotal.toFixed(2)} &nbsp;·&nbsp; Discount Rs. {discountAmount.toFixed(2)} &nbsp;·&nbsp;
+            <span className="text-sm font-black text-foreground"> Total Rs. {total.toFixed(2)}</span>{gstEnabled && <p className="text-purple-700">GST added ({gstPct}%) · {gstSupplyType === 'intra' ? 'CGST + SGST' : 'IGST'}</p>}
           </div>
         </div>
 
@@ -12827,7 +12810,7 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
   // total, matching the two invoice flows that already do both correctly.
   const clampedDiscountPct = Math.max(0, Math.min(100, Number(discountPct) || 0));
   const discountAmount = Math.round(subtotal * (clampedDiscountPct / 100) * 100) / 100;
-  const total = Math.max(0, Math.round(subtotal - discountAmount));
+  const total = gstInvoiceOffered && gstEnabled ? calculatePlannerSalesGst(subtotal,discountAmount,true,Number(gstPct)||0,gstSupplyType).total : Math.max(0, Math.round(subtotal - discountAmount));
 
   const printChecklist = (mode: 'thermal' | 'a4') => {
     const business = businessFor(scope);
@@ -12855,6 +12838,7 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
   };
 
   const confirm = async () => {
+    if (gstInvoiceOffered && gstEnabled && (!Number.isFinite(Number(gstPct)) || Number(gstPct)<=0 || Number(gstPct)>100)) {setError('Enter a valid GST percentage above 0 and up to 100.');return;}
     if (sendingRef.current) return;
     // FEATURE (2026-09-13): checked before missingPriceItems on purpose — an
     // item that isn't in this branch's list at all shouldn't be "fixable" by
@@ -13035,7 +13019,7 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
         // identically to every line so renderDispatchInvoiceHtml's "take the
         // first line's rate" lookup is trivially the same value everywhere.
         items: (gstInvoiceOffered && gstEnabled
-          ? [...invoiceLines, ...effectiveChargeLines].map(l => ({ ...l, hsnCode: gstHsnCode.trim(), gstPct: Math.max(0, Number(gstPct) || 0) }))
+          ? [...invoiceLines, ...effectiveChargeLines].map(l => ({ ...l, hsnCode: gstHsnCode.trim(), gstPct: Number(gstPct), gstPricing:'exclusive' as const, gstBuyerDetails:{name:customer?.name ?? hosurShop?.name ?? '',address:gstBuyerAddress,gstin:gstBuyerGstin,stateName:gstBuyerStateName,stateCode:gstBuyerStateCode} }))
           : [...invoiceLines, ...effectiveChargeLines]),
         discountPct,
         dispatchEntryIds: actions.map(a => ({ orderId: a.orderId, dispatchEntryId: a.dispatchEntryId })),
@@ -13100,7 +13084,8 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
             .eq('order_id', hosurOrderId);
           if (itemsErr) throw itemsErr;
 
-          const priceByName = new Map(invoiceLines.map(l => [normalizeItemName(l.itemName), l.unitPrice]));
+          const ledgerLines = gstEnabled ? hosurInvoiceLedgerLines(record.items, record.discountPct) : invoiceLines;
+          const priceByName = new Map(ledgerLines.filter(l=>l.unit!=='charge').map(l => [normalizeItemName(l.itemName), l.unitPrice]));
           const unitByName = new Map(invoiceLines.map(l => [normalizeItemName(l.itemName), l.unit]));
           const discountMult = 1 - clampedDiscountPct / 100;
           const billItems: HosurOrderItemForBilling[] = ((itemRows ?? []) as { id: string; item_name: string; dispatched_quantity: number | null }[])
@@ -13112,7 +13097,7 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
               return {
                 id: row.id, itemName: row.item_name,
                 unit: (unitByName.get(key) === 'kg' ? 'kg' : 'pcs') as 'pcs' | 'kg',
-                quantity: qty, unitPrice: Math.round(price * discountMult * 100) / 100, receivedQuantity: qty,
+                quantity: qty, unitPrice: gstEnabled ? price : Math.round(price * discountMult * 100) / 100, receivedQuantity: qty,
               };
             })
             .filter((i): i is HosurOrderItemForBilling => i !== null);
@@ -13130,7 +13115,7 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
           const outcome = await dispatchReceiveAndBill({
             order: { id: hosurOrderId, orderNumber: hosurOrderNumber ?? '', shopId: hosurShop.id, shopName: hosurShop.name, shopWhatsapp: hosurShop.phone },
             items: billItems,
-            charges: effectiveCharges,
+            charges: gstEnabled ? ledgerLines.filter(l=>l.unit==='charge').map(l=>({name:l.itemName,amount:l.unitPrice})) : effectiveCharges,
             payment: { paymentType: 'credit', dueDate },
             userName: dispatchedBy,
             requireCounterOpen: false,
@@ -13158,44 +13143,8 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
         setGstGenerating(true);
         setGstError(null);
         try {
-          const invoiceDate = kolkataToday();
-          // FEATURE (2026-09-03): "Even if we check the box also they should
-          // follow their respective invoice number not the gst invoice
-          // number its should follow the sequence of SALES/26-27/..." — the
-          // GST Tax Invoice reuses this dispatch's own invoiceNo (record) —
-          // the same shared SALES/26-27/N sequence Hosur already draws from —
-          // instead of drawing a second, separate number.
           const gstInvoiceNo = record.invoiceNo;
-          // AUDIT FIX (2026-09-03): same gap as BillingTab's GST invoice —
-          // this used raw invoiceLines/chargeLines unitPrice, ignoring
-          // discountPct entirely, so a discounted dispatch's printed tax
-          // invoice total disagreed with what saveDispatchInvoice actually
-          // recorded (and what the shop's credit bill actually charges)
-          // under the exact same invoice number.
-          const gstDiscountMult = 1 - clampedDiscountPct / 100;
-          // REDESIGN (2026-09-12): one flat gstPct/gstHsnCode for every line
-          // (see the note above gstPct's declaration) instead of a per-item
-          // lookup.
-          const gstLines: GstTaxInvoiceLine[] = [...invoiceLines, ...effectiveChargeLines].map(l => ({
-            itemName: l.itemName,
-            hsnCode: gstHsnCode.trim(),
-            qty: l.quantity,
-            uom: l.unit === 'pcs' ? 'Nos' : l.unit === 'kg' ? 'Kg' : l.unit,
-            rate: Math.round(l.unitPrice * gstDiscountMult * 100) / 100,
-            gstPct: Math.max(0, Number(gstPct) || 0),
-          }));
-          // AUDIT FIX (2026-09-05): was `hosurShop!.name` — a non-null
-          // assertion that's genuinely null for a Custom sale (hosurShop
-          // and customer are mutually exclusive, see gstInvoiceOffered
-          // above). Custom's buyer name is the walk-in customer instead.
-          const buyer = { name: customer?.name ?? hosurShop?.name ?? '', address: gstBuyerAddress, gstin: gstBuyerGstin, stateName: gstBuyerStateName, stateCode: gstBuyerStateCode };
-          const { html } = buildGstTaxInvoiceHtml({
-            buyer, consignee: buyer,
-            invoiceNo: gstInvoiceNo, invoiceDate,
-            supplyType: gstSupplyType,
-            lines: gstLines,
-            preparedBy: dispatchedBy,
-          });
+          const html = renderSavedDispatchTaxInvoice(record);
           setGstInvoiceResult({ invoiceNo: gstInvoiceNo, html });
         } catch (gstErr) {
           setGstError(gstErr instanceof Error ? gstErr.message : 'Could not generate the GST tax invoice.');
@@ -13437,8 +13386,8 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
                 />
               </label>
               <div className="text-right text-xs font-bold text-muted-foreground">
-                Subtotal Rs. {Math.round(subtotal)} &nbsp;·&nbsp; Discount Rs. {Math.round(discountAmount)} &nbsp;·&nbsp;
-                <span className="text-sm font-black text-foreground"> Total Rs. {Math.round(total)}</span>
+                Subtotal Rs. {subtotal.toFixed(2)} &nbsp;·&nbsp; Discount Rs. {discountAmount.toFixed(2)} &nbsp;·&nbsp;
+                <span className="text-sm font-black text-foreground"> Total Rs. {total.toFixed(2)}</span>{gstEnabled && <p className="text-purple-700">GST added ({gstPct}%) · {gstSupplyType === 'intra' ? 'CGST + SGST' : 'IGST'}</p>}
               </div>
             </div>
 

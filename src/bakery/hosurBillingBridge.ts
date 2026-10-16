@@ -1,3 +1,6 @@
+import { hosurInvoiceLedgerLines } from './hosurGstLedger';
+import type { DispatchInvoiceItem } from './dispatchInvoice';
+import type { GstPartyDetails } from './gstTaxInvoice';
 // src/bakery/hosurBillingBridge.ts
 // Standalone version of HosurDashboard's "receive -> create bill -> confirm
 // payment -> send WhatsApp" sequence, callable directly from Planner's
@@ -268,7 +271,7 @@ export async function dispatchReceiveAndBill(params: {
     billSubtotal = Number(b?.subtotal ?? 0);
   } else {
     billNo = await nextBillNo();
-    const subtotal = Math.round((items.reduce((sum, i) => sum + i.receivedQuantity * i.unitPrice, 0) + chargesTotal) * 100) / 100;
+    const subtotal = Math.round((items.reduce((sum, i) => sum + Math.round(i.receivedQuantity * i.unitPrice * 100) / 100, 0) + chargesTotal) * 100) / 100;
     billSubtotal = subtotal;
     const { data: billData, error: billError } = await supabase.from('hosur_bills').insert({
       bill_no: billNo, order_id: order.id, shop_id: order.shopId, shop_name: order.shopName,
@@ -362,16 +365,13 @@ export async function dispatchReceiveAndBill(params: {
     } else {
       // Already confirmed by an earlier batch — merge instead of falling
       // through to step 3 (which would just throw on this bill's status).
-      const finalPriced = (rowItems: { itemName: string; unit: string; quantity: number; unitPrice: number }[], discountPct: number) => {
-        const mult = 1 - Math.max(0, Math.min(100, discountPct || 0)) / 100;
-        return rowItems.map(i => ({ itemName: i.itemName, unit: i.unit, quantity: i.quantity, unitPrice: Math.round(i.unitPrice * mult * 100) / 100 }));
-      };
+      const finalPriced = hosurInvoiceLedgerLines;
       let combinedItems: { itemName: string; unit: string; quantity: number; unitPrice: number }[] = [];
       if (priorInvoiceNos.length > 0) {
         const { data: priorInvoiceRows } = await supabase.from('dispatch_invoices')
           .select('items, discount_pct')
           .eq('scope', 'Hosur').in('invoice_no', priorInvoiceNos).neq('status', 'cancelled');
-        for (const row of (priorInvoiceRows ?? []) as { items: { itemName: string; unit: string; quantity: number; unitPrice: number }[]; discount_pct: number }[]) {
+        for (const row of (priorInvoiceRows ?? []) as { items: DispatchInvoiceItem[]; discount_pct: number }[]) {
           combinedItems = combinedItems.concat(finalPriced(row.items ?? [], row.discount_pct ?? 0));
         }
       }
@@ -556,7 +556,7 @@ export interface HosurDispatchAndBillPayload {
   // full/partial payment for the online path too.
   payment: PaymentCapture;
   userName: string;
-  gst: { on: boolean; pct: number; hsn: string; supplyType: 'intra' | 'inter' } | null;
+  gst: { on: boolean; pct: number; hsn: string; supplyType: 'intra' | 'inter'; buyer?: GstPartyDetails } | null;
   // Leftover-pool rows the operator had already matched to this order before
   // going offline (HosurShopOrderPanel's `appliedLeftovers`, filtered to this
   // order) — captured as a snapshot of operator intent, not re-derived from
@@ -567,37 +567,34 @@ export interface HosurDispatchAndBillPayload {
 export async function runHosurDispatchAndBillCore(payload: HosurDispatchAndBillPayload): Promise<{ billNo: string; whatsappStatus: 'sent' | 'failed'; whatsappError: string | null }> {
   const { order, billItems, charges, gst } = payload;
 
-  const invoiceItems = [
+  const invoiceItems: DispatchInvoiceItem[] = [
     ...billItems.map(i => ({
       itemName: i.itemName, unit: i.unit, quantity: i.receivedQuantity, unitPrice: i.unitPrice,
       lineTotal: Math.round(i.receivedQuantity * i.unitPrice * 100) / 100,
-      ...(gst?.on ? { hsnCode: gst.hsn, gstPct: gst.pct } : {}),
+      ...(gst?.on ? { hsnCode: gst.hsn, gstPct: gst.pct, gstPricing: 'exclusive' as const, gstBuyerDetails:gst.buyer } : {}),
     })),
     ...charges.map(c => ({ itemName: c.name, unit: 'charge', quantity: 1, unitPrice: c.amount, lineTotal: c.amount })),
   ];
 
-  let mintedInvoiceNo: string | undefined;
-  let mintedInvoiceId: string | undefined;
-  try {
-    const invoiceRecord = await saveDispatchInvoice({
-      scope: 'Hosur',
-      hosurShopId: order.shopId, hosurShopName: order.shopName, hosurShopPhone: order.shopWhatsapp,
-      dispatchedBy: payload.userName,
-      items: invoiceItems,
-      discountPct: 0,
-      isGstInvoice: gst?.on ?? false,
-      gstSupplyType: gst?.supplyType ?? 'intra',
-    });
-    mintedInvoiceNo = invoiceRecord.invoiceNo;
-    mintedInvoiceId = invoiceRecord.id;
-  } catch (err) {
-    console.error('[runHosurDispatchAndBillCore] Failed to mint a dispatch invoice number (non-fatal):', err);
-  }
+  if (gst?.on && (!Number.isFinite(gst.pct) || gst.pct <= 0 || gst.pct > 100)) throw new Error('Enter a valid GST percentage above 0 and up to 100.');
+  const ledgerLines = hosurInvoiceLedgerLines(invoiceItems, 0);
+  const ledgerCharges = ledgerLines.filter(i=>i.unit==='charge').map(i=>({name:i.itemName,amount:i.unitPrice}));
+  const invoiceRecord = await saveDispatchInvoice({
+    scope: 'Hosur',
+    hosurShopId: order.shopId, hosurShopName: order.shopName, hosurShopPhone: order.shopWhatsapp,
+    dispatchedBy: payload.userName,
+    items: invoiceItems,
+    discountPct: 0,
+    isGstInvoice: gst?.on ?? false,
+    gstSupplyType: gst?.supplyType ?? 'intra',
+  });
+  const mintedInvoiceNo = invoiceRecord.invoiceNo;
+  const mintedInvoiceId = invoiceRecord.id;
 
   let outcome: Awaited<ReturnType<typeof dispatchReceiveAndBill>>;
   try {
     outcome = await dispatchReceiveAndBill({
-      order, items: billItems, charges,
+      order, items: billItems, charges: gst?.on ? ledgerCharges : charges,
       payment: payload.payment,
       userName: payload.userName,
       invoiceNo: mintedInvoiceNo,

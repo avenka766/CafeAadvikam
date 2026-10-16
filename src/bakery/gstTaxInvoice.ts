@@ -11,6 +11,7 @@
 // generating the EXACT same document via one shared function instead of a
 // second, separately-maintained copy that could drift out of sync.
 import { supabase, fetchAllRows } from '@/lib/supabase';
+import { calculatePlannerSalesGst } from './plannerSalesGst';
 
 export const GST_INVOICE_SELLER_DEFAULT = {
   name: 'VRSNB FOODS LLP',
@@ -94,6 +95,8 @@ export interface GstSellerDetails {
 }
 
 export interface BuildGstTaxInvoiceParams {
+  /** Opt-in only for new Sales bills; old invoices retain their original calculation. */
+  overallSalesTax?: { subtotal: number; discountAmount: number; gstPct: number };
   seller?: GstSellerDetails;
   buyer: GstPartyDetails;
   consignee?: GstPartyDetails; // defaults to buyer when omitted
@@ -143,13 +146,19 @@ export function buildGstTaxInvoiceHtml(p: BuildGstTaxInvoiceParams): BuiltGstTax
     return { ...l, amount, gstPct, cgstPct, sgstPct, igstPct, cgstAmt, sgstAmt, igstAmt };
   });
 
-  const beforeTaxValue = Math.round(computedLines.reduce((s, l) => s + l.amount, 0) * 100) / 100;
-  const totalCgst = Math.round(computedLines.reduce((s, l) => s + l.cgstAmt, 0) * 100) / 100;
-  const totalSgst = Math.round(computedLines.reduce((s, l) => s + l.sgstAmt, 0) * 100) / 100;
-  const totalIgst = Math.round(computedLines.reduce((s, l) => s + l.igstAmt, 0) * 100) / 100;
+  const overall = p.overallSalesTax ? calculatePlannerSalesGst(p.overallSalesTax.subtotal, p.overallSalesTax.discountAmount, true, p.overallSalesTax.gstPct, supplyType) : null;
+  const beforeTaxValue = overall?.taxableValue ?? Math.round(computedLines.reduce((s, l) => s + l.amount, 0) * 100) / 100;
+  const totalCgst = overall?.cgst ?? Math.round(computedLines.reduce((s, l) => s + l.cgstAmt, 0) * 100) / 100;
+  const totalSgst = overall?.sgst ?? Math.round(computedLines.reduce((s, l) => s + l.sgstAmt, 0) * 100) / 100;
+  const totalIgst = overall?.igst ?? Math.round(computedLines.reduce((s, l) => s + l.igstAmt, 0) * 100) / 100;
   const totalGst = Math.round((totalCgst + totalSgst + totalIgst) * 100) / 100;
   const rawTotal = beforeTaxValue + totalGst;
-  const totalAmount = Math.round(rawTotal);
+  const totalAmount = overall?.total ?? Math.round(rawTotal);
+  const amountWords = (value: number) => {
+    if (!overall) return numberToIndianWords(value);
+    const paise = Math.round(value * 100) % 100;
+    return `${numberToIndianWords(Math.floor(value))} Rupees${paise ? ` and ${numberToIndianWords(paise)} Paise` : ''}`;
+  };
   const roundOff = Math.round((totalAmount - rawTotal) * 100) / 100;
 
   const byRate = new Map<number, { taxableValue: number; cgstAmt: number; sgstAmt: number; igstAmt: number; hsnCodes: Set<string> }>();
@@ -160,7 +169,7 @@ export function buildGstTaxInvoiceHtml(p: BuildGstTaxInvoiceParams): BuiltGstTax
     if (l.hsnCode.trim()) row.hsnCodes.add(l.hsnCode.trim());
     byRate.set(key, row);
   }
-  const gstSummaryRows = Array.from(byRate.entries()).sort(([a], [b]) => a - b).map(([gstPct, row]) => ({
+  const gstSummaryRows = overall && p.overallSalesTax ? [{ gstPct: p.overallSalesTax.gstPct, taxableValue: overall.taxableValue, cgstAmt: overall.cgst, sgstAmt: overall.sgst, igstAmt: overall.igst, hsnCode: validLines[0]?.hsnCode || '-' }] : Array.from(byRate.entries()).sort(([a], [b]) => a - b).map(([gstPct, row]) => ({
     gstPct, taxableValue: row.taxableValue, cgstAmt: row.cgstAmt, sgstAmt: row.sgstAmt, igstAmt: row.igstAmt,
     hsnCode: row.hsnCodes.size === 1 ? Array.from(row.hsnCodes)[0] : row.hsnCodes.size > 1 ? 'Multiple' : '-',
   }));
@@ -179,18 +188,18 @@ export function buildGstTaxInvoiceHtml(p: BuildGstTaxInvoiceParams): BuiltGstTax
         <td>${l.itemName}</td>
         <td class="c">${l.hsnCode || ''}</td>
         <td class="r">${l.qty} ${l.uom}</td>
-        <td class="r">${Math.round(l.rate)}</td>
+        <td class="r">${overall ? (l.rate).toFixed(2) : Math.round(l.rate)}</td>
         <td class="c">${l.uom}</td>
-        <td class="r">${Math.round(cl.amount)}</td>
+        <td class="r">${overall ? (cl.amount).toFixed(2) : Math.round(cl.amount)}</td>
       </tr>`;
   }).join('');
 
   const taxRowsHtml = gstSummaryRows.map(r => supplyType === 'intra'
     ? `
-    <tr><td></td><td class="r b">Output CGST ${r.gstPct / 2}%</td><td></td><td></td><td class="r">${(r.gstPct / 2).toFixed(2)}</td><td class="c">%</td><td class="r">${Math.round(r.cgstAmt)}</td></tr>
-    <tr><td></td><td class="r b">Output SGST ${r.gstPct / 2}%</td><td></td><td></td><td class="r">${(r.gstPct / 2).toFixed(2)}</td><td class="c">%</td><td class="r">${Math.round(r.sgstAmt)}</td></tr>`
+    <tr><td></td><td class="r b">Output CGST ${r.gstPct / 2}%</td><td></td><td></td><td class="r">${(r.gstPct / 2).toFixed(2)}</td><td class="c">%</td><td class="r">${overall ? (r.cgstAmt).toFixed(2) : Math.round(r.cgstAmt)}</td></tr>
+    <tr><td></td><td class="r b">Output SGST ${r.gstPct / 2}%</td><td></td><td></td><td class="r">${(r.gstPct / 2).toFixed(2)}</td><td class="c">%</td><td class="r">${overall ? (r.sgstAmt).toFixed(2) : Math.round(r.sgstAmt)}</td></tr>`
     : `
-    <tr><td></td><td class="r b">Output IGST ${r.gstPct}%</td><td></td><td></td><td class="r">${r.gstPct.toFixed(2)}</td><td class="c">%</td><td class="r">${Math.round(r.igstAmt)}</td></tr>`
+    <tr><td></td><td class="r b">Output IGST ${r.gstPct}%</td><td></td><td></td><td class="r">${r.gstPct.toFixed(2)}</td><td class="c">%</td><td class="r">${overall ? (r.igstAmt).toFixed(2) : Math.round(r.igstAmt)}</td></tr>`
   ).join('');
 
   // AUDIT FIX (2026-09-03): this summary table was hardcoded to only ever
@@ -205,19 +214,19 @@ export function buildGstTaxInvoiceHtml(p: BuildGstTaxInvoiceParams): BuiltGstTax
   const gstSummaryHtml = gstSummaryRows.map(r => supplyType === 'intra' ? `
     <tr>
       <td class="c">${r.hsnCode}</td>
-      <td class="r">${Math.round(r.taxableValue)}</td>
+      <td class="r">${overall ? (r.taxableValue).toFixed(2) : Math.round(r.taxableValue)}</td>
       <td class="c">${(r.gstPct / 2).toFixed(2)}%</td>
-      <td class="r">${Math.round(r.cgstAmt)}</td>
+      <td class="r">${overall ? (r.cgstAmt).toFixed(2) : Math.round(r.cgstAmt)}</td>
       <td class="c">${(r.gstPct / 2).toFixed(2)}%</td>
-      <td class="r">${Math.round(r.sgstAmt)}</td>
-      <td class="r">${Math.round(r.cgstAmt + r.sgstAmt + r.igstAmt)}</td>
+      <td class="r">${overall ? (r.sgstAmt).toFixed(2) : Math.round(r.sgstAmt)}</td>
+      <td class="r">${overall ? (r.cgstAmt + r.sgstAmt + r.igstAmt).toFixed(2) : Math.round(r.cgstAmt + r.sgstAmt + r.igstAmt)}</td>
     </tr>` : `
     <tr>
       <td class="c">${r.hsnCode}</td>
-      <td class="r">${Math.round(r.taxableValue)}</td>
+      <td class="r">${overall ? (r.taxableValue).toFixed(2) : Math.round(r.taxableValue)}</td>
       <td class="c">${r.gstPct.toFixed(2)}%</td>
-      <td class="r">${Math.round(r.igstAmt)}</td>
-      <td class="r">${Math.round(r.cgstAmt + r.sgstAmt + r.igstAmt)}</td>
+      <td class="r">${overall ? (r.igstAmt).toFixed(2) : Math.round(r.igstAmt)}</td>
+      <td class="r">${overall ? (r.cgstAmt + r.sgstAmt + r.igstAmt).toFixed(2) : Math.round(r.cgstAmt + r.sgstAmt + r.igstAmt)}</td>
     </tr>`).join('');
 
   const optionalHeaderRow = (label: string, value: string | undefined) => (value ?? '').trim()
@@ -292,7 +301,8 @@ export function buildGstTaxInvoiceHtml(p: BuildGstTaxInvoiceParams): BuiltGstTax
           </thead>
           <tbody>
             ${rowsHtml}
-            <tr><td></td><td></td><td></td><td></td><td></td><td></td><td class="r">${Math.round(beforeTaxValue)}</td></tr>
+            ${overall && p.overallSalesTax?.discountAmount ? `<tr><td></td><td colspan="5">Bill discount</td><td class="r">− ${p.overallSalesTax.discountAmount.toFixed(2)}</td></tr>` : ''}
+            <tr><td></td><td>Taxable value</td><td></td><td></td><td></td><td></td><td class="r">${overall ? beforeTaxValue.toFixed(2) : Math.round(beforeTaxValue)}</td></tr>
             ${taxRowsHtml}
           </tbody>
           <tfoot>
@@ -300,7 +310,7 @@ export function buildGstTaxInvoiceHtml(p: BuildGstTaxInvoiceParams): BuiltGstTax
               <td colspan="3" class="c">Total</td>
               <td class="r">${validLines.reduce((s, l) => s + l.qty, 0)}</td>
               <td></td><td></td>
-              <td class="r">Rs. ${Math.round(totalAmount)}</td>
+              <td class="r">Rs. ${overall ? totalAmount.toFixed(2) : Math.round(totalAmount)}</td>
             </tr>
           </tfoot>
         </table>
@@ -308,7 +318,7 @@ export function buildGstTaxInvoiceHtml(p: BuildGstTaxInvoiceParams): BuiltGstTax
         <table style="margin-top:-1px;">
           <tr>
             <td class="b" style="width:20%;">Amount Chargeable (in words)</td>
-            <td style="width:65%;">INR ${numberToIndianWords(totalAmount)} Only</td>
+            <td style="width:65%;">INR ${amountWords(totalAmount)} Only</td>
             <td class="c b" style="width:15%;">E. &amp; O.E</td>
           </tr>
         </table>
@@ -336,16 +346,16 @@ export function buildGstTaxInvoiceHtml(p: BuildGstTaxInvoiceParams): BuiltGstTax
             ${supplyType === 'intra' ? `
             <tr class="b">
               <td class="c">Total</td>
-              <td class="r">${Math.round(beforeTaxValue)}</td>
-              <td></td><td class="r">${Math.round(totalCgst)}</td>
-              <td></td><td class="r">${Math.round(totalSgst)}</td>
-              <td class="r">${Math.round(gstSummaryTotalTax)}</td>
+              <td class="r">${overall ? beforeTaxValue.toFixed(2) : Math.round(beforeTaxValue)}</td>
+              <td></td><td class="r">${overall ? (totalCgst).toFixed(2) : Math.round(totalCgst)}</td>
+              <td></td><td class="r">${overall ? (totalSgst).toFixed(2) : Math.round(totalSgst)}</td>
+              <td class="r">${overall ? (gstSummaryTotalTax).toFixed(2) : Math.round(gstSummaryTotalTax)}</td>
             </tr>` : `
             <tr class="b">
               <td class="c">Total</td>
-              <td class="r">${Math.round(beforeTaxValue)}</td>
-              <td></td><td class="r">${Math.round(totalIgst)}</td>
-              <td class="r">${Math.round(gstSummaryTotalTax)}</td>
+              <td class="r">${overall ? beforeTaxValue.toFixed(2) : Math.round(beforeTaxValue)}</td>
+              <td></td><td class="r">${overall ? (totalIgst).toFixed(2) : Math.round(totalIgst)}</td>
+              <td class="r">${overall ? (gstSummaryTotalTax).toFixed(2) : Math.round(gstSummaryTotalTax)}</td>
             </tr>`}
           </tfoot>
         </table>
@@ -353,7 +363,7 @@ export function buildGstTaxInvoiceHtml(p: BuildGstTaxInvoiceParams): BuiltGstTax
         <!-- AUDIT FIX (2026-09-03): numberToIndianWords floors its input — passing the raw
              paise-precision gstSummaryTotalTax silently dropped the paise from the printed
              words (e.g. ₹123.45 read out as "One Hundred Twenty-Three Only"). Round first. -->
-        <p style="margin:8px 0; font-weight:bold;">Tax Amount (in words) : INR ${numberToIndianWords(Math.round(gstSummaryTotalTax))} Only</p>
+        <p style="margin:8px 0; font-weight:bold;">Tax Amount (in words) : INR ${overall ? amountWords(gstSummaryTotalTax) : numberToIndianWords(Math.round(gstSummaryTotalTax))} Only</p>
 
         <table style="margin-top:8px;">
           <tr>

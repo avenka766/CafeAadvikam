@@ -21,6 +21,9 @@ import { printViaIframe } from '@/lib/printViaIframe';
 import type { Branch } from './types';
 import { clampQtyForUnit } from './bakeryStore';
 import { jsPDF } from 'jspdf';
+import { calculatePlannerSalesGst } from './plannerSalesGst';
+import { hosurInvoiceLedgerLines } from './hosurGstLedger';
+import { buildGstTaxInvoiceHtml, type GstPartyDetails } from './gstTaxInvoice';
 
 export interface DispatchInvoiceItem {
   itemName: string;
@@ -48,6 +51,8 @@ export interface DispatchInvoiceItem {
   // every non-GST dispatch, same as before.
   hsnCode?: string;
   gstPct?: number;
+  gstPricing?: 'exclusive';
+  gstBuyerDetails?: GstPartyDetails;
 }
 
 // FEATURE (2026-09-03): 'Cake' added as a genuinely separate scope — cake
@@ -245,8 +250,9 @@ export async function saveDispatchInvoice(input: {
   const subtotal = Math.round(input.items.reduce((s, i) => s + i.lineTotal, 0) * 100) / 100;
   const discountAmount = Math.round(subtotal * (safeDiscountPct / 100) * 100) / 100;
   const preRound = subtotal - discountAmount;
-  const total = Math.round(preRound);
-  const roundOff = Math.round((total - preRound) * 100) / 100;
+  const exclusiveGst = input.isGstInvoice && input.items.some(i => i.gstPricing === 'exclusive');
+  const total = exclusiveGst ? calculatePlannerSalesGst(subtotal, discountAmount, true, input.items.find(i=>i.gstPricing === 'exclusive')?.gstPct || 0, input.gstSupplyType).total : Math.round(preRound);
+  const roundOff = exclusiveGst ? 0 : Math.round((total - preRound) * 100) / 100;
   const status = input.status ?? 'paid';
 
   // BUG FIX (2026-09-11): "TO/26-27/66 unable to see bill its missing" — this
@@ -358,7 +364,7 @@ export async function markDispatchInvoicePaid(record: DispatchInvoiceRecord, rec
 // (2026-09-03, previously PlannerDashboard.tsx-local) so Admin's Dispatch
 // Details tab can render/print Sales rows through the identical invoice
 // template without importing that whole page module.
-export interface WalkinBillItem { itemName: string; unit: string; price: number; quantity: number; lineTotal: number; hsnCode?: string; gstPct?: number }
+export interface WalkinBillItem { itemName: string; unit: string; price: number; quantity: number; lineTotal: number; hsnCode?: string; gstPct?: number; gstPricing?: 'exclusive'; gstBuyerDetails?: GstPartyDetails }
 export interface WalkinBillRow {
   id: string; billNo: string; items: WalkinBillItem[]; subtotal: number;
   discountType: 'none' | 'percent' | 'amount'; discountValue: number; discountAmount: number; total: number;
@@ -453,7 +459,7 @@ export function walkinBillToInvoiceRecord(bill: WalkinBillRow): DispatchInvoiceR
     customerPhone: bill.customerMobile,
     customerAddress: null,
     dispatchedBy: bill.cashierName || 'Planner',
-    items: bill.items.map(i => ({ itemName: i.itemName, unit: i.unit, quantity: i.quantity, unitPrice: i.price, lineTotal: i.lineTotal, hsnCode: i.hsnCode, gstPct: i.gstPct })),
+    items: bill.items.map(i => ({ itemName: i.itemName, unit: i.unit, quantity: i.quantity, unitPrice: i.price, lineTotal: i.lineTotal, hsnCode: i.hsnCode, gstPct: i.gstPct, gstPricing: i.gstPricing, gstBuyerDetails: i.gstBuyerDetails })),
     subtotal: bill.subtotal,
     discountPct: bill.discountType === 'percent' ? bill.discountValue : 0,
     discountAmount: bill.discountAmount,
@@ -476,6 +482,25 @@ export function walkinBillToInvoiceRecord(bill: WalkinBillRow): DispatchInvoiceR
     originalItems: null, // Sales bills aren't part of the Return feature (dispatch_invoices only)
     returnLog: [],
   };
+}
+
+export function renderSavedSalesTaxInvoice(bill: WalkinBillRow) {
+  const first = bill.items.find(item => item.unit !== 'charge');
+  const buyer = first?.gstBuyerDetails ?? {name: bill.customerName || 'Walk-in Customer', address: '', gstin: '', stateName: 'Tamil Nadu', stateCode: '33'};
+  return buildGstTaxInvoiceHtml({
+    buyer, consignee: buyer, invoiceNo: bill.billNo, invoiceDate: new Date(bill.createdAt).toLocaleDateString('en-CA', {timeZone:'Asia/Kolkata'}), supplyType: bill.gstSupplyType,
+    preparedBy: bill.cashierName || 'Planner', modeOfPayment: bill.paymentMode,
+    lines: bill.items.map(item => ({itemName:item.itemName,qty:item.quantity,rate:item.price,uom:item.unit==='pcs'?'Nos':item.unit==='kg'?'Kg':item.unit,hsnCode:first?.hsnCode || '',gstPct:first?.gstPct || 0})),
+    overallSalesTax: {subtotal:bill.subtotal,discountAmount:bill.discountAmount,gstPct:first?.gstPct || 0},
+  }).html;
+}
+
+export function renderSavedDispatchTaxInvoice(record: DispatchInvoiceRecord) {
+  const first = record.items.find(i => i.unit !== 'charge');
+  const buyer = first?.gstBuyerDetails ?? {name:record.customerName || record.hosurShopName || 'Customer', address:record.customerAddress || '', gstin:'', stateName:'Tamil Nadu', stateCode:'33'};
+  return buildGstTaxInvoiceHtml({buyer,consignee:buyer,invoiceNo:record.invoiceNo,invoiceDate:new Date(record.createdAt).toLocaleDateString('en-CA',{timeZone:'Asia/Kolkata'}),supplyType:record.gstSupplyType,preparedBy:record.dispatchedBy,
+    lines:record.items.map(i=>({itemName:i.itemName,qty:i.quantity,rate:i.unitPrice,uom:i.unit==='pcs'?'Nos':i.unit==='kg'?'Kg':i.unit,hsnCode:first?.hsnCode || '',gstPct:first?.gstPct || 0})),
+    overallSalesTax:{subtotal:record.subtotal,discountAmount:record.discountAmount,gstPct:first?.gstPct || 0}}).html;
 }
 
 function esc(v: unknown): string {
@@ -540,7 +565,9 @@ export function renderDispatchInvoiceHtml(record: DispatchInvoiceRecord, mode: '
   const gstPct = isGst ? Math.max(0, Number(record.items.find(i => i.unit !== 'charge')?.gstPct) || 0) : 0;
   const gstHsnCode = isGst ? (record.items.find(i => i.unit !== 'charge')?.hsnCode || '').trim() : '';
   const chargedAmount = Math.round(record.total * 100) / 100;
-  const taxableValue = isGst && gstPct > 0 ? Math.round((chargedAmount / (1 + gstPct / 100)) * 100) / 100 : chargedAmount;
+  const exclusiveGst = isGst && record.items.some(item => item.gstPricing === 'exclusive');
+  const formatAmount = (value: number) => exclusiveGst ? value.toFixed(2) : String(Math.round(value));
+  const taxableValue = exclusiveGst ? Math.round(Math.max(0, record.subtotal - record.discountAmount) * 100) / 100 : isGst && gstPct > 0 ? Math.round((chargedAmount / (1 + gstPct / 100)) * 100) / 100 : chargedAmount;
   const totalTax = isGst && gstPct > 0 ? Math.round((chargedAmount - taxableValue) * 100) / 100 : 0;
   const cgstAmt = isGst && record.gstSupplyType === 'intra' ? Math.round((totalTax / 2) * 100) / 100 : 0;
   const sgstAmt = isGst && record.gstSupplyType === 'intra' ? Math.round((totalTax - cgstAmt) * 100) / 100 : 0;
@@ -608,8 +635,8 @@ export function renderDispatchInvoiceHtml(record: DispatchInvoiceRecord, mode: '
       ${isReturned
         ? `<td class="num">${fmtQty(m.quantity)}</td><td class="num">${returnedQty > 0 ? fmtQty(returnedQty) : '-'}</td><td class="num">${fmtQty(netQty)}</td>`
         : `<td class="num">${fmtQty(m.quantity)}</td>`}
-      <td class="num">${Math.round(effectiveRate)}</td>
-      <td class="num">${Math.round(netAmount)}</td>
+      <td class="num">${formatAmount(effectiveRate)}</td>
+      <td class="num">${formatAmount(netAmount)}</td>
     </tr>`;
   }).join('');
   // The item table's own Total must now sum only the rows actually printed
@@ -624,7 +651,7 @@ export function renderDispatchInvoiceHtml(record: DispatchInvoiceRecord, mode: '
   // charge was never a physical unit count. See chargeItems above.
   const chargesHtml = chargeItems.length > 0 ? `
     <div class="row" style="margin-top:6px"><span style="font-weight:900">Other Charges</span><span></span></div>
-    ${chargeItems.map(c => `<div class="row"><span>${esc(c.itemName)}</span><span>${Math.round(c.lineTotal)}</span></div>`).join('')}` : '';
+    ${chargeItems.map(c => `<div class="row"><span>${esc(c.itemName)}</span><span>${formatAmount(c.lineTotal)}</span></div>`).join('')}` : '';
   const returnNoteHtml = record.returnLog.length > 0 ? `
     <div class="stamp-return">
       ${record.returnLog.map(entry => {
@@ -647,11 +674,11 @@ export function renderDispatchInvoiceHtml(record: DispatchInvoiceRecord, mode: '
       <tbody>
         <tr>
           ${gstHsnCode ? `<td>${esc(gstHsnCode)}</td>` : ''}
-          <td class="num">${Math.round(taxableValue)}</td>
+          <td class="num">${formatAmount(taxableValue)}</td>
           ${record.gstSupplyType === 'intra'
-            ? `<td class="num">${Math.round(cgstAmt)}</td><td class="num">${Math.round(sgstAmt)}</td>`
-            : `<td class="num">${Math.round(igstAmt)}</td>`}
-          <td class="num">${Math.round(totalTax)}</td>
+            ? `<td class="num">${formatAmount(cgstAmt)}</td><td class="num">${formatAmount(sgstAmt)}</td>`
+            : `<td class="num">${formatAmount(igstAmt)}</td>`}
+          <td class="num">${formatAmount(totalTax)}</td>
         </tr>
       </tbody>
     </table>` : '';
@@ -695,17 +722,17 @@ export function renderDispatchInvoiceHtml(record: DispatchInvoiceRecord, mode: '
       <thead><tr><th>Sn</th><th>Item Name</th>${isReturned ? '<th class="num">Sent</th><th class="num">Returned</th><th class="num">Net</th>' : '<th class="num">Qty</th>'}<th class="num">Rate</th><th class="num">Amount</th></tr></thead>
       <tbody>
         ${rows}
-        <tr class="total-row"><td></td><td>Total</td>${isReturned ? `<td></td><td></td><td class="num">${fmtQty(totalQty)}</td>` : `<td class="num">${fmtQty(totalQty)}</td>`}<td></td><td class="num">${Math.round(itemsSubtotal)}</td></tr>
+        <tr class="total-row"><td></td><td>Total</td>${isReturned ? `<td></td><td></td><td class="num">${fmtQty(totalQty)}</td>` : `<td class="num">${fmtQty(totalQty)}</td>`}<td></td><td class="num">${formatAmount(itemsSubtotal)}</td></tr>
       </tbody>
     </table>
     ${chargesHtml}
     ${gstSummaryHtml}
     ${returnNoteHtml}
     <div class="summary">
-      <div class="row"><span>Discount${record.discountPct ? ` (${record.discountPct}%)` : ''} :</span><span>${Math.round(record.discountAmount)}</span></div>
-      <div class="row"><span>Round-Off :</span><span>${record.roundOff >= 0 ? '+' : ''}${Math.round(record.roundOff)}</span></div>
-      ${isGst && gstPct > 0 ? `<div class="row"><span>Includes GST @ ${gstPct}% :</span><span>Rs ${Math.round(totalTax)}</span></div>` : ''}
-      <div class="row net"><span>Net Bill Amount :</span><span>Rs ${Math.round(record.total)}</span></div>
+      <div class="row"><span>Discount${record.discountPct ? ` (${record.discountPct}%)` : ''} :</span><span>${formatAmount(record.discountAmount)}</span></div>
+      <div class="row"><span>Round-Off :</span><span>${record.roundOff >= 0 ? '+' : ''}${formatAmount(record.roundOff)}</span></div>
+      ${isGst && gstPct > 0 ? `<div class="row"><span>${exclusiveGst ? 'GST added' : 'Includes GST'} @ ${gstPct}% :</span><span>Rs ${formatAmount(totalTax)}</span></div>` : ''}
+      <div class="row net"><span>Net Bill Amount :</span><span>Rs ${formatAmount(record.total)}</span></div>
       ${record.advanceAmount != null ? `
       <div class="row"><span>Advance Paid :</span><span>- Rs ${Math.round(record.advanceAmount)}</span></div>
       <div class="row" style="font-weight:900;${record.status === 'unpaid' ? 'color:#b45309' : 'color:#047857'}"><span>${record.status === 'unpaid' ? 'Balance Due' : 'Balance Settled'} :</span><span>Rs ${Math.round(record.balanceAmount ?? Math.max(0, record.total - record.advanceAmount))}</span></div>` : ''}
@@ -777,7 +804,7 @@ export async function printDispatchInvoice(record: DispatchInvoiceRecord, mode: 
   console.log('[printDispatchInvoice] called', { invoiceNo: record.invoiceNo, mode, itemCount: record.items?.length });
   let html: string;
   try {
-    html = renderDispatchInvoiceHtml(record, mode);
+    html = record.isGstInvoice && record.items.some(i=>i.gstPricing === 'exclusive') ? renderSavedDispatchTaxInvoice(record) : renderDispatchInvoiceHtml(record, mode);
     console.log('[printDispatchInvoice] HTML generated ok, length:', html.length);
   } catch (err) {
     console.error('[printDispatchInvoice] renderDispatchInvoiceHtml THREW — this is why nothing happened:', err);
@@ -1101,6 +1128,7 @@ export async function updateDispatchInvoice(params: {
       isExtra: addedKeys.includes(k) ? true : (originalByKey.get(k)?.isExtra ?? i.isExtra ?? false),
       ...(i.hsnCode !== undefined ? { hsnCode: i.hsnCode } : {}),
       ...(i.gstPct !== undefined ? { gstPct: i.gstPct } : {}),
+      ...(i.gstPricing ? {gstPricing:i.gstPricing, gstBuyerDetails:i.gstBuyerDetails} : {}),
     };
   });
   // AUDIT FIX (2026-09-02): same clamp as saveDispatchInvoice — see its comment.
@@ -1110,8 +1138,9 @@ export async function updateDispatchInvoice(params: {
   const subtotal = Math.round(finalItems.reduce((s, i) => s + i.lineTotal, 0) * 100) / 100;
   const discountAmount = Math.round(subtotal * (safeUpdatedDiscountPct / 100) * 100) / 100;
   const preRound = subtotal - discountAmount;
-  const total = Math.round(preRound);
-  const roundOff = Math.round((total - preRound) * 100) / 100;
+  const exclusiveGst = finalIsGstInvoice && finalItems.some(i => i.gstPricing === 'exclusive');
+  const total = exclusiveGst ? calculatePlannerSalesGst(subtotal, discountAmount, true, finalItems.find(i=>i.gstPricing === 'exclusive')?.gstPct || 0, finalGstSupplyType).total : Math.round(preRound);
+  const roundOff = exclusiveGst ? 0 : Math.round((total - preRound) * 100) / 100;
 
   // Re-collect dispatchEntryIds for the edited bill: keep every ref whose
   // item wasn't touched, drop refs for removed/changed items, and add the
@@ -1178,10 +1207,7 @@ export async function updateDispatchInvoice(params: {
       // billed prices, and combine with this edit's own final items before
       // syncing — so the shop's credit bill always reflects the full,
       // combined total across every batch, not just the one just edited.
-      const finalPriced = (items: DispatchInvoiceItem[], discountPct: number) => {
-        const mult = 1 - Math.max(0, Math.min(100, discountPct || 0)) / 100;
-        return items.map(i => ({ itemName: i.itemName, unit: i.unit, quantity: i.quantity, unitPrice: Math.round(i.unitPrice * mult * 100) / 100 }));
-      };
+      const finalPriced = hosurInvoiceLedgerLines;
       let combinedItems = finalPriced(finalItems, safeUpdatedDiscountPct);
       if (original.hosurShopId) {
         const { data: siblingRows } = await supabase.from('dispatch_invoices')
@@ -1328,10 +1354,7 @@ export async function cancelDispatchInvoice(params: {
         const { data: siblingRows } = await supabase.from('dispatch_invoices')
           .select('items, discount_pct, dispatch_entry_ids')
           .eq('scope', 'Hosur').eq('hosur_shop_id', original.hosurShopId).neq('status', 'cancelled').neq('id', params.invoiceId);
-        const finalPriced = (items: DispatchInvoiceItem[], discountPct: number) => {
-          const mult = 1 - Math.max(0, Math.min(100, discountPct || 0)) / 100;
-          return items.map(i => ({ itemName: i.itemName, unit: i.unit, quantity: i.quantity, unitPrice: Math.round(i.unitPrice * mult * 100) / 100 }));
-        };
+        const finalPriced = hosurInvoiceLedgerLines;
         let combinedItems: { itemName: string; unit: string; quantity: number; unitPrice: number }[] = [];
         for (const row of (siblingRows ?? []) as { items: DispatchInvoiceItem[]; discount_pct: number; dispatch_entry_ids: { orderId: string; dispatchEntryId: string }[] }[]) {
           const belongsToSameOrder = (row.dispatch_entry_ids ?? []).some(ref => {
@@ -1464,8 +1487,9 @@ export async function noteDispatchInvoiceReturnOnly(params: {
   const subtotal = Math.round(updatedItems.reduce((s, i) => s + i.lineTotal, 0) * 100) / 100;
   const discountAmount = Math.round(subtotal * (original.discountPct / 100) * 100) / 100;
   const preRound = subtotal - discountAmount;
-  const total = Math.round(preRound);
-  const roundOff = Math.round((total - preRound) * 100) / 100;
+  const exclusiveGst = original.isGstInvoice && updatedItems.some(i => i.gstPricing === 'exclusive');
+  const total = exclusiveGst ? calculatePlannerSalesGst(subtotal, discountAmount, true, updatedItems.find(i=>i.gstPricing === 'exclusive')?.gstPct || 0, original.gstSupplyType).total : Math.round(preRound);
+  const roundOff = exclusiveGst ? 0 : Math.round((total - preRound) * 100) / 100;
 
   const returnLogEntry = { at: new Date().toISOString(), by: params.returnedBy, reason: params.reason?.trim() || null, items: cleanedReturns };
   const newOriginalItems = original.originalItems ?? original.items;
