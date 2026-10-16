@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import {
   ArrowLeft,
   ArrowRight,
@@ -31,6 +31,7 @@ import { supabase } from "@/lib/supabase";
 import { LeadEnquiry } from "@/components/features/LeadEnquiry";
 import snbLogo from "@/assets/snb-logo.png";
 import { CAFE_INFO } from "@/constants/cafeInfo";
+import { isLocalDeliveryItem, isOnlineShopItem, matchesShopCollection, shopCollections, shopCollectionImage, shopItemImage } from "@/lib/shopCollections";
 import "@/styles/heritage.css";
 import "@/styles/heritage-shop.css";
 
@@ -53,6 +54,7 @@ const productIcon = (category: string) =>
     : Leaf;
 
 const COLLECTIONS = [
+  { id: "branch-only", label: "Bakery & Cakes · Direct order", pattern: /BAKERY|CAKE/i },
   {
     id: "sweets",
     label: "Sweets",
@@ -65,10 +67,10 @@ const COLLECTIONS = [
   },
   {
     id: "bakes",
-    label: "Bakes & cakes",
-    pattern: /BAKERY|CAKE|BISCUIT|COOKIE/i,
+    label: "Cookies & biscuits",
+    pattern: /BISCUIT|COOKIE/i,
   },
-  { id: "pantry", label: "Pantry", pattern: /OIL|PICKLE/i },
+  { id: "pantry", label: "Pantry", pattern: /OIL|PICKLE|POWDER|PODI/i },
 ];
 const startingPrice = (item: BranchCatalogItem) =>
   item.price * (item.uom === "Kgs" ? 0.25 : 1);
@@ -130,7 +132,7 @@ function loadStoredDraft(): StoredOrderDraft {
       localStorage.getItem(CART_STORAGE_KEY) || "{}"
     ) as Partial<StoredOrderDraft>;
     return {
-      cart: Array.isArray(parsed.cart) ? parsed.cart : [],
+      cart: Array.isArray(parsed.cart) ? parsed.cart.filter((line) => line && typeof line.category === 'string' && isOnlineShopItem(line)) : [],
       customer: { ...EMPTY_CUSTOMER, ...(parsed.customer || {}) },
     };
   } catch {
@@ -165,6 +167,12 @@ async function ensureRazorpayLoaded() {
 
 export default function BakeryOrderPage() {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const categorySlug = searchParams.get('category');
+  const storyCollection = shopCollections.find((entry) => entry.id === categorySlug);
+  const clearStoryCollection = () => {
+    setSearchParams((previous) => { const next = new URLSearchParams(previous); next.delete('category'); return next; });
+  };
   const initialDraft = useMemo(loadStoredDraft, []);
   const [cart, setCart] = useState<CartLine[]>(initialDraft.cart);
   const [customer, setCustomer] = useState<CheckoutForm>(initialDraft.customer);
@@ -176,7 +184,7 @@ export default function BakeryOrderPage() {
   const [visibleCount, setVisibleCount] = useState(24);
   useEffect(
     () => setVisibleCount(24),
-    [search, selectedCategory, collection, sort]
+    [search, selectedCategory, collection, sort, categorySlug]
   );
   const [screen, setScreen] = useState<"menu" | "checkout">("menu");
   useEffect(() => {
@@ -220,7 +228,7 @@ export default function BakeryOrderPage() {
         const latest = catalogItems.find(
           (item) => item.barcode === line.barcode
         );
-        return latest ? [{ ...latest, quantity: line.quantity }] : [];
+        return latest && isOnlineShopItem(latest) ? [{ ...latest, quantity: line.quantity }] : [];
       })
     );
   }, [catalogItems]);
@@ -242,6 +250,7 @@ export default function BakeryOrderPage() {
     const q = search.trim().toLowerCase();
     const matches = catalogItems.filter(
       (item) =>
+        (!categorySlug || matchesShopCollection(item, categorySlug)) &&
         (selectedCategory === "all" || item.category === selectedCategory) &&
         (collection === "all" ||
           COLLECTIONS.find((c) => c.id === collection)!.pattern.test(
@@ -259,7 +268,9 @@ export default function BakeryOrderPage() {
       : sort === "price-high"
       ? matches.sort((a, b) => startingPrice(b) - startingPrice(a))
       : matches;
-  }, [catalogItems, search, selectedCategory, collection, sort]);
+  }, [catalogItems, search, selectedCategory, collection, sort, categorySlug]);
+
+  const hasLocalDeliveryItems = cart.some(isLocalDeliveryItem);
 
   const subtotal = useMemo(
     () =>
@@ -278,6 +289,7 @@ export default function BakeryOrderPage() {
     cart.find((line) => line.barcode === barcode)?.quantity || 0;
 
   const setQuantity = (item: BranchCatalogItem, next: number) => {
+    if (next > 0 && !isOnlineShopItem(item)) return;
     const safeNext = Math.max(0, Math.round(next * 100) / 100);
     setCart((current) => {
       if (safeNext <= 0)
@@ -299,7 +311,8 @@ export default function BakeryOrderPage() {
   };
 
   const validateCheckout = () => {
-    if (!cart.length) return "Add at least one bakery item.";
+    if (!cart.length) return "Add at least one item.";
+    if (cart.some((item) => !isOnlineShopItem(item))) return "Bakery and Cake items must be ordered directly from our branch; delivery is within 30 km of Hosur only.";
     if (!customer.name.trim()) return "Enter the customer name.";
     if (!/^\d{10}$/.test(customer.phone.replace(/\D/g, "")))
       return "Enter a valid 10-digit mobile number.";
@@ -524,12 +537,12 @@ export default function BakeryOrderPage() {
                 screen === "checkout" ? "Back to shopping" : "Back to our story"
               }
               onClick={() =>
-                screen === "checkout" ? setScreen("menu") : navigate("/")
+                screen === "checkout" ? setScreen("menu") : navigate("/our-craft")
               }
             >
               <ArrowLeft />
               <span>
-                {screen === "checkout" ? "Keep exploring" : "Our story"}
+                {screen === "checkout" ? "Keep exploring" : "Our craft"}
               </span>
             </button>
             <button
@@ -544,7 +557,7 @@ export default function BakeryOrderPage() {
         </div>
       </header>
       <div className="s-announcement">
-        A little taste of home, wherever you are. Now delivering Pan-India.
+        <strong>No added preservatives <span>·</span> No palm oil <span>·</span> Made with care since 1988</strong>
       </div>
       <ol className="s-steps h-wrap" aria-label="Ordering steps">
         <li aria-current={screen === "menu" ? "step" : undefined}>
@@ -568,15 +581,15 @@ export default function BakeryOrderPage() {
           <div className="h-wrap">
             <section className="s-hero">
               <div>
-                <p className="h-eyebrow">From our family kitchen to yours</p>
+                <p className="h-eyebrow">The SNB collection · Since 1988</p>
                 <h1>
-                  A box of joy.
+                  A little craving.
                   <br />
-                  <em>A taste of tradition.</em>
+                  <em>A delicious discovery.</em>
                 </h1>
                 <p className="h-copy">
-                  Pick something you love, something to share, or a little of
-                  both. Your next sweet memory starts here.
+                  Rich ghee sweets. Seed-filled burfi. Savouries with a signature crunch.
+                  Pick your favourites and bring a little SNB joy home.
                 </p>
                 <div className="s-trust">
                   <span>
@@ -585,7 +598,7 @@ export default function BakeryOrderPage() {
                   </span>
                   <span>
                     <Truck />
-                    Pan-India delivery
+                    Eligible products ship Pan-India
                   </span>
                   <span>
                     <HeartIcon />
@@ -595,20 +608,29 @@ export default function BakeryOrderPage() {
               </div>
               <div className="s-hero-art">
                 <img
-                  src="/images/heritage/special-sweets.jpeg"
-                  alt="SNB special sweets assortment"
+                  src={shopCollectionImage('burfi')}
+                  alt="Illustrative seed burfi collection"
                 />
                 <img
-                  src="/images/heritage/cashew-sweets.jpeg"
-                  alt="SNB cashew sweets assortment"
+                  src={shopCollectionImage('oppat')}
+                  alt="Illustrative coconut Oppat collection"
                 />
               </div>
             </section>
+            <div className="s-branch-only"><strong>Bakery & Cakes: browse here, order directly from our branch.</strong><span>No online orders. Delivery only in and around Hosur, within 30 km.</span><a href={`tel:${CAFE_INFO.phone.replace(/\s/g, '')}`}>Contact our branch <ArrowRight size={14} /></a></div>
+            <div className="s-shop-highlights"><Link to="/order?category=oppat" onClick={() => { setSelectedCategory('all'); setCollection('all'); setSearch(''); }}><img src={shopCollectionImage('oppat')} alt="" /><div><small>OUR FAMOUS COCONUT OPPAT</small><strong>One bite. A reason to come back.</strong><span>Delivered within 30 km of Hosur <ArrowRight size={14} /></span></div></Link><a href={`tel:${CAFE_INFO.phone.replace(/\s/g, '')}`}><div><small>CELEBRATE WITH SOMETHING SPECIAL</small><strong>We take bulk orders.</strong><span>Hosur & surrounding areas · 30 km radius <ArrowRight size={14} /></span></div></a></div>
+            <div className="s-quality-ribbon"><span>Pure Nandini ghee</span><span>Carefully selected ingredients</span><Link to="/our-craft">Discover our standards <ArrowRight size={14} /></Link></div>
+            {categorySlug && <section className="s-collection-story" aria-label="Selected collection">
+              <div><p className="h-eyebrow">{storyCollection?.family || 'Collection'}</p><h2>{storyCollection?.title || 'Collection unavailable'}</h2><p>{storyCollection?.description || 'This collection could not be found. Please choose another collection.'}</p>
+              {storyCollection && 'local' in storyCollection && storyCollection.local && <strong>Delivery only within 30 km of Hosur.</strong>}</div>
+              <button type="button" onClick={clearStoryCollection}>Browse all products <ArrowRight size={16} /></button>
+            </section>}
             <nav className="s-collections" aria-label="Shop collections">
               <button
                 type="button"
-                aria-pressed={collection === "all"}
+                aria-pressed={!categorySlug && collection === "all"}
                 onClick={() => {
+                  clearStoryCollection();
                   setCollection("all");
                   setSelectedCategory("all");
                 }}
@@ -623,6 +645,7 @@ export default function BakeryOrderPage() {
                   type="button"
                   aria-pressed={collection === c.id}
                   onClick={() => {
+                    clearStoryCollection();
                     setCollection(c.id);
                     setSelectedCategory("all");
                   }}
@@ -631,6 +654,7 @@ export default function BakeryOrderPage() {
                 </button>
               ))}
             </nav>
+            <nav className="s-photo-collections" aria-label="Discover collections">{shopCollections.map((entry) => <Link key={entry.id} to={`/order?category=${entry.id}`} aria-current={categorySlug === entry.id ? 'page' : undefined} onClick={() => { setSelectedCategory('all'); setCollection('all'); setSearch(''); }}><img src={shopCollectionImage(entry.id)} alt="" loading="lazy" /><span>{entry.title}</span></Link>)}</nav>
             <section className="s-search-row" aria-label="Find products">
               <div className="s-search">
                 <Search aria-hidden="true" />
@@ -669,12 +693,14 @@ export default function BakeryOrderPage() {
             <label className="s-mobile-filter">
               Browse by category
               <select
-                value={selectedCategory}
+                value={categorySlug ? "story" : selectedCategory}
                 onChange={(event) => {
+                  clearStoryCollection();
                   setSelectedCategory(event.target.value);
                   setCollection("all");
                 }}
               >
+                {categorySlug && <option value="story">{storyCollection?.title || 'Selected collection'}</option>}
                 <option value="all">All our favourites</option>
                 {categories.map((category) => (
                   <option key={category} value={category}>
@@ -688,8 +714,9 @@ export default function BakeryOrderPage() {
                 <h2>Find your favourites</h2>
                 <button
                   type="button"
-                  aria-pressed={selectedCategory === "all"}
+                  aria-pressed={!categorySlug && selectedCategory === "all"}
                   onClick={() => {
+                    clearStoryCollection();
                     setSelectedCategory("all");
                     setCollection("all");
                   }}
@@ -702,6 +729,7 @@ export default function BakeryOrderPage() {
                     type="button"
                     aria-pressed={selectedCategory === category}
                     onClick={() => {
+                      clearStoryCollection();
                       setSelectedCategory(category);
                       setCollection("all");
                     }}
@@ -718,11 +746,12 @@ export default function BakeryOrderPage() {
                 ))}
               </aside>
               <section aria-label="Products">
+                <p className="s-image-caption">AI-created collection images · Actual products and presentation may vary.</p>
                 <div className="s-products-top">
                   <h2>
                     {search
                       ? "Your search results"
-                      : selectedCategory === "all"
+                      : storyCollection ? storyCollection.title : selectedCategory === "all"
                       ? "Made for your cravings"
                       : prettyName(selectedCategory)}
                   </h2>
@@ -734,6 +763,7 @@ export default function BakeryOrderPage() {
                       {filteredItems.slice(0, visibleCount).map((item) => {
                         const quantity = getQuantity(item.barcode);
                         const Icon = productIcon(item.category);
+                        const photo = shopItemImage(item);
                         const packSize =
                           item.uom === "Kgs"
                             ? packSizes[item.barcode] || 0.25
@@ -746,11 +776,13 @@ export default function BakeryOrderPage() {
                               quantity > 0 && "s-product-selected"
                             )}
                           >
+                            <img className="s-product-photo" src={photo.src} alt={photo.alt} loading="lazy" />
                             <div className="s-product-top">
                               <Icon aria-hidden="true" />
                               <small>{prettyName(item.category)}</small>
                             </div>
                             <h3>{prettyName(item.name)}</h3>
+                            {isLocalDeliveryItem(item) && <p className="s-local-label">Hosur · Within 30 km only</p>}
                             <p className="s-product-price">
                               <strong>
                                 {formatCurrency(
@@ -787,7 +819,7 @@ export default function BakeryOrderPage() {
                               </label>
                             )}
                             <div className="s-product-bottom">
-                              {quantity === 0 ? (
+                              {!isOnlineShopItem(item) ? <div className="s-direct-order"><p>No online orders · Delivery within 30 km of Hosur only.</p><a href={`tel:${CAFE_INFO.phone.replace(/\s/g, '')}`} className="s-add">Call branch to order <ArrowRight size={14} /></a></div> : quantity === 0 ? (
                                 <button
                                   type="button"
                                   className="s-add"
@@ -925,7 +957,7 @@ export default function BakeryOrderPage() {
               <p className="h-eyebrow">Something a little more personal</p>
               <h2>Big celebrations. Thoughtful gifts.</h2>
               <p>
-                Planning a bulk order, corporate gifts or a custom cake? Tell us
+                Planning a bulk order in Hosur or within 30 km? Tell us
                 what you have in mind and our team will help you choose.
               </p>
             </div>
@@ -981,6 +1013,7 @@ export default function BakeryOrderPage() {
               <section className="s-checkout-panel">
                 <p className="h-eyebrow">Where shall we send your order?</p>
                 <h2>Delivery details</h2>
+                {hasLocalDeliveryItems && <div className="s-delivery-notice" role="note"><Truck size={20} /><p>Your order includes Oppat, delivered only within 30 km of Hosur. Please use a delivery address within this area.</p></div>}
                 <p>
                   Use this mobile number to follow your order, from our kitchen
                   to your door.
@@ -1072,7 +1105,7 @@ export default function BakeryOrderPage() {
                         setCustomer({ ...customer, note: event.target.value })
                       }
                       rows={2}
-                      placeholder="Packing requests, a cake message or delivery instructions"
+                      placeholder="Packing requests or delivery instructions"
                     />
                   </label>
                 </div>

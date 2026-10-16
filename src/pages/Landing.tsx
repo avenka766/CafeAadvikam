@@ -114,7 +114,7 @@ const FAQS = [
   ],
   [
     "Does Sri Nanjundeshwara Bakery & Sweets deliver pan-India?",
-    "Yes. Our vision of Pan-India delivery is now a reality. We officially deliver our products across India. Browse the Order Now page for sweets, savouries, pickles, oils and more.",
+    "Yes. Our vision of Pan-India delivery is now a reality. We officially deliver our products across India. Explore our collections for sweets, savouries, pickles, oils and more. Oppat and bulk orders are available within 30 km of Hosur. Browse Bakery and Cake items online, then contact our branch to order. We do not take online orders for these items; delivery is only within 30 km of Hosur.",
   ],
 ];
 export default function Landing() {
@@ -216,7 +216,7 @@ export default function Landing() {
                   {label}
                 </a>
               ))}
-              <Link to="/order">Order now</Link>
+              <Link to="/our-craft">Order now</Link>
               <Link to="/order/track">Track your order</Link>
               <Link to="/login">Staff login</Link>
             </nav>
@@ -342,7 +342,7 @@ export default function Landing() {
             <p>
               From our kitchen to your doorstep. Now delivering across India.
             </p>
-            <Link className="h-button" to="/order">
+            <Link className="h-button" to="/our-craft">
               Order your favourites <ArrowRight />
             </Link>
           </div>
@@ -620,7 +620,7 @@ export default function Landing() {
                 ingredients, and care in everything we make.
               </p>
               <div className="h-actions">
-                <Link className="h-button" to="/order">
+                <Link className="h-button" to="/our-craft">
                   Explore bakery & foods <ArrowRight />
                 </Link>
               </div>
@@ -776,7 +776,7 @@ export default function Landing() {
               ingredients together.
             </p>
             <div className="h-actions">
-              <Link className="h-button" to="/order">
+              <Link className="h-button" to="/our-craft">
                 Shop ghee sweets <ArrowRight />
               </Link>
             </div>
@@ -794,7 +794,7 @@ export default function Landing() {
               meals and moments at home.
             </p>
             <div className="h-actions">
-              <Link className="h-link" to="/order">
+              <Link className="h-link" to="/our-craft">
                 Explore products <ArrowRight />
               </Link>
             </div>
@@ -830,7 +830,7 @@ export default function Landing() {
             home to be part of it.
           </p>
           <div className="h-actions">
-            <Link className="h-button" to="/order">
+            <Link className="h-button" to="/our-craft">
               Bring home your favourites <ArrowRight />
             </Link>
           </div>
@@ -997,7 +997,7 @@ export default function Landing() {
               </span>
             </a>
             <nav className="h-footer-links" aria-label="Footer navigation">
-              <Link to="/order">Order now</Link>
+              <Link to="/our-craft">Order now</Link>
               <a href="#cakes">Custom cakes</a>
               <a href="#catering">Catering</a>
               <a href="#occasion">Party hall</a>
