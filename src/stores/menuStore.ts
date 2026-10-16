@@ -1,9 +1,11 @@
+import {isElectronApp} from '@/lib/platform';
 import { create } from 'zustand';
 import { supabase } from '@/lib/supabase';
 import { makeSingletonSubscriber } from '@/lib/realtimeChannel';
 import type { MenuItem } from '@/types';
 import { useAuthStore } from '@/stores/authStore';
 
+const desktopMenuCache=()=>{try{return isElectronApp()?JSON.parse(localStorage.getItem('desktop-cafe-menu')||'[]'):[];}catch{return [] as MenuItem[];}};
 const MENU_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 interface MenuState {
@@ -20,13 +22,14 @@ interface MenuState {
 }
 
 export const useMenuStore = create<MenuState>()((set, get) => ({
-  items: [],
+  items: desktopMenuCache(),
   loading: false,
   loaded: false,
   loadedAt: null,
 
   loadMenu: async (force = false) => {
     const { loaded, loadedAt } = get();
+    if(isElectronApp()&&!navigator.onLine&&get().items.length)return;
     const expired = !loadedAt || Date.now() - loadedAt > MENU_TTL_MS;
     if (loaded && !expired && !force) return;
 
@@ -50,6 +53,7 @@ export const useMenuStore = create<MenuState>()((set, get) => ({
           imageUrl: d.image_url || undefined,
           gstApplicable: d.gst_applicable !== false,
         }));
+        if(isElectronApp())localStorage.setItem('desktop-cafe-menu',JSON.stringify(items));
         set({ items, loaded: true, loadedAt: Date.now() });
       }
     } finally {

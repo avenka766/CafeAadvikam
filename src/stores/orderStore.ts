@@ -1,3 +1,5 @@
+import {mergeCafeOrders} from '@/lib/mergeCafeOrders';
+import {automaticDesktopBilling,captureDesktopBill,desktopCheckoutIdentity,finishDesktopCheckout} from '@/lib/desktopBilling';
 import { calculateCafeGst, cafeEligibleSubtotal, cafeGstColumns, CAFE_GST_COLUMNS } from '@/lib/cafeGst';
 import { create } from 'zustand';
 import { supabase } from '@/lib/supabase';
@@ -41,7 +43,7 @@ function hydrateOrdersFromCache(set: (partial: Partial<OrderState>) => void): Pr
     orderCacheHydration = (async () => {
       const cached = await getCached<Order[]>(ORDERS_CACHE_KEY);
       if (cached && cached.length > 0) {
-        set({ orders: cached });
+        set({orders:mergeCafeOrders(useOrderStore.getState().orders,cached)});
         return true;
       }
       return false;
@@ -183,7 +185,7 @@ interface OrderState {
   // refresh used for the recurring background poll instead of loadOrders,
   // which always re-fetches and replaces the entire requested window.
   refreshRecentOrders: (days: number) => Promise<void>;
-  submitOrder: (params: { tableNumber?: number; orderType: OrderType; notes?: string; customerName?: string; createdBy: string; orderSource?: OrderSource; parcelCharges?: number; paymentType?: PaymentType; paymentBreakdown?: PaymentBreakdown; billedBy?: string; status?: OrderStatus; gstEnabled?: boolean; discount?: number; discountType?: 'flat' | 'percentage'; discountValue?: number; }) => Promise<string>;
+  submitOrder: (params: { creditCustomerPhone?:string; creditDueDate?:string; tableNumber?: number; orderType: OrderType; notes?: string; customerName?: string; createdBy: string; orderSource?: OrderSource; parcelCharges?: number; paymentType?: PaymentType; paymentBreakdown?: PaymentBreakdown; billedBy?: string; status?: OrderStatus; gstEnabled?: boolean; discount?: number; discountType?: 'flat' | 'percentage'; discountValue?: number; }) => Promise<string>;
   submitAdvanceOrder: (params: { tableNumber?: number; orderType: OrderType; notes?: string; customerName?: string; createdBy: string; advanceAmount: number; advancePaidBy: string; deliveryDate: string; isFullPayment?: boolean; }) => Promise<string>;
   updateOrderStatus: (orderId: string, status: OrderStatus, cancelReason?: string) => Promise<void>;
   refundAndCancel: (orderId: string, cancelReason: string, refundedBy: string, password: string) => Promise<void>;
@@ -321,7 +323,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
 
       if (error) throw error;
       if (data) {
-        const mapped = data.map(dbRowToOrder);
+        const mapped=mergeCafeOrders(get().orders,data.map(dbRowToOrder),true);
         set({ orders: mapped, _pollFailCount: 0, _loadedDays: days });
         void setCached(ORDERS_CACHE_KEY, mapped);
       }
@@ -394,10 +396,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
         .order('created_at', { ascending: false }), 2000);
       if (error) throw error;
       if (!data) return;
-      const fresh = data.map(dbRowToOrder);
-      const freshIds = new Set(fresh.map(o => o.id));
-      const merged = [...fresh, ...get().orders.filter(o => !freshIds.has(o.id))]
-        .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      const merged=mergeCafeOrders(get().orders,data.map(dbRowToOrder));
       // Anything outside this fetch's window is left exactly as it was —
       // this is a merge, never a wholesale replace. Anything inside the
       // window is fully replaced with the fresh copy so status/payment
@@ -437,7 +436,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     const discount = Math.max(0, Math.min(subtotal, Number(params.discount ?? 0)));
     const gst = params.gstEnabled === undefined ? undefined : calculateCafeGst(subtotal, discount, parcelCharges, params.gstEnabled, cafeEligibleSubtotal(cart, useMenuStore.getState().items));
     const total = gst?.total ?? Math.round(Math.max(0, subtotal + parcelCharges - discount));
-    const orderId = generateId();
+    const orderId = automaticDesktopBilling()?desktopCheckoutIdentity('cafe-order'):generateId();
     const now = new Date().toISOString();
     const orderSource = params.orderSource || 'staff';
     const paymentType = params.paymentType || 'unpaid';
@@ -463,7 +462,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     const cartSnapshot = [...cart];
     set((state) => ({ orders: [order, ...state.orders], cart: [] }));
 
-    if (offline) {
+    if (offline && !automaticDesktopBilling()) {
       // Queue the ORIGINAL submission (not the provisional id/number) — the
       // replay handler allocates a real order number and inserts under this
       // same client-generated orderId once back online. See
@@ -488,7 +487,8 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       ...(gst ? cafeGstColumns(gst) : {}),
     };
 
-    const { data: saved, error } = await supabase.rpc('save_cafe_order_v1', { p_order: payload });
+    const desktopSaved = automaticDesktopBilling() ? await captureDesktopBill({kind:'cafe-order',family:'CAFE',key:'cafe-order:'+orderId,rpc:'save_cafe_order_v1',args:{p_order:payload},credit:paymentType==='credit'?{customerName:params.customerName||'',customerPhone:params.creditCustomerPhone||'',dueDate:params.creditDueDate}:null,receipt:{...payload,customerName:params.customerName||'',customerPhone:params.creditCustomerPhone||'',dueDate:params.creditDueDate,paymentMode:paymentType}}).catch(error=>({data:null,pending:false,error})) : null;
+    const {data:saved,error} = desktopSaved ? {data:desktopSaved.data,error:(desktopSaved as {error?:any}).error||null} : await supabase.rpc('save_cafe_order_v1', { p_order: payload });
     if (error) {
       const inflightCart = get().cart;
       const mergedCart = [...cartSnapshot];
@@ -505,7 +505,8 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       throw new Error(`Failed to submit order: ${error.message}`);
     }
 
-    set(state => ({ orders: state.orders.map(o => o.id === orderId ? { ...o, ...dbRowToOrder(saved as Record<string, unknown>), orderNumber: Number(saved.order_number) } : o) }));
+    set(state => ({ orders: state.orders.map(o => o.id === orderId ? { ...o, ...dbRowToOrder(saved as Record<string, unknown>), orderNumber: Number(saved.order_number),pendingSync:desktopSaved?.pending??false } : o) }));
+    finishDesktopCheckout('cafe-order');
     return orderId;
   },
 
@@ -524,7 +525,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     // Frontend mitigation: staff billing review before payment collection is the current guard.
     // Supabase migration validates inserted item prices/subtotal against menu_items.
     const subtotal = cart.reduce((sum, c) => sum + c.menuItem.price * c.quantity, 0);
-    const orderId = generateId();
+    const orderId = automaticDesktopBilling()?desktopCheckoutIdentity('cafe-advance'):generateId();
     const now = new Date().toISOString();
     const isFullPayment = params.isFullPayment ?? false;
     const requestedAdvance = Number(params.advanceAmount);
@@ -569,7 +570,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
 
     set((state) => ({ orders: [order, ...state.orders] }));
 
-    if (offline) {
+    if (offline && !automaticDesktopBilling()) {
       // Queue the ORIGINAL submission (not the provisional id/number) — the
       // replay handler allocates a real order number and inserts under this
       // same client-generated orderId once back online. See
@@ -602,13 +603,15 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       ...(isFullPayment ? { fully_paid_at: now, balance_payment_type: params.advancePaidBy, balance_paid_by: params.createdBy } : {}),
     };
 
-    const { data: saved, error } = await supabase.rpc('save_cafe_order_v1', { p_order: payload });
+    const desktopSaved=automaticDesktopBilling()?await captureDesktopBill({kind:'cafe-order',family:'CAFE',key:'cafe-advance:'+orderId,rpc:'save_cafe_order_v1',args:{p_order:payload},receipt:{...payload,customerName:params.customerName,paymentMode:params.advancePaidBy}}).catch(error=>({data:null,pending:false,error})):null;
+    const {data:saved,error}=desktopSaved?{data:desktopSaved.data,error:(desktopSaved as any).error}:await supabase.rpc('save_cafe_order_v1',{p_order:payload});
     if (error) {
       set((state) => ({ orders: state.orders.filter((o) => o.id !== orderId), advanceCart: cartSnapshot }));
       console.error('[submitAdvanceOrder] Supabase insert failed:', error);
       throw new Error(`Failed to submit advance order: ${error.message}`);
     }
-    set(state => ({ orders: state.orders.map(o => o.id === orderId ? { ...o, ...dbRowToOrder(saved as Record<string, unknown>), orderNumber: Number(saved.order_number) } : o) }));
+    set(state => ({ orders: state.orders.map(o => o.id === orderId ? { ...o, ...dbRowToOrder(saved as Record<string, unknown>), orderNumber: Number(saved.order_number),pendingSync:desktopSaved?.pending??false } : o) }));
+    finishDesktopCheckout('cafe-advance');
     return orderId;
   },
 
@@ -754,6 +757,11 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     } }));
     const gst = calculateCafeGst(order.subtotal, order.discount, order.parcelCharges || 0, gstEnabled, cafeEligibleSubtotal(refreshedItems));
     if (paymentType === 'part_payment') validatePaymentBreakdown(breakdown, gst.total);
+    if(automaticDesktopBilling()){
+     const saved=await captureDesktopBill({kind:'cafe-finalize',family:'CAFE',fixedNumber:String(order.orderNumber),key:'cafe-payment:'+orderId,rpc:'desktop_collect_cafe_payment',args:{p_order_id:orderId,p_payment_type:paymentType,p_payment_breakdown:breakdown||null,p_billed_by:billedBy,p_gst_enabled:gstEnabled},receipt:{...order,id:orderId,order_number:order.orderNumber,items:refreshedItems,subtotal:order.subtotal,discount:order.discount,discount_type:order.discountType,discount_value:order.discountValue,...cafeGstColumns(gst),total:gst.total,payment_type:paymentType,payment_breakdown:breakdown||null,billed_by:billedBy,order_type:order.orderType,table_number:order.tableNumber,order_source:order.orderSource,created_by:order.createdBy}});
+     set(state=>({orders:state.orders.map(o=>o.id===orderId?{...o,...gst,paymentType,billedBy,items:refreshedItems,pendingSync:saved.pending,updatedAt:saved.action.createdAt,...(breakdown?{paymentBreakdown:breakdown}:{})}:o)}));return;
+    }
+
     const prev = get().orders;
     const now = new Date().toISOString();
     const updates: Record<string, unknown> = {
@@ -796,6 +804,11 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       throw new Error('Advance amount must be greater than zero and cannot exceed the bill total.');
     }
     const balanceDue = Math.max(0, billBase - advanceAmount);
+    if(automaticDesktopBilling()){
+     const saved=await captureDesktopBill({kind:'cafe-finalize',family:'CAFE',fixedNumber:String(order.orderNumber),key:'cafe-advance-payment:'+orderId+':'+advanceAmount,rpc:'desktop_set_cafe_advance',args:{p_order_id:orderId,p_advance_amount:advanceAmount,p_advance_paid_by:advancePaidBy,p_billed_by:billedBy,p_expected_updated_at:order.updatedAt},receipt:{...order,id:orderId,order_number:order.orderNumber,items:order.items,total:order.total,payment_type:'advance',advance_amount:advanceAmount,advance_paid_by:advancePaidBy,balance_due:balanceDue,billed_by:billedBy,order_type:order.orderType,order_source:order.orderSource,created_by:order.createdBy}});
+     set(state=>({orders:state.orders.map(o=>o.id===orderId?{...o,paymentType:'advance',advanceAmount,advancePaidBy,balanceDue,billedBy,pendingSync:saved.pending,updatedAt:saved.action.createdAt}:o)}));return;
+    }
+
     const updates: Record<string, unknown> = {
       payment_type: 'advance', advance_amount: advanceAmount, advance_paid_by: advancePaidBy,
       balance_due: balanceDue, billed_by: billedBy, updated_at: now,
@@ -831,7 +844,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     }
     if (balancePaymentType === 'part_payment') validatePaymentBreakdown(breakdown, balanceAmount);
 
-    const balanceOrderId = generateId();
+    const balanceOrderId = automaticDesktopBilling()?desktopCheckoutIdentity('cafe-balance:'+orderId):generateId();
     const balanceOrderNumber = 0;
 
     const balanceOrder: Order = {
@@ -879,21 +892,21 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
         balanceOrder,
         ...state.orders.map((o) =>
           o.id === orderId
-            ? { ...o, balanceDue: 0, fullyPaidAt: now, balancePaymentType, balancePaidBy: billedBy, balanceOrderId, updatedAt: now }
+            ? { ...o, balanceDue: 0, fullyPaidAt: now, balancePaymentType, balancePaidBy: billedBy, balanceOrderId, updatedAt: now, ...(automaticDesktopBilling()?{pendingSync:true}:{}) }
             : o,
         ),
       ],
     }));
 
-    const { data: saved, error } = await supabase.rpc('save_cafe_order_v1', {
-      p_order: balancePayload, p_parent_id: orderId, p_parent_updated_at: order.updatedAt,
-    });
+    const args={p_order:balancePayload,p_parent_id:orderId,p_parent_updated_at:order.updatedAt};
+    const desktopSaved=automaticDesktopBilling()?await captureDesktopBill({kind:'cafe-order',family:'CAFE',key:'cafe-balance:'+balanceOrderId,rpc:'save_cafe_order_v1',args,receipt:{...balancePayload,customerName:order.customerName,paymentMode:balancePaymentType}}).catch(error=>({data:null,pending:false,error})):null;
+    const {data:saved,error}=desktopSaved?{data:desktopSaved.data,error:(desktopSaved as any).error}:await supabase.rpc('save_cafe_order_v1',args);
     if (error) {
       set({ orders: prev });
       throw new Error(`Failed to record balance payment: ${error.message}`);
     }
-    set(state => ({ orders: state.orders.map(o => o.id === balanceOrderId ? { ...o, ...dbRowToOrder(saved as Record<string, unknown>), orderNumber: Number(saved.order_number) } : o) }));
-
+    set(state => ({ orders: state.orders.map(o => o.id === balanceOrderId ? { ...o, ...dbRowToOrder(saved as Record<string, unknown>), orderNumber: Number(saved.order_number),pendingSync:desktopSaved?.pending??false } : o) }));
+    finishDesktopCheckout('cafe-balance:'+orderId);
   },
 
   startPolling: (days = 60) => {
@@ -940,13 +953,9 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
             pendingOrderEvents = new Map();
             orderFlushTimer = null;
             set((current) => {
-              let next = current.orders;
-              const ids = new Set(events.keys());
-              next = next.filter((order) => !ids.has(order.id));
-              for (const ev of events.values()) {
-                if (ev.type === 'upsert' && ev.order) next = [ev.order, ...next];
-              }
-              return { orders: next.sort((a, b) => b.createdAt.localeCompare(a.createdAt)) };
+              const deleted=new Set([...events].filter(([,event])=>event.type==='delete').map(([id])=>id));
+              const incoming=[...events.values()].flatMap(event=>event.type==='upsert'&&event.order?[event.order]:[]);
+              return {orders:mergeCafeOrders(current.orders,incoming,false,deleted)};
             });
           }, ORDER_EVENT_FLUSH_MS);
         })
@@ -1082,3 +1091,5 @@ registerReplayHandler('cafe_advance_order_submit', async (_kind, payload) => {
   return { ok: true };
 });
 
+
+export const hydrateCachedCafeOrders=()=>hydrateOrdersFromCache(useOrderStore.setState);
