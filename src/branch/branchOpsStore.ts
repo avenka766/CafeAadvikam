@@ -1,3 +1,4 @@
+import {isElectronApp} from '@/lib/platform';
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { PersistStorage, StorageValue } from "zustand/middleware";
@@ -2228,6 +2229,8 @@ export const useBranchOpsStore = create<BranchOpsState>()(
           };
         }),
       refreshSalespeople: async (branch) => {
+        const cacheKey='desktop-salespeople:'+branch;
+        if(isElectronApp()){try{const cached=JSON.parse(localStorage.getItem(cacheKey)||'[]') as SalespersonProfile[];if(cached.length)set(s=>({salespeople:[...s.salespeople.filter(p=>p.branch!==branch),...cached]}));}catch{/* Keep the current roster if a local cache is unavailable. */}}
         try {
           // BUG FIX: now selects `status` and excludes rows mirrored as
           // "Deleted" — previously this only selected record_id/payload, so
@@ -2255,6 +2258,7 @@ export const useBranchOpsStore = create<BranchOpsState>()(
             .filter((row) => row.status !== "Deleted")
             .map((row) => row.payload as SalespersonProfile)
             .filter((p) => p?.id && p?.name);
+          if(isElectronApp())localStorage.setItem(cacheKey,JSON.stringify(fetched));
           set((s) => {
             const byId = new Map(fetched.map((p) => [p.id, p]));
             // Merge rather than replace: keep any other-branch entries and any

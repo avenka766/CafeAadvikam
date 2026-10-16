@@ -5,7 +5,7 @@ import { BRANCH_LABELS } from './types';
 import type { BranchBillRecord } from './branchOpsStore';
 import { supabase } from '@/lib/supabase';
 import { printViaIframe } from '@/lib/printViaIframe';
-import { desktopSilentPrint } from '@/lib/platform';
+import { desktopSilentPrint,isElectronApp } from '@/lib/platform';
 
 export const BRANCH_PRINT_COMPLETE_EVENT = 'cafe-aadvikam:branch-print-complete';
 
@@ -770,6 +770,7 @@ export function printCounterCloseSlip(input: {
 }
 
 export async function printCounterBill(bill: BranchBillRecord, duplicate = false) {
+  if(isElectronApp()&&bill.paymentMode==='wallet'){const {archiveDesktopConfirmedBill}=await import('@/lib/desktopBilling');await archiveDesktopConfirmedBill(bill.branch as 'SNB'|'VRSNB',bill.billNo,bill);}
   // Allocate the controlled copy first, then print through an off-screen iframe.
   // This avoids opening or leaving a visible "Preparing print" browser page.
   //
@@ -783,6 +784,7 @@ export async function printCounterBill(bill: BranchBillRecord, duplicate = false
   // "Print duplicate" button = duplicate) rather than leaving the till stuck.
   let isDuplicate = duplicate;
   try {
+    if(!(isElectronApp()&&bill.pendingSync)){
     const allocation = await Promise.race([
       supabase.rpc('allocate_document_print', {
         p_document_type: 'branch_bill',
@@ -797,6 +799,7 @@ export async function printCounterBill(bill: BranchBillRecord, duplicate = false
     if (error || !data) throw new Error(error?.message || 'Unable to allocate controlled print copy.');
     const row = Array.isArray(data) ? data[0] : data;
     isDuplicate = String((row as { copy_type?: string }).copy_type) === 'duplicate';
+    }
   } catch (allocationError) {
     console.error('[printCounterBill] allocate_document_print unavailable, printing with requested copy type:', allocationError);
   }
