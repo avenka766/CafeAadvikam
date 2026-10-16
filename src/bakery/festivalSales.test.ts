@@ -32,3 +32,11 @@ it('requires a custom item name and prevents duplicate names from silently mergi
   custom.name='Festival gift box';expect(festivalSaleCart(rows).error).toBe('');expect(festivalSaleCart(rows).lines[0].unit).toBe('pcs');
   custom.name='spl sweet mix 1kg';rows[0].quantity='1';rows[0].price='500';expect(festivalSaleCart(rows).error).toContain('already');
 });
+
+it('allows decimal kilograms for custom items while keeping festival packs and pieces whole',()=>{
+ const rows=createFestivalSaleDrafts();const custom=rows[12];custom.name='Cashew sweets';custom.unit='kg';custom.quantity='1.25';custom.price='800';
+ expect(festivalSaleCart(rows)).toEqual({lines:[{itemName:'Cashew sweets',unit:'kg',quantity:1.25,price:800}],error:''});
+ custom.unit='pcs';expect(festivalSaleCart(rows).error).toContain('whole quantity');
+ custom.unit='kg';for(const qty of ['0','-1','NaN','Infinity','0.0001']){custom.quantity=qty;expect(festivalSaleCart(rows).error).toContain('quantity');}
+ custom.quantity='0.125';expect(festivalSaleCart(rows).error).toBe('');rows[0].unit='kg';rows[0].quantity='1.5';rows[0].price='500';expect(festivalSaleCart(rows).error).toContain('whole quantity');
+});

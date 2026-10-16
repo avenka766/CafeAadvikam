@@ -7153,7 +7153,7 @@ function BillingTab() {
         {desktopState?.receipts.filter(r=>r.sync?.state!=='synced').map(r=><div key={r.id} className="flex flex-wrap items-center justify-between gap-2 border-t border-teal-200 pt-2"><span><b>{r.billNo}</b> · {invoiceMoney(r.total)} · Pending sync {r.sync?.error&&`· ${r.sync.error}`}</span><button onClick={()=>void printWalkinBill(r)} className="rounded border bg-white px-2 py-1">Reprint saved bill</button></div>)}
       </section>}
       <div className="flex items-center justify-between gap-4 rounded-2xl border border-amber-200 bg-amber-50 p-4">
-        <div><label htmlFor="festival-sales-mode" className="text-sm font-black text-amber-950">Festival Sales</label><p className="text-xs text-amber-800">Festival packs and custom items · pcs only. Normal and festival draft carts stay separate.</p></div>
+        <div><label htmlFor="festival-sales-mode" className="text-sm font-black text-amber-950">Festival Sales</label><p className="text-xs text-amber-800">Festival packs · pcs. Custom items · pcs or kg. Normal and festival draft carts stay separate.</p></div>
         <Switch id="festival-sales-mode" checked={festivalSales} disabled={saving} onCheckedChange={value => { setFestivalSales(value); setError(''); }} />
       </div>
 
@@ -7235,7 +7235,7 @@ function BillingTab() {
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-xs font-black text-foreground">{line.itemName}</p>
                     <div className="flex items-center gap-1 text-[11px] font-bold text-muted-foreground">
-                      {festivalSales ? <><input aria-label={`Cart quantity for ${line.itemName}`} type="number" min="1" step="1" value={festivalDrafts.find(row => (row.name.trim() || 'Custom item') === line.itemName)?.quantity ?? ''} onChange={event => setFestivalDrafts(rows => rows.map(row => (row.name.trim() || 'Custom item') === line.itemName ? { ...row, quantity: event.target.value } : row))} placeholder="Qty" className="h-6 w-14 rounded border border-border bg-background px-1 text-right" /><span>pcs ×</span></> : <span>{line.quantity} {line.unit} ×</span>}
+                      {festivalSales ? <><input aria-label={`Cart quantity for ${line.itemName}`} onWheel={event => event.currentTarget.blur()} type="number" min={line.unit === 'kg' ? "0.001" : "1"} step={line.unit === 'kg' ? "0.001" : "1"} value={festivalDrafts.find(row => (row.name.trim() || 'Custom item') === line.itemName)?.quantity ?? ''} onChange={event => setFestivalDrafts(rows => rows.map(row => (row.name.trim() || 'Custom item') === line.itemName ? { ...row, quantity: event.target.value } : row))} placeholder="Qty" className="h-6 w-14 rounded border border-border bg-background px-1 text-right" /><span>{line.unit} ×</span></> : <span>{line.quantity} {line.unit} ×</span>}
                       {/* FEATURE (2026-08-29): editable per-line price - see
                           setCartLinePrice above. Covers "unable to change the
                           price of items in the sales tab" for both catalog
@@ -7244,6 +7244,7 @@ function BillingTab() {
                       <input
                         type="number" min="0" step="0.01" value={festivalSales ? festivalDrafts.find(row => (row.name.trim() || 'Custom item') === line.itemName)?.price ?? '' : line.price}
                         aria-label={`Cart price for ${line.itemName}`}
+                        onWheel={event => event.currentTarget.blur()}
                         onChange={e => setCartLinePrice(line.itemName, e.target.value)}
                         className="h-6 w-16 rounded border border-border bg-background px-1 text-right text-[11px] font-black text-foreground"
                       />
