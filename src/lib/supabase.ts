@@ -1,3 +1,4 @@
+import {reportConnection} from '@/lib/connectionStatus';
 import { createClient } from '@supabase/supabase-js';
 import { getAppSessionToken } from '@/lib/appSession';
 
@@ -46,6 +47,7 @@ const sessionAwareFetch: typeof fetch = async (input, init: RequestInit = {}) =>
   }
   try {
     const response = await fetch(input, { ...init, headers });
+    reportConnection(true);
     if (typeof window !== 'undefined') {
       if (!response.ok && !isDiagnosticRequest) {
         // Peek at the body (without consuming it for the real caller) to see if this
@@ -127,7 +129,8 @@ const sessionAwareFetch: typeof fetch = async (input, init: RequestInit = {}) =>
     }
     return response;
   } catch (error) {
-    if (typeof window !== 'undefined' && !isDiagnosticRequest) window.dispatchEvent(new CustomEvent('cafe:data-error', { detail: { message: error instanceof Error ? error.message : 'Network request failed', module: 'Network', at: Date.now() } }));
+    // A transport failure activates the offline notice; financial/API errors above remain explicit.
+    if(!(error instanceof Error && error.name==='AbortError'))reportConnection(false);
     throw error;
   }
 };

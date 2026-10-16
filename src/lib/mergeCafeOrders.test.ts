@@ -1,0 +1,11 @@
+import {expect,it} from 'vitest';
+import {mergeCafeOrders} from './mergeCafeOrders';
+import type {Order} from '@/types';
+const order=(patch:Partial<Order>={})=>({id:'one',orderNumber:1,total:105,paymentType:'cash',createdAt:'2026-10-16T10:00:00Z',updatedAt:'2026-10-16T10:02:00Z',...patch} as Order);
+it('preserves a pending local payment through realtime, replace and merge refreshes',()=>{const local=order({pendingSync:true});const stale=order({paymentType:'unpaid',updatedAt:'2026-10-16T10:01:00Z'});for(const replace of [false,true])expect(mergeCafeOrders([local],[stale],replace)).toEqual([local]);});
+it('does not duplicate a provisional cafe ID when the server uses another ID for the same number',()=>{const local=order({id:'local',pendingSync:true});expect(mergeCafeOrders([local],[order({id:'server'})])).toEqual([local]);});
+it('does not let a delayed older event reverse a confirmed payment',()=>{const paid=order();expect(mergeCafeOrders([paid],[order({paymentType:'unpaid',updatedAt:'2026-10-16T10:00:00Z'})])).toEqual([paid]);});
+it('accepts a newer server correction after local synchronization',()=>{const newer=order({total:110,updatedAt:'2026-10-16T10:03:00Z'});expect(mergeCafeOrders([order()],[newer])).toEqual([newer]);});
+it('keeps pending receipts when deleted remotely and still removes synchronized deletions',()=>{const pending=order({pendingSync:true});const deleted=new Set(['one']);expect(mergeCafeOrders([pending],[],false,deleted)).toEqual([pending]);expect(mergeCafeOrders([order()],[],false,deleted)).toEqual([]);});
+it('retains pending orders outside a report refresh without retaining unrelated old server rows',()=>{const pending=order({pendingSync:true});const old=order({id:'old',orderNumber:2});expect(mergeCafeOrders([pending,old],[],true)).toEqual([pending]);});
+it('does not collapse unrelated drafts with no issued bill number',()=>{expect(mergeCafeOrders([order({id:'a',orderNumber:0})],[order({id:'b',orderNumber:0})])).toHaveLength(2);});

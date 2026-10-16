@@ -35,6 +35,7 @@ declare global {
   interface Window {
     cafeAadvikamDesktop?: {
       isElectron: boolean;
+      sales?: (operation: string, payload?: unknown) => Promise<unknown>;
       // FEATURE (2026-09-30): see desktopSilentPrint() below.
       silentPrint?: (html: string) => Promise<{ success: boolean; errorType?: string | null }>;
     };
