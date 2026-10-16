@@ -1,4 +1,5 @@
-import { calculateCafeGst, cafeEligibleSubtotal, savedCafeGst, CAFE_GST_COLUMNS } from '@/lib/cafeGst';
+import {automaticDesktopBilling,captureDesktopBill,archiveDesktopConfirmedBill,desktopCheckoutIdentity,finishDesktopCheckout} from '@/lib/desktopBilling';
+import { calculateCafeGst, cafeEligibleSubtotal, savedCafeGst, cafeGstColumns, CAFE_GST_COLUMNS } from '@/lib/cafeGst';
 import { CafeGstControl } from '@/components/features/CafeGstControl';
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { useOrderStore, dbRowToOrder } from '@/stores/orderStore';
@@ -120,6 +121,8 @@ function useCafeCounterOpened() {
           .eq('record_no', today),
       ]);
       if (!alive) return;
+      const cachedKey='desktop-cafe-counter:'+today;
+      if(closureError||opError){const cached=automaticDesktopBilling()?localStorage.getItem(cachedKey):null;if(cached)setRemoteCounter(JSON.parse(cached));return;}
       const formalRows = !closureError && Array.isArray(closureRows) ? closureRows : [];
       const latestRow = [...formalRows].sort(
         (a, b) => new Date(b.created_at as string).getTime() - new Date(a.created_at as string).getTime(),
@@ -136,6 +139,7 @@ function useCafeCounterOpened() {
         latestStatus === 'draft' ||
         (!closed && latestOpeningStatus === 'opened');
       setRemoteCounter({ opened, closed, loaded: true });
+      if(automaticDesktopBilling())localStorage.setItem(cachedKey,JSON.stringify({opened,closed,loaded:true}));
     };
     void checkCounterOpening();
     return () => {
@@ -532,7 +536,7 @@ function moneyHtml(value: number): string {
 // slip) gets a clearly-marked provisional label instead — never the
 // placeholder number formatted to look real.
 function billNo(order: Order, prefix = ''): string {
-  if (order.pendingSync) return `OFFLINE-${order.id.slice(0, 8).toUpperCase()}`;
+  if (order.pendingSync && !order.orderNumber) return `OFFLINE-${order.id.slice(0, 8).toUpperCase()}`;
   return `${prefix}${String(order.orderNumber).padStart(4, '0')}`;
 }
 
@@ -705,7 +709,8 @@ function billBody(order: Order, copyType: 'original' | 'duplicate' = 'original',
   `;
 }
 
-function printPaidBill(order: Order, copyType: 'original' | 'duplicate' = 'original', cashTendered?: number) {
+export async function printPaidBill(order: Order, copyType: 'original' | 'duplicate' = 'original', cashTendered?: number) {
+  if(automaticDesktopBilling()&&Number(order.walletAmount||0)>0)await archiveDesktopConfirmedBill('CAFE',String(order.orderNumber),order);
   return printCounterSlip(`Bill ${order.orderNumber}`, billBody(order, copyType, cashTendered));
 }
 
@@ -724,7 +729,7 @@ async function printKotThenBill(order: Order, copyType: 'original' | 'duplicate'
   await printPaidBill(order, copyType, cashTendered);
 }
 
-function printAdvanceSalesSlip(order: Order, mobile: string, orderDate: string, billPerson: string) {
+export function printAdvanceSalesSlip(order: Order, mobile: string, orderDate: string, billPerson: string) {
   const advance = order.advanceAmount ?? 0;
   const fullAmount = order.fullAmount ?? order.subtotal;
   const balance = order.balanceDue ?? Math.max(0, fullAmount - advance);
@@ -776,7 +781,8 @@ function printAdvanceClosureBill(order: Order, balancePaymentType: string, balan
   `);
 }
 
-function printCreditBill(order: Order, phone: string, dueDate: string) {
+export async function printCreditBill(order: Order, phone: string, dueDate: string) {
+  if(automaticDesktopBilling()&&Number(order.walletAmount||0)>0)await archiveDesktopConfirmedBill('CAFE',String(order.orderNumber),{...order,customerPhone:phone,dueDate});
   const dt = receiptDate(order.createdAt);
   printCounterSlip(`Credit Bill ${order.orderNumber}`, `
     ${cafeHeader('CREDIT', 'CREDIT BILL')}
@@ -1833,7 +1839,7 @@ function NewBillPanel() {
   const [walletAuthorizationSecret, setWalletAuthorizationSecret] = useState('');
   const [promotionEvaluation, setPromotionEvaluation] = useState<PromotionEvaluation>(EMPTY_CAFE_PROMOTION);
   const [couponCode, setCouponCode] = useState('');
-  const checkoutIdempotencyRef = useRef<string | null>(null);
+  const checkoutIdempotencyRef = useRef<string | null>(automaticDesktopBilling()?desktopCheckoutIdentity('cafe-promotional'):null);
   const [creditCustomerPhone, setCreditCustomerPhone] = useState('');
   const [creditDueDate, setCreditDueDate] = useState('');
   const [creditError, setCreditError] = useState('');
@@ -2791,6 +2797,7 @@ function NewBillPanel() {
         const billedBy = currentUser.displayName || currentUser.username;
         const orderId = runningOrder.id;
 
+        let desktopPendingItems:Order['items']=[];
         // Anything still sitting in the cart gets sent to the kitchen as one
         // last KOT automatically, so nothing is ever billed without a KOT.
         if (!allEmpty) {
@@ -2801,7 +2808,8 @@ function NewBillPanel() {
               quantity: ci.qty,
             })),
           ];
-          const { error: kotError } = await supabase.rpc('add_items_to_table_order_v1', {
+          if(automaticDesktopBilling()&&paymentMode!=='wallet')desktopPendingItems=pendingItems as Order['items'];
+          const { error: kotError } = automaticDesktopBilling()&&paymentMode!=='wallet'?{error:null}:await supabase.rpc('add_items_to_table_order_v1', {
             p_order_id: orderId,
             p_items: pendingItems,
             p_created_by: billedBy,
@@ -2817,7 +2825,7 @@ function NewBillPanel() {
 
         if (paymentMode === 'wallet') {
           if (!selectedWallet) throw new Error('Select a wallet customer.');
-          const idempotencyKey = checkoutIdempotencyRef.current
+          const idempotencyKey = checkoutIdempotencyRef.current ?? (automaticDesktopBilling()?desktopCheckoutIdentity('cafe-promotional'):null)
             ?? `cafe-table-wallet:${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`}`;
           checkoutIdempotencyRef.current = idempotencyKey;
           const { data, error } = await supabase.rpc('finalize_table_bill_wallet_v2', {
@@ -2880,7 +2888,7 @@ function NewBillPanel() {
             walletBalanceRemaining: Number(result.walletBalanceRemaining || 0) };
           setLastBill(settled);
           printPaidBill(settled, 'original');
-          checkoutIdempotencyRef.current = null;
+          checkoutIdempotencyRef.current = null; finishDesktopCheckout('cafe-promotional');
           setSelectedWallet(null); setWalletAmount(0); setWalletOtherMode(null); setWalletAuthorizationSecret(''); setCouponCode('');
           await loadOrders(60);
           setRunningOrder(null);
@@ -2901,7 +2909,7 @@ function NewBillPanel() {
 
         const finalPaymentType: PaymentType = paymentMode === 'credit' ? 'credit' : billMethod;
         const finalBreakdown = billMethod === 'part_payment' && paymentMode !== 'credit' ? splitBreakdown : null;
-        const { data, error } = await supabase.rpc('finalize_table_bill_v2', {
+        const finalizeArgs = {
           p_coupon_code: couponCode || null,
           p_selected_campaign_ids: promotionEvaluation.applied.map((item) => item.campaignId),
           p_gst_enabled: gstEnabled,
@@ -2912,11 +2920,19 @@ function NewBillPanel() {
           p_customer_name: customerName.trim() || null,
           p_discount_type: manualDiscountAmount > 0 ? manualDiscountType : null,
           p_discount_value: manualDiscountAmount > 0 ? manualDiscountInput : 0,
-        });
+        };
+        const localTableItems=[...runningOrder.items,...desktopPendingItems];
+        const localTableSubtotal=localTableItems.reduce((sum,i)=>sum+i.menuItem.price*i.quantity,0);
+        const localTableGst=calculateCafeGst(localTableSubtotal,combinedDiscount,runningOrder.parcelCharges||0,gstEnabled,cafeEligibleSubtotal(localTableItems,items));
+        const desktopFinalized=automaticDesktopBilling()?await captureDesktopBill({kind:'cafe-finalize',family:'CAFE',fixedNumber:String(runningOrder.orderNumber),key:'cafe-finalize:'+orderId,rpc:'finalize_table_bill_v2',args:finalizeArgs,
+          preKot:desktopPendingItems,credit:paymentMode==='credit'?{customerName:customerName.trim(),customerPhone:creditCustomerPhone.trim(),dueDate:creditDueDate}:null,
+          receipt:{id:orderId,created_at:runningOrder.createdAt,order_number:runningOrder.orderNumber,items:localTableItems,subtotal:localTableSubtotal,discount:combinedDiscount,discount_type:manualDiscountType,discount_value:manualDiscountInput,...cafeGstColumns(localTableGst),total:localTableGst.total,status:'served',payment_type:finalPaymentType,payment_breakdown:finalBreakdown,billed_by:billedBy,customer_name:customerName.trim()||null,customerName:customerName.trim(),customerPhone:creditCustomerPhone.trim(),dueDate:creditDueDate,order_type:'dine_in',table_number:tableNumber,order_source:'staff',created_by:runningOrder.createdBy}}):null;
+        const {data,error}=desktopFinalized?{data:desktopFinalized.data,error:null}:await supabase.rpc('finalize_table_bill_v2',finalizeArgs);
         if (error) throw new Error(error.message);
-        const finalized = dbRowToOrder(data as Record<string, unknown>);
+        const finalized = {...dbRowToOrder(data as Record<string, unknown>),pendingSync:desktopFinalized?.pending??false};
+        if(desktopFinalized)useOrderStore.setState(state=>({orders:state.orders.map(o=>o.id===finalized.id?finalized:o)}));
 
-        if (paymentMode === 'credit') {
+        if (paymentMode === 'credit' && !automaticDesktopBilling()) {
           const { recordCreditSale } = useBranchStore.getState();
           const creditItems = finalized.items.map((c) => ({
             itemName: c.menuItem.name, quantity: c.quantity, sellUnit: 'pcs' as const,
@@ -3010,6 +3026,7 @@ function NewBillPanel() {
           parcelCharges: parcelCharges > 0 ? parcelCharges : undefined,
           gstEnabled,
           paymentType: 'credit',
+          creditCustomerPhone:creditCustomerPhone.trim(),creditDueDate,
           billedBy: currentUser.displayName || currentUser.username,
           status: 'served',
           discount: manualDiscountAmount,
@@ -3036,7 +3053,7 @@ function NewBillPanel() {
         // real committed row (already fetched above) — use its total instead.
         if (savedOrder) setLastBill(savedOrder);
         const creditTotal = savedOrder ? savedOrder.total : total;
-        const err = await recordCreditSale(branch, {
+        const err = automaticDesktopBilling()?null:await recordCreditSale(branch, {
           billNo,
           branch,
           customerName: customerName.trim(),
@@ -3146,7 +3163,7 @@ function NewBillPanel() {
       if (selectedWallet.highValueAuthorizationLimit != null && selectedWallet.highValueAuthorizationLimit > 0 && walletAmount >= selectedWallet.highValueAuthorizationLimit && !walletAuthorizationSecret.trim()) { setSubmitError('Admin or Owner authorization is required for this high-value wallet payment.'); return; }
       setSubmitting(true);
       setSubmitError('');
-      const idempotencyKey = checkoutIdempotencyRef.current
+      const idempotencyKey = checkoutIdempotencyRef.current ?? (automaticDesktopBilling()?desktopCheckoutIdentity('cafe-promotional'):null)
         ?? `cafe-wallet:${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`}`;
       checkoutIdempotencyRef.current = idempotencyKey;
       try {
@@ -3254,7 +3271,7 @@ function NewBillPanel() {
         };
         setLastBill(printable);
         printKotThenBill({ ...printable, walletBalanceRemaining: Number(result.walletBalanceRemaining || printable.walletBalanceRemaining || 0) }, 'original');
-        checkoutIdempotencyRef.current = null;
+        checkoutIdempotencyRef.current = null; finishDesktopCheckout('cafe-promotional');
         clearCart();
         setParcelCount(0);
         closeActiveTakeawayTicket();
@@ -3297,12 +3314,12 @@ function NewBillPanel() {
     }
     setSubmitting(true);
     setSubmitError('');
-    const idempotencyKey = checkoutIdempotencyRef.current
+    const idempotencyKey = checkoutIdempotencyRef.current ?? (automaticDesktopBilling()?desktopCheckoutIdentity('cafe-promotional'):null)
       ?? `cafe-promotion:${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`}`;
     checkoutIdempotencyRef.current = idempotencyKey;
     try {
       const billedBy = currentUser.displayName || currentUser.username;
-      const { data, error } = await supabase.rpc('complete_cafe_promotional_checkout_v2', {
+      const checkoutArgs = {
           p_gst_enabled: gstEnabled,
         p_items: checkoutItems,
         p_table_number: orderType === 'dine_in' ? tableNumber : null,
@@ -3318,11 +3335,13 @@ function NewBillPanel() {
         p_selected_campaign_ids: promotionEvaluation.applied.map((item) => item.campaignId),
         p_discount_type: manualDiscountAmount > 0 ? manualDiscountType : null,
         p_discount_value: manualDiscountAmount > 0 ? manualDiscountInput : 0,
-      });
+      };
+      const desktopCheckout=automaticDesktopBilling()?await captureDesktopBill({kind:'cafe-order',family:'CAFE',key:idempotencyKey,rpc:'complete_cafe_promotional_checkout_v2',args:checkoutArgs,receipt:{items:checkoutItems,subtotal:itemsSubtotal,discount:combinedDiscount,...gst,customerName:customerName||'',paymentMode:billMethod,parcelCharges,paymentBreakdown,orderType,tableNumber:orderType==='dine_in'?tableNumber:null,promotionDiscount:promotionEvaluation.discount}}):null;
+      const {data,error}=desktopCheckout?{data:desktopCheckout.data,error:null}:await supabase.rpc('complete_cafe_promotional_checkout_v2',checkoutArgs);
       if (error) throw new Error(error.message);
       const result = data as Partial<Order> & { orderId: string; orderNumber: number; subtotal: number; discount: number; promotionDiscount?: number; total: number; cashback?: number; promotionIds?: string[]; items: Order['items'] };
       if (!result?.orderId || !result.orderNumber) throw new Error('Checkout completed without an order number.');
-      await loadOrders(60);
+      if(!desktopCheckout)await loadOrders(60);
       const loaded = useOrderStore.getState().orders.find((order) => order.id === result.orderId);
       const printable: Order = loaded?.gstRate != null ? loaded : {
         id: result.orderId,
@@ -3351,9 +3370,11 @@ function NewBillPanel() {
         promotionIds: result.promotionIds || [],
         walletCashback: Number(result.cashback || 0),
       };
+      if(desktopCheckout?.pending)printable.pendingSync=true;
+      if(automaticDesktopBilling())useOrderStore.setState(state=>({orders:state.orders.some(o=>o.id===printable.id)?state.orders.map(o=>o.id===printable.id?printable:o):[printable,...state.orders]}));
       setLastBill(printable);
       printKotThenBill(printable, 'original', billMethod === 'cash' ? Number(cashTendered || 0) || undefined : undefined);
-      checkoutIdempotencyRef.current = null;
+      checkoutIdempotencyRef.current = null; finishDesktopCheckout('cafe-promotional');
       clearCart();
       setParcelCount(0);
       closeActiveTakeawayTicket();
