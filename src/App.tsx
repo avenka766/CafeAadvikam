@@ -38,6 +38,7 @@ const SalesReport = lazy(() => import('@/pages/SalesReport'));
 const AdminDashboard = lazy(() => import('@/pages/AdminDashboard'));
 const StaffManagement = lazy(() => import('@/pages/StaffManagement'));
 const QRMenuPage = lazy(() => import('@/pages/QRMenuPage'));
+const OurCraftPage = lazy(() => import('@/pages/OurCraftPage'));
 const BakeryOrderPage = lazy(() => import('@/pages/BakeryOrderPage'));
 const QROrderPage = lazy(() => import('@/pages/QROrderPage'));
 const KitchenDashboard = lazy(() => import('@/pages/KitchenDashboard'));
@@ -157,7 +158,7 @@ function OfflineQueueBootstrap() {
 function AppRoutes() {
   const location = useLocation();
   const isLandingRoute = location.pathname === '/';
-  const publicRoutes = ['/', '/login', '/menu', '/digital-menu', '/order', '/order/track', '/cafe-order', '/cafe-order/track'];
+  const publicRoutes = ['/', '/login', '/menu', '/digital-menu', '/our-craft', '/order', '/order/track', '/cafe-order', '/cafe-order/track'];
   const isPublicRoute = publicRoutes.includes(location.pathname);
   const { currentUser } = useAuthStore();
   const native = isNativeApp();
@@ -321,6 +322,7 @@ function AppRoutes() {
         <Route path="/login"        element={<Login />} />
         <Route path="/menu"         element={<MenuPage />} />
         <Route path="/digital-menu" element={<DigitalMenu />} />
+        <Route path="/our-craft" element={<OurCraftPage />} />
         <Route path="/order"             element={<BakeryOrderPage />} />
         <Route path="/order/track"       element={<OrderTrackingPage />} />
         <Route path="/cafe-order"        element={<QROrderPage />} />
@@ -382,7 +384,7 @@ function AppRoutes() {
 
   return (
     <>
-      {useWorkspaceChrome && !isLandingRoute && location.pathname !== '/order' && <Header />}
+      {useWorkspaceChrome && !isLandingRoute && location.pathname !== '/order' && location.pathname !== '/our-craft' && <Header />}
       {useWorkspaceChrome && currentUser && !isPublicRoute ? (
         <WorkspaceChrome>{routes}</WorkspaceChrome>
       ) : routes}
