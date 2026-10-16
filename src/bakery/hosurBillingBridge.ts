@@ -1,3 +1,4 @@
+import {automaticDesktopBilling,billingSnapshot,desktopCheckoutIdentity,finishDesktopCheckout} from '@/lib/desktopBilling';
 import { hosurInvoiceLedgerLines } from './hosurGstLedger';
 import type { DispatchInvoiceItem } from './dispatchInvoice';
 import type { GstPartyDetails } from './gstTaxInvoice';
@@ -546,7 +547,7 @@ export async function dispatchReceiveAndBill(params: {
 // reconciled live, which is meaningless without a connection anyway).
 export interface HosurDispatchAndBillPayload {
   order: HosurOrderForBilling;
-  billItems: { id: string; itemName: string; unit: 'pcs' | 'kg'; quantity: number; unitPrice: number; receivedQuantity: number }[];
+  billItems: { knownReceivedQuantity?:number; id: string; itemName: string; unit: 'pcs' | 'kg'; quantity: number; unitPrice: number; receivedQuantity: number }[];
   charges: HosurBillCharge[];
   // Full payment capture (full/partial/credit) — NOT hardcoded to credit:
   // this function backs BOTH the normal online call (every payment type) and
@@ -565,7 +566,16 @@ export interface HosurDispatchAndBillPayload {
 }
 
 export async function runHosurDispatchAndBillCore(payload: HosurDispatchAndBillPayload): Promise<{ billNo: string; whatsappStatus: 'sent' | 'failed'; whatsappError: string | null }> {
-  const { order, billItems, charges, gst } = payload;
+  const { order, charges, gst } = payload;
+  let billItems=payload.billItems;
+  if(automaticDesktopBilling()){
+    if(payload.payment.paymentType!=='credit' && !(await getPackingCounterStatus()).isOpen)throw Error('Open the Planner counter before collecting payment.');
+    // The form's received quantity is cumulative. Invoice only the unbilled increment.
+    const state=await billingSnapshot();
+    const prior=state.actions.filter(a=>a.hosurBilling?.orderId===order.id && a.sync?.state!=='rejected');
+    billItems=payload.billItems.map(i=>{const known=Math.max(i.knownReceivedQuantity||0,...prior.flatMap(a=>(a.hosurBilling?.targets||[]).filter((t:any)=>t.id===i.id).map((t:any)=>t.target)));return {...i,knownReceivedQuantity:known,receivedQuantity:Math.max(0,Math.round((i.receivedQuantity-known)*1000)/1000)};}).filter(i=>i.receivedQuantity>0);
+    if(!billItems.length)throw Error('This quantity has already been billed. Refresh before sending a new batch.');
+  }
 
   const invoiceItems: DispatchInvoiceItem[] = [
     ...billItems.map(i => ({
@@ -587,7 +597,9 @@ export async function runHosurDispatchAndBillCore(payload: HosurDispatchAndBillP
     discountPct: 0,
     isGstInvoice: gst?.on ?? false,
     gstSupplyType: gst?.supplyType ?? 'intra',
+    ...(automaticDesktopBilling()?{desktopKey:'hosur:'+order.id+':'+JSON.stringify(payload.billItems.map(i=>[i.id,i.receivedQuantity])),desktopHosurBilling:{orderId:order.id,shopId:order.shopId,payment:payload.payment,targets:billItems.map(i=>({id:i.id,base:i.knownReceivedQuantity||0,target:(i.knownReceivedQuantity||0)+i.receivedQuantity})),appliedLeftovers:payload.appliedLeftovers}}:{}),
   });
+  if(automaticDesktopBilling())return {billNo:invoiceRecord.invoiceNo,whatsappStatus:'failed',whatsappError:'Bill saved on this computer. Check synchronization status before sending WhatsApp.'};
   const mintedInvoiceNo = invoiceRecord.invoiceNo;
   const mintedInvoiceId = invoiceRecord.id;
 
@@ -688,6 +700,14 @@ export interface HosurLeftoverDispatchPayload {
 
 export async function runHosurLeftoverDispatchCore(payload: HosurLeftoverDispatchPayload): Promise<{ billNo: string; whatsappStatus: 'sent' | 'failed'; whatsappError: string | null; orderNumber: string }> {
   const { shop, qty, price } = payload;
+  if(automaticDesktopBilling()){
+   if(!Number.isFinite(qty)||qty<=0||!Number.isFinite(price)||price<0||(payload.unit==='pcs'&&!Number.isInteger(qty)))throw Error('Enter a valid quantity and price.');
+   if(payload.payment.paymentType!=='credit'&&!(await getPackingCounterStatus()).isOpen)throw Error('Open the Planner counter before collecting payment.');
+   const scope='hosur-leftover:'+payload.leftoverRowId;const id=desktopCheckoutIdentity(scope);const itemId=desktopCheckoutIdentity(scope+':item');const orderNumber='HSR-LO-'+id.slice(0,8).toUpperCase();
+   const record=await saveDispatchInvoice({scope:'Hosur',hosurShopId:shop.id,hosurShopName:shop.shopName,hosurShopPhone:shop.whatsappNumber,dispatchedBy:payload.userName,items:[{itemName:payload.itemName,unit:payload.unit,quantity:qty,unitPrice:price,lineTotal:Math.round(qty*price*100)/100}],discountPct:0,desktopKey:'hosur-leftover:'+id,desktopHosurBilling:{orderId:id,shopId:shop.id,payment:payload.payment,newOrder:{id,orderNumber,itemId,itemName:payload.itemName,unit:payload.unit,quantity:qty,unitPrice:price,shopName:shop.shopName,shopWhatsapp:shop.whatsappNumber,shopAddress:shop.address},targets:[{id:itemId,base:0,target:qty}],appliedLeftovers:[{leftoverId:payload.leftoverRowId,qty}]}});
+   finishDesktopCheckout(scope);finishDesktopCheckout(scope+':item');return {billNo:record.invoiceNo,whatsappStatus:'failed',whatsappError:'Saved on this computer; check synchronization before sending WhatsApp.',orderNumber};
+  }
+
   const orderDate = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: '2-digit', month: '2-digit', day: '2-digit' }).format(new Date()).replace(/-/g, '');
   const orderNumber = 'HSR-LO-' + orderDate + '-' + crypto.randomUUID().slice(0, 4).toUpperCase();
   const lineTotal = Math.round(qty * price * 100) / 100;

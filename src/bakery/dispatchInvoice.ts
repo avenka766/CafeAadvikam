@@ -1,3 +1,4 @@
+import {automaticDesktopBilling,captureDesktopBill,billingSnapshot,desktopCheckoutIdentity,finishDesktopCheckout} from '@/lib/desktopBilling';
 // src/bakery/dispatchInvoice.ts
 // Shared invoice + checklist generation for the Planner Dispatch tab's new
 // review-before-dispatch flow (2026-08-08 workflow change): selecting items
@@ -22,7 +23,7 @@ import type { Branch } from './types';
 import { clampQtyForUnit } from './bakeryStore';
 import { jsPDF } from 'jspdf';
 import { calculatePlannerSalesGst } from './plannerSalesGst';
-import { hosurInvoiceLedgerLines } from './hosurGstLedger';
+import { hosurInvoiceLedgerLines,reconcileHosurLedgerTotal } from './hosurGstLedger';
 import { buildGstTaxInvoiceHtml, type GstPartyDetails } from './gstTaxInvoice';
 
 export interface DispatchInvoiceItem {
@@ -238,6 +239,10 @@ export async function saveDispatchInvoice(input: {
   // See DispatchInvoiceRecord.isGstInvoice — defaults false (plain "INVOICE").
   isGstInvoice?: boolean;
   gstSupplyType?: 'intra' | 'inter';
+  desktopActions?: Record<string,unknown>[];
+  desktopCakeOrders?:Record<string,any>[];
+  desktopHosurBilling?: Record<string,unknown>;
+  desktopKey?:string;
 }): Promise<DispatchInvoiceRecord> {
   // AUDIT FIX (2026-09-02): discountPct is planner-entered and, until now, was
   // trusted verbatim with no bound in either direction — a stray value (typo,
@@ -266,7 +271,7 @@ export async function saveDispatchInvoice(input: {
   // the number generation (when input.invoiceNo isn't already supplied by
   // the caller) AND the insert in a single transaction — a failed insert
   // rolls the number back too, instead of silently skipping it.
-  const { data, error } = await supabase.rpc('save_dispatch_invoice_secure', {
+  const rpcArgs = {
     p_scope: input.scope,
     p_hosur_shop_id: input.hosurShopId ?? null,
     p_hosur_shop_name: input.hosurShopName ?? null,
@@ -288,8 +293,14 @@ export async function saveDispatchInvoice(input: {
     p_gst_supply_type: input.gstSupplyType ?? 'intra',
     p_invoice_no: input.invoiceNo ?? null,
     p_number_scope: input.numberScope ?? (input.scope === 'Cake' ? 'SNB' : null),
-  }).single();
+  };
+  const desktopLedgerLines=input.desktopHosurBilling?reconcileHosurLedgerTotal(hosurInvoiceLedgerLines(input.items,safeDiscountPct),total):[];
+  const desktop=automaticDesktopBilling()?await captureDesktopBill({kind:'dispatch',family:(input.numberScope==='Hosur'||input.scope==='Hosur')?'SALES':'TO',key:input.desktopKey||((input.dispatchEntryIds?.length)?'dispatch:'+input.dispatchEntryIds.map(r=>r.dispatchEntryId).sort().join(','):'invoice:'+desktopCheckoutIdentity('dispatch-invoice:'+input.scope)),rpc:'save_dispatch_invoice_secure',args:rpcArgs,
+    dispatchActions:input.desktopActions||[],cakeOrders:input.desktopCakeOrders||[],hosurBilling:input.desktopHosurBilling?{...input.desktopHosurBilling,ledgerLines:desktopLedgerLines,total}:undefined,
+    receipt:{...input,subtotal,discountPct:safeDiscountPct,discountAmount,roundOff,total,status}}):null;
+  const {data,error}=desktop?{data:desktop.data,error:null}:await supabase.rpc('save_dispatch_invoice_secure',rpcArgs).single();
   if (error) throw error;
+  if(desktop)finishDesktopCheckout('dispatch-invoice:'+input.scope);
   const row = data as { id: string; invoice_no: string; created_at: string; paid_at: string | null };
   const invoiceNo = row.invoice_no;
 
@@ -881,7 +892,10 @@ export async function listDispatchInvoices(opts: {
     { maxRows: 20000 },
   );
   if (error) throw new Error(error);
-  return (data ?? []).map(recordFromRow);
+  const remote=(data??[]).map(recordFromRow);
+  if(!automaticDesktopBilling())return remote;
+  const local=(await billingSnapshot()).actions.filter(a=>a.kind==='dispatch'&&a.sync?.state!=='synced'&&(!opts.scope||a.receipt.scope===opts.scope)&&new Date(a.createdAt)>=new Date(opts.fromDate)&&new Date(a.createdAt)<new Date(opts.toDate)).filter(a=>!remote.some(r=>r.invoiceNo===a.billNo)).map(a=>({...a.receipt,id:a.id,invoiceNo:a.billNo,createdAt:a.createdAt,paidAt:a.receipt.status==='unpaid'?null:a.createdAt,dispatchEntryIds:a.receipt.dispatchEntryIds||[],cancelledBy:null,cancelledAt:null,cancelledReason:null,originalItems:null,returnLog:[]} as unknown as DispatchInvoiceRecord));
+  return [...remote,...local].sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
 }
 
 // FEATURE (2026-08-10): "for the dispatched items bill we need the edit

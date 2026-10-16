@@ -21,3 +21,12 @@ export function hosurInvoiceLedgerLines(items: Line[], discountPct: number) {
   if (tax.totalTax > 0) lines.push({itemName: `GST @ ${items.find(i => i.gstPricing === 'exclusive')?.gstPct}%`, unit: 'charge', quantity: 1, unitPrice: tax.totalTax});
   return lines;
 }
+
+/** Keep two-decimal rates and a nonnegative adjustment while matching the issued invoice. */
+export function reconcileHosurLedgerTotal(input:ReturnType<typeof hosurInvoiceLedgerLines>,total:number){
+ const lines=input.filter(i=>i.quantity>0).map(i=>({...i,unitPrice:Math.floor((i.unitPrice+1e-9)*100)/100}));
+ const sum=()=>salesMoney(lines.reduce((s,i)=>s+salesMoney(i.quantity*i.unitPrice),0));
+ while(sum()>total){const line=lines.filter(i=>i.unitPrice>=.01).sort((a,b)=>b.quantity-a.quantity)[0];if(!line)throw Error('Hosur invoice amount cannot be reconciled.');line.unitPrice=salesMoney(line.unitPrice-.01);}
+ const remainder=salesMoney(total-sum());if(remainder>0)lines.push({itemName:'Invoice rounding adjustment',unit:'charge',quantity:1,unitPrice:remainder});
+ return lines;
+}

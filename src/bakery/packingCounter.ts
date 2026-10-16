@@ -1,3 +1,4 @@
+import {automaticDesktopBilling} from '@/lib/desktopBilling';
 import { supabase } from '@/lib/supabase';
 
 export const PACKING_CLOSURE_KEY_PREFIX = 'packing-daily-closure:';
@@ -22,16 +23,19 @@ export async function getPackingCounterStatus(date = packingBusinessDateToday())
     .eq('key', `${PACKING_CLOSURE_KEY_PREFIX}${date}`)
     .maybeSingle();
 
-  if (error) throw error;
+  const cacheKey='desktop-packing-counter:'+date;
+  if (error) {const cached=automaticDesktopBilling()?localStorage.getItem(cacheKey):null;if(cached && (!navigator.onLine || /fetch|network|timeout|connection/i.test(error.message)))return JSON.parse(cached) as PackingCounterStatus;throw error;}
 
   const value = (data?.value && typeof data.value === 'object' ? data.value : {}) as {
     status?: string;
     opening_cash?: number;
   };
 
-  return {
+  const status={
     isOpen: value.status === 'draft',
     isFinalized: value.status === 'finalized',
     openingCash: Number(value.opening_cash ?? 0),
   };
+  if(automaticDesktopBilling())localStorage.setItem(cacheKey,JSON.stringify(status));
+  return status;
 }

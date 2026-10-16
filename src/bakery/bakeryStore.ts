@@ -422,7 +422,8 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
           .order('created_at', { ascending: false });
         const { data, error } = await query;
         if (!error && data) {
-          const fresh = data.map(d => rowToOrder(d as Record<string, unknown>));
+          let fresh = data.map(d => rowToOrder(d as Record<string, unknown>));
+          if(window.cafeAadvikamDesktop?.isElectron){const {overlayPendingDesktopDispatches}=await import('@/lib/desktopBilling');fresh=await overlayPendingDesktopDispatches(fresh);}
           if (!bakeryRealFetchDone || force) {
             // True first REAL fetch this session, OR an explicit,
             // deliberate refresh — a full, wide-window REPLACE rather than

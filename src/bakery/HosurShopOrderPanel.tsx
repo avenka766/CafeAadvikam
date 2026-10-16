@@ -1,3 +1,4 @@
+import {automaticDesktopBilling} from '@/lib/desktopBilling';
 import { calculatePlannerSalesGst } from './plannerSalesGst';
 // src/bakery/HosurShopOrderPanel.tsx
 // Planner's Hosur shop-order placement (price-list dropdown + custom item)
@@ -875,7 +876,7 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
     setResult(r => ({ ...r, [order.id]: undefined as any }));
     try {
       const billItems = orderItems.map(item => ({
-        id: item.id, itemName: item.itemName, unit: item.unit, quantity: item.quantity, unitPrice: item.unitPrice,
+        id: item.id, itemName: item.itemName, unit: item.unit, quantity: item.quantity, unitPrice: item.unitPrice, knownReceivedQuantity:item.receivedQuantity,
         receivedQuantity: overrides[item.id] !== undefined ? Number(overrides[item.id] || 0) : item.dispatchedQuantity,
       }));
       const orderChargesToBill = charges[order.id] ?? [];
@@ -908,7 +909,7 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
       // counter, everything is recorded as credit" philosophy for Hosur; a
       // cash/partial payment needs the counter reconciled live, which is
       // meaningless without a connection anyway.
-      if (!navigator.onLine) {
+      if (!navigator.onLine && !automaticDesktopBilling()) {
         if (pType !== 'credit') {
           throw new Error('No internet connection — only credit billing can be queued offline. Switch this order to Credit, or wait for a connection for cash/partial payment.');
         }
@@ -959,7 +960,7 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
         appliedLeftovers: appliedForOrderSnapshot,
       });
       setResult(r => ({ ...r, [order.id]: {
-        ok: outcome.whatsappStatus === 'sent',
+        ok: automaticDesktopBilling() || outcome.whatsappStatus === 'sent',
         message: outcome.whatsappStatus === 'sent'
           ? `Dispatched, billed (${outcome.billNo}), and WhatsApp bill sent to ${order.shopName}.`
           : `Dispatched and billed (${outcome.billNo}), but WhatsApp send failed: ${outcome.whatsappError}. Retry from WhatsApp Logs below.`,
@@ -1747,7 +1748,7 @@ function HosurLeftoverAndCancelPanel({ pendingOrders, pendingItems, appliedLefto
       // network is not there" — same reasoning and restriction as
       // dispatchAndBill above (queues the full intent, credit-only, nothing
       // written locally before this point).
-      if (!navigator.onLine) {
+      if (!navigator.onLine && !automaticDesktopBilling()) {
         if (dispatchPaymentType !== 'credit') {
           throw new Error('No internet connection — only credit billing can be queued offline. Switch to Credit, or wait for a connection for cash/partial payment.');
         }
@@ -1770,7 +1771,7 @@ function HosurLeftoverAndCancelPanel({ pendingOrders, pendingItems, appliedLefto
       const outcome = await runHosurLeftoverDispatchCore(corePayload);
 
       setDispatchResult(v => ({ ...v, [row.id]: {
-        ok: outcome.whatsappStatus === 'sent',
+        ok: automaticDesktopBilling() || outcome.whatsappStatus === 'sent',
         message: outcome.whatsappStatus === 'sent'
           ? `Dispatched, billed (${outcome.billNo}), and WhatsApp bill sent to ${shop.shopName}.`
           : `Dispatched and billed (${outcome.billNo}), but WhatsApp send failed: ${outcome.whatsappError}. Retry from WhatsApp Logs.`,

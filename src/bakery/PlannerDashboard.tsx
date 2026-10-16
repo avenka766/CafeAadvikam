@@ -1,3 +1,6 @@
+import {automaticDesktopBilling} from '@/lib/desktopBilling';
+import {desktopSalesAvailable,desktopSalesCall,desktopSalesSnapshot,prepareDesktopSales,saveDesktopSale,syncDesktopSales,type DesktopSnapshot,type DesktopSaleInput} from './desktopSales';
+import type {MergedCatalogItemWithPrice} from './PlannerLeftoverTab';
 import CustomerSuggestionsInput from './CustomerSuggestionsInput';
 import FestivalSalesPanel from './FestivalSalesPanel';
 import PlannerSalesGstFields from './PlannerSalesGstFields';
@@ -6691,6 +6694,10 @@ function BillingTab() {
   const festivalCart = useMemo(() => festivalSaleCart(festivalDrafts), [festivalDrafts]);
   const { items: catalogItems, loadCatalog } = useBranchCatalogStore();
   const currentUser = useAuthStore(s => s.currentUser);
+  const [desktopState,setDesktopState]=useState<DesktopSnapshot|null>(null);
+  const [desktopReady,setDesktopReady]=useState(!desktopSalesAvailable());
+  const [desktopError,setDesktopError]=useState('');
+  const transactionId=useRef<string>(crypto.randomUUID());
   const [search, setSearch] = useState('');
   const [cart, setCart] = useState<Record<string, { itemName: string; unit: 'pcs' | 'kg'; price: number; quantity: number }>>({});
   // FEATURE (2026-08-29): "no option to sell custom items not in the list,
@@ -6817,19 +6824,57 @@ function BillingTab() {
   // (packingCounter.ts) that already gates Hosur dispatch/billing, with the
   // same 15s-poll-while-visible pattern used there so this doesn't go stale
   // for a screen that stays mounted all session.
+  useEffect(()=>{
+    if(!desktopSalesAvailable()||!currentUser?.id)return;
+    let active=true;
+    void desktopSalesSnapshot(currentUser.id).then(state=>{if(!active)return;setDesktopState(state);
+      const d=state.draft as Record<string,any>|null;
+      if(d){
+        if(d.festivalSales!==undefined)setFestivalSales(d.festivalSales);
+        if(d.festivalDrafts!==undefined)setFestivalDrafts(d.festivalDrafts);
+        if(d.cart!==undefined)setCart(d.cart);
+        if(d.customItem!==undefined)setCustomItem(d.customItem);
+        if(d.customerName!==undefined)setCustomerName(d.customerName);
+        if(d.customerMobile!==undefined)setCustomerMobile(d.customerMobile);
+        if(d.discountType!==undefined)setDiscountType(d.discountType);
+        if(d.discountValue!==undefined)setDiscountValue(d.discountValue);
+        if(d.paymentMode!==undefined)setPaymentMode(d.paymentMode);
+        if(d.charges!==undefined)setCharges(d.charges);
+        if(d.chargeDraft!==undefined)setChargeDraft(d.chargeDraft);
+        if(d.gstEnabled!==undefined)setGstEnabled(d.gstEnabled);
+        if(d.gstBuyerName!==undefined)setGstBuyerName(d.gstBuyerName);
+        if(d.gstBuyerGstin!==undefined)setGstBuyerGstin(d.gstBuyerGstin);
+        if(d.gstBuyerAddress!==undefined)setGstBuyerAddress(d.gstBuyerAddress);
+        if(d.gstBuyerStateName!==undefined)setGstBuyerStateName(d.gstBuyerStateName);
+        if(d.gstBuyerStateCode!==undefined)setGstBuyerStateCode(d.gstBuyerStateCode);
+        if(d.gstSupplyType!==undefined)setGstSupplyType(d.gstSupplyType);
+        if(d.gstPct!==undefined)setGstPct(d.gstPct);
+        if(d.gstHsnCode!==undefined)setGstHsnCode(d.gstHsnCode);
+        if(typeof d.transactionId==='string')transactionId.current=d.transactionId;
+      }
+      setDesktopReady(true);
+    }).catch(err=>setDesktopError(`Local sales storage could not open: ${err.message}`));
+    const refresh=()=>void desktopSalesSnapshot(currentUser.id).then(state=>{if(active)setDesktopState(state);}).catch(err=>setDesktopError(err.message));
+    const timer=setInterval(refresh,30000);window.addEventListener('desktop-sales-changed',refresh);
+    return()=>{active=false;clearInterval(timer);window.removeEventListener('desktop-sales-changed',refresh);};
+  },[currentUser?.id]);
+  useEffect(()=>{if(desktopSalesAvailable()&&desktopReady&&currentUser?.id)void desktopSalesCall('draft',{staffId:currentUser.id,value:{festivalSales,festivalDrafts,cart,customItem,customerName,customerMobile,discountType,discountValue,paymentMode,charges,chargeDraft,gstEnabled,gstBuyerName,gstBuyerGstin,gstBuyerAddress,gstBuyerStateName,gstBuyerStateCode,gstSupplyType,gstPct,gstHsnCode,transactionId:transactionId.current}}).catch(err=>setDesktopError(`Draft could not be saved: ${err.message}`));},[desktopReady,currentUser?.id,festivalSales,festivalDrafts,cart,customItem,customerName,customerMobile,discountType,discountValue,paymentMode,charges,chargeDraft,gstEnabled,gstBuyerName,gstBuyerGstin,gstBuyerAddress,gstBuyerStateName,gstBuyerStateCode,gstSupplyType,gstPct,gstHsnCode]);
   const [counterOpen, setCounterOpen] = useState<boolean | null>(null);
   const [counterError, setCounterError] = useState('');
   const [refreshingCounter, setRefreshingCounter] = useState(false);
   const refreshCounter = useCallback(async () => {
     try {
+      if(desktopSalesAvailable()&&!navigator.onLine)throw new Error('Offline');
       const status = await getPackingCounterStatus();
       setCounterOpen(status.isOpen);
       setCounterError('');
+      if(desktopSalesAvailable()&&currentUser?.id){const state=await desktopSalesSnapshot(currentUser.id);await desktopSalesCall('cache',{counter:{date:kolkataToday(),isOpen:status.isOpen}});if(status.isOpen){try{setDesktopState(await prepareDesktopSales(currentUser.id));setDesktopError('');}catch(error){setDesktopError((error as {message?:string})?.message || 'Offline numbers could not be prepared.');}}}
     } catch (err) {
+      if(desktopSalesAvailable()&&currentUser?.id){try{const state=await desktopSalesSnapshot(currentUser.id);setDesktopState(state);const cached=state.cache.counter;setCounterOpen(cached?.date===kolkataToday()&&cached.isOpen);setCounterError('Using the last confirmed counter status for today. Offline bills remain pending until synchronized.');return;}catch{/* Show the storage error below. */}}
       setCounterOpen(false);
       setCounterError(err instanceof Error ? err.message : 'Could not check the Daily Closure counter status.');
     }
-  }, []);
+  }, [currentUser?.id]);
   // EGRESS FIX (2026-08-15): replaced the 15s poll with visibilitychange
   // (catches "counter was opened/closed while I was on another tab", the
   // common case) plus a manual Refresh button on the banner below (catches
@@ -6851,14 +6896,16 @@ function BillingTab() {
       'bakery_walkin_bills',
       (q) => q.select('*').gte('created_at', fromIso).lt('created_at', toIso).order('created_at', { ascending: false }),
     );
-    if (!fetchError && data) setRecent(data.map(mapWalkinBill));
+    if(desktopSalesAvailable()&&currentUser?.id){const local=await desktopSalesSnapshot(currentUser.id);setDesktopState(local);const merged=new Map<string,WalkinBillRow>(local.receipts.filter(r=>r.createdAt>=fromIso&&r.createdAt<toIso).map(r=>[r.id,r]));if(!fetchError&&data)for(const row of data.map(mapWalkinBill))merged.set(row.id,row);setRecent([...merged.values()].sort((a,b)=>b.createdAt.localeCompare(a.createdAt)));}else if (!fetchError && data) setRecent(data.map(mapWalkinBill));
     setLoadingRecent(false);
-  }, [recentFromDate, recentToDate]);
+  }, [recentFromDate, recentToDate,currentUser?.id]);
   useEffect(() => { loadRecent().catch(() => {}); }, [loadRecent]);
 
   // FEATURE (2026-08-23): shared, robust dedup — see the comment on
   // PlanningTab's uniqueItems above for the full reasoning.
-  const catalog = useMergedCatalogWithPrice();
+  const liveCatalog = useMergedCatalogWithPrice();
+  const catalog = liveCatalog.length?liveCatalog:(desktopState?.cache.catalog as MergedCatalogItemWithPrice[] ?? []);
+  useEffect(()=>{if(desktopSalesAvailable()&&desktopReady&&liveCatalog.length&&currentUser?.id)void desktopSalesSnapshot(currentUser.id).then(state=>desktopSalesCall('cache',{catalog:liveCatalog})).catch(err=>setDesktopError(err.message));},[liveCatalog,desktopReady,currentUser?.id]);
 
   const filtered = useMemo(
     () => catalog.filter(i => !search.trim() || i.name.toLowerCase().includes(search.trim().toLowerCase())),
@@ -6881,7 +6928,7 @@ function BillingTab() {
 
   const cartLines = festivalSales ? festivalCart.lines : Object.values(cart);
   const chargesTotal = Math.round(charges.reduce((s, c) => s + (Number(c.amount) || 0), 0) * 100) / 100;
-  const subtotal = Math.round((cartLines.reduce((s, l) => s + l.price * l.quantity, 0) + chargesTotal) * 100) / 100;
+  const subtotal = Math.round((cartLines.reduce((s, l) => s + Math.round(l.price * l.quantity * 100) / 100, 0) + chargesTotal) * 100) / 100;
   const discountAmount = discountType === 'none' ? 0
     : discountType === 'percent' ? Math.round(subtotal * (Math.min(100, Math.max(0, Number(discountValue) || 0)) / 100) * 100) / 100
     : Math.round(Math.min(subtotal, Math.max(0, Number(discountValue) || 0)) * 100) / 100;
@@ -6889,6 +6936,7 @@ function BillingTab() {
   const total = salesTax.total;
 
   const resetCart = () => {
+    transactionId.current=crypto.randomUUID();
     if (festivalSales) setFestivalDrafts(createFestivalSaleDrafts()); else setCart({});
    
     setDiscountType('none'); setDiscountValue(''); setCustomerName(''); setCustomerMobile('');
@@ -6923,7 +6971,9 @@ function BillingTab() {
     try {
       // Defense in depth: re-check right before saving, not just at the button
       // level, in case the counter got closed since the poll last ran.
-      const status = await getPackingCounterStatus().catch(() => null);
+      let status = desktopSalesAvailable()&&!navigator.onLine ? null : await getPackingCounterStatus().catch(() => null);
+      if(!status&&desktopSalesAvailable()&&currentUser?.id){const state=await desktopSalesSnapshot(currentUser.id);status={isOpen:state.cache.counter?.date===kolkataToday()&&state.cache.counter.isOpen,isFinalized:false,openingCash:0};}
+      if(desktopSalesAvailable()&&!desktopReady)throw new Error('Wait for local sales storage to finish opening.');
       if (!status?.isOpen) {
         setCounterOpen(false);
         setError("Planner's Daily Closure counter is closed — open it from the Daily Closure tab before billing.");
@@ -6950,7 +7000,7 @@ function BillingTab() {
         ...cartLines.map((l, index) => ({ itemName: l.itemName, unit: l.unit, price: l.price, quantity: l.quantity, lineTotal: Math.round(l.price * l.quantity * 100) / 100, ...(gstEnabled ? { hsnCode: gstHsnCode.trim(), gstPct: Math.max(0, Number(gstPct) || 0), gstPricing: 'exclusive' as const, ...(index === 0 ? {gstBuyerDetails: {name: gstBuyerName.trim() || customerName.trim() || 'Walk-in Customer',address:gstBuyerAddress,gstin:gstBuyerGstin,stateName:gstBuyerStateName,stateCode:gstBuyerStateCode}} : {}) } : {}) })),
         ...charges.map(c => ({ itemName: c.name, unit: 'charge', price: Number(c.amount) || 0, quantity: 1, lineTotal: Math.round((Number(c.amount) || 0) * 100) / 100 })),
       ];
-      const bill = await saveWalkinBillSecure({
+      const billInput:DesktopSaleInput = {
         items, subtotal, discountType, discountValue: Number(discountValue) || 0,
         discountAmount, total, paymentMode, cashierName: currentUser?.displayName || 'Planner',
         customerName: customerName.trim() || 'Walk-in Customer', customerMobile: customerMobile.trim() || null,
@@ -6959,7 +7009,12 @@ function BillingTab() {
         // INVOICE" — see DispatchInvoiceRecord.isGstInvoice.
         isGstInvoice: gstEnabled,
         gstSupplyType,
-      });
+      };
+      const bill = desktopSalesAvailable() ? await saveDesktopSale(billInput,currentUser?.id || '',transactionId.current) : await saveWalkinBillSecure(billInput);
+      if(desktopSalesAvailable()){
+        window.dispatchEvent(new Event('desktop-sales-saved'));
+        setDesktopState(await desktopSalesSnapshot(currentUser?.id || ''));
+      }
       const billNo = bill.billNo;
       // BUG FIX (2026-08-09): "regular walk-in bills should also deduct
       // stock and show as 'walk in bill' in reports" — this bill used to
@@ -6970,7 +7025,7 @@ function BillingTab() {
       // allowed to go negative rather than ever blocking the bill. Charge
       // lines (unit === 'charge') are skipped — nothing was physically
       // dispatched for a named charge, so there's no stock to debit.
-      for (const line of items) {
+      for (const line of (desktopSalesAvailable()?[]:items)) {
         if (line.unit === 'charge') continue;
         try {
           const result = await recordLeftoverMovement({
@@ -7023,6 +7078,7 @@ function BillingTab() {
   };
 
   const cancelBill = async (bill: WalkinBillRow) => {
+    if(desktopState?.receipts.some(r=>r.id===bill.id&&r.sync?.state!=='synced')){setError('This bill is saved locally. Sync it before cancellation.');return;}
     if (!window.confirm(`Cancel bill ${bill.billNo}? This can't be undone.`)) return;
     // AUDIT FIX (2026-09-06): plain update with no status guard — two
     // concurrent cancels of the same bill (a double-click, or two staff on
@@ -7088,6 +7144,14 @@ function BillingTab() {
         </div>
       </div>
 
+      {desktopSalesAvailable() && <section className="space-y-2 rounded-xl border border-teal-200 bg-teal-50 p-3 text-xs" aria-label="Offline sales safety">
+        <p className="font-black">Local sales protection · {desktopState?.available ?? 0} reserved bill numbers available</p>
+        <p>Saved bills stay on this computer and sync automatically when connected. Excel and JSON copies: {desktopState?.backupFolder || 'Opening storage…'}</p>
+        <p>Bill numbers and the catalogue are refreshed automatically while connected. Billing continues locally if the connection drops. Keep this computer's date and time correct.</p>
+        <div className="flex flex-wrap gap-2"><button onClick={()=>void syncDesktopSales(currentUser?.id || '').then(()=>loadRecent()).catch(err=>setDesktopError(err.message))} className="rounded border bg-white px-2 py-1">Sync now</button><button onClick={()=>void desktopSalesCall('open-backups').catch(err=>setDesktopError(err.message))} className="rounded border bg-white px-2 py-1">Open Excel backups</button></div>
+        {desktopError&&<p role="alert" className="font-bold text-red-700">{desktopError}</p>}
+        {desktopState?.receipts.filter(r=>r.sync?.state!=='synced').map(r=><div key={r.id} className="flex flex-wrap items-center justify-between gap-2 border-t border-teal-200 pt-2"><span><b>{r.billNo}</b> · {invoiceMoney(r.total)} · Pending sync {r.sync?.error&&`· ${r.sync.error}`}</span><button onClick={()=>void printWalkinBill(r)} className="rounded border bg-white px-2 py-1">Reprint saved bill</button></div>)}
+      </section>}
       <div className="flex items-center justify-between gap-4 rounded-2xl border border-amber-200 bg-amber-50 p-4">
         <div><label htmlFor="festival-sales-mode" className="text-sm font-black text-amber-950">Festival Sales</label><p className="text-xs text-amber-800">Festival packs and custom items · pcs only. Normal and festival draft carts stay separate.</p></div>
         <Switch id="festival-sales-mode" checked={festivalSales} disabled={saving} onCheckedChange={value => { setFestivalSales(value); setError(''); }} />
@@ -7265,7 +7329,7 @@ function BillingTab() {
 
           {error && <p className="rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs font-bold text-destructive">{error}</p>}
 
-          <button onClick={saveBill} disabled={saving || cartLines.length === 0 || counterOpen === false} className="flex h-11 w-full items-center justify-center gap-2 rounded-xl cafe-gradient text-sm font-black text-white shadow-teal disabled:opacity-40">
+          <button onClick={saveBill} disabled={saving || cartLines.length === 0 || counterOpen === false || !desktopReady || (desktopSalesAvailable() && !desktopState?.available)} className="flex h-11 w-full items-center justify-center gap-2 rounded-xl cafe-gradient text-sm font-black text-white shadow-teal disabled:opacity-40">
             {saving ? <Loader2 className="size-4 animate-spin" /> : <IndianRupee className="size-4" />} Save &amp; Print Bill{cartLines.length > 0 ? ` (${invoiceMoney(total)})` : ''}
           </button>
 
@@ -7338,7 +7402,7 @@ function BillingTab() {
                   <button onClick={() => printWalkinBill(bill, 'a4')} className="rounded-lg border border-border bg-card px-2 py-1.5 text-[10px] font-black text-muted-foreground hover:bg-muted" title="Print A4">A4</button>
                   {bill.status === 'active' && (
                     <>
-                      <button onClick={() => setEditingBill(bill)} className="flex items-center gap-1 rounded-lg border border-amber-300 bg-amber-50 px-2 py-1.5 text-[10px] font-black text-amber-800 hover:bg-amber-100" title="Edit bill"><Pencil className="size-3.5" /> Edit</button>
+                      <button onClick={() => {if(desktopState?.receipts.some(r=>r.id===bill.id&&r.sync?.state!=='synced')){setError('Sync this locally saved bill before editing.');return;}setEditingBill(bill);}} className="flex items-center gap-1 rounded-lg border border-amber-300 bg-amber-50 px-2 py-1.5 text-[10px] font-black text-amber-800 hover:bg-amber-100" title="Edit bill"><Pencil className="size-3.5" /> Edit</button>
                       <button onClick={() => cancelBill(bill)} className="rounded-lg border border-destructive/30 bg-destructive/10 p-1.5 text-destructive hover:bg-destructive/20" title="Cancel bill"><Trash2 className="size-3.5" /></button>
                     </>
                   )}
@@ -12408,6 +12472,7 @@ interface PlannerDispatchAndInvoicePayload {
   customerName: string | null;
   customerPhone: string | null;
   customerAddress: string | null;
+  isGstInvoice?:boolean;gstSupplyType?:'intra'|'inter';hosurBilling?:Record<string,unknown>;
 }
 
 async function runPlannerDispatchAndInvoiceCore(payload: PlannerDispatchAndInvoicePayload): Promise<DispatchInvoiceRecord> {
@@ -12458,7 +12523,13 @@ async function runPlannerDispatchAndInvoiceCore(payload: PlannerDispatchAndInvoi
   return record;
 }
 
-async function queuePlannerDispatchAndInvoice(payload: PlannerDispatchAndInvoicePayload): Promise<void> {
+async function queuePlannerDispatchAndInvoice(payload: PlannerDispatchAndInvoicePayload): Promise<DispatchInvoiceRecord|void> {
+  if(automaticDesktopBilling()){
+    const record=await saveDispatchInvoice({scope:payload.scope,numberScope:payload.numberScope,hosurShopId:payload.hosurShopId,hosurShopName:payload.hosurShopName,hosurShopPhone:payload.hosurShopPhone,customerName:payload.customerName,customerPhone:payload.customerPhone,customerAddress:payload.customerAddress,dispatchedBy:payload.dispatchedBy,items:payload.invoiceItems,discountPct:payload.discountPct,dispatchEntryIds:payload.actions.map(a=>({orderId:a.orderId,dispatchEntryId:a.dispatchEntryId})),notes:payload.notes,isGstInvoice:payload.isGstInvoice,gstSupplyType:payload.gstSupplyType,desktopActions:payload.actions.map(a=>({...a,stockSlug:closingStockItemSlug(a.itemName)})),desktopHosurBilling:payload.hosurBilling});
+    useBakeryStore.setState(state=>({orders:state.orders.map(order=>{const actions=payload.actions.filter(a=>a.orderId===order.id);if(!actions.length)return order;const dispatchLog=[...(order.dispatchLog||[])];for(const a of actions)if(!dispatchLog.some(d=>d.id===a.dispatchEntryId))dispatchLog.push({id:a.dispatchEntryId,itemName:a.itemName,quantity:a.quantity,unit:a.unit,branch:payload.scope,dispatchedBy:payload.dispatchedBy,dispatchedAt:record.createdAt,...(a.isExtra?{isExtra:true}:{}),...(a.targetHosurOrderId?{targetHosurOrderId:a.targetHosurOrderId}:{})});const updated={...order,dispatchLog};if(isAdvanceOrderTagged(order.notes))updated.status=advanceDispatchComplete(updated)?'dispatched':'produced';return updated;})}));
+    await setCached('bakery_orders_v3',useBakeryStore.getState().orders);
+    return record;
+  }
   await useOfflineQueueStore.getState().enqueue('planner_dispatch_and_invoice', payload);
 }
 
@@ -12898,12 +12969,12 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
     // telling the planner "dispatched" while silently skipping a bill/
     // WhatsApp they were told would happen automatically. Blocked here with
     // a clear message instead; every other case queues for real.
-    if (!navigator.onLine) {
-      if (gstInvoiceOffered && gstEnabled) {
+    if (automaticDesktopBilling() || !navigator.onLine) {
+      if (!automaticDesktopBilling() && gstInvoiceOffered && gstEnabled) {
         setError('No internet connection — a dispatch with a GST Tax Invoice needs a live connection. Uncheck the GST invoice box to send this offline, or try again once reconnected.');
         return;
       }
-      if (scope === 'Hosur' && hosurShop?.id && hosurOrderId) {
+      if (!automaticDesktopBilling() && scope === 'Hosur' && hosurShop?.id && hosurOrderId) {
         setError('No internet connection — this Hosur shop order needs a live connection to dispatch and auto-bill. Try again once reconnected.');
         return;
       }
@@ -12914,7 +12985,7 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
         const roundedActions = effectiveActions
           .map((a) => ({ ...a, quantity: a.unit === 'pcs' ? Math.round(a.quantity) : a.quantity }))
           .filter((a) => !(a.unit === 'pcs' && a.quantity <= 0));
-        await queuePlannerDispatchAndInvoice({
+        const savedDesktopDispatch = await queuePlannerDispatchAndInvoice({
           notes: invoiceNotes,
           scope,
           actions: roundedActions.map((a) => ({
@@ -12928,7 +12999,9 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
             ...(a.isExtra ? { isExtra: true } : {}),
             ...(customer ? { isCustomSale: true, customerName: customer.name } : {}),
           })),
-          invoiceItems: [...invoiceLines, ...effectiveChargeLines],
+          isGstInvoice:gstInvoiceOffered&&gstEnabled,gstSupplyType,
+          hosurBilling:scope==='Hosur'&&hosurShop?.id&&hosurOrderId?{orderId:hosurOrderId,shopId:hosurShop.id,shopName:hosurShop.name,shopWhatsapp:hosurShop.phone,invoiceItems:[...invoiceLines,...effectiveChargeLines],payment:{paymentType:'credit',dueDate:kolkataDateKey(new Date(Date.now()+2*86400000).toISOString())}}:undefined,
+          invoiceItems: gstInvoiceOffered&&gstEnabled?[...invoiceLines,...effectiveChargeLines].map(l=>({...l,hsnCode:gstHsnCode.trim(),gstPct:Number(gstPct),gstPricing:'exclusive' as const,gstBuyerDetails:{name:customer?.name||hosurShop?.name||'',address:gstBuyerAddress,gstin:gstBuyerGstin,stateName:gstBuyerStateName,stateCode:gstBuyerStateCode}})):[...invoiceLines, ...effectiveChargeLines],
           discountPct,
           dispatchedBy,
           numberScope: customer ? 'Hosur' : undefined,
@@ -12940,7 +13013,7 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
           customerAddress: customer?.address ?? null,
         });
         if (batchSignature) confirmedDispatchBatchSignatures.add(batchSignature);
-        setQueuedOffline(true);
+        if(savedDesktopDispatch){setResult(savedDesktopDispatch);try{await printDispatchInvoice(savedDesktopDispatch,'thermal');}catch(error){setError(`Invoice ${savedDesktopDispatch.invoiceNo} is saved; printing needs attention: ${(error as Error).message}`);}}else setQueuedOffline(true);
         onDone();
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Failed to queue this dispatch.');

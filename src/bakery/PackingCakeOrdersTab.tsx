@@ -1,3 +1,4 @@
+import {automaticDesktopBilling} from '@/lib/desktopBilling';
 // src/bakery/PackingCakeOrdersTab.tsx
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDispatchHistoryInvoices } from './useDispatchHistoryInvoices';
@@ -778,7 +779,7 @@ interface CakeDispatchAndInvoicePayload {
 async function runCakeDispatchAndInvoiceCore(payload: CakeDispatchAndInvoicePayload): Promise<DispatchInvoiceRecord[]> {
   const clampedDiscountPct = Math.max(0, Math.min(100, Number(payload.discountPct) || 0));
   for (const order of payload.orders) {
-    await performCakeDispatch(order, payload.dispatchedBy);
+    if(!automaticDesktopBilling())await performCakeDispatch(order, payload.dispatchedBy);
   }
   const byBranch = new Map<CakeOrderRow['branch'], CakeOrderRow[]>();
   for (const o of payload.orders) {
@@ -794,10 +795,11 @@ async function runCakeDispatchAndInvoiceCore(payload: CakeDispatchAndInvoicePayl
       unitPrice: Number(o.order_value), lineTotal: Number(o.order_value),
     }));
     const record = await saveDispatchInvoice({
-      scope: 'Cake', dispatchedBy: payload.dispatchedBy, items, discountPct: clampedDiscountPct,
+      scope: 'Cake', dispatchedBy: payload.dispatchedBy, items, discountPct: clampedDiscountPct,desktopCakeOrders:automaticDesktopBilling()?group:undefined,
       dispatchEntryIds: group.map((o) => ({ orderId: o.id, dispatchEntryId: o.id })),
     });
     records.push(record);
+    if(automaticDesktopBilling())continue;
     const dispatchIds = group.map((o) => cakeIncomingDispatchId(o.id));
     const tagIncoming = () => supabase.from('branch_incoming').update({ invoice_no: record.invoiceNo }).in('dispatch_id', dispatchIds);
     let { error: incomingTagError } = await tagIncoming();
@@ -902,6 +904,11 @@ function CakeDispatchReviewModal({ orders, dispatchedBy, onClose, onDone }: {
     // above instead of running the live loop below — see
     // runCakeDispatchAndInvoiceCore's comment for why this is safe to retry
     // and why it queues the exact reviewed snapshot.
+    if(automaticDesktopBilling()){
+      sendingInFlightRef.current=true;setSending(true);setError(null);
+      try{const records=await runCakeDispatchAndInvoiceCore({orders,dispatchedBy,discountPct:clampedDiscountPct});setResults(records);for(const record of records)void printDispatchInvoice(record,'thermal');onDone();}
+      catch(e){setError((e as Error).message);}finally{sendingInFlightRef.current=false;setSending(false);}return;
+    }
     if (!navigator.onLine) {
       sendingInFlightRef.current = true;
       setSending(true);
