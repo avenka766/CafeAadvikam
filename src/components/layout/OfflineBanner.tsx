@@ -1,3 +1,5 @@
+import {CONNECTIVITY_EVENT,connectionIsOnline,reportConnection} from '@/lib/connectionStatus';
+import {isElectronApp} from '@/lib/platform';
 // src/components/layout/OfflineBanner.tsx
 // FIX: no-offline-UX — shows a sticky banner at the top of the screen when
 // the device loses network connectivity, and hides it automatically on reconnect.
@@ -22,7 +24,7 @@
 // from — staff need to see exactly what failed and why, and be able to
 // clear a genuinely unrecoverable one so the rest of the queue can proceed.
 import { useEffect, useState } from 'react';
-import { WifiOff, RefreshCw, AlertTriangle, ChevronDown, ChevronUp, UserCog } from 'lucide-react';
+import { Wifi, WifiOff, RefreshCw, AlertTriangle, ChevronDown, ChevronUp, UserCog } from 'lucide-react';
 import { useOfflineQueueStore } from '@/lib/offlineQueue';
 import { useAuthStore } from '@/stores/authStore';
 
@@ -54,7 +56,8 @@ const KIND_LABELS: Record<string, string> = {
 };
 
 export default function OfflineBanner() {
-  const [offline, setOffline] = useState(!navigator.onLine);
+  const [offline, setOffline] = useState(!connectionIsOnline());
+  const [backOnline,setBackOnline]=useState(false);
   const [expanded, setExpanded] = useState(false);
   const pending = useOfflineQueueStore((s) => s.pending);
   const flushing = useOfflineQueueStore((s) => s.flushing);
@@ -63,14 +66,17 @@ export default function OfflineBanner() {
   const currentUserId = useAuthStore((s) => s.currentUser?.id);
 
   useEffect(() => {
-    const goOffline = () => setOffline(true);
-    const goOnline  = () => setOffline(false);
-    window.addEventListener('offline', goOffline);
-    window.addEventListener('online',  goOnline);
-    return () => {
-      window.removeEventListener('offline', goOffline);
-      window.removeEventListener('online',  goOnline);
-    };
+    let notice:ReturnType<typeof setTimeout>|undefined;
+    const changed=(event:Event)=>{const online=(event as CustomEvent<{online:boolean}>).detail.online;setOffline(!online);clearTimeout(notice);setBackOnline(online);if(online){void useOfflineQueueStore.getState().flush();notice=setTimeout(()=>setBackOnline(false),4000);}};
+    const goOffline=()=>reportConnection(false);const goOnline=()=>reportConnection(true);
+    window.addEventListener('offline',goOffline);window.addEventListener('online',goOnline);window.addEventListener(CONNECTIVITY_EVENT,changed);
+    // Probe only while the API is unreachable despite an active Wi-Fi/Ethernet connection.
+    let controller:AbortController|undefined;let timeout:ReturnType<typeof setTimeout>|undefined;
+    const retry=setInterval(()=>{if(connectionIsOnline()||!navigator.onLine||controller)return;controller=new AbortController();timeout=setTimeout(()=>controller?.abort(),5000);
+      const url=import.meta.env.VITE_SUPABASE_URL;const key=import.meta.env.VITE_SUPABASE_ANON_KEY;if(!url||!key){clearTimeout(timeout);controller=undefined;return;}
+      void fetch(url+'/auth/v1/health',{headers:{apikey:key},signal:controller.signal,cache:'no-store'}).then(response=>{if(response.ok)reportConnection(true);}).catch(()=>{}).finally(()=>{clearTimeout(timeout);controller=undefined;});
+    },15000);
+    return()=>{clearTimeout(notice);clearTimeout(timeout);clearInterval(retry);controller?.abort();window.removeEventListener('offline',goOffline);window.removeEventListener('online',goOnline);window.removeEventListener(CONNECTIVITY_EVENT,changed);};
   }, []);
 
   const pendingCount = pending.length;
@@ -82,7 +88,7 @@ export default function OfflineBanner() {
   // stuck sync with no explanation.
   const waitingForOwner = pending.filter((e) => e.staffId && e.staffId !== currentUserId && e.attempts === 0);
 
-  if (!offline && pendingCount === 0) return null;
+  if (!offline && pendingCount === 0 && !backOnline) return null;
 
   const syncingWhileOnline = !offline && pendingCount > 0;
   const hasFailure = failed.length > 0;
@@ -94,15 +100,15 @@ export default function OfflineBanner() {
         role="alert"
         aria-live="assertive"
         className="flex items-center justify-center gap-2 px-4 py-2 text-sm font-body font-semibold text-white"
-        style={{ background: hasFailure ? '#B91C1C' : hasWaitingForOwner ? '#7C3AED' : syncingWhileOnline ? '#1D4ED8' : '#854F0B' }}
+        style={{ background: offline?'#854F0B':!offline&&pendingCount===0&&backOnline?'#047857':hasFailure&&!offline ? '#B91C1C' : hasWaitingForOwner ? '#7C3AED' : syncingWhileOnline ? '#1D4ED8' : '#854F0B' }}
       >
-        {hasFailure ? (
+        {hasFailure && !offline ? (
           <button onClick={() => setExpanded((v) => !v)} className="flex items-center gap-2">
             <AlertTriangle className="size-4 shrink-0" />
             {failed.length} change{failed.length === 1 ? '' : 's'} failed to sync — needs attention
             {expanded ? <ChevronUp className="size-3.5" /> : <ChevronDown className="size-3.5" />}
           </button>
-        ) : hasWaitingForOwner ? (
+        ) : hasWaitingForOwner && !offline ? (
           <button onClick={() => setExpanded((v) => !v)} className="flex items-center gap-2">
             <UserCog className="size-4 shrink-0" />
             {waitingForOwner.length} change{waitingForOwner.length === 1 ? '' : 's'} queued by another staff member — they need to log back in to sync
@@ -111,12 +117,14 @@ export default function OfflineBanner() {
         ) : syncingWhileOnline ? (
           <>
             <RefreshCw className={`size-4 shrink-0 ${flushing ? 'animate-spin' : ''}`} />
-            Syncing {pendingCount} change{pendingCount === 1 ? '' : 's'} made while offline…
+            Back online — syncing {pendingCount} change{pendingCount === 1 ? '' : 's'} made while offline…
           </>
+        ) : backOnline && !offline ? (
+          <><Wifi className="size-4 shrink-0" />Back online</>
         ) : (
           <>
             <WifiOff className="size-4 shrink-0" />
-            No internet connection{pendingCount > 0 ? ` — ${pendingCount} change${pendingCount === 1 ? '' : 's'} queued, will sync automatically` : ' — some features may be unavailable'}
+            Working offline — {isElectronApp()?'bills are being saved on this computer':'changes will sync automatically when you reconnect'}
           </>
         )}
       </div>
