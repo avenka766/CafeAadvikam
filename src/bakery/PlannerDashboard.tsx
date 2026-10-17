@@ -6699,6 +6699,7 @@ function BillingTab() {
   const [desktopError,setDesktopError]=useState('');
   const transactionId=useRef<string>(crypto.randomUUID());
   const [search, setSearch] = useState('');
+  const [recentBillSearch, setRecentBillSearch] = useState('');
   const [cart, setCart] = useState<Record<string, { itemName: string; unit: 'pcs' | 'kg'; price: number; quantity: number }>>({});
   // FEATURE (2026-08-29): "no option to sell custom items not in the list,
   // and unable to change the price of items" — Sales/New Bill previously
@@ -6887,6 +6888,11 @@ function BillingTab() {
   }, [refreshCounter]);
 
   useEffect(() => { loadCatalog('SNB').catch(() => {}); loadCatalog('VRSNB').catch(() => {}); }, [loadCatalog]);
+
+  const visibleRecentBills = useMemo(() => {
+    const query = recentBillSearch.trim().toLocaleLowerCase();
+    return query ? recent.filter(bill => `${bill.billNo} ${bill.customerName || 'Walk-in Customer'}`.toLocaleLowerCase().includes(query)) : recent;
+  }, [recent, recentBillSearch]);
 
   const loadRecent = useCallback(async () => {
     setLoadingRecent(true);
@@ -7382,17 +7388,27 @@ function BillingTab() {
             </button>
           </div>
         </div>
+        <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3">
+          <div className="relative min-w-0 flex-1">
+            <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+            <input type="search" aria-label="Search recent bills by invoice number or customer name" placeholder="Search invoice number or customer name…" value={recentBillSearch} onChange={event => setRecentBillSearch(event.target.value)} className="h-10 w-full rounded-xl border border-border bg-background pl-9 pr-3 text-sm" />
+          </div>
+          <span className="text-xs font-bold text-muted-foreground" aria-live="polite">{visibleRecentBills.length} of {recent.length} bills</span>
+        </div>
         {loadingRecent ? (
           <div className="flex justify-center py-8"><Loader2 className="size-5 animate-spin text-muted-foreground" /></div>
         ) : recent.length === 0 ? (
           <div className="p-4"><EmptyState text="No walk-in bills in this date range." /></div>
+        ) : visibleRecentBills.length === 0 ? (
+          <div className="p-4"><EmptyState text="No bills match this invoice number or customer name in the selected date range." /></div>
         ) : (
           <div className="max-h-96 divide-y divide-border overflow-y-auto">
-            {recent.map(bill => (
+            {visibleRecentBills.map(bill => (
               <div key={bill.id} className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5">
                 <div className="min-w-0">
                   <p className="text-xs font-black text-foreground">
                     #{bill.billNo}
+                    <span className="ml-2 font-bold">— {bill.customerName?.trim() || 'Walk-in Customer'}</span>
                     {bill.status === 'cancelled' && <span className="ml-1.5 rounded-full bg-red-100 px-1.5 py-0.5 text-[10px] font-black text-red-700">Cancelled</span>}
                   </p>
                   <p className="text-[11px] font-bold text-muted-foreground">{new Date(bill.createdAt).toLocaleString('en-IN')} · {bill.items.length} item{bill.items.length === 1 ? '' : 's'} · {bill.paymentMode.toUpperCase()} · {bill.cashierName || '-'}</p>
