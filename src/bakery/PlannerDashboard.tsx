@@ -5064,6 +5064,7 @@ function invoiceBucketFor(scope: string): InvoiceBucket {
 }
 interface AllInvoiceRow {
   key: string;
+  printRecord: DispatchInvoiceRecord;
   bucket: InvoiceBucket;
   scopeLabel: string;
   invoiceNo: string;
@@ -5131,6 +5132,7 @@ function PlannerAllInvoicesTab({ active }: { active: boolean }) {
   const [sales, setSales] = useState<WalkinBillRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [printingKey, setPrintingKey] = useState<string | null>(null);
   const [bucketFilter, setBucketFilter] = useState<'All' | InvoiceBucket>('All');
   const [search, setSearch] = useState('');
   const [hosurPaymentByInvoiceNo, setHosurPaymentByInvoiceNo] = useState<Map<string, string>>(new Map());
@@ -5220,13 +5222,13 @@ function PlannerAllInvoicesTab({ active }: { active: boolean }) {
 
   const rows: AllInvoiceRow[] = useMemo(() => {
     const fromInvoices: AllInvoiceRow[] = invoices.map(r => ({
-      key: r.id, bucket: invoiceBucketFor(r.scope), scopeLabel: r.scope, invoiceNo: r.invoiceNo,
+      key: r.id, printRecord: r, bucket: invoiceBucketFor(r.scope), scopeLabel: r.scope, invoiceNo: r.invoiceNo,
       party: r.hosurShopName || r.customerName || `${r.scope} Branch`,
       date: r.createdAt, itemCount: r.items.length, total: r.total, dispatchedBy: r.dispatchedBy, status: r.status, searchText: [r.scope, r.notes, ...r.items.map(i => i.itemName), ...(r.dispatchEntryIds || []).map(e => invoiceOrderSearch.get(e.orderId) || '')].join(" "),
       paymentStatus: r.scope === 'Hosur' ? hosurPaymentByInvoiceNo.get(r.invoiceNo) : undefined,
     }));
     const fromSales: AllInvoiceRow[] = sales.map(b => ({
-      key: `wb-${b.id}`, bucket: 'SALES', scopeLabel: 'Sales', invoiceNo: b.billNo,
+      key: `wb-${b.id}`, printRecord: walkinBillToInvoiceRecord(b), bucket: 'SALES', scopeLabel: 'Sales', invoiceNo: b.billNo,
       party: b.customerName || 'Walk-in Customer',
       date: b.createdAt, itemCount: b.items.length, total: b.total, dispatchedBy: b.cashierName || 'Planner',
       status: b.status === 'cancelled' ? 'cancelled' : 'paid', paymentMode: b.paymentMode,
@@ -5282,6 +5284,19 @@ function PlannerAllInvoicesTab({ active }: { active: boolean }) {
   }, [filteredRows]);
   const grandTotal = totalsByBucket.TO.value + totalsByBucket.SALES.value + totalsByBucket.Cake.value;
   const grandCount = totalsByBucket.TO.count + totalsByBucket.SALES.count + totalsByBucket.Cake.count;
+
+  const printThermal = async (row: AllInvoiceRow) => {
+    if (printingKey) return;
+    setPrintingKey(row.key);
+    setError('');
+    try {
+      await printDispatchInvoice(row.printRecord, 'thermal');
+    } catch (err) {
+      setError(`Could not print ${row.invoiceNo}: ${err instanceof Error ? err.message : 'Printing failed. Please try again.'}`);
+    } finally {
+      setPrintingKey(null);
+    }
+  };
 
   const exportExcel = async () => {
     const { exportWorkbook } = await import('@/lib/exportAdminReport');
@@ -5431,14 +5446,15 @@ function PlannerAllInvoicesTab({ active }: { active: boolean }) {
                 <SortableTh label="Total" sortKey="total" activeKey={sortKey} dir={sortDir} onSort={toggleSort} align="right" />
                 <th className="p-3">Paymode</th>
                 <th className="p-3">Status</th>
+                <th className="p-3">Print</th>
               </tr>
             </thead>
             <tbody className="divide-y">
               {loading && (
-                <tr><td colSpan={8} className="p-8 text-center text-sm font-semibold text-muted-foreground"><Loader2 className="mx-auto mb-2 size-5 animate-spin" /> Loading invoices…</td></tr>
+                <tr><td colSpan={9} className="p-8 text-center text-sm font-semibold text-muted-foreground"><Loader2 className="mx-auto mb-2 size-5 animate-spin" /> Loading invoices…</td></tr>
               )}
               {!loading && sortedRows.length === 0 && (
-                <tr><td colSpan={8} className="p-8 text-center text-sm font-semibold text-muted-foreground">No invoices match these filters.</td></tr>
+                <tr><td colSpan={9} className="p-8 text-center text-sm font-semibold text-muted-foreground">No invoices match these filters.</td></tr>
               )}
               {!loading && sortedRows.map(r => (
                 <tr key={r.key} className={cn(r.status === 'cancelled' && 'bg-red-50/40')}>
@@ -5450,6 +5466,11 @@ function PlannerAllInvoicesTab({ active }: { active: boolean }) {
                   <td className="p-3 text-right font-black text-foreground">{formatCurrency(r.total)}</td>
                   <td className="p-3 text-muted-foreground">{allInvoicesPaymodeFor(r)}</td>
                   <td className="p-3"><span className={cn('inline-flex rounded-full px-2 py-0.5 text-[10px] font-black uppercase ring-1', allInvoicesStatusDisplay(r).tone)}>{allInvoicesStatusDisplay(r).label}</span></td>
+                  <td className="p-3">
+                    <button type="button" onClick={() => void printThermal(r)} disabled={printingKey !== null} aria-label={`Thermal print ${r.invoiceNo}`} className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg border border-border bg-card px-2.5 py-1.5 text-xs font-bold text-muted-foreground hover:bg-muted disabled:opacity-50">
+                      {printingKey === r.key ? <Loader2 className="size-3.5 animate-spin" /> : <Printer className="size-3.5" />} Thermal Print
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>
