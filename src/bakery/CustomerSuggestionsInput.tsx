@@ -3,8 +3,8 @@ import { ChevronDown, ChevronUp, Loader2 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 
 export type PreviousSalesCustomer = { name: string; mobile: string; address: string };
-export default function CustomerSuggestionsInput({ value, onChange, onSelect, placeholder = 'Customer name', className }: {
-  value: string; onChange: (value: string) => void; onSelect: (customer: PreviousSalesCustomer) => void; placeholder?: string; className?: string;
+export default function CustomerSuggestionsInput({ value, onChange, onSelect, placeholder = 'Customer name', className, required = false }: {
+  value: string; onChange: (value: string) => void; onSelect: (customer: PreviousSalesCustomer) => void; placeholder?: string; className?: string; required?: boolean;
 }) {
   const [focused, setFocused] = useState(false);
   const [customers, setCustomers] = useState<PreviousSalesCustomer[]>([]);
@@ -41,7 +41,7 @@ export default function CustomerSuggestionsInput({ value, onChange, onSelect, pl
   };
   useEffect(() => { if (active >= 0) document.getElementById(`${id}-${active}`)?.scrollIntoView?.({ block: 'nearest' }); }, [active, id]);
   return <div ref={wrapper} className="relative min-w-0" onBlur={event => { if (!wrapper.current?.contains(event.relatedTarget as Node)) { ++version.current; setFocused(false); } }}>
-    <input ref={input} value={value} placeholder={placeholder} className={className || 'h-10 w-full rounded-xl border border-border bg-background px-3 text-xs font-bold'} autoComplete="off" role="combobox" aria-label="Customer name" aria-autocomplete="list" aria-expanded={visible} aria-controls={`${id}-list`} aria-activedescendant={visible && active >= 0 ? `${id}-${active}` : undefined}
+    <input ref={input} required={required} value={value} placeholder={placeholder} className={className || 'h-10 w-full rounded-xl border border-border bg-background px-3 text-xs font-bold'} autoComplete="off" role="combobox" aria-label="Customer name" aria-autocomplete="list" aria-expanded={visible} aria-controls={`${id}-list`} aria-activedescendant={visible && active >= 0 ? `${id}-${active}` : undefined}
       onFocus={() => setFocused(true)} onChange={event => { ++version.current; setCustomers([]); setActive(-1); setFocused(true); onChange(event.target.value); }}
       onKeyDown={event => {
         if (event.key === 'Escape') { event.preventDefault(); ++version.current; setFocused(false); }

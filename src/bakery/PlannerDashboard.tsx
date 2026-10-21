@@ -6406,6 +6406,7 @@ function AdvanceSalesTab() {
 
   const save = async () => {
     if (savingInFlightRef.current) return;
+    if (!customerName.trim()) { setError('Enter the customer name before billing.'); return; }
     setError('');
     if (cartLines.length === 0) { setError('Add at least one item.'); return; }
     if (!deliveryDate) { setError('Enter a delivery date.'); return; }
@@ -6416,7 +6417,7 @@ function AdvanceSalesTab() {
     try {
       const items: AdvanceSaleItem[] = cartLines.map(l => ({ itemName: l.itemName, unit: l.unit, quantity: l.quantity, unitPrice: l.price, lineTotal: Math.round(l.price * l.quantity * 100) / 100 }));
       const result = await saveAdvanceSale({
-        source, customerName: customerName.trim() || null, customerPhone: customerPhone.trim() || null, items,
+        source, customerName: customerName.trim(), customerPhone: customerPhone.trim() || null, items,
         discountType, discountValue: Math.max(0, Number(discountValue) || 0),
         advanceAmount: advanceNum, advancePaymentMode,
         deliveryDate, deliveryTime: deliveryTime.trim() || null,
@@ -6542,7 +6543,7 @@ function AdvanceSalesTab() {
           )}
 
           <div className="grid grid-cols-2 gap-2">
-            <CustomerSuggestionsInput value={customerName} onChange={setCustomerName} onSelect={customer => { setCustomerName(customer.name); setCustomerPhone(customer.mobile); }} />
+            <CustomerSuggestionsInput placeholder="Customer name (required)" required value={customerName} onChange={setCustomerName} onSelect={customer => { setCustomerName(customer.name); setCustomerPhone(customer.mobile); }} />
             <input value={customerPhone} onChange={e => setCustomerPhone(e.target.value.replace(/\D/g, '').slice(0, 10))} placeholder="Mobile" inputMode="numeric" className="h-10 rounded-xl border border-border bg-background px-3 text-xs font-bold" />
           </div>
           <div className="grid grid-cols-2 gap-2">
@@ -6589,7 +6590,7 @@ function AdvanceSalesTab() {
 
           {error && <p className="rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs font-bold text-destructive">{error}</p>}
 
-          <button onClick={() => void save()} disabled={saving || cartLines.length === 0} className="flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-amber-600 text-sm font-black text-white shadow-sm hover:bg-amber-700 disabled:opacity-40">
+          <button onClick={() => void save()} disabled={saving || !customerName.trim() || cartLines.length === 0} className="flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-amber-600 text-sm font-black text-white shadow-sm hover:bg-amber-700 disabled:opacity-40">
             {saving ? <Loader2 className="size-4 animate-spin" /> : <IndianRupee className="size-4" />} Save &amp; Print Advance Bill
           </button>
 
@@ -6991,6 +6992,7 @@ function BillingTab() {
     // and creating two bill numbers for one sale. Set synchronously, before
     // ANY await, same as every other in-flight guard in this file.
     if (savingInFlightRef.current) return;
+    if (!customerName.trim()) { setError('Enter the customer name before billing.'); return; }
     if (cartLines.length === 0) { setError('Add at least one item.'); return; }
     if (festivalSales && festivalCart.error) { setError(festivalCart.error); return; }
     if (gstEnabled && (!Number.isFinite(Number(gstPct)) || Number(gstPct) <= 0 || Number(gstPct) > 100)) { setError('Enter a valid GST rate between 0 and 100%.'); return; }
@@ -7030,7 +7032,7 @@ function BillingTab() {
       const billInput:DesktopSaleInput = {
         items, subtotal, discountType, discountValue: Number(discountValue) || 0,
         discountAmount, total, paymentMode, cashierName: currentUser?.displayName || 'Planner',
-        customerName: customerName.trim() || 'Walk-in Customer', customerMobile: customerMobile.trim() || null,
+        customerName: customerName.trim(), customerMobile: customerMobile.trim() || null,
         // FEATURE (2026-09-05): only checking the GST Tax Invoice box below
         // should make this bill's own printed copy title itself "TAX
         // INVOICE" — see DispatchInvoiceRecord.isGstInvoice.
@@ -7285,7 +7287,7 @@ function BillingTab() {
           )}
 
           <div className="grid grid-cols-2 gap-2">
-            <CustomerSuggestionsInput value={customerName} onChange={setCustomerName} onSelect={customer => { setCustomerName(customer.name); setCustomerMobile(customer.mobile); }} placeholder="Customer name (optional)" />
+            <CustomerSuggestionsInput required value={customerName} onChange={setCustomerName} onSelect={customer => { setCustomerName(customer.name); setCustomerMobile(customer.mobile); }} placeholder="Customer name (required)" />
             <input value={customerMobile} onChange={e => setCustomerMobile(e.target.value.replace(/\D/g, '').slice(0, 10))} placeholder="Mobile (optional)" inputMode="numeric" className="h-10 rounded-xl border border-border bg-background px-3 text-xs font-bold" />
           </div>
 
@@ -7357,7 +7359,7 @@ function BillingTab() {
 
           {error && <p className="rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs font-bold text-destructive">{error}</p>}
 
-          <button onClick={saveBill} disabled={saving || cartLines.length === 0 || counterOpen === false || !desktopReady || (desktopSalesAvailable() && !desktopState?.available)} className="flex h-11 w-full items-center justify-center gap-2 rounded-xl cafe-gradient text-sm font-black text-white shadow-teal disabled:opacity-40">
+          <button onClick={saveBill} disabled={saving || !customerName.trim() || cartLines.length === 0 || counterOpen === false || !desktopReady || (desktopSalesAvailable() && !desktopState?.available)} className="flex h-11 w-full items-center justify-center gap-2 rounded-xl cafe-gradient text-sm font-black text-white shadow-teal disabled:opacity-40">
             {saving ? <Loader2 className="size-4 animate-spin" /> : <IndianRupee className="size-4" />} Save &amp; Print Bill{cartLines.length > 0 ? ` (${invoiceMoney(total)})` : ''}
           </button>
 
@@ -7540,6 +7542,7 @@ function EditWalkinBillModal({ bill, onClose, onSaved }: {
 
   const save = async () => {
     if (savingInFlightRef.current) return;
+    if (!customerName.trim()) { setError('Enter the customer name before saving.'); return; }
     setError(null);
     // REDESIGN (2026-09-12): same one-overall-rate GST as New Bill — see the
     // note above gstEnabled's declaration — applied identically to every
@@ -7599,7 +7602,7 @@ function EditWalkinBillModal({ bill, onClose, onSaved }: {
       const { error: updateError } = await supabase.from('bakery_walkin_bills').update({
         items: cleaned, subtotal: newSubtotal, discount_type: discountType,
         discount_value: Number(discountValue) || 0, discount_amount: newDiscountAmount, total: newTotal,
-        payment_mode: paymentMode, customer_name: customerName.trim() || 'Walk-in Customer',
+        payment_mode: paymentMode, customer_name: customerName.trim(),
         customer_mobile: customerMobile.trim() || null,
         is_gst_invoice: gstEnabled, gst_supply_type: gstSupplyType,
       }).eq('id', bill.id);
@@ -7608,7 +7611,7 @@ function EditWalkinBillModal({ bill, onClose, onSaved }: {
       const updatedBill: WalkinBillRow = {
         ...bill, items: cleaned, subtotal: newSubtotal, discountType, discountValue: Number(discountValue) || 0,
         discountAmount: newDiscountAmount, total: newTotal, paymentMode,
-        customerName: customerName.trim() || 'Walk-in Customer', customerMobile: customerMobile.trim() || null,
+        customerName: customerName.trim(), customerMobile: customerMobile.trim() || null,
         isGstInvoice: gstEnabled, gstSupplyType,
       };
 
@@ -7741,7 +7744,7 @@ function EditWalkinBillModal({ bill, onClose, onSaved }: {
         </div>
 
         <div className="mt-3 grid grid-cols-2 gap-2">
-          <CustomerSuggestionsInput value={customerName} onChange={setCustomerName} onSelect={customer => { setCustomerName(customer.name); setCustomerMobile(customer.mobile); }} placeholder="Customer name (optional)" />
+          <CustomerSuggestionsInput required value={customerName} onChange={setCustomerName} onSelect={customer => { setCustomerName(customer.name); setCustomerMobile(customer.mobile); }} placeholder="Customer name (required)" />
           <input value={customerMobile} onChange={e => setCustomerMobile(e.target.value.replace(/\D/g, '').slice(0, 10))} placeholder="Mobile (optional)" inputMode="numeric" className="h-10 rounded-xl border border-border bg-background px-3 text-xs font-bold" />
         </div>
 
@@ -7802,7 +7805,7 @@ function EditWalkinBillModal({ bill, onClose, onSaved }: {
 
         <div className="mt-4 flex justify-end gap-2">
           <button onClick={onClose} className="rounded-xl border border-border bg-card px-4 py-2 text-xs font-bold text-foreground hover:bg-muted">Cancel</button>
-          <button onClick={save} disabled={saving} className="flex items-center gap-1.5 rounded-xl cafe-gradient px-4 py-2 text-xs font-black text-white shadow-teal disabled:opacity-50">
+          <button onClick={save} disabled={saving || !customerName.trim()} className="flex items-center gap-1.5 rounded-xl cafe-gradient px-4 py-2 text-xs font-black text-white shadow-teal disabled:opacity-50">
             {saving ? <Loader2 className="size-3.5 animate-spin" /> : <Pencil className="size-3.5" />} Save Changes
           </button>
         </div>
@@ -8284,7 +8287,7 @@ function SampleBillTab() {
           <div className="space-y-2 rounded-xl border border-amber-200 bg-amber-50 p-3">
             <label className="block space-y-1">
               <span className="text-[11px] font-black uppercase tracking-wide text-amber-800">Customer Name *</span>
-              <CustomerSuggestionsInput value={customerName} onChange={setCustomerName} onSelect={customer => { setCustomerName(customer.name); setCustomerPhone(customer.mobile); setCustomerAddress(customer.address); }} className="w-full rounded-lg border border-amber-300 bg-white px-2.5 py-1.5 text-sm font-bold" placeholder="e.g. Ramesh Kumar" />
+              <CustomerSuggestionsInput required value={customerName} onChange={setCustomerName} onSelect={customer => { setCustomerName(customer.name); setCustomerPhone(customer.mobile); setCustomerAddress(customer.address); }} className="w-full rounded-lg border border-amber-300 bg-white px-2.5 py-1.5 text-sm font-bold" placeholder="e.g. Ramesh Kumar" />
             </label>
             <label className="block space-y-1">
               <span className="text-[11px] font-black uppercase tracking-wide text-amber-800">Mobile Number *</span>
