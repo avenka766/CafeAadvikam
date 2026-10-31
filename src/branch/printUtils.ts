@@ -115,6 +115,7 @@ function triggerPrintWithFallback(target: Window) {
 // printHtml — Branch reports, Admin SNB/VRSNB printouts, and Planner's
 // cake packing checklist — gets the fix at once instead of one at a time.
 export function printHtml(title: string, body: string) {
+  if(body.includes('data-print-format="thermal"'))return printViaIframe(body);
   // AUDIT FIX (2026-09-09): title can carry a staff-typed free-text value
   // (e.g. a waste-log item name) and lands both in <title> and inside a CSS
   // content:"..." string — unescaped, a `"` or `</style>` in it could break

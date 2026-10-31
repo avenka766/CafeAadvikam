@@ -819,13 +819,15 @@ registerReplayHandler('branch_manual_stock_delta', async (_kind, payload) => {
   return { ok: true };
 });
 
+const incomingConfirmInFlight=new Set<string>();
+
 registerReplayHandler('branch_confirm_incoming', async (_kind, payload) => {
   const p = payload as { branch: Branch; incomingId: string };
   let confirm = await supabase.rpc('confirm_incoming_stock_canonical', { p_incoming_id: p.incomingId, p_branch: p.branch });
   if (confirm.error && isMissingRpcError(confirm.error.message ?? '')) {
     confirm = await supabase.rpc('confirm_incoming_stock', { p_incoming_id: p.incomingId, p_branch: p.branch });
   }
-  if (confirm.error) return { ok: false, error: confirm.error.message };
+  if (confirm.error && !confirm.error.message?.includes('ALREADY_SYNCED:')) return { ok: false, error: confirm.error.message };
   await useBranchStore.getState().fetchBranchData(p.branch, true, ['stock', 'incoming']);
   return { ok: true };
 });
@@ -1745,7 +1747,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
   confirmIncoming: async (branch, incomingId) => {
     const inc = get().incoming[branch].find((i) => i.id === incomingId);
     if (!inc) return 'Item not found';
-    if (inc.confirmed) return null;
+    if (inc.confirmed) return 'This receipt has already been synced once. No extra stock was added.';
     if (inc.disputed) return 'This incoming stock is disputed and must be reviewed before confirmation.';
     if (inc.returnRequested) return 'Planner must resolve the requested return before this receipt can be confirmed.';
     const catalogItems = useBranchCatalogStore.getState().items[branch === 'VRSNB' ? 'VRSNB' : 'SNB'];
@@ -1756,6 +1758,10 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       return 'This item is sold in whole pieces. Correct the incoming unit and piece count before confirming.';
     }
 
+    const confirmationKey=branch+'|'+incomingId;
+    if(incomingConfirmInFlight.has(confirmationKey))return 'This receipt is already being confirmed. Please wait.';
+    incomingConfirmInFlight.add(confirmationKey);
+    try {
     // Try atomic RPC first (deployed via migration)
     let canonicalConfirm = await supabase.rpc('confirm_incoming_stock_canonical', {
       p_incoming_id: incomingId, p_branch: branch,
@@ -1800,6 +1806,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     }
 
     return 'Safe stock confirmation is unavailable. Please refresh or contact Admin; no stock was added.';
+    }finally{incomingConfirmInFlight.delete(confirmationKey);}
   },
 
   // Confirm all unconfirmed incoming items at once (not restricted to today)
