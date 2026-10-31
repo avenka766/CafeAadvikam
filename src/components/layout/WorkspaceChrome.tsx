@@ -131,8 +131,13 @@ const DEFAULT_META: PageMeta = {
 
 export function navForRole(role?: string): NavItem[] {
   switch (role) {
+    case 'audit':
+    case 'finance':
+      return [];
     case 'admin':
       return [
+        { label: 'Audit workspace', path: '/audit', icon: <ShieldCheck className="size-4" />, group: 'Reports' },
+        { label: 'Finance workspace', path: '/finance', icon: <WalletCards className="size-4" />, group: 'Reports' },
         // MOVED (2026-09-08): "Online Orders" relocated to Planner
         // Dashboard's Incoming Orders tab per explicit request — see
         // AdminDashboard.tsx's NAV_ITEMS for the matching removal note.
@@ -459,6 +464,7 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
     || /^\/admin-dashboard/.test(location.pathname)
     || /^\/admin-(snb|vrsnb)/.test(location.pathname)
     || /^\/owner/.test(location.pathname)
+    || /^\/(audit|finance)/.test(location.pathname)
     || (currentUser?.role === 'kitchen' && /^\/order-history/.test(location.pathname));
   const items = useMemo(() => navForRole(currentUser?.role), [currentUser?.role]);
   const groups = useMemo(() => {

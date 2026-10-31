@@ -17,7 +17,7 @@ const ROLE_LABELS: Record<string, string> = {
   cake_master: 'Cake Master', packing: 'Packing', branch_vrsnb: 'VR SNB Branch',
   branch_snb: 'SNB Branch', branch_hosur: 'Hosur Branch',
   // N-04: previously missing role labels
-  admin_vrsnb: 'VRSNB Admin', admin_snb: 'SNB Admin', owner: 'Owner',
+  audit: 'Audit', finance: 'Finance', admin_vrsnb: 'VRSNB Admin', admin_snb: 'SNB Admin', owner: 'Owner',
 };
 const ROLE_COLORS: Record<string, string> = {
   admin: 'bg-amber-500/20 text-amber-700 border-amber-400/30',
