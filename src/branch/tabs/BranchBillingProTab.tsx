@@ -1,3 +1,4 @@
+import {allowsFlexibleBranchStock as isSnbFlexibleStockItem} from '../flexibleStock';
 import {automaticDesktopBilling,captureDesktopBill,desktopCheckoutIdentity,finishDesktopCheckout} from '@/lib/desktopBilling';
 import { formatBranchQuantity } from '../quantityDisplay';
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
@@ -100,22 +101,6 @@ const PAYMENT_SHORTCUTS: Record<PayMode, string> = {
 
 function unitOf(item: BillingItem): 'pcs' | 'kg' {
   return item.uom === 'Kgs' ? 'kg' : 'pcs';
-}
-
-// FEATURE (2026-08-22): "VRSNB should allow billing Mix category even with
-// no stock, same as SNB's Mix & Combo." Confirmed directly against the
-// live catalog: SNB's category is literally "Mix & Combo" (or "Mix and
-// Combo"), VRSNB's is a completely separate, distinct category literally
-// named just "MIX" — not the same string in different casing, a genuinely
-// different category name per branch. Neither branch has the other
-// branch's category name in its own catalog, so there's no risk of this
-// accidentally matching the wrong thing.
-function isSnbFlexibleStockItem(branch: Branch, item?: Pick<BillingItem, 'category'> | null) {
-  if (!item) return false;
-  const normalizedCategory = item.category.toLowerCase().replace(/\s+/g, ' ').trim();
-  if (branch === 'SNB') return normalizedCategory === 'mix & combo' || normalizedCategory === 'mix and combo';
-  if (branch === 'VRSNB') return normalizedCategory === 'mix';
-  return false;
 }
 
 type RpcErrorLike = {
