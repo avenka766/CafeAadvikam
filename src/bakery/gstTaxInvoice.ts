@@ -95,6 +95,7 @@ export interface GstSellerDetails {
 }
 
 export interface BuildGstTaxInvoiceParams {
+  paper?: 'a4' | 'thermal';
   /** Opt-in only for new Sales bills; old invoices retain their original calculation. */
   overallSalesTax?: { subtotal: number; discountAmount: number; gstPct: number };
   seller?: GstSellerDetails;
@@ -160,6 +161,12 @@ export function buildGstTaxInvoiceHtml(p: BuildGstTaxInvoiceParams): BuiltGstTax
     return `${numberToIndianWords(Math.floor(value))} Rupees${paise ? ` and ${numberToIndianWords(paise)} Paise` : ''}`;
   };
   const roundOff = Math.round((totalAmount - rawTotal) * 100) / 100;
+  if(p.paper==='thermal'){
+    const esc=(v:unknown)=>String(v??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+    const money=(v:number)=>v.toFixed(2);const row=(label:string,value:unknown)=>`<div class="row"><span>${esc(label)}</span><b>${esc(value)}</b></div>`;
+    const html=`<!doctype html><html data-print-format="thermal"><head><title>Tax Invoice ${esc(p.invoiceNo)}</title><style>@page{size:80mm auto;margin:3mm}body{width:72mm;font:11px Arial;color:#111}.c{text-align:center}.row{display:flex;justify-content:space-between;gap:5px;margin:4px 0}.dash{border-top:1px dashed;margin:7px 0}table{width:100%;border-collapse:collapse}td,th{padding:4px 2px;vertical-align:top;text-align:left}.r{text-align:right}th{border-top:1px solid;border-bottom:1px solid}.net{font-size:15px;border-top:1px solid;border-bottom:1px solid;padding:6px 0}</style></head><body><h2 class="c">${esc(seller.name)}</h2><div class="c">${seller.addressLines.map(esc).join('<br>')}<br>GSTIN: ${esc(seller.gstin)}</div><h3 class="c">TAX INVOICE</h3>${row('Invoice',p.invoiceNo)}${row('Date',p.invoiceDate)}<div class="dash"></div><b>Buyer: ${esc(p.buyer.name)}</b><div>${esc(p.buyer.address)}</div><div>GSTIN: ${esc(p.buyer.gstin||'—')}<br>State: ${esc(p.buyer.stateName)} (${esc(p.buyer.stateCode)})</div>${consignee!==p.buyer?`<div>Consignee: ${esc(consignee.name)}<br>${esc(consignee.address)}<br>GSTIN: ${esc(consignee.gstin)}</div>`:''}<table><thead><tr><th>Item</th><th class="r">Qty</th><th class="r">Rate</th><th class="r">Amount</th></tr></thead><tbody>${computedLines.map(l=>`<tr><td>${esc(l.itemName)}<br><small>HSN: ${esc(l.hsnCode||'—')} · GST ${esc(l.gstPct)}%</small></td><td class="r">${esc(l.qty)} ${esc(l.uom)}</td><td class="r">${money(l.rate)}</td><td class="r">${money(l.amount)}</td></tr>`).join('')}</tbody></table><div class="dash"></div>${overall?row('Discount',money(p.overallSalesTax?.discountAmount||0)):''}${row('Taxable value',money(beforeTaxValue))}${supplyType==='intra'?row('CGST',money(totalCgst))+row('SGST',money(totalSgst)):row('IGST',money(totalIgst))}${row('Total GST',money(totalGst))}${row('Round off',money(roundOff))}<div class="net">${row('Net bill amount (INR)',money(totalAmount))}</div><p>${esc(amountWords(totalAmount))}</p>${p.referenceNo?row('Reference',p.referenceNo):''}${p.modeOfPayment?row('Payment',p.modeOfPayment):''}${row('Prepared by',p.preparedBy)}<p class="c">Thank you, Visit Again</p></body></html>`;
+    return {html,totalAmount,beforeTaxValue,totalGst};
+  }
 
   const byRate = new Map<number, { taxableValue: number; cgstAmt: number; sgstAmt: number; igstAmt: number; hsnCodes: Set<string> }>();
   for (const l of computedLines) {

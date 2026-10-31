@@ -5586,7 +5586,7 @@ const WALKIN_PAYMENT_MODES = [
 // without pulling in this whole page module.
 
 function printWalkinBill(bill: WalkinBillRow, mode: 'thermal' | 'a4' = 'thermal') {
-  if (bill.isGstInvoice && bill.items.some(item => item.gstPricing === 'exclusive')) return printHtml(bill.billNo, renderSavedSalesTaxInvoice(bill));
+  if (bill.isGstInvoice && bill.items.some(item => item.gstPricing === 'exclusive')) return printHtml(bill.billNo, renderSavedSalesTaxInvoice(bill,mode));
   return printDispatchInvoice(walkinBillToInvoiceRecord(bill), mode);
 }
 

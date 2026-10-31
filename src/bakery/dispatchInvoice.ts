@@ -1,3 +1,4 @@
+import {isElectronApp} from '@/lib/platform';
 import {automaticDesktopBilling,captureDesktopBill,billingSnapshot,desktopCheckoutIdentity,finishDesktopCheckout} from '@/lib/desktopBilling';
 // src/bakery/dispatchInvoice.ts
 // Shared invoice + checklist generation for the Planner Dispatch tab's new
@@ -495,21 +496,21 @@ export function walkinBillToInvoiceRecord(bill: WalkinBillRow): DispatchInvoiceR
   };
 }
 
-export function renderSavedSalesTaxInvoice(bill: WalkinBillRow) {
+export function renderSavedSalesTaxInvoice(bill: WalkinBillRow, paper:'a4'|'thermal'=isElectronApp()?'thermal':'a4') {
   const first = bill.items.find(item => item.unit !== 'charge');
   const buyer = first?.gstBuyerDetails ?? {name: bill.customerName || 'Walk-in Customer', address: '', gstin: '', stateName: 'Tamil Nadu', stateCode: '33'};
   return buildGstTaxInvoiceHtml({
-    buyer, consignee: buyer, invoiceNo: bill.billNo, invoiceDate: new Date(bill.createdAt).toLocaleDateString('en-CA', {timeZone:'Asia/Kolkata'}), supplyType: bill.gstSupplyType,
+    paper, buyer, consignee: buyer, invoiceNo: bill.billNo, invoiceDate: new Date(bill.createdAt).toLocaleDateString('en-CA', {timeZone:'Asia/Kolkata'}), supplyType: bill.gstSupplyType,
     preparedBy: bill.cashierName || 'Planner', modeOfPayment: bill.paymentMode,
     lines: bill.items.map(item => ({itemName:item.itemName,qty:item.quantity,rate:item.price,uom:item.unit==='pcs'?'Nos':item.unit==='kg'?'Kg':item.unit,hsnCode:first?.hsnCode || '',gstPct:first?.gstPct || 0})),
     overallSalesTax: {subtotal:bill.subtotal,discountAmount:bill.discountAmount,gstPct:first?.gstPct || 0},
   }).html;
 }
 
-export function renderSavedDispatchTaxInvoice(record: DispatchInvoiceRecord) {
+export function renderSavedDispatchTaxInvoice(record: DispatchInvoiceRecord,paper:'a4'|'thermal'=isElectronApp()?'thermal':'a4') {
   const first = record.items.find(i => i.unit !== 'charge');
   const buyer = first?.gstBuyerDetails ?? {name:record.customerName || record.hosurShopName || 'Customer', address:record.customerAddress || '', gstin:'', stateName:'Tamil Nadu', stateCode:'33'};
-  return buildGstTaxInvoiceHtml({buyer,consignee:buyer,invoiceNo:record.invoiceNo,invoiceDate:new Date(record.createdAt).toLocaleDateString('en-CA',{timeZone:'Asia/Kolkata'}),supplyType:record.gstSupplyType,preparedBy:record.dispatchedBy,
+  return buildGstTaxInvoiceHtml({paper,buyer,consignee:buyer,invoiceNo:record.invoiceNo,invoiceDate:new Date(record.createdAt).toLocaleDateString('en-CA',{timeZone:'Asia/Kolkata'}),supplyType:record.gstSupplyType,preparedBy:record.dispatchedBy,
     lines:record.items.map(i=>({itemName:i.itemName,qty:i.quantity,rate:i.unitPrice,uom:i.unit==='pcs'?'Nos':i.unit==='kg'?'Kg':i.unit,hsnCode:first?.hsnCode || '',gstPct:first?.gstPct || 0})),
     overallSalesTax:{subtotal:record.subtotal,discountAmount:record.discountAmount,gstPct:first?.gstPct || 0}}).html;
 }
@@ -815,7 +816,7 @@ export async function printDispatchInvoice(record: DispatchInvoiceRecord, mode: 
   console.log('[printDispatchInvoice] called', { invoiceNo: record.invoiceNo, mode, itemCount: record.items?.length });
   let html: string;
   try {
-    html = record.isGstInvoice && record.items.some(i=>i.gstPricing === 'exclusive') ? renderSavedDispatchTaxInvoice(record) : renderDispatchInvoiceHtml(record, mode);
+    html = record.isGstInvoice && record.items.some(i=>i.gstPricing === 'exclusive') ? renderSavedDispatchTaxInvoice(record,mode) : renderDispatchInvoiceHtml(record, mode);
     console.log('[printDispatchInvoice] HTML generated ok, length:', html.length);
   } catch (err) {
     console.error('[printDispatchInvoice] renderDispatchInvoiceHtml THREW — this is why nothing happened:', err);

@@ -8,6 +8,15 @@ const buyer={name:'GST Buyer',address:'Hosur',gstin:'TEST-GSTIN',stateName:'Tami
 const bill:WalkinBillRow={id:'test',billNo:'SALES/26-27/TEST',items:[{itemName:'Festival pack',unit:'pcs',quantity:2,price:500,lineTotal:1000,gstPct:5,hsnCode:'2106',gstPricing:'exclusive',gstBuyerDetails:buyer}],subtotal:1000,discountType:'none',discountValue:0,discountAmount:0,total:1050,paymentMode:'cash',cashierName:'Planner',customerName:'Customer',customerMobile:'9999999999',status:'active',createdAt:'2026-10-16T02:00:00Z',isGstInvoice:true,gstSupplyType:'intra',cancelledAt:null,cancelledReason:null};
 afterEach(()=>vi.restoreAllMocks());
 
+it.each(['intra','inter'] as const)('keeps GST totals identical on 80 mm and A4 (%s)',supplyType=>{
+ const params={buyer,invoiceNo:'SALES/26-27/TEST',invoiceDate:'2026-10-31',supplyType,preparedBy:'Planner',lines:[{itemName:'Pack <special>',qty:2,rate:500,gstPct:5,hsnCode:'2106',uom:'pcs'}],overallSalesTax:{subtotal:1000,discountAmount:100,gstPct:5}};
+ const a4=buildGstTaxInvoiceHtml(params),thermal=buildGstTaxInvoiceHtml({...params,paper:'thermal'});
+ expect(thermal.totalAmount).toBe(a4.totalAmount);expect(thermal.totalGst).toBe(a4.totalGst);expect(thermal.beforeTaxValue).toBe(900);
+ expect(thermal.html).toContain('data-print-format="thermal"');expect(thermal.html).toContain('80mm');expect(thermal.html).not.toContain('size:A4');
+ expect(thermal.html).toContain('Pack &lt;special&gt;');expect(thermal.html).toContain(supplyType==='intra'?'CGST':'IGST');expect(thermal.html).toContain('945.00');
+ expect(renderSavedSalesTaxInvoice({...bill,gstSupplyType:supplyType},'thermal')).toContain('data-print-format="thermal"');
+});
+
 it('adds 5% to the whole bill, after discount, with reconciling CGST/SGST',()=>{
   expect(calculatePlannerSalesGst(1000,0,true,5)).toEqual({taxableValue:1000,totalTax:50,cgst:25,sgst:25,igst:0,total:1050});
   expect(calculatePlannerSalesGst(1000,100,true,5).total).toBe(945);
