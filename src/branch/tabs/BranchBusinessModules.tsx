@@ -1176,7 +1176,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch', c
         return fail(`Advance cake order ${o.orderNo} cannot be closed yet — Cake Master has not dispatched it (current status: ${cakeRow?.status ?? 'unknown'}).`);
       }
     }
-    const { data: finalData, error: finalError } = await supabase.rpc('finalize_branch_advance_order_v2', {
+    const { data: finalData, error: finalError } = await supabase.rpc(orderKind==='store'&&!isPlannerScope?'finalize_branch_stock_advance_v1':'finalize_branch_advance_order_v2', {
       p_branch: branch,
       p_order_no: o.orderNo,
       p_items: orderLines,
@@ -1196,8 +1196,8 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch', c
       p_due_date: rpcPaymentMode === 'credit' ? (closingOverrides?.creditDueDate || null) : null,
     });
     if (finalError) {
-      return fail(/finalize_branch_advance_order_v2|could not find the function|schema cache/i.test(finalError.message)
-        ? 'The advance refund and stock fix is not installed. Apply migration 20260715120000_fix_advance_final_stock_refunds.sql.'
+      return fail(/finalize_branch_(?:stock_advance_v1|advance_order_v2)|could not find the function|schema cache/i.test(finalError.message)
+        ? 'The advance stock update is not installed. Ask Admin to apply the latest branch advance stock migration.'
         : `Advance order was not finalized: ${finalError.message}`);
     }
     const finalResult = finalData as { billNo?: string; invoiceNo?: number; refundNo?: string } | null;
