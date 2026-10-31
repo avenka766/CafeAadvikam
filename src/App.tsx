@@ -9,6 +9,7 @@ import ErrorBoundary from '@/components/layout/ErrorBoundary';
 import OfflineBanner from '@/components/layout/OfflineBanner';
 import DataHealthBanner from '@/components/layout/DataHealthBanner';
 import ElectronRefreshButton from '@/components/layout/ElectronRefreshButton';
+import DesktopSalesBootstrap from '@/components/layout/DesktopSalesBootstrap';
 import WorkspaceChrome from '@/components/layout/WorkspaceChrome';
 import { getRoleDefaultPath } from '@/lib/routing';
 import { isNativeApp, isElectronApp } from '@/lib/platform';
@@ -35,6 +36,8 @@ const DailyClosure = lazy(() => import('@/pages/DailyClosure'));
 const MenuManagement = lazy(() => import('@/pages/MenuManagement'));
 const OrderHistory = lazy(() => import('@/pages/OrderHistory'));
 const SalesReport = lazy(() => import('@/pages/SalesReport'));
+const AuditDashboard = lazy(() => import('@/pages/AuditDashboard'));
+const FinanceDashboard = lazy(() => import('@/pages/FinanceDashboard'));
 const AdminDashboard = lazy(() => import('@/pages/AdminDashboard'));
 const StaffManagement = lazy(() => import('@/pages/StaffManagement'));
 const QRMenuPage = lazy(() => import('@/pages/QRMenuPage'));
@@ -132,10 +135,12 @@ const NATIVE_APP_ROLE_GATE: Record<string, UserRole[]> = {
 
 function LiveMenuSync() {
   const { loadMenu, subscribe } = useMenuStore();
+  const auditOnly = useAuthStore(state => ['audit','finance'].includes(state.currentUser?.role || ''));
   useEffect(() => {
+    if (auditOnly) return;
     void loadMenu();
     return subscribe();
-  }, [loadMenu, subscribe]);
+  }, [loadMenu, subscribe, auditOnly]);
   return null;
 }
 
@@ -334,6 +339,8 @@ function AppRoutes() {
         <Route path="/kitchen"          element={<ProtectedRoute allowedRoles={['kitchen']}><KitchenDashboard /></ProtectedRoute>} />
         <Route path="/menu-management"  element={<ProtectedRoute allowedRoles={['admin']}><MenuManagement /></ProtectedRoute>} />
         <Route path="/sales-report"     element={<ProtectedRoute allowedRoles={['admin']}><SalesReport /></ProtectedRoute>} />
+        <Route path="/audit" element={<ProtectedRoute allowedRoles={['audit','admin','owner']}><AuditDashboard /></ProtectedRoute>} />
+        <Route path="/finance" element={<ProtectedRoute allowedRoles={['finance','admin','owner']}><FinanceDashboard /></ProtectedRoute>} />
         <Route path="/admin-dashboard"  element={<ProtectedRoute allowedRoles={['admin']}><AdminDashboard /></ProtectedRoute>} />
         <Route path="/admin-dashboard/planning" element={<ProtectedRoute allowedRoles={['admin']}><AdminDashboard /></ProtectedRoute>} />
         <Route path="/staff-management" element={<ProtectedRoute allowedRoles={['admin']}><StaffManagement /></ProtectedRoute>} />
@@ -368,6 +375,8 @@ function AppRoutes() {
     </Suspense>
   );
 
+  if (location.pathname === '/audit' || location.pathname === '/finance') return routes;
+
   // Owner Android app (2026-08-07): this build is single-purpose (Owner
   // only, appId com.cafeaadvikam.owner) — the public marketing Landing page
   // and the multi-app WorkspaceChrome sidebar (built for switching between
@@ -394,13 +403,15 @@ function AppRoutes() {
 }
 
 export default function App() {
+  const auditOnly = useAuthStore(state => ['audit','finance'].includes(state.currentUser?.role || ''));
   return (
     <ErrorBoundary>
-      <OfflineBanner />
+      {!auditOnly && <OfflineBanner />}
       <DataHealthBanner />
       <ElectronRefreshButton />
+        <DesktopSalesBootstrap />
       <BrowserRouter>
-        <OfflineQueueBootstrap />
+        {!auditOnly && <OfflineQueueBootstrap />}
         <LiveMenuSync />
         <AppRoutes />
       </BrowserRouter>
