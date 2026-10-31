@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from 'react';
-import { fetchAllRows } from '@/lib/supabase';
+import {ReportReadCache,type ReportReadFailure} from '@/lib/reportReadCache';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { fetchAllRows as fetchAllRowsUncached } from '@/lib/supabase';
 import { uniqueBranchBills } from '@/lib/uniqueBranchBills';
 import type { useBranchOpsStore } from '@/branch/branchOpsStore';
 import type { Branch } from '@/branch/types';
@@ -55,13 +56,19 @@ export function useVrsnbReportRecords(fromDate: string, toDate: string, branches
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [legacySales, setLegacySales] = useState<SaleRecord[]>([]);
+  const cacheRef=useRef(new ReportReadCache());const retryRef=useRef(false);const scopeRef=useRef('');
+  const [failedSources,setFailedSources]=useState<ReportReadFailure[]>([]);
   const [revision, setRevision] = useState(0);
+  const retrySource=useCallback((id:string)=>{cacheRef.current.retry(id);retryRef.current=true;setRevision(n=>n+1);},[]);
   const refresh = useCallback(() => setRevision(value => value + 1), []);
   const branchKey = branches.join(',');
   useEffect(() => {
     let active = true;
-    setData(buildReportRecords([]));
-    setLegacySales([]);
+    const scope=fromDate+'|'+toDate+'|'+branchKey;
+    if(!retryRef.current||scopeRef.current!==scope){cacheRef.current.reset();setData(buildReportRecords([]));setLegacySales([]);setFailedSources([]);}
+    retryRef.current=false;scopeRef.current=scope;
+    const cache=cacheRef.current;
+    const fetchAllRows=<T,>(table:string,configure:Parameters<typeof fetchAllRowsUncached<T>>[1],options:Parameters<typeof fetchAllRowsUncached<T>>[2],source:string)=>cache.read(source,source,()=>fetchAllRowsUncached<T>(table,configure,options));
     setError('');
     if (!fromDate || !toDate || fromDate > toDate) {
       setLoading(false);
@@ -90,7 +97,7 @@ export function useVrsnbReportRecords(fromDate: string, toDate: string, branches
               .gte(dateColumn, isTimestamp ? `${fromDate}T00:00:00+05:30` : fromDate)
               .lte(dateColumn, isTimestamp ? `${toDate}T23:59:59.999+05:30` : toDate)
               .order('created_at', { ascending: true }).order('record_id', { ascending: true }),
-              { maxRows: Infinity });
+              { maxRows: Infinity },`${branch} ${isTimestamp?'Operations':dateColumn.includes('expense')?'Expenses':'Bank deposits'}`);
             rows.push(...result.data);
             if (result.error) errors.push(`${branch}: ${result.error}`);
           } catch (cause) { errors.push(`${branch}: ${cause instanceof Error ? cause.message : String(cause)}`); }
@@ -102,7 +109,7 @@ export function useVrsnbReportRecords(fromDate: string, toDate: string, branches
             .eq('branch', branch)
             .gte('sold_at', `${fromDate}T00:00:00+05:30`)
             .lte('sold_at', `${toDate}T23:59:59.999+05:30`)
-            .order('sold_at', { ascending: false }).order('id', { ascending: false }), { maxRows: Infinity });
+            .order('sold_at', { ascending: false }).order('id', { ascending: false }), { maxRows: Infinity },`${branch} Sales item register`);
           if (result.error) errors.push(`${branch} sales: ${result.error}`);
           sales.push(...result.data.map(row => ({
             id: String(row.id), branch: branch as Branch, itemName: String(row.item_name),
@@ -117,10 +124,10 @@ export function useVrsnbReportRecords(fromDate: string, toDate: string, branches
       const billNumbers = new Set(records.bills.map(bill => `${bill.branch}|${bill.billNo}`));
       setLegacySales(sales.filter(sale => !sale.billNo || !billNumbers.has(`${sale.branch}|${sale.billNo}`)));
       setData(records);
-      setError(errors.join(' | '));
+      setError(errors.join(' | '));setFailedSources(cache.errors);
       setLoading(false);
     })();
     return () => { active = false; };
   }, [fromDate, toDate, branchKey, revision]);
-  return { ...data, legacySales, loading, error, refresh };
+  return { ...data, legacySales, loading, error, refresh, failedSources, retrySource };
 }

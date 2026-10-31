@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabase';
+import type { ReportReadFailure } from '@/lib/reportReadCache';
 import type { Branch } from '@/branch/types';
 
 export type LedgerClosureRow = {
@@ -71,7 +72,7 @@ function isValidLedgerDate(value: string) {
     && date.getUTCDate() === day;
 }
 
-type LedgerBundle = { closureRows: LedgerClosureRow[]; savedClosures: LedgerSavedClosure[]; error: string };
+type LedgerBundle = { closureRows: LedgerClosureRow[]; savedClosures: LedgerSavedClosure[]; error: string; failedSources:ReportReadFailure[] };
 
 // PERF FIX (2026-10-01): "branch dashboard very slow, [57014] statement
 // timeout" — live postgres_logs confirmed branch_daily_closure_ledger_ranged
@@ -105,7 +106,7 @@ function cacheKeyFor(fromDate: string, toDate: string, branchesKey: string) {
   return `${fromDate}|${toDate}|${branchesKey}`;
 }
 
-async function fetchLedgerBundle(fromDate: string, toDate: string, branchList: Branch[] | null): Promise<LedgerBundle> {
+async function fetchLedgerBundle(fromDate: string, toDate: string, branchList: Branch[] | null, onlySource?:string, previous?:LedgerBundle): Promise<LedgerBundle> {
   // PERF FIX (2026-09-26): "all the dashboard and tabs are getting
   // [statement timeout], always" — branch_daily_closure_ledger (the
   // view this used to query directly) computes its 3 GROUP BY CTEs
@@ -136,31 +137,19 @@ async function fetchLedgerBundle(fromDate: string, toDate: string, branchList: B
     return q;
   };
 
-  let [closureRes, savedRes] = await Promise.all([
-    buildClosureQuery(),
-    buildSavedClosureQuery(),
-  ]);
-
-  // RESILIENCE: a transient "statement timeout" under concurrent load (seen when
-  // several dashboard queries fire together) otherwise silently zeroes out this
-  // hook's data with no visible loading/error recovery. One retry after a short
-  // backoff (against freshly-built query objects — Postgrest builders are
-  // single-use thenables) clears it in practice — matches the retry pattern
-  // already used for the paginated fetches in AdminDashboard.tsx.
-  if (closureRes.error || savedRes.error) {
-    await new Promise((resolve) => setTimeout(resolve, 800));
-    [closureRes, savedRes] = await Promise.all([buildClosureQuery(), buildSavedClosureQuery()]);
-  }
-
-  const firstError = [closureRes.error, savedRes.error].find(Boolean);
-  if (firstError) {
-    return { closureRows: [], savedClosures: [], error: firstError.message || 'Unable to load branch ledger data.' };
-  }
-  return {
-    closureRows: (closureRes.data || []) as LedgerClosureRow[],
-    savedClosures: (savedRes.data || []) as LedgerSavedClosure[],
-    error: '',
+  const read=async(id:string,query:()=>PromiseLike<{data:unknown;error:{message:string}|null}>)=>{
+    try{
+      let result=await query();
+      if(result.error){await new Promise(resolve=>setTimeout(resolve,800));result=await query();}
+      return {id,...result};
+    }catch(error){return {id,data:null,error:{message:error instanceof Error?error.message:String(error)}};}
   };
+  const [closureRes,savedRes]=await Promise.all([
+    !onlySource||onlySource==='Sales ledger'?read('Sales ledger',buildClosureQuery):Promise.resolve({id:'Sales ledger',data:previous?.closureRows||[],error:null}),
+    !onlySource||onlySource==='Saved closures'?read('Saved closures',buildSavedClosureQuery):Promise.resolve({id:'Saved closures',data:previous?.savedClosures||[],error:null}),
+  ]);
+  const failedSources=[...(onlySource?previous?.failedSources.filter(f=>f.id!==onlySource)||[]:[]),...[closureRes,savedRes].flatMap(r=>r.error?[{id:r.id,error:r.error.message}]:[])];
+  return {closureRows:(closureRes.error?previous?.closureRows||[]:closureRes.data||[]) as LedgerClosureRow[],savedClosures:(savedRes.error?previous?.savedClosures||[]:savedRes.data||[]) as LedgerSavedClosure[],error:failedSources.map(f=>f.id+': '+f.error).join(' | '),failedSources};
 }
 
 function getLedgerBundle(fromDate: string, toDate: string, branchesKey: string, branchList: Branch[] | null, forceRefresh: boolean): Promise<LedgerBundle> {
@@ -170,6 +159,7 @@ function getLedgerBundle(fromDate: string, toDate: string, branchesKey: string, 
     return cached.promise;
   }
   const promise = fetchLedgerBundle(fromDate, toDate, branchList);
+  void promise.then(result=>{if(result.error&&ledgerCache.get(key)?.promise===promise)ledgerCache.delete(key);});
   ledgerCache.set(key, { promise, timestamp: Date.now() });
   return promise;
 }
@@ -179,6 +169,10 @@ export function useBranchLedger(fromDate: string, toDate: string, branches?: Bra
   const [savedClosures, setSavedClosures] = useState<LedgerSavedClosure[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [failedSources,setFailedSources]=useState<ReportReadFailure[]>([]);
+  const bundleRef=useRef<LedgerBundle>();
+  const retryRef=useRef<string>();
+  const scopeRef=useRef('');
 
   // HYGIENE FIX: JSON.stringify(branches) in useEffect deps creates a new string reference on every
   // render when branches is passed as a new array literal, causing the effect to re-fire continuously.
@@ -191,16 +185,19 @@ export function useBranchLedger(fromDate: string, toDate: string, branches?: Bra
   const [refreshToken, setRefreshToken] = useState(0);
   const forceNextFetchRef = useRef(false);
   const refresh = useCallback(() => {
-    forceNextFetchRef.current = true;
+    retryRef.current=undefined; forceNextFetchRef.current = true;
     setRefreshToken((t) => t + 1);
   }, []);
 
+  const retrySource=useCallback((id:string)=>{retryRef.current=id;setRefreshToken(t=>t+1);},[]);
   useEffect(() => {
     let active = true;
     if (!enabled) { setLoading(false); return; }
     const load = async () => {
-      setClosureRows([]);
-      setSavedClosures([]);
+      const scope=cacheKeyFor(fromDate,toDate,branchesKey);
+      const onlySource=scopeRef.current===scope?retryRef.current:undefined;
+      retryRef.current=undefined;scopeRef.current=scope;
+      if(!onlySource){bundleRef.current=undefined;setClosureRows([]);setSavedClosures([]);setFailedSources([]);}
       if (!isValidLedgerDate(fromDate) || !isValidLedgerDate(toDate) || fromDate > toDate) {
         setLoading(false);
         setError('Select a valid From Date and To Date.');
@@ -213,20 +210,13 @@ export function useBranchLedger(fromDate: string, toDate: string, branches?: Bra
       const forceRefresh = forceNextFetchRef.current;
       forceNextFetchRef.current = false;
 
-      const { closureRows: rows, savedClosures: saved, error: fetchError } =
-        await getLedgerBundle(fromDate, toDate, branchesKey, branchList, forceRefresh);
-
-      if (!active) return;
-      if (fetchError) {
-        setClosureRows([]);
-        setSavedClosures([]);
-        setError(fetchError);
-        setLoading(false);
-        return;
-      }
-
-      setClosureRows(rows);
-      setSavedClosures(saved);
+      const bundle=onlySource
+        ?await fetchLedgerBundle(fromDate,toDate,branchList,onlySource,bundleRef.current)
+        :await getLedgerBundle(fromDate,toDate,branchesKey,branchList,forceRefresh);
+      if(!active)return;
+      bundleRef.current=bundle;
+      setClosureRows(bundle.closureRows);setSavedClosures(bundle.savedClosures);
+      setError(bundle.error);setFailedSources(bundle.failedSources);
       setLoading(false);
     };
 
@@ -260,6 +250,7 @@ export function useBranchLedger(fromDate: string, toDate: string, branches?: Bra
     loading,
     error,
     refresh,
+    retrySource, failedSources,
     closureRows,
     savedClosures,
     closureByBranchDate,

@@ -412,14 +412,18 @@ export function asNumber(value: unknown) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+const sourceNames = ['Counter totals','Counter sessions','Daily summary','Cashier bills','Salesperson bills','Item sales','Category sales','Discount bills','Supplier outstanding','Purchase invoices','Supplier payments','Purchase returns','Return items','Purchase workflow','Branch sales history'];
+
 export function useSnbAdminReports(fromDate: string, toDate: string, tab = "reports") {
   const [data, setData] = useState<ReportState>(EMPTY);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [refreshedAt, setRefreshedAt] = useState<string | null>(null);
   const requestIdRef = useRef(0);
+  const savedResults = useRef<PromiseSettledResult<any>[]>([]);
+  const [failedSources, setFailedSources] = useState<{id:string;error:string}[]>([]);
 
-  const refresh = useCallback(async () => {
+  const load = useCallback(async (onlyIndex?:number) => {
     const requestId = ++requestIdRef.current;
     if (!isValidReportDate(fromDate) || !isValidReportDate(toDate) || fromDate > toDate) {
       setData(EMPTY);
@@ -431,7 +435,7 @@ export function useSnbAdminReports(fromDate: string, toDate: string, tab = "repo
 
     setLoading(true);
     setError("");
-    setData(EMPTY);
+    if(onlyIndex===undefined){setData(EMPTY);setFailedSources([]);savedResults.current=[];}
     const range = { fromDate, toDate };
     const tasks = [
       () => fetchPaged("snb_counter_calculated_totals", { ...range, dateColumn: "business_date", orderColumn: "business_date", columns: "counter_session_id,business_date,cashier_user_id,cashier_username,opening_cash,bill_count,gross_sales,billed_total,discounts,cash_sales,upi_sales,card_sales,credit_sales,credit_collected,credit_cash_collected,credit_upi_collected,credit_card_collected,credit_bank_collected,advance_collected,advance_cash_collected,returns,cash_refunds,net_sales,expected_cash_before_outflows" }),
@@ -456,9 +460,9 @@ export function useSnbAdminReports(fromDate: string, toDate: string, tab = "repo
       () => fetchSnbPurchaseWorkflowSnapshot(fromDate, toDate),
       () => fetchSnbOperationHistory(fromDate, toDate),
     ];
-    const results: PromiseSettledResult<any>[] = tasks.map(() => ({ status: "fulfilled", value: [] }));
-    results[14] = { status: 'fulfilled', value: { operationBills: [], operationReturns: [] } };
-    for (const index of snbReportSources(tab)) {
+    const results: PromiseSettledResult<any>[] = onlyIndex===undefined ? tasks.map(() => ({ status: "fulfilled", value: [] })) : [...savedResults.current];
+    if(onlyIndex===undefined)results[14] = { status: 'fulfilled', value: { operationBills: [], operationReturns: [] } };
+    for (const index of onlyIndex===undefined?snbReportSources(tab):[onlyIndex]) {
       if (requestId !== requestIdRef.current) return;
       try { results[index] = { status: "fulfilled", value: await tasks[index]() }; }
       catch (reason) { results[index] = { status: "rejected", reason }; }
@@ -466,6 +470,8 @@ export function useSnbAdminReports(fromDate: string, toDate: string, tab = "repo
 
     // A slower request for an earlier date range must not replace the latest report.
     if (requestId !== requestIdRef.current) return;
+    savedResults.current=results;
+    setFailedSources(results.flatMap((r,index)=>r.status==='rejected'?[{id:sourceNames[index],error:r.reason instanceof Error?r.reason.message:String(r.reason)}]:[]));
 
     const workflowResult = results[13];
     const operationHistoryResult = results.slice(14, 15)[0];
@@ -554,9 +560,12 @@ export function useSnbAdminReports(fromDate: string, toDate: string, tab = "repo
     setRefreshedAt(new Date().toISOString());
     setLoading(false);
   }, [fromDate, toDate, tab]);
+  const refresh=useCallback(()=>load(),[load]);
+  const retrySource=useCallback((id:string)=>{const index=sourceNames.indexOf(id);if(Number.isInteger(index)&&index>=0&&index<15&&savedResults.current[index]?.status==='rejected')void load(index);},[load]);
 
   useEffect(() => {
     void refresh();
+    return()=>{++requestIdRef.current;};
   }, [refresh]);
 
   const hasDatabaseReports = useMemo(
@@ -564,7 +573,7 @@ export function useSnbAdminReports(fromDate: string, toDate: string, tab = "repo
     [data],
   );
 
-  return { ...data, loading, error, refreshedAt, refresh, hasDatabaseReports };
+  return { ...data, loading, error, refreshedAt, refresh, retrySource, failedSources, hasDatabaseReports };
 }
 
 // ─── Lightweight, all-time cash summary (Bank Deposits / Current Cash tabs) ────
