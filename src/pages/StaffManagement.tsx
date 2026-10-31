@@ -24,7 +24,7 @@ const ROLE_GROUPS = [
   },
   {
     label: '🛡️ Branch Admins & Owner',
-    roles: ['admin_vrsnb', 'admin_snb', 'owner'] as UserRole[],
+    roles: ['admin_vrsnb', 'admin_snb', 'owner', 'audit', 'finance'] as UserRole[],
   },
 ];
 
@@ -43,6 +43,8 @@ const ROLE_LABELS: Record<UserRole, string> = {
   branch_hosur:    'Hosur Branch',
   admin_vrsnb:     'VRSNB Admin',
   admin_snb:       'SNB Admin',
+  audit:           'Audit — read-only finance',
+  finance:         'Finance — collections and payments',
   owner:           'Owner',
 };
 
@@ -61,6 +63,8 @@ const ROLE_COLORS: Record<UserRole, string> = {
   branch_hosur:    'bg-emerald-100 text-emerald-800',
   admin_vrsnb:     'bg-violet-100 text-violet-800',
   admin_snb:       'bg-yellow-100 text-yellow-800',
+  audit:           'bg-teal-100 text-teal-800',
+  finance:         'bg-emerald-100 text-emerald-800',
   owner:           'bg-rose-100 text-rose-800',
 };
 
