@@ -3,7 +3,7 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import { supabase } from '@/lib/supabase';
-import { clearAppSession, saveAppSession } from '@/lib/appSession';
+import { clearAppSession, saveAppSession, getAppSessionToken } from '@/lib/appSession';
 import { isNativeApp, isElectronApp } from '@/lib/platform';
 import type { User, UserRole } from '@/types';
 
@@ -105,6 +105,9 @@ export const useAuthStore = create<AuthState>()(
       },
 
       logout: () => {
+        const privateRole = get().currentUser?.role;
+        const auditSession = privateRole === 'audit' || privateRole === 'finance';
+        const auditToken = auditSession ? getAppSessionToken() : null;
         const timer = get()._sessionTimer;
         if (timer) clearTimeout(timer);
 
@@ -128,7 +131,8 @@ export const useAuthStore = create<AuthState>()(
         // Best-effort server invalidation. Local logout is already complete.
         void (async () => {
           try {
-            await supabase.rpc('logout_staff_secure');
+            const request = supabase.rpc(privateRole === 'finance' ? 'logout_finance_staff_secure' : auditSession ? 'logout_audit_staff_secure' : 'logout_staff_secure');
+            await (auditToken ? request.setHeader('x-cafe-session', auditToken) : request);
           } catch {
             // The local session remains cleared even if the network is unavailable.
           }
