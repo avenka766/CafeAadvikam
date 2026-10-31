@@ -38,6 +38,7 @@ declare global {
       sales?: (operation: string, payload?: unknown) => Promise<unknown>;
       // FEATURE (2026-09-30): see desktopSilentPrint() below.
       silentPrint?: (html: string) => Promise<{ success: boolean; errorType?: string | null }>;
+      printerSettings?: (operation:'get'|'save',value?:{receiptPrinter:string;reportPrinter:string})=>Promise<{settings:{receiptPrinter?:string;reportPrinter?:string};printers:{name:string;isDefault:boolean}[]}>;
     };
   }
 }
