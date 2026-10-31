@@ -6,6 +6,7 @@ import { buildReportSections, reportColumns, type ReportRow, type ReportValue } 
 import { REPORT_SOURCES } from '@/branch/reports/reportSources';
 import { downloadReportWorkbook } from '@/branch/reports/reportWorkbook';
 import { cn } from '@/lib/utils';
+import { ReportSourceFailures } from '@/components/ReportSourceFailures';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 
 const button = 'inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-bold disabled:opacity-50';
@@ -78,7 +79,7 @@ export function BranchReportView({ fromDate, toDate, reportBranches, userName, r
     <div aria-live="polite" className="space-y-3">
       {report.loading && <div className="rounded-2xl border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900">Loading report sources: {completed} of {REPORT_SOURCES.length}. Excel will be available when loading finishes.<div className="mt-2 h-1.5 overflow-hidden rounded-full bg-blue-100"><div className="h-full bg-blue-600 transition-all" style={{ width: `${completed / REPORT_SOURCES.length * 100}%` }} /></div></div>}
       {(report.error || exportError) && <p role="alert" className="rounded-xl bg-red-50 p-4 text-red-800">{report.error || exportError}</p>}
-      {failures.length > 0 && <details className="rounded-2xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950"><summary className="cursor-pointer font-bold">{failures.length} source(s) could not be fully loaded. This report is incomplete.</summary><ul className="mt-2 space-y-1">{failures.map(([id, data]) => <li key={id}>{REPORT_SOURCES.find(s => s.id === id)?.title}: {data.error}</li>)}</ul><p className="mt-2">Refresh to retry. Any export will clearly list these failures in Contents.</p></details>}
+      <ReportSourceFailures failures={failures.map(([id, data]) => ({ id, error: data.error }))} busy={report.loading} onRetry={report.retrySource} />
     </div>
     {!report.loading && !report.error && failures.length === 0 && <div className="grid gap-4 xl:grid-cols-2">
       {(['topItems', 'categories'] as const).map(id => {
