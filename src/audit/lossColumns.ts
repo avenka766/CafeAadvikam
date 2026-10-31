@@ -1,0 +1,5 @@
+import type {AuditColumn} from './AuditTable';
+const c=(key:string,label:string,numeric=false,money=false):AuditColumn=>({key,label,numeric,money});
+export const lossColumns=[c('date','Date'),c('branch','Branch'),c('type','Type'),c('reference','Report / record'),c('item','Item'),c('quantity','Quantity',true),c('unit','Unit'),c('system','System stock',true),c('physical','Physical stock',true),c('difference','Variation',true),c('reason','Reason'),c('status','Status'),c('verifiedBy','Verified / confirmed by'),c('recordedBy','Recorded by'),c('destination','Transfer destination'),c('plannerReceived','Planner receipt')];
+lossColumns.splice(7,0,c('unitPrice','Unit price INR',true,true),c('lossValue','Estimated loss INR',true,true),c('signedValue','Signed variation value INR',true,true),c('priceBasis','Price basis'),c('priceUpdated','Price last updated'));
+export const lossSummaryColumns=[c('branch','Branch'),c('type','Type'),c('unit','Unit'),c('records','Records',true),c('quantity','Quantity / signed variation',true),c('lossValue','Priced loss estimate INR',true,true),c('unpriced','Unpriced records',true)];

@@ -1,0 +1,17 @@
+import {AuditScroll} from './AuditScroll';
+import {useMemo,useState,type ReactNode} from 'react';
+import {ArrowDown,ArrowUp,ArrowUpDown} from 'lucide-react';
+import {sortAuditRows,type AuditSort} from './sorting';
+import type {AuditRaw} from './sources';
+export type AuditColumn={key:string;label:string;numeric?:boolean;money?:boolean;render?:(row:AuditRaw)=>ReactNode};
+export function AuditSortHeading({label,field,sort,onSort}:{label:string;field:string;sort:AuditSort|null;onSort:(key:string)=>void}){
+ const selected=sort?.key===field;const Icon=selected?(sort.direction==='asc'?ArrowUp:ArrowDown):ArrowUpDown;
+ return <th aria-sort={selected?(sort.direction==='asc'?'ascending':'descending'):'none'} className="px-4 py-3"><button type="button" onClick={()=>onSort(field)} className="flex items-center gap-1.5 whitespace-nowrap text-left hover:text-emerald-800">{label}<Icon className="size-3 shrink-0"/></button></th>;
+}
+export function AuditTable({title,rows,columns,loading=false}:{title:string;rows:AuditRaw[];columns:AuditColumn[];loading?:boolean}){
+ const[search,setSearch]=useState('');const[sort,setSort]=useState<AuditSort|null>(null);const[page,setPage]=useState(0);
+ const visible=useMemo(()=>sortAuditRows(rows.filter(r=>columns.some(c=>String(r[c.key]??'').toLowerCase().includes(search.toLowerCase()))),sort,(r,k)=>columns.find(c=>c.key===k)?.numeric&&r[k]!=null?Number(r[k]):r[k]),[rows,columns,sort,search]);
+ const pages=Math.max(1,Math.ceil(visible.length/50));const current=Math.min(page,pages-1);
+ const changeSort=(key:string)=>{setSort(s=>({key,direction:s?.key===key&&s.direction==='asc'?'desc':'asc'}));setPage(0);};
+ return <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white"><div className="flex flex-wrap items-center justify-between gap-3 border-b p-4"><h3 className="text-sm font-bold">{title}</h3><input aria-label={`Search ${title}`} placeholder="Search name, invoice or team…" value={search} onChange={e=>{setSearch(e.target.value);setPage(0);}} className="h-9 rounded-xl border border-slate-200 px-3 text-xs"/></div><AuditScroll><table className="w-full whitespace-nowrap text-left text-xs"><thead className="bg-slate-50 text-[10px] uppercase tracking-wide text-slate-500"><tr>{columns.map(c=><AuditSortHeading key={c.key} label={c.label} field={c.key} sort={sort} onSort={changeSort}/>)}</tr></thead><tbody className="divide-y divide-slate-100">{!loading&&visible.slice(current*50,current*50+50).map((r,i)=><tr key={String(r.id??i)} className="hover:bg-slate-50">{columns.map(c=><td key={c.key} className={`px-4 py-3 ${c.numeric?'text-right tabular-nums':''}`}>{c.render?c.render(r):r[c.key]==null?'—':c.money?`₹${Number(r[c.key]).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2})}`:String(r[c.key])}</td>)}</tr>)}{(loading||!visible.length)&&<tr><td colSpan={columns.length} className="p-8 text-left text-slate-500">{loading?'Loading live records…':'No records for this scope.'}</td></tr>}</tbody></table></AuditScroll><footer className="flex items-center justify-between gap-3 border-t p-4 text-xs text-slate-500"><span>{loading?'Loading':`${visible.length.toLocaleString('en-IN')} records · page ${current+1} of ${pages}`}</span><div className="flex gap-3"><button disabled={current===0} onClick={()=>setPage(current-1)} className="disabled:opacity-30">Previous</button><button disabled={current===pages-1} onClick={()=>setPage(current+1)} className="disabled:opacity-30">Next</button></div></footer></section>;
+}
