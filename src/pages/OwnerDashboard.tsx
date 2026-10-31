@@ -1,3 +1,5 @@
+import {ReportReadCache,type ReportReadFailure} from '@/lib/reportReadCache';
+import { ReportSourceFailures } from '@/components/ReportSourceFailures';
 // src/pages/OwnerDashboard.tsx
 // Owner Dashboard — Sales · Attendance · Credit · Waste Logs
 // New in this version:
@@ -289,6 +291,7 @@ type HosurBillRow = {
 };
 type HosurShopSalesRow = { shopName: string; billCount: number; revenue: number; paid: number; credit: number };
 type HosurSalesSummary = {
+  failedSources:ReportReadFailure[];retrySource:(id:string)=>void;
   loading: boolean;
   revenue: number; paid: number; credit: number;
   cash: number; upi: number; card: number;
@@ -303,15 +306,21 @@ function useHosurSalesSummary(fromKey: string, toKey: string): HosurSalesSummary
   const [itemQty, setItemQty] = useState(0);
   const [loading, setLoading] = useState(false);
   const [nonce, setNonce] = useState(0);
+  const cacheRef=useRef(new ReportReadCache());const retryRef=useRef(false);const scopeRef=useRef('');
+  const [failedSources,setFailedSources]=useState<ReportReadFailure[]>([]);
+  const retrySource=useCallback((id:string)=>{cacheRef.current.retry(id);retryRef.current=true;setNonce(n=>n+1);},[]);
 
   useEffect(() => {
-    let alive = true;
-    (async () => {
+    let alive = true;const scope=fromKey+'|'+toKey;
+    if(!retryRef.current||scopeRef.current!==scope){cacheRef.current.reset();setBills([]);setItemQty(0);setFailedSources([]);}
+    retryRef.current=false;scopeRef.current=scope;const cache=cacheRef.current;
+    const readRows=<T,>(table:string,configure:Parameters<typeof fetchAllRows<T>>[1])=>cache.read(table,table,()=>fetchAllRows<T>(table,configure));
+    (async () => {try{
       setLoading(true);
       // BUG FIX (2026-09-16): unbounded date-range query, no `.limit()` at
       // all — PostgREST silently caps at 1000 rows with no error (see
       // fetchAllRows's comment in lib/supabase.ts). Paginated.
-      const { data, error: errorMsg } = await fetchAllRows<Record<string, unknown>>('hosur_bills', (q) => q
+      const { data, error: errorMsg } = await readRows<Record<string, unknown>>('hosur_bills', (q) => q
         .select('id, shop_name, subtotal, paid_amount, credit_amount, payment_mode, confirmed_at, status')
         .not('confirmed_at', 'is', null)
         .neq('status', 'cancelled')
@@ -333,7 +342,7 @@ function useHosurSalesSummary(fromKey: string, toKey: string): HosurSalesSummary
       // matching fix on Admin's Hosur Sales tab) — fold confirmed walk-in
       // bills in here too so every Owner view built on this hook (Sales
       // Overview, Daily Closure, Everything) shows the same real total.
-      const { data: walkinData, error: walkinError } = await fetchAllRows<Record<string, unknown>>('bakery_walkin_bills', (q) => q
+      const { data: walkinData, error: walkinError } = await readRows<Record<string, unknown>>('bakery_walkin_bills', (q) => q
         .select('id, bill_no, total, payment_mode, cashier_name, status, customer_name, created_at')
         .eq('status', 'active')
         .ilike('bill_no', 'SALES/%')
@@ -370,13 +379,15 @@ function useHosurSalesSummary(fromKey: string, toKey: string): HosurSalesSummary
       setBills(mapped);
       if (rows.length) {
         const hosurIds = rows.map(r => String(r.id));
-        const { data: itemRows } = await fetchAllRows<Record<string, unknown>>('hosur_bill_items', (q) => q.select('bill_id, quantity').in('bill_id', hosurIds));
+        const { data: itemRows } = await readRows<Record<string, unknown>>('hosur_bill_items', (q) => q.select('bill_id, quantity').in('bill_id', hosurIds));
         if (!alive) return;
         setItemQty((itemRows || []).reduce((sum, r) => sum + Number((r as { quantity?: number }).quantity || 0), 0));
       } else {
         setItemQty(0);
       }
       setLoading(false);
+    }catch(error){if(alive)console.error('Sales report failed',error);}
+    finally{if(alive){setFailedSources(cache.errors);setLoading(false);}}
     })();
     return () => { alive = false; };
   }, [fromKey, toKey, nonce]);
@@ -399,8 +410,8 @@ function useHosurSalesSummary(fromKey: string, toKey: string): HosurSalesSummary
       shopMap.set(b.shopName, ex);
     });
     const byShop = [...shopMap.values()].sort((a, b) => b.revenue - a.revenue);
-    return { loading, revenue, paid, credit, cash, upi, card, billCount: bills.length, itemQty, byShop, bills, refresh: () => setNonce(n => n + 1) };
-  }, [bills, itemQty, loading]);
+    return { loading, failedSources, retrySource, revenue, paid, credit, cash, upi, card, billCount: bills.length, itemQty, byShop, bills, refresh: () => setNonce(n => n + 1) };
+  }, [bills, itemQty, loading,failedSources,retrySource]);
 }
 
 function HosurSalesByShopCard({ hosurSales }: { hosurSales: HosurSalesSummary }) {
@@ -416,6 +427,7 @@ function HosurSalesByShopCard({ hosurSales }: { hosurSales: HosurSalesSummary })
         </button>
       </div>
       <p className="text-[10px] text-muted-foreground mb-3">Confirmed Hosur shop bills for the selected range — {hosurSales.billCount} bills, {formatCurrency(hosurSales.paid)} collected, {formatCurrency(hosurSales.credit)} on credit</p>
+      <ReportSourceFailures failures={hosurSales.failedSources} busy={hosurSales.loading} onRetry={hosurSales.retrySource} />
       {hosurSales.byShop.length === 0 ? (
         <p className="text-sm text-muted-foreground py-4 text-center">No confirmed Hosur bills in this range yet.</p>
       ) : (
@@ -870,13 +882,8 @@ function SalesOverviewTab() {
           anything was wrong. salesLedger.error was already being set by
           the hook but never read here. Surfacing it now so the owner
           knows to hit Refresh instead of trusting a silently-wrong figure. */}
-      {salesLedger.error && (
-        <div className="flex items-center gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-800">
-          <AlertTriangle className="size-4 shrink-0" />
-          <span className="flex-1">VRSNB/SNB branch figures below may be incomplete — the sales report failed to load fully ({salesLedger.error}). Hit Refresh to reload.</span>
-          <button onClick={() => salesLedger.refresh()} className="shrink-0 rounded-lg bg-red-600 px-3 py-1.5 text-xs font-bold text-white">Refresh</button>
-        </div>
-      )}
+      <ReportSourceFailures failures={salesLedger.failedSources} busy={salesLedger.loading} onRetry={salesLedger.retrySource} />
+      {salesLedger.error && !salesLedger.failedSources.length && <p role="alert" className="text-red-700">{salesLedger.error}</p>}
 
       {/* Today cash-in-drawer */}
       {showCafe && (
@@ -2305,8 +2312,9 @@ function BranchOverviewTab() {
   // directly here, scoped to the selected range and paginated, bypasses
   // that shared cap for the one figure this panel needs to be exact.
   const [expensesByBranch, setExpensesByBranch] = useState<Record<string, number>>({});
+  const [expenseError,setExpenseError]=useState('');const [expenseRevision,setExpenseRevision]=useState(0);const [expensesLoading,setExpensesLoading]=useState(false);
   useEffect(() => {
-    let alive = true;
+    let alive = true;setExpenseError('');setExpensesLoading(true);setExpensesByBranch({});
     (async () => {
       const runQuery = () => fetchAllRows<{ branch: string; payload: { amount?: number } }>('branch_operation_records', (q) => q
         .select('branch, payload')
@@ -2325,7 +2333,7 @@ function BranchOverviewTab() {
         await new Promise((resolve) => setTimeout(resolve, 800));
         ({ data, error } = await runQuery());
       }
-      if (!alive || error) return;
+      if(!alive)return;setExpensesLoading(false);if(error){setExpenseError(String(error));return;}
       const totals: Record<string, number> = {};
       (data || []).forEach((row) => {
         totals[row.branch] = (totals[row.branch] || 0) + Number(row.payload?.amount || 0);
@@ -2333,7 +2341,7 @@ function BranchOverviewTab() {
       setExpensesByBranch(totals);
     })();
     return () => { alive = false; };
-  }, [fromKey, toKey]);
+  }, [fromKey, toKey,expenseRevision]);
 
   // FEATURE: "every single rupee should be seen by the Owner" — Sales,
   // Purchases and Expenses were already computed correctly per unit below
@@ -2680,12 +2688,9 @@ function BranchOverviewTab() {
           confirmed live on this exact hook silently falling back to a
           drastically understated figure with no indication anything was
           wrong. Surfacing it here too. */}
-      {ownerLedger.error && (
-        <div className="flex items-center justify-between gap-3 rounded-2xl border border-red-200 bg-red-50 p-4 text-sm font-semibold text-red-800">
-          <span>Branch figures below may be incomplete — the sales ledger failed to load fully ({ownerLedger.error}). Click Refresh to reload.</span>
-          <button onClick={() => ownerLedger.refresh()} className="shrink-0 rounded-lg bg-red-600 px-3 py-1.5 text-xs font-bold text-white">Refresh</button>
-        </div>
-      )}
+      <ReportSourceFailures failures={expenseError?[{id:'Branch expenses',error:expenseError}]:[]} busy={expensesLoading} onRetry={()=>setExpenseRevision(n=>n+1)} />
+      <ReportSourceFailures failures={ownerLedger.failedSources} busy={ownerLedger.loading} onRetry={ownerLedger.retrySource} />
+      {ownerLedger.error && !ownerLedger.failedSources.length && <p role="alert" className="text-red-700">{ownerLedger.error}</p>}
 
       <section className="owner-metric-grid wide">
         <OwnerMetricCard icon={<IndianRupee className="size-5" />} label="Gross Sales" value={formatCurrency(totals.sales)} sub="Cafe + branches" tone="green" />
@@ -2969,12 +2974,8 @@ function OwnerDailyClosureTab() {
       {/* BUG FIX (2026-09-08): "data should be accurate" — see the same
           fix on BranchOverviewTab/SalesOverviewTab above; ownerLedger's
           error was never surfaced here either. */}
-      {ownerLedger.error && (
-        <div className="flex items-center justify-between gap-3 rounded-2xl border border-red-200 bg-red-50 p-4 text-sm font-semibold text-red-800">
-          <span>Closure figures below may be incomplete — the sales ledger failed to load fully ({ownerLedger.error}). Click Refresh to reload.</span>
-          <button onClick={() => ownerLedger.refresh()} className="shrink-0 rounded-lg bg-red-600 px-3 py-1.5 text-xs font-bold text-white">Refresh</button>
-        </div>
-      )}
+      <ReportSourceFailures failures={ownerLedger.failedSources} busy={ownerLedger.loading} onRetry={ownerLedger.retrySource} />
+      {ownerLedger.error && !ownerLedger.failedSources.length && <p role="alert" className="text-red-700">{ownerLedger.error}</p>}
 
       <section className="owner-metric-grid">
         <OwnerMetricCard icon={<Receipt className="size-5" />} label="Net Sales" value={formatCurrency(totals.net)} tone="green" />
@@ -4410,7 +4411,8 @@ function OwnerEverythingTab() {
       {/* BUG FIX (2026-09-08): "data should be accurate" — see the same
           fix on BranchOverviewTab/SalesOverviewTab above; ownerLedger's
           error was never surfaced here either. */}
-      {ownerLedger.error && <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700">Net Sales Today may be incomplete — the sales ledger failed to load fully ({ownerLedger.error}). Click Refresh above to reload.</div>}
+      <ReportSourceFailures failures={ownerLedger.failedSources} busy={ownerLedger.loading} onRetry={ownerLedger.retrySource} />
+      {ownerLedger.error && !ownerLedger.failedSources.length && <p role="alert" className="text-red-700">{ownerLedger.error}</p>}
 
       <section className="owner-metric-grid">
         <OwnerMetricCard icon={<Receipt className="size-5" />} label="Net Sales Today" value={formatCurrency(totals.netSales)} tone="green" sub="Cafe + SNB + VRSNB + Hosur" />

@@ -1,3 +1,4 @@
+import { ReportSourceFailures } from '@/components/ReportSourceFailures';
 import { AdminReportDateRange, AdminSummaryCard } from '@/components/admin/AdminReportControls';
 import { allocateReportItems } from "@/lib/reportItemAllocation";
 // src/pages/AdminSNBDashboard.tsx
@@ -1099,7 +1100,8 @@ export default function AdminSNBDashboard() {
       )}
       {dbReports.error && !["stock", "update-stock", "suppliers", "quotations", "salespersons", "bank", "current-cash", "daily-sales"].includes(tab) && (
         <div className="rounded-2xl bg-amber-50 px-4 py-3 text-sm font-bold text-amber-900 ring-1 ring-amber-100">
-          Some live report data could not load. No browser-stored historical data will be substituted. {dbReports.error}
+          Some live report data could not load. No browser-stored historical data will be substituted.
+          <ReportSourceFailures failures={dbReports.failedSources} busy={dbReports.loading} onRetry={dbReports.retrySource} />
         </div>
       )}
       {notice && (
@@ -1116,12 +1118,8 @@ export default function AdminSNBDashboard() {
           confirmed live on Owner Dashboard's Sales tab this exact hook
           silently fell back to a drastically understated figure with no
           indication anything was wrong. Surfacing it here too. */}
-      {adminLedger.error && (
-        <div className="flex items-center justify-between gap-3 rounded-2xl bg-red-50 px-4 py-3 text-sm font-black text-red-800 ring-1 ring-red-100">
-          <span>Report figures below may be incomplete — the sales ledger failed to load fully ({adminLedger.error}). Click Refresh to reload.</span>
-          <button onClick={() => adminLedger.refresh()} className="shrink-0 rounded-lg bg-red-600 px-3 py-1.5 text-xs font-bold text-white">Refresh</button>
-        </div>
-      )}
+      <ReportSourceFailures failures={adminLedger.failedSources} busy={adminLedger.loading} onRetry={adminLedger.retrySource} />
+      {adminLedger.error && !adminLedger.failedSources.length && <p role="alert" className="text-red-700">{adminLedger.error}</p>}
 
       {tab === "overview" && <OverviewTab {...commonProps} />}
       {tab === "sales" && <SalesReturnsTab {...commonProps} />}

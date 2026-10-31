@@ -1,3 +1,4 @@
+import { ReportSourceFailures } from '@/components/ReportSourceFailures';
 import { AdminReportDateRange, AdminSummaryCard } from '@/components/admin/AdminReportControls';
 // src/pages/AdminVRSNBDashboard.tsx
 // VRSNB Admin Dashboard – manager control center for sales, returns, stock, purchase, balance, salesperson, closure and reports.
@@ -1059,12 +1060,8 @@ export default function AdminVRSNBDashboard() {
           below (Overview, Sales & Returns, Cashier Report, Branch Reports,
           Daily Closure...) reads adminLedger's derived totals with no
           error surfaced at all. */}
-      {adminLedger.error && (
-        <div className="flex items-center justify-between gap-3 rounded-2xl bg-red-50 px-4 py-3 text-sm font-black text-red-800 ring-1 ring-red-100">
-          <span>Report figures below may be incomplete — the sales ledger failed to load fully ({adminLedger.error}). Click Refresh to reload.</span>
-          <button onClick={() => adminLedger.refresh()} className="shrink-0 rounded-lg bg-red-600 px-3 py-1.5 text-xs font-bold text-white">Refresh</button>
-        </div>
-      )}
+      <ReportSourceFailures failures={adminLedger.failedSources} busy={adminLedger.loading} onRetry={adminLedger.retrySource} />
+      {adminLedger.error && !adminLedger.failedSources.length && <p role="alert" className="text-red-700">{adminLedger.error}</p>}
 
       {tab === "overview" && <OverviewTab {...commonProps} />}
       {tab === "sales" && <SalesReturnsTab {...commonProps} />}
@@ -3185,7 +3182,9 @@ function HistoryTab(props: any) {
   ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   return (
     <Panel title={`${props.reportLabel} History`} icon={<History className="size-4" />} action={<div className="flex gap-2"><button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => void refreshHistory()} disabled={refreshing}><RefreshCcw className={cn("size-4", refreshing && "animate-spin")} />Refresh</button><button className={cn(btnCls, "bg-slate-950 text-white")} onClick={() => csvDownload("VRSNB_Complete_History.xls", rows)}><Download className="size-4" />Excel</button></div>}>
-      <ReportLoadStatus loading={report.loading || cafe.loading || props.adminLedger.loading} error={[report.error, cafe.error, props.adminLedger.error].filter(Boolean).join(' | ')} />
+      <ReportLoadStatus loading={report.loading || cafe.loading || props.adminLedger.loading} error="" />
+      <ReportSourceFailures failures={report.failedSources} busy={report.loading} onRetry={report.retrySource} />
+      <ReportSourceFailures failures={cafe.error?[{id:'Cafe orders',error:cafe.error}]:[]} busy={cafe.loading} onRetry={cafe.refresh} />
       <p className="mb-3 text-sm text-slate-600">{props.fromDate} to {props.toDate} · {rows.length} records</p>
       <DataTable headers={["Branch", "Date & Time", "Type", "Reference", "Details", "Amount", "User", "Status"]} rows={rows.map((row) => [row.branch, fmtDateTime(row.date), row.type, row.reference, row.details, row.amount === 0 ? "-" : money(row.amount), row.user || "-", row.status])} empty={report.loading || cafe.loading || props.adminLedger.loading ? "Loading history..." : report.error || cafe.error ? "History could not be fully loaded. Please retry." : "No history found for the selected branches and date range."} />
     </Panel>

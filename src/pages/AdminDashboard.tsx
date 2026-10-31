@@ -1,5 +1,7 @@
+import { ReportSourceFailures } from '@/components/ReportSourceFailures';
+import { ReportReadCache, type ReportReadFailure } from '@/lib/reportReadCache';
 import { AdminSummaryCard, AdminReportDateRange } from '@/components/admin/AdminReportControls';
-import { fetchVerifiedAdminRows } from '@/lib/adminReportPaging';
+import { fetchVerifiedAdminRows as fetchVerifiedAdminRowsUncached } from '@/lib/adminReportPaging';
 import { branchReportTotals } from '@/lib/branchReportTotals';
 import { allocateReportItems } from '@/lib/reportItemAllocation';
 import { cafeGstCollection, summarizeCafeGst } from '@/lib/cafeGst';
@@ -494,19 +496,23 @@ function AdminDashboard() {
   // requestId (rather than the previous cancelled-boolean-per-effect-run
   // pattern) also correctly supersedes an in-flight run when the button is
   // clicked again before the first call resolves.
+  const realSalesReadCache=useRef(new ReportReadCache());
+  const [realSalesFailures,setRealSalesFailures]=useState<ReportReadFailure[]>([]);
   const realSalesRequestRef = useRef(0);
   const realSalesAbortRef = useRef<AbortController | null>(null);
-  const fetchRealSalesData = useCallback(async () => {
+  const fetchRealSalesData = useCallback(async (onlySource?:string) => {
     if (!fromDate || !toDate) return;
+    const cache=realSalesReadCache.current;
+    if(onlySource)cache.retry(onlySource);else{cache.reset();setRealSalesFailures([]);}
     const requestId = ++realSalesRequestRef.current;
     realSalesAbortRef.current?.abort();
     const controller = new AbortController(); realSalesAbortRef.current = controller;
     const needHosur = activeTab === 'hosur' || activeTab === 'overview';
     const empty = () => Promise.resolve({ data: [], error: null });
-    {
+    try {
       setRealSalesLoading(true);
       setRealSalesError('');
-      setRealBills([]); setRealBillItems([]); setRealPayments([]); setReportReturns([]);
+      if(!onlySource){setRealBills([]); setRealBillItems([]); setRealPayments([]); setReportReturns([]);}
       const fromTs = `${fromDate}T00:00:00+05:30`;
       const toTs = `${toDate}T23:59:59.999+05:30`;
       const fromMs = new Date(fromTs).getTime();
@@ -539,7 +545,17 @@ function AdminDashboard() {
       // load). One retry after a short backoff clears a transient
       // contention spike without needing to throttle overall concurrency.
       // Page by unique IDs: a timestamp-only cursor skips tied records.
-      const fetchAllRows = fetchAdminRows;
+      const fetchAllRows = <T,>(build:()=>any,pageSize?:number) => {
+        const url=new URL(build().url.toString());
+        const source=url.pathname.split('/').pop()||'Report data';
+        const filter=url.searchParams.get('record_type');
+        const id=filter?`${source} (${filter.replace(/^eq\./,'')})`:source;
+        return cache.read(id,url.toString(),()=>fetchAdminRows<T>(build,pageSize));
+      };
+      const fetchVerifiedAdminRows = <T=Record<string,any>,>(...args:Parameters<typeof fetchVerifiedAdminRowsUncached<T>>) => {
+        const [source,from,until,options]=args;
+        return cache.read(source,JSON.stringify([source,from,until,options?.branch,options?.billIds]),()=>fetchVerifiedAdminRowsUncached<T>(...args));
+      };
 
       // BUG FIX (2026-09-29): "All Time keeps giving multiple errors" (cont'd)
       // — even with keyset pagination + supporting indexes, some of these
@@ -564,7 +580,7 @@ function AdminDashboard() {
         return results;
       };
 
-      let [headersRes, itemsRes, paymentsRes, hosurRes, unbilledRes, expensesRes, purchasesRes, salesInvoicesRes, walkinBillsRes] = await runLimited([
+      const [headersRes, initialItemsRes, paymentsRes, hosurRes, unbilledRes, expensesRes, purchasesRes, salesInvoicesRes, walkinBillsRes] = await runLimited([
         () => fetchVerifiedAdminRows('branch_headers', fromTs, untilTs, { signal: controller.signal }),
         async () => ({ data: [], error: null }),
         // BUG FIX (2026-09-05): "the payment mode ... is not displaying" for
@@ -634,6 +650,7 @@ function AdminDashboard() {
           .ilike('bill_no', 'SALES/%')
           .gte('created_at', fromTs).lt('created_at', untilTs)),
       ], 1);
+      let itemsRes=initialItemsRes;
       // Items belong to the selected bills even if their sync timestamp is later.
       const branchItemRows: Record<string, unknown>[] = [];
       const selectedBillIds = (headersRes.data as Record<string, unknown>[]).map(r => String(r.id));
@@ -906,7 +923,8 @@ function AdminDashboard() {
         ...hosurBills.map((h) => ({ billId: String(h.id), mode: String(h.payment_mode ?? '').toLowerCase() || 'cash', amount: Number(h.paid_amount || 0) })),
       ]);
       setRealSalesLoading(false);
-    }
+    } catch(error) {if(realSalesRequestRef.current===requestId)setRealSalesError(error instanceof Error?error.message:String(error));}
+    finally {if(realSalesRequestRef.current===requestId){setRealSalesFailures(cache.errors);setRealSalesLoading(false);}}
   }, [fromDate, toDate, activeTab]);
 
   useEffect(() => {
@@ -2160,7 +2178,8 @@ function AdminDashboard() {
             className="w-full max-w-sm rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none" />
           <span className="ml-auto text-xs font-semibold text-slate-500">{filteredRealBills.length} bill{filteredRealBills.length === 1 ? '' : 's'}</span>
         </div>
-        {realSalesError && <p className="mb-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700">{realSalesError}</p>}
+        {realSalesError && !realSalesFailures.length && <p role="alert">{realSalesError}</p>}
+        <ReportSourceFailures failures={realSalesFailures} busy={realSalesLoading} onRetry={id=>void fetchRealSalesData(id)} />
         {filteredRealBills.length === 0 ? <EmptyState label={realSalesLoading ? 'Loading bills…' : 'No bills in this range.'} /> : (
           <div className="overflow-x-auto">
             <table className="w-full min-w-[860px] text-sm">
@@ -2540,7 +2559,8 @@ function AdminDashboard() {
       </Panel>
 
       <Panel title="Confirmed Bills" subtitle={`Hosur bills actually confirmed and collected in this range${realSalesLoading ? ' (loading…)' : hosurBillsInRange.length > 200 ? ` — showing the latest 200 of ${hosurBillsInRange.length} (use Excel/PDF export for the full list)` : ''}`}>
-        {realSalesError && <p className="mb-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700">{realSalesError}</p>}
+        {realSalesError && !realSalesFailures.length && <p role="alert">{realSalesError}</p>}
+        <ReportSourceFailures failures={realSalesFailures} busy={realSalesLoading} onRetry={id=>void fetchRealSalesData(id)} />
         {hosurBillsInRange.length === 0 ? <EmptyState label={realSalesLoading ? 'Loading bills…' : 'No confirmed Hosur bills in this range.'} /> : (
           <div className="overflow-x-auto">
             <table className="w-full min-w-[900px] text-sm">
@@ -3562,12 +3582,8 @@ function AdminDashboard() {
           confirmed live on Owner Dashboard's Sales tab this exact hook
           silently fell back to a drastically understated figure with no
           indication anything was wrong. Surfacing it here too. */}
-      {adminLedger.error && (
-        <div className="mb-5 flex items-center justify-between gap-3 rounded-3xl border border-red-200 bg-red-50 p-4 text-sm font-semibold text-red-800">
-          <span>Report figures below may be incomplete — the sales ledger failed to load fully ({adminLedger.error}). Click Refresh to reload.</span>
-          <button onClick={() => adminLedger.refresh()} className="shrink-0 rounded-lg bg-red-600 px-3 py-1.5 text-xs font-bold text-white">Refresh</button>
-        </div>
-      )}
+      <ReportSourceFailures failures={adminLedger.failedSources} busy={adminLedger.loading} onRetry={adminLedger.retrySource} />
+      {adminLedger.error && !adminLedger.failedSources.length && <p role="alert" className="text-red-700">{adminLedger.error}</p>}
 
       {activeContent[activeTab]}
     </main>
