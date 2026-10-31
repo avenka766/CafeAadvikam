@@ -15,6 +15,8 @@ export type UserRole =
   | 'branch_hosur'
   | 'admin_vrsnb'   // VRSNB Admin Dashboard
   | 'admin_snb'     // SNB Admin Dashboard
+  | 'audit'
+  | 'finance'
   | 'owner';        // Owner Dashboard
 
 export interface User {
