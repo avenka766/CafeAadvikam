@@ -1,7 +1,7 @@
 {
   "name": "vite_react_shadcn_ts",
   "private": true,
-  "version": "0.0.7",
+  "version": "0.0.8",
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
@@ -91,7 +91,8 @@
     "web-vitals": "^5.1.0",
     "xlsx": "^0.18.5",
     "zod": "^3.23.8",
-    "zustand": "^5.0.8"
+    "zustand": "^5.0.8",
+    "fflate": "^0.8.3"
   },
   "devDependencies": {
     "@capacitor/cli": "^8.0.0",
