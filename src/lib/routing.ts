@@ -29,6 +29,8 @@ export function getRoleDefaultPath(role: UserRole): string {
     case 'branch_hosur':   return '/bakery/planner?tab=hosur&hosurTab=place';
     case 'admin_vrsnb':    return '/admin-vrsnb';
     case 'admin_snb':      return '/admin-snb';
+    case 'audit':          return '/audit';
+    case 'finance':        return '/finance';
     // FEATURE (2026-09-26): "as soon as we login to Owner dashboard they
     // should be seeing the Branch overview tab" — a bare '/owner' resolves
     // to the 'Everything' tab on web (OwnerDashboard.tsx's own default for
