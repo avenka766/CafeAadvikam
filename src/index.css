@@ -4148,3 +4148,84 @@ html.android-admin-app .workspace-redesign { padding-bottom: 0; }
   .admin-date-filter-grid button:focus-visible { outline: 2px solid #047857; outline-offset: 2px; }
 }
 
+
+/* Touchscreen Cafe checkout: lists scroll independently; checkout stays in view. */
+.workspace-redesign.workspace-branch-billing [data-billing-dashboard] .biller-touch-workspace .biller-touch-checkout {max-height:none!important;overflow:visible!important;padding:8px!important;position:relative;z-index:10;}
+.biller-touch-options {position:relative;}
+.biller-touch-options>summary {display:flex;align-items:center;gap:6px;min-height:44px;padding:8px;background:#eef5f1;border:1px solid #cbded3;border-radius:10px;cursor:pointer;list-style:none;font-size:12px;font-weight:700;}
+.biller-touch-options>summary::-webkit-details-marker {display:none;}
+.biller-touch-options>summary strong {margin-left:auto;font-size:11px;color:#176047;}
+.biller-touch-settings {position:absolute;bottom:calc(100% + 8px);right:0;width:100%;max-height:min(65dvh,calc(100dvh - 180px));overflow-y:auto;overscroll-behavior:contain;padding:12px;background:white;border:1px solid #cbded3;border-radius:12px;box-shadow:0 -8px 35px #123b2929;z-index:30;}
+.workspace-branch-billing .biller-touch-settings button,.workspace-branch-billing .biller-touch-settings input {min-height:40px;}
+.workspace-branch-billing .biller-touch-settings button[role=switch] {min-height:24px;}
+.biller-touch-paybar {display:flex;align-items:center;gap:8px;padding-top:8px;min-height:64px;margin:0!important;}
+.biller-touch-total {display:flex;flex-direction:column;min-width:92px;line-height:1.15;}
+.biller-touch-total>span {font-size:12px;color:#52665c;}
+.biller-touch-total>strong {font-size:26px;font-weight:800;color:#103c2f;}
+.biller-touch-total>small {font-size:10px;color:#52665c;margin-top:3px;}
+.biller-touch-pay-action {flex:1;min-width:0;}
+.workspace-redesign.workspace-branch-billing [data-billing-dashboard] .biller-touch-pay-action>button {min-height:52px;font-size:15px!important;}
+@media(min-width:640px) {
+.workspace-branch-billing [data-billing-dashboard] {overflow:hidden!important;min-height:0!important;}
+.workspace-branch-billing [data-billing-dashboard] .biller-touch-workspace {display:grid!important;grid-template-columns:minmax(0,1fr) 320px;grid-template-rows:52px minmax(0,1fr);overflow:hidden!important;min-height:0!important;}
+.workspace-redesign.workspace-branch-billing [data-billing-dashboard] .biller-touch-workspace .biller-category-sidebar {grid-column:1;grid-row:1;width:auto!important;min-width:0!important;max-height:none!important;flex-direction:row;overflow-x:auto;overflow-y:hidden;border-right:0;border-bottom:1px solid #dce4de;}
+.workspace-redesign.workspace-branch-billing [data-billing-dashboard] .biller-touch-workspace .biller-category-mode {flex-shrink:0;width:158px;padding:3px!important;border-bottom:0;}
+.workspace-redesign.workspace-branch-billing [data-billing-dashboard] .biller-touch-workspace .biller-category-mode button {height:44px;padding:4px;font-size:12px;}
+.workspace-redesign.workspace-branch-billing [data-billing-dashboard] .biller-touch-workspace .biller-category-button {flex-shrink:0;width:auto;min-height:44px;padding:8px 14px!important;border-bottom:0;white-space:nowrap;}
+.workspace-redesign.workspace-branch-billing [data-billing-dashboard] .biller-touch-workspace .biller-category-button p:first-child {font-size:13px!important;}
+.workspace-redesign.workspace-branch-billing [data-billing-dashboard] .biller-touch-workspace .biller-category-button p:last-child {display:none;}
+.workspace-redesign.workspace-branch-billing [data-billing-dashboard] .biller-touch-workspace .biller-menu-panel {grid-column:1;grid-row:2;min-height:0!important;overflow:hidden;}
+.workspace-redesign.workspace-branch-billing [data-billing-dashboard] .biller-touch-workspace[data-item-mode=custom] .biller-menu-panel {grid-row:1 / -1;}
+.workspace-redesign.workspace-branch-billing [data-billing-dashboard] .biller-touch-workspace .biller-search-shell {padding:6px 8px!important;}
+.workspace-redesign.workspace-branch-billing [data-billing-dashboard] .biller-touch-workspace .biller-search-shell input {height:44px;font-size:14px!important;}
+.workspace-redesign.workspace-branch-billing [data-billing-dashboard] .biller-touch-workspace .biller-search-shell>p {display:none;}
+.workspace-redesign.workspace-branch-billing [data-billing-dashboard] .biller-touch-workspace .biller-item-scroll {min-height:0;padding:8px!important;}
+.workspace-redesign.workspace-branch-billing [data-billing-dashboard] .biller-touch-workspace .biller-menu-grid {grid-template-columns:repeat(auto-fill,minmax(180px,1fr))!important;gap:8px!important;}
+.workspace-redesign.workspace-branch-billing [data-billing-dashboard] .biller-touch-workspace .pos-menu-card-compact-no-image {min-height:112px!important;padding:10px!important;border-radius:12px!important;}
+.workspace-redesign.workspace-branch-billing [data-billing-dashboard] .biller-touch-workspace .pos-menu-body-compact h3 {font-size:14px!important;line-height:1.25!important;}
+.workspace-redesign.workspace-branch-billing [data-billing-dashboard] .biller-touch-workspace .pos-menu-price {font-size:16px!important;}
+.workspace-redesign.workspace-branch-billing [data-billing-dashboard] .biller-touch-workspace .pos-menu-add-small,.workspace-redesign.workspace-branch-billing [data-billing-dashboard] .biller-touch-workspace .pos-menu-stepper-small button {width:44px!important;height:44px!important;min-width:44px!important;font-size:20px!important;}
+.workspace-redesign.workspace-branch-billing [data-billing-dashboard] .biller-touch-workspace .pos-menu-stepper-small {gap:4px!important;}
+.workspace-redesign.workspace-branch-billing [data-billing-dashboard] .biller-touch-workspace .biller-cart-panel {grid-column:2;grid-row:1 / -1;width:320px!important;min-width:0!important;max-height:none!important;height:100%;min-height:0!important;}
+.workspace-redesign.workspace-branch-billing [data-billing-dashboard] .biller-touch-workspace .biller-cart-context {min-height:40px;padding:4px 8px!important;}
+.workspace-redesign.workspace-branch-billing [data-billing-dashboard] .biller-touch-workspace .biller-cart-context>span {display:none;}
+.biller-touch-cart-title {font-size:16px;}
+.workspace-redesign.workspace-branch-billing [data-billing-dashboard] .biller-touch-workspace .biller-cart-context>button {min-height:32px;font-size:11px;}
+.workspace-branch-billing .biller-touch-order-controls {padding:6px 8px!important;}
+.workspace-branch-billing .biller-touch-order-controls>div:first-child>button {min-height:40px;font-size:13px!important;}
+.workspace-branch-billing .biller-touch-order-controls>div.relative>button {min-height:40px;}
+.workspace-redesign.workspace-branch-billing [data-billing-dashboard] .biller-touch-workspace .biller-cart-items {min-height:0!important;flex:1 1 0%;padding:8px!important;overflow-y:auto;overscroll-behavior:contain;}
+.workspace-redesign.workspace-branch-billing [data-billing-dashboard] .biller-touch-workspace .biller-cart-line {padding:8px!important;gap:6px;}
+.workspace-redesign.workspace-branch-billing [data-billing-dashboard] .biller-touch-workspace .biller-cart-line p {font-size:13px!important;}
+.workspace-redesign.workspace-branch-billing [data-billing-dashboard] .biller-touch-workspace .biller-cart-line .truncate {white-space:normal;}
+.workspace-redesign.workspace-branch-billing [data-billing-dashboard] .biller-touch-workspace .biller-cart-line button.rounded-full {min-width:36px;min-height:40px;}
+.workspace-branch-billing .biller-status-bar button {min-height:36px;font-size:11px!important;}
+}
+@media(min-width:640px) {
+.workspace-redesign.workspace-branch-billing [data-billing-dashboard] .biller-status-bar>div {display:flex;flex-wrap:nowrap;overflow-x:auto;gap:5px;}
+.workspace-redesign.workspace-branch-billing [data-billing-dashboard] .biller-status-bar button {flex:0 0 auto;min-height:36px;padding:6px 9px;font-size:11px;}
+.workspace-redesign.workspace-branch-billing [data-billing-dashboard] .biller-status-bar>div>div {flex-shrink:0;}
+}
+
+/* Payment confirmation keeps its final actions outside the scrolling details. */
+.cafe-payment-dialog {width:min(760px,100%);max-height:calc(100dvh - 24px);display:flex;flex-direction:column;overflow:hidden;}
+.cafe-payment-heading {padding:12px 18px;flex-shrink:0;}
+.cafe-payment-heading h2 {font-size:22px;line-height:1.2;}
+.cafe-payment-heading>p {font-size:12px;margin-top:3px;}
+.cafe-payment-body {min-height:0;overflow-y:auto;padding:14px;display:grid;grid-template-columns:minmax(0,.95fr) minmax(0,1.05fr);gap:12px;align-content:start;align-items:start;}
+.cafe-payment-body>div {grid-column:2;min-width:0;}
+.cafe-payment-body>.cafe-payment-summary {grid-column:1;grid-row:1 / span 5;padding:12px;}
+.cafe-payment-body>p {grid-column:2;}
+.cafe-payment-body label {margin-bottom:5px;}
+.cafe-payment-body button {min-height:44px;}
+.cafe-payment-body .grid>button {padding:10px 4px;flex-direction:row;justify-content:center;gap:5px;}
+.cafe-payment-body input {min-height:44px;}
+.cafe-payment-body .grid-cols-2.sm\:grid-cols-4 {grid-template-columns:repeat(2,minmax(0,1fr));}
+.cafe-payment-actions {padding:12px 16px;border-top:1px solid hsl(var(--border));background:hsl(var(--background));flex-shrink:0;}
+.cafe-payment-actions button {min-height:48px;}
+@media(max-width:599px) {
+.cafe-payment-body {display:block;}
+.cafe-payment-body>div+div {margin-top:12px;}
+.cafe-payment-heading {padding:10px 14px;}
+}
+.cafe-payment-overlay {z-index:100!important;padding:12px;}
