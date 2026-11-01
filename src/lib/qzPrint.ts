@@ -59,22 +59,33 @@ async function loadQz(): Promise<QzModule> {
   if (!qzScriptPromise) {
     qzScriptPromise = new Promise<QzModule>((resolve, reject) => {
       if (window.qz) { resolve(window.qz); return; }
-      const existing = document.querySelector<HTMLScriptElement>('script[data-qz-tray]');
-      const onReady = () => {
-        if (window.qz) resolve(window.qz);
-        else reject(new Error('qz-tray script loaded but window.qz was not set'));
-      };
-      if (existing) {
-        existing.addEventListener('load', onReady, { once: true });
-        existing.addEventListener('error', () => reject(new Error('Failed to load qz-tray script')), { once: true });
-        return;
-      }
+      // A failed/previously loaded tag will never emit another load event.
+      // A live attempt is already shared by qzScriptPromise; any leftover tag
+      // here is stale and must be replaced rather than awaited indefinitely.
+      document.querySelectorAll('script[data-qz-tray]').forEach(script => script.remove());
       const script = document.createElement('script');
+      let settled = false;
+      const cleanup = () => {
+        window.clearTimeout(timer);
+        script.removeEventListener('load', onReady);
+        script.removeEventListener('error', onError);
+      };
+      const fail = (error: Error) => {
+        if (settled) return;
+        settled = true; cleanup(); script.remove(); reject(error);
+      };
+      const onReady = () => {
+        if (settled) return;
+        if (!window.qz) { fail(new Error('qz-tray script loaded but window.qz was not set')); return; }
+        settled = true; cleanup(); resolve(window.qz);
+      };
+      const onError = () => fail(new Error('Failed to load qz-tray script'));
+      const timer = window.setTimeout(() => fail(new Error('QZ Tray script did not load in time')), 4000);
       script.src = '/vendor/qz-tray.js';
       script.async = true;
       script.dataset.qzTray = 'true';
       script.addEventListener('load', onReady, { once: true });
-      script.addEventListener('error', () => reject(new Error('Failed to load qz-tray script')), { once: true });
+      script.addEventListener('error', onError, { once: true });
       document.head.appendChild(script);
     }).then((qz) => {
       // Unsigned/untrusted mode: QZ Tray will show a one-time "Action
@@ -118,6 +129,15 @@ export function setPrinterPref(role: string, printerName: string): void {
 
 let connectAttempt: Promise<boolean> | null = null;
 
+function waitForSetup<T>(work: Promise<T>, operation: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => reject(new Error(`QZ Tray ${operation} did not respond`)), 3000);
+    // A connection may finish later. This only bounds setup; it never starts
+    // a delayed print after the caller has already used browser printing.
+    work.then(value => { window.clearTimeout(timer); resolve(value); }, error => { window.clearTimeout(timer); reject(error); });
+  });
+}
+
 // Ensures a live QZ Tray connection, attempting to connect only once at a
 // time (concurrent print calls share the same in-flight attempt). Returns
 // false (never throws) if QZ Tray isn't running on this machine.
@@ -127,7 +147,7 @@ export async function ensureQzConnected(): Promise<boolean> {
       try {
         const qz = await loadQz();
         if (qz.websocket.isActive()) return true;
-        await qz.websocket.connect({ retries: 1, delay: 0 });
+        await waitForSetup(qz.websocket.connect({ retries: 0, delay: 0 }), 'connection');
         return true;
       } catch {
         return false;
@@ -152,7 +172,7 @@ export async function listQzPrinters(): Promise<string[]> {
   if (!connected) return [];
   try {
     const qz = await loadQz();
-    const found = await qz.printers.find();
+    const found = await waitForSetup(qz.printers.find(), 'printer list');
     return Array.isArray(found) ? found : [found];
   } catch {
     return [];
