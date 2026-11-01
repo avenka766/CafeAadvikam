@@ -3443,20 +3443,20 @@ function NewBillPanel() {
       </div>
     )}
     {showBillModal && (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 px-4" onClick={() => !submitting && setShowBillModal(false)}>
-        <div className="w-full max-w-md max-h-[90vh] overflow-y-auto rounded-3xl bg-background border border-border shadow-2xl" onClick={e => e.stopPropagation()}>
-          <div className="px-5 py-4 border-b border-border bg-emerald-50">
+      <div className="cafe-payment-overlay fixed inset-0 z-50 flex items-center justify-center bg-black/55 px-4" onClick={() => !submitting && setShowBillModal(false)}>
+        <div role="dialog" aria-modal="true" aria-labelledby="cafe-payment-title" className="cafe-payment-dialog rounded-3xl bg-background border border-border shadow-2xl" onClick={e => e.stopPropagation()}>
+          <div className="cafe-payment-heading px-5 py-4 border-b border-border bg-emerald-50">
             <div className="flex items-center justify-between">
               <p className="text-[10px] font-black uppercase tracking-widest text-emerald-700">Final billing</p>
               <span className="flex items-center gap-1 text-[10px] font-black uppercase tracking-widest text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-full">
                 {orderType === 'dine_in' ? <><UtensilsCrossed className="size-3" />Table {tableNumber ? tableLabel(tableNumber) : ''}</> : <><ShoppingBag className="size-3" />Takeaway</>}
               </span>
             </div>
-            <h2 className="font-display text-2xl font-black text-foreground">Bill & Print</h2>
+            <h2 id="cafe-payment-title" className="font-display text-2xl font-black text-foreground">Bill & Print</h2>
             <p className="text-sm text-muted-foreground">Confirm payment mode. This saves the bill as paid and opens the print slip.</p>
           </div>
-          <div className="p-5 space-y-4">
-            <div className="rounded-2xl border border-border bg-muted/30 p-4 space-y-2">
+          <div className="cafe-payment-body">
+            <div className="cafe-payment-summary rounded-2xl border border-border bg-muted/30 p-4 space-y-2">
               <div className="flex justify-between text-sm text-muted-foreground"><span>Items ({totalItemQty})</span><span className="tabular-nums">{formatCurrency(itemsSubtotal)}</span></div>
               {parcelCharges > 0 && <div className="flex justify-between text-sm text-amber-700"><span>Parcel charges</span><span className="font-black tabular-nums">+{formatCurrency(parcelCharges)}</span></div>}
               {manualDiscountAmount > 0 && <div className="flex justify-between text-sm text-rose-700"><span>Discount</span><span className="font-black tabular-nums">-{formatCurrency(manualDiscountAmount)}</span></div>}
@@ -3565,7 +3565,8 @@ function NewBillPanel() {
               </div>
             )}
             {submitError && <p className="text-xs text-destructive font-semibold">{submitError}</p>}
-            <div className="flex gap-2">
+          </div>
+            <div className="cafe-payment-actions flex gap-2">
               <button type="button" onClick={() => setShowBillModal(false)} disabled={submitting}
                 className="flex-1 py-3 rounded-xl border border-border text-sm font-bold active:scale-95 disabled:opacity-50">Cancel</button>
               <button type="button" onClick={handleSubmit} disabled={submitting}
@@ -3573,11 +3574,10 @@ function NewBillPanel() {
                 <Printer className="size-4" />{submitting ? 'Billing...' : 'Bill & Print'}
               </button>
             </div>
-          </div>
         </div>
       </div>
     )}
-    <div className="biller-workspace flex flex-1 min-h-0 overflow-hidden">
+    <div className="biller-workspace biller-touch-workspace flex flex-1 min-h-0 overflow-hidden" data-item-mode={itemMode}>
 
       {/* -- COL 1: Category sidebar ---------------------- */}
       {itemMode === 'menu' && (
@@ -3770,6 +3770,7 @@ function NewBillPanel() {
             function (Clear) now lives as a compact icon button at the right
             of the context row so nothing is lost. */}
         <div className="biller-cart-context flex items-center gap-1.5 px-4 py-2 border-b border-border bg-background/60 shrink-0 text-[11px] font-body font-semibold overflow-x-auto">
+          <strong className="biller-touch-cart-title">Your bill</strong>
           <span className={cn('flex items-center gap-1 px-2 py-1 rounded-full shrink-0',
             orderType === 'dine_in' ? 'bg-primary/10 text-primary' : 'bg-blue-100 text-blue-700')}>
             {orderType === 'dine_in' ? <UtensilsCrossed className="size-3" /> : <ShoppingBag className="size-3" />}
@@ -3802,7 +3803,7 @@ function NewBillPanel() {
              the cart, which is the part staff actually need to see/scroll.
              Shrunk padding/text/legend here so more of the panel below is
              cart. */}
-        <div className="border-b border-border px-3 py-2 space-y-1.5 shrink-0 bg-background/40">
+        <div className="biller-touch-order-controls border-b border-border px-3 py-2 space-y-1.5 shrink-0 bg-background/40">
           <div className="flex gap-1.5">
             <button onClick={() => switchOrderType('dine_in')}
               className={cn('flex-1 py-1.5 rounded-lg text-xs font-body font-semibold transition-all active:scale-95',
@@ -4191,8 +4192,10 @@ function NewBillPanel() {
           )}
         </div>
 
-        {showBillFooter && (
-          <div className="biller-cart-footer border-t border-border px-4 py-3 space-y-3 bg-muted/20 shrink-0">
+        <div className="biller-cart-footer biller-touch-checkout border-t border-border bg-muted/20 shrink-0">
+          <details className="biller-touch-options">
+            <summary><span>Payment, parcel &amp; GST</span><strong>{paymentMode === 'regular' ? 'Regular' : paymentMode === 'wallet' ? 'Wallet' : 'Credit'}</strong><ChevronDown className="size-4"/></summary>
+            <div className="biller-touch-settings space-y-3">
             {/* -- Payment Mode -- */}
             <div className="grid grid-cols-3 gap-2">
               <button onClick={() => { setPaymentMode('regular'); setBillMethod('cash'); setCreditError(''); }}
@@ -4322,13 +4325,15 @@ function NewBillPanel() {
                 </div>
               )}
               <CafeGstControl enabled={gstEnabled} onChange={setGstEnabled} disabled={submitting} tax={gst} />
-              <div className="flex items-center justify-between">
-                <span className="font-body text-base font-bold text-foreground">Total</span>
-                <span className="font-display text-3xl font-bold text-foreground tabular-nums">{formatCurrency(total)}</span>
-              </div>
+            </div>
+            </div>
+          </details>
+          <div className="biller-touch-paybar">
+            <div className="biller-touch-total" data-checkout-total><span>Total</span><strong>{formatCurrency(total)}</strong><small>{gstEnabled ? `GST ₹${gst.gstAmount.toFixed(2)} added` : 'GST off'}</small></div>
+            <div className="biller-touch-pay-action">
               {submitError && <p className="text-xs font-body text-destructive text-center">{submitError}</p>}
               <button onClick={() => paymentMode === 'credit' ? handleSubmit() : openBillModal()}
-                disabled={submitting || (orderType === 'dine_in' && !runningOrder && allEmpty)}
+                disabled={submitting || !showBillFooter}
                 className={cn(
                   'w-full py-3.5 rounded-xl font-body font-bold text-sm active:scale-[0.97] transition-all disabled:opacity-60 flex items-center justify-center gap-2 text-white',
                   paymentMode === 'credit' ? 'shadow-md' : 'shadow-teal'
@@ -4352,7 +4357,7 @@ function NewBillPanel() {
               </button>
             </div>
           </div>
-        )}
+        </div>
       </div>
     </div>
 
