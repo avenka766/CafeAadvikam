@@ -4830,6 +4830,8 @@ function PrinterSetupModal({ onClose }: { onClose: () => void }) {
           </div>
         </div>
 
+        <button type="button" onClick={() => { save('bill', ''); save('kot', ''); onClose(); }} className="mt-4 w-full rounded-xl border border-slate-300 py-3 text-sm font-black text-slate-800">Use Chrome print window</button>
+        <p className="mt-2 text-xs text-slate-500">If automatic printing is unavailable, use this option and select the thermal printer in Chrome. Reprint saved bills using Duplicate.</p>
         <button onClick={onClose} className="mt-5 w-full rounded-xl bg-slate-950 py-3 text-sm font-black text-white">Done</button>
       </div>
     </div>
