@@ -1,3 +1,5 @@
+import AdminPayrollGate from '@/components/admin/AdminPayrollGate';
+import {payrollWeekOffLimit as weekOffLimit} from '@/lib/payrollWeekOff';
 import ContractTeamsPanel, { type ContractTeam } from '@/components/admin/ContractTeamsPanel';
 import { useAuthStore } from '@/stores/authStore';
 import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
@@ -28,6 +30,7 @@ interface Employee {
   name: string;
   branch: Branch;
   department: string;
+  weekOffOverrides?: Record<string, number>;
   grossSalary: number;
   salaryAdvance: number;
   uniformDeduction: number;
@@ -141,19 +144,6 @@ const defaultDecision = (): DeductionDecision => ({ deductAdvance: false, deduct
 //    the calendar, not a flat number: 5 in a month that actually has 5
 //    Sundays, 4 otherwise (every other department stays a flat 4 — that
 //    part was correct and is untouched).
-function countSundaysInMonth(year: number, month: number): number {
-  const daysInMonth = new Date(year, month, 0).getDate();
-  let count = 0;
-  for (let d = 1; d <= daysInMonth; d++) {
-    if (new Date(year, month - 1, d).getDay() === 0) count++;
-  }
-  return count;
-}
-const weekOffLimit = (employee: Pick<Employee, 'department'>, year: number, month: number) => {
-  if (!employee.department.trim().toLowerCase().startsWith('admin')) return 4;
-  return countSundaysInMonth(year, month) >= 5 ? 5 : 4;
-};
-
 // ─── Month helpers ─────────────────────────────────────────────────────────────
 function getMonthMeta(year: number, month: number) {
   const daysInMonth = new Date(year, month, 0).getDate();
@@ -180,6 +170,7 @@ function dbRowToEmployee(d: Record<string, unknown>): Employee {
     name: d.name as string,
     branch: d.branch as Branch,
     department: (d.department as string) || '',
+    weekOffOverrides: (d.week_off_overrides as Record<string, number>) || {},
     grossSalary: Number(d.gross_salary),
     salaryAdvance: Number(d.salary_advance),
     uniformDeduction: Number(d.uniform_deduction),
@@ -194,7 +185,7 @@ function dbRowToEmployee(d: Record<string, unknown>): Employee {
 }
 
 async function fetchEmployees(): Promise<Employee[]> {
-  const { data, error } = await supabase.from('employees').select('id, name, branch, department, gross_salary, salary_advance, uniform_deduction, other_deduction, account_number, bank_name, ifsc_code, payment_mode, account_holder_name, bank_branch_location').eq('is_active', true).order('id', { ascending: true });
+  const { data, error } = await supabase.from('employees').select('id, name, branch, department, week_off_overrides, gross_salary, salary_advance, uniform_deduction, other_deduction, account_number, bank_name, ifsc_code, payment_mode, account_holder_name, bank_branch_location').eq('is_active', true).order('id', { ascending: true });
   if (error) throw error;
   return (data || []).map(dbRowToEmployee);
 }
@@ -1852,7 +1843,7 @@ function AdvanceTab({ employees, advanceRecords, tableReady, onAdd, onClear }: {
 }
 
 // ─── Main Page ─────────────────────────────────────────────────────────────────
-export default function AttendanceSalary() {
+function AttendanceSalaryContent() {
   const role = useAuthStore(state => state.currentUser?.role);
   const canManageTeams = role === 'admin' || role === 'owner';
   const [teams, setTeams] = useState<ContractTeam[]>([]);
@@ -2316,7 +2307,7 @@ export default function AttendanceSalary() {
         <div className="mx-4 bg-card border border-border rounded-2xl overflow-hidden">
           <div className="px-4 py-3 border-b border-border">
             <h2 className="font-display font-bold text-foreground">Daily Attendance — {activeMonth.label}</h2>
-            <p className="text-[10px] font-body text-muted-foreground mt-0.5">Tap row to expand → tap day: blank → ✓ Present → ½ Half Day → W Week Off → X Absent → blank. Meals ₹10 each, on any day. Admin Office staff can take 5 week offs; all other staff can take 4.</p>
+            <p className="text-[10px] font-body text-muted-foreground mt-0.5">Tap row to expand → tap day: blank → ✓ Present → ½ Half Day → W Week Off → X Absent → blank. Meals ₹10 each, on any day. Admin staff follow the month’s Sunday allowance (4 or 5); others have 4. Individual monthly exceptions appear in each employee’s Week Off limit.</p>
           </div>
           {filtered.length === 0
             ? <EmptyState icon="👥" message="No employees found" sub="Add staff in Staff Management to see them here." />
@@ -2419,4 +2410,8 @@ export default function AttendanceSalary() {
       {editEmp && <EditEmpModal emp={editEmp} teamNames={teamNames} onSave={saveEmp} onClose={() => setEditEmp(null)} />}
     </div>
   );
+}
+
+export default function AttendanceSalary() {
+  return <AdminPayrollGate><AttendanceSalaryContent /></AdminPayrollGate>;
 }
