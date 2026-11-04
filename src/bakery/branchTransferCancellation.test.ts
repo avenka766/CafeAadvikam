@@ -21,7 +21,8 @@ it('does not guess the stock item when its source dispatch is missing',async()=>
 });
 it('clears an explicitly rejected request so the corrected invoice can be retried',async()=>{
  m.rpc.mockResolvedValue({error:{code:'P0001',message:'TRANSFER_ALREADY_RECEIVED'}});
- await expect(cancelBranchTransfer(record)).rejects.toThrow('TRANSFER_ALREADY_RECEIVED');expect(localStorage.length).toBe(0);
+ await expect(cancelBranchTransfer(record)).rejects.toThrow('already been received at SNB');expect(localStorage.length).toBe(0);
+ expect(m.rpc).toHaveBeenCalledTimes(1);expect(m.rpc.mock.calls[0][0]).toBe('cancel_branch_transfer_once_v1');
 });
 it('retains the request and explains a missing server update without falling back to unsafe writes',async()=>{
  m.rpc.mockResolvedValue({error:{code:'PGRST202',message:'Function not found'}});

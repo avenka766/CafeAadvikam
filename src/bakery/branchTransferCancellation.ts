@@ -32,6 +32,7 @@ export function cancelBranchTransfer(record: DispatchInvoiceRecord, reason = 'Ca
     if (error) {
       if (error.code === 'PGRST202') throw new Error('The safe cancellation update is not installed on the server yet. Nothing was cancelled. Your request is saved for retry after installation.');
       if (error.code && /^(P0001|22[0-9A-Z]{3}|23[0-9A-Z]{3}|42501|P0002|P0003)$/.test(error.code)) localStorage.removeItem(key);
+      if(error.code==='P0001'&&/^TRANSFER_ALREADY_RECEIVED\b/.test(error.message||''))throw new Error(`This delivery has already been received at ${record.scope}. It cannot be cancelled directly. If the goods are coming back, record a branch Transfer Out to Planner and confirm receipt in Planner > Transfer In. Keep the original invoice for the audit trail. No stock or invoice was changed.`);
       throw new Error(error.code ? error.message : 'Cancellation confirmation was lost. Retry this invoice; the original request is saved.');
     }
     if (data?.id !== record.id || data.status !== 'cancelled') throw new Error('Cancellation confirmation is incomplete. Retry the saved request.');
