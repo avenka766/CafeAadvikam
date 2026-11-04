@@ -59,7 +59,9 @@ export default function OfflineBanner() {
   const [offline, setOffline] = useState(!connectionIsOnline());
   const [backOnline,setBackOnline]=useState(false);
   const [expanded, setExpanded] = useState(false);
+  const [archiveError,setArchiveError]=useState('');
   const pending = useOfflineQueueStore((s) => s.pending);
+  const storageError = useOfflineQueueStore((s) => s.storageError);
   const flushing = useOfflineQueueStore((s) => s.flushing);
   const flush = useOfflineQueueStore((s) => s.flush);
   const discard = useOfflineQueueStore((s) => s.discard);
@@ -88,7 +90,7 @@ export default function OfflineBanner() {
   // stuck sync with no explanation.
   const waitingForOwner = pending.filter((e) => e.staffId && e.staffId !== currentUserId && e.attempts === 0);
 
-  if (!offline && pendingCount === 0 && !backOnline) return null;
+  if (!offline && pendingCount === 0 && !backOnline && !storageError) return null;
 
   const syncingWhileOnline = !offline && pendingCount > 0;
   const hasFailure = failed.length > 0;
@@ -100,9 +102,9 @@ export default function OfflineBanner() {
         role="alert"
         aria-live="assertive"
         className="flex items-center justify-center gap-2 px-4 py-2 text-sm font-body font-semibold text-white"
-        style={{ background: offline?'#854F0B':!offline&&pendingCount===0&&backOnline?'#047857':hasFailure&&!offline ? '#B91C1C' : hasWaitingForOwner ? '#7C3AED' : syncingWhileOnline ? '#1D4ED8' : '#854F0B' }}
+        style={{ background: storageError?'#B91C1C':offline?'#854F0B':!offline&&pendingCount===0&&backOnline?'#047857':hasFailure&&!offline ? '#B91C1C' : hasWaitingForOwner ? '#7C3AED' : syncingWhileOnline ? '#1D4ED8' : '#854F0B' }}
       >
-        {hasFailure && !offline ? (
+        {storageError ? (<><AlertTriangle className="size-4 shrink-0" /><span>{storageError}</span></>) : hasFailure && !offline ? (
           <button onClick={() => setExpanded((v) => !v)} className="flex items-center gap-2">
             <AlertTriangle className="size-4 shrink-0" />
             {failed.length} change{failed.length === 1 ? '' : 's'} failed to sync — needs attention
@@ -149,6 +151,7 @@ export default function OfflineBanner() {
 
       {hasFailure && expanded && (
         <div className="max-h-[50vh] overflow-y-auto bg-white border-b-2 border-red-700 shadow-lg">
+          {archiveError&&<p role="alert" className="p-3 text-red-800">{archiveError}</p>}
           {failed.map((entry) => (
             <div key={entry.id} className="flex items-start justify-between gap-3 border-b border-red-100 px-4 py-3">
               <div className="min-w-0">
@@ -166,15 +169,16 @@ export default function OfflineBanner() {
                 >
                   Retry
                 </button>
-                <button
+                <button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it."
                   onClick={() => {
-                    if (window.confirm(`Discard this queued ${KIND_LABELS[entry.kind] || entry.kind}? This cannot be undone — the change it represents will NOT be saved.`)) {
-                      void discard(entry.id);
+                    if (window.confirm(`Archive this queued ${KIND_LABELS[entry.kind] || entry.kind} for review? This stops automatic synchronization. It does not cancel a sale or refund money. The original details remain saved on this computer.`)) {
+                      setArchiveError('');void discard(entry.id).catch(failure=>setArchiveError(failure instanceof Error?failure.message:'Unable to archive the saved action.'));
                     }
                   }}
+                  disabled={flushing}
                   className="rounded-lg bg-slate-200 px-3 py-1.5 text-xs font-bold text-slate-700"
                 >
-                  Discard
+                  Archive for review
                 </button>
               </div>
             </div>
