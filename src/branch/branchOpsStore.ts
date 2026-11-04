@@ -1,9 +1,12 @@
+import {saveBranchReturn} from './returnRequest';
+import {shareInFlightRead} from '@/lib/shareInFlightRead';
 import {isElectronApp} from '@/lib/platform';
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { PersistStorage, StorageValue } from "zustand/middleware";
 import { supabase, fetchAllRows } from "@/lib/supabase";
-import { useOfflineQueueStore, registerReplayHandler } from "@/lib/offlineQueue";
+import {persistOperationMirror} from "./durableOperationMirror";
+import {dedupeBranchBills} from './branchBillIdentity';
 import type { Branch } from "./types";
 
 type PayMode = "cash" | "upi" | "card" | "split" | "bank" | "credit" | "wallet";
@@ -257,6 +260,7 @@ export interface QuotationRecord {
 }
 
 export interface ReturnRecord {
+  duplicate?: boolean;
   cashierUserId?: string;
   counterSessionId?: string;
   id: string;
@@ -656,6 +660,7 @@ interface BranchOpsState {
   refreshSalespeople: (branch: Branch) => Promise<void>;
   addAdvanceCakeOrder: (
     order: Omit<CakeAdvanceOrder, "id" | "orderNo" | "createdAt" | "status"> & { orderNo?: string },
+    confirmed: CakeAdvanceOrder,
   ) => CakeAdvanceOrder;
   updateAdvanceStatus: (
     id: string,
@@ -769,14 +774,14 @@ interface BranchOpsState {
   removeSupplier: (id: string, user: string) => void;
   addExpense: (
     expense: Omit<ExpenseRecord, "id" | "createdAt">,
-  ) => ExpenseRecord;
+  ) => Promise<ExpenseRecord>;
   // Password-gated in the UI (verify_staff_password RPC) before this is called —
   // the store action itself just performs the mutation once authorized.
   updateExpense: (
     id: string,
     updates: Partial<Omit<ExpenseRecord, "id" | "branch" | "createdAt">>,
     user: string,
-  ) => void;
+  ) => Promise<void>;
   addComplaint: (
     complaint: Omit<ComplaintRecord, "id" | "createdAt" | "updatedAt" | "status">,
   ) => ComplaintRecord;
@@ -829,22 +834,6 @@ type MirrorRow = {
   updated_at: string;
 };
 
-async function writeMirrorRow(row: MirrorRow): Promise<{ ok: boolean; error?: string }> {
-  const { error } = await supabase
-    .from("branch_operation_records")
-    .upsert(row, { onConflict: "branch,record_type,record_id" });
-  if (error && !/branch_operation_records|does not exist|schema cache/i.test(error.message)) {
-    return { ok: false, error: error.message };
-  }
-  return { ok: true };
-}
-
-// STAGE B (2026-09-01): registered once at module load — lets the shared
-// offline queue (src/lib/offlineQueue.ts) replay a queued mirror write once
-// the connection returns, without offlineQueue.ts needing to know anything
-// about branch_operation_records itself.
-registerReplayHandler("branch_operation_record", async (_kind, payload) => writeMirrorRow(payload as MirrorRow));
-
 // BUG FIX (2026-09-26): "SNB Branch and SNB Admin salesperson management —
 // unable to see few persons I added, multiple times." This was a
 // fire-and-forget single-attempt write with no retry: an online-but-
@@ -880,23 +869,8 @@ const mirrorOperationRecord = (
     payload,
     updated_at: new Date().toISOString(),
   };
-  return writeMirrorRow(row).then(async (result) => {
-    if (result.ok) return true;
-    // OFFLINE FIX (2026-09-01): this used to just console.error and drop the
-    // write entirely — a mutation made while genuinely offline (fetch itself
-    // fails, not a real server-side error) would silently never reach the
-    // server even after reconnecting, with no trace it had ever happened.
-    // The optimistic in-memory state each caller already applied via set()
-    // before calling this stands either way; queueing only guarantees the
-    // write itself isn't lost.
-    if (!navigator.onLine) {
-      void useOfflineQueueStore.getState().enqueue("branch_operation_record", row);
-      return true;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 800));
-    const retryResult = await writeMirrorRow(row);
-    if (retryResult.ok) return true;
-    console.error(`[branchOpsStore] Failed to mirror ${recordType} after retry:`, retryResult.error);
+  return persistOperationMirror(row).then(()=>true).catch(failure=>{
+    console.error(`[branchOpsStore] Operation was not safely stored:`,failure);
     return false;
   });
 };
@@ -1163,6 +1137,7 @@ const mergeOperationRecordsIntoState = (
     }
   }
 
+  state.bills=dedupeBranchBills(state.bills??[]);
   return { ...(saved ?? { version: 1 }), state };
 };
 
@@ -1189,8 +1164,12 @@ function getSessionBranch(): Branch | null {
   }
 }
 
+function branchHydrationIdentity(){
+  try{const raw=sessionStorage.getItem('cafe-aadvikam-auth')??localStorage.getItem('cafe-aadvikam-auth');const user=raw?JSON.parse(raw)?.state?.currentUser:null;return `${user?.id??'signed-out'}:${user?.role??''}`;}catch{return 'signed-out';}
+}
+
 const branchOpsSupabaseStorage: PersistStorage<BranchOpsState> = {
-  getItem: async (name) => {
+  getItem: (name) => shareInFlightRead(`branch-ops:${branchHydrationIdentity()}:${name}`,async () => {
     // EGRESS FIX: Scope all hydration queries to the current branch when possible.
     // Branch staff devices only ever need their own branch's records; fetching all
     // branches was multiplying egress by N branches on every page load/refresh.
@@ -1388,17 +1367,11 @@ const branchOpsSupabaseStorage: PersistStorage<BranchOpsState> = {
         ...dedicatedRows,
       ],
     );
-  },
-  setItem: async (name, value) => {
-    const { error } = await supabase.from("app_state").upsert(
-      {
-        key: name,
-        value,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: "key" },
-    );
-    if (error) console.error("[branchOpsStore] Supabase save failed:", error.message);
+  }),
+  setItem: async () => {
+    // partialize deliberately persists no fields: each real record has its own
+    // durable mirror/table. Repeatedly uploading {state:{}} adds requests and
+    // cannot preserve any additional data. Legacy snapshots remain readable.
   },
   removeItem: async (name) => {
     const { error } = await supabase.from("app_state").delete().eq("key", name);
@@ -1549,13 +1522,18 @@ export const useBranchOpsStore = create<BranchOpsState>()(
             auditLogs: [audit(previous.branch, user, "Supplier Deleted", previous.name, "Deleted"), ...state.auditLogs],
           };
         }),
-      addExpense: (expense) => {
+      addExpense: async (expense) => {
         const newExpense: ExpenseRecord = {
           ...expense,
           amount: Number(expense.amount || 0),
           id: uid("exp"),
           createdAt: new Date().toISOString(),
         };
+        if(!Number.isFinite(newExpense.amount)||newExpense.amount<=0)throw Error('Enter a finite positive expense amount.');
+        const stored=await mirrorOperationRecord(expense.branch, "expense", newExpense.id, newExpense, {
+          recordNo:newExpense.id,amount:newExpense.amount,actor:expense.enteredBy,
+        });
+        if(!stored)throw Error('Expense could not be safely stored. Keep the details and retry.');
         set((s) => ({
           expenses: [newExpense, ...s.expenses],
           cashMovements: [
@@ -1578,31 +1556,20 @@ export const useBranchOpsStore = create<BranchOpsState>()(
             ...s.auditLogs,
           ],
         }));
-        mirrorOperationRecord(expense.branch, "expense", newExpense.id, newExpense, {
-          recordNo: newExpense.id,
-          amount: newExpense.amount,
-          actor: expense.enteredBy,
-        });
         return newExpense;
       },
-      updateExpense: (id, updates, user) =>
-        set((state) => {
-          const previous = state.expenses.find((expense) => expense.id === id);
-          if (!previous) return state;
-          const updated: ExpenseRecord = { ...previous, ...updates, amount: Number(updates.amount ?? previous.amount) };
-          mirrorOperationRecord(previous.branch, "expense", id, updated, {
-            recordNo: id,
-            amount: updated.amount,
-            actor: user,
-          });
-          return {
-            expenses: state.expenses.map((expense) => expense.id === id ? updated : expense),
-            auditLogs: [
-              audit(previous.branch, user, "Expense Edited", `${previous.category} ${previous.amount}`, `${updated.category} ${updated.amount}`),
-              ...state.auditLogs,
-            ],
-          };
-        }),
+      updateExpense: async (id,updates,user) => {
+        const previous=get().expenses.find(e=>e.id===id);
+        if(!previous)throw Error('Expense was not found. Refresh and try again.');
+        const updated:ExpenseRecord={...previous,...updates,amount:Number(updates.amount??previous.amount)};
+        if(!Number.isFinite(updated.amount)||updated.amount<=0)throw Error('Enter a finite positive expense amount.');
+        const stored=await mirrorOperationRecord(previous.branch,'expense',id,updated,{recordNo:id,amount:updated.amount,actor:user});
+        if(!stored)throw Error('Expense change could not be safely stored. Keep the details and retry.');
+        set(state=>({expenses:state.expenses.map(e=>e.id===id?updated:e),
+          cashMovements:state.cashMovements.map(m=>m.referenceNumber===id?{...m,amount:updated.amount,paymentMode:updated.mode,purpose:`Expense - ${updated.category}`,remarks:updated.description}:m),
+          auditLogs:[audit(previous.branch,user,'Expense Edited',`${previous.category} ${previous.amount}`,`${updated.category} ${updated.amount}`),...state.auditLogs],
+        }));
+      },
       addComplaint: (complaint) => {
         const now = new Date().toISOString();
         const newComplaint: ComplaintRecord = {
@@ -2277,69 +2244,17 @@ export const useBranchOpsStore = create<BranchOpsState>()(
           console.error("[branchOpsStore] refreshSalespeople threw:", err);
         }
       },
-      addAdvanceCakeOrder: (order) => {
-        const orderNo = order.orderNo ?? nextBranchAdvanceOrderNumber(order.branch);
-        const orderType = order.orderType || "cake";
-        const newOrder: CakeAdvanceOrder = {
-          ...order,
-          id: uid("adv"),
-          orderNo,
-          status: orderType === "store" ? "Ready for Final Invoice" : "Pending Store Confirmation",
-          createdAt: new Date().toISOString(),
-        };
-        const orderItems = order.items && order.items.length > 0
-          ? order.items.map((item) => `${item.itemName} ${item.quantity} ${item.unit}`).join(", ")
-          : `${order.cakeKg}kg ${order.flavor} ${order.shape} cake`;
-        const storeOrder: StoreOrderRecord = {
-          id: uid("store"),
-          branch: order.branch,
-          sourceOrderId: newOrder.id,
-          orderNo,
-          customerName: order.customerName,
-          mobile: order.mobile,
-          details: `${orderType.toUpperCase()} - ${orderItems}${order.messageOnCake ? ` - ${order.messageOnCake}` : ""}${order.attachmentName ? ` - Attachment: ${order.attachmentName}` : ""}`,
-          requiredAt: `${order.deliveryDate} ${order.deliveryTime}`,
-          status: "Pending Store Confirmation",
-          createdAt: newOrder.createdAt,
-        };
-        const actor = order.createdBy || order.salesperson;
-        set((s) => ({
-          advanceCakeOrders: [newOrder, ...s.advanceCakeOrders],
-          storeOrders: s.storeOrders,
-          notifications: s.notifications,
-          cashMovements: order.skipLocalCashMovement ? s.cashMovements : [
-            {
-              id: uid("cash"),
-              branch: order.branch,
-              dateTime: newOrder.createdAt,
-              amount: order.advanceAmount,
-              paymentMode: order.paymentMode,
-              direction: "in",
-              purpose: "Cake advance received",
-              enteredBy: actor,
-              referenceNumber: orderNo,
-              remarks: order.collectionSource || order.customerName,
-            },
-            ...s.cashMovements,
-          ],
-          auditLogs: [
-            audit(
-              order.branch,
-              actor,
-              "Advance Order",
-              "-",
-              `${orderNo} ${order.advanceAmount}`,
-            ),
-            ...s.auditLogs,
-          ],
+      addAdvanceCakeOrder: (order,confirmed) => {
+        if(!confirmed?.id||!confirmed.orderNo)throw Error('An advance must be confirmed by the server before adding it to the dashboard.');
+        const existing=get().advanceCakeOrders.find(o=>o.id===confirmed.id);
+        if(existing){set(s=>({advanceCakeOrders:s.advanceCakeOrders.map(o=>o.id===confirmed.id?confirmed:o)}));return confirmed;}
+        const actor=confirmed.createdBy||confirmed.salesperson;
+        const movementId='advance-received:'+confirmed.id;
+        set(s=>({advanceCakeOrders:[confirmed,...s.advanceCakeOrders],
+          cashMovements:confirmed.skipLocalCashMovement?s.cashMovements:[{id:movementId,branch:confirmed.branch,dateTime:confirmed.createdAt,amount:confirmed.advanceAmount,paymentMode:confirmed.paymentMode,direction:'in',purpose:'Advance received',enteredBy:actor,referenceNumber:confirmed.orderNo,remarks:confirmed.collectionSource||confirmed.customerName},...s.cashMovements.filter(m=>m.id!==movementId)],
+          auditLogs:[audit(confirmed.branch,actor,'Advance Order','-',confirmed.orderNo+' '+confirmed.advanceAmount),...s.auditLogs]
         }));
-        mirrorOperationRecord(order.branch, "advance_order", newOrder.id, newOrder, {
-          recordNo: orderNo,
-          amount: order.orderValue,
-          status: newOrder.status,
-          actor,
-        });
-        return newOrder;
+        return confirmed;
       },
       updateAdvanceStatus: (id, status, user, details = {}) =>
         set((s) => {
@@ -2633,152 +2548,23 @@ export const useBranchOpsStore = create<BranchOpsState>()(
         return newReturn;
       },
       addReturn: async (ret) => {
-        // BUG FIX (2026-08-11): this used to be trusted as the FINAL return
-        // number (used directly for the printed receipt, local history, and
-        // mirrored record) — but it's only a best-effort guess computed from
-        // whatever return history happens to be loaded in this browser's
-        // memory right now, which is not guaranteed to include every past
-        // return (a fresh session/reload starts counting from scratch). If
-        // this guess collided with an unrelated older return already in the
-        // real ledger, the server used to silently no-op the whole return
-        // (see process_branch_return's now-fixed duplicate-guard) while this
-        // client still showed success. The server is now the source of
-        // truth: it renumbers on a collision and reports back the number it
-        // actually used (see `finalReturnNo` below) — this is now only the
-        // starting guess sent along with the request.
-        const returnNo = `${ret.branch}-RET-${String(seq(`return-${ret.branch}`)).padStart(4, "0")}`;
-        const requestedRefundMode = ret.originalPaymentMode === "credit" || ret.originalPaymentMode === "credit_adjustment"
-          ? (ret.returnPayMode === "cash" || ret.returnPayMode === "upi" || ret.returnPayMode === "card" ? ret.returnPayMode : "credit_adjustment")
-          : (ret.returnPayMode || ret.originalPaymentMode || "cash");
-
-        let ledgerResult: { creditAdjusted?: number; refundAmount?: number; refundMode?: string; returnNo?: string } | null = null;
-        try {
-          // Typed `any` explicitly: `result` is reassigned below across up to
-          // 3 different RPC calls (fallback chain for older DB deployments
-          // missing a newer function) — strict-mode control-flow analysis
-          // otherwise narrows the reassigned variable down to `never` by the
-          // time it's read after the final `if (result.error)` check, a known
-          // TS limitation with discriminated-union response types reassigned
-          // across conditional branches, not a real type issue (the JSON
-          // shape genuinely varies per RPC and was already read via optional
-          // chaining below regardless).
-          let result: any = requestedRefundMode === 'wallet'
-            ? await supabase.rpc('process_branch_wallet_return_v1', {
-                p_branch: ret.branch,
-                p_bill_no: ret.originalBillNo,
-                p_return_no: returnNo,
-                p_amount: ret.total,
-                p_returned_by: ret.returnedBy,
-                p_reason: ret.reason,
-                p_items: ret.items ?? [],
-                p_idempotency_key: `branch-wallet-refund:${ret.branch}:${returnNo}`,
-              })
-            : await supabase.rpc('process_branch_promotional_return_v1', {
-                p_branch: ret.branch,
-                p_bill_no: ret.originalBillNo,
-                p_return_no: returnNo,
-                p_amount: ret.total,
-                p_payment_mode: requestedRefundMode,
-                p_returned_by: ret.returnedBy,
-                p_reason: ret.reason,
-                p_items: ret.items ?? [],
-              });
-          if (requestedRefundMode !== 'wallet' && result.error && /process_branch_promotional_return_v1|could not find the function|schema cache|does not exist/i.test(result.error.message ?? '')) {
-            result = await supabase.rpc('process_branch_return_credit_safe', {
-              p_branch: ret.branch,
-              p_bill_no: ret.originalBillNo,
-              p_return_no: returnNo,
-              p_amount: ret.total,
-              p_payment_mode: requestedRefundMode,
-              p_returned_by: ret.returnedBy,
-              p_reason: ret.reason,
-              p_items: ret.items ?? [],
-            });
-          }
-          if (requestedRefundMode !== 'wallet' && result.error && /process_branch_return_credit_safe|could not find the function|schema cache|does not exist/i.test(result.error.message ?? '')) {
-            if (requestedRefundMode === 'credit_adjustment') {
-              throw new Error('Credit-safe return workflow is not installed. Apply the latest branch return migration.');
-            }
-            result = await supabase.rpc('process_branch_return', {
-              p_branch: ret.branch,
-              p_bill_no: ret.originalBillNo,
-              p_return_no: returnNo,
-              p_amount: ret.total,
-              p_payment_mode: requestedRefundMode,
-              p_returned_by: ret.returnedBy,
-              p_reason: ret.reason,
-              p_items: ret.items ?? [],
-            });
-          }
-          if (result.error) throw result.error;
-          // Cast against the explicit literal type here, not `typeof
-          // ledgerResult` — a self-referential `typeof` on the LHS variable
-          // being assigned resolves against its narrowed type just before
-          // this line (still `null`, its initial value, since this is the
-          // first reassignment), which strict mode's control-flow analysis
-          // then carries forward as `never` for every later read of
-          // `ledgerResult` in this function.
-          ledgerResult = (result.data ?? null) as { creditAdjusted?: number; refundAmount?: number; refundMode?: string; returnNo?: string } | null;
-        } catch (rpcErr) {
-          console.error('[addReturn] process_branch_return failed; return was not recorded in ledger:', rpcErr);
-          const message = rpcErr instanceof Error ? rpcErr.message : String((rpcErr as { message?: string })?.message || 'Unknown database error');
-          throw new Error(`Return was not recorded: ${message}`);
-        }
-
-        // The server may have renumbered this return (see fix above) if our
-        // guess collided with an unrelated existing return — always defer to
-        // whatever number it reports actually using.
-        const finalReturnNo = ledgerResult?.returnNo || returnNo;
-        const refundAmount = roundMoney(Number(ledgerResult?.refundAmount ?? (requestedRefundMode === 'credit_adjustment' ? 0 : ret.total)));
-        const effectiveMode = refundAmount > 0
-          ? (ledgerResult?.refundMode || requestedRefundMode)
-          : 'credit_adjustment';
-        const newRet: ReturnRecord = {
-          ...ret,
-          id: uid("ret"),
-          returnNo: finalReturnNo,
-          returnPayMode: effectiveMode,
-          refundAmount,
-          creditAdjusted: roundMoney(Number(ledgerResult?.creditAdjusted ?? 0)),
-          createdAt: new Date().toISOString(),
-        };
-
-        set((state) => ({
-          returns: [newRet, ...state.returns],
-          cashMovements: refundAmount > 0 && (effectiveMode === 'cash' || effectiveMode === 'upi' || effectiveMode === 'card')
-            ? [{
-                id: uid("cash"),
-                branch: ret.branch,
-                dateTime: newRet.createdAt,
-                amount: refundAmount,
-                paymentMode: effectiveMode,
-                direction: "out",
-                purpose: "Return refund",
-                enteredBy: ret.returnedBy,
-                referenceNumber: returnNo,
-                remarks: ret.reason,
-              }, ...state.cashMovements]
-            : state.cashMovements,
-          auditLogs: [
-            audit(
-              ret.branch,
-              ret.returnedBy,
-              "Return Bill",
-              ret.originalBillNo,
-              `${returnNo} ${ret.total}; credit adjusted ${roundMoney(Number(ledgerResult?.creditAdjusted ?? 0))}; refund ${refundAmount}`,
-            ),
-            ...state.auditLogs,
-          ],
+        const {useAuthStore}=await import('@/stores/authStore');
+        const user=useAuthStore.getState().currentUser;
+        const requestedRefundMode=ret.originalPaymentMode==='credit'||ret.originalPaymentMode==='credit_adjustment'
+          ?(['cash','upi','card'].includes(ret.returnPayMode||'')?ret.returnPayMode!:'credit_adjustment')
+          :(ret.returnPayMode||ret.originalPaymentMode||'cash');
+        const result=await saveBranchReturn(user?.id??'',{p_branch:ret.branch,p_bill_no:ret.originalBillNo,p_payment_mode:requestedRefundMode,p_reason:ret.reason,p_items:ret.items??[]});
+        const refundAmount=Number(result.refundAmount),effectiveMode=refundAmount>0?(result.refundMode||requestedRefundMode):'credit_adjustment';
+        const newRet:ReturnRecord={...ret,id:result.id,returnNo:result.returnNo,duplicate:result.duplicate,total:Number(result.amount),items:result.items,returnPayMode:effectiveMode,refundAmount,creditAdjusted:Number(result.creditAdjusted),createdAt:result.createdAt||new Date().toISOString(),returnedBy:user?.username||ret.returnedBy,cashierUserId:result.cashierUserId??user?.id,counterSessionId:result.counterSessionId??undefined};
+        set(state=>({
+          returns:[newRet,...state.returns.filter(row=>row.branch!==ret.branch||row.returnNo!==result.returnNo)],
+          cashMovements:refundAmount>0&&['cash','upi','card'].includes(effectiveMode)
+            ?[{id:`return-refund:${result.id}`,branch:ret.branch,dateTime:newRet.createdAt,amount:refundAmount,paymentMode:effectiveMode as 'cash'|'upi'|'card',direction:'out' as const,purpose:'Return refund',cashierUserId:newRet.cashierUserId,counterSessionId:newRet.counterSessionId,enteredBy:newRet.returnedBy,referenceNumber:result.returnNo,remarks:ret.reason},...state.cashMovements.filter(row=>!(row.branch===ret.branch&&row.referenceNumber===result.returnNo&&row.purpose==='Return refund'))]
+            :state.cashMovements,
+          auditLogs:[audit(ret.branch,newRet.returnedBy,result.duplicate?'Return confirmed again':'Return Bill',ret.originalBillNo,`${result.returnNo} ${newRet.total}; credit adjusted ${newRet.creditAdjusted}; refund ${refundAmount}`),...state.auditLogs],
         }));
-        // BUG FIX: same "return" mirror gap as recordAdvanceRefund above —
-        // this is the main return path (used from the billing screen), so it
-        // matters even more that it reaches branch_operation_records.
-        mirrorOperationRecord(ret.branch, "return", newRet.id, newRet, {
-          recordNo: returnNo,
-          amount: refundAmount,
-          status: "Active",
-          actor: ret.returnedBy,
-        });
+        // The server transaction already wrote the canonical return and its
+        // operation record; do not create a second mirror with a different ID.
         return newRet;
       },
       addPurchase: (purchase) => {
@@ -3467,7 +3253,7 @@ export const useBranchOpsStore = create<BranchOpsState>()(
           "branch_operation_records",
           (query) => {
             let q = query
-              .select("record_type, record_id, payload, created_at")
+              .select("id, record_type, record_id, payload, created_at")
               .in("record_type", ["bill", "advance_final_bill"])
               .gte("created_at", `${startDate}T00:00:00`)
               .lte("created_at", `${endDate}T23:59:59`)
@@ -3666,7 +3452,7 @@ export async function nextBranchInvoiceAtomic(branch: Branch) {
     };
   }
   console.error("[nextBranchInvoiceAtomic] Supabase sequence failed:", error?.message);
-  return nextBranchInvoice(branch);
+  throw new Error('A confirmed branch bill number is unavailable. Use the reserved desktop offline sequence or reconnect; no local number will be guessed.');
 }
 
 // AUDIT FIX (2026-09-05): "the payment should be round off there should not

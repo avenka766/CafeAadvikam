@@ -8,7 +8,8 @@ import {
   Smartphone, Truck, UserRound, WalletCards, RefreshCw, Menu, X, UserCircle2, LogOut,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { supabase } from '@/lib/supabase';
+import {useShallow} from 'zustand/react/shallow';
+import {dashboardReadScopes} from './dashboardReadScopes';
 import { businessDate } from '@/lib/businessDate';
 import { useAuthStore } from '@/stores/authStore';
 import { isNativeApp } from '@/lib/platform';
@@ -78,21 +79,9 @@ const BASE_TABS = [
 
 interface Props { branch: Branch }
 
-type TodayLedger = {
-  sales_total: number | string;
-  advance_collected: number | string;
-  advance_balance_collected: number | string;
-  cash_total: number | string;
-  upi_total: number | string;
-  card_total: number | string;
-};
-
-const n = (value: number | string | null | undefined) => Number(value ?? 0);
-
 export default function BranchDashboard({ branch }: Props) {
   const [searchParams, setSearchParams] = useSearchParams();
   const [opsHydrated, setOpsHydrated] = useState(() => useBranchOpsStore.persist.hasHydrated());
-  const [todayLedger, setTodayLedger] = useState<TodayLedger | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const { currentUser, logout } = useAuthStore();
   // FEATURE (2026-09-03): "the SNB/VRSNB app is not at all good and there is
@@ -109,14 +98,8 @@ export default function BranchDashboard({ branch }: Props) {
   const native = isNativeApp();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
-  const {
-    stock, sales, incoming, advanceOrders, thresholds, loading,
-    creditSales: branchCreditSales,
-    creditPayments: branchCreditPayments,
-    stockMismatches, fetchBranchData, syncIncomingFromDispatches, cleanOldData, seedBranchItems,
-    subscribeToStock, fetchStockMismatches, fetchCreditPayments,
-  } = useBranchStore();
-  const { bills, cashMovements, notifications, purchases, advanceCakeOrders, refreshSalespeople } = useBranchOpsStore();
+  const {stock,sales,advanceOrders,thresholds,loading,fetchBranchData,syncIncomingFromDispatches,cleanOldData,seedBranchItems,subscribeToStock}=useBranchStore(useShallow(state=>({stock:state.stock,sales:state.sales,advanceOrders:state.advanceOrders,thresholds:state.thresholds,loading:state.loading,fetchBranchData:state.fetchBranchData,syncIncomingFromDispatches:state.syncIncomingFromDispatches,cleanOldData:state.cleanOldData,seedBranchItems:state.seedBranchItems,subscribeToStock:state.subscribeToStock})));
+  const {advanceCakeOrders,notifications,refreshSalespeople}=useBranchOpsStore(useShallow(state=>({advanceCakeOrders:state.advanceCakeOrders,notifications:state.notifications,refreshSalespeople:state.refreshSalespeople})));
   const tabStripExpanded = useSnbTabStripStore((s) => s.expanded);
 
   const initializedRef = useRef<Branch | null>(null);
@@ -124,7 +107,6 @@ export default function BranchDashboard({ branch }: Props) {
   const [showDeliveryAlert, setShowDeliveryAlert] = useState(false);
 
   const branchStock = useMemo(() => stock[branch] || [], [stock, branch]);
-  const branchIncoming = useMemo(() => incoming[branch] || [], [incoming, branch]);
   const branchAdvance = useMemo(() => advanceOrders?.[branch] || [], [advanceOrders, branch]);
   const branchSales = useMemo(() => sales[branch] || [], [sales, branch]);
   const branchThresholds = useMemo(() => thresholds[branch] || {}, [thresholds, branch]);
@@ -145,6 +127,9 @@ export default function BranchDashboard({ branch }: Props) {
     return !t.adminOnly || isAdminUser;
   }), [canViewReports, canViewSalespersonReport, isAdminUser]);
   const requestedTab = searchParams.get('tab') as TabId | null;  const tab: TabId = requestedTab && tabs.some((t) => t.id === requestedTab) ? requestedTab : 'bill';
+  const activeScopes=useMemo(()=>Array.from(new Set([...dashboardReadScopes(tab),'advance' as const])),[tab]);
+  const activeScopesRef=useRef(activeScopes);activeScopesRef.current=activeScopes;
+  useEffect(()=>{void fetchBranchData(branch,false,activeScopes);},[branch,activeScopes,fetchBranchData]);
   const openTab = useCallback((id: TabId | string) => {
     const next = id as TabId;
     if (next === 'bill') setSearchParams({});
@@ -203,17 +188,12 @@ export default function BranchDashboard({ branch }: Props) {
     // while fetchBranchData right below still runs exactly as before and
     // overwrites it the moment the network succeeds.
     void hydrateBranchDataFromCache(branch);
-    fetchBranchData(branch);
 
-    timers.push(window.setTimeout(() => {
-      fetchStockMismatches();
-      fetchCreditPayments(branch);
-    }, 150));
 
     if (initializedRef.current !== branch) {
       initializedRef.current = branch;
       timers.push(window.setTimeout(() => {
-        syncIncomingFromDispatches(branch, true);
+        syncIncomingFromDispatches(branch);
         seedBranchItems(branch);
         cleanOldData();
       }, 300));
@@ -228,14 +208,16 @@ export default function BranchDashboard({ branch }: Props) {
     // stayed focused the whole time and the websocket silently died
     // anyway" — a real, if rarer, failure mode this recovery poll exists
     // for specifically).
-    const refresh = () => { if (!document.hidden) void fetchBranchData(branch); };
+    const refresh = () => { if (!document.hidden) void fetchBranchData(branch,false,activeScopesRef.current); };
     // Staggered for the same reason as the mount wave above — a cashier
     // tabbing back and forth (checking WhatsApp, a calculator app, etc.)
     // during a busy shift used to fire both of these at once on every
     // return, repeatedly, stacking on top of whatever else just refocused.
+    let lastVisibilityRefresh=Date.now();
     const refreshOnVisible = () => {
-      if (document.hidden) return;
-      void fetchBranchData(branch);
+      if (document.hidden || Date.now()-lastVisibilityRefresh<60_000) return;
+      lastVisibilityRefresh=Date.now();
+      void fetchBranchData(branch,false,activeScopesRef.current);
       timers.push(window.setTimeout(() => { if (!document.hidden) syncIncomingFromDispatches(branch); }, 150));
     };
     document.addEventListener('visibilitychange', refreshOnVisible);
@@ -249,49 +231,20 @@ export default function BranchDashboard({ branch }: Props) {
       clearInterval(syncId);
       timers.forEach((t) => window.clearTimeout(t));
     };
-  }, [branch, cleanOldData, fetchBranchData, fetchCreditPayments, fetchStockMismatches, seedBranchItems, subscribeToStock, syncIncomingFromDispatches]);
-
-  const loadTodayLedger = useCallback(async () => {
-    const { data, error } = await supabase.rpc('get_branch_daily_closure_summary', {
-      p_branch: branch,
-      p_date: businessDate(),
-    });
-    const row = Array.isArray(data) ? data[0] : data;
-    setTodayLedger(error ? null : (row as TodayLedger | null));
-  }, [branch]);
-
-  useEffect(() => {
-    const mountTimer = window.setTimeout(() => { void loadTodayLedger(); }, 600);
-    // Offset from the OTHER visibilitychange handler above (which fires
-    // fetchBranchData immediately + syncIncomingFromDispatches at +150ms) so
-    // regaining focus doesn't pile three unrelated query bundles into the
-    // same instant — same staggering reasoning as the mount effect above.
-    const refreshOnVisible = () => {
-      if (document.hidden) return;
-      window.setTimeout(() => { if (!document.hidden) void loadTodayLedger(); }, 300);
-    };
-    document.addEventListener('visibilitychange', refreshOnVisible);
-    return () => {
-      window.clearTimeout(mountTimer);
-      document.removeEventListener('visibilitychange', refreshOnVisible);
-    };
-  }, [loadTodayLedger]);
+  }, [branch, cleanOldData, fetchBranchData, seedBranchItems, subscribeToStock, syncIncomingFromDispatches]);
 
   const refreshAll = useCallback(async () => {
     if (refreshing) return;
     setRefreshing(true);
     try {
       await Promise.all([
-        fetchBranchData(branch, true),
-        fetchStockMismatches(),
-        fetchCreditPayments(branch),
+        fetchBranchData(branch, true,activeScopesRef.current),
         syncIncomingFromDispatches(branch, true),
-        loadTodayLedger(),
       ]);
     } finally {
       setRefreshing(false);
     }
-  }, [branch, fetchBranchData, fetchCreditPayments, fetchStockMismatches, loadTodayLedger, refreshing, syncIncomingFromDispatches]);
+  }, [branch, fetchBranchData, refreshing, syncIncomingFromDispatches]);
 
   useEffect(() => {
     const handleHeaderRefresh = (event: Event) => {
@@ -306,17 +259,6 @@ export default function BranchDashboard({ branch }: Props) {
     if (requestedTab && !tabs.some((t) => t.id === requestedTab)) openTab('bill');
   }, [requestedTab, tabs, openTab]);
 
-  const lowStockCount = useMemo(
-    () => branchStock.filter((s) => s.quantity <= (branchThresholds[s.itemName] ?? s.minThreshold ?? 10)).length,
-    [branchStock, branchThresholds],
-  );
-  const pendingIncoming = branchIncoming.filter((i) => !i.confirmed).length;
-  const pendingAdvance = branchAdvance.filter((o) => o.status === 'pending').length;
-  const unreadNotifications = notifications.filter((n) => n.branch === branch && n.status === 'Unread').length;
-  const pendingPurchases = purchases.filter((p) => p.branch === branch && p.total > p.paidAmount).length;
-  const visibleCreditSales = branchCreditSales[branch] || [];
-  const pendingCreditSales = visibleCreditSales.filter((c) => c.status !== 'settled').length;
-  const creditDue = visibleCreditSales.filter((c) => c.status !== 'settled').reduce((s, c) => s + c.creditAmount, 0);
   const todayIso = businessDate();
   const todayLegacyDeliveries = branchAdvance.filter((o) => o.status === 'pending' && o.deliveryDate === todayIso);
   const todayCakeDeliveries = advanceCakeOrders.filter((o) => o.branch === branch && !['Paid In Full', 'Cancelled'].includes(o.status) && o.deliveryDate === todayIso);
@@ -331,48 +273,6 @@ export default function BranchDashboard({ branch }: Props) {
       setShowDeliveryAlert(true);
     }
   }, [branch, todayDeliveryCount, todayIso, todayLegacyDeliveries, todayCakeDeliveries]);
-
-  const todayString = new Date().toDateString();
-  const todayBills = useMemo(
-    () => bills.filter((b) => b.branch === branch && new Date(b.createdAt).toDateString() === todayString),
-    [bills, branch, todayString],
-  );
-  const counterTodayBills = useMemo(
-    () => todayBills.filter((b) => b.source !== 'advance-final'),
-    [todayBills],
-  );
-  const legacyTodaySalesLog = useMemo(
-    () => branchSales.filter((s) => new Date(s.soldAt).toDateString() === todayString && !s.billNo),
-    [branchSales, todayString],
-  );
-  const todayAdvanceIn = useMemo(
-    () => cashMovements
-      .filter((m) => m.branch === branch && new Date(m.dateTime).toDateString() === todayString && m.direction === 'in' && (m.purpose === 'Cake advance received' || m.purpose === 'Advance balance collection'))
-      .reduce((s, m) => s + m.amount, 0),
-    [cashMovements, branch, todayString],
-  );
-  const todayCreditCollections = useMemo(
-    () => (branchCreditPayments[branch] || [])
-      .filter((m) => new Date(m.createdAt).toDateString() === todayString)
-      .filter((m) => !cashMovements.some((cm) =>
-        cm.branch === branch
-        && cm.referenceNumber === m.billNo
-        && cm.paymentMode === m.paymentMode
-        && cm.amount === m.amount
-        && cm.purpose === 'Credit upfront collection'
-      )),
-    [branchCreditPayments, branch, todayString, cashMovements],
-  );
-  const localTodayRevenue = useMemo(
-    () => counterTodayBills.reduce((s, b) => s + b.total, 0) + legacyTodaySalesLog.reduce((s, r) => s + (r.unitPrice ?? 0) * r.quantitySold, 0) + todayAdvanceIn,
-    [counterTodayBills, legacyTodaySalesLog, todayAdvanceIn],
-  );
-  // Sales value and collection value are separate: advances are collections, not new sales.
-  const totalTodayRevenue = todayLedger ? n(todayLedger.sales_total) : localTodayRevenue - todayAdvanceIn;
-  const todayMovements = cashMovements.filter((m) => m.branch === branch && new Date(m.dateTime).toDateString() === todayString);
-  const currentCash = todayLedger ? n(todayLedger.cash_total) : todayMovements.filter((m) => m.paymentMode === 'cash').reduce((s, m) => s + (m.direction === 'in' ? m.amount : -m.amount), 0);
-  const currentUpi = todayLedger ? n(todayLedger.upi_total) : todayMovements.filter((m) => m.paymentMode === 'upi').reduce((s, m) => s + (m.direction === 'in' ? m.amount : -m.amount), 0);
-  const currentCard = todayLedger ? n(todayLedger.card_total) : todayMovements.filter((m) => m.paymentMode === 'card').reduce((s, m) => s + (m.direction === 'in' ? m.amount : -m.amount), 0);
 
   if (!opsHydrated) {
     return (

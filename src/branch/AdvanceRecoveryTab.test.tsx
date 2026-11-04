@@ -1,0 +1,22 @@
+import {afterEach,beforeEach,expect,it,vi} from 'vitest';import {act} from 'react';import {createRoot,type Root} from 'react-dom/client';
+const m=vi.hoisted(()=>({save:vi.fn(),add:vi.fn(),load:vi.fn(),subscribe:vi.fn(()=>()=>{}),items:{SNB:[],VRSNB:[],Hosur:[]}}));
+vi.mock('./advanceCreationRequest',async importOriginal=>({...await importOriginal<any>(),saveAdvanceCreation:m.save}));
+vi.mock('@/lib/supabase',()=>({supabase:{rpc:async()=>({data:null,error:null})},fetchAllRows:vi.fn()}));
+vi.mock('@/stores/authStore',()=>({useAuthStore:()=>({currentUser:{id:'staff',role:'branch_snb',username:'Fixture'}})}));
+vi.mock('@/stores/branchCatalogStore',()=>({useBranchCatalogStore:()=>({items:m.items,loadCatalog:m.load,subscribe:m.subscribe})}));
+vi.mock('./branchOpsStore',()=>({money:(n:number)=>`₹${n}`,useBranchOpsStore:()=>({advanceCakeOrders:[],salespeople:[],counterOpenings:[],addAdvanceCakeOrder:m.add})}));
+vi.mock('./branchStore',()=>({useBranchStore:()=>({fetchBranchData:vi.fn()})}));
+vi.mock('@/bakery/bakeryStore',()=>({useBakeryStore:(selector:any)=>selector({submitOrder:vi.fn()})}));
+import {AdvanceCakeOrdersTab} from './tabs/BranchBusinessModules';
+(globalThis as any).IS_REACT_ACT_ENVIRONMENT=true;let root:Root,host:HTMLDivElement;
+beforeEach(()=>{localStorage.clear();m.save.mockReset();m.add.mockReset();host=document.createElement('div');document.body.append(host);root=createRoot(host);});
+afterEach(()=>{act(()=>root.unmount());host.remove();localStorage.clear();});
+it('recovers a saved advance without retyping it and clears the old form before another collection',async()=>{
+ const draft={branch:'SNB',customerName:'Saved customer',orderValue:100,advanceAmount:40,items:[]};const confirmed={...draft,id:'request',orderNo:'SNB-ADV-1',status:'Pending Store Confirmation'};
+ localStorage.setItem('advance-creation:staff:SNB',JSON.stringify({p_request:'request',p_receiver:true,p_order:draft}));m.save.mockResolvedValue(confirmed);m.add.mockReturnValue(confirmed);
+ await act(async()=>root.render(<AdvanceCakeOrdersTab branch="SNB" branchStock={[]}/>));
+ const name=[...host.querySelectorAll('label')].find(l=>/Customer Name/i.test(l.textContent||''))?.querySelector('input');expect(name).toBeTruthy();
+ await act(async()=>{Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value')!.set!.call(name,'Old customer form');name!.dispatchEvent(new Event('input',{bubbles:true}));});
+ await act(async()=>{[...host.querySelectorAll('button')].find(b=>b.textContent==='Recover saved advance')!.click();});
+ expect(m.save).toHaveBeenCalledWith('staff',{p_receiver:true,p_order:draft});expect(m.add).toHaveBeenCalledWith(confirmed,confirmed);expect(name!.value).toBe('');expect(localStorage.getItem('advance-creation:staff:SNB')).toBeNull();expect(host.textContent).toContain('Recovered SNB-ADV-1');
+});
