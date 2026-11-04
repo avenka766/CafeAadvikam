@@ -7,6 +7,7 @@ import BottomNav from '@/components/layout/BottomNav';
 import ProtectedRoute from '@/components/layout/ProtectedRoute';
 import ErrorBoundary from '@/components/layout/ErrorBoundary';
 import OfflineBanner from '@/components/layout/OfflineBanner';
+import DeleteConfirmationGuard from '@/components/layout/DeleteConfirmationGuard';
 import DataHealthBanner from '@/components/layout/DataHealthBanner';
 import ElectronRefreshButton from '@/components/layout/ElectronRefreshButton';
 import DesktopSalesBootstrap from '@/components/layout/DesktopSalesBootstrap';
@@ -84,37 +85,8 @@ const AdminAlertsPage = lazy(() => import('@/pages/AdminAlertsPage'));
 
 
 
-// Owner Android app — silent auto-login (2026-08-12, explicit owner request:
-// "I don't want the app to have a login screen... they should see the
-// data"). This is a genuine security tradeoff, made knowingly: these
-// credentials ship inside the .apk itself, so anyone who obtains the app
-// package file (not just the phone) could extract them and authenticate as
-// this account remotely. To limit the blast radius of that:
-//   - This is a DEDICATED account ("owner-app-device"), not either real
-//     Owner's personal login — their own usernames/passwords are never
-//     embedded anywhere and keep working independently.
-//   - If this credential ever needs to be revoked, delete/reset just this
-//     one staff record server-side (Staff Management) — it doesn't touch
-//     the real Owner accounts.
-// Only wired in for the native build; the web dashboard (used by every
-// other role, on shared/less-trusted devices) is completely unaffected and
-// still requires a real login.
-const OWNER_AUTOLOGIN_USERNAME = import.meta.env.VITE_ANDROID_ADMIN_BUILD === 'true' ? '' : 'owner-app-device';
-const OWNER_AUTOLOGIN_PASSWORD = import.meta.env.VITE_ANDROID_ADMIN_BUILD === 'true' ? '' : 'UaUs36zfZmL-MYxlMsYMRMYwE4zP3kKU';
-// BUG FIX (2026-09-03): this used to fire for ANY native build (`isNativeApp()`
-// alone), not just Owner's app specifically. That was safe as long as Owner's
-// app was the only native build that existed, but a second native app (the
-// SNB/VRSNB branch-staff app, built the same day) compiles from this EXACT
-// SAME dist/ bundle — Capacitor's webDir isn't per-app-configurable, so both
-// apps ship identical JS with no way to tell them apart from bundle content
-// alone. Left unscoped, rebuilding the branch-staff app would have silently
-// auto-logged every SNB/VRSNB staff member in as Owner instead of showing
-// their real login screen — the opposite of that app's whole point. Fixed by
-// checking the REAL installed app's package id via @capacitor/app's
-// App.getInfo() (a native call reading the actual Android manifest, not
-// anything baked into the shared JS bundle) instead of just isNativeApp().
-const OWNER_APP_ID = 'com.cafeaadvikam.owner';
-
+// New builds require an individual login. Existing installed Owner builds remain
+// unchanged until replacement; no shared account secret is bundled here.
 // FEATURE (2026-09-08): "in planner apk only the planner should be able to
 // login, others should not be able to login — same for the other 2 apk
 // files." Each native build is single-purpose (see the 3 mobile-apps/*
@@ -189,68 +161,6 @@ function AppRoutes() {
     }
   }, [hydrated]);
 
-  // Owner Android app — silent auto-login. Runs once, after the persisted
-  // session has finished hydrating, only when native and no session was
-  // restored (i.e. a genuinely fresh install, or a wiped one during
-  // testing). See OWNER_AUTOLOGIN_USERNAME/PASSWORD above for the reasoning.
-  // `status` gates rendering below so the real login screen never flashes
-  // on screen while this is in flight — 'done' covers both "logged in
-  // already" and "auto-login finished" (success or failure), the latter
-  // falling through to the normal login screen as a safety net.
-  const [autoLoginStatus, setAutoLoginStatus] = useState<'idle' | 'trying' | 'done'>('idle');
-  useEffect(() => {
-    if (!hydrated) return;
-    if (!native || currentUser) { setAutoLoginStatus('done'); return; }
-    if (autoLoginStatus !== 'idle') return;
-    setAutoLoginStatus('trying');
-    // @capacitor/core (and everything that depends on it, incl. @capacitor/app)
-    // is marked `external` in vite.config.ts so the plain web build doesn't
-    // try to bundle native-only packages — reached via a dynamic import()
-    // wrapped in try/catch here, same established pattern as
-    // src/lib/nativeNotifications.ts's isNative(). A top-level static import
-    // crashes the ENTIRE app on load with "Failed to resolve module
-    // specifier '@capacitor/core'" (confirmed live on-device) since that
-    // bare specifier isn't resolvable by the WebView outside a dynamic
-    // import boundary.
-    void (async () => {
-      // BUG FIX (2026-09-27): "why does it show the login screen — it
-      // should open straight to the dashboard." Root cause: this whole
-      // block ran exactly once, and a fresh cold app-start (right after
-      // install, or right after the device/emulator itself just booted)
-      // can hit the login RPC before the network is actually usable yet —
-      // that single failed attempt fell straight through to the real login
-      // screen for the rest of that app session, with no way back short of
-      // force-quitting and reopening the app. Confirmed live: the exact
-      // same build failed silently on first launch, then auto-logged in
-      // successfully on a second launch a few seconds later with nothing
-      // else different. Retrying the LOGIN call specifically (not the
-      // getInfo() app-id check above it, which is a synchronous native
-      // bridge call and isn't network-dependent) covers this without
-      // changing the "different app -> real login screen" behavior at all.
-      const MAX_LOGIN_ATTEMPTS = 3;
-      const RETRY_DELAY_MS = 1500;
-      try {
-        const { App: NativeApp } = await import('@capacitor/app');
-        const info = await NativeApp.getInfo();
-        if (info.id !== OWNER_APP_ID) return; // a different native app (e.g. branch-staff) — real login screen applies
-        for (let attempt = 1; attempt <= MAX_LOGIN_ATTEMPTS; attempt++) {
-          try {
-            await useAuthStore.getState().login(OWNER_AUTOLOGIN_USERNAME, OWNER_AUTOLOGIN_PASSWORD);
-            break;
-          } catch (err) {
-            if (attempt === MAX_LOGIN_ATTEMPTS) throw err;
-            await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
-          }
-        }
-      } catch {
-        // @capacitor/app unavailable, or every login attempt failed — falls
-        // through to the real login screen, same safety net as before.
-      } finally {
-        setAutoLoginStatus('done');
-      }
-    })();
-  }, [hydrated, native, currentUser, autoLoginStatus]);
-
   // FEATURE (2026-09-08): per-app login role gate (see NATIVE_APP_ROLE_GATE
   // above) — resolved independently of the Owner auto-login effect above
   // (that one bails out immediately once `currentUser` exists, but this gate
@@ -297,7 +207,7 @@ function AppRoutes() {
     </div>
   );
 
-  if (!hydrated || (native && autoLoginStatus !== 'done')) return (
+  if (!hydrated) return (
     <div className="min-h-screen bg-background flex items-center justify-center">
       <div className="flex flex-col items-center gap-3">
         <div className="size-10 rounded-2xl bg-primary/10 animate-pulse" />
@@ -406,6 +316,7 @@ export default function App() {
   const auditOnly = useAuthStore(state => ['audit','finance'].includes(state.currentUser?.role || ''));
   return (
     <ErrorBoundary>
+      <DeleteConfirmationGuard />
       {!auditOnly && <OfflineBanner />}
       <DataHealthBanner />
       <ElectronRefreshButton />
