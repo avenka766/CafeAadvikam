@@ -251,6 +251,7 @@ export async function saveDispatchInvoice(input: {
   desktopHosurBilling?: Record<string,unknown>;
   desktopKey?:string;
 }): Promise<DispatchInvoiceRecord> {
+  if(input.scope==='Hosur'&&!input.desktopHosurBilling)throw Error('Create Hosur invoices through Hosur Dispatch & Billing so the invoice and shop billing ledger are saved together. A dispatch-only invoice cannot be issued.');
   // AUDIT FIX (2026-09-02): discountPct is planner-entered and, until now, was
   // trusted verbatim with no bound in either direction — a stray value (typo,
   // bad state, or a compromised session) could zero out or invert a real

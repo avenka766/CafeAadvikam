@@ -1,5 +1,6 @@
 import { supabase, fetchAllRows } from '@/lib/supabase';
 import * as XLSX from 'xlsx';
+import {addWorkbookTotals} from '@/lib/excelWorkbookTotals';
 
 export const FESTIVAL_PRODUCTION_TABLE = 'planner_festival_production';
 export type FestivalEntry = {
@@ -70,5 +71,5 @@ export function festivalWorkbook(rows: FestivalEntry[], from: string, to: string
   return book;
 }
 export function downloadFestivalReport(rows: FestivalEntry[], from: string, to: string) {
-  XLSX.writeFile(festivalWorkbook(rows, from, to), `Festival_Production_${from}_to_${to}.xlsx`, { compression: true });
+  XLSX.writeFile(addWorkbookTotals(festivalWorkbook(rows, from, to)), `Festival_Production_${from}_to_${to}.xlsx`, { compression: true });
 }

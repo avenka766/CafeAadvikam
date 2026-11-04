@@ -12,6 +12,7 @@
 // "Export All" button (every section, one file) — same code path, so the
 // combined report can't visually drift from the per-section ones.
 import * as XLSX from 'xlsx';
+import {addWorkbookTotals} from '@/lib/excelWorkbookTotals';
 import jsPDF from 'jspdf';
 
 export interface ExcelSheetSpec {
@@ -49,7 +50,7 @@ export function generateExcelReport(opts: { filename: string; sections: ExcelSec
       addSheet(combined ? `${section.prefix} - ${sheet.name}` : sheet.name, sheet.rows, sheet.fallback);
     });
   });
-  XLSX.writeFile(wb, opts.filename);
+  XLSX.writeFile(addWorkbookTotals(wb), opts.filename);
 }
 
 export interface PdfTableSpec {

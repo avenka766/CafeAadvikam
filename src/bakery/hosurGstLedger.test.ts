@@ -2,6 +2,8 @@ import {expect,it,vi,afterEach} from 'vitest';
 import {hosurInvoiceLedgerLines} from './hosurGstLedger';
 import {saveDispatchInvoice,renderSavedDispatchTaxInvoice} from './dispatchInvoice';
 import {supabase} from '@/lib/supabase';
+const m=vi.hoisted(()=>({workflow:vi.fn()}));
+vi.mock('./webDispatchRequest',()=>({saveWebDispatch:m.workflow}));
 const buyer={name:'Hosur Buyer',address:'Hosur',gstin:'TEST-GST',stateName:'Tamil Nadu',stateCode:'33'};
 const item={itemName:'Sweet mix',unit:'pcs',quantity:2,unitPrice:500,lineTotal:1000,gstPct:5,gstPricing:'exclusive' as const,gstBuyerDetails:buyer,hsnCode:'2106'};
 const sum=(lines:ReturnType<typeof hosurInvoiceLedgerLines>)=>Math.round(lines.reduce((s,i)=>s+Math.round(i.quantity*i.unitPrice*100)/100,0)*100)/100;
@@ -17,10 +19,14 @@ it('reconciles whole-bill discount and fractional quantity rounding to the tax i
 it('preserves the legacy non-GST ledger projection',()=>{
  const {gstPricing:_,...legacy}=item;expect(sum(hosurInvoiceLedgerLines([legacy],10))).toBe(900);
 });
-it('saves Hosur tax with the existing atomic invoice RPC and reprints the full invoice format',async()=>{
- const single=vi.fn().mockResolvedValue({data:{id:'test',invoice_no:'SALES/26-27/TEST',created_at:'2026-10-16T02:00:00Z'},error:null});
- const rpc=vi.spyOn(supabase,'rpc').mockReturnValue({single} as never);
- const record=await saveDispatchInvoice({scope:'Hosur',hosurShopName:'Shop',dispatchedBy:'Planner',items:[item],discountPct:10,isGstInvoice:true,gstSupplyType:'intra'});
- expect(rpc).toHaveBeenCalledWith('save_dispatch_invoice_secure',expect.objectContaining({p_total:945,p_subtotal:1000,p_discount_amount:100,p_round_off:0,p_items:[item]}));
+it('saves Hosur tax and the shop ledger through the atomic workflow and reprints the full invoice format',async()=>{
+ m.workflow.mockResolvedValue({id:'test',invoice_no:'SALES/26-27/TEST',created_at:'2026-10-16T02:00:00Z'});
+ const record=await saveDispatchInvoice({scope:'Hosur',hosurShopName:'Shop',dispatchedBy:'Planner',items:[item],discountPct:10,isGstInvoice:true,gstSupplyType:'intra',desktopHosurBilling:{orderId:'fixture'}});
+ expect(m.workflow).toHaveBeenCalledWith(expect.objectContaining({p_invoice:expect.objectContaining({p_total:945,p_subtotal:1000,p_discount_amount:100,p_round_off:0,p_items:[item]}),p_hosur:expect.objectContaining({total:945})}));
  expect(record.invoiceNo).toBe('SALES/26-27/TEST');const html=renderSavedDispatchTaxInvoice(record);expect(html).toContain('VRSNB FOODS LLP');expect(html).toContain('Hosur Buyer');expect(html).toContain('TEST-GST');expect(html).toContain('Rs. 945.00');expect(html).toContain('Bill discount');
+});
+it('blocks a standalone Hosur invoice before a number or remote write is requested',async()=>{
+ const rpc=vi.spyOn(supabase,'rpc');
+ await expect(saveDispatchInvoice({scope:'Hosur',dispatchedBy:'Planner',items:[item],discountPct:0})).rejects.toThrow('shop billing ledger');
+ expect(rpc).not.toHaveBeenCalled();
 });
