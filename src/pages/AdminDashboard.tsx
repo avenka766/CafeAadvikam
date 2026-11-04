@@ -1,5 +1,5 @@
 import {isGstCheckedBill} from '@/lib/gstBillFilter';
-import {invoiceTax,aggregateInvoiceTax,reconcileHosurItems} from '@/lib/hosurReportAccounting';
+import {invoiceTax,hosurLedgerTax,reconcileHosurItems} from '@/lib/hosurReportAccounting';
 import { ReportSourceFailures } from '@/components/ReportSourceFailures';
 import { ReportReadCache, type ReportReadFailure } from '@/lib/reportReadCache';
 import { AdminSummaryCard, AdminReportDateRange } from '@/components/admin/AdminReportControls';
@@ -437,6 +437,7 @@ function AdminDashboard() {
     salesperson: string; biller: string; invoiceNo?: string; dataCheckOk?: boolean; isGstInvoice?: boolean;
     tax?: ReturnType<typeof invoiceTax>; itemSubtotal?:number;
     invoiceTaxes?:Record<string,ReturnType<typeof invoiceTax>>;
+    invoiceReconciliationError?:string;
   }>>([]);
   const [realBillItems, setRealBillItems] = useState<Array<{
     billId: string; branch: Branch; itemName: string; quantity: number; unit: string;
@@ -745,12 +746,14 @@ function AdminDashboard() {
       // dispatch invoice outside this report's dispatch creation range.
       const linkedNumbers=[...new Set(hosurBills.flatMap(h=>String(h.invoice_no||'').split(',').map(n=>n.trim()).filter(Boolean)))];
       for(let offset=0;offset<linkedNumbers.length;offset+=200){
-        const flags=await fetchAllRows<Record<string,unknown>>(()=>supabase.from('dispatch_invoices').select('invoice_no,is_gst_invoice,total,subtotal,discount_amount,gst_supply_type,items').in('invoice_no',linkedNumbers.slice(offset,offset+200)).abortSignal(controller.signal));
+        const flags=await fetchAllRows<Record<string,unknown>>(()=>supabase.from('dispatch_invoices').select('invoice_no,status,is_gst_invoice,total,subtotal,discount_amount,gst_supply_type,items').in('invoice_no',linkedNumbers.slice(offset,offset+200)).abortSignal(controller.signal));
         if(realSalesRequestRef.current!==requestId)return;
         if(flags.error){setRealSalesError('GST bill flags could not load: '+flags.error.message);setRealSalesLoading(false);return;}
         flags.data.filter(r=>r.is_gst_invoice===true).forEach(r=>gstInvoiceNumbers.add(String(r.invoice_no)));
         flags.data.forEach(r=>taxInvoices.set(String(r.invoice_no),r));
       }
+      const missingInvoiceNumbers=linkedNumbers.filter(n=>!taxInvoices.has(n));
+      if(missingInvoiceNumbers.length){setRealSalesError('Linked invoice details could not load: '+missingInvoiceNumbers.join(', '));setRealSalesLoading(false);return;}
 
 
       const walkinBills = (walkinBillsRes.data || []) as Array<Record<string, unknown>>;
@@ -789,7 +792,7 @@ function AdminDashboard() {
         String(s.status) === 'paid' && String(s.scope) !== 'Hosur');
       const activeWalkinBills = walkinBills.filter((w) => String(w.status) === 'active');
       const unconfirmedExtra = [
-        ...salesInvoices.filter((s) => isUncoveredHosur(s) || (String(s.scope) !== 'Hosur' && String(s.status) !== 'paid')),
+        ...salesInvoices.filter((s) => String(s.status)==='cancelled' || isUncoveredHosur(s) || (String(s.scope) !== 'Hosur' && String(s.status) !== 'paid')),
         ...walkinBills.filter((w) => String(w.status) !== 'active'),
       ];
       setUnconfirmedSalesInvoices(unconfirmedExtra.map((r) => ({
@@ -822,16 +825,20 @@ function AdminDashboard() {
           // hosurBillsSplitForDisplay already documents for this case).
           const firstInvoiceNo = String(h.invoice_no ?? '').split(',').map((s) => s.trim()).filter(Boolean)[0];
           const dispatchDate = firstInvoiceNo ? dispatchCreatedAtByInvoiceNo.get(firstInvoiceNo) : undefined;
+          const linked=String(h.invoice_no||'').split(',').map(n=>taxInvoices.get(n.trim()));
+          const active=linked.filter((r):r is Record<string,unknown>=>!!r&&r.status!=='cancelled');
+          const accounting=hosurLedgerTax(active,Number(h.subtotal||0),hosurItemsChunks.filter(i=>String(i.bill_id)===String(h.id)));
           return {
             id: String(h.id), billNo: String(h.bill_no ?? ''), branch: 'Hosur' as Branch,
-            tax:aggregateInvoiceTax(String(h.invoice_no||'').split(',').map(n=>taxInvoices.get(n.trim())).filter((r):r is Record<string,unknown>=>!!r)),
-            invoiceTaxes:Object.fromEntries(String(h.invoice_no||'').split(',').map(n=>n.trim()).filter(n=>taxInvoices.has(n)).map(n=>[n,invoiceTax(taxInvoices.get(n)!)])),
-            itemSubtotal:aggregateInvoiceTax(String(h.invoice_no||'').split(',').map(n=>taxInvoices.get(n.trim())).filter((r):r is Record<string,unknown>=>!!r))?.itemSubtotal,
+            tax:accounting.tax,
+            invoiceTaxes:accounting.invoiceTaxes,
+            invoiceReconciliationError: linked.length>0&&active.length===0?'No active linked invoice remains. Review the cancelled invoices before export.':undefined,
+            itemSubtotal:accounting.tax?.itemSubtotal,
             total: Number(h.subtotal || 0), subtotal: Number(h.subtotal || 0), discount: 0,
             createdAt: dispatchDate || String(h.confirmed_at), status: 'original' as const,
             salesperson: '', biller: String(h.shop_name ?? ''),
-            invoiceNo: String(h.invoice_no ?? '') || String(h.bill_no ?? ''),
-            isGstInvoice: String(h.invoice_no || '').split(',').some(n=>gstInvoiceNumbers.has(n.trim())),
+            invoiceNo: active.map(r=>String(r.invoice_no)).join(', ') || String(h.invoice_no ?? '') || String(h.bill_no ?? ''),
+            isGstInvoice: active.some(r=>r.is_gst_invoice===true),
             dataCheckOk: Math.abs(Number(h.subtotal || 0) - (Number(h.credit_amount || 0) + Number(h.paid_amount || 0))) < 0.01,
           };
         // The confirmed_at fetch above was deliberately widened past toTs so
@@ -2319,7 +2326,7 @@ function AdminDashboard() {
   );
   const hosurItemReconciliation=useMemo(()=>{
     const rows: Array<(typeof realBillItems)[number]&{savedItemValue:number;allocation:number}>=[];const errors:string[]=[];
-    for(const bill of hosurBillsInRange){try{if(bill.tax&&Math.abs(bill.tax.invoiceValue-bill.total)>.011)throw Error('Invoice value differs from the shop ledger. Review before export.');rows.push(...reconcileHosurItems(bill,realBillItems.filter(i=>i.branch==='Hosur'&&i.billId===bill.id)));}catch(e){errors.push(`${bill.invoiceNo||bill.billNo}: ${(e as Error).message}`);}}
+    for(const bill of hosurBillsInRange){try{if(bill.invoiceReconciliationError)throw Error(bill.invoiceReconciliationError);if(bill.tax&&Math.abs(bill.tax.invoiceValue-bill.total)>.011)throw Error('Invoice value differs from the shop ledger. Review before export.');rows.push(...reconcileHosurItems(bill,realBillItems.filter(i=>i.branch==='Hosur'&&i.billId===bill.id)));}catch(e){errors.push(`${bill.invoiceNo||bill.billNo}: ${(e as Error).message}`);}}
     return {rows,errors};
   },[hosurBillsInRange,realBillItems]);
   const hosurBillItemsInRange = hosurItemReconciliation.rows;
@@ -2358,7 +2365,7 @@ function AdminDashboard() {
     if (invoiceNos.length <= 1) {
       return [{ ...b, rowKey: b.id, splitInvoiceNo: invoiceNos[0] || b.invoiceNo || b.billNo || '—', splitTotal: b.total, splitIndex: 0, splitCount: 1 }];
     }
-    const ratios = invoiceNos.map(no => hosurDispatchTotalsByInvoiceNo.get(no) ?? 0);
+    const ratios = invoiceNos.map(no => b.invoiceTaxes?.[no]?.invoiceValue ?? hosurDispatchTotalsByInvoiceNo.get(no) ?? 0);
     const amounts = splitAmountByRatio(b.total, ratios);
     return invoiceNos.map((no, idx) => ({
       ...b, rowKey: `${b.id}-${idx}`, splitInvoiceNo: no, splitTotal: amounts[idx], splitIndex: idx, splitCount: invoiceNos.length,
@@ -2410,13 +2417,13 @@ function AdminDashboard() {
     return Array.from(map.values()).sort((a, b) => b.revenue - a.revenue);
   }, [hosurBillsInRange, hosurBillItemsInRange]);
 
-  const hosurTaxColumns=['Taxable Value','CGST','SGST','IGST','Invoice Value'].map((header,i)=>({header,key:['taxableValue','cgst','sgst','igst','invoiceValue'][i]}));
+  const hosurTaxColumns=['Taxable Value','CGST','SGST','IGST','Invoice Value','Printed Invoice Value','Shop Ledger Adjustment'].map((header,i)=>({header,key:['taxableValue','cgst','sgst','igst','invoiceValue','printedInvoiceValue','ledgerAdjustment'][i]}));
   const hosurTaxValues=(bill:(typeof hosurBillsInRange)[number],splitIndex?:number)=>{
-    const tax=bill.tax||{taxableValue:bill.total,cgst:0,sgst:0,igst:0,invoiceValue:bill.total};
+    const tax=bill.tax||{taxableValue:bill.total,cgst:0,sgst:0,igst:0,invoiceValue:bill.total,printedInvoiceValue:bill.total,ledgerAdjustment:0};
     const numbers=(bill.invoiceNo||bill.billNo).split(',').map(n=>n.trim()).filter(Boolean);
     const ratios=numbers.map(n=>hosurDispatchTotalsByInvoiceNo.get(n)||0);
     if(splitIndex!==undefined&&bill.invoiceTaxes?.[numbers[splitIndex]])return bill.invoiceTaxes[numbers[splitIndex]];
-    return Object.fromEntries(['taxableValue','cgst','sgst','igst','invoiceValue'].map(k=>[k,splitIndex===undefined?tax[k as keyof typeof tax]:splitAmountByRatio(tax[k as keyof typeof tax],ratios)[splitIndex]]));
+    return Object.fromEntries(['taxableValue','cgst','sgst','igst','invoiceValue','printedInvoiceValue','ledgerAdjustment'].map(k=>[k,splitIndex===undefined?tax[k as keyof typeof tax]:splitAmountByRatio(tax[k as keyof typeof tax],ratios)[splitIndex]]));
   };
   const exportHosurExcel = () => { if(hosurItemReconciliation.errors.length){window.alert('Export blocked: '+hosurItemReconciliation.errors.join('; '));return;} return exportWorkbook(`Admin_Hosur_${fromDate}_${toDate}`, [
     {name:'Invoice Exceptions',title:'Historical invoice exceptions — excluded from confirmed sales totals',columns:[{header:'Invoice Number',key:'invoiceNo'},{header:'Branch',key:'scope'},{header:'Customer / Shop',key:'who'},{header:'Status',key:'status'},{header:'Recorded Value (not sales)',key:'total'},{header:'Date',key:'createdAt'}],rows:hosurGstOnly?[]:hosurReviewInvoices},
