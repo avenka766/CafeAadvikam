@@ -1,4 +1,5 @@
 import * as XLSX from 'xlsx';
+import {addWorkbookTotals} from '@/lib/excelWorkbookTotals';
 import { REPORT_SOURCES, type ReportSnapshot } from './reportSources';
 import { reportColumns, type ReportSection, type ReportValue } from './reportModel';
 
@@ -79,5 +80,5 @@ export function buildReportWorkbook(sections: ReportSection[], context: Workbook
 }
 
 export function downloadReportWorkbook(sections: ReportSection[], context: WorkbookContext) {
-  XLSX.writeFile(buildReportWorkbook(sections, context), `VRSNB_Cafe_Reports_${context.from}_to_${context.to}.xlsx`, { compression: true });
+  XLSX.writeFile(addWorkbookTotals(buildReportWorkbook(sections, context)), `VRSNB_Cafe_Reports_${context.from}_to_${context.to}.xlsx`, { compression: true });
 }
