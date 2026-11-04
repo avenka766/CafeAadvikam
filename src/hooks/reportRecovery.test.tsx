@@ -5,8 +5,9 @@ import {useCompleteBranchReports} from './useCompleteBranchReports';
 import {useBranchLedger} from './useBranchLedger';
 import {useSnbAdminReports} from './useSnbAdminReports';
 import {ReportReadCache} from '@/lib/reportReadCache';
-const mocks=vi.hoisted(()=>({source:vi.fn(),rpc:vi.fn(),table:vi.fn()}));
+const mocks=vi.hoisted(()=>({source:vi.fn(),rpc:vi.fn(),table:vi.fn(),canonical:vi.fn()}));
 vi.mock('@/branch/reports/reportSources',async original=>({...await original<typeof import('@/branch/reports/reportSources')>(),loadReportSource:mocks.source}));
+vi.mock('@/lib/snbCanonicalHistory',()=>({loadSnbCanonicalHistory:mocks.canonical}));
 vi.mock('@/lib/supabase',()=>({fetchAllRows:vi.fn(),supabase:{rpc:mocks.rpc,from:(table:string)=>{
  const builder:any={then:(resolve:any,reject:any)=>Promise.resolve(mocks.table(table)).then(resolve,reject)};
  for(const method of ['select','eq','gte','lte','lt','order','range','in','limit'])builder[method]=()=>builder;
@@ -34,13 +35,17 @@ it('keeps saved closures when the sales ledger times out and only retries that l
  failed=false;await act(async()=>{report!.retrySource('Sales ledger');});
  expect(report!.closureRows).toHaveLength(1);expect(report!.savedClosures[0].id).toBe('closure');expect(mocks.table).toHaveBeenCalledTimes(1);expect(report!.error).toBe('');
 });
-it('retries one SNB cashier source while retaining the successful counter sessions',async()=>{
+it('retries only canonical cashier sales while retaining counter sessions',async()=>{
  let report:ReturnType<typeof useSnbAdminReports>;let failed=true;
- mocks.table.mockImplementation(async(name:string)=>name==='snb_counter_calculated_totals'?{data:failed?null:[{bill_count:5}],error:failed?{message:'timeout'}:null}:{data:[{id:'session'}],error:null});
+ mocks.canonical.mockImplementation(async()=>{if(failed)throw Error('timeout');return {operationBills:[{id:'bill',total:100}],operationReturns:[],cashierPayments:[]};});
+ mocks.table.mockResolvedValue({data:[{id:'session'}],error:null});
  function View(){report=useSnbAdminReports('2026-10-01','2026-10-31','cashier-report');return null;}
  await act(async()=>root.render(<View/>));expect(report!.counterSessions).toHaveLength(1);expect(report!.failedSources).toHaveLength(1);
- mocks.table.mockClear();failed=false;await act(async()=>{report!.retrySource('Counter totals');});
- expect(mocks.table.mock.calls.map(c=>c[0])).toEqual(['snb_counter_calculated_totals']);expect(report!.counterSessions[0].id).toBe('session');expect(report!.error).toBe('');
+ mocks.table.mockClear();mocks.canonical.mockClear();failed=false;
+ await act(async()=>{report!.retrySource('Branch sales history');});
+ expect(mocks.canonical).toHaveBeenCalledExactlyOnceWith('2026-10-01','2026-10-31',true);
+ expect(mocks.table).not.toHaveBeenCalled();expect(report!.counterSessions[0].id).toBe('session');
+ expect(report!.operationBills[0].id).toBe('bill');expect(report!.error).toBe('');
 });
 it('does not let an earlier range overwrite a newly selected report',async()=>{
  let report:ReturnType<typeof useCompleteBranchReports>;let resolveOld:(value:any)=>void;

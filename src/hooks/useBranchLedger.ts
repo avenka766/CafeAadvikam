@@ -192,7 +192,7 @@ export function useBranchLedger(fromDate: string, toDate: string, branches?: Bra
   const retrySource=useCallback((id:string)=>{retryRef.current=id;setRefreshToken(t=>t+1);},[]);
   useEffect(() => {
     let active = true;
-    if (!enabled) { setLoading(false); return; }
+    if (!enabled) { setLoading(false); setError(''); setFailedSources([]); return; }
     const load = async () => {
       const scope=cacheKeyFor(fromDate,toDate,branchesKey);
       const onlySource=scopeRef.current===scope?retryRef.current:undefined;

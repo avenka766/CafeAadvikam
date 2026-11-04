@@ -1,3 +1,4 @@
+import type {CashierPayment} from '@/lib/cashierSalesReport';
 import { snbReportSources } from "@/lib/snbReportSources";
 import { loadSnbCanonicalHistory } from "@/lib/snbCanonicalHistory";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -271,6 +272,7 @@ type ReportState = {
   supplierPayments: SnbSupplierPaymentRow[];
   purchaseReturns: SnbPurchaseReturnRow[];
   purchaseReturnItems: SnbPurchaseReturnItemRow[];
+  cashierPayments: CashierPayment[];
   operationBills: BranchBillRecord[];
   operationReturns: ReturnRecord[];
 };
@@ -297,11 +299,13 @@ const EMPTY: ReportState = {
   supplierPayments: [],
   purchaseReturns: [],
   purchaseReturnItems: [],
+  cashierPayments: [],
   operationBills: [],
   operationReturns: [],
 };
 
 type SnbOperationHistory = {
+  cashierPayments: CashierPayment[];
   operationBills: BranchBillRecord[];
   operationReturns: ReturnRecord[];
 };
@@ -458,10 +462,10 @@ export function useSnbAdminReports(fromDate: string, toDate: string, tab = "repo
       () => fetchPaged("snb_purchase_returns", { ...range, dateColumn: "return_date", orderColumn: "created_at", columns: "id,return_no,purchase_invoice_id,supplier_name,invoice_number,return_date,reason_type,settlement_type,credit_note_no,reference_no,remarks,total_amount,entered_by,status,created_at" }),
       () => fetchPaged("snb_purchase_return_items", { orderColumn: "created_at", columns: "id,purchase_return_id,purchase_invoice_item_id,item_name,quantity,unit,rate,tax,discount,line_total,item_reason,batch_no,expiry_date,stock_before,stock_after,created_at" }),
       () => fetchSnbPurchaseWorkflowSnapshot(fromDate, toDate),
-      () => fetchSnbOperationHistory(fromDate, toDate),
+      () => fetchSnbOperationHistory(fromDate, toDate, tab === 'cashier-report'),
     ];
     const results: PromiseSettledResult<any>[] = onlyIndex===undefined ? tasks.map(() => ({ status: "fulfilled", value: [] })) : [...savedResults.current];
-    if(onlyIndex===undefined)results[14] = { status: 'fulfilled', value: { operationBills: [], operationReturns: [] } };
+    if(onlyIndex===undefined)results[14] = { status: 'fulfilled', value: { operationBills: [], operationReturns: [], cashierPayments: [] } };
     for (const index of onlyIndex===undefined?snbReportSources(tab):[onlyIndex]) {
       if (requestId !== requestIdRef.current) return;
       try { results[index] = { status: "fulfilled", value: await tasks[index]() }; }
@@ -501,7 +505,7 @@ export function useSnbAdminReports(fromDate: string, toDate: string, tab = "repo
     }
     const operationHistory = operationHistoryResult.status === 'fulfilled'
       ? operationHistoryResult.value as SnbOperationHistory
-      : { operationBills: [], operationReturns: [] };
+      : { operationBills: [], operationReturns: [], cashierPayments: [] };
 
     const purchaseInvoices = mergeRows<SnbPurchaseInvoiceRow>([
       rows(9) as SnbPurchaseInvoiceRow[],
@@ -553,6 +557,7 @@ export function useSnbAdminReports(fromDate: string, toDate: string, tab = "repo
       supplierPayments,
       purchaseReturns,
       purchaseReturnItems,
+      cashierPayments: operationHistory.cashierPayments || [],
       operationBills: operationHistory.operationBills,
       operationReturns: operationHistory.operationReturns,
     });
