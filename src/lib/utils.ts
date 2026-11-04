@@ -74,6 +74,6 @@ export async function dbWrite(
   } catch (err) {
     console.error('[dbWrite] unhandled:', err);
     // Re-throw so callers can catch and show a toast/set error state
-    throw new Error(friendlyMsg);
+    throw Object.assign(new Error(friendlyMsg), {cause: err});
   }
 }

@@ -1,5 +1,5 @@
 import { supabase } from '@/lib/supabase';
-type Source = 'cafe' | 'branch_headers' | 'branch_payments' | 'branch_references' | 'branch_items';
+type Source = 'snb_cashier_payments' | 'cafe' | 'branch_headers' | 'branch_payments' | 'branch_references' | 'branch_items';
 type Row = { id: string; created_at: string; total?: number | string; amount?: number | string; line_total?: number | string };
 type Page = { rows: Row[]; count: number | null; total: number | string | null };
 
@@ -37,7 +37,7 @@ export async function readVerifiedReport<T extends Row>(read: (cursor: Row | nul
 
 export async function fetchVerifiedAdminRows<T = Record<string, any>>(source: Source, from: string, until: string, options: { branch?: string; billIds?: string[]; signal?: AbortSignal } = {}): Promise<{ data: T[]; error: { message: string } | null }> {
   try {
-    const amountKey = source === 'branch_references' ? undefined : source === 'branch_payments' ? 'amount' : source === 'branch_items' ? 'line_total' : 'total';
+    const amountKey = source === 'branch_references' ? undefined : (source === 'branch_payments' || source === 'snb_cashier_payments') ? 'amount' : source === 'branch_items' ? 'line_total' : 'total';
     const rows = await readVerifiedReport(async (cursor, verify, size) => {
       let query = supabase.rpc('admin_sales_report_page_v1', {
         p_source: source, p_from: from, p_until: until, p_after_time: cursor?.created_at ?? null,

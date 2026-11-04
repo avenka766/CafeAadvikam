@@ -60,8 +60,8 @@ export function desktopCheckoutIdentity(scope:string){
 export function finishDesktopCheckout(scope:string){if(automaticDesktopBilling())localStorage.removeItem('desktop-checkout:'+(useAuthStore.getState().currentUser?.id||'')+':'+scope);}
 export async function captureDesktopBill(input:Capture):Promise<{action:BillingAction;data:any;pending:boolean}>{
  const user=useAuthStore.getState().currentUser;if(!user)throw Error('Sign in before billing.');
- let state=await billingSnapshot();
- if(!input.fixedNumber&&!state.available[input.family]&&navigator.onLine){await maintainBillingNumbers([input.family]);state=await billingSnapshot();}
+ const state=await billingSnapshot();
+ if(!input.fixedNumber&&!state.available[input.family]&&navigator.onLine){await maintainBillingNumbers([input.family]);}
  const action=await desktopSalesCall<BillingAction>('billing-capture',{...input,staffId:user.id});
  window.dispatchEvent(new Event('desktop-billing-saved'));
  const previous=(await billingSnapshot()).actions.find(a=>a.id===action.id)?.sync;

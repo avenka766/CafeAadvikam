@@ -117,7 +117,9 @@ const sessionAwareFetch: typeof fetch = async (input, init: RequestInit = {}) =>
       else {
         if (!isDiagnosticRequest) window.dispatchEvent(new Event('cafe:data-recovered'));
         if (isRestTableRequest && !init.method?.toUpperCase()?.match(/^(POST|PATCH|DELETE|PUT)$/)) {
-          response.clone().json().then((body) => {
+          const parameters=new URL(requestUrl,window.location.origin).searchParams;
+          const paged=parameters.has('offset')||headers.has('Range');
+          if(!paged)response.clone().json().then((body) => {
             if (Array.isArray(body) && body.length === 1000) {
               console.warn(
                 `[CafeAadvikam] Supabase query returned exactly 1000 rows — this is PostgREST's default page cap, and a query matching MORE than 1000 rows silently loses the rest with no error. If this table can realistically hold >1000 matching rows, use fetchAllRows() from this file instead of a plain query. Endpoint: ${requestUrl}`,
@@ -144,77 +146,4 @@ export const supabase = createClient(
   },
 );
 
-// BUG FIX (2026-09-08): this project's PostgREST API has a hard 1000-row
-// response cap (confirmed live: a `.limit(20000)` query against `orders`
-// returned exactly 1000 rows while the exact-count header reported 2257
-// real matches) — a client-side `.limit(N)` for N > 1000 does NOT override
-// this; PostgREST silently returns only the first page (in whatever order
-// the query specifies, or physical row order if unspecified) with a normal
-// HTTP 200, so it never trips the app's error banner either. This was
-// found live-undercounting VRSNB Admin's "Cafe" sales totals by ~38% on a
-// 30-day range (useCafeOrderSales.ts). Any query whose real result set can
-// exceed 1000 rows needs to page through with `.range()` instead of trusting
-// a bigger `.limit()` — this small helper does that, matching the pattern
-// already established in useSnbAdminReports.ts's local `fetchPaged`. Use it
-// (or the same range-looping pattern) for anything summing/counting over a
-// date range on a table that can realistically hold >1000 matching rows.
-export async function fetchAllRows<T = Record<string, unknown>>(
-  table: string,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  build: (query: any) => any,
-  options: { pageSize?: number; maxRows?: number; cursorColumn?: string } = {},
-): Promise<{ data: T[]; error: string | null }> {
-  const pageSize = options.pageSize ?? 1000;
-  const maxRows = options.maxRows ?? 50000;
-  const rows: T[] = [];
-  // BUG FIX: "switch tabs / log in, see the error" — deep OFFSET pagination
-  // (the .range() loop below) forces Postgres to generate and discard every
-  // row before the current page on EVERY request, and re-sort the whole
-  // remainder each time. Confirmed live against branch_operation_records: a
-  // wide-date-range, no-branch-filter fetch (e.g. an Owner "All Time" report)
-  // matches well over half the table, so no index arrangement helps — a
-  // request 30+ pages deep (~30,000 rows in) took 5+ seconds and tripped the
-  // statement timeout, firing the red "data may be incomplete" banner. When
-  // `cursorColumn` is given, page by keyset instead: each request only asks
-  // for rows strictly past the last row already fetched (`lt(cursorColumn,
-  // cursor)`, relying on the caller's own `.order(cursorColumn, {ascending:
-  // false})`), which Postgres can always satisfy with a fast, bounded index
-  // scan no matter how deep the page is — no OFFSET, nothing to discard.
-  // Opt-in only (existing call sites keep the old, proven .range() behavior
-  // unless they pass this) so this can't regress anything not explicitly
-  // switched over.
-  if (options.cursorColumn) {
-    const cursorColumn = options.cursorColumn;
-    let cursor: unknown = null;
-    for (let i = 0; i < maxRows / pageSize; i++) {
-      let query = build(supabase.from(table));
-      if (cursor !== null) query = query.lt(cursorColumn, cursor);
-      const { data, error } = await query.limit(pageSize);
-      if (error) return { data: rows, error: error.message };
-      const page = (data ?? []) as T[];
-      rows.push(...page);
-      if (page.length < pageSize) break;
-      // SAFETY (2026-09-29): a caller whose .select() omits cursorColumn
-      // would otherwise cursor on `undefined` — confirmed live elsewhere
-      // (AdminDashboard.tsx's own copy of this pattern) that every
-      // subsequent page then fails with a real 400
-      // ("created_at=lt.undefined"). Fail fast with a clear message instead
-      // of sending a request that can only ever error.
-      const nextCursor = (page[page.length - 1] as Record<string, unknown>)[cursorColumn];
-      if (nextCursor === undefined || nextCursor === null) {
-        return { data: rows, error: `Pagination cursor missing — select() must include ${cursorColumn}.` };
-      }
-      cursor = nextCursor;
-    }
-    return { data: rows, error: null };
-  }
-  for (let from = 0; from < maxRows; from += pageSize) {
-    const query = build(supabase.from(table));
-    const { data, error } = await query.range(from, from + pageSize - 1);
-    if (error) return { data: rows, error: error.message };
-    const page = (data ?? []) as T[];
-    rows.push(...page);
-    if (page.length < pageSize) break;
-  }
-  return { data: rows, error: null };
-}
+export {fetchAllRows} from './fetchAllRows';

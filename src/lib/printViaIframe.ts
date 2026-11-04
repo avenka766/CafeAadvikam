@@ -36,7 +36,7 @@ import { desktopSilentPrint } from './platform';
 // Last-resort path: a real window the user can print from manually. Only
 // reached if the hidden iframe could not be created at all.
 function fallbackToWindow(html: string) {
-  let win: Window | null = null;
+  let win: Window | null;
   try {
     win = window.open('', '_blank');
   } catch {

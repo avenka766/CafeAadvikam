@@ -18,7 +18,7 @@
 // once via `setReplayHandler`) to reconstruct and re-attempt the write. This
 // keeps the queue itself dependency-free of any particular store.
 
-import { get, set as idbSet, createStore, type UseStore } from 'idb-keyval';
+import { get as idbGet, set as idbSet, createStore, type UseStore } from 'idb-keyval';
 import { create } from 'zustand';
 
 export interface QueuedMutation {
@@ -43,6 +43,7 @@ export interface QueuedMutation {
   // never blocked — same as today's behavior for them).
   staffId?: string | null;
   staffUsername?: string | null;
+  anonymous?: boolean;
 }
 
 // A single shape rather than a discriminated union ({ ok: true } | { ok:
@@ -53,7 +54,7 @@ export interface QueuedMutation {
 // `ok` is false, always absent when `ok` is true, same contract, no
 // narrowing required to read it safely.
 type ReplayResult = { ok: boolean; error?: string };
-type ReplayHandler = (kind: string, payload: unknown) => Promise<ReplayResult>;
+type ReplayHandler = (kind: string, payload: unknown, requestId: string) => Promise<ReplayResult>;
 
 const DB_NAME = 'cafe_aadvikam_offline_queue';
 const STORE_NAME = 'pending';
@@ -70,27 +71,26 @@ function getStore(): UseStore | null {
   return store;
 }
 
+const STORAGE_ERROR = 'Offline storage is unavailable. Keep this window open; offline changes are not safely saved until storage recovers.';
+let storageWrites: Promise<void> = Promise.resolve();
+let archiveWrites:Promise<void>=Promise.resolve();
 async function readQueue(): Promise<QueuedMutation[]> {
-  try {
-    const s = getStore();
-    if (!s) return [];
-    const value = await get<QueuedMutation[]>(QUEUE_KEY, s);
-    return value ?? [];
-  } catch {
-    return [];
-  }
+  const target = getStore();
+  if (!target) throw new Error(STORAGE_ERROR);
+  const value = await idbGet<QueuedMutation[]>(QUEUE_KEY, target);
+  if (value !== undefined && !Array.isArray(value)) throw new Error('Offline queue data is unreadable. Keep this window open and contact Admin.');
+  return value ?? [];
 }
-
 async function writeQueue(queue: QueuedMutation[]): Promise<void> {
-  try {
-    const s = getStore();
-    if (!s) return;
-    await idbSet(QUEUE_KEY, queue, s);
-  } catch {
-    // best-effort — if this fails the queue only lives in the Zustand store
-    // below for the rest of this tab's session, same trade-off localCache.ts
-    // already accepts elsewhere in this app.
-  }
+  // Serialize snapshots so an earlier, slower write cannot replace newer bills.
+  const snapshot = structuredClone(queue);
+  const write = storageWrites.catch(() => {}).then(async () => {
+    const target = getStore();
+    if (!target) throw new Error(STORAGE_ERROR);
+    await idbSet(QUEUE_KEY, snapshot, target);
+  });
+  storageWrites = write;
+  return write;
 }
 
 // STAGE B (2026-09-01): a registry rather than a single handler — each store
@@ -106,13 +106,14 @@ export function registerReplayHandler(kind: string, handler: ReplayHandler) {
 }
 
 function makeId() {
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  return crypto.randomUUID();
 }
 
 interface OfflineQueueState {
   pending: QueuedMutation[];
   flushing: boolean;
   hydrated: boolean;
+  storageError: string | null;
   hydrate: () => Promise<void>;
   enqueue: (kind: string, payload: unknown) => Promise<void>;
   flush: () => Promise<void>;
@@ -134,9 +135,11 @@ export const useOfflineQueueStore = create<OfflineQueueState>((set, get) => ({
   pending: [],
   flushing: false,
   hydrated: false,
+  storageError: null,
 
   hydrate: async () => {
     if (get().hydrated) return;
+    try {
     const persisted = await readQueue();
     // BUG FIX (2026-09-01, found via live testing): this used to blindly
     // overwrite `pending` with whatever was on disk. App.tsx's
@@ -155,6 +158,8 @@ export const useOfflineQueueStore = create<OfflineQueueState>((set, get) => ({
     }
     set({ pending: merged, hydrated: true });
     if (merged.length !== persisted.length) await writeQueue(merged);
+    set({storageError:null});
+    } catch {set({hydrated:false,storageError:STORAGE_ERROR});}
   },
 
   // Called by a write path's failure handler when `!navigator.onLine` — see
@@ -163,6 +168,8 @@ export const useOfflineQueueStore = create<OfflineQueueState>((set, get) => ({
   // already applied stands as-is; this only guarantees the write itself
   // isn't lost.
   enqueue: async (kind, payload) => {
+    await get().hydrate();
+    if (!get().hydrated) throw new Error(get().storageError || STORAGE_ERROR);
     // AUDIT FIX (2026-09-09): capture who's actually logged in right now, so
     // flush() can refuse to replay this under a DIFFERENT person's session
     // later. Dynamic import — authStore already doesn't import this module,
@@ -171,6 +178,8 @@ export const useOfflineQueueStore = create<OfflineQueueState>((set, get) => ({
     // store-agnostic (see the file header).
     const { useAuthStore } = await import('@/stores/authStore');
     const currentUser = useAuthStore.getState().currentUser;
+    const anonymous=!currentUser?.id&&kind==='cafe_order_submit';
+    if(!currentUser?.id&&!anonymous)throw Error('Sign in before saving this offline action. No request was sent.');
     const entry: QueuedMutation = {
       id: makeId(),
       kind,
@@ -180,10 +189,12 @@ export const useOfflineQueueStore = create<OfflineQueueState>((set, get) => ({
       lastError: null,
       staffId: currentUser?.id ?? null,
       staffUsername: currentUser?.username ?? null,
+      anonymous,
     };
     const next = [...get().pending, entry];
     set({ pending: next });
-    await writeQueue(next);
+    try {await writeQueue(next); set({storageError:null});}
+    catch {set({storageError:STORAGE_ERROR}); throw new Error(STORAGE_ERROR);}
   },
 
   // Processes the queue IN ORDER per `kind` and stops THAT kind at its first
@@ -200,21 +211,21 @@ export const useOfflineQueueStore = create<OfflineQueueState>((set, get) => ({
   // dependency BETWEEN different kinds, only within the same kind. Now
   // grouped by kind first, so one stuck kind no longer blocks the rest.
   flush: async () => {
-    if (get().flushing) return;
-    if (!navigator.onLine) return;
-    await get().hydrate();
-    const queue = get().pending;
-    if (queue.length === 0) return;
-
-    // AUDIT FIX (2026-09-09): who's actually logged in right now, to compare
-    // against each entry's captured owner below — see enqueue()'s comment.
-    const { useAuthStore } = await import('@/stores/authStore');
-    const activeStaffId = useAuthStore.getState().currentUser?.id ?? null;
-
-    set({ flushing: true });
+    if (get().flushing || !navigator.onLine) return;
+    // Acquire before the first await: online events and timers may race.
+    set({flushing:true});
     try {
+      await get().hydrate();
+      if (!get().hydrated || !get().pending.length) return;
+      const {useAuthStore} = await import('@/stores/authStore');
+      const activeStaffId = useAuthStore.getState().currentUser?.id ?? null;
+      const queue = get().pending;
+      await writeQueue(queue);
+      set({storageError:null});
       const blockedKinds = new Set<string>();
       for (const entry of queue) {
+        // Logout/account switching during an in-flight upload must stop the batch.
+        if ((useAuthStore.getState().currentUser?.id ?? null) !== activeStaffId) break;
         if (blockedKinds.has(entry.kind)) continue;
 
         // A queued write with a known owner that doesn't match whoever's
@@ -222,9 +233,12 @@ export const useOfflineQueueStore = create<OfflineQueueState>((set, get) => ({
         // silently replayed under the wrong person's session — same
         // "stop this kind, don't lose ordering" treatment as a real
         // failure below, so a later same-kind entry can't jump ahead of it.
-        // No owner recorded (older entry from before this fix, or a kind
-        // enqueued before any user was ever logged in) behaves exactly as
-        // before — nothing blocks it.
+        // Legacy entries without an owner remain available for reconciliation.
+        // Explicit public QR requests replay only while still signed out.
+        if(!entry.staffId&&(!entry.anonymous||activeStaffId)){
+          const remaining=get().pending.map(e=>e.id===entry.id?{...e,attempts:e.attempts+1,lastError:entry.anonymous?'Sign out to retry this customer QR order under its original public context.':'This older offline action has no recorded operator. Admin must reconcile it before replay; the original data is preserved.'}:e);
+          set({pending:remaining});await writeQueue(remaining);blockedKinds.add(entry.kind);continue;
+        }
         if (entry.staffId && entry.staffId !== activeStaffId) {
           blockedKinds.add(entry.kind);
           continue;
@@ -242,7 +256,7 @@ export const useOfflineQueueStore = create<OfflineQueueState>((set, get) => ({
           continue;
         }
         let result: ReplayResult;
-        try { result = await handler(entry.kind, entry.payload); }
+        try { result = await handler(entry.kind, entry.payload, entry.id); }
         catch (error) { result = { ok: false, error: error instanceof Error ? error.message : 'Sync failed. Please retry.' }; }
         if (result.ok) {
           const remaining = get().pending.filter((e) => e.id !== entry.id);
@@ -260,15 +274,30 @@ export const useOfflineQueueStore = create<OfflineQueueState>((set, get) => ({
           blockedKinds.add(entry.kind);
         }
       }
-    } finally {
+    } catch {set({storageError:STORAGE_ERROR});}
+    finally {
       set({ flushing: false });
     }
   },
 
   discard: async (id) => {
-    const next = get().pending.filter((e) => e.id !== id);
-    set({ pending: next });
-    await writeQueue(next);
+    const task=archiveWrites.catch(()=>{}).then(async()=>{
+      if(get().flushing)throw Error('Wait for synchronization to finish before archiving a saved action.');
+      set({flushing:true});
+      try{
+        const entry=get().pending.find(e=>e.id===id);if(!entry)return;
+        const {useAuthStore}=await import('@/stores/authStore');const user=useAuthStore.getState().currentUser;
+        if(!(['admin','owner'].includes(user?.role||'')||entry.staffId&&entry.staffId===user?.id||entry.anonymous&&!user))throw Error('Only the original operator or Admin can archive this action for reconciliation.');
+        try{
+          const target=getStore();if(!target)throw Error(STORAGE_ERROR);
+          const archived=await idbGet<unknown[]>('discarded',target)??[];
+          if(!Array.isArray(archived))throw Error(STORAGE_ERROR);
+          await idbSet('discarded',[...archived.filter(e=>(e as {id?:string}).id!==id),{...entry,archivedAt:new Date().toISOString(),archivedBy:user?.id??null}],target);
+          const next=get().pending.filter(e=>e.id!==id);await writeQueue(next);set({pending:next,storageError:null});
+        }catch{set({storageError:STORAGE_ERROR});throw Error(STORAGE_ERROR);}
+      }finally{set({flushing:false});}
+    });
+    archiveWrites=task;await task;
   },
 }));
 
