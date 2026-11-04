@@ -920,8 +920,9 @@ async function notifyRevisedHosur(row:Record<string,unknown>,record:DispatchInvo
 }
 
 export async function cancelDispatchInvoice(params:{invoiceId:string;reason?:string}):Promise<{ok:true;record:DispatchInvoiceRecord}|{error:string}>{
- const {data,error}=await supabase.from('dispatch_invoices').select('*').eq('id',params.invoiceId).single();
- if(error||!data)return {error:error?.message||'Invoice not found.'};const original=recordFromRow(data);
+ if(automaticDesktopBilling()&&(await billingSnapshot()).actions.some(a=>a.id===params.invoiceId&&a.sync?.state!=='synced'))return {error:'This invoice is saved on this computer and is waiting to sync. Reconnect and wait for Synced before cancelling it.'};
+ const {data,error}=await supabase.rpc('get_dispatch_invoice_for_change_v1',{p_invoice:params.invoiceId});
+ if(error||!data)return {error:error?.message||'Invoice confirmation could not load. Refresh before cancelling; nothing was changed.'};const original=recordFromRow(data);
  try {
   let row:Record<string,unknown>;
   if(original.notes?.startsWith('Sample Bill')&&!original.dispatchEntryIds.length)row=await changeSampleInvoice(original,'cancel',{},params.reason||'Cancelled sample bill');

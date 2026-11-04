@@ -1079,6 +1079,9 @@ export default function PlannerDashboard({ embedded = false }: { embedded?: bool
   // can ever be silently lost by navigating away and back.
   const [dispatchVisited, setDispatchVisited] = useState(false);
   useEffect(() => { if (tab === 'dispatch') setDispatchVisited(true); }, [tab]);
+  const [billingVisited, setBillingVisited] = useState(tab === 'billing');
+  useEffect(() => { if (tab === 'billing') setBillingVisited(true); }, [tab]);
+  const needsOrders = ['incoming','sent','merged','planning','production','dispatch','advance','leftover-stock','reports','invoice'].includes(tab);
 
   // Nightly Production/Dispatch "clean slate" cutoff (see PRODUCTION_CUTOFF_KEY).
   const [productionCutoff, setProductionCutoffState] = useState<string | null>(null);
@@ -1088,6 +1091,7 @@ export default function PlannerDashboard({ embedded = false }: { embedded?: bool
   );
 
   useEffect(() => {
+    if(!needsOrders)return;
     fetchOrders().catch(() => {});
     void getProductionCutoff().then(setProductionCutoffState).catch(() => {});
     const unsubscribe = subscribe();
@@ -1113,7 +1117,7 @@ export default function PlannerDashboard({ embedded = false }: { embedded?: bool
       }
     }, 15 * 60_000);
     return () => { unsubscribe(); document.removeEventListener('visibilitychange', refreshOnVisible); clearInterval(id); };
-  }, [fetchOrders, subscribe]);
+  }, [fetchOrders, subscribe, needsOrders]);
 
   const incomingOrders   = useMemo(() => orders.filter(o => o.status === 'pending'), [orders]);
   const sentOrders        = useMemo(() => orders.filter(o => o.status === 'accepted' || o.status === 'store_confirmed' || o.status === 'produced' || o.status === 'dispatched'), [orders]);
@@ -1242,7 +1246,7 @@ export default function PlannerDashboard({ embedded = false }: { embedded?: bool
             })}
           </div>
         )}
-        {loading && orders.length === 0 ? (
+        {needsOrders && loading && orders.length === 0 ? (
           <div className="flex justify-center py-20"><Loader2 className="size-6 animate-spin text-muted-foreground" /></div>
         ) : (
           <>
@@ -1267,9 +1271,9 @@ export default function PlannerDashboard({ embedded = false }: { embedded?: bool
               <PlannerReportsAndClosingStockTab orders={orders} activeLeftovers={activeLeftovers} doneOrders={doneOrders} />
             )}
             {tab === 'invoice' && <InvoiceTab orders={orders} />}
-            {tab === 'billing' && <BillingWalkinTab />}
           </>
         )}
+        {billingVisited && <div style={{display:tab==='billing'?'block':'none'}}><BillingWalkinTab /></div>}
       </main>
     </div>
   );

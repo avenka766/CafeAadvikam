@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { supabase, fetchAllRows } from '@/lib/supabase';
 import { makeSingletonSubscriber } from '@/lib/realtimeChannel';
 import { getCached, setCached } from '@/lib/localCache';
+import { getAppSessionToken } from '@/lib/appSession';
 import type { BakeryOrder, BakeryOrderItem, PreparedItem, DispatchEntry, WorkflowStatus, Branch } from './types';
 import { useNotificationStore } from './notificationStore'; // BUG #16 FIX: needed to fire baker shortage notifications
 import { advanceDispatchComplete, advanceDispatchProgress } from './advanceDispatchProgress';
@@ -264,6 +265,7 @@ export function rowToOrder(d: Record<string, unknown>): BakeryOrder {
 const BAKERY_ORDER_COLUMNS = 'id, order_number, items, status, created_by, created_at, expected_output, materials_calculated_at, prepared_items, produced_items, dispatch_split, leftover_status, store_confirmed_at, production_released_at, planner_notes, sent_to_packing_at, dispatch_log, target_branch, store_source_order_number, store_send_request_id, notes, correction_request';
 let bakeryFetchInFlight: Promise<void> | null = null;
 let bakeryLastFetchedAt = 0;
+let bakeryLastFetchedSession: string | null = null;
 // EGRESS FIX (2026-08-21): tracks whether this store has ever successfully
 // completed a fetch this session — used below to decide between a full
 // 60-day populate (only needed once, when there's nothing in local state
@@ -364,7 +366,8 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
   // while stopping this 15 s poll from re-fetching the entire order history forever.
   fetchOrders: async (silent = false, force = false) => {
     if (bakeryFetchInFlight) return bakeryFetchInFlight;
-    if (!force && silent && Date.now() - bakeryLastFetchedAt < BAKERY_FETCH_FRESH_MS) return;
+    const session = getAppSessionToken();
+    if (!force && bakeryRealFetchDone && session === bakeryLastFetchedSession && Date.now() - bakeryLastFetchedAt < BAKERY_FETCH_FRESH_MS) return;
 
     const request = (async () => {
       if (!silent) set({ loading: true });
@@ -392,12 +395,11 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
         const cutoffDays = (bakeryRealFetchDone && !force) ? BAKERY_REFRESH_WINDOW_DAYS : 60;
         const cutoff = new Date();
         cutoff.setDate(cutoff.getDate() - cutoffDays);
-        const query = supabase
-          .from('bakery_orders')
+        const { data, error } = await fetchAllRows<Record<string,unknown>>('bakery_orders',q=>q
           .select(BAKERY_ORDER_COLUMNS)
           .gte('created_at', cutoff.toISOString())
-          .order('created_at', { ascending: false });
-        const { data, error } = await query;
+          .order('created_at', { ascending: false }),{cursorColumn:'created_at'});
+        if(error)throw Error(error);
         if (!error && data) {
           let fresh = data.map(d => rowToOrder(d as Record<string, unknown>));
           if(window.cafeAadvikamDesktop?.isElectron){const {overlayPendingDesktopDispatches}=await import('@/lib/desktopBilling');fresh=await overlayPendingDesktopDispatches(fresh);}
@@ -426,6 +428,7 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
             void setCached(BAKERY_ORDERS_CACHE_KEY, merged);
           }
           bakeryLastFetchedAt = Date.now();
+          bakeryLastFetchedSession = session;
         }
       } catch (e) {
         console.error('fetchOrders error:', e);
