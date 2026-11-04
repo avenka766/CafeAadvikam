@@ -1,4 +1,6 @@
-import {payrollPf, payrollHistoryRoster} from '@/lib/payrollPf';
+import {payrollPf, visiblePayrollEmployee} from '@/lib/payrollPf';
+import EmployeeExitDialog from '@/components/admin/EmployeeExitDialog';
+import EmployeeExitsPanel from '@/components/admin/EmployeeExitsPanel';
 import {savePayrollDay,savePayrollDeduction} from '@/lib/payrollPersistence';
 import AdminPayrollGate from '@/components/admin/AdminPayrollGate';
 import {payrollWeekOffLimit as weekOffLimit} from '@/lib/payrollWeekOff';
@@ -34,6 +36,8 @@ interface Employee {
   department: string;
   weekOffOverrides?: Record<string, number>;
   isActive?: boolean;
+  leftOn?: string;
+  paidSalary?: Record<string,number>;
   payrollYear?: number;
   payrollMonth?: number;
   grossSalary: number;
@@ -99,6 +103,11 @@ function calcESI(earned: number, gross?: number) {
   return eligibilityBase <= ESI_WAGE_LIMIT ? Math.round(earned * ESI_RATE) : 0;
 }
 const calcPF = payrollPf;
+function attendanceEditable(emp:Employee,day:number){
+ if(emp.paidSalary)return false;
+ if(emp.isActive!==false)return true;
+ return !!emp.leftOn&&`${emp.payrollYear}-${String(emp.payrollMonth).padStart(2,'0')}-${String(day).padStart(2,'0')}`<emp.leftOn;
+}
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const BRANCHES: Branch[] = ['VRSNB', 'Cafe Aadvikam', 'SNB', 'Hosur'];
@@ -177,6 +186,7 @@ function dbRowToEmployee(d: Record<string, unknown>): Employee {
     weekOffOverrides: (d.week_off_overrides as Record<string, number>) || {},
     grossSalary: Number(d.gross_salary),
     isActive: d.is_active !== false,
+    leftOn: d.left_on ? String(d.left_on) : undefined,
     salaryAdvance: Number(d.salary_advance),
     uniformDeduction: Number(d.uniform_deduction),
     otherDeduction: Number(d.other_deduction),
@@ -280,11 +290,6 @@ async function markAdvanceRecordCleared(advanceId: string): Promise<void> {
   if(error)throw error;
 }
 
-async function deactivateEmployee(id: string): Promise<void> {
-  const { error } = await supabase.from('employees').update({ is_active: false }).eq('id', id);
-  if (error) throw error;
-}
-
 async function deleteOldAttendance(currentYear: number, currentMonth: number): Promise<void> {
   void currentYear;
   void currentMonth;
@@ -327,7 +332,10 @@ export function calcSalary(emp: Employee, att: MonthAttendance, daysInMonth: num
   const esiDed      = decision.deductESI     ? calcESI(earned, emp.grossSalary) : 0;
   const pfDed       = decision.deductPF      ? calcPF(earned, emp.payrollYear, emp.payrollMonth)  : 0;
   const totalDed = advanceDed + canteenTotal + uniformDed + otherDed + esiDed + pfDed;
-  return { presentDays, halfDays, woffDays, worked, canteenTotal, earned, totalDed, advanceDed, uniformDed, otherDed, esiDed, pfDed, net: Math.max(0, earned - totalDed) };
+  const calculated={ presentDays, halfDays, woffDays, worked, canteenTotal, earned, totalDed, advanceDed, uniformDed, otherDed, esiDed, pfDed, net: Math.max(0, earned - totalDed) };
+  if(!emp.paidSalary)return calculated;
+  const p=emp.paidSalary;
+  return {...calculated,presentDays:p.present,halfDays:p.half,woffDays:p.week_off,worked:p.present+p.half*.5+p.week_off,canteenTotal:p.canteen,earned:p.earned,totalDed:p.deductions,advanceDed:p.advance,uniformDed:p.uniform,otherDed:p.other,esiDed:p.esi,pfDed:p.pf,net:p.net};
 }
 
 // ─── Payslip PDF ──────────────────────────────────────────────────────────────
@@ -1157,7 +1165,7 @@ function AttRow({ emp, att, onUpdate, expanded, onToggle, decision, onDecisionCh
                 return (
                   <div key={day} className="flex flex-col items-center gap-0.5" style={{ minWidth: 32 }}>
                     <span className="text-[9px] font-body font-semibold text-muted-foreground">{day}</span>
-                    <button onClick={() => toggleDay(day)} className={cn('size-7 rounded-lg text-[9px] font-bold transition-all active:scale-90 border flex items-center justify-center',
+                    <button disabled={!attendanceEditable(emp,day)} onClick={() => toggleDay(day)} className={cn('size-7 rounded-lg text-[9px] font-bold transition-all active:scale-90 border flex items-center justify-center disabled:opacity-40',
                       !a.present && !a.half && !a.woff && !a.absent && 'bg-muted border-border text-muted-foreground/60 hover:border-primary/40',
                       a.present && 'bg-emerald-500 border-emerald-600 text-white',
                       a.half    && 'bg-yellow-400 border-yellow-500 text-white',
@@ -1179,7 +1187,7 @@ function AttRow({ emp, att, onUpdate, expanded, onToggle, decision, onDecisionCh
                         toggleMeal fixes above). */}
                     <div className="flex gap-[2px] mt-0.5">
                       {(['bf', 'lunch', 'dinner'] as const).map(m => (
-                        <button key={m} onClick={e => { e.stopPropagation(); toggleMeal(day, m); }} title={m === 'bf' ? 'Breakfast ₹10' : m === 'lunch' ? 'Lunch ₹10' : 'Dinner ₹10'}
+                        <button key={m} disabled={!attendanceEditable(emp,day)} onClick={e => { e.stopPropagation(); toggleMeal(day, m); }} title={m === 'bf' ? 'Breakfast ₹10' : m === 'lunch' ? 'Lunch ₹10' : 'Dinner ₹10'}
                           className={cn('w-[18px] h-[16px] rounded text-[7px] font-bold transition-all active:scale-90 border leading-none flex items-center justify-center', a[m] ? 'bg-orange-400 border-orange-500 text-white' : 'bg-muted border-border text-muted-foreground hover:border-orange-300')}>
                           {m === 'bf' ? 'B' : m === 'lunch' ? 'L' : 'D'}
                         </button>
@@ -1268,7 +1276,7 @@ function SalaryCard({ emp, att, decision, onDecisionChange, daysInMonth, monthLa
           {hasUniform && <DeductToggle label="Uniform Deduction" amount={emp.uniformDeduction} checked={decision.deductUniform} onChange={v => onDecisionChange(emp.id, { ...decision, deductUniform: v })} />}
           {hasOther && <DeductToggle label="Other Deduction" amount={emp.otherDeduction} checked={decision.deductOther} onChange={v => onDecisionChange(emp.id, { ...decision, deductOther: v })} />}
           <DeductToggle label={`ESI (0.75% of earned${emp.grossSalary > ESI_WAGE_LIMIT ? ' — not applicable, gross > ₹21k' : ''})`} amount={esiAmount} checked={decision.deductESI} onChange={v => onDecisionChange(emp.id, { ...decision, deductESI: v })} />
-          <DeductToggle label={emp.payrollYear! * 100 + emp.payrollMonth! >= 202611 ? 'PF (12% of 60% earned, max ₹3,000)' : 'PF (12% earned, max ₹1,800)'} amount={pfAmount} checked={decision.deductPF} onChange={v => onDecisionChange(emp.id, { ...decision, deductPF: v })} />
+          <DeductToggle label={emp.paidSalary ? 'PF (recorded paid salary)' : 'PF (12% of 60% earned, max ₹1,800)'} amount={pfAmount} checked={decision.deductPF} onChange={v => onDecisionChange(emp.id, { ...decision, deductPF: v })} />
           {hasAdvance && !decision.deductAdvance && (
             <p className="text-[10px] font-body text-amber-600 pb-1 flex items-center gap-1"><AlertCircle className="size-3" /> Advance {'₹'}{emp.salaryAdvance.toLocaleString('en-IN')} carried forward to next month</p>
           )}
@@ -1851,7 +1859,7 @@ function AttendanceSalaryContent() {
   const loadRequest=useRef(0);
   const [decisions, setDecisions] = useState<DeductionDecisions>({});
   const [loading, setLoading] = useState(true);
-  const [tab, setTab] = useState<'attendance' | 'salary' | 'employees' | 'analytics' | 'advance' | 'teams'>('attendance');
+  const [tab, setTab] = useState<'attendance' | 'salary' | 'employees' | 'analytics' | 'advance' | 'teams' | 'exits'>('attendance');
   const [branch, setBranch]   = useState<'All' | Branch>('All');
   const [dept, setDept]       = useState<string>('All');
   // FEATURE (2026-08-20): contractor team filter — "BITTU TEAM, BALA TEAM,
@@ -1917,15 +1925,18 @@ function AttendanceSalaryContent() {
       const teamResult = await supabase.from('attendance_contract_teams').select('id,name').order('name');
       if (teamResult.error) setTeamError('Contract teams could not load. Refresh to try again.');
       else { setTeams(teamResult.data || []); setTeamError(''); }
-      const [emps, attData, decData, advResult] = await Promise.all([
+      const [emps, attData, decData, advResult,paidResult] = await Promise.all([
         fetchEmployees(),
         fetchAttendance(activeMonth.year, activeMonth.month),
         fetchDeductionDecisions(activeMonth.year, activeMonth.month),
         fetchAdvanceRecords(),
+        supabase.rpc('admin_paid_payroll_snapshots_v1',{p_year:activeMonth.year,p_month:activeMonth.month}),
       ]);
       if(request!==loadRequest.current)return;
       if(!advResult.tableReady)throw new Error('Salary advances could not load. Reload before calculating payroll.');
-      setEmployees(sortByName(payrollHistoryRoster(emps, attData, activeMonth.year*100+activeMonth.month < new Date().getFullYear()*100+new Date().getMonth()+1).map(e=>({...e,payrollYear:activeMonth.year,payrollMonth:activeMonth.month}))));
+      if(paidResult.error)throw Error('Paid payroll history could not load. Retry before calculating salary.');
+      const paid=new Map((paidResult.data||[]).map((r:{employee_id:string;snapshot:Record<string,number>})=>[r.employee_id,r.snapshot]));
+      setEmployees(sortByName(emps.filter(e=>visiblePayrollEmployee(e,activeMonth.year,activeMonth.month)).map(e=>({...e,payrollYear:activeMonth.year,payrollMonth:activeMonth.month,paidSalary:paid.get(e.id) as Record<string,number>|undefined}))));
       setAtt(attData);
       setDecisions(decData);
       setAdvanceRecords(advResult.records);
@@ -1955,6 +1966,10 @@ function AttendanceSalaryContent() {
   attRef.current = att;
 
   const updateAtt = useCallback(async (empId:string,day:number,val:DayAttendance) => {
+    const employee=employees.find(e=>e.id===empId);
+    const date=`${activeMonth.year}-${String(activeMonth.month).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+    if(employee?.isActive===false&&(!employee.leftOn||date>=employee.leftOn)){setSaveError('This employee has left. Attendance cannot be marked from the leaving date.');return;}
+    if(employee?.paidSalary){setSaveError('This payroll is paid. Its attendance must be reviewed through a recorded correction.');return;}
     const period=`${activeMonth.year}-${activeMonth.month}`;const k=ak(empId,day);const lock=`${period}:${k}`;
     if(writeLocks.current.has(lock))return;
     writeLocks.current.add(lock);setPendingWrites(n=>n+1);setSaveError('');
@@ -1966,7 +1981,7 @@ function AttendanceSalaryContent() {
       if(activePeriod.current===period){attRef.current={...attRef.current,[k]:previous};setAtt(p=>({...p,[k]:previous}));}
       setSaveError(`Attendance was not saved (${period}, day ${day}). ${error instanceof Error?error.message:'Please retry.'}`);
     } finally {writeLocks.current.delete(lock);setPendingWrites(n=>n-1);}
-  },[activeMonth.year,activeMonth.month]);
+  },[activeMonth.year,activeMonth.month,employees]);
 
   const updateDecision = useCallback(async(empId:string,d:DeductionDecision)=>{
     const period=`${activeMonth.year}-${activeMonth.month}`;const lock=`${period}:deduction:${empId}`;
@@ -2008,20 +2023,9 @@ function AttendanceSalaryContent() {
   const addEmp = (emp: Employee) => { setAddToTeam(undefined); setEmployees(prev => sortByName([...prev, {...emp,payrollYear:activeMonth.year,payrollMonth:activeMonth.month}])); setShowAddModal(false); };
   const [removeEmpError, setRemoveEmpError] = useState('');
   const [removingEmpId, setRemovingEmpId]   = useState<string | null>(null);
+  const [exitEmployee,setExitEmployee]=useState<Employee|null>(null);
 
-  const removeEmp = async (id: string) => {
-    if (removingEmpId) return;
-    setRemovingEmpId(id); setRemoveEmpError('');
-    try {
-      await deactivateEmployee(id);
-      setEmployees(prev => prev.map(e => e.id === id ? {...e,isActive:false} : e));
-    } catch {
-      // EMP-FIX: replace blocking alert() with inline error state
-      setRemoveEmpError('Failed to remove employee — please try again.');
-    } finally {
-      setRemovingEmpId(null);
-    }
-  };
+  const removeEmp = async (id: string) => { setExitEmployee(employees.find(e=>e.id===id)||null); };
   const saveEmp = (updated: Employee) => {
     const prev = employees.find(e => e.id === updated.id);
     setEmployees(prevList => sortByName(prevList.map(e => e.id === updated.id ? {...updated,isActive:e.isActive,payrollYear:e.payrollYear,payrollMonth:e.payrollMonth} : e)));
@@ -2044,7 +2048,7 @@ function AttendanceSalaryContent() {
   }, [contractor]);
 
   const filtered = useMemo(() => {
-    let list = employees.filter(e => tab !== 'employees' || e.isActive !== false);
+    let list = employees.filter(e => tab !== 'employees' || e.isActive !== false || e.id==='emp_import_0062');
     if (branch !== 'All') list = list.filter(e => e.branch === branch);
     // Department filter: 'Store' and 'Admin office' are the two department groups
     if (dept !== 'All') list = list.filter(e =>
@@ -2210,7 +2214,7 @@ function AttendanceSalaryContent() {
           { k: 'employees', l: '👥 Employees' },
           { k: 'analytics', l: '📊 Analytics' },
           { k: 'advance', l: '💳 Advance' },
-          ...(canManageTeams ? [{ k: 'teams' as const, l: '👥 Contract Teams' }] : []),
+          ...(canManageTeams ? [{ k: 'teams' as const, l: '👥 Contract Teams' },{k:'exits' as const,l:'Leavers & settlements'}] : []),
         ] as const).map(({ k, l }) => (
           <button key={k} onClick={() => handleTabChange(k)}
             className={cn('shrink-0 px-3 py-2.5 rounded-xl text-xs font-body font-bold transition-all active:scale-95', tab === k ? 'cafe-gradient text-primary-foreground shadow-sm' : 'bg-card border border-border text-foreground')}>
@@ -2324,7 +2328,7 @@ function AttendanceSalaryContent() {
       {tab === 'salary' && (
         <div className="px-4 space-y-3">
           <div className="bg-card border border-border rounded-2xl p-4">
-            <p className="mb-3 text-xs text-muted-foreground">{activeMonth.year*100+activeMonth.month>=202611 ? 'PF: 12% of 60% of earned salary, capped at ₹1,800 per month. Earlier payroll months retain their previous rule.' : 'Historical payroll rule: PF is 12% of earned salary, capped at ₹1,800.'}</p>
+            <p className="mb-3 text-xs text-muted-foreground">{'Unpaid payroll: PF is 12% of 60% of earned salary, capped at ₹1,800. Recorded paid payroll retains its payment snapshot.'}</p>
             <h3 className="font-display font-bold text-foreground mb-3 flex items-center gap-2">
               <TrendingDown className="size-4 text-primary" />
               {branch === 'All' ? 'All Branches' : branch} — {activeMonth.label} Summary
@@ -2366,10 +2370,10 @@ function AttendanceSalaryContent() {
                 </div>
                 <button onClick={() => setEditEmp(e)} className="size-7 rounded-lg bg-primary/10 text-primary flex items-center justify-center hover:bg-primary/20 transition-colors mt-0.5"><Pencil className="size-3.5" /></button>
                 <button
-                  aria-label={`Archive ${e.name}`}
-                  data-delete-confirmation="Remove this employee from active staff? Previous attendance, salary and payment history will be preserved and remain visible for the relevant month."
+                  aria-label={`Record leaving for ${e.name}`}
+                  title={e.isActive===false?'Already marked left — history preserved':'Record leaving date and final salary'}
                   onClick={() => removeEmp(e.id)}
-                  disabled={removingEmpId === e.id}
+                  disabled={removingEmpId === e.id||e.isActive===false}
                   className="size-7 rounded-lg bg-destructive/10 text-destructive flex items-center justify-center hover:bg-destructive/20 transition-colors mt-0.5 disabled:opacity-40"
                 >
                   {removingEmpId === e.id ? <Loader2 className="size-3.5 animate-spin" /> : <Trash2 className="size-3.5" />}
@@ -2413,6 +2417,8 @@ function AttendanceSalaryContent() {
       <div className="h-6" />
       {showAddModal && <AddEmpModal onAdd={addEmp} teamNames={teamNames} fixedTeam={addToTeam} onClose={() => { setShowAddModal(false); setAddToTeam(undefined); }} />}
       {editEmp && <EditEmpModal emp={editEmp} teamNames={teamNames} onSave={saveEmp} onClose={() => setEditEmp(null)} />}
+      {exitEmployee&&<EmployeeExitDialog employee={exitEmployee} onClose={()=>setExitEmployee(null)} onSaved={()=>{setExitEmployee(null);void loadData();}}/>}
+      {tab==='exits'&&canManageTeams&&<EmployeeExitsPanel/>}
     </div>
   );
 }

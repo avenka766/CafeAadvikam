@@ -1,4 +1,4 @@
-import {payrollPf} from '@/lib/payrollPf';
+import {payrollPf,visiblePayrollEmployee} from '@/lib/payrollPf';
 import {ReportReadCache,type ReportReadFailure} from '@/lib/reportReadCache';
 import { ReportSourceFailures } from '@/components/ReportSourceFailures';
 // src/pages/OwnerDashboard.tsx
@@ -1113,7 +1113,8 @@ const ownerAttendanceKey = (employeeId: string, day: number) => `${employeeId}-$
 const ownerCalcESI = (earned: number, gross: number) => gross <= OWNER_ESI_WAGE_LIMIT ? Math.round(earned * OWNER_ESI_RATE) : 0;
 const ownerCalcPF = payrollPf;
 
-function ownerCalcSalary(emp: { id: string; grossSalary: number; salaryAdvance: number; uniformDeduction: number; otherDeduction: number }, attendance: OwnerMonthAttendance, daysInMonth: number, decision: OwnerDeductionDecision = ownerDefaultDecision(), year?: number, month?: number) {
+function ownerCalcSalary(emp: { id: string; grossSalary: number; salaryAdvance: number; uniformDeduction: number; otherDeduction: number;paidSalary?:Record<string,number> }, attendance: OwnerMonthAttendance, daysInMonth: number, decision: OwnerDeductionDecision = ownerDefaultDecision(), year?: number, month?: number) {
+  if(emp.paidSalary){const p=emp.paidSalary;return {earned:p.earned,deductions:p.deductions,net:p.net,worked:p.present+p.half*.5+p.week_off};}
   let presentDays = 0;
   let halfDays = 0;
   let woffDays = 0;
@@ -1152,6 +1153,7 @@ function AttendanceSalaryTab() {
   const [employees, setEmployees] = useState<Array<{
     id: string; name: string; branch: string; department: string;
     grossSalary: number; salaryAdvance: number; uniformDeduction: number; otherDeduction: number;
+    paidSalary?:Record<string,number>;
   }>>([]);
   const [attendance, setAttendance] = useState<OwnerMonthAttendance>({});
   const [deductionDecisions, setDeductionDecisions] = useState<OwnerDeductionDecisions>({});
@@ -1167,7 +1169,7 @@ function AttendanceSalaryTab() {
     const request=++payrollLoad.current;
     setLoading(true); setFetchError(null);
     Promise.all([
-      supabase.from('employees').select('id, name, branch, department, gross_salary, salary_advance, uniform_deduction, other_deduction'),
+      supabase.from('employees').select('id, name, branch, department, gross_salary, salary_advance, uniform_deduction, other_deduction, is_active, left_on'),
       // BUG FIX (2026-09-20): attendance is one row per employee per day (1,645
       // rows for Sept 2026) — a plain query is silently capped at 1,000 rows by
       // PostgREST, which understated payroll here for every employee whose rows
@@ -1177,14 +1179,17 @@ function AttendanceSalaryTab() {
         (q) => q.select('employee_id, day, present, half, woff, bf, lunch, dinner').eq('year', payrollYear).eq('month', payrollMonth).order('employee_id', { ascending: true }).order('day', { ascending: true }),
       ).then((r) => ({ data: r.data, error: r.error ? { message: r.error } : null })),
       supabase.from('deduction_decisions').select('employee_id, deduct_advance, deduct_other, deduct_uniform, deduct_esi, deduct_pf').eq('year', payrollYear).eq('month', payrollMonth),
-    ]).then(([employeesRes, attendanceRes, decisionsRes]) => {
+      supabase.rpc('admin_paid_payroll_snapshots_v1',{p_year:payrollYear,p_month:payrollMonth}),
+    ]).then(([employeesRes, attendanceRes, decisionsRes,paidRes]) => {
       if(request!==payrollLoad.current)return;
       const data = employeesRes.data;
-      const error = employeesRes.error || attendanceRes.error || decisionsRes.error;
+      const error = employeesRes.error || attendanceRes.error || decisionsRes.error || paidRes.error;
       console.debug('[AttendanceSalaryTab] employees:', data?.length, error?.message);
       if (error) setFetchError(error.message || 'Failed to load employee data.');
       else if (data) {
-        setEmployees(data.map((row: any) => ({
+        const paid=new Map((paidRes.data||[]).map((r:{employee_id:string;snapshot:Record<string,number>})=>[r.employee_id,r.snapshot]));
+        setEmployees(data.filter((row:any)=>visiblePayrollEmployee({id:row.id,isActive:row.is_active!==false,leftOn:row.left_on},payrollYear,payrollMonth)).map((row: any) => ({
+          paidSalary:paid.get(row.id) as Record<string,number>|undefined,
           id: row.id,
           name: row.name,
           branch: row.branch,

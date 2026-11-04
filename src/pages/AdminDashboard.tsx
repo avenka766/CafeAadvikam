@@ -1,4 +1,5 @@
 import {isGstCheckedBill} from '@/lib/gstBillFilter';
+import {invoiceTax,aggregateInvoiceTax,reconcileHosurItems} from '@/lib/hosurReportAccounting';
 import { ReportSourceFailures } from '@/components/ReportSourceFailures';
 import { ReportReadCache, type ReportReadFailure } from '@/lib/reportReadCache';
 import { AdminSummaryCard, AdminReportDateRange } from '@/components/admin/AdminReportControls';
@@ -434,6 +435,8 @@ function AdminDashboard() {
     id: string; billNo: string; branch: Branch; total: number; subtotal: number;
     discount: number; createdAt: string; status: 'original' | 'returned' | 'duplicate_printed';
     salesperson: string; biller: string; invoiceNo?: string; dataCheckOk?: boolean; isGstInvoice?: boolean;
+    tax?: ReturnType<typeof invoiceTax>; itemSubtotal?:number;
+    invoiceTaxes?:Record<string,ReturnType<typeof invoiceTax>>;
   }>>([]);
   const [realBillItems, setRealBillItems] = useState<Array<{
     billId: string; branch: Branch; itemName: string; quantity: number; unit: string;
@@ -642,11 +645,11 @@ function AdminDashboard() {
         // deduplicated against hosur_bills below rather than dropped, so an
         // orphaned one like /272 still surfaces.
         () => !needHosur ? empty() : fetchAllRows(() => supabase.from('dispatch_invoices')
-          .select('id, invoice_no, scope, status, total, items, hosur_shop_name, customer_name, created_at, dispatch_entry_ids, is_gst_invoice')
+          .select('id, invoice_no, scope, status, total, subtotal, discount_amount, gst_supply_type, items, hosur_shop_name, customer_name, created_at, dispatch_entry_ids, is_gst_invoice')
           .ilike('invoice_no', 'SALES/%')
           .gte('created_at', fromTs).lt('created_at', untilTs)),
         () => !needHosur ? empty() : fetchAllRows(() => supabase.from('bakery_walkin_bills')
-          .select('id, bill_no, items, total, payment_mode, cashier_name, status, customer_name, created_at, is_gst_invoice')
+          .select('id, bill_no, items, total, subtotal, discount_amount, gst_supply_type, payment_mode, cashier_name, status, customer_name, created_at, is_gst_invoice')
           .ilike('bill_no', 'SALES/%')
           .gte('created_at', fromTs).lt('created_at', untilTs)),
       ], 1);
@@ -737,14 +740,16 @@ function AdminDashboard() {
       );
       const salesInvoices = (salesInvoicesRes.data || []) as Array<Record<string, unknown>>;
       const gstInvoiceNumbers = new Set(salesInvoices.filter(r=>r.is_gst_invoice===true).map(r=>String(r.invoice_no)));
+      const taxInvoices=new Map(salesInvoices.map(r=>[String(r.invoice_no),r]));
       // Resolve the persisted checkbox even when a confirmed bill links an older
       // dispatch invoice outside this report's dispatch creation range.
       const linkedNumbers=[...new Set(hosurBills.flatMap(h=>String(h.invoice_no||'').split(',').map(n=>n.trim()).filter(Boolean)))];
       for(let offset=0;offset<linkedNumbers.length;offset+=200){
-        const flags=await fetchAllRows<Record<string,unknown>>(()=>supabase.from('dispatch_invoices').select('invoice_no,is_gst_invoice').in('invoice_no',linkedNumbers.slice(offset,offset+200)).abortSignal(controller.signal));
+        const flags=await fetchAllRows<Record<string,unknown>>(()=>supabase.from('dispatch_invoices').select('invoice_no,is_gst_invoice,total,subtotal,discount_amount,gst_supply_type,items').in('invoice_no',linkedNumbers.slice(offset,offset+200)).abortSignal(controller.signal));
         if(realSalesRequestRef.current!==requestId)return;
         if(flags.error){setRealSalesError('GST bill flags could not load: '+flags.error.message);setRealSalesLoading(false);return;}
         flags.data.filter(r=>r.is_gst_invoice===true).forEach(r=>gstInvoiceNumbers.add(String(r.invoice_no)));
+        flags.data.forEach(r=>taxInvoices.set(String(r.invoice_no),r));
       }
 
 
@@ -819,6 +824,9 @@ function AdminDashboard() {
           const dispatchDate = firstInvoiceNo ? dispatchCreatedAtByInvoiceNo.get(firstInvoiceNo) : undefined;
           return {
             id: String(h.id), billNo: String(h.bill_no ?? ''), branch: 'Hosur' as Branch,
+            tax:aggregateInvoiceTax(String(h.invoice_no||'').split(',').map(n=>taxInvoices.get(n.trim())).filter((r):r is Record<string,unknown>=>!!r)),
+            invoiceTaxes:Object.fromEntries(String(h.invoice_no||'').split(',').map(n=>n.trim()).filter(n=>taxInvoices.has(n)).map(n=>[n,invoiceTax(taxInvoices.get(n)!)])),
+            itemSubtotal:aggregateInvoiceTax(String(h.invoice_no||'').split(',').map(n=>taxInvoices.get(n.trim())).filter((r):r is Record<string,unknown>=>!!r))?.itemSubtotal,
             total: Number(h.subtotal || 0), subtotal: Number(h.subtotal || 0), discount: 0,
             createdAt: dispatchDate || String(h.confirmed_at), status: 'original' as const,
             salesperson: '', biller: String(h.shop_name ?? ''),
@@ -834,6 +842,7 @@ function AdminDashboard() {
         // "out of range" (or a real in-range bill can go missing) again.
         }).filter((b) => { const t = new Date(b.createdAt).getTime(); return t >= fromMs && t <= toMs; }),
         ...paidExtraSalesInvoices.map((s) => ({
+          tax:invoiceTax(s),itemSubtotal:invoiceTax(s).itemSubtotal,
           id: String(s.id), billNo: String(s.invoice_no ?? ''), branch: 'Hosur' as Branch,
           total: Number(s.total || 0), subtotal: Number(s.total || 0), discount: 0,
           createdAt: String(s.created_at), status: 'original' as const,
@@ -841,6 +850,7 @@ function AdminDashboard() {
           invoiceNo: String(s.invoice_no ?? ''), isGstInvoice: s.is_gst_invoice===true,
         })),
         ...activeWalkinBills.map((w) => ({
+          tax:invoiceTax(w),itemSubtotal:invoiceTax(w).itemSubtotal,
           isGstInvoice: w.is_gst_invoice===true, id: String(w.id), billNo: String(w.bill_no ?? ''), branch: 'Hosur' as Branch,
           total: Number(w.total || 0), subtotal: Number(w.total || 0), discount: 0,
           createdAt: String(w.created_at), status: 'original' as const,
@@ -2287,9 +2297,18 @@ function AdminDashboard() {
   // fixes the default view and both exports in one place, same fix as
   // Admin Dispatch Details' `rows` useMemo.
   const [hosurGstOnly, setHosurGstOnly] = useState(false);
+  const [hosurSearch,setHosurSearch]=useState('');
+  const [hosurShop,setHosurShop]=useState('All');
+  const [hosurPayment,setHosurPayment]=useState('All');
+  const [hosurBalance,setHosurBalance]=useState('All');
   const allHosurBillsInRange = useMemo(() => realBillsInRange.filter(b => b.branch === 'Hosur')
     .sort((a, b) => (b.invoiceNo || b.billNo || '').localeCompare(a.invoiceNo || a.billNo || '', undefined, { numeric: true, sensitivity: 'base' })), [realBillsInRange]);
-  const hosurBillsInRange = useMemo(()=>allHosurBillsInRange.filter(b=>!hosurGstOnly||isGstCheckedBill(b)),[allHosurBillsInRange,hosurGstOnly]);
+  const hosurShopOptions=useMemo(()=>Array.from(new Set(allHosurBillsInRange.map(b=>b.biller).filter(Boolean))).sort(),[allHosurBillsInRange]);
+  const hosurBillsInRange = useMemo(()=>allHosurBillsInRange.filter(b=>{
+    const paid=billPaidByMode.get(b.id)||{cash:0,upi:0,card:0};const balance=b.total-paid.cash-paid.upi-paid.card;
+    return (!hosurGstOnly||isGstCheckedBill(b))&&(hosurShop==='All'||b.biller===hosurShop)&&(!hosurSearch.trim()||`${b.invoiceNo||''} ${b.billNo} ${b.biller}`.toLowerCase().includes(hosurSearch.trim().toLowerCase()))&&(hosurPayment==='All'||paid[hosurPayment as keyof typeof paid]>0)&&(hosurBalance==='All'||(hosurBalance==='Outstanding'?balance>.01:balance<=.01));
+  }),[allHosurBillsInRange,hosurGstOnly,hosurShop,hosurSearch,hosurPayment,hosurBalance,billPaidByMode]);
+  const hosurReviewInvoices=unconfirmedSalesInvoices.filter(r=>(hosurShop==='All'||r.who===hosurShop)&&(!hosurSearch.trim()||`${r.invoiceNo} ${r.who}`.toLowerCase().includes(hosurSearch.trim().toLowerCase())));
   // GUARDRAIL (2026-09-30): see the dataCheckOk comment above — bills that
   // fail this check in the CURRENT date range, surfaced as a banner so an
   // admin sees it before exporting/sending anything, not after a client
@@ -2298,7 +2317,12 @@ function AdminDashboard() {
     () => hosurBillsInRange.filter(b => b.dataCheckOk === false),
     [hosurBillsInRange],
   );
-  const hosurBillItemsInRange = useMemo(() => realBillItems.filter(i => i.branch === 'Hosur'), [realBillItems]);
+  const hosurItemReconciliation=useMemo(()=>{
+    const rows: Array<(typeof realBillItems)[number]&{savedItemValue:number;allocation:number}>=[];const errors:string[]=[];
+    for(const bill of hosurBillsInRange){try{if(bill.tax&&Math.abs(bill.tax.invoiceValue-bill.total)>.011)throw Error('Invoice value differs from the shop ledger. Review before export.');rows.push(...reconcileHosurItems(bill,realBillItems.filter(i=>i.branch==='Hosur'&&i.billId===bill.id)));}catch(e){errors.push(`${bill.invoiceNo||bill.billNo}: ${(e as Error).message}`);}}
+    return {rows,errors};
+  },[hosurBillsInRange,realBillItems]);
+  const hosurBillItemsInRange = hosurItemReconciliation.rows;
   // FEATURE (2026-09-28): "I need both to show as different rows" — replaces
   // the earlier "stack invoice numbers on separate lines, same row" fix the
   // user explicitly rejected. A comma-joined invoice_no now becomes N real
@@ -2374,19 +2398,29 @@ function AdminDashboard() {
   // backlog has no items resolved to it yet — that stays its own KPI/section, not a
   // sales line, since nothing has actually been billed for it).
   const hosurItemWiseSales = useMemo(() => {
-    const map = new Map<string, { itemName: string; qty: number; revenue: number; bills: number }>();
+    const map = new Map<string, { itemName: string; unit:string; qty: number; revenue: number; bills: number }>();
     hosurBillsInRange.forEach(b => hosurBillItemsInRange.filter(i => i.billId === b.id).forEach(i => {
-      const row = map.get(i.itemName) ?? { itemName: i.itemName, qty: 0, revenue: 0, bills: 0 };
+      const key=JSON.stringify([i.itemName,i.unit]);
+      const row = map.get(key) ?? { itemName: i.itemName, unit:i.unit, qty: 0, revenue: 0, bills: 0 };
       row.qty += i.quantity;
       row.revenue += i.lineTotal;
       row.bills += 1;
-      map.set(i.itemName, row);
+      map.set(key, row);
     }));
     return Array.from(map.values()).sort((a, b) => b.revenue - a.revenue);
   }, [hosurBillsInRange, hosurBillItemsInRange]);
 
-  const exportHosurExcel = () => exportWorkbook(`Admin_Hosur_${fromDate}_${toDate}`, [
-    {name:'GST Checked Bills', title:`GST checked bills (${fromDate} to ${toDate})`, columns:[{header:'Invoice Number',key:'invoiceNo',width:24},{header:'Customer / Shop',key:'biller',width:26},{header:'Date',key:'date'},{header:'Bill Total',key:'total'}], rows:allHosurBillsInRange.filter(isGstCheckedBill).map(b=>({invoiceNo:b.invoiceNo||b.billNo,biller:b.biller,date:fmtDate(b.createdAt),total:b.total}))},
+  const hosurTaxColumns=['Taxable Value','CGST','SGST','IGST','Invoice Value'].map((header,i)=>({header,key:['taxableValue','cgst','sgst','igst','invoiceValue'][i]}));
+  const hosurTaxValues=(bill:(typeof hosurBillsInRange)[number],splitIndex?:number)=>{
+    const tax=bill.tax||{taxableValue:bill.total,cgst:0,sgst:0,igst:0,invoiceValue:bill.total};
+    const numbers=(bill.invoiceNo||bill.billNo).split(',').map(n=>n.trim()).filter(Boolean);
+    const ratios=numbers.map(n=>hosurDispatchTotalsByInvoiceNo.get(n)||0);
+    if(splitIndex!==undefined&&bill.invoiceTaxes?.[numbers[splitIndex]])return bill.invoiceTaxes[numbers[splitIndex]];
+    return Object.fromEntries(['taxableValue','cgst','sgst','igst','invoiceValue'].map(k=>[k,splitIndex===undefined?tax[k as keyof typeof tax]:splitAmountByRatio(tax[k as keyof typeof tax],ratios)[splitIndex]]));
+  };
+  const exportHosurExcel = () => { if(hosurItemReconciliation.errors.length){window.alert('Export blocked: '+hosurItemReconciliation.errors.join('; '));return;} return exportWorkbook(`Admin_Hosur_${fromDate}_${toDate}`, [
+    {name:'Invoice Exceptions',title:'Historical invoice exceptions — excluded from confirmed sales totals',columns:[{header:'Invoice Number',key:'invoiceNo'},{header:'Branch',key:'scope'},{header:'Customer / Shop',key:'who'},{header:'Status',key:'status'},{header:'Recorded Value (not sales)',key:'total'},{header:'Date',key:'createdAt'}],rows:hosurGstOnly?[]:hosurReviewInvoices},
+    {name:'GST Checked Bills', title:`GST checked bills (${fromDate} to ${toDate})`, columns:[{header:'Invoice Number',key:'invoiceNo',width:24},{header:'Customer / Shop',key:'biller',width:26},{header:'Date',key:'date'},...hosurTaxColumns], rows:hosurBillsInRange.filter(isGstCheckedBill).map(b=>({invoiceNo:b.invoiceNo||b.billNo,biller:b.biller,date:fmtDate(b.createdAt),...hosurTaxValues(b)}))},
     {
       name: 'Total Sales', title: `Hosur Sales — Total Sales (${fromDate} to ${toDate})`,
       columns: [{ header: 'Metric', key: 'metric' }, { header: 'Amount', key: 'amount' }],
@@ -2402,7 +2436,7 @@ function AdminDashboard() {
     },
     {
       name: 'Item-wise Sales', title: `Hosur Sales — Item-wise Sales (${fromDate} to ${toDate})`,
-      columns: [{ header: 'Item Name', key: 'itemName', width: 28 }, { header: 'Qty Sold', key: 'qty' }, { header: 'Revenue', key: 'revenue' }, { header: 'Bills', key: 'bills' }],
+      columns: [{ header: 'Item Name', key: 'itemName', width: 28 }, {header:'Unit',key:'unit'}, { header: 'Qty Sold', key: 'qty' }, { header: 'Revenue', key: 'revenue' }, { header: 'Bills', key: 'bills' }],
       rows: hosurItemWiseSales,
     },
     {
@@ -2418,6 +2452,7 @@ function AdminDashboard() {
         { header: 'Branch', key: 'branch' }, { header: 'Invoice Number', key: 'invoiceNo', width: 18 }, { header: 'Status', key: 'status', width: 14 }, { header: 'Date', key: 'date', width: 14 }, { header: 'Time', key: 'time', width: 12 },
         { header: 'Total Sales', key: 'totalSales' }, { header: 'Cash', key: 'cash' }, { header: 'UPI', key: 'upi' }, { header: 'Card', key: 'card' },
         { header: 'Salesperson', key: 'salesperson', width: 18 }, { header: 'Biller', key: 'biller' },
+        ...hosurTaxColumns,
         // GUARDRAIL (2026-09-30): travels with the file itself, not just the
         // on-screen banner — see hosurDataIntegrityIssues above.
         { header: 'Data Check', key: 'dataCheck', width: 34 }, { header: 'Status', key: 'status' }, { header: 'Original Advance Bill', key: 'originalBill' }, { header: 'Payment Recorded At (IST)', key: 'paidAt', width: 24 }, { header: 'Cancellation Reason', key: 'cancelReason', width: 32 },
@@ -2458,13 +2493,9 @@ function AdminDashboard() {
       rows: [
         ...hosurBillsSplitForDisplay.map(b => {
           const paid = b.splitIndex === 0 ? (billPaidByMode.get(b.id) ?? { cash: 0, upi: 0, card: 0 }) : { cash: 0, upi: 0, card: 0 };
-          return { branch: 'Hosur', invoiceNo: b.splitInvoiceNo, status: 'Billed', date: fmtDate(b.createdAt), time: fmtTime(b.createdAt), totalSales: b.splitTotal, cash: paid.cash, upi: paid.upi, card: paid.card, salesperson: b.salesperson || '—', biller: b.biller || '—', dataCheck: b.dataCheckOk === false ? 'MISMATCH — verify before use' : 'OK' };
+          return { ...hosurTaxValues(b,b.splitIndex), branch: 'Hosur', invoiceNo: b.splitInvoiceNo, status: 'Billed', date: fmtDate(b.createdAt), time: fmtTime(b.createdAt), totalSales: b.splitTotal, cash: paid.cash, upi: paid.upi, card: paid.card, salesperson: b.salesperson || '—', biller: b.biller || '—', dataCheck: b.dataCheckOk === false ? 'MISMATCH — verify before use' : 'OK' };
         }),
-        ...(hosurGstOnly ? [] : unconfirmedSalesInvoices).map(r => ({
-          branch: r.scope, invoiceNo: r.invoiceNo, status: r.status === 'cancelled' ? 'Cancelled' : 'Not Billed',
-          date: fmtDate(r.createdAt), time: fmtTime(r.createdAt), totalSales: r.total, cash: 0, upi: 0, card: 0,
-          salesperson: '—', biller: r.who || '—', dataCheck: '—',
-        })),
+
       ].sort((a, b) => b.invoiceNo.localeCompare(a.invoiceNo, undefined, { numeric: true, sensitivity: 'base' })),
     },
     {
@@ -2472,14 +2503,14 @@ function AdminDashboard() {
       // item was sold in that bill" — one row per item per bill.
       name: 'Bill Items', title: `Hosur Sales — Bill Items (${fromDate} to ${toDate})`,
       columns: [
-        { header: 'Invoice Number', key: 'invoiceNo', width: 18 }, { header: 'Date', key: 'date', width: 14 }, { header: 'Item Name', key: 'itemName', width: 28 },
-        { header: 'Qty', key: 'qty' }, { header: 'Line Total', key: 'lineTotal' },
+        { header: 'Invoice Number', key: 'invoiceNo', width: 18 }, { header: 'Party / Shop Name', key: 'partyName', width: 26 }, { header: 'Date', key: 'date', width: 14 }, { header: 'Item Name', key: 'itemName', width: 28 },
+        {header:'Unit',key:'unit'}, { header: 'Qty', key: 'qty' }, { header: 'Saved Item Value', key: 'savedItemValue' }, { header: 'Tax / Discount / Rounding Allocation', key: 'allocation' }, { header: 'Line Total (Invoice Contribution)', key: 'lineTotal' },
       ],
       rows: hosurBillsInRange.flatMap(b => hosurBillItemsInRange.filter(i => i.billId === b.id).map(i => ({
-        invoiceNo: b.invoiceNo || b.billNo || '—', date: fmtDate(b.createdAt), itemName: i.itemName, qty: i.quantity, lineTotal: i.lineTotal,
+        invoiceNo: b.invoiceNo || b.billNo || '—', partyName:b.biller, date: fmtDate(b.createdAt), itemName: i.itemName, unit:i.unit, qty: i.quantity, savedItemValue:i.savedItemValue,allocation:i.allocation,lineTotal: i.lineTotal,
       }))),
     },
-  ]);
+  ]); };
 
   const exportHosurPdf = () => {
     const PDF_BILL_CAP = 300;
@@ -2526,7 +2557,7 @@ function AdminDashboard() {
             className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700 hover:bg-slate-50 disabled:opacity-60">
             <RefreshCw className={cn('size-3.5', realSalesLoading && 'animate-spin')} />Refresh
           </button>
-          <label className="inline-flex items-center gap-2 text-sm font-semibold"><input type="checkbox" checked={hosurGstOnly} onChange={e=>setHosurGstOnly(e.target.checked)} /> GST checked bills only</label>
+          <div className="flex flex-wrap gap-3"><select aria-label="Filter Hosur payment" value={hosurPayment} onChange={e=>setHosurPayment(e.target.value)} className="rounded-lg border p-2 text-sm"><option value="All">All payment methods</option><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option></select><select aria-label="Filter Hosur balance" value={hosurBalance} onChange={e=>setHosurBalance(e.target.value)} className="rounded-lg border p-2 text-sm"><option value="All">All balances</option><option value="Outstanding">Credit / outstanding</option><option value="Settled">Settled</option></select><input aria-label="Search Hosur bill or shop" value={hosurSearch} onChange={e=>setHosurSearch(e.target.value)} placeholder="Search bill number or shop name" className="rounded-lg border p-2 text-sm"/><select aria-label="Filter Hosur shop" value={hosurShop} onChange={e=>setHosurShop(e.target.value)} className="rounded-lg border p-2 text-sm"><option value="All">All shops</option>{hosurShopOptions.map(shop=><option key={shop} value={shop}>{shop}</option>)}</select><label className="inline-flex items-center gap-2 text-sm font-semibold"><input type="checkbox" checked={hosurGstOnly} onChange={e=>setHosurGstOnly(e.target.checked)} /> GST checked bills only</label></div>
           <button onClick={exportHosurExcel}
             className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-3 py-2 text-xs font-black text-white">
             <FileSpreadsheet className="size-3.5" /> Excel
