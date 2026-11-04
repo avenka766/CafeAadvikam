@@ -1,0 +1,22 @@
+import {it,expect,vi} from 'vitest';
+const m=vi.hoisted(()=>({fetch:vi.fn(),cache:vi.fn(),session:'first'}));
+vi.mock('@/lib/appSession',()=>({getAppSessionToken:()=>m.session}));
+vi.mock('@/lib/supabase',()=>({supabase:{from:vi.fn()},fetchAllRows:m.fetch}));
+vi.mock('@/lib/localCache',()=>({getCached:async()=>null,setCached:m.cache}));
+it('coalesces loads, reuses a fresh complete result on tab remount, and never publishes incomplete pages',async()=>{
+ const {useBakeryStore}=await import('../bakeryStore');
+ let finish:(value:unknown)=>void=()=>{};
+ m.fetch.mockImplementationOnce(()=>new Promise(resolve=>{finish=resolve;}));
+ const one=useBakeryStore.getState().fetchOrders(),two=useBakeryStore.getState().fetchOrders();
+ await vi.waitFor(()=>expect(m.fetch).toHaveBeenCalledTimes(1));
+ const rows=Array.from({length:1001},(_,i)=>({id:`order-${i}`,order_number:i,items:[],status:'pending',created_at:'2026-11-04T00:00:00Z'}));
+ finish({data:rows,error:null});await Promise.all([one,two]);expect(useBakeryStore.getState().orders).toHaveLength(1001);
+ expect(m.fetch.mock.calls[0][2]).toEqual({cursorColumn:'created_at'});
+ await useBakeryStore.getState().fetchOrders();expect(m.fetch).toHaveBeenCalledTimes(1);
+ m.fetch.mockResolvedValueOnce({data:[],error:'Page two failed'});
+ const log=vi.spyOn(console,'error').mockImplementation(()=>{});
+ await useBakeryStore.getState().fetchOrders(true,true);expect(useBakeryStore.getState().orders).toHaveLength(1001);
+ expect(m.cache).toHaveBeenCalledTimes(1);log.mockRestore();
+ m.session='new-login';m.fetch.mockResolvedValueOnce({data:rows,error:null});
+ await useBakeryStore.getState().fetchOrders();expect(m.fetch).toHaveBeenCalledTimes(3);
+});

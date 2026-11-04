@@ -11,6 +11,7 @@ beforeEach(() => {
   m.from.mockReturnValue(query);
   m.single.mockResolvedValue({ data: { id: 'invoice', scope: 'SNB', status: 'unpaid', discount_pct: 0,
     items: [{ itemName: 'Burfi', unit: 'kg', quantity: 0.5, unitPrice: 100, lineTotal: 50 }] } });
+  m.rpc.mockImplementation(() => m.single());
 });
 it('rejects invalid edits before reading or changing any remote records', async () => {
   const result = await updateDispatchInvoice({ invoiceId: 'invoice', editedBy: 'Fixture', updatedDiscountPct: 0,
@@ -40,7 +41,14 @@ it('routes internal branch cancellation through one transaction instead of claim
   m.cancel.mockResolvedValue({ id: 'invoice', status: 'cancelled', scope: 'SNB' });
   const result = await cancelDispatchInvoice({ invoiceId: 'invoice', reason: 'Wrong dispatch' });
   expect(result).toHaveProperty('ok', true); expect(m.cancel).toHaveBeenCalledTimes(1);
-  expect(m.from).toHaveBeenCalledTimes(1); expect(m.rpc).not.toHaveBeenCalled();
+  expect(m.from).not.toHaveBeenCalled(); expect(m.rpc).toHaveBeenCalledWith('get_dispatch_invoice_for_change_v1',{p_invoice:'invoice'});
+});
+it('does not start cancellation when invoice lookup reports an expired session or missing record', async()=>{
+ for(const message of ['SESSION_REQUIRED','INVOICE_NOT_FOUND']){
+  m.rpc.mockResolvedValue({data:null,error:{message}});
+  expect(await cancelDispatchInvoice({invoiceId:'invoice'})).toEqual({error:message});
+ }
+ expect(m.cancel).not.toHaveBeenCalled();expect(m.revise).not.toHaveBeenCalled();
 });
 it('recovers a committed full return before validating against its now-empty invoice', async () => {
   m.pending.mockReturnValue(true);
