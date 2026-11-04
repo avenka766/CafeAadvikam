@@ -36,7 +36,7 @@ export default function MenuItemCard({ item, quantity, onAdd, onRemove, compact,
               </button>
             ) : (
               <div className="pos-menu-stepper-small" aria-label={`${item.name} quantity ${quantity}`}>
-                <button onClick={onRemove} aria-label={`Remove ${item.name}`}><Minus className="size-3.5" /></button>
+                <button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it." onClick={onRemove} aria-label={`Remove ${item.name}`}><Minus className="size-3.5" /></button>
                 <span>{quantity}</span>
                 <button onClick={onAdd} aria-label={`Add more ${item.name}`}><Plus className="size-3.5" /></button>
               </div>
@@ -82,7 +82,7 @@ export default function MenuItemCard({ item, quantity, onAdd, onRemove, compact,
             </button>
           ) : (
             <div className="pos-menu-stepper" aria-label={`${item.name} quantity ${quantity}`}>
-              <button onClick={onRemove} aria-label={`Remove ${item.name}`}><Minus className="size-4" /></button>
+              <button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it." onClick={onRemove} aria-label={`Remove ${item.name}`}><Minus className="size-4" /></button>
               <span>{quantity}</span>
               <button onClick={onAdd} aria-label={`Add more ${item.name}`}><Plus className="size-4" /></button>
             </div>

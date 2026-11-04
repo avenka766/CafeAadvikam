@@ -159,7 +159,7 @@ export default function OrderCart({ isOpen, onClose }: OrderCartProps) {
                         <button type="button" onClick={() => updateCartQuantity(cartItem.menuItem.id, cartItem.quantity - 1)} aria-label={`Remove ${cartItem.menuItem.name}`}><Minus className="size-4" /></button>
                         <span>{cartItem.quantity}</span>
                         <button type="button" onClick={() => updateCartQuantity(cartItem.menuItem.id, cartItem.quantity + 1)} aria-label={`Add ${cartItem.menuItem.name}`}><Plus className="size-4" /></button>
-                        <button type="button" onClick={() => removeFromCart(cartItem.menuItem.id)} className="order-cart-delete" aria-label={`Delete ${cartItem.menuItem.name}`}><Trash2 className="size-4" /></button>
+                        <button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it." type="button" onClick={() => removeFromCart(cartItem.menuItem.id)} className="order-cart-delete" aria-label={`Delete ${cartItem.menuItem.name}`}><Trash2 className="size-4" /></button>
                       </div>
                     </article>
                   ))}
