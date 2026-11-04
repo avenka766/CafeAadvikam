@@ -3,6 +3,7 @@
 // labeled .xlsx (not a raw dump) — bold headers, auto-sized columns, a title
 // row, and an export-timestamp footer.
 import * as XLSX from 'xlsx';
+import {addWorkbookTotals} from './excelWorkbookTotals';
 
 export interface ExcelColumn {
   header: string;
@@ -41,7 +42,7 @@ export function exportToExcel(params: {
   // (xlsx-style / exceljs) if visual styling is required later.
 
   XLSX.utils.book_append_sheet(wb, ws, sheetName.slice(0, 31));
-  XLSX.writeFile(wb, `${filename}.xlsx`);
+  XLSX.writeFile(addWorkbookTotals(wb), `${filename}.xlsx`);
 }
 
 export function ExportButtonProps(rows: number) {

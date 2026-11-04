@@ -1,3 +1,4 @@
+import {withExcelObjectTotals} from './excelTotals';
 export type ExcelExportValue = string | number | boolean | null | undefined;
 export type ExcelExportRow = Record<string, ExcelExportValue>;
 export type ExcelWorksheet = {
@@ -30,7 +31,7 @@ function numberStyle(header: string) {
 }
 
 function worksheetXml(sheet: ExcelWorksheet) {
-  const safeRows = sheet.rows.length ? sheet.rows : [{ Note: "No data available" }];
+  const safeRows = sheet.rows.length ? withExcelObjectTotals(sheet.rows) : [{ Note: "No data available" }];
   const headers = Array.from(
     safeRows.reduce((set, row) => {
       Object.keys(row).forEach((key) => set.add(key));
