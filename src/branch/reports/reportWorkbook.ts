@@ -13,7 +13,7 @@ function excelValue(key: string, value: ReportValue) {
   return value;
 }
 function sheetName(title: string, used: Set<string>) {
-  const base = title.replace(/[\[\]:*?/\\]/g, ' ').replace(/\s+/g, ' ').slice(0, 27).trim() || 'Details';
+  const base = title.replace(/[\u005b\u005d:*?/\\]/g, ' ').replace(/\s+/g, ' ').slice(0, 27).trim() || 'Details';
   let name = base, suffix = 1;
   while (used.has(name.toLowerCase())) name = `${base.slice(0, 26)} ${++suffix}`;
   used.add(name.toLowerCase()); return name;

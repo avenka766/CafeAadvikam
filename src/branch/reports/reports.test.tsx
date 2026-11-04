@@ -98,7 +98,7 @@ describe('Sales report integrity', () => {
   it('renders category navigation and disables export until loading completes', async () => {
     Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
     const host = document.createElement('div'); const root = createRoot(host);
-    const props = { fromDate: '2026-10-01', toDate: '2026-10-01', reportBranches: ['Cafe', 'VRSNB'] as ('Cafe' | 'VRSNB')[], userName: 'Test', report: { snapshot: fixture(), loading: true, error: '', loadedAt: '', refresh: vi.fn() } };
+    const props = { fromDate: '2026-10-01', toDate: '2026-10-01', reportBranches: ['Cafe', 'VRSNB'] as ('Cafe' | 'VRSNB')[], userName: 'Test', report: { snapshot: fixture(), loading: true, error: '', loadedAt: '', refresh: vi.fn(), retrySource: vi.fn() } };
     await act(async () => root.render(<BranchReportView {...props} />));
     const exportButton = Array.from(host.querySelectorAll('button')).find(b => b.textContent?.includes('Download complete Excel'))!;
     expect(exportButton.disabled).toBe(true);

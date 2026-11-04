@@ -16,7 +16,7 @@ const names: Record<string, string> = {
   hold_bill: 'Held bills', credit_sale: 'Credit history',
 };
 export function label(key: string) {
-  return key.replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/[_\.]/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+  return key.replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/[_.]/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
     .replace(/\bId\b/g, 'ID').replace(/\bUpi\b/g, 'UPI').replace(/\bGst\b/g, 'GST');
 }
 export function indiaDate(value: unknown): string {
