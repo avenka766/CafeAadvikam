@@ -90,7 +90,8 @@ const sessionAwareFetch: typeof fetch = async (input, init: RequestInit = {}) =>
         }
         if (sessionExpired) {
           window.dispatchEvent(new CustomEvent('cafe:session-expired', { detail: { at: Date.now() } }));
-        } else if (/LAST_ITEM_USE_CANCEL_ORDER/i.test(responseMessage)) {
+        } else if (/LAST_ITEM_USE_CANCEL_ORDER/i.test(responseMessage) ||
+          (requestUrl.includes('/rpc/cancel_branch_transfer_once_v1') && responseCode==='P0001' && /^TRANSFER_ALREADY_RECEIVED\b/.test(responseMessage))) {
           // BUG FIX (2026-08-21): "cancelling the last item on an order shows
           // a scary 'business data may be incomplete' banner." This is a
           // correctly-working validation response (you can't remove an
