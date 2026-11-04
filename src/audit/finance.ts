@@ -15,7 +15,7 @@ export const auditDay=istDay;
 export function buildAuditFinance(snapshot:AuditSnapshot,from:string,to:string){
  const entries:AuditEntry[]=[];const issues:AuditIssue[]=[];const data=(source:AuditSourceId)=>snapshot[source]?.rows||[];
  const within=(date:unknown)=>{const day=istDay(date);return !!day&&day>=from&&day<=to;};
- const issue=(source:string,r:AuditRaw,message:string,severity:AuditIssue['severity']='Review',amount?:number)=>issues.push({source,branch:text(r,'branch','scope')||'Business',reference:auditReference(source,r,snapshot),message,severity,amount});
+ const issue=(source:string,r:AuditRaw,message:string,severity:AuditIssue['severity']='Review',amount?:number)=>issues.push({source,branch:text(r,'branch','scope')||(source.startsWith('hosur_')?'Hosur':source.startsWith('snb_')?'SNB':source.startsWith('vrsnb_')?'VRSNB':source.startsWith('store_')?'Store':source.startsWith('planner_')?'Planner':'Business'),reference:auditReference(source,r,snapshot),message,severity,amount});
  const add=(source:AuditSourceId,r:AuditRaw,category:AuditCategory,patch:Partial<AuditEntry>={})=>{
   const e:AuditEntry={id:source+':'+r.id+':'+entries.length,source,sourceId:String(r.id),branch:text(r,'branch','scope')||'Business',category,date:text(r,'created_at','invoice_date','delivery_date','given_date'),reference:auditReference(source,r,snapshot),party:text(r,'customer_name','supplier_name','shop_name','hosur_shop_name','salesperson','entered_by','created_by'),status:text(r,'status'),mode:text(r,'payment_mode','payment_method','payment_type'),amount:num(val(r,'total','total_amount','amount','grand_total','subtotal')),revenue:0,cashIn:0,cashOut:0,purchase:0,expense:0,tax:0,orderValue:0,outstanding:0,payable:0,items:Array.isArray(r.items)?r.items:Array.isArray(r.line_items)?r.line_items:[],raw:r,...patch};entries.push(e);return e;
  };
@@ -34,11 +34,11 @@ export function buildAuditFinance(snapshot:AuditSnapshot,from:string,to:string){
   if(active&&!items.length&&total!==0)issue('branch_bills',r,'No item rows found for this bill. Bill total is retained; item analysis is incomplete.','Missing',total);
   if(isReturn&&!returnNos.has(`${r.branch}:${r.bill_no}`)&&!cancelled(r)){issue('branch_bills',r,'Legacy return is present only in bill headers; deducted once and shown separately.');add('branch_bills',r,'Refunds',{revenue:-Math.abs(total),amount:Math.abs(total)});}
  }
- for(const r of unique('branch_returns',r=>`${r.branch}:${r.return_no||r.id}`)){const amount=Math.abs(num(r.amount));add('branch_returns',r,'Refunds',{reference:text(r,'return_no'),party:`Original ${text(r,'bill_no')}`,revenue:-amount,cashOut:/cash|upi|card|bank/i.test(text(r,'payment_mode'))?amount:0,amount});}
+ for(const r of unique('branch_returns',r=>`${r.branch}:${r.return_no||r.id}`)){const amount=Math.abs(num(r.amount));add('branch_returns',r,'Refunds',{reference:text(r,'return_no'),party:`Original ${text(r,'bill_no')}`,revenue:/-ADV-REF-/i.test(text(r,'return_no'))?0:-amount,cashOut:/cash|upi|card|bank/i.test(text(r,'payment_mode'))?Math.abs(num(r.refund_amount??r.amount)):0,amount});}
  for(const r of data('branch_payments')){
   const mode=text(r,'payment_mode');const refund=/refund/i.test(text(r,'payment_purpose'));const nonCash=/credit|wallet|advance_adjust/i.test(mode);const amount=num(r.amount);
   const original=headers.get(`${r.branch}:${r.bill_no}`);const valid=!cancelled(r);
-  const coveredRefund=refund&&returns.some(x=>x.branch===r.branch&&x.bill_no===r.bill_no&&Math.abs(num(x.amount)-Math.abs(amount))<0.01);
+  const coveredRefund=refund&&returns.some(x=>x.branch===r.branch&&x.bill_no===r.bill_no&&Math.abs(num(x.refund_amount??x.amount)-Math.abs(amount))<0.01);
   add('branch_payments',r,'Receipts',{cashIn:valid&&!refund&&!nonCash?Math.max(0,amount):0,cashOut:valid&&refund&&!coveredRefund&&!nonCash?Math.abs(amount):0});
   if(original&&cancelled(original))issue('branch_payments',r,'Receipt links to a cancelled bill. Recorded money movement is retained; review its reversal or refund.');
  }
@@ -68,13 +68,15 @@ export function buildAuditFinance(snapshot:AuditSnapshot,from:string,to:string){
  const dispatchNos=new Set(dispatch.map(r=>String(r.invoice_no)));
  for(const r of data('hosur_bills')){const ledger=hosurLedger.get(String(r.id));const initial=ledger?Math.max(0,num(r.subtotal)-num(ledger.opening_amount)):num(r.credit_amount)===0&&data('hosur_collections').every(p=>p.bill_id!==r.id)?num(r.paid_amount):0;
   add('hosur_bills',r,'Reference',{branch:'Hosur',cashIn:!cancelled(r)&&within(r.confirmed_at||r.created_at)?initial:0,reference:text(r,'invoice_no','bill_no')});
-  if(!dispatchNos.has(String(r.invoice_no)))issue('hosur_bills',r,'No matching dispatch invoice in this date range. Review invoice date/link; this reference is not added as a second sale.','Review',num(r.subtotal));
+  const references=String(r.invoice_no||'').split(',').map(value=>value.trim()).filter(Boolean);
+  const missing=references.filter(reference=>!dispatchNos.has(reference));
+  if(!cancelled(r)&&(!references.length||missing.length))issue('hosur_bills',r,`Linked dispatch reference${missing.length===1?'':'s'} not loaded in this date range${missing.length?': '+missing.join(', '):''}. Review invoice date/link; this reference is not added as a second sale.`,'Review',num(r.subtotal));
  }
  for(const r of data('hosur_collections'))add('hosur_collections',r,'Receipts',{branch:'Hosur',cashIn:num(r.amount_collected),amount:num(r.amount_collected)});
  for(const r of data('credit_payments'))add('credit_payments',r,'Receipts',{branch:'Cafe',date:text(r,'paid_at'),cashIn:cancelled(r)?0:num(r.amount)});
  for(const r of data('branch_credits'))add('branch_credits',r,'Credit balances',{outstanding:cancelled(r)||/settled/.test(String(r.status))?0:num(r.credit_amount),amount:num(r.credit_amount)});
  for(const r of data('hosur_credit'))add('hosur_credit',r,'Credit balances',{branch:'Hosur',outstanding:cancelled(r)||data('branch_credits').some(c=>c.source==='hosur'&&String(c.source_id)===String(r.bill_id))?0:num(r.balance_amount),amount:num(r.balance_amount)});
- for(const r of data('branch_advances'))add('branch_advances',r,'Advances',{orderValue:within(r.created_at)&&!cancelled(r)?num(r.subtotal):0,outstanding:cancelled(r)?0:num(r.balance_due),amount:num(r.subtotal)});
+ for(const r of data('branch_advances'))add('branch_advances',r,'Advances',{orderValue:within(r.created_at)&&!cancelled(r)?num(r.subtotal):0,outstanding:cancelled(r)||r.finalized_in_main||r.cancelled_in_main||r.status==='completed'?0:num(r.balance_due),amount:num(r.subtotal)});
  for(const r of data('planner_advances')){const active=!cancelled(r);const initial=within(r.created_at);const final=r.status==='paid'&&within(r.paid_at);const advance=num(r.advance_amount);const total=num(r.total);
   add('planner_advances',r,'Advances',{branch:'Planner',reference:String(r.fy_seq),amount:total,orderValue:active&&initial?total:0,revenue:active&&final?total:0,cashIn:active?(initial?advance:0)+(final?Math.max(0,total-advance):0):0,outstanding:active&&r.status!=='paid'?num(r.balance_amount):0,date:final?String(r.paid_at):String(r.created_at)});
  }

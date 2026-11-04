@@ -5,6 +5,31 @@ import {auditWorkbook} from './export';
 const date='2026-10-22T05:00:00Z';const range=['2026-10-22','2026-10-22'] as const;
 const snapshot=(parts:Record<string,AuditRaw[]>):AuditSnapshot=>Object.fromEntries(AUDIT_SOURCES.map(s=>[s.id,{rows:parts[s.id]||[],status:'ready',error:''}]));
 const bill=(id:string,total:number,patch:AuditRaw={})=>({id,branch:'SNB',bill_no:'SNB-'+id,total,status:'original',created_at:date,...patch});
+it('matches every invoice in a cumulative Hosur bill without adding another sale',()=>{
+ const r=buildAuditFinance(snapshot({dispatches:[{id:'d1',scope:'Hosur',invoice_no:'SALES/1',total:20,status:'paid',created_at:date},{id:'d2',scope:'Hosur',invoice_no:'SALES/2',total:30,status:'paid',created_at:date}],hosur_bills:[{id:'h',invoice_no:'SALES/1, SALES/2',subtotal:50,paid_amount:0,credit_amount:50,created_at:date}]}),...range);
+ expect(r.totals.sales).toBe(50);expect(r.issues.filter(i=>i.source==='hosur_bills')).toEqual([]);
+});
+it('identifies only the missing Hosur link and labels its business unit',()=>{
+ const r=buildAuditFinance(snapshot({dispatches:[{id:'d1',scope:'Hosur',invoice_no:'SALES/1',total:20,status:'paid',created_at:date}],hosur_bills:[{id:'h',invoice_no:'SALES/1, SALES/OLD',subtotal:50,credit_amount:50,created_at:date}]}),...range);
+ const issue=r.issues.find(i=>i.source==='hosur_bills')!;expect(issue.branch).toBe('Hosur');expect(issue.message).toContain('SALES/OLD');expect(issue.message).not.toContain('SALES/1');
+});
+it('excludes legacy balances already finalized or cancelled in the main register without inventing receipts',()=>{
+ const base={branch:'SNB',subtotal:100,balance_due:60,status:'pending',created_at:date};
+ const r=buildAuditFinance(snapshot({branch_advances:[{...base,id:'final',finalized_in_main:true},{...base,id:'cancelled',cancelled_in_main:true},{...base,id:'open'}]}),...range);
+ expect(r.totals.outstanding).toBe(60);expect(r.totals.collected).toBe(0);expect(r.totals.sales).toBe(0);
+});
+it('separates credit reduction from money refunded on a sales return',()=>{
+ const r=buildAuditFinance(snapshot({branch_returns:[{id:'r',branch:'SNB',return_no:'SNB-RET-1',amount:60,refund_amount:10,credit_adjusted:50,payment_mode:'cash',created_at:date}]}),...range);
+ const row=r.entries.find(e=>e.category==='Refunds')!;expect(row.revenue).toBe(-60);expect(row.cashOut).toBe(10);
+});
+it('treats an advance cancellation as returned money rather than negative sales',()=>{
+ const r=buildAuditFinance(snapshot({branch_returns:[{id:'r',branch:'SNB',return_no:'SNB-ADV-REF-1',amount:100,payment_mode:'cash',created_at:date}]}),...range);
+ const row=r.entries.find(e=>e.category==='Refunds')!;expect(row.revenue).toBe(0);expect(row.cashOut).toBe(100);
+});
+it('counts the actual partial credit refund only once when a payment mirror exists',()=>{
+ const r=buildAuditFinance(snapshot({branch_returns:[{id:'r',branch:'SNB',bill_no:'SNB-1',return_no:'SNB-RET-1',amount:60,refund_amount:10,credit_adjusted:50,payment_mode:'cash',created_at:date}],branch_payments:[{id:'p',branch:'SNB',bill_no:'SNB-1',amount:10,payment_mode:'cash',payment_purpose:'refund',created_at:date}]}),...range);
+ expect(r.totals.paidOut).toBe(10);
+});
 describe('Audit finance reconciliation',()=>{
  it('counts branch credit sales as revenue, returns once, and receipt mirrors once',()=>{
   const data=snapshot({branch_bills:[bill('1',100),bill('2',200,{bill_type:'credit'}),bill('3',20,{bill_type:'return',source:'return',bill_no:'SNB-RET-1'})],branch_returns:[{id:'return',branch:'SNB',bill_no:'SNB-1',return_no:'SNB-RET-1',amount:20,payment_mode:'cash',created_at:date}],branch_payments:[{id:'p',branch:'SNB',credit_sale_id:'credit',amount:50,payment_mode:'cash',payment_purpose:'credit_settlement',created_at:date}],credit_receipts:[{id:'p2',branch:'SNB',credit_sale_id:'credit',amount:50,payment_mode:'cash',created_at:date}]});
