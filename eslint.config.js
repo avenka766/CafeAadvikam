@@ -13,7 +13,7 @@ export default tseslint.config(
   // "rule not found" errors (a plugin-resolution artifact of linting
   // non-project JS), which is what forced CI's lint step behind
   // `continue-on-error`.
-  { ignores: ["dist", "android", "ios", "mobile-apps"] },
+  { ignores: ["dist", "desktop-app", "android", "ios", "mobile-apps"] },
   {
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
     files: ["**/*.{ts,tsx}"],

@@ -10,8 +10,7 @@ dist-ssr
 desktop-app
 release
 
-# Lockfile — generated locally against an internal registry; let Vercel regenerate it
-package-lock.json
+# Commit the public-registry lockfile for reproducible installs.
 
 # Logs
 logs
@@ -40,3 +39,10 @@ mobile-apps/**/android/capacitor-cordova-android-plugins/build/
 mobile-apps/**/android/local.properties
 mobile-apps/**/android/app/src/main/assets/public/
 *.jks
+
+# Private local validation data and working copies
+.desktop-validation/
+.audit-stream-check.json
+probe.js
+probe.cjs
+.automatic-*.py
