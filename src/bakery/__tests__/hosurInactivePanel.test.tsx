@@ -1,0 +1,22 @@
+import {act} from 'react';
+import {createRoot,type Root} from 'react-dom/client';
+import {afterEach,beforeEach,expect,it,vi} from 'vitest';
+const m=vi.hoisted(()=>({from:vi.fn(),fetch:vi.fn(),counter:vi.fn()}));
+vi.mock('../packingCounter',()=>({getPackingCounterStatus:m.counter}));
+vi.mock('@/lib/supabase',()=>({supabase:{from:m.from,rpc:vi.fn()},fetchAllRows:m.fetch}));
+vi.mock('@/stores/authStore',()=>({useAuthStore:(s:any)=>s({currentUser:{displayName:'Fixture'}})}));
+vi.mock('../hosurBillingBridge',()=>({runHosurDispatchAndBillCore:vi.fn(),queueHosurDispatchAndBill:vi.fn(),runHosurLeftoverDispatchCore:vi.fn(),queueHosurLeftoverDispatch:vi.fn()}));
+vi.mock('@/pages/HosurDashboard',()=>({notifyAdmin:vi.fn()}));
+import HosurShopOrderPanel from '../HosurShopOrderPanel';
+(globalThis as {IS_REACT_ACT_ENVIRONMENT?:boolean}).IS_REACT_ACT_ENVIRONMENT=true;
+let host:HTMLDivElement,root:Root;
+beforeEach(()=>{m.from.mockReset();m.fetch.mockReset().mockResolvedValue({data:[],error:null});m.counter.mockReset().mockResolvedValue({isOpen:true});const query:any=new Proxy({}, {get:(_t,key)=>key==='then'?Promise.resolve({data:[],error:null}).then.bind(Promise.resolve({data:[],error:null})):()=>query});m.from.mockReturnValue(query);host=document.createElement('div');document.body.append(host);root=createRoot(host);});
+afterEach(()=>{act(()=>root.unmount());host.remove();});
+it('loads on entry and pauses when the retained workspace is hidden',async()=>{
+ const render=(active:boolean)=>act(async()=>root.render(<HosurShopOrderPanel active={active} section="dispatch"/>));
+ await render(false);expect(m.from).not.toHaveBeenCalled();expect(m.fetch).not.toHaveBeenCalled();
+ await render(true);expect(m.from).toHaveBeenCalledTimes(2);expect(m.fetch).toHaveBeenCalledTimes(2);
+ await render(false);expect(m.from).toHaveBeenCalledTimes(2);expect(m.fetch).toHaveBeenCalledTimes(2);
+ const counterCalls=m.counter.mock.calls.length;await act(async()=>{document.dispatchEvent(new Event('visibilitychange'));});expect(m.counter).toHaveBeenCalledTimes(counterCalls);
+ await render(true);expect(m.from).toHaveBeenCalledTimes(4);expect(m.fetch).toHaveBeenCalledTimes(4);
+});
