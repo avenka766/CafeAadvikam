@@ -211,7 +211,7 @@ function WasteTab() {
             <textarea value={voidReason} onChange={e => setVoidReason(e.target.value)} className="mt-2 min-h-24 w-full rounded-xl border border-border bg-background p-3" autoFocus />
             <div className="mt-4 flex justify-end gap-2">
               <button type="button" onClick={() => { setVoidTarget(null); setVoidReason(''); }} className="rounded-xl border px-4 py-2">Cancel</button>
-              <button type="button" onClick={handleDelete} disabled={!voidReason.trim() || deleting === voidTarget.id} className="rounded-xl bg-destructive px-4 py-2 text-destructive-foreground">{deleting === voidTarget.id ? 'Voiding…' : 'Confirm void'}</button>
+              <button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it." type="button" onClick={handleDelete} disabled={!voidReason.trim() || deleting === voidTarget.id} className="rounded-xl bg-destructive px-4 py-2 text-destructive-foreground">{deleting === voidTarget.id ? 'Voiding…' : 'Confirm void'}</button>
             </div>
           </div>
         </div>

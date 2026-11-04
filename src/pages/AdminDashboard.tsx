@@ -1,3 +1,4 @@
+import {isGstCheckedBill} from '@/lib/gstBillFilter';
 import { ReportSourceFailures } from '@/components/ReportSourceFailures';
 import { ReportReadCache, type ReportReadFailure } from '@/lib/reportReadCache';
 import { AdminSummaryCard, AdminReportDateRange } from '@/components/admin/AdminReportControls';
@@ -11,7 +12,6 @@ import { useAdminBillReferences } from '@/hooks/useAdminBillReferences';
 import ReportPager from '@/components/admin/ReportPager';
 import { useAdminCafeOrders } from '@/hooks/useAdminCafeOrders';
 import { fetchAdminRows } from '@/lib/adminReportData';
-import { useOrderStore } from '@/stores/orderStore';
 import { useShallow } from 'zustand/react/shallow';
 import { useBranchStore } from '@/branch/branchStore';
 import { useBranchOpsStore } from '@/branch/branchOpsStore';
@@ -306,9 +306,8 @@ function AdminDashboard() {
   const [auditSearch, setAuditSearch] = useState('');
   const [auditBranchFilter, setAuditBranchFilter] = useState<Branch | 'all'>('all');
 
-  const { orders, polling, startPolling, stopPolling, loadOrders, ordersLoading } = useOrderStore(
-    useShallow(s => ({ orders: s.orders, polling: s.polling, startPolling: s.startPolling, stopPolling: s.stopPolling, loadOrders: s.loadOrders, ordersLoading: s.loading }))
-  );
+  // Cafe reports use the verified date-ranged server register below, rather
+  // than another ninety-day download into an unused operational order store.
   const { stock, sales, incoming, creditSales, stockMismatches, fetchBranchData, fetchStockMismatches } = useBranchStore();
   const { bills, returns, purchasePayments, cashMovements, bankDeposits, cashierClosures, stockVarianceRecords, auditLogs, notifications, updateNotificationStatus, complaints, updateComplaintStatus, fetchBillsInRange } = useBranchOpsStore();
   // The in-memory `bills` array is capped for performance (see
@@ -339,7 +338,6 @@ function AdminDashboard() {
     setSearchParams(next === 'overview' ? {} : { tab: next });
   };
 
-  useEffect(() => { startPolling(90); return () => stopPolling(); }, [startPolling, stopPolling]);
   // AUDIT FIX (2026-09-04): named so the header's "Refresh" button (and the
   // new per-tab Refresh buttons on Overview/Audit below) can call the exact
   // same fetch on demand instead of only ever running once on mount.
@@ -356,7 +354,9 @@ function AdminDashboard() {
     });
     void fetchStockMismatches();
   }, [fetchBranchData, fetchStockMismatches]);
-  useEffect(() => { refreshBranchAndStock(); }, [refreshBranchAndStock]);
+  useEffect(() => {
+    if(['stock-disputes','stock-variance','waste','credits','advance','daily-closure'].includes(activeTab))refreshBranchAndStock();
+  }, [refreshBranchAndStock,activeTab]);
   // Branch waste (dump/damage/transfer-out) is shared across SNB Order, SNB Admin,
   // VRSNB Admin, Owner, and here via the `branch_waste_logs` Supabase table.
   // This used to read a local-only branchOpsStore that never synced across devices.
@@ -433,7 +433,7 @@ function AdminDashboard() {
   const [realBills, setRealBills] = useState<Array<{
     id: string; billNo: string; branch: Branch; total: number; subtotal: number;
     discount: number; createdAt: string; status: 'original' | 'returned' | 'duplicate_printed';
-    salesperson: string; biller: string; invoiceNo?: string; dataCheckOk?: boolean;
+    salesperson: string; biller: string; invoiceNo?: string; dataCheckOk?: boolean; isGstInvoice?: boolean;
   }>>([]);
   const [realBillItems, setRealBillItems] = useState<Array<{
     billId: string; branch: Branch; itemName: string; quantity: number; unit: string;
@@ -642,11 +642,11 @@ function AdminDashboard() {
         // deduplicated against hosur_bills below rather than dropped, so an
         // orphaned one like /272 still surfaces.
         () => !needHosur ? empty() : fetchAllRows(() => supabase.from('dispatch_invoices')
-          .select('id, invoice_no, scope, status, total, items, hosur_shop_name, customer_name, created_at, dispatch_entry_ids')
+          .select('id, invoice_no, scope, status, total, items, hosur_shop_name, customer_name, created_at, dispatch_entry_ids, is_gst_invoice')
           .ilike('invoice_no', 'SALES/%')
           .gte('created_at', fromTs).lt('created_at', untilTs)),
         () => !needHosur ? empty() : fetchAllRows(() => supabase.from('bakery_walkin_bills')
-          .select('id, bill_no, items, total, payment_mode, cashier_name, status, customer_name, created_at')
+          .select('id, bill_no, items, total, payment_mode, cashier_name, status, customer_name, created_at, is_gst_invoice')
           .ilike('bill_no', 'SALES/%')
           .gte('created_at', fromTs).lt('created_at', untilTs)),
       ], 1);
@@ -736,6 +736,18 @@ function AdminDashboard() {
         hosurBills.flatMap((h) => String(h.invoice_no ?? '').split(',').map((s) => s.trim()).filter(Boolean)),
       );
       const salesInvoices = (salesInvoicesRes.data || []) as Array<Record<string, unknown>>;
+      const gstInvoiceNumbers = new Set(salesInvoices.filter(r=>r.is_gst_invoice===true).map(r=>String(r.invoice_no)));
+      // Resolve the persisted checkbox even when a confirmed bill links an older
+      // dispatch invoice outside this report's dispatch creation range.
+      const linkedNumbers=[...new Set(hosurBills.flatMap(h=>String(h.invoice_no||'').split(',').map(n=>n.trim()).filter(Boolean)))];
+      for(let offset=0;offset<linkedNumbers.length;offset+=200){
+        const flags=await fetchAllRows<Record<string,unknown>>(()=>supabase.from('dispatch_invoices').select('invoice_no,is_gst_invoice').in('invoice_no',linkedNumbers.slice(offset,offset+200)).abortSignal(controller.signal));
+        if(realSalesRequestRef.current!==requestId)return;
+        if(flags.error){setRealSalesError('GST bill flags could not load: '+flags.error.message);setRealSalesLoading(false);return;}
+        flags.data.filter(r=>r.is_gst_invoice===true).forEach(r=>gstInvoiceNumbers.add(String(r.invoice_no)));
+      }
+
+
       const walkinBills = (walkinBillsRes.data || []) as Array<Record<string, unknown>>;
       const dispatchTotalsByInvoiceNo = new Map<string, number>();
       // BUG FIX (2026-09-30): "Excel is showing wrong date" — this tab used
@@ -811,6 +823,7 @@ function AdminDashboard() {
             createdAt: dispatchDate || String(h.confirmed_at), status: 'original' as const,
             salesperson: '', biller: String(h.shop_name ?? ''),
             invoiceNo: String(h.invoice_no ?? '') || String(h.bill_no ?? ''),
+            isGstInvoice: String(h.invoice_no || '').split(',').some(n=>gstInvoiceNumbers.has(n.trim())),
             dataCheckOk: Math.abs(Number(h.subtotal || 0) - (Number(h.credit_amount || 0) + Number(h.paid_amount || 0))) < 0.01,
           };
         // The confirmed_at fetch above was deliberately widened past toTs so
@@ -825,10 +838,10 @@ function AdminDashboard() {
           total: Number(s.total || 0), subtotal: Number(s.total || 0), discount: 0,
           createdAt: String(s.created_at), status: 'original' as const,
           salesperson: '', biller: String(s.hosur_shop_name || s.customer_name || (String(s.scope) === 'Hosur' ? '' : `${s.scope} dispatch`)),
-          invoiceNo: String(s.invoice_no ?? ''),
+          invoiceNo: String(s.invoice_no ?? ''), isGstInvoice: s.is_gst_invoice===true,
         })),
         ...activeWalkinBills.map((w) => ({
-          id: String(w.id), billNo: String(w.bill_no ?? ''), branch: 'Hosur' as Branch,
+          isGstInvoice: w.is_gst_invoice===true, id: String(w.id), billNo: String(w.bill_no ?? ''), branch: 'Hosur' as Branch,
           total: Number(w.total || 0), subtotal: Number(w.total || 0), discount: 0,
           createdAt: String(w.created_at), status: 'original' as const,
           salesperson: String(w.cashier_name ?? ''), biller: String(w.customer_name || 'Walk-in'),
@@ -950,6 +963,7 @@ function AdminDashboard() {
     : `${new Date(`${fromDate}T00:00:00`).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short' })} – ${new Date(`${toDate}T00:00:00`).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', year: 'numeric' })}`;
 
   const cafeRegister = useAdminCafeOrders(fromDate, toDate, activeTab === 'cafe' || activeTab === 'overview');
+  const closureCafeRegister = useAdminCafeOrders(closureDate, closureDate, activeTab === 'daily-closure');
   const cafeOrdersInRange = cafeRegister.orders;
   const [cafePage, setCafePage] = useState(1);
   const [branchPage, setBranchPage] = useState(1);
@@ -1201,15 +1215,15 @@ function AdminDashboard() {
         // (those were never adjusted). Use sales_total directly so both
         // always match; advance amounts now surface as their own explicit
         // fields instead of silently being subtracted out of the total.
-        const totalSales = adminLedger.toNumber(ledger.sales_total);
-        const advanceCollected = adminLedger.toNumber(ledger.advance_collected);
-        const advanceBalanceCollected = adminLedger.toNumber(ledger.advance_balance_collected);
-        const cashSales = adminLedger.toNumber(ledger.cash_total);
-        const upiSales = adminLedger.toNumber(ledger.upi_total);
-        const cardSales = adminLedger.toNumber(ledger.card_total);
-        const creditSalesDay = adminLedger.toNumber(ledger.credit_billed);
-        const returnsDay = adminLedger.toNumber(savedLedgerClosure?.refunds || 0);
-        const expensesDay = adminLedger.toNumber(savedLedgerClosure?.expenses || 0);
+        const totalSales = closureLedger.toNumber(ledger.sales_total);
+        const advanceCollected = closureLedger.toNumber(ledger.advance_collected);
+        const advanceBalanceCollected = closureLedger.toNumber(ledger.advance_balance_collected);
+        const cashSales = closureLedger.toNumber(ledger.cash_total);
+        const upiSales = closureLedger.toNumber(ledger.upi_total);
+        const cardSales = closureLedger.toNumber(ledger.card_total);
+        const creditSalesDay = closureLedger.toNumber(ledger.credit_billed);
+        const returnsDay = closureLedger.toNumber(savedLedgerClosure?.refunds || 0);
+        const expensesDay = closureLedger.toNumber(savedLedgerClosure?.expenses || 0);
         // BUG FIX (audit 2026-09-02): this projected-balance estimate (only used when no
         // savedLedgerClosure exists yet) omitted purchase payments and bank deposits —
         // the exact same formula in the fallback branch path just below (line ~832)
@@ -1217,10 +1231,10 @@ function AdminDashboard() {
         // (already read below for display); bank deposits has no column here (see the
         // bankDeposits:0 comment below), so read it from the same raw per-date store array
         // the fallback path uses.
-        const purchasePaymentsDay = adminLedger.toNumber(savedLedgerClosure?.purchase_payments || 0);
+        const purchasePaymentsDay = closureLedger.toNumber(savedLedgerClosure?.purchase_payments || 0);
         const bankDepositsDay = bankDeposits.filter(d => d.branch === branch && localDateKey(d.createdAt) === closureDate).reduce((sum, d) => sum + Number(d.amount || 0), 0);
-        const closingBalance = savedLedgerClosure ? adminLedger.toNumber(savedLedgerClosure.actual_cash) : openingBalance + cashSales - returnsDay - expensesDay - purchasePaymentsDay - bankDepositsDay;
-        const differenceAmount = savedLedgerClosure ? adminLedger.toNumber(savedLedgerClosure.difference) : 0;
+        const closingBalance = savedLedgerClosure ? closureLedger.toNumber(savedLedgerClosure.actual_cash) : openingBalance + cashSales - returnsDay - expensesDay - purchasePaymentsDay - bankDepositsDay;
+        const differenceAmount = savedLedgerClosure ? closureLedger.toNumber(savedLedgerClosure.difference) : 0;
         const status: ClosureRow['status'] = savedLedgerClosure ? (Math.abs(differenceAmount) >= 10 ? 'Review' : 'Closed') : 'Pending';
         return {
           branch,
@@ -1262,7 +1276,7 @@ function AdminDashboard() {
         .filter(s => localDateKey(s.soldAt) === closureDate)
         .map(s => ({ id: s.id, branch, itemName: s.itemName, qty: Number(s.quantitySold || 0), revenue: Number(s.unitPrice || 0) * Number(s.quantitySold || 0), payment: s.paymentMethod || '-', soldAt: s.soldAt, soldBy: s.soldBy, billNo: s.billNo }));
       const opsBills = bills.filter(b => b.branch === branch && localDateKey(b.createdAt) === closureDate);
-      const cafeDayOrders = branch === 'Cafe' ? orders.filter(o => localDateKey(o.createdAt) === closureDate && o.status === 'served') : [];
+      const cafeDayOrders = branch === 'Cafe' ? closureCafeRegister.orders.filter(o => o.status === 'served') : [];
       const representedBills = new Set(opsBills.map((bill) => bill.billNo).filter(Boolean));
       const legacyTxns = txns.filter((transaction) => !transaction.billNo || !representedBills.has(transaction.billNo));
       const totalSales = branch === 'Cafe' ? cafeDayOrders.reduce((sum, o) => sum + Number(o.total || 0), 0) : opsBills.reduce((sum, b) => sum + Number(b.total || 0), 0) + legacyTxns.reduce((sum, t) => sum + t.revenue, 0);
@@ -1282,7 +1296,7 @@ function AdminDashboard() {
       const status: ClosureRow['status'] = latestClosure ? (Math.abs(differenceAmount) >= 10 ? 'Review' : 'Closed') : 'Pending';
       return { branch, openingBalance, totalSales, cashSales, upiSales, cardSales, creditSales: creditSalesDay, returns: returnsDay, netSales: totalSales - returnsDay, expenses: expensesDay, purchasePayments: paymentsDay, bankDeposits: depositsDay, closingBalance, differenceAmount, remarks: latestClosure?.notes || (latestClosure ? 'Closed and verified' : 'Pending branch closure'), status, closedBy: latestClosure?.cashier || '-', closedAt: latestClosure ? fmtDateTime(latestClosure.createdAt) : '-', advanceCollected: 0, advanceBalanceCollected: 0 };
     });
-  }, [closureLedger, cashierClosures, sales, bills, orders, returns, cashMovements, purchasePayments, bankDeposits, closureDate]);
+  }, [closureLedger, cashierClosures, sales, bills, closureCafeRegister.orders, returns, cashMovements, purchasePayments, bankDeposits, closureDate]);
 
   const closureStatusChart = useMemo(() => [
     { status: 'Closed', count: closureRows.filter(r => r.status === 'Closed').length },
@@ -1301,7 +1315,8 @@ function AdminDashboard() {
     diff: filteredClosureRows.reduce((s, r) => s + Math.abs(r.differenceAmount), 0),
   }), [filteredClosureRows]);
 
-  const exportDailyClosure = () => exportWorkbook(`Admin_DailyClosure_${closureDate}`, [{
+  const closureReady = !closureLedger.loading && !closureLedger.error && !closureCafeRegister.loading && !closureCafeRegister.error;
+  const exportDailyClosure = () => closureReady && exportWorkbook(`Admin_DailyClosure_${closureDate}`, [{
     name: 'Sales Details', title: `Daily Closure — Sales Detail (${closureDate})`,
     columns: [
       { header: 'Branch', key: 'Branch' }, { header: 'Opening Balance', key: 'Opening Balance' }, { header: 'Total Sales', key: 'Total Sales' },
@@ -1319,7 +1334,7 @@ function AdminDashboard() {
     })),
   }]);
 
-  const exportDailyClosurePdf = () => exportReportPdf({
+  const exportDailyClosurePdf = () => closureReady && exportReportPdf({
     filename: `Admin_DailyClosure_${closureDate}`,
     title: 'Daily Closure Verification',
     subtitle: `Date: ${closureDate}`,
@@ -1342,6 +1357,7 @@ function AdminDashboard() {
     String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
   const printDailyClosure = () => {
+    if (!closureReady) return;
     // AUDIT FIX (2026-09-05): "the payment should be round off there should
     // not be any decimal points".
     // AUDIT FIX (2026-09-09): closedBy/remarks are free text (a closure note
@@ -1404,7 +1420,8 @@ function AdminDashboard() {
     return [{ name: 'Cash', value: totals.cash }, { name: 'UPI', value: totals.upi }, { name: 'Card', value: totals.card }, { name: 'Credit', value: totals.credit }].filter(item => item.value > 0);
   }, [branchFilter, cafePaymentSplit, realBillsInRange, realPayments]);
 
-  const exportOverviewExcel = () => exportWorkbook(`Admin_Overview_${fromDate}_${toDate}`, [
+  const overviewReady = !realSalesLoading && !adminLedger.loading && !cafeRegister.loading && !realSalesError && !adminLedger.error && !cafeRegister.error;
+  const exportOverviewExcel = () => overviewReady && exportWorkbook(`Admin_Overview_${fromDate}_${toDate}`, [
     {
       name: 'Sales Details', title: `Dashboard Overview — Sales (${fromDate} to ${toDate})`,
       columns: [{ header: 'Branch', key: 'branch' }, { header: 'Sales', key: 'sales' }, { header: 'Transactions', key: 'orders' }, { header: 'Returns', key: 'returns' }],
@@ -1417,7 +1434,7 @@ function AdminDashboard() {
     },
   ]);
 
-  const exportOverviewPdf = () => exportReportPdf({
+  const exportOverviewPdf = () => overviewReady && exportReportPdf({
     filename: `Admin_Overview_${fromDate}_${toDate}`,
     title: 'Dashboard Overview',
     subtitle: `${fromDate} to ${toDate} · ${branchFilter === 'all' ? 'All branches' : BRANCH_LABELS[branchFilter]}`,
@@ -1453,22 +1470,27 @@ function AdminDashboard() {
               re-fetch on a fromDate/toDate change, and `orders` only via the
               90s background poll. */}
           <button
-            onClick={() => { void fetchRealSalesData(); refreshBranchAndStock(); adminLedger.refresh(); void loadOrders(90); }}
+            onClick={() => { void fetchRealSalesData(); adminLedger.refresh(); cafeRegister.refresh(); }}
             disabled={realSalesLoading}
             className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700 hover:bg-slate-50 disabled:opacity-60">
             <RefreshCw className={cn('size-3.5', realSalesLoading && 'animate-spin')} />Refresh
           </button>
-          <button onClick={exportOverviewExcel}
+          <button disabled={!overviewReady} onClick={exportOverviewExcel}
             className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-3 py-2 text-xs font-black text-white">
             <FileSpreadsheet className="size-3.5" /> Excel
           </button>
-          <button onClick={exportOverviewPdf}
+          <button disabled={!overviewReady} onClick={exportOverviewPdf}
             className="inline-flex items-center gap-2 rounded-2xl bg-slate-950 px-3 py-2 text-xs font-black text-white">
             <FileDown className="size-3.5" /> PDF
           </button>
         </div>
       </div>
 
+      <ReportSourceFailures failures={realSalesFailures} busy={realSalesLoading} onRetry={id => void fetchRealSalesData(id)} />
+      {realSalesError && !realSalesFailures.length && <p role="alert">{realSalesError}</p>}
+      {cafeRegister.error && <p role="alert">Cafe register: {cafeRegister.error} <button onClick={cafeRegister.refresh}>Retry Cafe only</button></p>}
+      {!overviewReady && <p role="status" className="rounded-2xl bg-amber-50 p-4 text-amber-900">Waiting for complete report data. Charts and exports become available after all required sources load successfully.</p>}
+      {overviewReady && <>
       <div className="grid gap-5 xl:grid-cols-[1.4fr_0.9fr]">
         <Panel title="Branch-wise Sales Comparison" subtitle="Cafe, SNB, VRSNB and Hosur revenue for selected range">
           <ChartWrap>
@@ -1569,6 +1591,7 @@ function AdminDashboard() {
           </div>
         </Panel>
       </div>
+      </>}
     </div>
   );
 
@@ -2263,8 +2286,10 @@ function AdminDashboard() {
   // invoiceNo (natural/numeric compare, so ".../9" sorts before ".../90")
   // fixes the default view and both exports in one place, same fix as
   // Admin Dispatch Details' `rows` useMemo.
-  const hosurBillsInRange = useMemo(() => realBillsInRange.filter(b => b.branch === 'Hosur')
+  const [hosurGstOnly, setHosurGstOnly] = useState(false);
+  const allHosurBillsInRange = useMemo(() => realBillsInRange.filter(b => b.branch === 'Hosur')
     .sort((a, b) => (b.invoiceNo || b.billNo || '').localeCompare(a.invoiceNo || a.billNo || '', undefined, { numeric: true, sensitivity: 'base' })), [realBillsInRange]);
+  const hosurBillsInRange = useMemo(()=>allHosurBillsInRange.filter(b=>!hosurGstOnly||isGstCheckedBill(b)),[allHosurBillsInRange,hosurGstOnly]);
   // GUARDRAIL (2026-09-30): see the dataCheckOk comment above — bills that
   // fail this check in the CURRENT date range, surfaced as a banner so an
   // admin sees it before exporting/sending anything, not after a client
@@ -2361,6 +2386,7 @@ function AdminDashboard() {
   }, [hosurBillsInRange, hosurBillItemsInRange]);
 
   const exportHosurExcel = () => exportWorkbook(`Admin_Hosur_${fromDate}_${toDate}`, [
+    {name:'GST Checked Bills', title:`GST checked bills (${fromDate} to ${toDate})`, columns:[{header:'Invoice Number',key:'invoiceNo',width:24},{header:'Customer / Shop',key:'biller',width:26},{header:'Date',key:'date'},{header:'Bill Total',key:'total'}], rows:allHosurBillsInRange.filter(isGstCheckedBill).map(b=>({invoiceNo:b.invoiceNo||b.billNo,biller:b.biller,date:fmtDate(b.createdAt),total:b.total}))},
     {
       name: 'Total Sales', title: `Hosur Sales — Total Sales (${fromDate} to ${toDate})`,
       columns: [{ header: 'Metric', key: 'metric' }, { header: 'Amount', key: 'amount' }],
@@ -2434,7 +2460,7 @@ function AdminDashboard() {
           const paid = b.splitIndex === 0 ? (billPaidByMode.get(b.id) ?? { cash: 0, upi: 0, card: 0 }) : { cash: 0, upi: 0, card: 0 };
           return { branch: 'Hosur', invoiceNo: b.splitInvoiceNo, status: 'Billed', date: fmtDate(b.createdAt), time: fmtTime(b.createdAt), totalSales: b.splitTotal, cash: paid.cash, upi: paid.upi, card: paid.card, salesperson: b.salesperson || '—', biller: b.biller || '—', dataCheck: b.dataCheckOk === false ? 'MISMATCH — verify before use' : 'OK' };
         }),
-        ...unconfirmedSalesInvoices.map(r => ({
+        ...(hosurGstOnly ? [] : unconfirmedSalesInvoices).map(r => ({
           branch: r.scope, invoiceNo: r.invoiceNo, status: r.status === 'cancelled' ? 'Cancelled' : 'Not Billed',
           date: fmtDate(r.createdAt), time: fmtTime(r.createdAt), totalSales: r.total, cash: 0, upi: 0, card: 0,
           salesperson: '—', biller: r.who || '—', dataCheck: '—',
@@ -2500,6 +2526,7 @@ function AdminDashboard() {
             className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700 hover:bg-slate-50 disabled:opacity-60">
             <RefreshCw className={cn('size-3.5', realSalesLoading && 'animate-spin')} />Refresh
           </button>
+          <label className="inline-flex items-center gap-2 text-sm font-semibold"><input type="checkbox" checked={hosurGstOnly} onChange={e=>setHosurGstOnly(e.target.checked)} /> GST checked bills only</label>
           <button onClick={exportHosurExcel}
             className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-3 py-2 text-xs font-black text-white">
             <FileSpreadsheet className="size-3.5" /> Excel
@@ -2650,7 +2677,7 @@ function AdminDashboard() {
           paid/active (unpaid, cancelled, or plain test data — found live: a
           VRSNB "Sample Bill" with fake customer details) stays out of the
           money totals but is still listed here so nothing is hidden. */}
-      {unconfirmedSalesInvoices.length > 0 && (
+      {!hosurGstOnly && unconfirmedSalesInvoices.length > 0 && (
         <Panel title="Other SALES/ Invoices — Needs Review, Not Counted in Revenue" subtitle="Unpaid/cancelled/test invoices from the same SALES/26-27 number series (VRSNB dispatch, Planner walk-in), plus any Hosur dispatch invoice not yet reflected on a confirmed shop bill — shown for visibility only, excluded from Billed Sales above.">
           <div className="overflow-x-auto">
             <table className="w-full min-w-[760px] text-sm">
@@ -3021,7 +3048,7 @@ function AdminDashboard() {
         ))}
       </div>
       <Panel title="Daily Closure Verification" subtitle="Cafe, SNB Branch, VRSNB Branch and Hosur Branch"
-        action={<div className="flex flex-wrap gap-2"><button onClick={() => closureLedger.refresh()} disabled={closureLedger.loading} className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-black disabled:opacity-60"><RefreshCw className={cn('size-3.5', closureLedger.loading && 'animate-spin')} />Refresh</button><button onClick={printDailyClosure} className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-black"><Printer className="size-3.5" />Print</button><button onClick={exportDailyClosure} className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-3 py-2 text-xs font-black text-white"><FileSpreadsheet className="size-3.5" />Excel</button><button onClick={exportDailyClosurePdf} className="inline-flex items-center gap-2 rounded-2xl bg-slate-950 px-3 py-2 text-xs font-black text-white"><FileDown className="size-3.5" />PDF</button></div>}>
+        action={<div className="flex flex-wrap gap-2"><button onClick={() => { closureLedger.refresh(); closureCafeRegister.refresh(); }} disabled={closureLedger.loading} className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-black disabled:opacity-60"><RefreshCw className={cn('size-3.5', closureLedger.loading && 'animate-spin')} />Refresh</button><button disabled={!closureReady} onClick={printDailyClosure} className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-black"><Printer className="size-3.5" />Print</button><button disabled={!closureReady} onClick={exportDailyClosure} className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-3 py-2 text-xs font-black text-white"><FileSpreadsheet className="size-3.5" />Excel</button><button disabled={!closureReady} onClick={exportDailyClosurePdf} className="inline-flex items-center gap-2 rounded-2xl bg-slate-950 px-3 py-2 text-xs font-black text-white"><FileDown className="size-3.5" />PDF</button></div>}>
         <div className="mb-4 grid gap-2 lg:grid-cols-[180px_220px_1fr]">
           <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
             Date<input type="date" value={closureDate} onChange={e => setClosureDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
@@ -3033,6 +3060,9 @@ function AdminDashboard() {
           <div className="flex items-center gap-2 rounded-2xl bg-slate-50 px-3 py-2 text-xs text-slate-500"><Filter className="size-4" />Verify sales, collections, expenses, deposits and closing differences before approving.</div>
         </div>
 
+        <ReportSourceFailures failures={closureLedger.failedSources} busy={closureLedger.loading} onRetry={closureLedger.retrySource} />
+        {closureCafeRegister.error && <p role="alert">Cafe closure register: {closureCafeRegister.error} <button onClick={closureCafeRegister.refresh}>Retry Cafe only</button></p>}
+        {!closureReady && <p role="status">Closure data is incomplete. Printing and exports are blocked until the required sources load.</p>}
         {/* CHANGE 9a: Better visual layout per branch card */}
         <div className="grid gap-4">
           {filteredClosureRows.map(row => (
@@ -3562,7 +3592,7 @@ function AdminDashboard() {
       <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <div className="flex flex-wrap items-center gap-2">
-            <Badge tone={polling ? 'blue' : 'amber'}>{polling ? 'Auto refresh on' : 'Auto refresh off'}</Badge>
+            <Badge tone="blue">Server reports</Badge>
           </div>
           <h2 className="mt-1 font-display text-2xl font-black text-slate-950 sm:text-3xl">{activeMeta.label}</h2>
           <p className="mt-1 text-sm text-slate-500">{activeMeta.description}</p>

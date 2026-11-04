@@ -332,8 +332,6 @@ export default function DailyClosure() {
     const payments: PaymentTotals = { cash: 0, upi: 0, card: 0 };
     const creditCollectionPayments: PaymentTotals = { cash: 0, upi: 0, card: 0 };
     let creditSales = 0;
-    let creditCollected = 0;
-    let creditPending = 0;
     let advanceReceived = 0;
     let advanceBalanceCollected = 0;
     let advanceOrderValue = 0;
@@ -415,14 +413,14 @@ export default function DailyClosure() {
     const advanceClosedToday = orders.filter(order => sameBusinessDate(order.fullyPaidAt, selectedDate) && inCurrentSession(order.fullyPaidAt));
     const cafeCreditSales = branchCreditSales.Cafe || [];
     const cafeCreditPayments = branchCreditPayments.Cafe || [];
-    creditCollected = cafeCreditPayments
+    const creditCollected = cafeCreditPayments
       .filter(payment => sameBusinessDate(payment.createdAt, selectedDate) && inCurrentSession(payment.createdAt))
       .reduce((sum, payment) => {
         const amount = safeNumber(payment.amount);
         addPayment(creditCollectionPayments, payment.paymentMode, amount);
         return sum + amount;
       }, 0);
-    creditPending = cafeCreditSales
+    const creditPending = cafeCreditSales
       .filter(sale => sale.status !== 'settled')
       .reduce((sum, sale) => sum + safeNumber(sale.creditAmount), 0);
 

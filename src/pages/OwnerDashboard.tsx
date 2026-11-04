@@ -1,3 +1,4 @@
+import {payrollPf} from '@/lib/payrollPf';
 import {ReportReadCache,type ReportReadFailure} from '@/lib/reportReadCache';
 import { ReportSourceFailures } from '@/components/ReportSourceFailures';
 // src/pages/OwnerDashboard.tsx
@@ -1107,13 +1108,12 @@ type OwnerDeductionDecision = { deductAdvance: boolean; deductOther: boolean; de
 type OwnerDeductionDecisions = Record<string, OwnerDeductionDecision>;
 const ownerDefaultDecision = (): OwnerDeductionDecision => ({ deductAdvance: false, deductOther: true, deductUniform: true, deductESI: false, deductPF: false });
 const OWNER_ESI_RATE = 0.0075;
-const OWNER_PF_RATE = 0.12;
 const OWNER_ESI_WAGE_LIMIT = 21000;
 const ownerAttendanceKey = (employeeId: string, day: number) => `${employeeId}-${day}`;
 const ownerCalcESI = (earned: number, gross: number) => gross <= OWNER_ESI_WAGE_LIMIT ? Math.round(earned * OWNER_ESI_RATE) : 0;
-const ownerCalcPF = (earned: number) => Math.min(1800, Math.round(earned * OWNER_PF_RATE));
+const ownerCalcPF = payrollPf;
 
-function ownerCalcSalary(emp: { id: string; grossSalary: number; salaryAdvance: number; uniformDeduction: number; otherDeduction: number }, attendance: OwnerMonthAttendance, daysInMonth: number, decision: OwnerDeductionDecision = ownerDefaultDecision()) {
+function ownerCalcSalary(emp: { id: string; grossSalary: number; salaryAdvance: number; uniformDeduction: number; otherDeduction: number }, attendance: OwnerMonthAttendance, daysInMonth: number, decision: OwnerDeductionDecision = ownerDefaultDecision(), year?: number, month?: number) {
   let presentDays = 0;
   let halfDays = 0;
   let woffDays = 0;
@@ -1144,7 +1144,7 @@ function ownerCalcSalary(emp: { id: string; grossSalary: number; salaryAdvance: 
     + (decision.deductOther ? Number(emp.otherDeduction || 0) : 0)
     + canteenTotal
     + (decision.deductESI ? ownerCalcESI(earned, Number(emp.grossSalary || 0)) : 0)
-    + (decision.deductPF ? ownerCalcPF(earned) : 0);
+    + (decision.deductPF ? ownerCalcPF(earned, year, month) : 0);
   return { earned, deductions, net: Math.max(0, earned - deductions), worked };
 }
 
@@ -1162,7 +1162,9 @@ function AttendanceSalaryTab() {
   const [payrollMonth, setPayrollMonth] = useState(now.getMonth() + 1);
   const daysInMonth = new Date(payrollYear, payrollMonth, 0).getDate();
 
+  const payrollLoad = useRef(0);
   const loadEmployees = useCallback(() => {
+    const request=++payrollLoad.current;
     setLoading(true); setFetchError(null);
     Promise.all([
       supabase.from('employees').select('id, name, branch, department, gross_salary, salary_advance, uniform_deduction, other_deduction'),
@@ -1176,6 +1178,7 @@ function AttendanceSalaryTab() {
       ).then((r) => ({ data: r.data, error: r.error ? { message: r.error } : null })),
       supabase.from('deduction_decisions').select('employee_id, deduct_advance, deduct_other, deduct_uniform, deduct_esi, deduct_pf').eq('year', payrollYear).eq('month', payrollMonth),
     ]).then(([employeesRes, attendanceRes, decisionsRes]) => {
+      if(request!==payrollLoad.current)return;
       const data = employeesRes.data;
       const error = employeesRes.error || attendanceRes.error || decisionsRes.error;
       console.debug('[AttendanceSalaryTab] employees:', data?.length, error?.message);
@@ -1218,7 +1221,7 @@ function AttendanceSalaryTab() {
         setDeductionDecisions(nextDecisions);
       }
       setLoading(false);
-    });
+    }).catch(error=>{if(request===payrollLoad.current){setFetchError(error instanceof Error?error.message:"Payroll could not load.");setLoading(false);}});
   }, [payrollMonth, payrollYear]);
   useEffect(() => { void loadEmployees(); }, [loadEmployees]);
 
@@ -1230,12 +1233,12 @@ function AttendanceSalaryTab() {
 
   const salaryStats = useMemo(() => {
     const total      = employees.reduce((a, e) => a + (Number(e.grossSalary) || 0), 0);
-    const earned     = employees.reduce((a, e) => a + ownerCalcSalary(e, attendance, daysInMonth, deductionDecisions[e.id] ?? ownerDefaultDecision()).earned, 0);
+    const earned     = employees.reduce((a, e) => a + ownerCalcSalary(e, attendance, daysInMonth, deductionDecisions[e.id] ?? ownerDefaultDecision(), payrollYear, payrollMonth).earned, 0);
     const advances   = employees.reduce((a, e) => a + (Number(e.salaryAdvance) || 0), 0);
-    const deductions = employees.reduce((a, e) => a + ownerCalcSalary(e, attendance, daysInMonth, deductionDecisions[e.id] ?? ownerDefaultDecision()).deductions, 0);
-    const netPayable = employees.reduce((a, e) => a + ownerCalcSalary(e, attendance, daysInMonth, deductionDecisions[e.id] ?? ownerDefaultDecision()).net, 0);
+    const deductions = employees.reduce((a, e) => a + ownerCalcSalary(e, attendance, daysInMonth, deductionDecisions[e.id] ?? ownerDefaultDecision(), payrollYear, payrollMonth).deductions, 0);
+    const netPayable = employees.reduce((a, e) => a + ownerCalcSalary(e, attendance, daysInMonth, deductionDecisions[e.id] ?? ownerDefaultDecision(), payrollYear, payrollMonth).net, 0);
     return { total, earned, advances, deductions, netPayable };
-  }, [employees, attendance, daysInMonth, deductionDecisions]);
+  }, [employees, attendance, daysInMonth, deductionDecisions, payrollYear, payrollMonth]);
 
   const atRiskEmployees = useMemo(() =>
     employees
@@ -1253,12 +1256,12 @@ function AttendanceSalaryTab() {
   const employeeRows = useMemo(() => {
     return employees
       .map(e => {
-        const calc = ownerCalcSalary(e, attendance, daysInMonth, deductionDecisions[e.id] ?? ownerDefaultDecision());
+        const calc = ownerCalcSalary(e, attendance, daysInMonth, deductionDecisions[e.id] ?? ownerDefaultDecision(), payrollYear, payrollMonth);
         return { ...e, earned: calc.earned, deductionsTotal: calc.deductions, net: calc.net };
       })
       .filter(e => !staffSearch || `${e.name} ${e.branch} ${e.department}`.toLowerCase().includes(staffSearch.toLowerCase()))
       .sort((a, b) => b.net - a.net);
-  }, [employees, attendance, daysInMonth, deductionDecisions, staffSearch]);
+  }, [employees, attendance, daysInMonth, deductionDecisions, staffSearch, payrollYear, payrollMonth]);
 
   const allDepts = useMemo(() => [...new Set(employees.map(e => e.department))], [employees]);
   const deptByBranch = useMemo(() => {
@@ -1318,7 +1321,7 @@ function AttendanceSalaryTab() {
           <Building2 className="size-4 text-primary" />Branch Summary
         </h3>
         {Object.entries(branchGroups).map(([branch, emps]) => {
-          const branchTotal = emps.reduce((s, e) => s + ownerCalcSalary(e, attendance, daysInMonth, deductionDecisions[e.id] ?? ownerDefaultDecision()).earned, 0);
+          const branchTotal = emps.reduce((s, e) => s + ownerCalcSalary(e, attendance, daysInMonth, deductionDecisions[e.id] ?? ownerDefaultDecision(), payrollYear, payrollMonth).earned, 0);
           const highRisk    = emps.filter(e => Number(e.grossSalary) > 0 && Number(e.salaryAdvance) / Number(e.grossSalary) >= 0.5).length;
           return (
             <div key={branch} className="rounded-2xl border border-slate-200 p-4">
@@ -1503,7 +1506,7 @@ function AttendanceSalaryTab() {
 
 // ── Waste Logs Tab ────────────────────────────────────────────────────────────
 // CHANGE 11: date range state + presets + daily trend chart
-function WasteLogsTab() {
+export function WasteLogsTab() {
   // FEATURE (2026-08-09): "Waste & Loss tab there is no price of the damage
   // items how much is loss this should be highlighted" — neither waste
   // source stored a rupee value. Price branch waste rows against the live
@@ -1515,13 +1518,13 @@ function WasteLogsTab() {
   const { items: vrsnbCatalogW } = useOperationalBranchCatalog('VRSNB');
   const snbPriceByNameW = useMemo(() => new Map(snbCatalogW.map(item => [ownerNormalizeName(item.name), item.price])), [snbCatalogW]);
   const vrsnbPriceByNameW = useMemo(() => new Map(vrsnbCatalogW.map(item => [ownerNormalizeName(item.name), item.price])), [vrsnbCatalogW]);
-  const branchWastePriceFor = (branch: string, itemName: string): number | null => {
+  const branchWastePriceFor = useCallback((branch: string, itemName: string): number | null => {
     const key = ownerNormalizeName(itemName);
     if (branch === 'SNB' || branch === 'Hosur') return snbPriceByNameW.get(key) ?? null;
     // Cafe has no dedicated catalog in this app; VRSNB is used as the closest
     // available price reference, same fallback StockTab.tsx already uses.
     return vrsnbPriceByNameW.get(key) ?? null;
-  };
+  },[snbPriceByNameW,vrsnbPriceByNameW]);
   const parseLeadingQuantity = (raw: string): number | null => {
     const match = /^\s*([\d.]+)/.exec(raw || '');
     if (!match) return null;
@@ -1541,6 +1544,7 @@ function WasteLogsTab() {
     quantity: number; unit: string; reason: string; createdBy: string; createdAt: string;
   }>>([]);
   const [branchWasteLoading, setBranchWasteLoading] = useState(true);
+  const [branchWasteError,setBranchWasteError]=useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   // FEATURE (2026-08-12): "make the branch as first tab and kitchen waste as
@@ -1551,64 +1555,34 @@ function WasteLogsTab() {
   const [fromDate, setFromDate] = useState(todayStr);
   const [toDate, setToDate] = useState(todayStr);
 
+  const kitchenWasteRequestId=useRef(0);
   const fetchWaste = useCallback(async () => {
-    setLoading(true); setError('');
-    // BUG FIX: "check the data range and see if they are seeing any
-    // issues" — this table's sibling (branch_waste_logs, fetchBranchWaste
-    // below) was already fixed 2026-09-08 for the exact same problem
-    // (PostgREST's 1000-row cap silently drops older rows on a wide range)
-    // but this one was missed. Empty today, so no data has been lost yet —
-    // fixed before it could grow into the same silent gap.
-    const { data, error: err } = await fetchAllRows<{ id: string; food_item: string; quantity: string; logged_at: string }>(
-      'kitchen_waste_log',
-      (q) => q
-        .select('id, food_item, quantity, logged_at')
-        // AUDIT FIX (2026-09-02): bare timestamp = UTC in Postgres, shifting
-        // the window vs this tab's own IST-computed fromDate/toDate.
-        .gte('logged_at', `${fromDate}T00:00:00+05:30`)
-        .lte('logged_at', `${toDate}T23:59:59+05:30`)
-        .order('logged_at', { ascending: false }),
-    );
-    if (err) setError(err);
-    else setEntries(data ?? []);
-    setLoading(false);
-  }, [fromDate, toDate]);
+    const request=++kitchenWasteRequestId.current;setLoading(true);setError('');setEntries([]);
+    try{
+      const until=new Date(`${toDate}T00:00:00Z`);until.setUTCDate(until.getUTCDate()+1);
+      const {data,error}=await fetchAllRows<{id:string;food_item:string;quantity:string;logged_at:string}>('kitchen_waste_log',q=>q.select('id,food_item,quantity,logged_at')
+        .gte('logged_at',`${fromDate}T00:00:00+05:30`).lt('logged_at',`${until.toISOString().slice(0,10)}T00:00:00+05:30`).order('logged_at',{ascending:false}));
+      if(request!==kitchenWasteRequestId.current)return;
+      if(error)throw Error(error);setEntries(data);
+    }catch(failure){if(request===kitchenWasteRequestId.current)setError(failure instanceof Error?failure.message:'Kitchen waste could not load.');}
+    finally{if(request===kitchenWasteRequestId.current)setLoading(false);}
+  }, [fromDate,toDate]);
 
   useEffect(() => { void fetchWaste(); }, [fetchWaste]);
 
   const branchWasteRequestId = useRef(0);
   const fetchBranchWaste = useCallback(async () => {
-    const requestId = ++branchWasteRequestId.current;
-    setBranchWasteLoading(true);
-    // BUG FIX (2026-09-08): branch_waste_logs already holds 1000+ rows —
-    // a plain `.limit(2000)` here is silently capped at 1000 by PostgREST's
-    // project-wide response cap (see fetchAllRows in src/lib/supabase.ts),
-    // so a wide-enough range could silently drop older waste entries.
-    const { data, error: err } = await fetchAllRows<Record<string, unknown>>(
-      'branch_waste_logs',
-      (q) => q
-        .select('id,branch,log_type,item_name,quantity,unit,reason,created_by_username,created_at')
-        .gte('created_at', `${fromDate}T00:00:00+05:30`)
-        .lte('created_at', `${toDate}T23:59:59+05:30`)
-        .order('created_at', { ascending: false }),
-      { maxRows: 10000 },
-    ).then((r) => ({ data: r.data, error: r.error ? { message: r.error } : null }));
-    if (requestId !== branchWasteRequestId.current) return;
-    if (!err && data) {
-      setWasteLogs(data.map((d: any) => ({
-        id: d.id,
-        branch: d.branch,
-        logType: d.log_type,
-        itemName: d.item_name,
-        quantity: Number(d.quantity || 0),
-        unit: d.unit,
-        reason: d.reason || '',
-        createdBy: d.created_by_username || '',
-        createdAt: d.created_at,
-      })));
-    }
-    setBranchWasteLoading(false);
-  }, [fromDate, toDate]);
+    const request=++branchWasteRequestId.current;setBranchWasteLoading(true);setBranchWasteError('');setWasteLogs([]);
+    try{
+      const until=new Date(`${toDate}T00:00:00Z`);until.setUTCDate(until.getUTCDate()+1);
+      const {data,error}=await fetchAllRows<Record<string,unknown>>('branch_waste_logs',q=>q.select('id,branch,log_type,item_name,quantity,unit,reason,created_by_username,created_at')
+        .gte('created_at',`${fromDate}T00:00:00+05:30`).lt('created_at',`${until.toISOString().slice(0,10)}T00:00:00+05:30`).order('created_at',{ascending:false}),{maxRows:10000});
+      if(request!==branchWasteRequestId.current)return;
+      if(error)throw Error(error);
+      setWasteLogs(data.map(d=>({id:String(d.id),branch:String(d.branch),logType:String(d.log_type),itemName:String(d.item_name),quantity:Number(d.quantity||0),unit:String(d.unit),reason:String(d.reason||''),createdBy:String(d.created_by_username||''),createdAt:String(d.created_at)})));
+    }catch(failure){if(request===branchWasteRequestId.current)setBranchWasteError(failure instanceof Error?failure.message:'Branch waste could not load.');}
+    finally{if(request===branchWasteRequestId.current)setBranchWasteLoading(false);}
+  }, [fromDate,toDate]);
 
   useEffect(() => {
     void fetchBranchWaste();
@@ -1624,7 +1598,7 @@ function WasteLogsTab() {
         const price = branchWastePriceFor(log.branch, log.itemName);
         return { ...log, price, lossValue: price != null ? price * log.quantity : null };
       });
-  }, [wasteLogs, snbPriceByNameW, vrsnbPriceByNameW]);
+  }, [wasteLogs, branchWastePriceFor]);
   const totalBranchWasteLoss = useMemo(
     () => filteredBranchWaste.reduce((sum, log) => sum + (log.lossValue ?? 0), 0),
     [filteredBranchWaste],
@@ -1831,7 +1805,9 @@ function WasteLogsTab() {
         </>
       )}
 
-      {activeSource === 'branches' && (
+      {activeSource==='branches'&&branchWasteError&&<div role="alert" className="rounded-xl bg-red-50 p-4 text-red-800">Branch waste data is incomplete: {branchWasteError}<button className="ml-3 underline" onClick={()=>void fetchBranchWaste()}>Retry branch waste only</button></div>}
+      {activeSource==='branches'&&branchWasteLoading&&<p role="status">Loading branch waste…</p>}
+      {activeSource === 'branches' && !branchWasteError && !branchWasteLoading && (
         <>
           {filteredBranchWaste.length === 0 && (
             <div className="flex flex-col items-center justify-center py-12 gap-3 text-center">
@@ -2245,7 +2221,9 @@ function BranchOverviewTab() {
   // real store purchases instead of an unfiltered sum of every branch's
   // purchases.
   const [storeInvoiceRows, setStoreInvoiceRows] = useState<Array<{ total: number; paid: number; date: string }>>([]);
+  const [storeInvoiceError,setStoreInvoiceError]=useState('');const [storeInvoiceLoading,setStoreInvoiceLoading]=useState(true);const [storeInvoiceRetry,setStoreInvoiceRetry]=useState(0);
   useEffect(() => {
+    setStoreInvoiceLoading(true);setStoreInvoiceError('');
     let alive = true;
     (async () => {
       // BUG FIX: "check the data range and see if they are seeing any
@@ -2254,17 +2232,17 @@ function BranchOverviewTab() {
       // about a month and understate Store Purchases (and, in turn, Net
       // Profit above) with no error at all. Same fix already applied
       // elsewhere in this file for the exact same table-growth pattern.
-      const { data } = await fetchAllRows<Record<string, unknown>>('store_invoices', (q) => q
+      const { data, error } = await fetchAllRows<Record<string, unknown>>('store_invoices', (q) => q
         .select('grand_total, paid_amount, delivery_date, created_at'));
-      if (!alive || !data) return;
+      if(!alive)return;if(error)throw new Error(error);if(!data)throw new Error('Store purchase data is unavailable.');
       setStoreInvoiceRows((data as Array<Record<string, unknown>>).map((invoice) => ({
         total: Number(invoice.grand_total || 0),
         paid: Number(invoice.paid_amount || 0),
         date: String(invoice.delivery_date || invoice.created_at || ''),
       })));
-    })();
+    })().catch(error=>{if(alive){setStoreInvoiceRows([]);setStoreInvoiceError(error instanceof Error?error.message:'Store purchases could not load.');}}).finally(()=>{if(alive)setStoreInvoiceLoading(false);});
     return () => { alive = false; };
-  }, []);
+  }, [storeInvoiceRetry]);
 
   useEffect(() => { startPolling(60); return () => stopPolling(); }, [startPolling, stopPolling]);
   useEffect(() => { fetchBranchDataStaggered(fetchBranchData); }, [fetchBranchData]);
@@ -2670,6 +2648,7 @@ function BranchOverviewTab() {
     { label: 'All Time',   value: 'all' },
   ];
 
+  if(storeInvoiceLoading||storeInvoiceError)return <div role="alert" className="rounded-xl border p-4"><p>{storeInvoiceLoading?'Loading complete Store purchases before calculating profit…':`Store purchase data is incomplete: ${storeInvoiceError}`}</p>{storeInvoiceError&&<button onClick={()=>setStoreInvoiceRetry(n=>n+1)}>Retry Store purchases only</button>}</div>;
   return (
     <div className="owner-tab-stack">
       <OwnerToolbar>
@@ -3055,7 +3034,7 @@ function OwnerDailyClosureTab() {
 }
 
 // ── Purchases & Store Visibility Tab ─────────────────────────────────────────
-function OwnerPurchasesTab() {
+export function OwnerPurchasesTab() {
   const { invoices, load } = useInvoiceStore();
   const { orders: purchaseOrders, load: loadOrders } = usePurchaseOrderStore();
   // UX FIX (2026-09-27): "all the date should be default in todays date" —
@@ -3064,6 +3043,7 @@ function OwnerPurchasesTab() {
   const [toDate, setToDate] = useState(ownerDateInput());
   const [query, setQuery] = useState('');
   const [status, setStatus] = useState('all');
+  const [purchaseError,setPurchaseError]=useState('');const [purchaseLoading,setPurchaseLoading]=useState(true);
   const [dbLines, setDbLines] = useState<OwnerStorePurchaseLine[]>([]);
 
   useEffect(() => { load(); loadOrders(); }, [load, loadOrders]);
@@ -3074,16 +3054,16 @@ function OwnerPurchasesTab() {
   // Now scoped to the selected range (Owner already controls that range) and
   // capped defensively.
   const fetchStoreInvoiceLines = useCallback(async () => {
-    const requestId = ++storeInvoicesRequestId.current;
+    const requestId = ++storeInvoicesRequestId.current;setPurchaseLoading(true);setPurchaseError('');
+    try{
     // BUG FIX (2026-09-16): `.limit(2000)` does NOT override PostgREST's
     // hard 1000-row response cap (see fetchAllRows's comment in
     // lib/supabase.ts) — a wide owner-picked range can exceed it. Paginated.
-    const { data } = await fetchAllRows<Record<string, unknown>>('store_invoices', (q) => q
+    const { data, error } = await fetchAllRows<Record<string, unknown>>('store_invoices', (q) => q
       .select('id, line_items, paid_amount, grand_total, supplier_name, invoice_number, delivery_date, created_at, payment_method, purchase_status, status, synced_to_stock, stock_sync_status, remarks, notes')
-      .gte('created_at', `${fromDate}T00:00:00+05:30`)
-      .lte('created_at', `${toDate}T23:59:59+05:30`)
+      .or(`and(delivery_date.gte.${fromDate},delivery_date.lte.${toDate}),and(delivery_date.is.null,created_at.gte.${fromDate}T00:00:00+05:30,created_at.lte.${toDate}T23:59:59.999+05:30)`)
       .order('created_at', { ascending: false }));
-    if (requestId !== storeInvoicesRequestId.current || !data) return;
+    if(requestId!==storeInvoicesRequestId.current)return;if(error)throw new Error(error);if(!data)throw new Error('Purchase details are unavailable.');
     const rows: OwnerStorePurchaseLine[] = (data as Array<Record<string, unknown>>).flatMap((invoice) => {
       const lineItems = (invoice.line_items as Array<Record<string, unknown>> | null) || [];
       const paidAmount = Number(invoice.paid_amount || 0);
@@ -3110,6 +3090,7 @@ function OwnerPurchasesTab() {
       }));
     });
     setDbLines(rows);
+    }catch(error){if(requestId===storeInvoicesRequestId.current){setDbLines([]);setPurchaseError(error instanceof Error?error.message:'Purchase details could not load.');}}finally{if(requestId===storeInvoicesRequestId.current)setPurchaseLoading(false);}
   }, [fromDate, toDate]);
 
   useEffect(() => { void fetchStoreInvoiceLines(); }, [fetchStoreInvoiceLines, invoices.length]);
@@ -3136,7 +3117,7 @@ function OwnerPurchasesTab() {
     remarks: invoice.notes || (index >= 0 ? 'Store invoice' : ''),
   }))), [invoices]);
 
-  const lines = dbLines.length ? dbLines : fallbackLines;
+  const lines = dbLines;
   const from = new Date(`${fromDate}T00:00:00`);
   const to = new Date(`${toDate}T23:59:59`);
   const filtered = lines.filter(line => ownerInRange(line.purchaseDate, from, to) && (status === 'all' || line.purchaseStatus === status || line.stockSyncStatus === status) && `${line.supplierName} ${line.invoiceNumber} ${line.itemName}`.toLowerCase().includes(query.toLowerCase()));
@@ -3162,6 +3143,7 @@ function OwnerPurchasesTab() {
   }, {} as Record<string, { name: string; Quantity: number; Amount: number }>)).sort((a, b) => b.Amount - a.Amount).slice(0, 8);
   const statusOptions = ['all', ...Array.from(new Set(lines.flatMap(line => [line.purchaseStatus, line.stockSyncStatus]).filter(Boolean)))];
 
+  if(purchaseLoading||purchaseError)return <div role="alert" className="rounded-xl border p-4"><p>{purchaseLoading?'Loading purchase details…':`Purchase data is incomplete: ${purchaseError}`}</p>{purchaseError&&<button onClick={()=>void fetchStoreInvoiceLines()}>Retry purchase details only</button>}</div>;
   return (
     <div className="owner-tab-stack">
       <OwnerToolbar>
@@ -3308,13 +3290,16 @@ function OwnerStockVarianceTab() {
   const to = useMemo(() => ownerEndOfToday(), [preset]);
   const [stockVarianceRecords, setStockVarianceRecords] = useState<BranchStockVarianceRecord[]>([]);
   const [varianceRefreshing, setVarianceRefreshing] = useState(false);
+  const [varianceError,setVarianceError]=useState('');
   const refreshVariance = useCallback(async () => {
     setVarianceRefreshing(true);
-    const { data } = await fetchAllRows<Record<string, unknown>>('branch_stock_variance_records', (q) => q
+    setVarianceError('');
+    const { data, error } = await fetchAllRows<Record<string, unknown>>('branch_stock_variance_records', (q) => q
       .select('id, branch, report_id, report_no, item_name, unit, system_qty, physical_qty, difference, reported_by, confirmed_by, created_at')
       .gte('created_at', from.toISOString())
       .lte('created_at', to.toISOString())
       .order('created_at', { ascending: false }), { cursorColumn: 'created_at' });
+    if(error){setVarianceError(error);setStockVarianceRecords([]);setVarianceRefreshing(false);return;}
     setStockVarianceRecords((data || []).map((row): BranchStockVarianceRecord => ({
       id: String(row.id),
       branch: row.branch as Branch,
@@ -3470,6 +3455,7 @@ function OwnerStockVarianceTab() {
           <Download className="size-4" />Export
         </button>
       </OwnerToolbar>
+      {varianceError && <p role="alert" className="rounded-xl bg-red-50 p-3 text-red-800">Stock variance could not load completely: {varianceError}. Retry this report before using its totals.</p>}
 
       <div className="flex flex-wrap gap-1.5">
         <button

@@ -1,3 +1,5 @@
+import {payrollPf, payrollHistoryRoster} from '@/lib/payrollPf';
+import {savePayrollDay,savePayrollDeduction} from '@/lib/payrollPersistence';
 import AdminPayrollGate from '@/components/admin/AdminPayrollGate';
 import {payrollWeekOffLimit as weekOffLimit} from '@/lib/payrollWeekOff';
 import ContractTeamsPanel, { type ContractTeam } from '@/components/admin/ContractTeamsPanel';
@@ -31,6 +33,9 @@ interface Employee {
   branch: Branch;
   department: string;
   weekOffOverrides?: Record<string, number>;
+  isActive?: boolean;
+  payrollYear?: number;
+  payrollMonth?: number;
   grossSalary: number;
   salaryAdvance: number;
   uniformDeduction: number;
@@ -84,9 +89,8 @@ interface DeductionDecision {
 type DeductionDecisions = Record<string, DeductionDecision>;
 
 // ESI: 0.75% employee deduction (applicable if gross <= 21000); amount based on earned salary
-// PF: 12% of earned salary (capped at ₹1,800)
+// PF policy is shared with Owner and Finance; historical months retain their policy.
 const ESI_RATE = 0.0075;
-const PF_RATE  = 0.12;
 const ESI_WAGE_LIMIT = 21000;
 
 // gross is used only for the eligibility threshold; earned is the actual base for calculation
@@ -94,7 +98,7 @@ function calcESI(earned: number, gross?: number) {
   const eligibilityBase = gross ?? earned;
   return eligibilityBase <= ESI_WAGE_LIMIT ? Math.round(earned * ESI_RATE) : 0;
 }
-function calcPF(earned: number)  { return Math.min(1800, Math.round(earned * PF_RATE)); }
+const calcPF = payrollPf;
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const BRANCHES: Branch[] = ['VRSNB', 'Cafe Aadvikam', 'SNB', 'Hosur'];
@@ -172,6 +176,7 @@ function dbRowToEmployee(d: Record<string, unknown>): Employee {
     department: (d.department as string) || '',
     weekOffOverrides: (d.week_off_overrides as Record<string, number>) || {},
     grossSalary: Number(d.gross_salary),
+    isActive: d.is_active !== false,
     salaryAdvance: Number(d.salary_advance),
     uniformDeduction: Number(d.uniform_deduction),
     otherDeduction: Number(d.other_deduction),
@@ -185,7 +190,7 @@ function dbRowToEmployee(d: Record<string, unknown>): Employee {
 }
 
 async function fetchEmployees(): Promise<Employee[]> {
-  const { data, error } = await supabase.from('employees').select('id, name, branch, department, week_off_overrides, gross_salary, salary_advance, uniform_deduction, other_deduction, account_number, bank_name, ifsc_code, payment_mode, account_holder_name, bank_branch_location').eq('is_active', true).order('id', { ascending: true });
+  const { data, error } = await fetchAllRows<Record<string, unknown>>('employees', q => q.select('id, name, branch, department, is_active, week_off_overrides, gross_salary, salary_advance, uniform_deduction, other_deduction, account_number, bank_name, ifsc_code, payment_mode, account_holder_name, bank_branch_location').order('id', { ascending: true }));
   if (error) throw error;
   return (data || []).map(dbRowToEmployee);
 }
@@ -211,29 +216,14 @@ async function fetchAttendance(year: number, month: number): Promise<MonthAttend
   return result;
 }
 
-async function upsertAttendance(employeeId: string, year: number, month: number, day: number, val: DayAttendance) {
-  const { error } = await supabase.from('attendance').upsert({ employee_id: employeeId, year, month, day, present: val.present, half: val.half, woff: val.woff, absent: val.absent, bf: val.bf, lunch: val.lunch, dinner: val.dinner }, { onConflict: 'employee_id,year,month,day' });
-  if (error) console.error('Attendance upsert failed:', error.message);
-}
-
-async function upsertMeals(employeeId: string, year: number, month: number, day: number, val: DayAttendance) {
-  const { error } = await supabase.from('attendance').upsert({ employee_id: employeeId, year, month, day, bf: val.bf, lunch: val.lunch, dinner: val.dinner }, { onConflict: 'employee_id,year,month,day' });
-  if (error) console.error('Attendance meal upsert failed:', error.message);
-}
-
 async function fetchDeductionDecisions(year: number, month: number): Promise<DeductionDecisions> {
   const { data, error } = await supabase.from('deduction_decisions').select('employee_id, deduct_advance, deduct_other, deduct_uniform, deduct_esi, deduct_pf').eq('year', year).eq('month', month);
-  if (error) { console.warn('deduction_decisions fetch:', error.message); return {}; }
+  if (error) throw new Error('Payroll deductions could not load: '+error.message);
   const result: DeductionDecisions = {};
   for (const row of (data || [])) {
     result[row.employee_id as string] = { deductAdvance: row.deduct_advance as boolean, deductOther: row.deduct_other as boolean, deductUniform: row.deduct_uniform as boolean, deductESI: (row.deduct_esi ?? false) as boolean, deductPF: (row.deduct_pf ?? false) as boolean };
   }
   return result;
-}
-
-async function upsertDeductionDecision(employeeId: string, year: number, month: number, decision: DeductionDecision) {
-  const { error } = await supabase.from('deduction_decisions').upsert({ employee_id: employeeId, year, month, deduct_advance: decision.deductAdvance, deduct_other: decision.deductOther, deduct_uniform: decision.deductUniform, deduct_esi: decision.deductESI, deduct_pf: decision.deductPF }, { onConflict: 'employee_id,year,month' });
-  if (error) console.error('Deduction decision upsert failed:', error.message);
 }
 
 async function insertEmployee(emp: Omit<Employee, 'id'> & { id?: string }): Promise<Employee | null> {
@@ -250,25 +240,19 @@ async function updateEmployee(emp: Employee): Promise<boolean> {
 }
 
 async function clearAdvance(employeeId: string): Promise<void> {
-  const { error } = await supabase.from('employees').update({ salary_advance: 0 }).eq('id', employeeId);
+  const { error } = await supabase.rpc('clear_employee_salary_advances_v1', {p_employee_id: employeeId});
   if (error) throw error;
-  // Also mark all uncleared advances for this employee as cleared
-  const { error: clearErr } = await supabase.from('salary_advances').update({ cleared: true }).eq('employee_id', employeeId).eq('cleared', false);
-  // AUDIT FIX (2026-09-02): this write's error was previously silently
-  // dropped — employees.salary_advance would be reset to 0 above even if
-  // the matching salary_advances rows failed to mark cleared, permanently
-  // diverging the two.
-  if (clearErr) throw clearErr;
 }
 
 // ─── Advance Records DB helpers ───────────────────────────────────────────────
 async function fetchAdvanceRecords(): Promise<{ records: SalaryAdvanceRecord[]; tableReady: boolean }> {
-  const { data, error } = await supabase
-    .from('salary_advances')
-    .select('id, employee_id, amount, given_date, note, cleared')
-    .order('given_date', { ascending: false });
+  const { data, error } = await fetchAllRows<Record<string, unknown>>(
+    'salary_advances',
+    q => q.select('id, employee_id, amount, given_date, note, cleared')
+      .order('given_date', { ascending: false }).order('id', { ascending: false }),
+  );
   if (error) {
-    console.warn('salary_advances fetch:', error.message);
+    console.warn('salary_advances fetch:', error);
     return { records: [], tableReady: false };
   }
   const records = (data || []).map(r => ({
@@ -282,50 +266,18 @@ async function fetchAdvanceRecords(): Promise<{ records: SalaryAdvanceRecord[]; 
   return { records, tableReady: true };
 }
 
-async function insertAdvanceRecord(rec: Omit<SalaryAdvanceRecord, 'id' | 'cleared'>): Promise<{ ok: SalaryAdvanceRecord } | { err: string }> {
-  const { data, error } = await supabase
-    .from('salary_advances')
-    .insert({ employee_id: rec.employeeId, amount: rec.amount, given_date: rec.givenDate, note: rec.note || null, cleared: false })
-    .select()
-    .single();
-  if (error || !data) {
-    const msg = error?.message ?? 'No data returned';
-    console.error('Insert advance failed:', msg);
-    return { err: msg };
-  }
-  // AUDIT FIX (2026-09-02): was a non-atomic read-then-write (select
-  // current, compute in JS, update) with the write's error unchecked —
-  // concurrent advances for the same employee could silently drop one from
-  // the total. Now a single atomic DB-side increment.
-  const { error: advErr } = await supabase.rpc('apply_salary_advance_delta', {
-    p_employee_id: rec.employeeId,
-    p_delta: rec.amount,
-  });
-  if (advErr) {
-    console.error('Failed to update employee salary_advance total:', advErr.message);
-    return { err: `Advance record saved, but updating the employee's total failed: ${advErr.message}. Refresh and verify the total manually.` };
-  }
-  return { ok: {
-    id: data.id as string,
-    employeeId: data.employee_id as string,
-    amount: Number(data.amount),
-    givenDate: data.given_date as string,
-    note: (data.note as string) || undefined,
-    cleared: data.cleared as boolean,
-  }};
+async function insertAdvanceRecord(rec: Omit<SalaryAdvanceRecord, 'id' | 'cleared'>, requestId: string): Promise<{ ok: SalaryAdvanceRecord } | { err: string }> {
+  const { data, error } = await supabase.rpc('give_salary_advance_atomic_v1', {
+    p_request_id: requestId, p_employee_id: rec.employeeId, p_amount: rec.amount,
+    p_given_date: rec.givenDate, p_note: rec.note || null,
+  }).single();
+  if (error || !data) return {err: error?.message || 'No saved advance returned'};
+  const row = data as {id:string;employee_id:string;amount:number;given_date:string;note:string|null;cleared:boolean};
+  return {ok:{id:row.id,employeeId:row.employee_id,amount:Number(row.amount),givenDate:row.given_date,note:row.note||undefined,cleared:row.cleared}};
 }
-
-async function markAdvanceRecordCleared(advanceId: string, employeeId: string, amount: number): Promise<void> {
-  const { error } = await supabase.from('salary_advances').update({ cleared: true }).eq('id', advanceId);
-  if (error) throw error;
-  // AUDIT FIX (2026-09-02): atomic DB-side decrement, same as
-  // insertAdvanceRecord above — was a non-atomic read-then-write with the
-  // write's error unchecked.
-  const { error: advErr } = await supabase.rpc('apply_salary_advance_delta', {
-    p_employee_id: employeeId,
-    p_delta: -amount,
-  });
-  if (advErr) throw advErr;
+async function markAdvanceRecordCleared(advanceId: string): Promise<void> {
+  const {error}=await supabase.rpc('clear_salary_advance_record_v1',{p_advance_id:advanceId});
+  if(error)throw error;
 }
 
 async function deactivateEmployee(id: string): Promise<void> {
@@ -341,7 +293,7 @@ async function deleteOldAttendance(currentYear: number, currentMonth: number): P
 }
 
 // ─── Salary Calc ──────────────────────────────────────────────────────────────
-function calcSalary(emp: Employee, att: MonthAttendance, daysInMonth: number, decision: DeductionDecision) {
+export function calcSalary(emp: Employee, att: MonthAttendance, daysInMonth: number, decision: DeductionDecision) {
   let presentDays = 0, halfDays = 0, woffDays = 0, canteenTotal = 0;
   for (let d = 1; d <= daysInMonth; d++) {
     const a = att[ak(emp.id, d)];
@@ -373,7 +325,7 @@ function calcSalary(emp: Employee, att: MonthAttendance, daysInMonth: number, de
   // BUG-C3 FIX: pass emp.grossSalary as second arg so the eligibility threshold is checked
   // against the contracted gross, not the prorated earned amount.
   const esiDed      = decision.deductESI     ? calcESI(earned, emp.grossSalary) : 0;
-  const pfDed       = decision.deductPF      ? calcPF(earned)  : 0;
+  const pfDed       = decision.deductPF      ? calcPF(earned, emp.payrollYear, emp.payrollMonth)  : 0;
   const totalDed = advanceDed + canteenTotal + uniformDed + otherDed + esiDed + pfDed;
   return { presentDays, halfDays, woffDays, worked, canteenTotal, earned, totalDed, advanceDed, uniformDed, otherDed, esiDed, pfDed, net: Math.max(0, earned - totalDed) };
 }
@@ -501,7 +453,7 @@ function generatePayslipPdf(emp: Employee, calc: ReturnType<typeof calcSalary>, 
 }
 
 // ─── Excel Export ─────────────────────────────────────────────────────────────
-function exportExcel(
+export function exportExcel(
   employees: Employee[],
   att: MonthAttendance,
   decisions: DeductionDecisions,
@@ -1143,7 +1095,7 @@ function AttRow({ emp, att, onUpdate, expanded, onToggle, decision, onDecisionCh
       <button className="w-full flex items-center gap-2 px-3 py-2.5 text-left transition-colors active:bg-muted/40" onClick={onToggle}>
         <span className={cn('shrink-0 px-1.5 py-0.5 rounded text-[9px] font-body font-bold border', BRANCH_COLORS[emp.branch])}>{BRANCH_SHORT[emp.branch]}</span>
         <div className="flex-1 min-w-0">
-          <p className="text-xs font-body font-semibold text-foreground truncate">{emp.name}</p>
+          <p className="text-xs font-body font-semibold text-foreground truncate">{emp.name}{emp.isActive === false ? ' (Left)' : ''}</p>
           <p className="text-[10px] font-body text-muted-foreground">
             {emp.department}
             {hasAdvance && <span className="ml-1 text-amber-600 font-semibold">· Adv {'₹'}{emp.salaryAdvance.toLocaleString('en-IN')}</span>}
@@ -1224,11 +1176,12 @@ function AttRow({ emp, att, onUpdate, expanded, onToggle, decision, onDecisionCh
 }
 
 // ─── Salary card ──────────────────────────────────────────────────────────────
-function SalaryCard({ emp, att, decision, onDecisionChange, daysInMonth, monthLabel, onAdvanceCleared }: {
+function SalaryCard({ emp, att, decision, onDecisionChange, daysInMonth, monthLabel, onAdvanceCleared, saving }: {
   emp: Employee; att: MonthAttendance; daysInMonth: number; monthLabel: string;
   decision: DeductionDecision;
   onDecisionChange: (empId: string, d: DeductionDecision) => void;
   onAdvanceCleared: (empId: string) => void;
+  saving: boolean;
 }) {
   const [clearing, setClearing] = useState(false);
   const [clearError, setClearError] = useState<string | null>(null);
@@ -1236,7 +1189,7 @@ function SalaryCard({ emp, att, decision, onDecisionChange, daysInMonth, monthLa
   const { presentDays, halfDays, woffDays, worked, canteenTotal, earned, advanceDed, uniformDed, otherDed, esiDed, pfDed, net } = calc;
   // Preview amounts shown in toggle labels: use earned as base, gross for ESI eligibility check
   const esiAmount = calcESI(earned, emp.grossSalary);
-  const pfAmount  = calcPF(earned);
+  const pfAmount  = calcPF(earned, emp.payrollYear, emp.payrollMonth);
   const hasAdvance = emp.salaryAdvance > 0;
   const hasOther = emp.otherDeduction > 0;
   const hasUniform = emp.uniformDeduction > 0;
@@ -1263,7 +1216,7 @@ function SalaryCard({ emp, att, decision, onDecisionChange, daysInMonth, monthLa
             <span className={cn('px-1.5 py-0.5 rounded text-[9px] font-body font-bold border shrink-0', BRANCH_COLORS[emp.branch])}>{BRANCH_SHORT[emp.branch]}</span>
             <span className="text-[10px] font-body text-muted-foreground truncate">{emp.department}</span>
           </div>
-          <p className="font-display font-bold text-base text-foreground">{emp.name}</p>
+          <p className="font-display font-bold text-base text-foreground">{emp.name}{emp.isActive === false ? ' (Left)' : ''}</p>
           {emp.accountNumber && <p className="text-[10px] font-body text-muted-foreground mt-0.5 truncate">{emp.bankName} · {emp.accountNumber}</p>}
         </div>
         <div className="shrink-0 text-right">
@@ -1271,6 +1224,7 @@ function SalaryCard({ emp, att, decision, onDecisionChange, daysInMonth, monthLa
           <p className="text-[10px] font-body text-muted-foreground">Net Salary</p>
           <button
             type="button"
+            disabled={saving}
             onClick={() => generatePayslipPdf(emp, calc, monthLabel, daysInMonth)}
             className="mt-1.5 inline-flex items-center gap-1 rounded-lg bg-primary/10 px-2 py-1 text-[10px] font-body font-bold text-primary hover:bg-primary/20"
           >
@@ -1285,7 +1239,7 @@ function SalaryCard({ emp, att, decision, onDecisionChange, daysInMonth, monthLa
           {hasUniform && <DeductToggle label="Uniform Deduction" amount={emp.uniformDeduction} checked={decision.deductUniform} onChange={v => onDecisionChange(emp.id, { ...decision, deductUniform: v })} />}
           {hasOther && <DeductToggle label="Other Deduction" amount={emp.otherDeduction} checked={decision.deductOther} onChange={v => onDecisionChange(emp.id, { ...decision, deductOther: v })} />}
           <DeductToggle label={`ESI (0.75% of earned${emp.grossSalary > ESI_WAGE_LIMIT ? ' — not applicable, gross > ₹21k' : ''})`} amount={esiAmount} checked={decision.deductESI} onChange={v => onDecisionChange(emp.id, { ...decision, deductESI: v })} />
-          <DeductToggle label={`PF (12% of earned${earned * PF_RATE > 1800 ? ', capped at ₹1,800' : ''})`} amount={pfAmount} checked={decision.deductPF} onChange={v => onDecisionChange(emp.id, { ...decision, deductPF: v })} />
+          <DeductToggle label={emp.payrollYear! * 100 + emp.payrollMonth! >= 202611 ? 'PF (12% of 60% earned, max ₹3,000)' : 'PF (12% earned, max ₹1,800)'} amount={pfAmount} checked={decision.deductPF} onChange={v => onDecisionChange(emp.id, { ...decision, deductPF: v })} />
           {hasAdvance && !decision.deductAdvance && (
             <p className="text-[10px] font-body text-amber-600 pb-1 flex items-center gap-1"><AlertCircle className="size-3" /> Advance {'₹'}{emp.salaryAdvance.toLocaleString('en-IN')} carried forward to next month</p>
           )}
@@ -1573,14 +1527,18 @@ function AdvanceTab({ employees, advanceRecords, tableReady, onAdd, onClear }: {
   const [clearError, setClearError] = useState('');
   const [filterCleared, setFilterCleared] = useState(false);
 
-  const canSubmit = empId && Number(amount) > 0 && givenDate;
+  const advanceRequest = useRef<{key:string;id:string}|null>(null);
+  const canSubmit = empId && Number.isFinite(Number(amount)) && Number(amount) > 0 && givenDate;
 
   const handleAdd = async () => {
-    if (!canSubmit) return;
+    if (!canSubmit || saving) return;
+    const key=JSON.stringify([empId,Number(amount),givenDate,note]);
+    if(advanceRequest.current?.key!==key)advanceRequest.current={key,id:crypto.randomUUID()};
     setSaving(true); setSaveError('');
-    const result = await insertAdvanceRecord({ employeeId: empId, amount: Number(amount), givenDate, note });
+    const result = await insertAdvanceRecord({ employeeId: empId, amount: Number(amount), givenDate, note }, advanceRequest.current.id);
     setSaving(false);
     if ('ok' in result) {
+      advanceRequest.current=null;
       onAdd(result.ok);
       setAmount(''); setNote('');
     } else {
@@ -1591,7 +1549,7 @@ function AdvanceTab({ employees, advanceRecords, tableReady, onAdd, onClear }: {
   const handleClear = async (rec: SalaryAdvanceRecord) => {
     setClearingId(rec.id); setClearError('');
     try {
-      await markAdvanceRecordCleared(rec.id, rec.employeeId, rec.amount);
+      await markAdvanceRecordCleared(rec.id);
       onClear(rec.id, rec.employeeId, rec.amount);
     } catch {
       setClearError('Failed to mark cleared — please try again.');
@@ -1760,7 +1718,7 @@ function AdvanceTab({ employees, advanceRecords, tableReady, onAdd, onClear }: {
                       {BRANCH_SHORT[emp.branch]}
                     </span>
                     <div className="flex-1 min-w-0">
-                      <p className="font-body font-bold text-sm text-foreground">{emp.name}</p>
+                      <p className="font-body font-bold text-sm text-foreground">{emp.name}{emp.isActive === false ? ' (Left)' : ''}</p>
                       <p className="text-[10px] font-body text-muted-foreground">{emp.department}</p>
                     </div>
                     <div className="shrink-0 text-right">
@@ -1791,7 +1749,7 @@ function AdvanceTab({ employees, advanceRecords, tableReady, onAdd, onClear }: {
                   {BRANCH_SHORT[emp.branch]}
                 </span>
                 <div className="flex-1 min-w-0">
-                  <p className="font-body font-bold text-sm text-foreground">{emp.name}</p>
+                  <p className="font-body font-bold text-sm text-foreground">{emp.name}{emp.isActive === false ? ' (Left)' : ''}</p>
                   <p className="text-[10px] font-body text-muted-foreground">{emp.department}</p>
                 </div>
                 {empTotal > 0 && (
@@ -1856,6 +1814,12 @@ function AttendanceSalaryContent() {
   const [employees, setEmployees] = useState<Employee[]>([]);
   const teamNames = useMemo(() => Array.from(new Set([...teams.map(team => team.name), ...employees.map(employee => employee.paymentMode?.trim()).filter((name): name is string => !!name)])).sort(), [teams, employees]);
   const [att, setAtt] = useState<MonthAttendance>({});
+  const [saveError,setSaveError]=useState('');
+  const [readError,setReadError]=useState('');
+  const [pendingWrites,setPendingWrites]=useState(0);
+  const activePeriod=useRef('');activePeriod.current=`${activeMonth.year}-${activeMonth.month}`;
+  const writeLocks=useRef(new Set<string>());
+  const loadRequest=useRef(0);
   const [decisions, setDecisions] = useState<DeductionDecisions>({});
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<'attendance' | 'salary' | 'employees' | 'analytics' | 'advance' | 'teams'>('attendance');
@@ -1868,6 +1832,7 @@ function AttendanceSalaryContent() {
   // added contractor team name shows up automatically without a code change.
   const [contractor, setContractor] = useState<string>('All');
   const [search, setSearch]   = useState('');
+  const [pfOnly, setPfOnly] = useState(false);
 
   const handleTabChange = (newTab: typeof tab) => {
     setTab(newTab);
@@ -1917,6 +1882,7 @@ function AttendanceSalaryContent() {
   const ddRef = useRef<HTMLDivElement>(null);
 
   const loadData = useCallback(async (opts?: { silent?: boolean }) => {
+    const request=++loadRequest.current;setReadError('');
     if (opts?.silent) setRefreshing(true); else setLoading(true);
     try {
       const teamResult = await supabase.from('attendance_contract_teams').select('id,name').order('name');
@@ -1928,7 +1894,9 @@ function AttendanceSalaryContent() {
         fetchDeductionDecisions(activeMonth.year, activeMonth.month),
         fetchAdvanceRecords(),
       ]);
-      setEmployees(sortByName(emps));
+      if(request!==loadRequest.current)return;
+      if(!advResult.tableReady)throw new Error('Salary advances could not load. Reload before calculating payroll.');
+      setEmployees(sortByName(payrollHistoryRoster(emps, attData, activeMonth.year*100+activeMonth.month < new Date().getFullYear()*100+new Date().getMonth()+1).map(e=>({...e,payrollYear:activeMonth.year,payrollMonth:activeMonth.month}))));
       setAtt(attData);
       setDecisions(decData);
       setAdvanceRecords(advResult.records);
@@ -1936,9 +1904,10 @@ function AttendanceSalaryContent() {
       const now = new Date();
       deleteOldAttendance(now.getFullYear(), now.getMonth() + 1);
     } catch (e) {
+      if(request===loadRequest.current)setReadError(e instanceof Error?e.message:'Payroll data could not load.');
       console.error('Load error:', e);
     } finally {
-      if (opts?.silent) setRefreshing(false); else setLoading(false);
+      if(request===loadRequest.current){if (opts?.silent) setRefreshing(false); else setLoading(false);}
     }
   }, [activeMonth.year, activeMonth.month]);
 
@@ -1956,30 +1925,29 @@ function AttendanceSalaryContent() {
   const attRef = useRef(att);
   attRef.current = att;
 
-  const updateAtt = useCallback((empId: string, day: number, val: DayAttendance) => {
-    const k = ak(empId, day);
-    const prev = attRef.current[k];
-    setAtt(p => ({ ...p, [k]: val }));
-    // BUG FIX (2026-09-20): a food (bf/lunch/dinner) tick used to upsert the
-    // WHOLE day row from whatever the screen held for that day — if that day's
-    // row hadn't been loaded (see fetchAttendance's row-cap fix), the screen held
-    // a blank and the write silently reset the employee's real attendance
-    // status to "blank". When only the meal flags changed, write ONLY the meal
-    // columns so a food deduction can never touch attendance status.
-    const statusUnchanged =
-      (prev?.present ?? false) === val.present && (prev?.half ?? false) === val.half &&
-      (prev?.woff ?? false) === val.woff && (prev?.absent ?? false) === val.absent;
-    if (statusUnchanged) {
-      void upsertMeals(empId, activeMonth.year, activeMonth.month, day, val);
-    } else {
-      upsertAttendance(empId, activeMonth.year, activeMonth.month, day, val);
-    }
-  }, [activeMonth.year, activeMonth.month]);
+  const updateAtt = useCallback(async (empId:string,day:number,val:DayAttendance) => {
+    const period=`${activeMonth.year}-${activeMonth.month}`;const k=ak(empId,day);const lock=`${period}:${k}`;
+    if(writeLocks.current.has(lock))return;
+    writeLocks.current.add(lock);setPendingWrites(n=>n+1);setSaveError('');
+    const previous=attRef.current[k]??defaultDay();
+    attRef.current={...attRef.current,[k]:val};setAtt(p=>({...p,[k]:val}));
+    const mealsOnly=previous.present===val.present&&previous.half===val.half&&previous.woff===val.woff&&previous.absent===val.absent;
+    try {await savePayrollDay(empId,activeMonth.year,activeMonth.month,day,val,mealsOnly);}
+    catch(error){
+      if(activePeriod.current===period){attRef.current={...attRef.current,[k]:previous};setAtt(p=>({...p,[k]:previous}));}
+      setSaveError(`Attendance was not saved (${period}, day ${day}). ${error instanceof Error?error.message:'Please retry.'}`);
+    } finally {writeLocks.current.delete(lock);setPendingWrites(n=>n-1);}
+  },[activeMonth.year,activeMonth.month]);
 
-  const updateDecision = useCallback((empId: string, d: DeductionDecision) => {
-    setDecisions(prev => ({ ...prev, [empId]: d }));
-    upsertDeductionDecision(empId, activeMonth.year, activeMonth.month, d);
-  }, [activeMonth.year, activeMonth.month]);
+  const updateDecision = useCallback(async(empId:string,d:DeductionDecision)=>{
+    const period=`${activeMonth.year}-${activeMonth.month}`;const lock=`${period}:deduction:${empId}`;
+    if(writeLocks.current.has(lock))return;
+    const previous=decisions[empId]??defaultDecision();writeLocks.current.add(lock);setPendingWrites(n=>n+1);setSaveError('');
+    setDecisions(p=>({...p,[empId]:d}));
+    try{await savePayrollDeduction(empId,activeMonth.year,activeMonth.month,d);}
+    catch(error){if(activePeriod.current===period)setDecisions(p=>({...p,[empId]:previous}));setSaveError(`Deductions were not saved. ${error instanceof Error?error.message:'Please retry.'}`);}
+    finally{writeLocks.current.delete(lock);setPendingWrites(n=>n-1);}
+  },[activeMonth.year,activeMonth.month,decisions]);
 
   const getDecision = useCallback((empId: string): DeductionDecision =>
     decisions[empId] ?? defaultDecision(), [decisions]);
@@ -2008,15 +1976,16 @@ function AttendanceSalaryContent() {
     ));
   };
 
-  const addEmp = (emp: Employee) => { setAddToTeam(undefined); setEmployees(prev => sortByName([...prev, emp])); setShowAddModal(false); };
+  const addEmp = (emp: Employee) => { setAddToTeam(undefined); setEmployees(prev => sortByName([...prev, {...emp,payrollYear:activeMonth.year,payrollMonth:activeMonth.month}])); setShowAddModal(false); };
   const [removeEmpError, setRemoveEmpError] = useState('');
   const [removingEmpId, setRemovingEmpId]   = useState<string | null>(null);
 
   const removeEmp = async (id: string) => {
+    if (removingEmpId) return;
     setRemovingEmpId(id); setRemoveEmpError('');
     try {
       await deactivateEmployee(id);
-      setEmployees(prev => prev.filter(e => e.id !== id));
+      setEmployees(prev => prev.map(e => e.id === id ? {...e,isActive:false} : e));
     } catch {
       // EMP-FIX: replace blocking alert() with inline error state
       setRemoveEmpError('Failed to remove employee — please try again.');
@@ -2026,7 +1995,7 @@ function AttendanceSalaryContent() {
   };
   const saveEmp = (updated: Employee) => {
     const prev = employees.find(e => e.id === updated.id);
-    setEmployees(prevList => sortByName(prevList.map(e => e.id === updated.id ? updated : e)));
+    setEmployees(prevList => sortByName(prevList.map(e => e.id === updated.id ? {...updated,isActive:e.isActive,payrollYear:e.payrollYear,payrollMonth:e.payrollMonth} : e)));
     // If advance was reduced to 0 via the edit modal, mark all their records as cleared
     if (prev && prev.salaryAdvance > 0 && updated.salaryAdvance === 0) {
       setAdvanceRecords(prevRecs => prevRecs.map(r => r.employeeId === updated.id ? { ...r, cleared: true } : r));
@@ -2046,7 +2015,7 @@ function AttendanceSalaryContent() {
   }, [contractor]);
 
   const filtered = useMemo(() => {
-    let list = employees;
+    let list = employees.filter(e => tab !== 'employees' || e.isActive !== false);
     if (branch !== 'All') list = list.filter(e => e.branch === branch);
     // Department filter: 'Store' and 'Admin office' are the two department groups
     if (dept !== 'All') list = list.filter(e =>
@@ -2054,13 +2023,12 @@ function AttendanceSalaryContent() {
     );
     list = list.filter(matchesContractor);
     if (search.trim()) { const q = search.toLowerCase(); list = list.filter(e => e.name.toLowerCase().includes(q) || e.department.toLowerCase().includes(q)); }
+    if(tab === 'salary' && pfOnly) list=list.filter(e=>calcSalary(e,att,activeMonth.daysInMonth,getDecision(e.id)).pfDed>0);
     return list;
-  }, [employees, branch, dept, matchesContractor, search]);
+  }, [employees, branch, dept, matchesContractor, search, tab, pfOnly, att, activeMonth.daysInMonth, getDecision]);
 
   const summary = useMemo(() => {
-    let list = branch === 'All' ? employees : employees.filter(e => e.branch === branch);
-    if (dept !== 'All') list = list.filter(e => e.department.trim().toLowerCase() === dept.toLowerCase());
-    list = list.filter(matchesContractor);
+    const list = filtered;
     let gross = 0, net = 0, canteen = 0, advanceTotal = 0;
     list.forEach(e => {
       const d = getDecision(e.id);
@@ -2068,16 +2036,16 @@ function AttendanceSalaryContent() {
       gross += e.grossSalary; net += c.net; canteen += c.canteenTotal; advanceTotal += e.salaryAdvance;
     });
     return { count: list.length, gross, net, canteen, advanceTotal };
-  }, [employees, branch, dept, matchesContractor, att, activeMonth.daysInMonth, getDecision]);
+  }, [filtered, att, activeMonth.daysInMonth, getDecision]);
 
   const handleExcelExport = () => {
-    let list = branch === 'All' ? employees : employees.filter(e => e.branch === branch);
-    if (dept !== 'All') list = list.filter(e => e.department.trim().toLowerCase() === dept.toLowerCase());
-    list = list.filter(matchesContractor);
+    if(pendingWrites){setSaveError('Wait for payroll changes to finish saving before exporting.');return;}
+    const list = filtered;
     exportExcel(list, att, decisions, activeMonth.daysInMonth, activeMonth.label, getDecision);
   };
 
   const handleAttendanceExcelExport = () => {
+    if(pendingWrites){setSaveError('Wait for payroll changes to finish saving before exporting.');return;}
     let list = branch === 'All' ? employees : employees.filter(e => e.branch === branch);
     if (dept !== 'All') list = list.filter(e => e.department.trim().toLowerCase() === dept.toLowerCase());
     list = list.filter(matchesContractor);
@@ -2085,6 +2053,7 @@ function AttendanceSalaryContent() {
   };
 
   const handleAdvanceExcelExport = () => {
+    if(pendingWrites){setSaveError('Wait for payroll changes to finish saving before exporting.');return;}
     let empList = branch === 'All' ? employees : employees.filter(e => e.branch === branch);
     if (dept !== 'All') empList = empList.filter(e => e.department.trim().toLowerCase() === dept.toLowerCase());
     empList = empList.filter(matchesContractor);
@@ -2092,10 +2061,9 @@ function AttendanceSalaryContent() {
   };
 
   const handleSalaryPdfExport = async () => {
+    if(pendingWrites){setSaveError('Wait for payroll changes to finish saving before exporting.');return;}
     const { exportReportPdf, pdfMoney } = await import('@/lib/exportAdminReport');
-    let list = branch === 'All' ? employees : employees.filter(e => e.branch === branch);
-    if (dept !== 'All') list = list.filter(e => e.department.trim().toLowerCase() === dept.toLowerCase());
-    list = list.filter(matchesContractor);
+    const list = filtered;
     const rows = list.map(e => ({ e, c: calcSalary(e, att, activeMonth.daysInMonth, getDecision(e.id)) }));
     const totalGross = rows.reduce((s, r) => s + r.e.grossSalary, 0);
     const totalNet = rows.reduce((s, r) => s + r.c.net, 0);
@@ -2118,6 +2086,8 @@ function AttendanceSalaryContent() {
     });
   };
 
+  if(readError&&!loading)return <div role="alert" className="m-4 rounded-2xl border border-red-200 bg-red-50 p-5 text-red-800"><p className="font-bold">Payroll data is incomplete</p><p className="mt-2">{readError}</p><button className="mt-3 rounded-xl border bg-white px-4 py-2 font-bold" onClick={()=>void loadData()}>Reload payroll data</button></div>;
+
   if (loading) {
     return (
       <div className="min-h-[100dvh] bg-background flex items-center justify-center">
@@ -2131,6 +2101,8 @@ function AttendanceSalaryContent() {
 
   return (
     <div className="dashboard-screen min-h-[100dvh] bg-transparent pt-0 pb-6">
+      {saveError&&<div role="alert" className="m-4 rounded-xl border border-red-200 bg-red-50 p-3 font-semibold text-red-800">{saveError}</div>}
+      {pendingWrites>0&&<p role="status" className="px-4 py-2 text-sm text-amber-800">Saving {pendingWrites} payroll change(s)…</p>}
       {/* Header */}
       <div className="px-4 pt-4 pb-2 flex items-start justify-between gap-2">
         <div>
@@ -2281,6 +2253,7 @@ function AttendanceSalaryContent() {
           )}
           {tab === 'salary' && (
             <>
+              <label className="flex items-center gap-2 text-sm font-semibold"><input type="checkbox" checked={pfOnly} onChange={e=>setPfOnly(e.target.checked)} /> PF deducted only</label>
               <button onClick={handleExcelExport} className="shrink-0 h-10 px-3 rounded-xl bg-emerald-600 text-white flex items-center gap-1 text-xs font-body font-semibold transition-colors hover:bg-emerald-700 active:scale-95">
                 <Download className="size-4" /> Excel
               </button>
@@ -2307,7 +2280,7 @@ function AttendanceSalaryContent() {
         <div className="mx-4 bg-card border border-border rounded-2xl overflow-hidden">
           <div className="px-4 py-3 border-b border-border">
             <h2 className="font-display font-bold text-foreground">Daily Attendance — {activeMonth.label}</h2>
-            <p className="text-[10px] font-body text-muted-foreground mt-0.5">Tap row to expand → tap day: blank → ✓ Present → ½ Half Day → W Week Off → X Absent → blank. Meals ₹10 each, on any day. Admin staff follow the month’s Sunday allowance (4 or 5); others have 4. Individual monthly exceptions appear in each employee’s Week Off limit.</p>
+            <p className="text-[10px] font-body text-muted-foreground mt-0.5">Former staff are included in previous months. Blank days mean no saved attendance. Tap row to expand → tap day: blank → ✓ Present → ½ Half Day → W Week Off → X Absent → blank. Meals ₹10 each, on any day. Admin staff follow the month’s Sunday allowance (4 or 5); others have 4. Individual monthly exceptions appear in each employee’s Week Off limit.</p>
           </div>
           {filtered.length === 0
             ? <EmptyState icon="👥" message="No employees found" sub="Add staff in Staff Management to see them here." />
@@ -2322,6 +2295,7 @@ function AttendanceSalaryContent() {
       {tab === 'salary' && (
         <div className="px-4 space-y-3">
           <div className="bg-card border border-border rounded-2xl p-4">
+            <p className="mb-3 text-xs text-muted-foreground">{activeMonth.year*100+activeMonth.month>=202611 ? 'PF: 12% of 60% of earned salary, capped at ₹3,000 per month. Earlier payroll months retain their previous rule.' : 'Historical payroll rule: PF is 12% of earned salary, capped at ₹1,800.'}</p>
             <h3 className="font-display font-bold text-foreground mb-3 flex items-center gap-2">
               <TrendingDown className="size-4 text-primary" />
               {branch === 'All' ? 'All Branches' : branch} — {activeMonth.label} Summary
@@ -2336,7 +2310,7 @@ function AttendanceSalaryContent() {
             </div>
           </div>
           {filtered.map(e => (
-            <SalaryCard key={e.id} emp={e} att={att} decision={getDecision(e.id)} onDecisionChange={updateDecision} daysInMonth={activeMonth.daysInMonth} monthLabel={activeMonth.label} onAdvanceCleared={handleAdvanceCleared} />
+            <SalaryCard key={e.id} emp={e} att={att} decision={getDecision(e.id)} onDecisionChange={updateDecision} daysInMonth={activeMonth.daysInMonth} monthLabel={activeMonth.label} onAdvanceCleared={handleAdvanceCleared} saving={pendingWrites > 0} />
           ))}
           {filtered.length === 0 && <EmptyState icon="👥" message="No employees found" sub="Add staff in Staff Management to see them here." />}
         </div>
@@ -2363,6 +2337,8 @@ function AttendanceSalaryContent() {
                 </div>
                 <button onClick={() => setEditEmp(e)} className="size-7 rounded-lg bg-primary/10 text-primary flex items-center justify-center hover:bg-primary/20 transition-colors mt-0.5"><Pencil className="size-3.5" /></button>
                 <button
+                  aria-label={`Archive ${e.name}`}
+                  data-delete-confirmation="Remove this employee from active staff? Previous attendance, salary and payment history will be preserved and remain visible for the relevant month."
                   onClick={() => removeEmp(e.id)}
                   disabled={removingEmpId === e.id}
                   className="size-7 rounded-lg bg-destructive/10 text-destructive flex items-center justify-center hover:bg-destructive/20 transition-colors mt-0.5 disabled:opacity-40"

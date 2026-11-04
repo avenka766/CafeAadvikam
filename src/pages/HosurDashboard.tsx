@@ -50,7 +50,7 @@ import { useBranchCatalogStore, type BranchCatalogItem } from '@/stores/branchCa
 import { HOSUR_VRSNB_PRICE_LIST } from '@/data/hosurVrsnbPriceList';
 import { buildHosurOrderTag, buildHosurItemId, checkRecentDuplicateHosurOrder } from '@/bakery/hosurOrderShared';
 import { getPackingCounterStatus } from '@/bakery/packingCounter';
-import { queueHosurConfirmBill } from '@/bakery/hosurBillingBridge';
+import { queueHosurConfirmBill,runHosurConfirmBillCore } from '@/bakery/hosurBillingBridge';
 import KgPackAdder from '@/bakery/KgPackAdder';
 
 export const BRANCH = 'Hosur' as const;
@@ -1013,7 +1013,7 @@ function EmptyState({ icon, title, subtitle }: { icon: React.ReactNode; title: s
   );
 }
 
-export default function HosurDashboard({ hideNav = false }: { hideNav?: boolean } = {}) {
+export default function HosurDashboard({ hideNav = false, active = true }: { hideNav?: boolean; active?: boolean } = {}) {
   const { currentUser } = useAuthStore();
   const snbCatalog = useBranchCatalogStore((state) => state.items.SNB);
   const { loadCatalog, subscribe } = useBranchCatalogStore();
@@ -1030,10 +1030,11 @@ export default function HosurDashboard({ hideNav = false }: { hideNav?: boolean 
   const [searchParams, setSearchParams] = useSearchParams();
   const [tab, setTabState] = useState<HosurTab>(() => parseHosurTab(searchParams.get('hosurTab')));
   useEffect(() => {
+    if(!active)return;
     const urlTab = parseHosurTab(searchParams.get('hosurTab'));
     if (urlTab !== tab) setTabState(urlTab);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchParams]);
+  }, [searchParams,active]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   // AUDIT FIX (2026-09-02): `busy` alone is a React state guard, which
@@ -1048,9 +1049,10 @@ export default function HosurDashboard({ hideNav = false }: { hideNav?: boolean 
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   useEffect(() => {
+    if(!active)return;
     void loadCatalog('SNB');
     return subscribe('SNB');
-  }, [loadCatalog, subscribe]);
+  }, [loadCatalog, subscribe,active]);
 
   useEffect(() => {
     if (!success) return;
@@ -1260,15 +1262,18 @@ export default function HosurDashboard({ hideNav = false }: { hideNav?: boolean 
   const refreshRef = useRef(refresh);
   useEffect(() => { refreshRef.current = refresh; }, [refresh]);
 
+  const refreshTab = hideNav ? parseHosurTab(searchParams.get('hosurTab')) : '';
   useEffect(() => {
-    void refreshRef.current();
-    // Manual refresh only: polling caused the whole workspace to visibly refresh while users were editing.
-  }, []);
+    if(active)void refreshRef.current();
+    // One refresh on entry / visible embedded-tab change. Hidden panes retain
+    // their drafts without running another whole-dataset request batch.
+  }, [active,refreshTab]);
 
   useEffect(() => {
+    if(!active)return;
     const nextTab = parseHosurTab(searchParams.get('hosurTab'));
     setTabState((current) => current === nextTab ? current : nextTab);
-  }, [searchParams]);
+  }, [searchParams,active]);
 
   // BUG FIX (2026-08-07): when embedded (hideNav), this is the only place
   // besides the manual Refresh button that can pull in fresh data — Planner
@@ -1279,22 +1284,16 @@ export default function HosurDashboard({ hideNav = false }: { hideNav?: boolean 
   // mount — that's already covered by the effect above), so switching to
   // e.g. Credit Ledger right after dispatching an order shows the new bill
   // instead of what was loaded when the Hosur section first opened.
-  const didMountRef = useRef(false);
   useEffect(() => {
-    if (!hideNav) return;
-    if (!didMountRef.current) { didMountRef.current = true; return; }
-    void refreshRef.current();
-  }, [tab, hideNav]);
+    if (active && (tab === 'billing' || tab === 'closure')) void refreshHosurCounter();
+  }, [tab, refreshHosurCounter,active]);
 
   useEffect(() => {
-    if (tab === 'billing' || tab === 'closure') void refreshHosurCounter();
-  }, [tab, refreshHosurCounter]);
-
-  useEffect(() => {
+    if(!active)return;
     const onFocus = () => { if (tab === 'billing') void refreshHosurCounter(); };
     window.addEventListener('focus', onFocus);
     return () => window.removeEventListener('focus', onFocus);
-  }, [tab, refreshHosurCounter]);
+  }, [tab, refreshHosurCounter,active]);
 
   const setTab = (nextTab: HosurTab) => {
     setTabState(nextTab);
@@ -1613,154 +1612,16 @@ export default function HosurDashboard({ hideNav = false }: { hideNav?: boolean 
       });
       return;
     }
-    await assertHosurCounterOpen();
-    const total = bill.subtotal;
-    let paid = 0;
-    let credit = 0;
-    if (paymentType === 'full') {
-      paid = total;
-      credit = 0;
-    } else if (paymentType === 'credit') {
-      paid = 0;
-      credit = total;
-    } else {
-      paid = Math.max(0, Math.min(total, Number(draft.paidAmount || 0)));
-      credit = Math.max(0, total - paid);
+    if(paymentType!=='credit')await assertHosurCounterOpen();
+    const confirmed=await runHosurConfirmBillCore({
+      bill:{id:bill.id,orderId:bill.orderId,shopId:bill.shopId,shopName:bill.shopName,shopWhatsapp:bill.shopWhatsapp,billNo:bill.billNo,invoiceNo:bill.invoiceNo,subtotal:bill.subtotal},
+      items:[],paymentType,paidAmount:Number(draft.paidAmount||0),paymentMode:draft.paymentMode,dueDate:draft.dueDate,userName,userRole,
+    });
+    if(confirmed.notificationWarning)setError(`Bill ${confirmed.bill.invoiceNo||confirmed.bill.billNo} is saved. ${confirmed.notificationWarning}`);
+    if(confirmed.items.length){
+      try{printBill(confirmed.bill,confirmed.items,confirmed.duplicate);}
+      catch(cause){setError(`Bill ${confirmed.bill.invoiceNo||confirmed.bill.billNo} is saved. Printing needs attention; do not collect again.`);}
     }
-    if ((paymentType === 'credit' || paymentType === 'partial') && !draft.dueDate) {
-      throw new Error('Due date is mandatory for Credit and Partial Payment bills.');
-    }
-    if (paymentType === 'partial' && paid <= 0) throw new Error('Enter paid amount for partial payment.');
-    if (paymentType === 'partial' && paid >= total) throw new Error('Partial payment paid amount must be less than bill total.');
-
-    const status: BillStatus = credit <= 0 ? 'paid' : paymentType === 'credit' ? 'credit_open' : 'partial_credit';
-    const now = new Date().toISOString();
-
-    // BUG FIX (2026-08-12, audit): this update had no guard against confirming
-    // the same draft bill twice (two tabs/devices, or a double-tap on Confirm)
-    // — both calls would pass, both would go on to insert their own
-    // branch_credit_sales/branch_credit_payments/branch_sales rows below,
-    // duplicating the shop's recorded credit debt. Scoping the update to
-    // `status='draft'` and checking a row actually came back closes that:
-    // the second caller sees zero rows updated and gets a clear error
-    // instead of silently duplicating the ledger entries.
-    const { data: updatedBill, error: billError } = await supabase.from('hosur_bills').update({
-      paid_amount: paid,
-      credit_amount: credit,
-      payment_type: paymentType,
-      payment_mode: paymentType === 'credit' ? null : draft.paymentMode,
-      due_date: credit > 0 ? draft.dueDate : null,
-      status,
-      confirmed_by: userName,
-      confirmed_at: now,
-    }).eq('id', bill.id).eq('status', 'draft').select('id').maybeSingle();
-    if (billError) throw billError;
-    if (!updatedBill) throw new Error('This bill has already been confirmed (possibly from another tab/device) — refresh and check its status before retrying.');
-
-    // BUG FIX (audit #17 sweep): this update's own error was never checked
-    // at all — if it silently failed, the bill above would be genuinely
-    // confirmed while this order's own status field stayed stale, risking
-    // it reappearing in an "unbilled" list even though it's actually done.
-    // hosur_bills.status is the real source of truth for "is this billed,"
-    // so a failure here doesn't warrant unwinding the already-successful
-    // bill confirmation — just make it visible rather than silent.
-    if (bill.orderId) {
-      const { error: orderStatusError } = await supabase.from('hosur_orders').update({ status: 'billed' }).eq('id', bill.orderId);
-      if (orderStatusError) console.error('[confirmBill] Failed to mark hosur_orders as billed (bill itself is confirmed):', orderStatusError);
-    }
-
-    const items = billItems[bill.id] ?? [];
-    if (credit > 0) {
-      // BUG FIX (2026-08-12, audit): if this insert fails, the bill above is
-      // already confirmed with a credit balance but no ledger row exists for
-      // it anywhere — that credit becomes invisible to the Credit tab,
-      // AdminCreditTab and OwnerCreditTab alike, with no way to collect it.
-      // Roll the bill back to 'draft' on failure so the confirm can be
-      // retried cleanly instead of leaving it stuck in this half-done state.
-      const rollbackToDraft = async () => {
-        // BUG FIX (audit #17 sweep): the rollback's own error was never
-        // checked either — not worth unwinding further (this already IS
-        // the recovery path for a prior failure), but worth logging so a
-        // failed rollback isn't completely invisible.
-        const { error: rollbackError } = await supabase.from('hosur_bills').update({
-          paid_amount: 0, credit_amount: 0, payment_type: null, payment_mode: null,
-          due_date: null, status: 'draft', confirmed_by: null, confirmed_at: null,
-        }).eq('id', bill.id).eq('status', status);
-        if (rollbackError) console.error('[confirmBill] Rollback-to-draft itself failed:', rollbackError);
-      };
-      const { data: creditSale, error: ledgerError } = await supabase.from('branch_credit_sales').insert({
-        branch: BRANCH,
-        source: 'hosur',
-        source_id: bill.id,
-        customer_ref: bill.shopId,
-        customer_name: bill.shopName,
-        customer_phone: bill.shopWhatsapp,
-        items: items.map((item) => ({
-          itemName: item.itemName,
-          quantity: item.quantity,
-          sellUnit: item.unit,
-          price: item.unitPrice,
-          lineTotal: item.lineTotal,
-        })),
-        subtotal: total,
-        amount_paid: paid,
-        credit_amount: credit,
-        sold_by: userName,
-        bill_no: bill.billNo,
-        due_date: draft.dueDate,
-        status: paid > 0 ? 'partial' : 'pending',
-        notes: 'Hosur credit bill',
-      }).select('id').single();
-      if (ledgerError) { await rollbackToDraft(); throw ledgerError; }
-      if (paid > 0 && creditSale?.id) {
-        const { error: paymentError } = await supabase.from('branch_credit_payments').insert({
-          credit_sale_id: creditSale.id,
-          branch: BRANCH,
-          bill_no: bill.billNo,
-          amount: paid,
-          payment_mode: draft.paymentMode,
-          payment_purpose: 'partial_at_billing',
-          remarks: 'Hosur partial payment at billing',
-          collected_by: userName,
-          collected_role: userRole,
-          created_at: now,
-        });
-        if (paymentError) { await rollbackToDraft(); await supabase.from('branch_credit_sales').delete().eq('id', creditSale.id); throw paymentError; }
-      }
-      await notifyAdmin('Hosur credit bill created', `${bill.shopName} has ${money(credit)} credit on invoice ${bill.invoiceNo ?? bill.billNo}. Due ${toDateLabel(draft.dueDate)}.`, bill.id, bill.invoiceNo ?? bill.billNo, { billId: bill.id, amount: credit });
-    }
-
-    // FIX (MD Bug #19): Write branch_sales rows for the PAID portion of this bill so that
-    // Hosur wholesale revenue appears in Owner Dashboard SalesOverviewTab, BranchOverviewTab,
-    // and Admin dashboards (all of which aggregate branch_sales for revenue KPIs).
-    // Previously only credit bills wrote to branch_credit_sales — full-payment and the paid
-    // portion of partial bills wrote NOTHING, making the entire wholesale revenue stream invisible.
-    // Each item gets a branch_sales row proportionally tagged with the payment method.
-    if (paid > 0 && items.length > 0) {
-      const salesRows = items.map(item => ({
-        branch: BRANCH,
-        item_name: item.itemName,
-        quantity_sold: item.quantity,
-        sold_at: now,
-        sold_by: userName,
-        payment_method: draft.paymentMode,
-        unit_price: item.unitPrice,
-        bill_no: bill.billNo,
-        source: 'hosur_wholesale',  // distinguishes from retail counter sales
-      }));
-      // Best-effort — don't block bill confirmation on a sales-mirror failure
-      supabase.from('branch_sales').insert(salesRows).then(({ error }) => {
-        if (error) console.warn('[confirmBill] branch_sales mirror failed:', error.message);
-      });
-    }
-
-    const finalBill = { ...bill, paidAmount: paid, creditAmount: credit, paymentType, paymentMode: paymentType === 'credit' ? null : draft.paymentMode, dueDate: credit > 0 ? draft.dueDate : null, status, confirmedAt: now, confirmedBy: userName } as HosurBill;
-    const body = buildBillMessage(finalBill, items);
-    const whatsapp = await sendWhatsapp({ shopId: bill.shopId, shopName: bill.shopName, phone: bill.shopWhatsapp, billId: bill.id, billNo: bill.invoiceNo ?? bill.billNo, messageType: 'bill', body, billForMedia: finalBill, itemsForMedia: items });
-    if (whatsapp.status === 'failed') {
-      await notifyAdmin('Hosur WhatsApp bill failed', `${bill.invoiceNo ?? bill.billNo} for ${bill.shopName} could not be sent. Retry from WhatsApp Logs.`, bill.id, bill.invoiceNo ?? bill.billNo, { error: whatsapp.errorMessage });
-    }
-    printBill(finalBill, items, false);
   };
 
   const resendBillWhatsapp = async (bill: HosurBill) => {
@@ -2241,7 +2102,7 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
                         <button title="Rename this item" className="text-muted-foreground hover:text-foreground" onClick={() => { setRenamingItemName(item.name); setRenameDraft(item.name); }}><Pencil className="size-3" /></button>
                       </span>
                     )}
-                    {nameMismatch?.status === 'mismatch' && (<span title={`Recipe Management has "${nameMismatch.match}" — spelling doesn't match.`} className="ml-1.5 inline-flex items-center gap-1 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-700">recipe mismatch</span>)}{nameMismatch?.status === 'missing' && (<span title="This item isn't in Recipe Management yet." className="ml-1.5 inline-flex items-center gap-1 rounded-full bg-red-100 px-1.5 py-0.5 text-[10px] font-bold text-red-700">not in recipe mgmt</span>)}<p className="text-[10px] text-muted-foreground">{item.category} · {item.source === 'shop' ? 'shop item' : 'master item'}</p></td><td className="px-3 py-2">{item.uom === 'Kgs' ? 'kg' : 'pcs'}</td><td className="px-3 py-2">{item.source === 'master' ? money(item.price) : '—'}</td><td className="px-3 py-2"><input className="w-28 rounded-xl border px-2 py-1.5 text-sm" type="number" value={priceEdits[item.name] ?? String(current)} onChange={(e) => setPriceEdits((prev) => ({ ...prev, [item.name]: e.target.value }))} /></td><td className="px-3 py-2 text-right"><div className="flex justify-end gap-2"><button className={softButton} disabled={!selectedShop || busy} onClick={() => withBusy(() => savePrice(item), 'Price updated.')}>{custom?.isActive ? 'Update' : 'Save'}</button><button className="rounded-2xl bg-red-50 px-3 py-2 text-xs font-black text-red-700 hover:bg-red-100" disabled={!selectedShop || busy} onClick={() => withBusy(() => deletePrice(item), 'Item removed from this shop list.')}>Delete</button></div></td></tr>;
+                    {nameMismatch?.status === 'mismatch' && (<span title={`Recipe Management has "${nameMismatch.match}" — spelling doesn't match.`} className="ml-1.5 inline-flex items-center gap-1 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-700">recipe mismatch</span>)}{nameMismatch?.status === 'missing' && (<span title="This item isn't in Recipe Management yet." className="ml-1.5 inline-flex items-center gap-1 rounded-full bg-red-100 px-1.5 py-0.5 text-[10px] font-bold text-red-700">not in recipe mgmt</span>)}<p className="text-[10px] text-muted-foreground">{item.category} · {item.source === 'shop' ? 'shop item' : 'master item'}</p></td><td className="px-3 py-2">{item.uom === 'Kgs' ? 'kg' : 'pcs'}</td><td className="px-3 py-2">{item.source === 'master' ? money(item.price) : '—'}</td><td className="px-3 py-2"><input className="w-28 rounded-xl border px-2 py-1.5 text-sm" type="number" value={priceEdits[item.name] ?? String(current)} onChange={(e) => setPriceEdits((prev) => ({ ...prev, [item.name]: e.target.value }))} /></td><td className="px-3 py-2 text-right"><div className="flex justify-end gap-2"><button className={softButton} disabled={!selectedShop || busy} onClick={() => withBusy(() => savePrice(item), 'Price updated.')}>{custom?.isActive ? 'Update' : 'Save'}</button><button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it." className="rounded-2xl bg-red-50 px-3 py-2 text-xs font-black text-red-700 hover:bg-red-100" disabled={!selectedShop || busy} onClick={() => withBusy(() => deletePrice(item), 'Item removed from this shop list.')}>Delete</button></div></td></tr>;
                 })}
               </tbody>
             </table>
@@ -2453,7 +2314,7 @@ function NewOrderTab({ shops, prices, busy, withBusy, priceFor, userName }: {
           </Card>
           <Card className="h-fit space-y-4 2xl:sticky 2xl:top-36">
             <h3 className="font-black">Order Summary</h3>
-            {cartItems.length === 0 ? <EmptyState icon={<ShoppingCart className="size-6" />} title="No items added" /> : <div className="max-h-[48dvh] space-y-2 overflow-auto pr-1">{cartItems.map((item) => <div key={item.itemName} className="rounded-2xl border bg-muted/20 p-3"><div className="flex justify-between gap-2"><p className="text-sm font-black">{item.itemName}</p><button className="text-red-600" onClick={() => setCart((prev) => { const next = { ...prev }; delete next[item.itemName]; return next; })}><X className="size-4" /></button></div><div className="mt-1 flex justify-between text-xs text-muted-foreground"><span>{num(item.quantity)} {item.unit} × {money(item.unitPrice)}</span><b className="text-foreground">{money(item.lineTotal)}</b></div></div>)}</div>}
+            {cartItems.length === 0 ? <EmptyState icon={<ShoppingCart className="size-6" />} title="No items added" /> : <div className="max-h-[48dvh] space-y-2 overflow-auto pr-1">{cartItems.map((item) => <div key={item.itemName} className="rounded-2xl border bg-muted/20 p-3"><div className="flex justify-between gap-2"><p className="text-sm font-black">{item.itemName}</p><button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it." className="text-red-600" onClick={() => setCart((prev) => { const next = { ...prev }; delete next[item.itemName]; return next; })}><X className="size-4" /></button></div><div className="mt-1 flex justify-between text-xs text-muted-foreground"><span>{num(item.quantity)} {item.unit} × {money(item.unitPrice)}</span><b className="text-foreground">{money(item.lineTotal)}</b></div></div>)}</div>}
             <Field label="Order notes"><textarea className={cn(inputClass, 'min-h-20 resize-none')} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Optional notes for packing/branch" /></Field>
             <div className="flex items-center justify-between rounded-2xl bg-emerald-700 px-4 py-3 text-white"><span className="font-black">Total</span><span className="font-display text-2xl font-black">{money(subtotal)}</span></div>
             <button className={primaryButton} disabled={busy || cartItems.length === 0} onClick={() => withBusy(saveOrder, 'Order created and sent to packing workflow.')}>{busy ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />} Create Order</button>

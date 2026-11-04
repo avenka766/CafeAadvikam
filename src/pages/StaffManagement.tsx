@@ -505,7 +505,7 @@ export default function StaffManagement() {
             <p className="mt-2 text-sm text-muted-foreground">Remove {deleteTarget.displayName}? This action cannot be undone.</p>
             <div className="mt-5 flex justify-end gap-2">
               <button type="button" className="rounded-xl border px-4 py-2" onClick={() => setDeleteTarget(null)}>Cancel</button>
-              <button type="button" className="rounded-xl bg-destructive px-4 py-2 text-destructive-foreground" onClick={handleRemoveStaff} disabled={removingId === deleteTarget.id}>{removingId === deleteTarget.id ? 'Removing…' : 'Remove'}</button>
+              <button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it." type="button" className="rounded-xl bg-destructive px-4 py-2 text-destructive-foreground" onClick={handleRemoveStaff} disabled={removingId === deleteTarget.id}>{removingId === deleteTarget.id ? 'Removing…' : 'Remove'}</button>
             </div>
           </div>
         </div>

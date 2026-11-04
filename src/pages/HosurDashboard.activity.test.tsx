@@ -1,0 +1,23 @@
+import {act} from 'react';
+import {createRoot,type Root} from 'react-dom/client';
+import {MemoryRouter} from 'react-router-dom';
+import {afterEach,beforeEach,expect,it,vi} from 'vitest';
+const m=vi.hoisted(()=>({from:vi.fn(),fetch:vi.fn(),catalog:vi.fn(),subscribe:vi.fn(),unsubscribe:vi.fn(),branch:vi.fn(),credits:vi.fn(),sync:vi.fn()}));
+vi.mock('@/lib/supabase',()=>({supabase:{from:m.from,rpc:vi.fn()},fetchAllRows:m.fetch}));
+vi.mock('@/stores/authStore',()=>({useAuthStore:()=>({currentUser:{displayName:'Fixture',role:'planner'}})}));
+vi.mock('@/branch/branchStore',()=>({useBranchStore:()=>({fetchBranchData:m.branch,fetchCreditSales:m.credits,syncIncomingFromDispatches:m.sync})}));
+vi.mock('@/stores/branchCatalogStore',()=>({useBranchCatalogStore:(selector?:any)=>selector?selector({items:{SNB:[]}}):{loadCatalog:m.catalog,subscribe:m.subscribe}}));
+vi.mock('@/bakery/hosurBillingBridge',()=>({queueHosurConfirmBill:vi.fn()}));
+import HosurDashboard from './HosurDashboard';
+(globalThis as {IS_REACT_ACT_ENVIRONMENT?:boolean}).IS_REACT_ACT_ENVIRONMENT=true;
+let host:HTMLDivElement,root:Root;
+beforeEach(()=>{for(const fn of Object.values(m))fn.mockReset();m.fetch.mockResolvedValue({data:[],error:null});m.subscribe.mockReturnValue(m.unsubscribe);const result=Promise.resolve({data:[],error:null});const query:any=new Proxy({}, {get:(_t,key)=>key==='then'?result.then.bind(result):()=>query});m.from.mockReturnValue(query);host=document.createElement('div');document.body.append(host);root=createRoot(host);});
+afterEach(()=>{act(()=>root.unmount());host.remove();});
+it('defers all hidden workspace loads and refreshes once when entered',async()=>{
+ const render=(active:boolean)=>act(async()=>root.render(<MemoryRouter initialEntries={['/?hosurTab=credit']}><HosurDashboard hideNav active={active}/></MemoryRouter>));
+ await render(false);expect(m.from).not.toHaveBeenCalled();expect(m.fetch).not.toHaveBeenCalled();expect(m.catalog).not.toHaveBeenCalled();
+ await render(true);const fetched=m.fetch.mock.calls.length;expect(fetched).toBeGreaterThan(0);expect(m.branch).toHaveBeenCalledTimes(1);expect(m.subscribe).toHaveBeenCalledTimes(1);
+ await render(false);expect(m.fetch).toHaveBeenCalledTimes(fetched);expect(m.unsubscribe).toHaveBeenCalledTimes(1);
+ await act(async()=>{window.dispatchEvent(new Event('focus'));});expect(m.fetch).toHaveBeenCalledTimes(fetched);
+ await render(true);expect(m.branch).toHaveBeenCalledTimes(2);expect(m.fetch).toHaveBeenCalledTimes(fetched*2);
+});

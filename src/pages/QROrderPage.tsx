@@ -420,7 +420,7 @@ export default function QROrderPage() {
                       <span className="min-w-8 text-center text-sm font-black">{line.quantity}</span>
                       <button type="button" onClick={() => changeQuantity(line.menuItem.id, line.quantity + 1)} className="grid size-8 place-items-center rounded-lg bg-stone-950 text-white"><Plus className="size-4" /></button>
                     </div>
-                    <button type="button" onClick={() => removeFromCart(line.menuItem.id)} aria-label={`Remove ${line.menuItem.name}`} className="grid size-9 place-items-center rounded-xl text-red-600 hover:bg-red-50"><Trash2 className="size-4" /></button>
+                    <button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it." type="button" onClick={() => removeFromCart(line.menuItem.id)} aria-label={`Remove ${line.menuItem.name}`} className="grid size-9 place-items-center rounded-xl text-red-600 hover:bg-red-50"><Trash2 className="size-4" /></button>
                   </div>
                 ))}
               </div>

@@ -1,3 +1,4 @@
+import {buildCashierSalesRows} from '@/lib/cashierSalesReport';
 import { ReportSourceFailures } from '@/components/ReportSourceFailures';
 import { AdminReportDateRange, AdminSummaryCard } from '@/components/admin/AdminReportControls';
 import { allocateReportItems } from "@/lib/reportItemAllocation";
@@ -10,6 +11,7 @@ import {
   useEffect,
   useMemo,
   useState,
+  useRef,
   type ElementType,
   type ReactNode,
 } from "react";
@@ -551,7 +553,7 @@ export default function AdminSNBDashboard() {
   const [lowStockOpen, setLowStockOpen] = useState(true);
   const [lowSearch, setLowSearch] = useState("");
   const [notice, setNotice] = useState("");
-  const adminLedger = useBranchLedger(fromDate, toDate, [BRANCH]);
+  const adminLedger = useBranchLedger(fromDate, toDate, [BRANCH], !['cashier-closure','closure'].includes(tab));
   const dbReports = useSnbAdminReports(fromDate, toDate, tab);
 
   const userName =
@@ -1615,7 +1617,7 @@ function SalesReturnsTab(props: any) {
             className={cn(btnCls, "bg-slate-950 text-white")}
             onClick={() =>
               csvDownload(
-                `SNB_Sales_Returns_${dateInput()}.xls`,
+                `SNB_Sales_Returns_${props.fromDate}_to_${props.toDate}.xls`,
                 salesRows.map((r) => ({
                   Type: r.type,
                   Number: r.no,
@@ -2243,7 +2245,7 @@ function SuppliersTab({ userName }: { userName: string }) {
       >
         <DataTable
           headers={["Name", "Mobile", "GST", "Items", "Address", "Notes", "Added", "Actions"]}
-          rows={rows.map((supplier) => [supplier.name, supplier.mobile, supplier.gstNumber || "-", supplier.itemsProvided || "-", supplier.address || "-", supplier.notes || "-", fmtDateTime(supplier.createdAt), <div key={supplier.id} className="flex gap-2"><button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => { setEditingId(supplier.id); setForm({ name: supplier.name, address: supplier.address, mobile: supplier.mobile, gstNumber: supplier.gstNumber, itemsProvided: supplier.itemsProvided, notes: supplier.notes }); }}>Edit</button><button className={cn(btnCls, "bg-red-50 text-red-700 ring-1 ring-red-200")} onClick={() => { if (window.confirm(`Delete ${supplier.name}?`)) removeSupplier(supplier.id, userName); }}>Delete</button></div>])}
+          rows={rows.map((supplier) => [supplier.name, supplier.mobile, supplier.gstNumber || "-", supplier.itemsProvided || "-", supplier.address || "-", supplier.notes || "-", fmtDateTime(supplier.createdAt), <div key={supplier.id} className="flex gap-2"><button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => { setEditingId(supplier.id); setForm({ name: supplier.name, address: supplier.address, mobile: supplier.mobile, gstNumber: supplier.gstNumber, itemsProvided: supplier.itemsProvided, notes: supplier.notes }); }}>Edit</button><button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it." className={cn(btnCls, "bg-red-50 text-red-700 ring-1 ring-red-200")} onClick={() => { if (window.confirm(`Delete ${supplier.name}?`)) removeSupplier(supplier.id, userName); }}>Delete</button></div>])}
           empty="No suppliers added."
         />
       </Panel>
@@ -2331,12 +2333,21 @@ function ExpensesTab({ userName, expenseAmount, cashBalance }: any) {
       createdBy: expense.enteredBy,
     });
   };
-  const save = () => {
+  const [saveError,setSaveError]=useState('');
+  const [savingExpense,setSavingExpense]=useState(false);
+  const expenseSaveRef=useRef(false);
+  const save = async () => {
     const amount = Number(form.amount);
     // AUDIT FIX (2026-09-02): `!amount` let a negative expense through.
-    if (!form.category.trim() || !form.description.trim() || !(amount > 0)) return;
-    addExpense({ branch: BRANCH, expenseDate: form.expenseDate, category: form.category, description: form.description, amount, mode: form.mode as any, enteredBy: userName });
-    setForm({ ...form, category: "", description: "", amount: "" });
+    if (!form.category.trim() || !form.description.trim() || !Number.isFinite(amount) || !(amount > 0)) return;
+    if(expenseSaveRef.current)return;
+    expenseSaveRef.current=true;setSavingExpense(true);setSaveError('');
+    try {
+      await addExpense({branch:BRANCH,expenseDate:form.expenseDate,category:form.category,description:form.description,amount,mode:form.mode as any,enteredBy:userName});
+      setForm({...form,category:'',description:'',amount:''});
+    }catch(failure){setSaveError(failure instanceof Error?failure.message:'Could not save expense.');}
+    finally{expenseSaveRef.current=false;setSavingExpense(false);}
+
   };
   const openEdit = (expense: (typeof rows)[number]) => {
     setEditingExpense(expense);
@@ -2357,7 +2368,8 @@ function ExpensesTab({ userName, expenseAmount, cashBalance }: any) {
     const { data: verified, error: verifyError } = await supabase.rpc("verify_staff_password", { p_user_id: currentUser.id, p_password: password });
     if (verifyError) return `Could not verify password: ${verifyError.message}`;
     if (!verified) return "Incorrect password.";
-    updateExpense(editingExpense.id, { category: editForm.category.trim(), description: editForm.description.trim(), amount, mode: editForm.mode as any }, userName);
+    try{await updateExpense(editingExpense.id,{category:editForm.category.trim(),description:editForm.description.trim(),amount,mode:editForm.mode as any},userName);}
+    catch(failure){return failure instanceof Error?failure.message:'Expense change could not be saved.';}
     setEditingExpense(null);
     return null;
   };
@@ -2369,6 +2381,7 @@ function ExpensesTab({ userName, expenseAmount, cashBalance }: any) {
       </div>
       <div className="grid gap-4 xl:grid-cols-[430px_minmax(0,1fr)]">
         <Panel title="Add Expense" icon={<Banknote className="size-4" />}>
+          {saveError&&<p role="alert" className="rounded-xl bg-red-50 p-3 text-sm text-red-700">{saveError}</p>}
           <div className="space-y-3">
             <div className="grid grid-cols-2 gap-3">
               <Field label="Date"><input type="date" className={inputCls} value={form.expenseDate} onChange={(e) => setForm({ ...form, expenseDate: e.target.value })} /></Field>
@@ -2381,7 +2394,7 @@ function ExpensesTab({ userName, expenseAmount, cashBalance }: any) {
                 <option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option><option value="bank">Bank</option>
               </select>
             </Field>
-            <button onClick={save} className={cn(btnCls, "w-full bg-slate-950 text-white")}>Save Expense</button>
+            <button disabled={savingExpense} onClick={()=>void save()} className={cn(btnCls, "w-full bg-slate-950 text-white")}>Save Expense</button>
           </div>
         </Panel>
         <Panel title="Expense History" icon={<History className="size-4" />} action={<div className="flex flex-wrap gap-2"><button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => void refreshExpenses()} disabled={expensesRefreshing}><RefreshCcw className={cn("size-4", expensesRefreshing && "animate-spin")} /> Refresh</button><button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Expenses.xls", rows.map((e) => ({ Date: e.expenseDate, Category: e.category, Details: e.description, Amount: e.amount, Mode: e.mode, EnteredBy: e.enteredBy })))}><Download className="size-4" /> Excel</button></div>}>
@@ -2982,7 +2995,7 @@ function WasteLogsTab({ userName, role }: { userName: string; role: string }) {
                   {lines.map((line) => (
                     <div key={line.lineId} className="flex items-center justify-between gap-2 rounded-xl bg-white px-3 py-2 ring-1 ring-slate-200">
                       <div className="text-sm font-bold"><span className="font-black">{line.itemName}</span> · {line.quantity} {line.unit} · @{Math.round(priceForItem(line.itemName))}</div>
-                      <div className="flex items-center gap-2"><span className="text-sm font-black text-slate-700">₹{Math.round(priceForItem(line.itemName) * Number(line.quantity || 0))}</span><button type="button" onClick={() => removeLine(line.lineId)} className="grid size-7 place-items-center rounded-lg text-slate-400 hover:bg-red-50 hover:text-red-600"><X className="size-3.5" /></button></div>
+                      <div className="flex items-center gap-2"><span className="text-sm font-black text-slate-700">₹{Math.round(priceForItem(line.itemName) * Number(line.quantity || 0))}</span><button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it." type="button" onClick={() => removeLine(line.lineId)} className="grid size-7 place-items-center rounded-lg text-slate-400 hover:bg-red-50 hover:text-red-600"><X className="size-3.5" /></button></div>
                     </div>
                   ))}
                 </div>
@@ -3968,42 +3981,15 @@ function CurrentCashTab({ userName }: { userName: string }) {
 }
 function CashierReportTab(props: any) {
   const db = props.dbReports as ReturnType<typeof useSnbAdminReports>;
-  const rows = useMemo(() => {
-    const map = new Map<string, any>();
-    props.dbReports.counterTotals.forEach((entry: any) => {
-      const name = entry.cashier_username || "Legacy / Unattributed";
-      const row = map.get(name) || { name, grossSales: 0, discount: 0, returns: 0, netSales: 0, bills: 0, cash: 0, upi: 0, card: 0, credit: 0, creditCollected: 0, advance: 0, sessions: 0 };
-      // `billed_total` = Σ bill.total (post discount/promo/wallet/round-off) —
-      // the same figure the Dashboard Overview shows as "Gross Sales", so the
-      // two tabs reconcile. `gross_sales` on the view is a PRE-discount number
-      // (Σ subtotal + discount − round_off); we surface the discount separately
-      // instead. Fall back to gross_sales only for older rows with no
-      // billed_total (view predates this column).
-      row.grossSales += asNumber(entry.billed_total) || asNumber(entry.gross_sales);
-      row.discount += asNumber(entry.discounts);
-      row.returns += asNumber(entry.returns);
-      row.netSales += asNumber(entry.net_sales);
-      row.bills += asNumber(entry.bill_count);
-      row.cash += asNumber(entry.cash_sales);
-      row.upi += asNumber(entry.upi_sales);
-      row.card += asNumber(entry.card_sales);
-      row.credit += asNumber(entry.credit_sales);
-      row.creditCollected += asNumber(entry.credit_collected);
-      row.advance += asNumber(entry.advance_collected);
-      row.sessions += 1;
-      map.set(name, row);
-    });
-    // Total Amount = paid-for sales for this cashier = Net Sales − Credit Sales
-    // (the part billed on credit that is NOT yet paid). Everything else — cash,
-    // UPI, card, advance already received on cake orders — is realised money, so
-    // it's just net minus the outstanding credit balance booked in the period.
-    // (Not cash+upi+card+creditCollected+advance: that undercounts advance-final
-    // cake bills whose advance was paid on an earlier day and never lands in
-    // this session's payment rows.)
-    return Array.from(map.values())
-      .map((row: any) => ({ ...row, totalAmount: Math.max(0, row.netSales - row.credit) }))
-      .sort((a: any, b: any) => b.netSales - a.netSales);
-  }, [props.dbReports.counterTotals]);
+  const rows = useMemo(() => buildCashierSalesRows(db.operationBills, db.operationReturns, db.cashierPayments, db.counterSessions),
+    [db.operationBills, db.operationReturns, db.cashierPayments, db.counterSessions]);
+  const exportCashierReport = () => downloadExcelWorkbook(`SNB_Cashier_Report_${props.fromDate}_to_${props.toDate}.xls`, [
+    {name: 'Cashier Summary', rows: rows.map(row => ({CashierLogin:row.name,Sessions:row.sessions,GrossSales:row.grossSales,Discount:row.discount,Returns:row.returns,NetSales:row.netSales,Bills:row.bills,Cash:row.cash,UPI:row.upi,Card:row.card,CreditSales:row.credit,CreditCollected:row.creditCollected,AdvanceCollected:row.advance,AdvanceBalanceCollected:row.advanceBalance,TotalAmountHandled:row.totalAmount}))},
+    {name: 'Sales Bills', rows: db.operationBills.map(b => ({InvoiceNumber:b.billNo,DateIST:fmtDateTime(b.createdAt),RecordedAt:b.createdAt,Cashier:b.biller,Salesperson:b.salesperson,SalesAmount:b.total,Discount:b.discount,Payment:b.paymentMode,CounterSession:b.counterSessionId||''}))},
+    {name: 'Return Receipts', rows: db.operationReturns.map(r => ({ReturnNo:r.returnNo,OriginalBill:r.originalBillNo,DateIST:fmtDateTime(r.createdAt),Cashier:r.returnedBy,ReturnAmount:r.total,RefundMode:r.returnPayMode||'',Reason:r.reason}))},
+    {name: 'Collections', rows: db.cashierPayments.map(p => ({InvoiceNumber:p.bill_no||'',DateIST:fmtDateTime(p.created_at),Cashier:p.cashier_username||p.collected_by||'Legacy / Unattributed',Purpose:p.payment_purpose,Mode:p.payment_mode,Amount:Number(p.amount),CounterSession:p.counter_session_id||''}))},
+    {name: 'Report Details', rows: [{From:props.fromDate,To:props.toDate,SalesBills:db.operationBills.length,SalesAmount:db.operationBills.reduce((sum,b)=>sum+b.total,0),DateRule:'Sales use invoice creation date in IST, matching History. Collections and returns use their own recorded date. Counter closures retain their session business date. Prior advances and credit collections are not additional sales.'}]},
+  ]);
 
   const totalNet = rows.reduce((sum: number, row: any) => sum + row.netSales, 0);
   const totalBills = rows.reduce((sum: number, row: any) => sum + row.bills, 0);
@@ -4018,8 +4004,9 @@ function CashierReportTab(props: any) {
         <Kpi label="Total Amount Handled" value={money(grandTotalAmount)} icon={<WalletCards className="size-5" />} tone="purple" />
         <Kpi label="Top Cashier" value={best ? best.name : "-"} sub={best ? money(best.netSales) : undefined} icon={<BarChart3 className="size-5" />} tone="amber" />
       </div>
+      <p className="rounded-xl bg-blue-50 p-3 text-xs font-semibold text-blue-900">Sales follow the invoice date in IST, matching History and Excel. Collections follow their payment date. Counter Closure retains the original session date; an old session may include a next-day invoice.</p>
       {props.dbReports.error && <div className="rounded-2xl bg-amber-50 p-3 text-xs font-bold text-amber-800 ring-1 ring-amber-100">Some database reports could not load: {props.dbReports.error}</div>}
-      <Panel title="Cashier Accountability Report" icon={<BarChart3 className="size-4" />} action={<div className="flex flex-wrap gap-2"><button disabled={db.loading} className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200 disabled:opacity-50")} onClick={() => void db.refresh()}><RefreshCcw className={cn("size-4", db.loading && "animate-spin")} /> Refresh</button><button disabled={db.loading || !!db.error} className={cn(btnCls, "bg-slate-950 text-white disabled:opacity-50")} onClick={() => csvDownload("SNB_Cashier_Report.xls", rows.map((row: any) => ({ CashierLogin: row.name, Sessions: row.sessions, GrossSales: row.grossSales, Discount: row.discount, Returns: row.returns, NetSales: row.netSales, Bills: row.bills, Cash: row.cash, UPI: row.upi, Card: row.card, CreditSales: row.credit, CreditCollected: row.creditCollected, AdvanceCollected: row.advance, TotalAmount: row.totalAmount })))}><Download className="size-4" /> Excel</button></div>}>
+      <Panel title="Cashier Accountability Report" icon={<BarChart3 className="size-4" />} action={<div className="flex flex-wrap gap-2"><button disabled={db.loading} className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200 disabled:opacity-50")} onClick={() => void db.refresh()}><RefreshCcw className={cn("size-4", db.loading && "animate-spin")} /> Refresh</button><button disabled={db.loading || !!db.error} className={cn(btnCls, "bg-slate-950 text-white disabled:opacity-50")} onClick={exportCashierReport}><Download className="size-4" /> Excel</button></div>}>
         <DataTable
           headers={["Rank", "Cashier Login", "Sessions", "Gross", "Discount", "Returns", "Net", "Bills", "Cash", "UPI", "Card", "Credit Sales", "Credit Collected", "Advance", "Total Amount"]}
           rows={rows.map((row: any, index: number) => [`#${index + 1}`, row.name, row.sessions || "-", money(row.grossSales), money(row.discount), money(row.returns), <span key="net" className="font-black text-emerald-700">{money(row.netSales)}</span>, row.bills, money(row.cash), money(row.upi), money(row.card), money(row.credit), money(row.creditCollected), money(row.advance), <span key="total" className="font-black text-purple-700">{money(row.totalAmount)}</span>])}
@@ -4047,6 +4034,11 @@ function CashierReportTab(props: any) {
             <span className="tabular-nums">{money(grandTotalAmount)}</span>
           </div>
         )}
+      </Panel>
+      <Panel title="Cashier bill details — invoice date" icon={<Receipt className="size-4" />}>
+        <DataTable headers={['Invoice','Date (IST)','Cashier','Salesperson','Sale amount','Payment']}
+          rows={db.operationBills.map(b=>[b.billNo,fmtDateTime(b.createdAt),b.biller,b.salesperson,money(b.total),b.paymentMode])}
+          empty={db.loading?'Loading bills…':'No sales bills for the selected date range.'}/>
       </Panel>
     </div>
   );
@@ -6976,7 +6968,7 @@ function SalespersonManagementTab({ userName }: { userName: string }) {
               >
                 Edit
               </button>
-              <button
+              <button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it."
                 className={cn(btnCls, "bg-red-50 text-red-600")}
                 onClick={() => {
                   if (window.confirm(`Delete salesperson ${p.name}?`)) {
@@ -7173,7 +7165,7 @@ function DailyClosureTab({ userName, ...props }: any) {
   );
 }
 
-function HistoryTab(props: any) {
+export function HistoryTab(props: any) {
   const db = props.dbReports as ReturnType<typeof useSnbAdminReports>;
   const historyRows = buildSalesRows({ ...props, branchBills: db.operationBills, branchReturns: db.operationReturns,
     legacySalesRows: [], movementInRange: [], creditPaymentsInRange: [] })
@@ -7192,6 +7184,12 @@ function HistoryTab(props: any) {
   }));
   const itemsSoldRows = Array.from(itemMap.values());
   const [expandedRow, setExpandedRow] = useState<string | null>(null);
+  const [historyPage,setHistoryPage]=useState(1);
+  useEffect(()=>{setHistoryPage(1);setExpandedRow(null);},[props.fromDate,props.toDate,db.refreshedAt]);
+  const pages=Math.max(1,Math.ceil(historyRows.length/100));
+  const page=Math.min(historyPage,pages);
+  const visibleHistory=historyRows.slice((page-1)*100,page*100);
+  const emptyHistory=db.loading?'Loading live history…':db.error?'Live history could not load. Retry failed sources above.':'No history records for selected date range.';
 
   const exportAll = () =>
     downloadExcelWorkbook(`SNB_History_${props.fromDate}_to_${props.toDate}.xls`, [
@@ -7290,11 +7288,12 @@ function HistoryTab(props: any) {
               {historyRows.length === 0 ? (
                 <tr>
                   <td colSpan={9} className="p-6 text-center font-bold text-slate-500">
-                    No history records for selected date range.
+                    {emptyHistory}
                   </td>
                 </tr>
               ) : (
-                historyRows.map((r: any, index: number) => {
+                visibleHistory.map((r: any, localIndex: number) => {
+                  const index=(page-1)*100+localIndex;
                   const rowKey = `${r.type}-${r.no}-${index}`;
                   const hasItems = (r.items || []).length > 0;
                   return (
@@ -7380,9 +7379,16 @@ function HistoryTab(props: any) {
             </tbody>
           </table>
         </div>
+        {historyRows.length>0&&<div className="mt-3 flex items-center justify-between gap-3 text-xs">
+          <span>{historyRows.length} bills · Page {page} of {pages} · Excel includes all bills</span>
+          <div className="flex gap-2">
+            <button type="button" disabled={page===1} onClick={()=>setHistoryPage(page-1)} className="rounded-lg border px-3 py-2 disabled:opacity-40">Previous</button>
+            <button type="button" disabled={page===pages} onClick={()=>setHistoryPage(page+1)} className="rounded-lg border px-3 py-2 disabled:opacity-40">Next</button>
+          </div>
+        </div>}
       </Panel>
       <Panel title="Refunds — deducted in Sales Summary" icon={<RotateCcw className="size-4" />}>
-        <DataTable headers={['Return No', 'Original Bill', 'Date', 'Amount']} rows={db.operationReturns.map(r => [r.returnNo, r.originalBillNo, fmtDateTime(r.createdAt), money(r.total)])} empty="No refunds in this range." />
+        <DataTable headers={['Return No', 'Original Bill', 'Date', 'Amount']} rows={db.operationReturns.map(r => [r.returnNo, r.originalBillNo, fmtDateTime(r.createdAt), money(r.total)])} empty={db.loading?'Loading live refunds…':db.error?'Refund data is incomplete; retry failed sources above.':'No refunds in this range.'} />
       </Panel>
       <Panel title="Items Sold" icon={<Package className="size-4" />}>
         <DataTable
@@ -7397,7 +7403,7 @@ function HistoryTab(props: any) {
             money(asNumber(row.net_item_sales)),
             asNumber(row.bill_count),
           ])}
-          empty="No item-wise sales for this date range."
+          empty={db.loading?'Loading live item details…':db.error?'Item data is incomplete; retry failed sources above.':'No item-wise sales for this date range.'}
         />
       </Panel>
     </div>

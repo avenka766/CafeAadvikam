@@ -8,6 +8,7 @@ import {
   useEffect,
   useMemo,
   useState,
+  useRef,
   type ElementType,
   type ReactNode,
 } from "react";
@@ -441,9 +442,11 @@ export default function AdminVRSNBDashboard() {
   // branchOpsStore's hydration limit). Whenever the admin picks/changes a
   // report date range, fetch that exact range directly so totals are never
   // silently clipped by the cap.
+  const needsBillRange=tab!=='cashier-closure';
   useEffect(() => {
+    if(!needsBillRange)return;
     VRSNB_ADMIN_BRANCHES.forEach(branch => void fetchBillsInRange(fromDate, toDate, branch));
-  }, [fromDate, toDate, fetchBillsInRange]);
+  }, [fromDate, toDate, needsBillRange, fetchBillsInRange]);
   const [lowStockOpen, setLowStockOpen] = useState(true);
   const [lowSearch, setLowSearch] = useState("");
   const [notice, setNotice] = useState("");
@@ -454,13 +457,13 @@ export default function AdminVRSNBDashboard() {
   );
   const viewBranch: Branch = viewScope === "Cafe" ? "Cafe" : BRANCH;
   const viewBranchLabel = SCOPE_LABEL[viewScope];
-  const adminLedger = useBranchLedger(fromDate, toDate, viewBranches);
+  const adminLedger = useBranchLedger(fromDate, toDate, viewBranches, tab !== 'cashier-closure');
   // BUG FIX (2026-08-10): Cafe's real sales live in the `orders` table, not
   // branch_bill_headers/branch_daily_closure_ledger (those two only ever
   // cover VRSNB/SNB's retail till). Fetched separately and folded into the
   // combined totals below whenever Cafe is in the selected scope — see
   // useCafeOrderSales.ts for the full explanation.
-  const cafeOrderSales = useCafeOrderSales(fromDate, toDate, viewBranches.includes("Cafe"));
+  const cafeOrderSales = useCafeOrderSales(fromDate, toDate, viewBranches.includes("Cafe") && tab !== "cashier-closure");
 
   const userName =
     currentUser?.displayName || currentUser?.username || "VRSNB Admin";
@@ -1681,7 +1684,7 @@ function SalesReturnsTab(props: any) {
               className={cn(btnCls, "bg-slate-950 text-white")}
               onClick={() =>
                 csvDownload(
-                  `VRSNB_Sales_Returns_${dateInput()}.xls`,
+                  `VRSNB_Sales_Returns_${props.fromDate}_to_${props.toDate}.xls`,
                   salesRows.map((r) => ({
                     Type: r.type,
                     Number: r.no,
@@ -2002,7 +2005,7 @@ function SuppliersTab({ userName }: { userName: string }) {
       >
         <DataTable
           headers={["Name", "Mobile", "GST", "Items", "Address", "Notes", "Added", "Actions"]}
-          rows={rows.map((supplier) => [supplier.name, supplier.mobile, supplier.gstNumber || "-", supplier.itemsProvided || "-", supplier.address || "-", supplier.notes || "-", fmtDateTime(supplier.createdAt), <div key={supplier.id} className="flex gap-2"><button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => { setEditingId(supplier.id); setForm({ name: supplier.name, address: supplier.address, mobile: supplier.mobile, gstNumber: supplier.gstNumber, itemsProvided: supplier.itemsProvided, notes: supplier.notes }); }}>Edit</button><button className={cn(btnCls, "bg-red-50 text-red-700 ring-1 ring-red-200")} onClick={() => { if (window.confirm(`Delete ${supplier.name}?`)) removeSupplier(supplier.id, userName); }}>Delete</button></div>])}
+          rows={rows.map((supplier) => [supplier.name, supplier.mobile, supplier.gstNumber || "-", supplier.itemsProvided || "-", supplier.address || "-", supplier.notes || "-", fmtDateTime(supplier.createdAt), <div key={supplier.id} className="flex gap-2"><button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => { setEditingId(supplier.id); setForm({ name: supplier.name, address: supplier.address, mobile: supplier.mobile, gstNumber: supplier.gstNumber, itemsProvided: supplier.itemsProvided, notes: supplier.notes }); }}>Edit</button><button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it." className={cn(btnCls, "bg-red-50 text-red-700 ring-1 ring-red-200")} onClick={() => { if (window.confirm(`Delete ${supplier.name}?`)) removeSupplier(supplier.id, userName); }}>Delete</button></div>])}
           empty="No VRSNB suppliers added."
         />
       </Panel>
@@ -2128,14 +2131,23 @@ function ExpensesTab({ userName, expenseAmount, cashBalance }: any) {
       setRefreshing(false);
     }
   };
-  const save = () => {
+  const [saveError,setSaveError]=useState('');
+  const [savingExpense,setSavingExpense]=useState(false);
+  const expenseSaveRef=useRef(false);
+  const save = async () => {
     const amount = Number(form.amount);
     // AUDIT FIX (2026-09-02): `!amount` only rejects zero/NaN — a negative
     // amount is truthy and sailed through, creating a negative "expense"
     // that inflates computed cash-on-hand instead of reducing it.
-    if (!form.category.trim() || !form.description.trim() || !(amount > 0)) return;
-    addExpense({ branch: BRANCH, expenseDate: form.expenseDate, category: form.category, description: form.description, amount, mode: form.mode as any, enteredBy: userName });
-    setForm({ ...form, category: "", description: "", amount: "" });
+    if (!form.category.trim() || !form.description.trim() || !Number.isFinite(amount) || !(amount > 0)) return;
+    if(expenseSaveRef.current)return;
+    expenseSaveRef.current=true;setSavingExpense(true);setSaveError('');
+    try {
+      await addExpense({branch:BRANCH,expenseDate:form.expenseDate,category:form.category,description:form.description,amount,mode:form.mode as any,enteredBy:userName});
+      setForm({...form,category:'',description:'',amount:''});
+    }catch(failure){setSaveError(failure instanceof Error?failure.message:'Could not save expense.');}
+    finally{expenseSaveRef.current=false;setSavingExpense(false);}
+
   };
   return (
     <div className="space-y-4">
@@ -2145,6 +2157,7 @@ function ExpensesTab({ userName, expenseAmount, cashBalance }: any) {
       </div>
       <div className="grid gap-4 xl:grid-cols-[430px_minmax(0,1fr)]">
         <Panel title="Add Expense" icon={<Banknote className="size-4" />}>
+          {saveError&&<p role="alert" className="rounded-xl bg-red-50 p-3 text-sm text-red-700">{saveError}</p>}
           <div className="space-y-3">
             <div className="grid grid-cols-2 gap-3">
               <Field label="Date"><input type="date" className={inputCls} value={form.expenseDate} onChange={(e) => setForm({ ...form, expenseDate: e.target.value })} /></Field>
@@ -2157,7 +2170,7 @@ function ExpensesTab({ userName, expenseAmount, cashBalance }: any) {
                 <option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option><option value="bank">Bank</option>
               </select>
             </Field>
-            <button onClick={save} className={cn(btnCls, "w-full bg-slate-950 text-white")}>Save Expense</button>
+            <button disabled={savingExpense} onClick={()=>void save()} className={cn(btnCls, "w-full bg-slate-950 text-white")}>Save Expense</button>
           </div>
         </Panel>
         <Panel title="Expense History" icon={<History className="size-4" />} action={<div className="flex gap-2"><button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => void refreshExpenses()} disabled={refreshing}><RefreshCcw className={cn("size-4", refreshing && "animate-spin")} /> Refresh</button><button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("VRSNB_Expenses.xls", rows.map((e) => ({ Date: e.expenseDate, Category: e.category, Details: e.description, Amount: e.amount, Mode: e.mode, EnteredBy: e.enteredBy })))}><Download className="size-4" /> Excel</button></div>}>
@@ -4090,7 +4103,7 @@ function SalespersonManagementTab({ userName }: { userName: string }) {
               >
                 Edit
               </button>
-              <button
+              <button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it."
                 className={cn(btnCls, "bg-red-50 text-red-600")}
                 onClick={() => removeSalesperson(p.id, userName)}
               >
