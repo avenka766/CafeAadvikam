@@ -24,3 +24,13 @@ it('revokes the private Audit session using the captured token after clearing lo
  useAuthStore.getState().logout();await request;
  expect(useAuthStore.getState().currentUser).toBeNull();expect(getAppSessionToken()).toBeNull();expect(mocks.rpc).toHaveBeenCalledWith('logout_audit_staff_secure');expect(request.setHeader).toHaveBeenCalledWith('x-cafe-session','isolated-audit-session-token');
 });
+
+it('revokes a normal staff session with the token captured before local logout',async()=>{
+ const {saveAppSession,getAppSessionToken}=await import('@/lib/appSession');
+ saveAppSession('isolated-normal-session-token',new Date(Date.now()+60000).toISOString());
+ useAuthStore.setState({currentUser:{id:'fixture',username:'Fixture',displayName:'Fixture',role:'billing',password:''}});
+ const setHeader=vi.fn().mockResolvedValue({data:null,error:null});mocks.rpc.mockReturnValue({setHeader});
+ useAuthStore.getState().logout();await Promise.resolve();
+ expect(getAppSessionToken()).toBeNull();expect(mocks.rpc).toHaveBeenCalledWith('logout_staff_secure');
+ expect(setHeader).toHaveBeenCalledWith('x-cafe-session','isolated-normal-session-token');
+});

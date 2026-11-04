@@ -1,4 +1,6 @@
 import { create } from 'zustand';
+import {createConfiguredWallet} from './walletCreationRequest';
+import {useAuthStore} from './authStore';
 import { supabase, fetchAllRows } from '@/lib/supabase';
 import type { Branch } from '@/branch/types';
 import type {
@@ -341,29 +343,12 @@ export const useWalletPromotionStore = create<WalletPromotionState>((set, get) =
     const mobile = normalizePhone(input.mobile);
     if (mobile.length !== 10) throw new Error('Enter a valid 10-digit mobile number.');
     if (get().wallets.some((wallet) => normalizePhone(wallet.mobile) === mobile)) throw new Error('A wallet already exists for this mobile number.');
-    const { data, error } = await supabase.rpc('create_customer_wallet_secure', {
-      p_customer_name: input.customerName.trim(),
-      p_mobile: mobile,
-      p_alternate_mobile: input.alternateMobile?.trim() || null,
-      p_email: input.email?.trim() || null,
-      p_date_of_birth: input.dateOfBirth || null,
-      p_anniversary_date: input.anniversaryDate || null,
-      p_address: input.address?.trim() || null,
-      p_customer_type: input.customerType || 'Regular',
-      p_preferred_branch: input.preferredBranch || null,
-      p_opening_balance: amount(input.openingBalance),
-      p_notes: input.notes?.trim() || null,
-      p_status: input.status || 'active',
-      p_idempotency_key: `wallet-create:${mobile}`,
-    });
-    if (error) throw new Error(error.message.includes('WALLET_EXISTS') ? 'A wallet already exists for this mobile number.' : error.message);
-    let created = walletFromRow((data || {}) as Record<string, unknown>);
-    if (input.transactionLimit != null || input.dailyLimit != null || input.highValueAuthorizationLimit != null || input.deductionPriority) {
-      try {
-        await get().updateWalletLimits(created.id, input.transactionLimit ?? null, input.dailyLimit ?? null, input.deductionPriority || 'promotional_first', input.highValueAuthorizationLimit ?? null);
-        created = { ...created, transactionLimit: input.transactionLimit ?? null, dailyLimit: input.dailyLimit ?? null, deductionPriority: input.deductionPriority || 'promotional_first', highValueAuthorizationLimit: input.highValueAuthorizationLimit ?? null };
-      } catch { /* wallet created; limits can be set later from the profile */ }
-    }
+    const data=await createConfiguredWallet(useAuthStore.getState().currentUser?.id||'',{
+      customerName:input.customerName.trim(),mobile,alternateMobile:input.alternateMobile?.trim()||null,email:input.email?.trim()||null,
+      dateOfBirth:input.dateOfBirth||null,anniversaryDate:input.anniversaryDate||null,address:input.address?.trim()||null,
+      customerType:input.customerType||'Regular',preferredBranch:input.preferredBranch||null,openingBalance:amount(input.openingBalance),notes:input.notes?.trim()||null,status:input.status||'active',
+    },{transactionLimit:input.transactionLimit??null,dailyLimit:input.dailyLimit??null,highValueAuthorizationLimit:input.highValueAuthorizationLimit??null,deductionPriority:input.deductionPriority||'promotional_first'});
+    const created=walletFromRow(data);
     set((state) => ({ wallets: [created, ...state.wallets.filter((wallet) => wallet.id !== created.id)] }));
     return created;
   },

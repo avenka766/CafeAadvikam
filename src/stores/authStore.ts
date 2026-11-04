@@ -107,7 +107,7 @@ export const useAuthStore = create<AuthState>()(
       logout: () => {
         const privateRole = get().currentUser?.role;
         const auditSession = privateRole === 'audit' || privateRole === 'finance';
-        const auditToken = auditSession ? getAppSessionToken() : null;
+        const auditToken = getAppSessionToken();
         const timer = get()._sessionTimer;
         if (timer) clearTimeout(timer);
 
