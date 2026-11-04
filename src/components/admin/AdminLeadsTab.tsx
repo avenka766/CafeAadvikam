@@ -147,7 +147,7 @@ export default function AdminLeadsTab() {
                       </select>
                     </td>
                     <td className="px-4 py-2">
-                      <button onClick={() => void removeEnquiry(r.id)} className="grid size-8 place-items-center rounded-lg text-red-600 hover:bg-red-50" aria-label="Delete"><Trash2 className="size-4" /></button>
+                      <button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it." onClick={() => void removeEnquiry(r.id)} className="grid size-8 place-items-center rounded-lg text-red-600 hover:bg-red-50" aria-label="Delete"><Trash2 className="size-4" /></button>
                     </td>
                   </tr>
                 ))}
@@ -174,7 +174,7 @@ export default function AdminLeadsTab() {
                     <td className="px-4 py-2">{r.contact}</td>
                     <td className="px-4 py-2 text-gray-500">{new Date(r.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</td>
                     <td className="px-4 py-2">
-                      <button onClick={() => void removeWaitlist(r.id)} className="grid size-8 place-items-center rounded-lg text-red-600 hover:bg-red-50" aria-label="Delete"><Trash2 className="size-4" /></button>
+                      <button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it." onClick={() => void removeWaitlist(r.id)} className="grid size-8 place-items-center rounded-lg text-red-600 hover:bg-red-50" aria-label="Delete"><Trash2 className="size-4" /></button>
                     </td>
                   </tr>
                 ))}

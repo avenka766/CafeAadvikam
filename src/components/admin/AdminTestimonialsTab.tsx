@@ -277,7 +277,7 @@ export default function AdminTestimonialsTab() {
                   <td className="px-4 py-2">
                     <div className="flex gap-2">
                       <button onClick={() => setDialog(r)} className="grid size-8 place-items-center rounded-lg hover:bg-gray-100"><Pencil className="size-4" /></button>
-                      <button onClick={() => void remove(r.id)} className="grid size-8 place-items-center rounded-lg text-red-600 hover:bg-red-50"><Trash2 className="size-4" /></button>
+                      <button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it." onClick={() => void remove(r.id)} className="grid size-8 place-items-center rounded-lg text-red-600 hover:bg-red-50"><Trash2 className="size-4" /></button>
                     </div>
                   </td>
                 </tr>

@@ -268,7 +268,7 @@ export default function AdminPromoBannersTab() {
       <Dialog open={!!deleteTarget} onOpenChange={open => { if (!open && !deleting) setDeleteTarget(null); }}>
         <DialogContent><DialogTitle>Delete this banner?</DialogTitle><DialogDescription>“{deleteTarget?.title}” will be permanently removed. This cannot be undone.</DialogDescription>
           {deleteError && <p role="alert" className="text-sm text-red-700">{deleteError}</p>}
-          <div className="flex justify-end gap-3"><button disabled={deleting} onClick={() => setDeleteTarget(null)} className="rounded-lg border px-4 py-2">Cancel</button><button disabled={deleting} onClick={() => deleteTarget && void remove(deleteTarget.id)} className="rounded-lg bg-red-700 px-4 py-2 text-white">{deleting ? 'Deleting…' : 'Delete banner'}</button></div>
+          <div className="flex justify-end gap-3"><button disabled={deleting} onClick={() => setDeleteTarget(null)} className="rounded-lg border px-4 py-2">Cancel</button><button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it." disabled={deleting} onClick={() => deleteTarget && void remove(deleteTarget.id)} className="rounded-lg bg-red-700 px-4 py-2 text-white">{deleting ? 'Deleting…' : 'Delete banner'}</button></div>
         </DialogContent>
       </Dialog>
     </div>

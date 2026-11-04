@@ -375,6 +375,6 @@ function ItemPicker({ label, items, selectedIds, onChange, single = false, scope
         {matches.map((item) => <button type="button" key={item.id} onClick={() => pick(item.id)} className="block w-full px-3 py-2 text-left text-sm hover:bg-slate-50"><span className="font-bold">{item.name}</span> <span className="text-xs text-slate-400">· {item.category}</span></button>)}
       </div>}
     </div>
-    {selectedItems.length > 0 && <div className="mt-2 flex flex-wrap gap-2">{selectedItems.map((item) => <span key={item.id} className="flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1 text-xs font-bold">{item.name}<button type="button" onClick={() => remove(item.id)}><X className="size-3" /></button></span>)}</div>}
+    {selectedItems.length > 0 && <div className="mt-2 flex flex-wrap gap-2">{selectedItems.map((item) => <span key={item.id} className="flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1 text-xs font-bold">{item.name}<button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it." type="button" onClick={() => remove(item.id)}><X className="size-3" /></button></span>)}</div>}
   </div>;
 }

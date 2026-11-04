@@ -9,6 +9,7 @@ import { cn } from '@/lib/utils';
 import { useBranchStore } from '@/branch/branchStore';
 import type { Branch } from '@/branch/types';
 import type { BranchAdvanceOrder } from '@/branch/branchStore';
+import {advanceCollectionBlocked,advanceDisplayStatus} from '@/branch/advanceCollectionEligibility';
 
 interface Props {
   branches: Branch[];
@@ -62,11 +63,11 @@ export default function AdminAdvanceTab({ branches }: Props) {
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return allOrders.filter(o => {
-      if (statusFilter !== 'all' && o.status !== statusFilter) return false;
+      if (statusFilter !== 'all' && advanceDisplayStatus(o) !== statusFilter) return false;
       if (branchFilter !== 'all' && o.branch !== branchFilter) return false;
       if (dateFilter && toLocalDateKey(o.createdAt) !== dateFilter) return false;
       if (q) {
-        const hay = [o.customerName ?? '', o.soldBy, ...o.items.map(i => i.itemName)].join(' ').toLowerCase();
+        const hay = [o.orderNo??'',o.mainFinalBillNo??'',o.customerName ?? '', o.soldBy, ...o.items.map(i => i.itemName)].join(' ').toLowerCase();
         if (!hay.includes(q)) return false;
       }
       return true;
@@ -74,8 +75,8 @@ export default function AdminAdvanceTab({ branches }: Props) {
   }, [allOrders, statusFilter, branchFilter, dateFilter, search]);
 
   // ── Summary numbers ─────────────────────────────────────────────────────────
-  const pending   = allOrders.filter(o => o.status === 'pending');
-  const completed = allOrders.filter(o => o.status === 'completed');
+  const pending   = allOrders.filter(o => !advanceCollectionBlocked(o));
+  const completed = allOrders.filter(o => advanceDisplayStatus(o) === 'completed');
   const totalAdvance     = allOrders.reduce((s, o) => s + o.advanceAmount, 0);
   const totalOutstanding = pending.reduce((s, o) => s + o.balanceDue, 0);
   const totalOrderValue  = allOrders.reduce((s, o) => s + o.subtotal, 0);
@@ -87,8 +88,8 @@ export default function AdminAdvanceTab({ branches }: Props) {
     return {
       branch: b,
       total: bOrders.length,
-      pending: bOrders.filter(o => o.status === 'pending').length,
-      outstanding: bOrders.filter(o => o.status === 'pending').reduce((s, o) => s + o.balanceDue, 0),
+      pending: bOrders.filter(o => !advanceCollectionBlocked(o)).length,
+      outstanding: bOrders.filter(o => !advanceCollectionBlocked(o)).reduce((s, o) => s + o.balanceDue, 0),
       advance: bOrders.reduce((s, o) => s + o.advanceAmount, 0),
     };
   }), [allOrders, branches]);
@@ -98,8 +99,10 @@ export default function AdminAdvanceTab({ branches }: Props) {
     const rows = filtered.map((o, i) => ({
       'S.No':           i + 1,
       'Branch':         o.branch,
+      'Order No': o.orderNo??'',
+      'Final Invoice': o.mainFinalBillNo??'',
       'Customer':       o.customerName ?? '-',
-      'Status':         o.status === 'completed' ? (o.balanceDue <= 0 ? 'Pre-Paid' : 'Settled') : 'Balance Pending',
+      'Status': o.finalizedInMain?'Finalized in main register':advanceDisplayStatus(o)==='cancelled'?'Cancelled':o.status === 'completed' ? (o.balanceDue <= 0 ? 'Pre-Paid' : 'Settled') : 'Balance Pending',
       'Order Date':     toLocalDate(o.createdAt),
       'Order Time':     toLocalTime(o.createdAt),
       'Delivery Date':  o.deliveryDate ? new Date(o.deliveryDate + 'T00:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '-',
@@ -107,7 +110,9 @@ export default function AdminAdvanceTab({ branches }: Props) {
       'Total Bill (₹)': o.subtotal,
       'Advance Paid (₹)': o.advanceAmount,
       'Advance Method': o.advanceMethod.toUpperCase(),
-      'Balance Due (₹)': o.balanceDue > 0 ? o.balanceDue : 0,
+      'Balance Due (₹)': !advanceCollectionBlocked(o)?Math.max(0,o.balanceDue):0,
+      'Historical balance field (₹)': o.balanceDue,
+      'Reconciliation note':o.mainFinalizationProblem??(o.finalizedInMain?'Check the original final invoice and credit ledger; do not collect again.':''),
       'Balance Method': o.balanceMethod?.toUpperCase() ?? '-',
       'Sold By':        o.soldBy,
     }));
@@ -242,7 +247,7 @@ export default function AdminAdvanceTab({ branches }: Props) {
         <div className="space-y-3">
           {filtered.map(order => {
             const isExpanded  = expanded === order.id;
-            const isCompleted = order.status === 'completed';
+            const isCompleted = advanceDisplayStatus(order) === 'completed';
             const isFullPay   = order.balanceDue <= 0;
 
             return (
@@ -263,7 +268,7 @@ export default function AdminAdvanceTab({ branches }: Props) {
                         isCompleted
                           ? 'bg-emerald-100 text-emerald-700 border-emerald-200'
                           : 'bg-amber-100 text-amber-700 border-amber-300')}>
-                        {isCompleted ? (isFullPay ? '✓ Pre-Paid' : '✓ Settled') : '⏳ Balance Pending'}
+                        {order.finalizedInMain?'Finalized in main register':advanceDisplayStatus(order)==='cancelled'?'Cancelled':isCompleted ? (isFullPay ? '✓ Pre-Paid' : '✓ Settled') : '⏳ Balance Pending'}
                       </span>
                       {order.customerName && (
                         <span className="text-sm font-bold text-foreground truncate">{order.customerName}</span>
@@ -313,7 +318,12 @@ export default function AdminAdvanceTab({ branches }: Props) {
                     <span className="text-amber-700 font-semibold">Advance ({order.advanceMethod.toUpperCase()})</span>
                     <span className="font-bold text-amber-700">−{fmt(order.advanceAmount)}</span>
                   </div>
-                  {isFullPay ? (
+                  {order.finalizedInMain||advanceDisplayStatus(order)==='cancelled' ? (
+                    <p className="border-t pt-2 text-xs font-semibold text-blue-900">
+                      {order.mainFinalBillNo?`Final invoice: ${order.mainFinalBillNo}. `:''}
+                      {advanceDisplayStatus(order)==='cancelled'?'Cancelled order. No balance is collectible.':'Finalized in the main register. Check the original invoice and credit ledger; do not collect this balance again.'}
+                    </p>
+                  ) : isFullPay ? (
                     <div className="flex justify-between text-xs pt-1 border-t border-emerald-200">
                       <span className="font-bold text-emerald-700 flex items-center gap-1">
                         <CheckCircle2 className="size-3" /> Fully Pre-Paid

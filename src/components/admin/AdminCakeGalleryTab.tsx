@@ -216,7 +216,7 @@ export default function AdminCakeGalleryTab() {
                   <span className="max-w-[70%] truncate text-xs font-bold text-white">{r.category ?? '—'}</span>
                   <div className="flex gap-1">
                     <button onClick={() => setDialog(r)} className="grid size-7 place-items-center rounded-full bg-white/90"><Pencil className="size-3.5" /></button>
-                    <button onClick={() => void remove(r.id)} className="grid size-7 place-items-center rounded-full bg-white/90 text-red-600"><Trash2 className="size-3.5" /></button>
+                    <button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it." onClick={() => void remove(r.id)} className="grid size-7 place-items-center rounded-full bg-white/90 text-red-600"><Trash2 className="size-3.5" /></button>
                   </div>
                 </div>
               </div>
