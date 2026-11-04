@@ -1,4 +1,5 @@
 import {Zip,ZipDeflate,strToU8} from 'fflate';
+import {withExcelObjectTotals} from '@/lib/excelTotals';
 import type {ReportSheet} from '@/lib/exportAdminReport';
 const ns='http://schemas.openxmlformats.org/spreadsheetml/2006/main';
 const rel='http://schemas.openxmlformats.org/officeDocument/2006/relationships';
@@ -14,12 +15,14 @@ export function streamAuditWorkbook(sheets:ReportSheet[],progress?:(message:stri
  const parts=sheets.flatMap(sheet=>Array.from({length:Math.max(1,Math.ceil(sheet.rows.length/1000000))},(_,part)=>{const suffix=sheet.rows.length>1000000?` ${part+1}`:'';return {sheet,start:part*1000000,end:Math.min(sheet.rows.length,(part+1)*1000000),name:sheet.name.slice(0,31-suffix.length)+suffix};}));
  const cell=(address:string,value:unknown,style=0)=>value==null||value===''?'':typeof value==='number'&&Number.isFinite(value)?`<c r="${address}" s="${style}"><v>${value}</v></c>`:typeof value==='boolean'?`<c r="${address}" t="b"><v>${value?1:0}</v></c>`:`<c r="${address}" t="inlineStr" s="${style}"><is><t xml:space="preserve">${xml(value)}</t></is></c>`;
  parts.forEach(({sheet,start,end,name},index)=>{
+  const data=sheet.rows.slice(start,end);const totaled=withExcelObjectTotals(data);const total=totaled.length>data.length?totaled[totaled.length-1]:null;
   progress?.(`Writing sheet ${index+1}/${parts.length}: ${name}`);
   const f=new ZipDeflate(`xl/worksheets/sheet${index+1}.xml`,{level:6});zip.add(f);let buffer='';
   const push=(value:string,final=false)=>{buffer+=value;if(buffer.length>262144||final){f.push(strToU8(buffer),final);buffer='';}};
   const columns=sheet.columns.map((c,i)=>({...c,address:col(i),style:!['salaryRecords','missingSalary'].includes(c.key)&&moneyKey.test(c.key)?3:4}));const last=col(Math.max(2,columns.length)-1);const lastRow=4+end-start;
-  push(`<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="${ns}"><dimension ref="A1:${last}${lastRow}"/><sheetViews><sheetView workbookViewId="0"><pane ySplit="4" topLeftCell="A5" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><cols>${columns.map((c,i)=>`<col min="${i+1}" max="${i+1}" width="${c.width||24}" customWidth="1"/>`).join('')}</cols><sheetData><row r="1" ht="27" customHeight="1">${cell('A1',sheet.title,1)}</row><row r="2">${cell('A2',`Exported ${new Date().toISOString()} · INR`)}${name==='Contents'?'':cell('B2','Back to Contents')}</row><row r="4" ht="32" customHeight="1">${columns.map(c=>cell(c.address+'4',c.header,2)).join('')}</row>`);
+  push(`<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="${ns}"><dimension ref="A1:${last}${lastRow+(total?1:0)}"/><sheetViews><sheetView workbookViewId="0"><pane ySplit="4" topLeftCell="A5" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><cols>${columns.map((c,i)=>`<col min="${i+1}" max="${i+1}" width="${c.width||24}" customWidth="1"/>`).join('')}</cols><sheetData><row r="1" ht="27" customHeight="1">${cell('A1',sheet.title,1)}</row><row r="2">${cell('A2',`Exported ${new Date().toISOString()} · INR`)}${name==='Contents'?'':cell('B2','Back to Contents')}</row><row r="4" ht="32" customHeight="1">${columns.map(c=>cell(c.address+'4',c.header,2)).join('')}</row>`);
   for(let i=start;i<end;i++){const r=5+i-start;push(`<row r="${r}">${columns.map(c=>{const v=sheet.rows[i][c.key];return cell(c.address+r,v,typeof v==='number'?c.style:0);}).join('')}</row>`);}
+  if(total)push(`<row r="${lastRow+1}">${columns.map(c=>cell(c.address+(lastRow+1),total[c.key],2)).join('')}</row>`);
   push('</sheetData>');if(end>start)push(`<autoFilter ref="A4:${last}${lastRow}"/>`);
   const links=name==='Contents'?sheet.rows.slice(start,end).map((r,i)=>`<hyperlink ref="${columns.find(c=>c.key==='sheet')!.address}${5+i}" location="${xml("'"+String(r.sheet).replaceAll("'","''")+"'!A1")}"/>`).join(''):`<hyperlink ref="B2" location="&apos;Contents&apos;!A1"/>`;
   push(`<hyperlinks>${links}</hyperlinks></worksheet>`,true);
