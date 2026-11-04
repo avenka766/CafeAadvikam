@@ -1,3 +1,6 @@
+import {completeBranchCheckout,branchCheckoutRoundOff,type BranchCheckoutCharges} from '../branchCheckoutRequest';
+import {dedupeBranchBills} from '../branchBillIdentity';
+import {findLedgerBillForReprint} from '../ledgerBill';
 import {allowsFlexibleBranchStock as isSnbFlexibleStockItem} from '../flexibleStock';
 import {automaticDesktopBilling,captureDesktopBill,desktopCheckoutIdentity,finishDesktopCheckout} from '@/lib/desktopBilling';
 import { formatBranchQuantity } from '../quantityDisplay';
@@ -150,12 +153,15 @@ type QueuedBranchCheckout = {
   canonicalManualDiscount: number; canonicalTax: number; canonicalCoreRoundOff: number; discountPercent: number;
   creditDueDate: string | null; creditNotes: string | null; idempotencyKey: string;
   provisionalBillNo: string; provisionalBillId: string;
+  protocol?:2;bill?:Record<string,unknown>;charges?:BranchCheckoutCharges;
 };
 
 registerReplayHandler('branch_checkout', async (_kind, payload) => {
   const p = payload as QueuedBranchCheckout;
 
-  let checkoutResponse = await supabase.rpc('complete_branch_promotional_checkout_v1', {
+  const draft=p.bill??useBranchOpsStore.getState().bills.find(b=>b.id===p.provisionalBillId);
+  if(!draft)return {ok:false,error:'The original offline receipt needs Admin review. It remains saved.'};
+  const checkoutResponse = await completeBranchCheckout({
     p_branch: p.branch,
     p_items: p.items,
     p_payments: p.corePaymentRows,
@@ -173,34 +179,18 @@ registerReplayHandler('branch_checkout', async (_kind, payload) => {
     p_coupon_code: null,
     p_idempotency_key: p.idempotencyKey,
     p_selected_campaign_ids: [],
-  });
-  if (checkoutResponse.error?.code === 'PGRST202') {
-    const canonicalRpcVersion = p.branch === 'SNB' ? 'v4' : 'v3';
-    const fallbackArgs = {
-      p_branch: p.branch, p_items: p.items, p_payments: p.corePaymentRows, p_customer_name: p.customerName,
-      p_customer_phone: p.customerPhone, p_salesperson: p.billingStaff, p_biller: p.userName,
-      p_discount: p.canonicalManualDiscount, p_tax: p.canonicalTax, p_round_off: p.canonicalCoreRoundOff,
-      p_payment_type: p.paymentMode === 'credit' ? 'credit' : 'counter',
-      p_due_date: p.paymentMode === 'credit' ? p.creditDueDate : null, p_notes: p.paymentMode === 'credit' ? p.creditNotes : null,
-      p_discount_percent: p.discountPercent,
-    };
-    checkoutResponse = canonicalRpcVersion === 'v4'
-      ? await supabase.rpc('complete_branch_checkout_canonical_v4', fallbackArgs)
-      : await supabase.rpc('complete_branch_checkout_canonical_v3', fallbackArgs);
-    if (checkoutResponse.error?.code === 'PGRST202') {
-      const { p_discount_percent: _ignored, ...legacyArgs } = fallbackArgs;
-      checkoutResponse = await supabase.rpc('complete_branch_checkout_canonical', legacyArgs);
-    }
-  }
+  },p.charges??{packing:0,delivery:0,payments:[],purpose:'bill_collection'},{protocol:p.protocol??0,id:p.provisionalBillId,number:p.provisionalBillNo,bill:draft});
+  if(checkoutResponse.error?.code==='PGRST202')return {ok:false,error:'The secure checkout service is unavailable. The saved request is retained; update the service before retrying.'};
   const { data, error: rpcError } = checkoutResponse;
-  if (rpcError) return { ok: false, error: rpcError.message };
+  if (rpcError) return { ok: false, error: rpcError.message==='LEGACY_OFFLINE_BILL_REQUIRES_RECONCILIATION'?'An older offline bill needs Admin reconciliation; it may already have a final number. The original receipt is preserved.':rpcError.message };
   const result = data as CheckoutRpcResult;
   if (!result?.billNo || !result.invoiceNo) return { ok: false, error: 'Checkout committed but bill number was not returned.' };
 
   useBranchOpsStore.setState((state) => ({
-    bills: state.bills.map((bill) => bill.id === p.provisionalBillId
+    bills: dedupeBranchBills(state.bills.map((bill) => bill.id === p.provisionalBillId
       ? { ...bill, sourceBillId: result.billId, billNo: result.billNo, invoiceNo: result.invoiceNo, pendingSync: false, needsReprint: true }
-      : bill),
+      : bill)),
+    cashMovements:state.cashMovements.map(m=>m.referenceNumber===p.provisionalBillNo?{...m,referenceNumber:result.billNo}:m),
   }));
   return { ok: true };
 });
@@ -422,22 +412,12 @@ export default function BranchBillingProTab({
     setOldBillSearching(true);
     setOldBillError('');
     try {
-      const normalized = query.toUpperCase().startsWith(`${branch.toUpperCase()}-`)
-        ? query.toUpperCase()
-        : `${branch.toUpperCase()}-${query.replace(/^[A-Za-z]+-/, '')}`;
-      const { data, error: fetchError } = await supabase
-        .from('branch_operation_records')
-        .select('payload')
-        .eq('branch', branch)
-        .eq('record_type', 'bill')
-        .eq('payload->>billNo', normalized)
-        .maybeSingle();
-      if (fetchError) throw new Error(fetchError.message);
-      if (!data) {
+      const bill = await findLedgerBillForReprint(branch, query);
+      if (!bill) {
         setOldBillError(`No bill found matching "${query}".`);
         return;
       }
-      await printCounterBill(data.payload as BranchBillRecord, true);
+      await printCounterBill(bill, true);
       setOldBillSearch('');
     } catch (e) {
       setOldBillError(e instanceof Error ? e.message : 'Could not find or print that bill.');
@@ -794,6 +774,7 @@ export default function BranchBillingProTab({
     if (paymentMode === 'credit' && Number(creditAmountPaid || 0) < 0) return 'Credit upfront amount cannot be negative.';
     if (paymentMode === 'wallet' && !selectedWallet) return 'Select a wallet customer before checkout.';
     if (paymentMode === 'wallet' && selectedWallet?.status !== 'active') return 'This wallet is not active.';
+    if(paymentMode==='wallet'&&extraChargesValue>0)return 'For packing or delivery charges, choose a cash, UPI, card or split bill so every charge is recorded with its payment.';
     if (paymentMode === 'wallet' && walletAmount <= 0) return 'Enter the wallet amount to use.';
     if (paymentMode === 'wallet' && selectedWallet && walletAmount > selectedWallet.totalBalance) return `Wallet has only ${money(selectedWallet.totalBalance)} available.`;
     if (paymentMode === 'wallet' && walletAmount > total) return 'Wallet amount cannot exceed the bill total.';
@@ -894,7 +875,7 @@ export default function BranchBillingProTab({
         const canonicalCombinedDiscount = Math.min(canonicalSubtotal,roundMoney(canonicalManualDiscount+promotionDiscount));
         const canonicalCoreAmountBeforeRoundOff = roundMoney(Math.max(0, canonicalSubtotal + canonicalTax - canonicalCombinedDiscount));
         const canonicalCoreTotal = roundWholeRupee(canonicalCoreAmountBeforeRoundOff);
-        const canonicalCoreRoundOff = roundMoney(canonicalCoreTotal - canonicalCoreAmountBeforeRoundOff);
+        const canonicalCoreRoundOff = branchCheckoutRoundOff(canonicalCoreAmountBeforeRoundOff,extraChargesValue);
         const localAmountBeforeRoundOff = roundMoney(canonicalCoreAmountBeforeRoundOff + extraChargesValue);
         const localTotal = roundWholeRupee(localAmountBeforeRoundOff);
         const localRoundOff = roundMoney(localTotal - localAmountBeforeRoundOff);
@@ -949,10 +930,11 @@ export default function BranchBillingProTab({
           counterSessionId: counterSessionId || undefined,
           pendingSync: true,
         };
+        const chargePayments=Object.entries(paymentRows.reduce((acc,row)=>{acc[row.mode]=(acc[row.mode]||0)+row.amount;return acc;},{} as Record<string,number>)).map(([mode,amount])=>({mode,amount:roundMoney(amount-corePaymentRows.filter(r=>r.mode===mode).reduce((sum,r)=>sum+r.amount,0))})).filter(r=>r.amount>0);
         let desktopResult;
         if(desktopCounter){
           const {billNo:_number,invoiceNo:_invoice,...receipt}=draftBill;
-          const chargePayments=Object.entries(paymentRows.reduce((acc,row)=>{acc[row.mode]=(acc[row.mode]||0)+row.amount;return acc;},{} as Record<string,number>)).map(([mode,amount])=>({mode,amount:roundMoney(amount-corePaymentRows.filter(r=>r.mode===mode).reduce((sum,r)=>sum+r.amount,0))})).filter(r=>r.amount>0);
+
           desktopResult=await captureDesktopBill({kind:'branch-sale',family:branch as 'SNB'|'VRSNB',key:idempotencyKey,rpc:'complete_branch_promotional_checkout_v1',receipt,
             args:{p_branch:branch,p_items:canonicalItems,p_payments:corePaymentRows,p_customer_name:customerName,p_customer_phone:customerPhone,p_salesperson:billingStaff,p_biller:userName,p_manual_discount:canonicalManualDiscount,p_tax:canonicalTax,p_round_off:canonicalCoreRoundOff,p_payment_type:paymentMode==='credit'?'credit':'counter',p_due_date:paymentMode==='credit'?creditDueDate:null,p_notes:paymentMode==='credit'?creditRemarks.trim()||null:null,p_discount_percent:discountPercent,p_coupon_code:couponCode||null,p_idempotency_key:idempotencyKey,p_selected_campaign_ids:promotionEvaluation.applied.map(p=>p.campaignId)},
             charges:{packing:packingChargeValue,delivery:deliveryChargeValue,payments:chargePayments,purpose:paymentMode==='credit'?'credit_upfront':'bill_collection'}});
@@ -966,7 +948,8 @@ export default function BranchBillingProTab({
           billingStaff, userName, canonicalManualDiscount, canonicalTax, canonicalCoreRoundOff, discountPercent,
           creditDueDate: paymentMode === 'credit' ? creditDueDate : null,
           creditNotes: paymentMode === 'credit' ? creditRemarks.trim() || null : null,
-          idempotencyKey, provisionalBillNo, provisionalBillId: saved.id,
+          idempotencyKey, provisionalBillNo, provisionalBillId: saved.id,protocol:2,bill:saved,
+          charges:{packing:packingChargeValue,delivery:deliveryChargeValue,payments:chargePayments,purpose:paymentMode==='credit'?'credit_upfront':'bill_collection'},
         });
         }
 
@@ -1082,7 +1065,7 @@ export default function BranchBillingProTab({
       // the cart-refreshed comparison against the cashier-facing `total`).
       const canonicalCoreAmountBeforeRoundOff = roundMoney(Math.max(0, canonicalSubtotal + canonicalTax - canonicalCombinedDiscount));
       const canonicalCoreTotal = roundWholeRupee(canonicalCoreAmountBeforeRoundOff);
-      const canonicalCoreRoundOff = roundMoney(canonicalCoreTotal - canonicalCoreAmountBeforeRoundOff);
+      const canonicalCoreRoundOff = branchCheckoutRoundOff(canonicalCoreAmountBeforeRoundOff,extraChargesValue);
       const catalogueChanged = canonicalItems.length !== cart.length || canonicalItems.some((item, index) => {
         const old = cart.find((line) => line.barcode === item.barcode) ?? cart[index];
         return !old || old.itemName !== item.itemName || roundMoney(old.price) !== roundMoney(item.price) || old.unit !== item.unit;
@@ -1167,7 +1150,7 @@ export default function BranchBillingProTab({
       const customerName = paymentMode === 'wallet' ? selectedWallet?.customerName ?? null : paymentMode === 'credit' ? creditCustomerName.trim() : null;
       const customerPhone = paymentMode === 'wallet' ? selectedWallet?.mobile ?? null : paymentMode === 'credit' ? creditCustomerMobile.trim() : null;
 
-      let checkoutResponse = paymentMode === 'wallet'
+      const checkoutResponse = paymentMode === 'wallet'
         ? await supabase.rpc('complete_branch_wallet_checkout_v1', {
             p_branch: branch,
             p_items: canonicalItems,
@@ -1188,7 +1171,7 @@ export default function BranchBillingProTab({
             p_selected_campaign_ids: promotionEvaluation.applied.map((item) => item.campaignId),
             p_wallet_authorization_secret: walletAuthorizationSecret || null,
           })
-        : await supabase.rpc('complete_branch_promotional_checkout_v1', {
+        : await completeBranchCheckout({
             p_branch: branch,
             p_items: canonicalItems,
             p_payments: corePaymentRows,
@@ -1206,33 +1189,8 @@ export default function BranchBillingProTab({
             p_coupon_code: couponCode || null,
             p_idempotency_key: idempotencyKey,
             p_selected_campaign_ids: promotionEvaluation.applied.map((item) => item.campaignId),
-          });
-      if (paymentMode !== 'wallet' && checkoutResponse.error?.code === 'PGRST202') {
-        const canonicalRpcVersion = branch === 'SNB' ? 'v4' : 'v3';
-        const fallbackArgs = {
-          p_branch: branch,
-          p_items: canonicalItems,
-          p_payments: corePaymentRows,
-          p_customer_name: customerName,
-          p_customer_phone: customerPhone,
-          p_salesperson: billingStaff,
-          p_biller: userName,
-          p_discount: canonicalCombinedDiscount,
-          p_tax: canonicalTax,
-          p_round_off: canonicalCoreRoundOff,
-          p_payment_type: paymentMode === 'credit' ? 'credit' : 'counter',
-          p_due_date: paymentMode === 'credit' ? creditDueDate : null,
-          p_notes: paymentMode === 'credit' ? creditRemarks.trim() || null : null,
-          p_discount_percent: discountPercent,
-        };
-        checkoutResponse = canonicalRpcVersion === 'v4'
-          ? await supabase.rpc('complete_branch_checkout_canonical_v4', fallbackArgs)
-          : await supabase.rpc('complete_branch_checkout_canonical_v3', fallbackArgs);
-        if (checkoutResponse.error?.code === 'PGRST202') {
-          const { p_discount_percent: _ignoredDiscountPercent, ...legacyArgs } = fallbackArgs;
-          checkoutResponse = await supabase.rpc('complete_branch_checkout_canonical', legacyArgs);
-        }
-      }
+          },{packing:packingChargeValue,delivery:deliveryChargeValue,payments:chargePaymentsForRpc,purpose:paymentMode==='credit'?'credit_upfront':'bill_collection'});
+      if(checkoutResponse.error?.code==='PGRST202')throw Error('The secure checkout service is unavailable. Keep this bill and retry after the service is updated.');
       const { data, error: rpcError } = checkoutResponse;
       if (rpcError) {
         const rpcName = paymentMode === 'wallet' ? 'complete_branch_wallet_checkout_v1' : 'complete_branch_promotional_checkout_v1';
@@ -1339,42 +1297,7 @@ export default function BranchBillingProTab({
       // reason to the audit trail. Neither of these blocks the sale (which
       // already committed above) - failures here are surfaced via setError
       // but the bill itself stays valid.
-      if (extraChargesValue > 0) {
-        // BUG FIX (2026-09-14): confirmed live — `saved.id` is a LOCAL-only
-        // id (useBranchOpsStore's `addBill`/`uid("bill")`, e.g.
-        // "bill-1757834521234-a3f9x2"), never the real branch_bill_headers
-        // UUID. Every single call to this RPC has been sending that fake
-        // string as `p_bill_id` (a `uuid`-typed parameter) — Postgres
-        // rejects it outright with "invalid input syntax for type uuid"
-        // before the function body ever runs, so this has failed 100% of
-        // the time since the feature existed (confirmed: zero
-        // branch_bill_items rows named 'Packing Charge'/'Delivery Charge'
-        // exist anywhere in the database, old or new). The fire-and-forget
-        // `.then()` below only sets a local, easy-to-miss error banner, so
-        // this went unnoticed rather than blocking anything. The real id is
-        // `result.billId`, returned by the checkout RPC just above (already
-        // used for the cashier-attribution backfill a few lines up).
-        void supabase.rpc('add_branch_bill_extra_charges_secure', {
-          p_branch: branch,
-          p_bill_id: result.billId,
-          p_packing_charge: packingChargeValue,
-          p_delivery_charge: deliveryChargeValue,
-          // BUG FIX (2026-09-13): see chargePaymentsForRpc's own comment
-          // above — tells the RPC exactly which mode(s) the charge was
-          // really collected in right now, and whether that collection
-          // counts as a normal sale or a credit-upfront payment, so it can
-          // insert the matching branch_sale_payments row(s) (what Cashier
-          // Report/Daily Closure actually sum) instead of only bumping the
-          // bill header's own display total.
-          p_charge_payments: chargePaymentsForRpc,
-          p_charge_payment_purpose: paymentMode === 'credit' ? 'credit_upfront' : 'bill_collection',
-          p_notes: null,
-        }).then(({ error: chargesError }) => {
-          if (chargesError) {
-            setError(`Bill ${saved.billNo} saved, but packing/delivery charge sync failed: ${chargesError.message}. Amounts were still printed and recorded locally.`);
-          }
-        });
-      }
+
       if (discountReason.trim()) {
         addAuditLog({
           branch,

@@ -10,6 +10,7 @@ import { SectionHeader, EmptyState } from '../components';
 import { useBranchStore } from '../branchStore';
 import type { BranchAdvanceOrder } from '../branchStore';
 import type { Branch } from '../types';
+import { advanceCollectionBlocked, advanceDisplayStatus } from '../advanceCollectionEligibility';
 
 interface Props {
   branch: Branch;
@@ -71,7 +72,7 @@ export function AdvancePaymentsTab({ branch, advanceOrders }: Props) {
   const [collectError, setCollectError] = useState<Record<string, string>>({});
 
   const doCollect = async (order: BranchAdvanceOrder) => {
-    if (collectingId) return;
+    if (collectingId || advanceCollectionBlocked(order)) return;
     setCollectingId(order.id);
     setCollectError(e => ({ ...e, [order.id]: '' }));
     try {
@@ -86,10 +87,11 @@ export function AdvancePaymentsTab({ branch, advanceOrders }: Props) {
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return advanceOrders.filter(o => {
-      if (statusFilter !== 'all' && o.status !== statusFilter) return false;
+      if (statusFilter !== 'all' && advanceDisplayStatus(o) !== statusFilter) return false;
       if (dateFilter && toLocalDateKey(o.createdAt) !== dateFilter) return false;
       if (q) {
         const haystack = [
+          o.orderNo ?? '', o.mainFinalBillNo ?? '',
           o.customerName ?? '',
           o.soldBy,
           ...o.items.map(i => i.itemName),
@@ -101,7 +103,7 @@ export function AdvancePaymentsTab({ branch, advanceOrders }: Props) {
   }, [advanceOrders, statusFilter, dateFilter, search]);
 
   // ── Aggregations ────────────────────────────────────────────────────────────
-  const pending   = advanceOrders.filter(o => o.status === 'pending');
+  const pending   = advanceOrders.filter(o => !advanceCollectionBlocked(o));
   const completed = advanceOrders.filter(o => o.status === 'completed');
 
   const totalAdvanceCollected = advanceOrders.reduce((s, o) => s + o.advanceAmount, 0);
@@ -140,6 +142,12 @@ export function AdvancePaymentsTab({ branch, advanceOrders }: Props) {
           <p className="font-display text-xl font-bold text-purple-800 tabular-nums">{fmt(totalOrderValue)}</p>
         </div>
       </div>
+
+      {advanceOrders.some(order => order.finalizedInMain) && (
+        <p className="rounded-xl bg-blue-50 p-3 text-xs text-blue-900">
+          Orders finalized in the main register cannot collect another balance here. Their final payments and any credit remain in the main invoice and credit reports; this older register does not assume they were paid in cash.
+        </p>
+      )}
 
       {/* ── Full Payment Summary Banner ─────────────────────────────────── */}
       {totalAdvanceCollected > 0 && (
@@ -226,7 +234,7 @@ export function AdvancePaymentsTab({ branch, advanceOrders }: Props) {
         <div className="space-y-3">
           {filtered.map(order => {
             const isExpanded = expanded === order.id;
-            const isCompleted = order.status === 'completed';
+            const isCompleted = advanceDisplayStatus(order) === 'completed';
             const isFullPay = order.balanceDue <= 0;
             const balancePaid = isCompleted && !isFullPay
               ? order.subtotal - order.advanceAmount
@@ -246,7 +254,7 @@ export function AdvancePaymentsTab({ branch, advanceOrders }: Props) {
                         isCompleted
                           ? 'bg-emerald-100 text-emerald-700 border-emerald-200'
                           : 'bg-amber-100 text-amber-700 border-amber-300')}>
-                        {isCompleted ? (isFullPay ? '✓ Fully Pre-Paid' : '✓ Completed') : '⏳ Pending Balance'}
+                        {order.cancelledInMain || order.status === 'cancelled' ? 'Cancelled' : order.finalizedInMain ? 'Finalized in main register' : isCompleted ? (isFullPay ? '✓ Fully Pre-Paid' : '✓ Completed') : '⏳ Pending Balance'}
                       </span>
                       {order.customerName && (
                         <span className="text-sm font-bold text-foreground truncate">{order.customerName}</span>
@@ -306,7 +314,13 @@ export function AdvancePaymentsTab({ branch, advanceOrders }: Props) {
                   </div>
 
                   {/* Full-pay: no balance row needed */}
-                  {isFullPay ? (
+                  {order.finalizedInMain || advanceDisplayStatus(order)==='cancelled' ? (
+                    <div className="border-t pt-2 text-xs font-semibold text-blue-800">
+                      {order.mainFinalBillNo ? `Final invoice: ${order.mainFinalBillNo}. ` : ''}
+                      {advanceDisplayStatus(order)==='cancelled' ? 'Cancelled order. No balance is collectible.' : 'Finalized in the main register. Do not collect this balance again; check the original invoice and credit ledger.'}
+                      {order.mainFinalizationProblem && <p className="mt-1 text-amber-800">{order.mainFinalizationProblem}</p>}
+                    </div>
+                  ) : isFullPay ? (
                     <div className="flex items-center justify-between pt-1 border-t border-emerald-200">
                       <span className="text-xs font-bold text-emerald-700 flex items-center gap-1">
                         <CheckCircle2 className="size-3" /> Fully Paid (No Balance Due)
@@ -344,7 +358,7 @@ export function AdvancePaymentsTab({ branch, advanceOrders }: Props) {
                     Cake orders (a different system, completed via their own
                     Final Bill flow) are excluded — this only applies to
                     store/custom orders. */}
-                {!isCompleted && order.items[0]?.orderType !== 'cake' && (
+                {!advanceCollectionBlocked(order) && order.items[0]?.orderType !== 'cake' && (
                   <div className="border-t border-border/50 bg-card px-4 py-3 space-y-2">
                     {!order.dispatchedAt ? (
                       <p className="flex items-center gap-1.5 text-[11px] font-bold text-amber-700">

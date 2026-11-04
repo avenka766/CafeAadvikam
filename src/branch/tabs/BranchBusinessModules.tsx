@@ -1,3 +1,9 @@
+import {financialLineTotal} from '@/lib/financialRounding';
+import {saveAdvanceCreation,pendingAdvanceCreation,finishAdvanceCreation} from '@/branch/advanceCreationRequest';
+import {pendingBranchReturn} from '../returnRequest';
+import {returnableItems,returnItemKey} from '../returnableItems';
+import {shareInFlightRead} from '@/lib/shareInFlightRead';
+import {mapLedgerBillRow, type LedgerBillRow} from '../ledgerBill';
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type React from 'react';
 import {
@@ -7,7 +13,8 @@ import {
   Truck, UserRound, WalletCards, X, XCircle,
 } from 'lucide-react';
 import { cn, roundQty } from '@/lib/utils';
-import { supabase } from '@/lib/supabase';
+import { supabase,fetchAllRows } from '@/lib/supabase';
+import {startOfBusinessDayISO} from '@/lib/businessDate';
 import { businessDate } from '@/lib/businessDate';
 import { downloadExcel } from '@/lib/excelDownload';
 import { useAuthStore } from '@/stores/authStore';
@@ -32,99 +39,6 @@ import { CAKE_DESIGNS, CAKE_DRAWING_CHARGE, CAKE_PHOTO_CHARGE, cakeTypesFor, cal
 // stock) must never be reachable there -- only 'cake' mode, which this app's
 // Cake Master pipeline already handles independently of branch_stock.
 type ModuleProps = { branch: Branch; branchStock: StockItem[]; branchSales?: SaleRecord[]; onOpenTab?: (tab: string) => void; source?: 'branch' | 'snb-order'; cakeOnly?: boolean };
-
-type LedgerBillRow = {
-  id: string;
-  bill_no: string;
-  invoice_no: number;
-  bill_type: string;
-  customer_name: string | null;
-  customer_phone: string | null;
-  salesperson: string | null;
-  biller: string | null;
-  subtotal: number | string;
-  discount: number | string;
-  discount_percent?: number | string | null;
-  tax: number | string;
-  round_off?: number | string | null;
-  total: number | string;
-  tendered: number | string;
-  balance: number | string;
-  status: string;
-  created_at: string;
-  branch_bill_items?: Array<{
-    item_name: string;
-    quantity: number | string;
-    unit: 'pcs' | 'kg';
-    unit_price: number | string;
-    discount: number | string | null;
-    tax: number | string | null;
-    line_total: number | string;
-  }>;
-  branch_sale_payments?: Array<{
-    payment_mode: 'cash' | 'upi' | 'card' | 'bank' | 'mixed';
-    amount: number | string;
-  }>;
-};
-
-// Shared by BranchBillHistoryProTab's initial load AND its reprint() action -
-// factored out so a duplicate-print can re-fetch and re-map a single fresh
-// row (picking up any Payment Mode Edit / credit conversion made after the
-// tab first loaded) instead of reusing the stale snapshot from mount time.
-function mapLedgerBillRow(row: LedgerBillRow, branch: Branch): BranchBillRecord {
-  const items = (row.branch_bill_items || []).map((item) => ({
-    itemName: item.item_name,
-    quantity: num(item.quantity),
-    unit: item.unit,
-    price: num(item.unit_price),
-    discount: num(item.discount),
-    tax: num(item.tax),
-    lineTotal: num(item.line_total),
-  }));
-  const payments = row.branch_sale_payments || [];
-  const splitTotals = payments.reduce<Record<string, number>>((acc, payment) => {
-    acc[payment.payment_mode] = (acc[payment.payment_mode] || 0) + num(payment.amount);
-    return acc;
-  }, {});
-  const modes = Object.keys(splitTotals).filter((mode) => splitTotals[mode] > 0);
-  const paymentMode = row.bill_type === 'credit'
-    ? 'credit'
-    : modes.length > 1
-      ? 'split'
-      : ((modes[0] || 'cash') as BranchBillRecord['paymentMode']);
-  const split = {
-    cash: splitTotals.cash || 0,
-    upi: splitTotals.upi || 0,
-    card: splitTotals.card || 0,
-  };
-
-  return {
-    id: row.id,
-    branch,
-    billNo: row.bill_no,
-    invoiceNo: num(row.invoice_no),
-    items,
-    subtotal: num(row.subtotal),
-    discount: num(row.discount),
-    discountPercent: row.discount_percent == null ? undefined : num(row.discount_percent),
-    tax: num(row.tax),
-    roundOff: row.round_off == null ? undefined : num(row.round_off),
-    amountBeforeRoundOff: roundMoney(num(row.total) - num(row.round_off)),
-    total: num(row.total),
-    tendered: num(row.tendered),
-    balance: num(row.balance),
-    paymentMode,
-    creditCustomerName: row.customer_name || undefined,
-    creditCustomerMobile: row.customer_phone || undefined,
-    split: paymentMode === 'split' || row.bill_type === 'credit' ? split : undefined,
-    salesperson: row.salesperson || 'Staff',
-    biller: row.biller || 'Staff',
-    createdAt: row.created_at,
-    printCount: row.status === 'duplicate_printed' ? 2 : 1,
-    status: row.status === 'duplicate_printed' ? 'Duplicate Bill' : row.status === 'returned' ? 'Returned' : 'Original Bill',
-    source: row.bill_type === 'advance_final' ? 'advance-final' : 'counter',
-  } as BranchBillRecord;
-}
 
 type ClosureLedgerRow = {
   branch: Branch;
@@ -602,6 +516,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch', c
     attachmentName:'', attachmentDataUrl:'', topperCharge:'', toyCharges:'',
   });
   const [error, setError] = useState('');
+  const [advanceRecoveryNotice,setAdvanceRecoveryNotice]=useState('');
   // AUDIT FIX (2026-09-02): saveAdvance has no in-flight/double-submit
   // guard, unlike BranchBillingProTab's checkout() (checkoutInFlightRef) —
   // a double-tap on "Generate Sales Order Slip" (e.g. a touchscreen POS
@@ -816,12 +731,33 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch', c
       throw new Error(`Could not send order to Cake Master: ${cakeMasterError.message}`);
     }
   };
+  const resetAdvanceForm=()=>{
+    setCommon({ slipNumber:'', customerName:'', mobile:'', deliveryDate:'', deliveryTime:'', advanceAmount:'', paymentMode:'cash', salesperson:'' });
+    setAdvanceSplit({ cash: '', upi: '', card: '' });
+    setAdvanceCreditDueDate('');
+    setStoreFullyPaid(false); setCustomFullyPaid(false);
+    setStoreLines([]); setCustomLines([]); setCustom({ itemName:'', quantity:'1', unit:'pcs', price:'', notes:'', attachmentName:'', attachmentDataUrl:'' }); setCake({ cakeKg:'', creamType:'Butter Cream', cakeTypeId:'butter-birthday', flavor:'', shape:'', designType:'Normal', drawingWork:false, photoWork:false, messageOnCake:'', designNotes:'', attachmentName:'', attachmentDataUrl:'', topperCharge:'', toyCharges:'' });
+  };
+  const recoverSavedAdvance = async () => {
+    if(saveAdvanceInFlightRef.current)return;
+    const pending=pendingAdvanceCreation(currentUser?.id||'',branch);if(!pending)return;
+    saveAdvanceInFlightRef.current=true;setSavingAdvance(true);
+    try {
+      const confirmed=await saveAdvanceCreation(currentUser?.id||'',pending);
+      addAdvanceCakeOrder(confirmed,confirmed);
+      resetAdvanceForm();
+      finishAdvanceCreation(currentUser?.id||'',branch);
+      setError('');setAdvanceRecoveryNotice(`Recovered ${confirmed.orderNo}. Do not collect its advance again. The saved order is in the pipeline below; use Send to Store if it still needs to reach Planner.`);
+    }catch(cause){setError(cause instanceof Error?cause.message:'The saved advance could not be confirmed.');}
+    finally{saveAdvanceInFlightRef.current=false;setSavingAdvance(false);}
+  };
   const saveAdvance = async (orderType: 'store' | 'custom' | 'cake') => {
     if (saveAdvanceInFlightRef.current) return;
     saveAdvanceInFlightRef.current = true;
     setSavingAdvance(true);
     try {
       await saveAdvanceImpl(orderType);
+    } catch(cause) { setError(cause instanceof Error?cause.message:'Advance could not be confirmed. Recover the saved request before collecting payment again.');
     } finally {
       saveAdvanceInFlightRef.current = false;
       setSavingAdvance(false);
@@ -833,12 +769,12 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch', c
     const fullyPaid = orderType === 'store' ? storeFullyPaid : orderType === 'custom' ? customFullyPaid : false;
     const cakeWeight = Number(cake.cakeKg || 0);
     const cakeItemName = `${cake.creamType} - ${selectedCakeType?.name || 'Cake'} - ${cake.flavor || 'Flavour not entered'}`.trim();
-    const sourceLines = orderType === 'store'
+    const sourceLines = ( orderType === 'store'
       ? storeLines
       : orderType === 'custom'
         ? (customLines.length > 0 ? customLines : [{ itemName: custom.itemName.trim(), quantity: Number(custom.quantity || 0), unit: custom.unit, price: Number(custom.price || 0), tax:0, discount:0, lineTotal: Number(custom.quantity || 0) * Number(custom.price || 0) }])
-        : [{ barcode: undefined as number | undefined, itemName: cakeItemName, quantity: cakeWeight, unit:'kg' as const, price: cakeWeight > 0 ? cakeGrandTotal / cakeWeight : 0, tax:0, discount:0, lineTotal: cakeGrandTotal }];
-    const orderValue = sourceLines.reduce((sum, line)=>sum+line.lineTotal,0);
+        : [{ barcode: undefined as number | undefined, itemName: cakeItemName, quantity: cakeWeight, unit:'kg' as const, price: cakeWeight > 0 ? cakeGrandTotal / cakeWeight : 0, tax:0, discount:0, lineTotal: cakeGrandTotal }]).map(line=>({...line,lineTotal:financialLineTotal(line.quantity,line.price)}));
+    const orderValue = financialLineTotal(1,sourceLines.reduce((sum, line)=>sum+line.lineTotal,0));
     if (orderType === 'cake' && (!selectedCakeType || cakeWeight <= 0 || !cake.flavor.trim() || !cake.shape.trim())) {
       setError('Cream type, cake type, weight, flavor and shape are mandatory.');
       return;
@@ -860,112 +796,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch', c
     const first = sourceLines[0];
     const attachmentName = orderType === 'cake' ? cake.attachmentName : custom.attachmentName;
     const attachmentDataUrl = orderType === 'cake' ? cake.attachmentDataUrl : custom.attachmentDataUrl;
-    let orderNo: string;
-    let stockReserved = false;
-    if (isSnbOrder) {
-      const receiverItems = sourceLines.map((line) => ({
-        itemName: line.itemName,
-        barcode: line.barcode,
-        quantity: line.quantity,
-        sellUnit: line.unit,
-        price: line.price,
-        lineTotal: line.lineTotal,
-        isCustom: orderType !== 'store',
-        orderType,
-        slipNumber: common.slipNumber.trim() || undefined,
-        mobile: common.mobile.trim(),
-        deliveryTime: common.deliveryTime,
-      }));
-      const receiverNotes = [
-        `${orderType} advance order`,
-        common.mobile.trim() ? `Mobile ${common.mobile.trim()}` : '',
-        common.slipNumber.trim() ? `Slip ${common.slipNumber.trim()}` : '',
-        common.deliveryTime ? `Delivery time ${common.deliveryTime}` : '',
-        orderType === 'cake' ? `${cake.creamType} - ${selectedCakeType?.name || ''} - ${cake.flavor} - ${cake.shape} - ${cake.designType}` : '',
-        orderType === 'cake' ? cake.designNotes : orderType === 'custom' ? custom.notes : 'Existing SNB stock advance order',
-      ].filter(Boolean).join(' | ');
-      // BUG FIX (2026-09-12): "SNB-ADV-316 missing, SNB-ADV-317 behaved
-      // oddly" — this used to pre-generate the order number via its own
-      // separate nextBranchAdvanceOrderNumberAtomic() RPC call BEFORE this
-      // one, so a failure here (or just never reaching this call) permanently
-      // burned the number with no order behind it. The number is now
-      // generated INSIDE create_snb_order_advance_order_secure_v2 itself
-      // (same transaction as the order's own insert — see
-      // create_branch_advance_order_reserved), and handed back in the
-      // response instead of being decided client-side beforehand.
-      const { data: receiverData, error: receiverError } = await supabase.rpc('create_snb_order_advance_order_secure_v2', {
-        p_order_no: null,
-        p_customer_name: common.customerName.trim(),
-        p_items: receiverItems,
-        p_subtotal: orderValue,
-        p_advance_amount: adv,
-        p_advance_method: common.paymentMode,
-        p_delivery_date: common.deliveryDate,
-        p_notes: receiverNotes,
-        p_entered_by: auditActor,
-        p_payment_splits: paymentSplitLines.length > 0 ? paymentSplitLines : null,
-        p_credit_due_date: common.paymentMode === 'credit' ? (advanceCreditDueDate || null) : null,
-        p_customer_phone: common.mobile.trim() || null,
-      });
-      if (receiverError) {
-        setError(`Advance order was not saved: ${receiverError.message}`);
-        return;
-      }
-      const returnedOrderNo = (receiverData as Record<string, unknown> | null)?.orderNo;
-      if (!returnedOrderNo || typeof returnedOrderNo !== 'string') {
-        setError('Advance order was saved, but no order number was returned — refresh and check the Advance Orders list before retrying.');
-        return;
-      }
-      orderNo = returnedOrderNo;
-      stockReserved = orderType === 'store';
-      await fetchBranchData(branch, false, ['stock', 'advance']); // EGRESS FIX: new advance order + (for store type) a stock reservation
-    } else {
-      // BUG FIX: this used to mint the order number via its own separate
-      // nextBranchAdvanceOrderNumberAtomic() RPC call, then make 1-2 MORE
-      // separate RPC calls (stock reservation, payment recording) that can
-      // legitimately fail for business reasons (insufficient stock, invalid
-      // split, missing due date) -- any such failure burned the number
-      // permanently with nothing behind it (confirmed root cause of missing
-      // SNB-ADV-N numbers). mint_branch_advance_order_atomic wraps all three
-      // steps in one DB transaction -- a reservation/payment failure now
-      // rolls back the mint too, so no number is ever burned.
-      const { data: mintData, error: mintError } = await supabase.rpc('mint_branch_advance_order_atomic', {
-        p_branch: branch,
-        p_order_type: orderType,
-        p_reservation_items: orderType === 'store' ? sourceLines.map((line) => ({
-          itemName: line.itemName,
-          barcode: line.barcode,
-          quantity: line.quantity,
-          isCustom: false,
-        })) : [],
-        p_advance_amount: adv,
-        p_order_total: orderValue,
-        p_payment_mode: common.paymentMode,
-        p_collected_by: staff,
-        p_remarks: `${orderType} advance order - ${common.customerName.trim()}`,
-        p_payment_splits: paymentSplitLines.length > 0 ? paymentSplitLines : null,
-        p_customer_name: common.customerName.trim() || null,
-        p_customer_phone: common.mobile.trim() || null,
-        p_payment_items: sourceLines,
-        p_due_date: common.paymentMode === 'credit' ? (advanceCreditDueDate || null) : null,
-      });
-      if (mintError) {
-        setError(/mint_branch_advance_order_atomic|could not find the function|schema cache/i.test(mintError.message)
-          ? 'Advance order RPC is not installed. Run the mint_branch_advance_order_atomic migration before collecting an advance.'
-          : `Advance order was not saved: ${mintError.message}`);
-        return;
-      }
-      const returnedOrderNo = (mintData as Record<string, unknown> | null)?.orderNo;
-      if (!returnedOrderNo || typeof returnedOrderNo !== 'string') {
-        setError('Advance order was saved, but no order number was returned — refresh and check the Advance Orders list before retrying.');
-        return;
-      }
-      orderNo = returnedOrderNo;
-      stockReserved = orderType === 'store';
-      if (orderType === 'store') await fetchBranchData(branch, false, ['stock']); // EGRESS FIX: reservation only touches reserved_quantity on stock
-    }
-    const order = addAdvanceCakeOrder({
-      orderNo,
+    const orderDraft = {
       slipNumber: common.slipNumber.trim() || undefined,
       branch, orderType, customerName: common.customerName.trim(), mobile: common.mobile.trim(), orderDate: businessDate(),
       deliveryDate: common.deliveryDate, deliveryTime: common.deliveryTime, items: sourceLines, cakeKg: String(first.quantity),
@@ -987,7 +818,14 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch', c
       advancePaymentSplits: paymentSplitLines.length > 0 ? paymentSplitLines : undefined,
       advanceCreditDueDate: common.paymentMode === 'credit' ? (advanceCreditDueDate || undefined) : undefined,
       createdBy: auditActor, collectionSource: isSnbOrder ? 'SNB Order collected' : undefined, skipLocalCashMovement: isSnbOrder,
-    });
+    };
+    const confirmed=await saveAdvanceCreation(currentUser?.id||'',{p_order:orderDraft,p_receiver:isSnbOrder});
+    const order = addAdvanceCakeOrder({...orderDraft,orderNo:confirmed.orderNo},confirmed);
+    const orderNo=confirmed.orderNo;
+    const stockReserved=orderType==='store';
+    if(isSnbOrder)await fetchBranchData(branch,false,['stock','advance']);
+    else if(orderType==='store')await fetchBranchData(branch,false,['stock']);
+
     // FEATURE (2026-09-12): "even if its store item also it should have gone
     // to planner dashboard: advance orders tab and then only if they would
     // have dispatch then only... they should be able to complete the final
@@ -1006,7 +844,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch', c
     let sendToPlannerError: string | null = null;
     try {
       if (orderType === 'cake') await sendCakeToStoreDashboard(order);
-      else await sendToStoreDashboard(order, sourceLines);
+      else await sendToStoreDashboard(order, order.items || sourceLines);
       markAdvanceSentToStore(order.id);
     } catch (sendError) {
       sendToPlannerError = `Order ${order.orderNo} saved, but could not be sent to the Planner dashboard automatically: ${sendError instanceof Error ? sendError.message : 'unknown error'}. Use "Send to Store" on this order below to retry — Final Bill stays locked until that succeeds.`;
@@ -1015,18 +853,18 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch', c
     // that on a credit order though - "fully paid" there just means the
     // whole order value is owed on credit, not actually collected, and the
     // stamp would misleadingly tell the customer nothing more is due.
-    const fullyPaidForPrint = fullyPaid && common.paymentMode !== 'credit';
-    const paymentModeLabel = common.paymentMode === 'split' && paymentSplitLines.length > 0
-      ? paymentSplitLines.map((line) => `${line.mode.toUpperCase()} ${money(line.amount)}`).join(' + ')
-      : common.paymentMode === 'credit'
-        ? `CREDIT - Due ${advanceCreditDueDate}`
-        : common.paymentMode;
-    printAdvanceSalesOrder({ branch, orderNo: order.orderNo, slipNumber: order.slipNumber, customerName: order.customerName, mobile: order.mobile, deliveryDate: order.deliveryDate, deliveryTime: order.deliveryTime, items: sourceLines, orderValue, advanceAmount: adv, balanceAmount, paymentMode: paymentModeLabel, staffName: isSnbOrder ? auditActor : staff, fullyPaid: fullyPaidForPrint, cakeDetails: orderType === 'cake' && selectedCakeType ? { creamType: cake.creamType, cakeType: selectedCakeType.name, flavor: cake.flavor.trim(), weightKg: cakeWeight, shape: cake.shape.trim(), design: cake.designType, baseRate: cakePrice.baseRate, baseAmount: cakePrice.baseAmount, designCharge: cakePrice.designCharge, drawingCharge: cakePrice.drawingCharge, photoCharge: cakePrice.photoCharge, topperCharge: topperChargeNum, toyCharges: toyChargesNum, messageOnCake: cake.messageOnCake.trim() || undefined } : undefined });
-    setCommon({ slipNumber:'', customerName:'', mobile:'', deliveryDate:'', deliveryTime:'', advanceAmount:'', paymentMode:'cash', salesperson:'' });
-    setAdvanceSplit({ cash: '', upi: '', card: '' });
-    setAdvanceCreditDueDate('');
-    setStoreFullyPaid(false); setCustomFullyPaid(false);
-    setStoreLines([]); setCustomLines([]); setCustom({ itemName:'', quantity:'1', unit:'pcs', price:'', notes:'', attachmentName:'', attachmentDataUrl:'' }); setCake({ cakeKg:'', creamType:'Butter Cream', cakeTypeId:'butter-birthday', flavor:'', shape:'', designType:'Normal', drawingWork:false, photoWork:false, messageOnCake:'', designNotes:'', attachmentName:'', attachmentDataUrl:'', topperCharge:'', toyCharges:'' });
+    const fullyPaidForPrint = order.balanceAmount <= 0 && order.paymentMode !== 'credit';
+    const paymentModeLabel = order.paymentMode === 'split' && order.advancePaymentSplits?.length
+      ? order.advancePaymentSplits.map((line) => `${line.mode.toUpperCase()} ${money(line.amount)}`).join(' + ')
+      : order.paymentMode === 'credit'
+        ? `CREDIT - Due ${order.advanceCreditDueDate || ''}`
+        : order.paymentMode;
+
+    resetAdvanceForm();
+    finishAdvanceCreation(currentUser?.id||'',branch);
+    try {
+    printAdvanceSalesOrder({ branch, orderNo: order.orderNo, slipNumber: order.slipNumber, customerName: order.customerName, mobile: order.mobile, deliveryDate: order.deliveryDate, deliveryTime: order.deliveryTime, items: order.items || sourceLines, orderValue:order.orderValue, advanceAmount:order.advanceAmount, balanceAmount:order.balanceAmount, paymentMode: paymentModeLabel, staffName:order.createdBy || order.salesperson, fullyPaid: fullyPaidForPrint, cakeDetails: order.orderType === 'cake' ? { creamType: order.creamType || '', cakeType: order.cakeTypeName || '', flavor: order.flavor, weightKg: Number(order.cakeKg), shape: order.shape, design: order.designType || 'Normal', baseRate: order.baseRate || 0, baseAmount: order.baseAmount || 0, designCharge: order.designCharge || 0, drawingCharge: order.drawingCharge || 0, photoCharge: order.photoCharge || 0, topperCharge: order.topperCharge || 0, toyCharges: order.toyCharges || 0, messageOnCake: order.messageOnCake || undefined } : undefined });
+    }catch(cause){setError([sendToPlannerError,`Order ${order.orderNo} was saved, but printing failed. Print it from its saved record; do not collect the advance again. ${cause instanceof Error?cause.message:''}`].filter(Boolean).join(' '));return;}
     // Surface a send-to-Planner failure instead of silently wiping it — the
     // order/payment already succeeded and must not be lost, but staff need
     // to know Planner wasn't notified so they know to use the retry button.
@@ -1350,6 +1188,9 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch', c
       </div>
     )}
     <Section title="Advance Order" icon={<Gift className="size-5"/>}>
+      {advanceRecoveryNotice && <div className="mb-3 rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-800">{advanceRecoveryNotice}</div>}
+      {pendingAdvanceCreation(currentUser?.id||'',branch) && <div className="mb-3 rounded-2xl border border-amber-300 bg-amber-50 p-3 text-sm font-semibold">A previous advance save is awaiting confirmation. Do not collect that payment again.<SoftButton disabled={savingAdvance} onClick={()=>void recoverSavedAdvance()} className="mt-2">Recover saved advance</SoftButton></div>}
+
       {!cakeOnly && (
       <div className="mb-4 grid grid-cols-3 gap-2 rounded-2xl bg-slate-100 p-1">
         {(['store','custom','cake'] as const).map((tab)=><button key={tab} onClick={()=>setMode(tab)} className={cn('rounded-xl px-3 py-2 text-sm font-black capitalize', mode===tab?'bg-slate-950 text-white':'text-slate-600')}>{tab === 'store' ? 'Store Items' : tab === 'custom' ? 'Custom Items' : 'Cake Orders'}</button>)}
@@ -1365,7 +1206,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch', c
         {mode === 'store' && <>
           <div className="grid grid-cols-[1fr_110px] gap-2"><Field label="Item"><Select value={storePick.itemName} onChange={(e)=>setStorePick({...storePick,itemName:e.target.value})}>{items.map((i)=><option key={i.name}>{i.name}</option>)}</Select></Field><Field label="Qty"><Input type="number" min="0" value={storePick.quantity} onChange={(e)=>setStorePick({...storePick,quantity:e.target.value})}/></Field></div>
           <SoftButton onClick={addStoreLine}><Plus className="size-4"/>Add Item</SoftButton>
-          <div className="max-h-52 space-y-2 overflow-y-auto rounded-2xl bg-slate-50 p-2">{storeLines.length === 0 ? <p className="p-3 text-sm font-bold text-slate-500">No items selected.</p> : storeLines.map((line, idx)=>{ const avail = stockQty(branchStock, line.itemName, line.barcode); return <div key={`${line.itemName}-${idx}`} className="flex items-center justify-between gap-2 rounded-xl bg-white p-3 text-sm font-bold"><span>{line.itemName} - {line.quantity} {line.unit}{avail < line.quantity && <span className="ml-2 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-black text-amber-700">Low stock ({avail} in stock)</span>}</span><span>{money(line.lineTotal)}</span><button onClick={()=>removeStoreLine(idx)} className="rounded-lg bg-red-50 p-2 text-red-600"><XCircle className="size-4"/></button></div>; })}</div>
+          <div className="max-h-52 space-y-2 overflow-y-auto rounded-2xl bg-slate-50 p-2">{storeLines.length === 0 ? <p className="p-3 text-sm font-bold text-slate-500">No items selected.</p> : storeLines.map((line, idx)=>{ const avail = stockQty(branchStock, line.itemName, line.barcode); return <div key={`${line.itemName}-${idx}`} className="flex items-center justify-between gap-2 rounded-xl bg-white p-3 text-sm font-bold"><span>{line.itemName} - {line.quantity} {line.unit}{avail < line.quantity && <span className="ml-2 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-black text-amber-700">Low stock ({avail} in stock)</span>}</span><span>{money(line.lineTotal)}</span><button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it." onClick={()=>removeStoreLine(idx)} className="rounded-lg bg-red-50 p-2 text-red-600"><XCircle className="size-4"/></button></div>; })}</div>
           <div className="rounded-2xl bg-emerald-50 p-3 font-black text-emerald-800">Order Value: {money(storeValue)}</div>
           {/* Fully Paid toggle */}
           <div className="flex items-center gap-3 rounded-2xl bg-emerald-50 p-3 ring-1 ring-emerald-100">
@@ -1379,7 +1220,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch', c
           <div className="grid grid-cols-3 gap-2"><Field label="Qty *"><Input type="number" min="0" value={custom.quantity} onChange={(e)=>setCustom({...custom,quantity:e.target.value})}/></Field><Field label="Unit"><Select value={custom.unit} onChange={(e)=>setCustom({...custom,unit:e.target.value as 'pcs'|'kg'})}><option value="pcs">Pcs</option><option value="kg">Kgs</option></Select></Field><Field label="Rate *"><Input type="number" min="0" value={custom.price} onChange={(e)=>setCustom({...custom,price:e.target.value})}/></Field></div>
           <div className="rounded-2xl bg-slate-50 p-3 text-sm font-black text-slate-700">Current item total: {money(customDraftTotal)}</div>
           <SoftButton onClick={addCustomLine}><Plus className="size-4"/>Add Custom Item</SoftButton>
-          <div className="max-h-52 space-y-2 overflow-y-auto rounded-2xl bg-slate-50 p-2">{customLines.length === 0 ? <p className="p-3 text-sm font-bold text-slate-500">No custom items added.</p> : customLines.map((line, idx)=><div key={`${line.itemName}-${idx}`} className="flex items-center justify-between gap-2 rounded-xl bg-white p-3 text-sm font-bold"><span>{line.itemName} - {line.quantity} {line.unit} x {money(line.price)}</span><span>{money(line.lineTotal)}</span><button onClick={()=>removeCustomLine(idx)} className="rounded-lg bg-red-50 p-2 text-red-600"><XCircle className="size-4"/></button></div>)}</div>
+          <div className="max-h-52 space-y-2 overflow-y-auto rounded-2xl bg-slate-50 p-2">{customLines.length === 0 ? <p className="p-3 text-sm font-bold text-slate-500">No custom items added.</p> : customLines.map((line, idx)=><div key={`${line.itemName}-${idx}`} className="flex items-center justify-between gap-2 rounded-xl bg-white p-3 text-sm font-bold"><span>{line.itemName} - {line.quantity} {line.unit} x {money(line.price)}</span><span>{money(line.lineTotal)}</span><button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it." onClick={()=>removeCustomLine(idx)} className="rounded-lg bg-red-50 p-2 text-red-600"><XCircle className="size-4"/></button></div>)}</div>
           <div className="rounded-2xl bg-emerald-50 p-3 font-black text-emerald-800">Order Value: {money(customValue || customDraftTotal)}</div>
           <Field label="Custom Notes"><Textarea value={custom.notes} onChange={(e)=>setCustom({...custom,notes:e.target.value})}/></Field>
 
@@ -1860,9 +1701,17 @@ export function ReturnsTab({ branch, branchStock }: ModuleProps) {
   const [reason, setReason] = useState('Customer return');
   const [returnPayMode, setReturnPayMode] = useState<'cash'|'upi'|'card'|'credit_adjustment'|'wallet'>('cash');
   const [returning, setReturning] = useState(false);
+  const returnInFlight=useRef(false),findVersion=useRef(0),returnViewActive=useRef(true);
+  const [recoveringReturn,setRecoveringReturn]=useState(false);
+  const stopReturnView=useCallback(()=>{returnViewActive.current=false;},[]);
+  const invalidateReturnFind=useCallback(()=>{findVersion.current++;},[]);
+  useEffect(()=>{returnViewActive.current=true;return stopReturnView;},[stopReturnView]);
+  useEffect(()=>{setSelected(null);setRecoveringReturn(false);return invalidateReturnFind;},[branch,invalidateReturnFind]);
   const [returnError, setReturnError] = useState('');
 
   const find = async () => {
+    if(returnInFlight.current)return;
+    const version=++findVersion.current;
     const normalizedBillNo = billNo.trim();
     let bill: BranchBillRecord | null = null;
     if (normalizedBillNo) {
@@ -1873,6 +1722,7 @@ export function ReturnsTab({ branch, branchStock }: ModuleProps) {
         .neq('bill_type', 'return')
         .ilike('bill_no', normalizedBillNo)
         .maybeSingle();
+      if(version!==findVersion.current)return;
       if (error) { setSelected(null); setReturnError(`Bill could not load: ${error.message}`); return; }
       if (data) {
         bill = mapLedgerBillRow(data as LedgerBillRow, branch);
@@ -1881,25 +1731,39 @@ export function ReturnsTab({ branch, branchStock }: ModuleProps) {
         }
       }
     }
-    setSelected(bill);
-    setQtys({});
-    setReturnError(bill ? '' : 'Bill not found.');
-    setReturnPayMode(bill?.paymentMode === 'credit' ? 'credit_adjustment' : bill?.paymentMode === 'wallet' ? 'wallet' : (bill?.paymentMode === 'upi' || bill?.paymentMode === 'card' ? bill.paymentMode : 'cash'));
+    if(version!==findVersion.current)return;
+    try{
+      const pending=bill?pendingBranchReturn(currentUser?.id??'',branch,bill.billNo):null;
+      if(bill&&!pending){
+        const previous=await fetchAllRows<{return_no:string;items:unknown}>('branch_return_records',q=>q.select('id,return_no,items,created_at').eq('branch',branch).eq('bill_no',bill!.billNo).order('created_at',{ascending:false}),{cursorColumn:'created_at'});
+        if(version!==findVersion.current)return;
+        if(previous.error)throw Error(`Previous returns could not load: ${previous.error}`);
+        bill={...bill,items:returnableItems(bill.items,bill.total,previous.data)};
+        if(!bill.items.length){setSelected(null);setReturnError('All items on this bill have already been returned.');return;}
+      }
+      setRecoveringReturn(!!pending);
+      setSelected(bill?{...bill,items:pending?.p_items??bill.items}:null);
+      setQtys(pending?Object.fromEntries(pending.p_items.map(item=>[returnItemKey(item),String(item.quantity)])):{});
+      setReturnError(bill?'':'Bill not found.');
+      if(pending){setReason(pending.p_reason);setReturnPayMode(pending.p_payment_mode as typeof returnPayMode);}
+      else setReturnPayMode(bill?.paymentMode==='credit'?'credit_adjustment':bill?.paymentMode==='wallet'?'wallet':bill?.paymentMode==='upi'||bill?.paymentMode==='card'?bill.paymentMode:'cash');
+    }catch(cause){setSelected(null);setReturnError(cause instanceof Error?cause.message:'Return history could not load.');}
+
   };
 
   const doReturn = async () => {
-    if (!selected || returning) return;
+    if (!selected || returning || returnInFlight.current) return;
     setReturnError('');
-    setReturning(true);
     const lines = selected.items.flatMap((item)=>{
-      const quantity = Number(qtys[item.itemName] || 0);
+      const quantity = Number(qtys[returnItemKey(item)] || 0);
       return quantity > 0 ? [{ ...item, quantity, lineTotal: roundMoney(quantity * item.price) }] : [];
     });
     if (!lines.length) { setReturnError('Enter at least one return quantity.'); setReturning(false); return; }
-    if (lines.some(line => !Number.isFinite(line.quantity) || !Number.isFinite(line.lineTotal) || line.quantity > (selected.items.find(item => item.itemName === line.itemName)?.quantity || 0))) {
+    if (lines.some(line => !Number.isFinite(line.quantity) || !Number.isFinite(line.lineTotal) || (line.unit==='pcs'&&!Number.isInteger(line.quantity)) || line.quantity > (selected.items.find(item => returnItemKey(item) === returnItemKey(line))?.quantity || 0))) {
       setReturnError('Return quantities must be valid and cannot exceed the sold quantities.'); setReturning(false); return;
     }
     if (!reason.trim()) { setReturnError('Return reason is mandatory.'); setReturning(false); return; }
+    returnInFlight.current=true;setReturning(true);
     try {
       const ret = await addReturn({
         branch,
@@ -1911,7 +1775,9 @@ export function ReturnsTab({ branch, branchStock }: ModuleProps) {
         reason: reason.trim(),
         returnPayMode,
       });
-      await fetchBranchData(branch, false, ['stock', 'sales', 'credit']); // EGRESS FIX: a return can touch stock, sales, and (credit-mode bill) credit sales
+      if(!returnViewActive.current)return;
+      await fetchBranchData(branch, true, ['stock', 'sales', 'credit']); // EGRESS FIX: a return can touch stock, sales, and (credit-mode bill) credit sales
+      if(!returnViewActive.current)return;
       const printableMode = ret.returnPayMode === 'credit_adjustment' ? 'credit' : (ret.returnPayMode || 'cash');
       void printCounterBill({
         id: ret.id,
@@ -1928,19 +1794,20 @@ export function ReturnsTab({ branch, branchStock }: ModuleProps) {
         paymentMode: printableMode as BranchBillRecord['paymentMode'],
         salesperson: selected.salesperson || '',
         biller: currentUser?.username || currentUser?.displayName || 'Staff',
-        createdAt: new Date().toISOString(),
-        printCount: 1,
+        createdAt: ret.createdAt,
+        printCount: ret.duplicate?2:1,
         status: 'Returned',
         source: 'counter',
         _isReturn: true,
         _originalBillNo: selected.billNo,
+        notes: `${ret.reason} | Refund: ${money(ret.refundAmount||0)} | Credit reduced: ${money(ret.creditAdjusted||0)}`,
         _returnReason: `${reason}${Number(ret.creditAdjusted || 0) > 0 ? ` - Credit reduced ${money(Number(ret.creditAdjusted || 0))}` : ''}${Number(ret.refundAmount || 0) > 0 ? ` - Refunded ${money(Number(ret.refundAmount || 0))}` : ''}`,
-      } as BranchBillRecord & { _isReturn: boolean; _originalBillNo: string; _returnReason: string }, false);
+      } as BranchBillRecord & { _isReturn: boolean; _originalBillNo: string; _returnReason: string }, !!ret.duplicate);
       setSelected(null); setBillNo(''); setQtys({});
     } catch (error) {
       setReturnError(error instanceof Error ? error.message : 'Return could not be completed.');
     } finally {
-      setReturning(false);
+      returnInFlight.current=false;setReturning(false);
     }
   };
 
@@ -1953,15 +1820,17 @@ export function ReturnsTab({ branch, branchStock }: ModuleProps) {
   return <div className="branch-split-workspace branch-split-workspace-tight grid h-full min-h-0 gap-2">
     <Section title="Return Bill" icon={<RotateCcw className="size-5"/>}>
       <div className="space-y-3">
-        <Field label="Search bill number"><div className="flex gap-2"><Input value={billNo} onChange={(e)=>setBillNo(e.target.value)} onKeyDown={(e)=>{if(e.key==='Enter')void find();}} placeholder={`${branch}-0001`}/><PrimaryButton onClick={()=>void find()}>Search</PrimaryButton></div></Field>
+        <Field label="Search bill number"><div className="flex gap-2"><Input disabled={returning} value={billNo} onChange={(e)=>setBillNo(e.target.value)} onKeyDown={(e)=>{if(e.key==='Enter')void find();}} placeholder={`${branch}-0001`}/><PrimaryButton disabled={returning} onClick={()=>void find()}>Search</PrimaryButton></div></Field>
+        {!selected&&returnError&&<p role="alert" className="rounded-xl bg-red-50 p-3 text-sm font-bold text-red-700">{returnError}</p>}
         {selected && <div className="rounded-2xl bg-slate-50 p-3">
+          {recoveringReturn&&<p role="status" className="mb-2 rounded-xl bg-amber-100 p-2 text-sm font-bold">A saved return needs confirmation. Retry this exact request; do not issue another refund.</p>}
           <p className="font-black">{selected.billNo} - {money(selected.total)}</p>
           <p className="text-xs font-bold uppercase text-slate-500">Original payment: {selected.paymentMode}</p>
           {selected.paymentMode === 'credit' && <p className="mt-2 rounded-xl bg-amber-100 p-2 text-xs font-bold text-amber-900">The unpaid credit balance is reduced first. Select a refund mode only when the return exceeds the outstanding credit.</p>}
           {selected.paymentMode === 'wallet' && <p className="mt-2 rounded-xl bg-emerald-100 p-2 text-xs font-bold text-emerald-900">The eligible amount will be restored to the same wallet and its original paid/promotional balance buckets.</p>}
-          <div className="max-h-[24vh] overflow-y-auto pr-1">{selected.items.map((item)=><div key={item.itemName} className="mt-2 grid grid-cols-[1fr_90px] gap-2"><p className="text-sm font-bold">{item.itemName}<br/><span className="text-xs text-slate-500">Max {item.quantity} - {money(item.price)}</span></p><Input type="number" min="0" max={item.quantity} step="0.001" value={qtys[item.itemName] || ''} onChange={(e)=>setQtys({...qtys,[item.itemName]:e.target.value})}/></div>)}</div>
-          <Field label="Reason for Return"><select value={reason} onChange={(e)=>setReason(e.target.value)} className="mb-2 h-9 w-full rounded-xl border border-slate-200 px-3 text-sm font-bold"><option value="">Select preset reason...</option><option value="Customer return - product defect">Product defect</option><option value="Customer return - wrong item billed">Wrong item billed</option><option value="Customer return - changed mind">Changed mind</option><option value="Customer return - duplicate bill">Duplicate bill</option><option value="Customer return - overcharge correction">Overcharge correction</option><option value="Customer return - stale/expired product">Stale/expired product</option></select><Textarea value={reason} onChange={(e)=>setReason(e.target.value)} placeholder="Or type a custom reason..."/></Field>
-          <Field label="Settlement"><div className={cn('grid gap-2', modes.length===4?'grid-cols-2':'grid-cols-3')}>{modes.map((mode)=><button key={mode.value} onClick={()=>setReturnPayMode(mode.value)} className={cn('rounded-xl border-2 px-2 py-2 text-xs font-black', returnPayMode===mode.value?'border-slate-950 bg-slate-950 text-white':'border-slate-200 bg-white text-slate-600')}>{mode.label}</button>)}</div></Field>
+          <div className="max-h-[24vh] overflow-y-auto pr-1">{selected.items.map((item)=><div key={returnItemKey(item)} className="mt-2 grid grid-cols-[1fr_90px] gap-2"><p className="text-sm font-bold">{item.itemName}<br/><span className="text-xs text-slate-500">Max {item.quantity} - {money(item.price)}</span></p><Input disabled={returning||recoveringReturn} type="number" min="0" max={item.quantity} step={item.unit==='pcs'?'1':'0.001'} value={qtys[returnItemKey(item)] || ''} onChange={(e)=>setQtys({...qtys,[returnItemKey(item)]:e.target.value})}/></div>)}</div>
+          <Field label="Reason for Return"><select disabled={returning||recoveringReturn} value={reason} onChange={(e)=>setReason(e.target.value)} className="mb-2 h-9 w-full rounded-xl border border-slate-200 px-3 text-sm font-bold"><option value="">Select preset reason...</option><option value="Customer return - product defect">Product defect</option><option value="Customer return - wrong item billed">Wrong item billed</option><option value="Customer return - changed mind">Changed mind</option><option value="Customer return - duplicate bill">Duplicate bill</option><option value="Customer return - overcharge correction">Overcharge correction</option><option value="Customer return - stale/expired product">Stale/expired product</option></select><Textarea disabled={returning||recoveringReturn} value={reason} onChange={(e)=>setReason(e.target.value)} placeholder="Or type a custom reason..."/></Field>
+          <Field label="Settlement"><div className={cn('grid gap-2', modes.length===4?'grid-cols-2':'grid-cols-3')}>{modes.map((mode)=><button key={mode.value} disabled={returning||recoveringReturn} onClick={()=>setReturnPayMode(mode.value)} className={cn('rounded-xl border-2 px-2 py-2 text-xs font-black', returnPayMode===mode.value?'border-slate-950 bg-slate-950 text-white':'border-slate-200 bg-white text-slate-600')}>{mode.label}</button>)}</div></Field>
           {returnError && <p className="rounded-xl bg-red-50 p-3 text-sm font-black text-red-700">{returnError}</p>}
           <PrimaryButton onClick={()=>void doReturn()} disabled={returning}><Printer className="size-4"/>{returning ? 'Processing Return...' : 'Print Return Bill & Sync Stock'}</PrimaryButton>
         </div>}
@@ -2040,12 +1909,15 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
   const [upiAuditNotes, setUpiAuditNotes] = useState('');
   const [notes, setNotes] = useState('');
   const [savedMessage, setSavedMessage] = useState('');
-  const [ledgerToday, setLedgerToday] = useState<ClosureLedgerRow | null>(null);
+  const [ledgerToday] = useState<ClosureLedgerRow | null>(null);
   const [closureMessage, setClosureMessage] = useState('');
   const [openCashier, setOpenCashier] = useState('');
   const [openDenominations, setOpenDenominations] = useState<Record<number,string>>({500:'',200:'',100:'',50:'',20:'',10:'',5:'',2:'',1:''});
   const [closeDenominations, setCloseDenominations] = useState<Record<number,string>>({500:'',200:'',100:'',50:'',20:'',10:'',5:'',2:'',1:''});
   const [openSavedMessage, setOpenSavedMessage] = useState('');
+  const totalsReadVersion=useRef(0);
+  const invalidateCounterRead=useCallback(()=>{totalsReadVersion.current++;},[]);
+  const creditFrom=startOfBusinessDayISO(),creditUntil=new Date(new Date(creditFrom).getTime()+86400000).toISOString();
   const [ledgerLoading, setLedgerLoading] = useState(false);
   const [counterSnapshot, setCounterSnapshot] = useState<CounterClosureSnapshot>({ advanceCash:0, advanceUpi:0, advanceCard:0, advanceBank:0, advanceInitial:0, advanceBalance:0, advanceTotal:0, paymentCount:0 });
   // BUG FIX (2026-09-11): "cashier unable to open the counter" — added
@@ -2178,7 +2050,8 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
     // EGRESS FIX (2026-08-15): dropped the 15s poll — visibilitychange plus
     // the existing manual Refresh button (below, on the ledger panel) cover
     // the same freshness need without a background timer.
-    const refreshOnVisible = () => { if (!document.hidden) void load(); };
+    let lastVisibleRead=Date.now();
+    const refreshOnVisible = () => { if (!document.hidden&&Date.now()-lastVisibleRead>=30_000){lastVisibleRead=Date.now();void load();} };
     document.addEventListener('visibilitychange', refreshOnVisible);
     return () => { active = false; document.removeEventListener('visibilitychange', refreshOnVisible); };
   }, [loadCounterSnapshot, loadOpenSession]);
@@ -2195,40 +2068,9 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
   }, [branchCounterOpenRecord, user]);
 
   useEffect(() => {
-    void fetchCreditSales(branch);
-    void fetchCreditPayments(branch);
-  }, [branch, fetchCreditPayments, fetchCreditSales]);
-
-  const loadClosureLedger = useCallback(async () => {
-    setLedgerLoading(true);
-    setClosureMessage('');
-    const date = todayIso();
-    // PERF FIX (2026-09-26): "all the dashboard and tabs are getting
-    // [statement timeout], always" — branch_daily_closure_ledger (the view)
-    // aggregates its 3 source tables in full BEFORE this branch/date filter
-    // ever applies — confirmed a full Seq Scan of ~38,000+ rows on every
-    // call, and this loads on every visit to this branch's own closure
-    // screen, many times a day. Switched to the ranged RPC (same fix as
-    // useBranchLedger.ts), which pushes the filter inside the aggregation
-    // and uses the existing (branch, created_at) indexes instead.
-    const { data: ledgerData, error: ledgerError } = await supabase
-      .rpc('branch_daily_closure_ledger_ranged', { p_from_date: date, p_to_date: date, p_branches: [branch] })
-      .maybeSingle();
-    setLedgerLoading(false);
-    if (ledgerError) {
-      const missingLedger = /branch_daily_closure_ledger|does not exist|schema cache/i.test(ledgerError.message);
-      setClosureMessage(missingLedger
-        ? 'Supabase daily closure ledger is not installed yet. Run 20260614_branch_core_tables.sql and 20260614_branch_atomic_checkout_rpc.sql before relying on closure totals.'
-        : `Could not load Supabase closure ledger: ${ledgerError.message}`);
-      setLedgerToday(null);
-    } else {
-      setLedgerToday((ledgerData as ClosureLedgerRow | null) || null);
-    }
-  }, [branch]);
-
-  useEffect(() => {
-    void loadClosureLedger();
-  }, [loadClosureLedger]);
+    void fetchCreditSales(branch,creditFrom,creditUntil);
+    void fetchCreditPayments(branch,creditFrom,creditUntil);
+  }, [branch, creditFrom, creditUntil, fetchCreditPayments, fetchCreditSales]);
 
   const hasActiveCounter = Boolean(branchCounterOpenRecord);
   const sessionStartedAt = branchCounterOpenRecord?.openedAt ? new Date(branchCounterOpenRecord.openedAt).getTime() : 0;
@@ -2240,28 +2082,26 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
   const closureLedger = useClosedLedgerForLiveTotals ? ledgerToday : null;
   const activeSessionId = branchCounterOpenRecord?.counterSessionId;
 
-  useEffect(() => {
-    let alive = true;
-    if (!activeSessionId) { setAuthTotals(null); return; }
-    const run = async () => {
-      const { data, error } = await supabase.rpc('get_branch_counter_session_totals_secure', { p_session_id: activeSessionId });
-      if (!alive) return;
-      if (error || !data || typeof data !== 'object') { setAuthTotals(null); return; }
-      const r = data as Record<string, unknown>;
-      setAuthTotals({
-        cashTotal: Number(r.cashTotal || 0),
-        upiTotal: Number(r.upiTotal || 0),
-        cardTotal: Number(r.cardTotal || 0),
-        billCount: Number(r.billCount || 0),
-        grossSales: Number(r.grossSales || 0),
-        discounts: Number(r.discounts || 0),
-      });
-    };
-    void run();
-    const onVisible = () => { if (!document.hidden) void run(); };
-    document.addEventListener('visibilitychange', onVisible);
-    return () => { alive = false; document.removeEventListener('visibilitychange', onVisible); };
-  }, [activeSessionId]);
+  const loadClosureLedger = useCallback(async () => {
+    const version=++totalsReadVersion.current;
+    if(!activeSessionId){setAuthTotals(null);setLedgerLoading(false);return;}
+    setLedgerLoading(true);
+    try{
+      const {data,error}=await shareInFlightRead(`counter-totals:${currentUser?.id}:${activeSessionId}`,()=>supabase.rpc('get_branch_counter_session_totals_secure',{p_session_id:activeSessionId}));
+      if(version!==totalsReadVersion.current)return;
+      if(error||!data||typeof data!=='object'){setAuthTotals(null);setClosureMessage(error?.message||'Counter totals could not load.');return;}
+      const r=data as Record<string,unknown>;
+      setAuthTotals({cashTotal:Number(r.cashTotal||0),upiTotal:Number(r.upiTotal||0),cardTotal:Number(r.cardTotal||0),billCount:Number(r.billCount||0),grossSales:Number(r.grossSales||0),discounts:Number(r.discounts||0)});
+    }catch(cause){if(version===totalsReadVersion.current){setAuthTotals(null);setClosureMessage(cause instanceof Error?cause.message:'Counter totals could not load.');}}
+    finally{if(version===totalsReadVersion.current)setLedgerLoading(false);}
+  },[activeSessionId,currentUser?.id]);
+  useEffect(()=>{
+    void loadClosureLedger();
+    let lastVisibleRead=Date.now();
+    const onVisible=()=>{if(!document.hidden&&Date.now()-lastVisibleRead>=30_000){lastVisibleRead=Date.now();void loadClosureLedger();}};
+    document.addEventListener('visibilitychange',onVisible);
+    return ()=>{invalidateCounterRead();document.removeEventListener('visibilitychange',onVisible);};
+  },[loadClosureLedger,invalidateCounterRead]);
 
   const belongsToCashier = (cashierUserId?: string, cashierName?: string) => currentUser?.id
     ? (cashierUserId ? cashierUserId === currentUser.id : cashierName === user)
@@ -2780,7 +2620,7 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
           <p className="mt-1 text-sm font-black text-foreground">Cashier Closure - {new Date(`${todayIso()}T00:00:00`).toLocaleDateString('en-IN', { day: '2-digit', month: 'long', year: 'numeric' })}</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <button onClick={() => { void fetchCreditSales(branch); void fetchCreditPayments(branch); void loadClosureLedger(); void loadOpenSession(); void loadCounterSnapshot(); }} disabled={ledgerLoading} className="h-11 rounded-xl border border-border bg-card px-3 text-sm font-bold flex items-center gap-2 active:scale-95 disabled:opacity-50">
+          <button onClick={() => { void fetchCreditSales(branch,creditFrom,creditUntil); void fetchCreditPayments(branch,creditFrom,creditUntil); void loadClosureLedger(); void loadOpenSession(); void loadCounterSnapshot(); }} disabled={ledgerLoading} className="h-11 rounded-xl border border-border bg-card px-3 text-sm font-bold flex items-center gap-2 active:scale-95 disabled:opacity-50">
             <RotateCcw className={cn("size-4", ledgerLoading && "animate-spin")} />Refresh
           </button>
           <button onClick={() => printClosure()} className="h-11 rounded-xl bg-primary px-4 text-sm font-black text-primary-foreground flex items-center gap-2 active:scale-95">
@@ -3085,7 +2925,7 @@ export function SalespersonReportTab({ branch }: ModuleProps) {
   // failure is surfaced here instead of a false "added" look.
   const [addSaving,setAddSaving]=useState(false); const [addError,setAddError]=useState<string|null>(null);
   const doAdd=async()=>{ if(!name) return; setAddSaving(true); setAddError(null); const savedName=name; const ok=await addSalesperson(branch,savedName,currentUser?.displayName||'Admin'); setAddSaving(false); if(!ok){ setAddError(`"${savedName}" was not saved — the server didn't confirm the write after retrying. Please try Add again.`); return; } setName(''); };
-  return <div className="grid gap-5 xl:grid-cols-[400px_minmax(0,1fr)]"><Section title="Salesperson Master" icon={<UserRound className="size-5"/>}>{isAdmin && <div className="mb-4 space-y-2"><div className="flex gap-2"><Input value={name} onChange={(e)=>setName(e.target.value)} placeholder="Add salesperson"/><PrimaryButton onClick={()=>void doAdd()} disabled={addSaving}><Plus className="size-4"/>{addSaving?'Saving…':'Add'}</PrimaryButton></div>{addError && <p className="rounded-xl border border-red-200 bg-red-50 p-2 text-xs font-semibold text-red-700">{addError}</p>}</div>}<div className="space-y-2">{salespeople.filter(s=>s.branch===branch).map(s=><div key={s.id} className="flex items-center justify-between rounded-2xl border p-3"><Input disabled={!isAdmin} value={s.name} onChange={(e)=>updateSalesperson(s.id,e.target.value,s.active,currentUser?.displayName||'Admin')}/>{isAdmin && <button onClick={()=>removeSalesperson(s.id,currentUser?.displayName||'Admin')} className="ml-2 rounded-xl bg-red-50 p-3 text-red-600"><Trash2 className="size-4"/></button>}</div>)}</div></Section><Section title="Salesperson-wise Sales" icon={<Receipt className="size-5"/>}><div className="space-y-2">{rows.map(([person,v])=><div key={person} className="grid grid-cols-[1fr_auto_auto] items-center gap-3 rounded-2xl border p-4"><p className="font-black">{person}</p><span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-black">{v.count} bills</span><p className="text-xl font-black text-emerald-700">{money(v.total)}</p></div>)}</div></Section></div>;
+  return <div className="grid gap-5 xl:grid-cols-[400px_minmax(0,1fr)]"><Section title="Salesperson Master" icon={<UserRound className="size-5"/>}>{isAdmin && <div className="mb-4 space-y-2"><div className="flex gap-2"><Input value={name} onChange={(e)=>setName(e.target.value)} placeholder="Add salesperson"/><PrimaryButton onClick={()=>void doAdd()} disabled={addSaving}><Plus className="size-4"/>{addSaving?'Saving…':'Add'}</PrimaryButton></div>{addError && <p className="rounded-xl border border-red-200 bg-red-50 p-2 text-xs font-semibold text-red-700">{addError}</p>}</div>}<div className="space-y-2">{salespeople.filter(s=>s.branch===branch).map(s=><div key={s.id} className="flex items-center justify-between rounded-2xl border p-3"><Input disabled={!isAdmin} value={s.name} onChange={(e)=>updateSalesperson(s.id,e.target.value,s.active,currentUser?.displayName||'Admin')}/>{isAdmin && <button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it." onClick={()=>removeSalesperson(s.id,currentUser?.displayName||'Admin')} className="ml-2 rounded-xl bg-red-50 p-3 text-red-600"><Trash2 className="size-4"/></button>}</div>)}</div></Section><Section title="Salesperson-wise Sales" icon={<Receipt className="size-5"/>}><div className="space-y-2">{rows.map(([person,v])=><div key={person} className="grid grid-cols-[1fr_auto_auto] items-center gap-3 rounded-2xl border p-4"><p className="font-black">{person}</p><span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-black">{v.count} bills</span><p className="text-xl font-black text-emerald-700">{money(v.total)}</p></div>)}</div></Section></div>;
 }
 
 export function AdminNotificationsBranchTab({ branch }: ModuleProps) {
