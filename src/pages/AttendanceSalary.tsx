@@ -453,6 +453,23 @@ function generatePayslipPdf(emp: Employee, calc: ReturnType<typeof calcSalary>, 
 }
 
 // ─── Excel Export ─────────────────────────────────────────────────────────────
+const contractTeam = (e: Employee) => e.paymentMode?.trim() || 'Direct';
+function teamSheet(sheet: XLSX.WorkSheet, headerRow: number, teams: string[]) {
+  const column = sheet.rows[headerRow].length;
+  sheet.rows[headerRow][column] = 'Contract Team';
+  teams.forEach((team, index) => { sheet.rows[headerRow + 1 + index][column] = team; });
+  sheet['!cols'] = Array.from({length:column}, (_,i) => sheet['!cols']?.[i] || {wch:14}).concat({wch:22});
+  sheet['!autofilter'] = { startRow: headerRow, endRow: headerRow + teams.length, endColumn: column };
+}
+function appendContractTeams(wb: XLSX.WorkBook, employees: Employee[], monthLabel: string) {
+  const sheet = XLSX.utils.aoa_to_sheet([
+    [`CONTRACT TEAM ROSTER — ${monthLabel.toUpperCase()}`], [],
+    ['#', 'Name', 'Branch', 'Department', 'Status', 'Gross Monthly Salary', 'Advance Balance'],
+    ...employees.map((e,i) => [i+1,e.name,e.branch,e.department,e.isActive===false?'Archived':'Active',e.grossSalary,e.salaryAdvance]),
+  ]);
+  teamSheet(sheet, 2, employees.map(contractTeam));
+  XLSX.utils.book_append_sheet(wb, sheet, 'Contract Teams');
+}
 export function exportExcel(
   employees: Employee[],
   att: MonthAttendance,
@@ -512,6 +529,7 @@ export function exportExcel(
     { s: { r: 0, c: 0 }, e: { r: 0, c: 17 } },
     { s: { r: 1, c: 0 }, e: { r: 1, c: 17 } },
   ];
+  teamSheet(ws1, 3, employees.map(contractTeam));
   XLSX.utils.book_append_sheet(wb, ws1, 'Salary Summary');
 
   // ── Sheet 2: Attendance Detail ──
@@ -547,6 +565,7 @@ export function exportExcel(
     { s: { r: 0, c: 0 }, e: { r: 0, c: daysInMonth + 7 } },
     { s: { r: 1, c: 0 }, e: { r: 1, c: daysInMonth + 7 } },
   ];
+  teamSheet(ws2, 3, employees.map(contractTeam));
   XLSX.utils.book_append_sheet(wb, ws2, 'Attendance Detail');
 
   // ── Sheet 3: BANK(SALARY) ──
@@ -584,14 +603,16 @@ export function exportExcel(
     { s: { r: 0, c: 0 }, e: { r: 0, c: 6 } },
     { s: { r: 1, c: 0 }, e: { r: 1, c: 6 } },
   ];
+  teamSheet(ws3, 3, employees.map(contractTeam));
   XLSX.utils.book_append_sheet(wb, ws3, 'BANK(SALARY)');
+  appendContractTeams(wb, employees, monthLabel);
 
   // Save
   XLSX.writeFile(wb, `CafeAadvikam_SalaryReport_${monthLabel.replace(' ', '_')}.xlsx`);
 }
 
 // ─── Attendance-only Excel Export ─────────────────────────────────────────────
-function exportAttendanceExcel(
+export function exportAttendanceExcel(
   employees: Employee[],
   att: MonthAttendance,
   decisions: DeductionDecisions,
@@ -661,11 +682,13 @@ function exportAttendanceExcel(
     { s: { r: 2, c: 0 }, e: { r: 2, c: daysInMonth + 11 } },
   ];
 
+  teamSheet(ws, 4, employees.map(contractTeam));
   XLSX.utils.book_append_sheet(wb, ws, 'Attendance Register');
 
   // ── Sheet 2: Per-employee meal detail ──
   const mealHeaders = ['#', 'Name', 'Branch', 'Department', 'Day', 'Breakfast', 'Lunch', 'Dinner', 'Meal Cost (₹)'];
   const mealRows: (string | number)[][] = [];
+  const mealTeams: string[] = [];
   let mealIdx = 1;
   employees.forEach(e => {
     for (let d = 1; d <= daysInMonth; d++) {
@@ -679,6 +702,7 @@ function exportAttendanceExcel(
       if (!a.bf && !a.lunch && !a.dinner) continue;
       const cost = [a.bf, a.lunch, a.dinner].filter(Boolean).length * 10;
       mealRows.push([mealIdx++, e.name, e.branch, e.department, d, a.bf ? 'Yes' : '', a.lunch ? 'Yes' : '', a.dinner ? 'Yes' : '', cost]);
+      mealTeams.push(contractTeam(e));
     }
   });
   const ws2 = XLSX.utils.aoa_to_sheet([
@@ -697,13 +721,15 @@ function exportAttendanceExcel(
     { s: { r: 0, c: 0 }, e: { r: 0, c: 8 } },
     { s: { r: 1, c: 0 }, e: { r: 1, c: 8 } },
   ];
+  teamSheet(ws2, 3, mealTeams);
   XLSX.utils.book_append_sheet(wb, ws2, 'Meal Log');
+  appendContractTeams(wb, employees, monthLabel);
 
   XLSX.writeFile(wb, `CafeAadvikam_Attendance_${monthLabel.replace(' ', '_')}.xlsx`);
 }
 
 // ─── Advance Excel Export ──────────────────────────────────────────────────────
-function exportAdvanceExcel(
+export function exportAdvanceExcel(
   employees: Employee[],
   allAdvanceRecords: SalaryAdvanceRecord[],
   monthLabel: string
@@ -763,6 +789,7 @@ function exportAdvanceExcel(
     { s: { r: 0, c: 0 }, e: { r: 0, c: 8 } },
     { s: { r: 1, c: 0 }, e: { r: 1, c: 8 } },
   ];
+  teamSheet(ws1, 3, records.map(r => contractTeam(empMap[r.employeeId])));
   XLSX.utils.book_append_sheet(wb, ws1, 'Advance Records');
 
   // ── Sheet 2: Per-employee Advance Summary ──
@@ -799,7 +826,9 @@ function exportAdvanceExcel(
   ws2['!merges'] = [
     { s: { r: 0, c: 0 }, e: { r: 0, c: 7 } },
   ];
+  teamSheet(ws2, 2, employees.filter(e => records.some(r => r.employeeId === e.id) || e.salaryAdvance !== 0).map(contractTeam));
   XLSX.utils.book_append_sheet(wb, ws2, 'Employee Summary');
+  appendContractTeams(wb, employees, monthLabel);
 
   XLSX.writeFile(wb, `CafeAadvikam_Advances_${monthLabel.replace(' ', '_')}.xlsx`);
 }
@@ -2295,7 +2324,7 @@ function AttendanceSalaryContent() {
       {tab === 'salary' && (
         <div className="px-4 space-y-3">
           <div className="bg-card border border-border rounded-2xl p-4">
-            <p className="mb-3 text-xs text-muted-foreground">{activeMonth.year*100+activeMonth.month>=202611 ? 'PF: 12% of 60% of earned salary, capped at ₹3,000 per month. Earlier payroll months retain their previous rule.' : 'Historical payroll rule: PF is 12% of earned salary, capped at ₹1,800.'}</p>
+            <p className="mb-3 text-xs text-muted-foreground">{activeMonth.year*100+activeMonth.month>=202611 ? 'PF: 12% of 60% of earned salary, capped at ₹1,800 per month. Earlier payroll months retain their previous rule.' : 'Historical payroll rule: PF is 12% of earned salary, capped at ₹1,800.'}</p>
             <h3 className="font-display font-bold text-foreground mb-3 flex items-center gap-2">
               <TrendingDown className="size-4 text-primary" />
               {branch === 'All' ? 'All Branches' : branch} — {activeMonth.label} Summary
