@@ -20,11 +20,14 @@ export function previousPayrollMonth(today:string){const date=new Date(`${today}
 export type FinanceRequest={method:'finance_record_supplier'|'finance_pay_salary'|'finance_record_department'|'finance_void_expense';args:Record<string,unknown>};
 export async function sendFinanceRequest(request:FinanceRequest){
  const {data,error}=await supabase.rpc(request.method,request.args);
- if(error)throw Object.assign(Error(error.message),{rejected:!!error.code&&/^[0-9A-Z]{5}$/.test(error.code)&&!error.code.startsWith('PGRST')});
+ // Only definitive validation/permission failures release the saved request.
+ // Connection loss (08xxx) and unknown completion (40003) can follow a commit.
+ if(error)throw Object.assign(Error(error.message),{rejected:!!error.code&&/^(P0001|22[0-9A-Z]{3}|23[0-9A-Z]{3}|42501)$/.test(error.code)});
  if(!data?.receipt)throw Error('No payment receipt was returned. Retry the saved request to check it.');
  return data as {receipt:string;already_saved?:boolean;balance?:number;amount?:number};
 }
 export function financeError(message:string){
+ if(message==='ADVANCE_RECORDS_REQUIRE_RECONCILIATION')return 'Salary advance records do not match the employee balance. Reconcile them in Attendance before recording this salary payment.';
  if(message==='CURRENT_BALANCE_NOT_VERIFIED')return 'Set the verified current supplier balance before recording its first payment.';
  if(message==='PAYROLL_MONTH_NOT_CLOSED')return 'This payroll month has not ended. Review it now and record payment after month end.';
  if(message==='INVALID_GRN_AMOUNT_REVIEW_BEFORE_PAYING')return 'A GRN has an invalid total or paid amount. Review its invoice before recording payment.';
