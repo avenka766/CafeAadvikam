@@ -516,7 +516,7 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
                     </div>
 
                     {/* Remove */}
-                    <button
+                    <button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it."
                       onClick={() => removeLine(idx)}
                       disabled={lines.length === 1}
                       className="size-10 rounded-xl bg-destructive/10 text-destructive flex items-center justify-center disabled:opacity-30 active:scale-95 transition-all shrink-0"
@@ -624,7 +624,7 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
                   <option value="kg">Kg</option>
                   <option value="pcs">Pcs</option>
                 </select>
-                <button
+                <button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it."
                   onClick={() => removeCustomLine(idx)}
                   className="size-10 rounded-xl bg-destructive/10 text-destructive flex items-center justify-center active:scale-95 transition-all shrink-0"
                 >

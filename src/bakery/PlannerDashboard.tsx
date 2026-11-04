@@ -1,3 +1,9 @@
+import {collectHosurOrderIds,useHosurShopOrders,type HosurShopOrderCard} from './useHosurShopOrders';
+import {financialLineTotal,financialPercent} from '@/lib/financialRounding';
+import {changeSampleInvoice} from './sampleInvoiceRequest';
+import {pendingRegularDispatch,saveWebDispatch} from './webDispatchRequest';
+import {loadPlannerGstRegister} from './plannerGstRegister';
+import PlannerGstRegister from './GstBillRegisterPanel';
 import {automaticDesktopBilling} from '@/lib/desktopBilling';
 import {desktopSalesAvailable,desktopSalesCall,desktopSalesSnapshot,prepareDesktopSales,saveDesktopSale,syncDesktopSales,type DesktopSnapshot,type DesktopSaleInput} from './desktopSales';
 import type {MergedCatalogItemWithPrice} from './PlannerLeftoverTab';
@@ -47,7 +53,8 @@ import PackingDailyClosureTab, { usePackingDispatchSummary, StatCard, DisputesAn
 import { exportToExcel } from '@/lib/exportExcel';
 import HosurDashboard from '@/pages/HosurDashboard';
 import HosurShopOrderPanel, { leftoverReasonLabel } from './HosurShopOrderPanel';
-import { dispatchReceiveAndBill, type HosurOrderItemForBilling } from './hosurBillingBridge';
+import {RetainedPanel} from '@/components/RetainedPanel';
+import { notifyConfirmedHosurInvoice } from './hosurBillingBridge';
 import PackingCakeOrdersTab from './PackingCakeOrdersTab';
 import { useCakeReadyCount } from './useCakeReadyCount';
 import PlannerLeftoverTab, { PlannerTransferOutTab, useLeftoverBalanceMap, closingStockBalanceKey, recordLeftoverMovement, kolkataToday, qtyFmt, sanitizeQtyForUnit, type LeftoverUnit, useMergedLeftoverCatalog, useMergedCatalogWithPrice, useBranchOnlyCatalog, ItemSearchPicker, type MergedCatalogItem } from './PlannerLeftoverTab';
@@ -62,7 +69,7 @@ import { generateExcelReport, generatePdfReport, type ExcelSectionSpec, type Pdf
 import { printWasteLogBatch } from '@/pages/AdminSNBDashboard';
 import {
   businessFor, defaultDiscountPct, saveDispatchInvoice, printDispatchInvoice, listDispatchInvoices, markDispatchInvoicePaid, updateDispatchInvoice, cancelDispatchInvoice,
-  mapWalkinBill, walkinBillToInvoiceRecord, returnDispatchInvoiceItems, recordFromRow, saveWalkinBillSecure,
+  changeWalkinBillAtomic, mapWalkinBill, walkinBillToInvoiceRecord, returnDispatchInvoiceItems, recordFromRow, saveWalkinBillSecure,
   saveAdvanceSale, settleAdvanceSale, cancelAdvanceSale, listAdvanceSales, advanceSaleToInvoiceRecord,
   type DispatchInvoiceRecord, type DispatchInvoiceItem, type WalkinBillRow, type WalkinBillItem, type AdvanceSaleRecord, type AdvanceSaleItem, type DispatchInvoiceScope,
 } from './dispatchInvoice';
@@ -1316,7 +1323,7 @@ function useHosurShopNames(orders: BakeryOrder[]): Map<string, string> {
   const hosurIds = useMemo(() => {
     const ids = new Set<string>();
     for (const o of orders) extractHosurOrderIds(o.notes).forEach(id => ids.add(id));
-    return Array.from(ids);
+    return Array.from(ids).sort();
   }, [orders]);
   const key = hosurIds.join(',');
   useEffect(() => {
@@ -1870,7 +1877,7 @@ function EditableIncomingOrderCard({ order, bucket, label, tone, hosurShopName, 
                 <option value="kg">kg</option>
                 <option value="pcs">pcs</option>
               </select>
-              <button type="button" onClick={() => removeDraft(idx)} className="flex items-center justify-center gap-1 rounded-lg border border-red-300 bg-red-50 px-2 py-1.5 text-[11px] font-black text-red-700 hover:bg-red-100">
+              <button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it." type="button" onClick={() => removeDraft(idx)} className="flex items-center justify-center gap-1 rounded-lg border border-red-300 bg-red-50 px-2 py-1.5 text-[11px] font-black text-red-700 hover:bg-red-100">
                 <Trash2 className="size-3.5" /> Remove
               </button>
             </div>
@@ -2315,7 +2322,7 @@ function MergedSummaryTab({ orders }: { orders: BakeryOrder[] }) {
                               <button type="button" title="Edit this item's quantity on the order it contributes the most to (not the merged total across all orders)" onClick={() => { const target = largestContributor(row); setEditingKey(key); setEditValue(String(target ? displayQtyFor(target.item) : row.totalRequested)); setRowError(null); }} className="rounded-lg border border-border p-1 text-muted-foreground hover:bg-muted">
                                 <Pencil className="size-3" />
                               </button>
-                              <button type="button" disabled={rowSaving === key} title="Remove (from the order contributing the most of this item)" onClick={() => void removeRow(row, key)} className="rounded-lg border border-red-200 p-1 text-red-600 hover:bg-red-50 disabled:opacity-50">
+                              <button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it." type="button" disabled={rowSaving === key} title="Remove (from the order contributing the most of this item)" onClick={() => void removeRow(row, key)} className="rounded-lg border border-red-200 p-1 text-red-600 hover:bg-red-50 disabled:opacity-50">
                                 <X className="size-3" />
                               </button>
                             </span>
@@ -3253,6 +3260,8 @@ function HosurUnifiedSection({ embedded = false }: { embedded?: boolean } = {}) 
   };
 
   const panelSection: 'place' | 'dispatch' | undefined = activeTab === 'place' || activeTab === 'dispatch' ? activeTab : undefined;
+  const lastPanelSection = useRef<'place' | 'dispatch'>(panelSection ?? 'place');
+  if(panelSection)lastPanelSection.current=panelSection;
 
   return (
     <div className="space-y-4">
@@ -3283,12 +3292,12 @@ function HosurUnifiedSection({ embedded = false }: { embedded?: boolean } = {}) 
         </div>
       </div>
 
-      <div className={panelSection ? '' : 'hidden'}>
-        <HosurShopOrderPanel section={panelSection ?? 'place'} onPendingCountChange={setPendingDispatchCount} />
-      </div>
-      <div className={panelSection ? 'hidden' : ''}>
-        <HosurDashboard hideNav />
-      </div>
+      <RetainedPanel active={Boolean(panelSection)}>
+        <HosurShopOrderPanel active={Boolean(panelSection)} section={lastPanelSection.current} onPendingCountChange={setPendingDispatchCount} />
+      </RetainedPanel>
+      <RetainedPanel active={!panelSection}>
+        <HosurDashboard hideNav active={!panelSection} />
+      </RetainedPanel>
     </div>
   );
 }
@@ -3522,24 +3531,23 @@ function InvoiceTab({ orders }: { orders: BakeryOrder[] }) {
         }
       }
     }
-    return Array.from(ids);
+    return Array.from(ids).sort();
   }, [orders, date]);
   const hosurTargetOrderIdsForDateKey = hosurTargetOrderIdsForDate.join(',');
   const [hosurShopNameById, setHosurShopNameById] = useState<Map<string, string>>(new Map());
   useEffect(() => {
     let cancelled = false;
-    if (hosurTargetOrderIdsForDate.length === 0) { setHosurShopNameById(new Map()); return; }
+    const queryIds = hosurTargetOrderIdsForDateKey ? hosurTargetOrderIdsForDateKey.split(',') : [];
+    if (queryIds.length === 0) { setHosurShopNameById(new Map()); return; }
     (async () => {
       // BUG FIX (2026-09-16): same unpaginated-`.in()` cap risk as the Jos
       // Bakery Theni dispatch bug — paginated.
-      const { data } = await fetchAllRows<Record<string, unknown>>('hosur_orders', (q) => q.select('id, shop_name').in('id', hosurTargetOrderIdsForDate));
+      const { data } = await fetchAllRows<Record<string, unknown>>('hosur_orders', (q) => q.select('id, shop_name').in('id', queryIds));
       if (cancelled) return;
       setHosurShopNameById(new Map((data ?? []).map(o => [o.id as string, String(o.shop_name ?? 'Unknown shop')])));
     })();
     return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the
-    // stable joined string, not the unstable array reference.
-  }, [hosurTargetOrderIdsForDateKey]);
+}, [hosurTargetOrderIdsForDateKey]);
 
   const hosurShopRows = useMemo(() => {
     // BUG FIX: same case-sensitivity bug as perBranchRows/hosurShopSummary
@@ -4271,29 +4279,28 @@ function ReportsTab({ orders, onExportDataChange }: {
         ids.add(d.targetHosurOrderId);
       }
     }
-    return Array.from(ids);
+    return Array.from(ids).sort();
   }, [orders, dateFrom, dateTo, reportsCutoff]);
   const hosurTargetOrderIdsKey = hosurTargetOrderIds.join(',');
   const [hosurShopNameById, setHosurShopNameById] = useState<Map<string, string>>(new Map());
   useEffect(() => {
     let cancelled = false;
-    if (hosurTargetOrderIds.length === 0) { setHosurShopNameById(new Map()); return; }
+    const queryIds = hosurTargetOrderIdsKey ? hosurTargetOrderIdsKey.split(',') : [];
+    if (queryIds.length === 0) { setHosurShopNameById(new Map()); return; }
     (async () => {
       // BUG FIX (2026-09-16): same unpaginated-`.in()` cap risk as the Jos
       // Bakery Theni dispatch bug — paginated.
-      const { data } = await fetchAllRows<Record<string, unknown>>('hosur_orders', (q) => q.select('id, shop_name').in('id', hosurTargetOrderIds));
+      const { data } = await fetchAllRows<Record<string, unknown>>('hosur_orders', (q) => q.select('id, shop_name').in('id', queryIds));
       if (cancelled) return;
       setHosurShopNameById(new Map((data ?? []).map(o => [o.id as string, String(o.shop_name ?? 'Unknown shop')])));
     })();
     return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the
-    // stable joined string, not the unstable array reference (see HosurShopBreakdown).
-  }, [hosurTargetOrderIdsKey]);
-  const resolveHosurShopName = (d: { branch: string; targetHosurOrderId?: string }): string | null => {
+}, [hosurTargetOrderIdsKey]);
+  const resolveHosurShopName = useCallback((d: { branch: string; targetHosurOrderId?: string }): string | null => {
     if (d.branch !== 'Hosur') return null;
     if (!d.targetHosurOrderId) return 'Unassigned (not shop-tagged)';
     return hosurShopNameById.get(d.targetHosurOrderId) ?? 'Unknown shop';
-  };
+  }, [hosurShopNameById]);
 
   const extraDispatchRows = useMemo(() => orders.flatMap(o =>
     (o.dispatchLog || [])
@@ -4312,7 +4319,7 @@ function ReportsTab({ orders, onExportDataChange }: {
         branch: d.branch, dispatchedAt: d.dispatchedAt, dispatchedBy: d.dispatchedBy,
         orderNumber: o.orderNumber, shopName: resolveHosurShopName(d),
       })),
-  ).sort((a, b) => b.dispatchedAt.localeCompare(a.dispatchedAt)), [orders, hosurShopNameById, dateFrom, dateTo, reportsCutoff]);
+  ).sort((a, b) => b.dispatchedAt.localeCompare(a.dispatchedAt)), [orders, resolveHosurShopName, dateFrom, dateTo, reportsCutoff]);
 
   // Every Hosur dispatch (not just extras) broken out by the actual shop it
   // went to, so "Hosur" stops being one combined bucket in the report.
@@ -4332,7 +4339,7 @@ function ReportsTab({ orders, onExportDataChange }: {
         isExtra: Boolean(d.isExtra), dispatchedAt: d.dispatchedAt, dispatchedBy: d.dispatchedBy,
         orderNumber: o.orderNumber,
       })),
-  ), [orders, hosurShopNameById, dateFrom, dateTo, reportsCutoff]);
+  ), [orders, resolveHosurShopName, dateFrom, dateTo, reportsCutoff]);
 
   const hosurShopSummary = useMemo(() => {
     const byShop = new Map<string, { shopName: string; totalDispatches: number; extraCount: number; items: Map<string, { itemName: string; unit: string; quantity: number }> }>();
@@ -5997,7 +6004,7 @@ function GstInvoiceTab() {
               <input value={l.uom} onChange={e => patchLine(l.id, { uom: e.target.value })} placeholder="UOM" className="col-span-1 h-10 rounded-lg border border-border px-2 text-xs font-bold" />
               <input type="number" min="0" value={l.rate} onChange={e => patchLine(l.id, { rate: e.target.value })} placeholder="Rate" className="col-span-2 h-10 rounded-lg border border-border px-2 text-xs font-bold" />
               <input type="number" min="0" max="100" value={l.gstPct} onChange={e => patchLine(l.id, { gstPct: e.target.value })} placeholder="GST %" title="GST %" className="col-span-2 h-10 rounded-lg border border-primary/40 bg-primary/5 px-2 text-xs font-bold" />
-              <button type="button" onClick={() => removeLine(l.id)} className="col-span-1 flex items-center justify-center rounded-lg text-muted-foreground hover:bg-red-50 hover:text-red-600"><X className="size-4" /></button>
+              <button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it." type="button" onClick={() => removeLine(l.id)} className="col-span-1 flex items-center justify-center rounded-lg text-muted-foreground hover:bg-red-50 hover:text-red-600"><X className="size-4" /></button>
               <p className="col-span-12 text-right text-[11px] font-bold text-muted-foreground">Amount ₹{Math.round(l.amount)} + GST ₹{Math.round(l.cgstAmt + l.sgstAmt + l.igstAmt)} = ₹{Math.round(l.total)}</p>
             </div>
           ))}
@@ -6034,7 +6041,7 @@ function GstInvoiceTab() {
 
       <div className="overflow-hidden rounded-2xl border border-border bg-white shadow-sm">
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-muted/40 px-4 py-3">
-          <p className="text-sm font-black text-foreground">Recent Invoices</p>
+          <p className="text-sm font-black text-foreground">Manually created tax invoices</p>
           <div className="flex flex-wrap items-center gap-2">
             <input type="date" value={recentInvoiceFromDate} onChange={(e) => setRecentInvoiceFromDate(e.target.value)} className="h-8 rounded-lg border border-border bg-card px-2 text-xs font-bold" />
             <span className="text-xs font-bold text-muted-foreground">to</span>
@@ -6136,7 +6143,7 @@ function BillingWalkinTab() {
           </button>
         </div>
       </div>
-      {sub === 'new' ? <BillingTab /> : sub === 'sample' ? <SampleBillTab /> : sub === 'invoice' ? <GstInvoiceTab /> : <AdvanceSalesTab />}
+      {sub === 'new' ? <BillingTab /> : sub === 'sample' ? <SampleBillTab /> : sub === 'invoice' ? <><PlannerGstRegister /><GstInvoiceTab /></> : <AdvanceSalesTab />}
     </div>
   );
 }
@@ -6233,19 +6240,7 @@ function SalesExcelExport() {
       // FEATURE (2026-09-17): "add the ... Invoice bills to the export" —
       // now that GstInvoiceTab actually saves a row per invoice (see
       // saveGstTaxInvoiceSecure), this is real stored data, not a gap.
-      const gstInvoices = await listGstTaxInvoices({ fromDate: fromIso, toDate: toIso });
-      const invoiceRows = gstInvoices.map((inv) => ({
-        'Invoice No': inv.invoiceNo,
-        Date: new Date(inv.createdAt).toLocaleString('en-IN'),
-        'Buyer Name': inv.buyerName,
-        GSTIN: inv.buyerGstin || '',
-        Items: inv.items.length,
-        'Taxable Value': inv.taxableValue,
-        CGST: inv.cgstAmount,
-        SGST: inv.sgstAmount,
-        IGST: inv.igstAmount,
-        Total: inv.total,
-      }));
+      const invoiceRows = await loadPlannerGstRegister(fromIso, toIso);
 
       generateExcelReport({
         filename: `Sales_${fromDate}_to_${toDate}.xlsx`,
@@ -6932,7 +6927,7 @@ function BillingTab() {
   // FEATURE (2026-08-23): shared, robust dedup — see the comment on
   // PlanningTab's uniqueItems above for the full reasoning.
   const liveCatalog = useMergedCatalogWithPrice();
-  const catalog = liveCatalog.length?liveCatalog:(desktopState?.cache.catalog as MergedCatalogItemWithPrice[] ?? []);
+  const catalog = useMemo(() => liveCatalog.length?liveCatalog:(desktopState?.cache.catalog as MergedCatalogItemWithPrice[] ?? []), [liveCatalog, desktopState?.cache.catalog]);
   useEffect(()=>{if(desktopSalesAvailable()&&desktopReady&&liveCatalog.length&&currentUser?.id)void desktopSalesSnapshot(currentUser.id).then(state=>desktopSalesCall('cache',{catalog:liveCatalog})).catch(err=>setDesktopError(err.message));},[liveCatalog,desktopReady,currentUser?.id]);
 
   const filtered = useMemo(
@@ -7039,38 +7034,13 @@ function BillingTab() {
         isGstInvoice: gstEnabled,
         gstSupplyType,
       };
-      const bill = desktopSalesAvailable() ? await saveDesktopSale(billInput,currentUser?.id || '',transactionId.current) : await saveWalkinBillSecure(billInput);
+      const bill = desktopSalesAvailable() ? await saveDesktopSale(billInput,currentUser?.id || '',transactionId.current) : await saveWalkinBillSecure(billInput,transactionId.current);
       if(desktopSalesAvailable()){
         window.dispatchEvent(new Event('desktop-sales-saved'));
         setDesktopState(await desktopSalesSnapshot(currentUser?.id || ''));
       }
       const billNo = bill.billNo;
-      // BUG FIX (2026-08-09): "regular walk-in bills should also deduct
-      // stock and show as 'walk in bill' in reports" — this bill used to
-      // save purely as a money record with no link at all to the Closing
-      // Stock pool, so items sold here silently never left the tracked
-      // stock. Best-effort per line (mirrors submitDispatch's own philosophy
-      // — a ledger hiccup must never block a sale that already happened),
-      // allowed to go negative rather than ever blocking the bill. Charge
-      // lines (unit === 'charge') are skipped — nothing was physically
-      // dispatched for a named charge, so there's no stock to debit.
-      for (const line of (desktopSalesAvailable()?[]:items)) {
-        if (line.unit === 'charge') continue;
-        try {
-          const result = await recordLeftoverMovement({
-            itemName: line.itemName,
-            unit: line.unit === 'pcs' ? 'pcs' : 'kg',
-            delta: -Math.abs(line.quantity),
-            businessDate: kolkataToday(),
-            reason: 'dispatch',
-            recordedBy: currentUser?.displayName || 'Planner',
-            notes: `Walk-in Bill #${billNo}`,
-          });
-          if ('error' in result) console.error('[BillingTab] Closing Stock pool debit failed:', result.error);
-        } catch (err) {
-          console.error('[BillingTab] Closing Stock pool debit threw:', err);
-        }
-      }
+      // The server saves the bill, number and stock movement atomically.
       setLastBill(bill);
 
       // FEATURE (2026-09-03, restored 2026-09-12): optional GST Tax Invoice
@@ -7109,40 +7079,10 @@ function BillingTab() {
   const cancelBill = async (bill: WalkinBillRow) => {
     if(desktopState?.receipts.some(r=>r.id===bill.id&&r.sync?.state!=='synced')){setError('This bill is saved locally. Sync it before cancellation.');return;}
     if (!window.confirm(`Cancel bill ${bill.billNo}? This can't be undone.`)) return;
-    // AUDIT FIX (2026-09-06): plain update with no status guard — two
-    // concurrent cancels of the same bill (a double-click, or two staff on
-    // different devices) could both pass, both run the stock-reversal loop
-    // below, and double-credit the Closing Stock pool. `.neq('status',
-    // 'cancelled')` makes this a compare-and-swap: only the request that
-    // actually flips the row proceeds to reverse stock.
-    const { data: claimed, error: updateError } = await supabase.from('bakery_walkin_bills').update({ status: 'cancelled', cancelled_at: new Date().toISOString() }).eq('id', bill.id).neq('status', 'cancelled').select('id');
-    if (!updateError && claimed && claimed.length > 0) {
-      // BUG FIX: cancelling a bill only ever flipped its status — the
-      // stock deduction saveBill made for every line item (via
-      // recordLeftoverMovement) was never reversed, so the Closing Stock
-      // pool permanently showed less stock than actually exists for a
-      // sale that got cancelled and never happened. Reverse it here with
-      // the same best-effort philosophy saveBill's own deduction uses — a
-      // ledger hiccup must never block the cancellation itself. Charge
-      // lines (unit === 'charge', added 2026-09-03) are skipped here too —
-      // same reasoning as saveBill's own deduction loop below.
-      for (const line of bill.items) {
-        if (line.unit === 'charge') continue;
-        try {
-          const result = await recordLeftoverMovement({
-            itemName: line.itemName,
-            unit: line.unit === 'pcs' ? 'pcs' : 'kg',
-            delta: Math.abs(line.quantity),
-            businessDate: kolkataToday(),
-            reason: 'return',
-            recordedBy: currentUser?.displayName || 'Planner',
-            notes: `Cancelled Walk-in Bill #${bill.billNo}`,
-          });
-          if ('error' in result) console.error('[BillingTab] Closing Stock pool reversal on cancel failed:', result.error);
-        } catch (err) {
-          console.error('[BillingTab] Closing Stock pool reversal on cancel threw:', err);
-        }
-      }
+    const reason = window.prompt('Reason for cancelling this bill (required):')?.trim();
+    if (!reason) return;
+    try {
+      await changeWalkinBillAtomic(bill,'cancel',{},reason,crypto.randomUUID());
       // FEATURE (2026-09-06): "recorded in the report" — same audit trail
       // cancelDispatchInvoice now writes for SNB/VRSNB/Hosur/Custom cancels,
       // so a cancelled Sales bill shows up in Admin's Activity Log too.
@@ -7156,7 +7096,7 @@ function BillingTab() {
         });
       }
       loadRecent();
-    }
+    } catch (failure) {setError(failure instanceof Error ? failure.message : 'Cancellation could not be saved.');}
   };
 
   return (
@@ -7302,7 +7242,7 @@ function BillingTab() {
                     <span className="truncate text-xs font-black text-foreground">{c.name}</span>
                     <div className="flex items-center gap-2">
                       <span className="text-xs font-bold text-muted-foreground">{invoiceMoney(Number(c.amount) || 0)}</span>
-                      <button type="button" onClick={() => removeCharge(i)} aria-label={`Remove ${c.name}`}><X className="size-3.5 text-destructive" /></button>
+                      <button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it." type="button" onClick={() => removeCharge(i)} aria-label={`Remove ${c.name}`}><X className="size-3.5 text-destructive" /></button>
                     </div>
                   </div>
                 ))}
@@ -7540,6 +7480,7 @@ function EditWalkinBillModal({ bill, onClose, onSaved }: {
     : Math.round(Math.min(previewSubtotal, Math.max(0, Number(discountValue) || 0)) * 100) / 100;
   const previewTotal = calculatePlannerSalesGst(previewSubtotal, previewDiscountAmount, exclusiveGst, Math.max(0, Number(gstPct) || 0), gstSupplyType).total;
 
+  const atomicEditId = useRef(crypto.randomUUID());
   const save = async () => {
     if (savingInFlightRef.current) return;
     if (!customerName.trim()) { setError('Enter the customer name before saving.'); return; }
@@ -7561,59 +7502,17 @@ function EditWalkinBillModal({ bill, onClose, onSaved }: {
     savingInFlightRef.current = true;
     setSaving(true);
     try {
-      // Reverse the ORIGINAL items' Closing Stock deduction (best-effort —
-      // same philosophy as saveBill/cancelBill: a ledger hiccup must never
-      // block the edit itself, which already reflects what was actually sold).
-      for (const line of bill.items) {
-        if (line.unit === 'charge') continue;
-        try {
-          const result = await recordLeftoverMovement({
-            itemName: line.itemName, unit: line.unit === 'pcs' ? 'pcs' : 'kg',
-            delta: Math.abs(line.quantity), businessDate: kolkataToday(), reason: 'return',
-            recordedBy: currentUser?.displayName || 'Planner', notes: `Edited Walk-in Bill #${bill.billNo} — reverting original items`,
-          });
-          if ('error' in result) console.error('[EditWalkinBillModal] stock reversal failed:', result.error);
-        } catch (err) { console.error('[EditWalkinBillModal] stock reversal threw:', err); }
-      }
-      // Apply the EDITED items' deduction.
-      for (const line of cleaned) {
-        if (line.unit === 'charge') continue;
-        try {
-          const result = await recordLeftoverMovement({
-            itemName: line.itemName, unit: line.unit === 'pcs' ? 'pcs' : 'kg',
-            delta: -Math.abs(line.quantity), businessDate: kolkataToday(), reason: 'dispatch',
-            recordedBy: currentUser?.displayName || 'Planner', notes: `Edited Walk-in Bill #${bill.billNo}`,
-          });
-          if ('error' in result) console.error('[EditWalkinBillModal] stock debit failed:', result.error);
-        } catch (err) { console.error('[EditWalkinBillModal] stock debit threw:', err); }
-      }
-
       const newSubtotal = Math.round(cleaned.reduce((s, l) => s + l.lineTotal, 0) * 100) / 100;
       const newDiscountAmount = discountType === 'none' ? 0
         : discountType === 'percent' ? Math.round(newSubtotal * (clampedDiscountPct / 100) * 100) / 100
         : Math.round(Math.min(newSubtotal, Math.max(0, Number(discountValue) || 0)) * 100) / 100;
       const newTotal = calculatePlannerSalesGst(newSubtotal, newDiscountAmount, exclusiveGst, Math.max(0, Number(gstPct) || 0), gstSupplyType).total;
 
-      // BUG FIX (2026-09-12): this update never touched is_gst_invoice/
-      // gst_supply_type at all — checking the GST box here had no lasting
-      // effect: the row stayed non-GST in the DB, so a later reprint from
-      // Recent Bills (printWalkinBill) would still show a plain "INVOICE"
-      // with no GST breakdown, regardless of what was just checked/entered.
-      const { error: updateError } = await supabase.from('bakery_walkin_bills').update({
-        items: cleaned, subtotal: newSubtotal, discount_type: discountType,
-        discount_value: Number(discountValue) || 0, discount_amount: newDiscountAmount, total: newTotal,
-        payment_mode: paymentMode, customer_name: customerName.trim(),
-        customer_mobile: customerMobile.trim() || null,
-        is_gst_invoice: gstEnabled, gst_supply_type: gstSupplyType,
-      }).eq('id', bill.id);
-      if (updateError) throw updateError;
-
-      const updatedBill: WalkinBillRow = {
-        ...bill, items: cleaned, subtotal: newSubtotal, discountType, discountValue: Number(discountValue) || 0,
-        discountAmount: newDiscountAmount, total: newTotal, paymentMode,
-        customerName: customerName.trim(), customerMobile: customerMobile.trim() || null,
-        isGstInvoice: gstEnabled, gstSupplyType,
-      };
+      const updatedBill = await changeWalkinBillAtomic(bill,'edit',{
+        items:cleaned,subtotal:newSubtotal,discountType,discountValue:Number(discountValue)||0,
+        discountAmount:newDiscountAmount,total:newTotal,paymentMode,customerName:customerName.trim(),
+        customerMobile:customerMobile.trim()||null,isGstInvoice:gstEnabled,gstSupplyType,
+      },'Planner Sales bill edit',atomicEditId.current);
 
       // FEATURE (2026-09-12): "once we check the box the gst bill should
       // come and also dont forget to add that amount in that bill" — same
@@ -7734,7 +7633,7 @@ function EditWalkinBillModal({ bill, onClose, onSaved }: {
                   Stock ledger. `step` alone is only a spinner hint, it
                   doesn't block a typed value. */}
               <input type="number" min="0" step={l.unit === 'kg' ? 0.001 : 1} value={l.quantity} onChange={e => updateLine(l.key, { quantity: l.unit === 'charge' ? Math.max(0, Number(e.target.value) || 0) : clampQtyForUnit(Number(e.target.value) || 0, l.unit === 'kg' ? 'kg' : 'pcs') })} placeholder="Qty" className="h-9 rounded-lg border border-border bg-background px-2 text-xs font-bold" />
-              <button onClick={() => removeLine(l.key)} className="flex h-9 items-center justify-center rounded-lg border border-destructive/30 bg-destructive/10 text-destructive hover:bg-destructive/20"><X className="size-3.5" /></button>
+              <button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it." onClick={() => removeLine(l.key)} className="flex h-9 items-center justify-center rounded-lg border border-destructive/30 bg-destructive/10 text-destructive hover:bg-destructive/20"><X className="size-3.5" /></button>
             </div>
           ))}
         </div>
@@ -7845,7 +7744,6 @@ interface EditableSampleBillLine { key: number; itemName: string; unit: 'pcs' | 
 function EditSampleBillModal({ bill, onClose, onSaved }: {
   bill: DispatchInvoiceRecord; onClose: () => void; onSaved: () => void;
 }) {
-  const currentUser = useAuthStore(s => s.currentUser);
   const [lines, setLines] = useState<EditableSampleBillLine[]>(
     () => bill.items.map((i, idx) => ({ key: idx, itemName: i.itemName, unit: i.unit === 'pcs' ? 'pcs' : 'kg', price: i.unitPrice, quantity: i.quantity })),
   );
@@ -7864,67 +7762,22 @@ function EditSampleBillModal({ bill, onClose, onSaved }: {
   };
 
   const clampedPct = Math.max(0, Math.min(100, Number(discountPct) || 0));
-  const previewSubtotal = Math.round(lines.reduce((s, l) => s + l.price * l.quantity, 0) * 100) / 100;
-  const previewDiscountAmount = Math.round(previewSubtotal * (clampedPct / 100) * 100) / 100;
+  const previewSubtotal = Math.round(lines.reduce((s, l) => s + (Number.isFinite(l.quantity)&&Number.isFinite(l.price)&&l.quantity>=0&&l.price>=0?financialLineTotal(l.quantity,l.price):0), 0) * 100) / 100;
+  const previewDiscountAmount = financialPercent(previewSubtotal,clampedPct);
   const previewTotal = Math.max(0, Math.round(previewSubtotal - previewDiscountAmount));
 
   const save = async () => {
     if (savingInFlightRef.current) return;
     setError(null);
+    if(lines.some(l=>l.itemName.trim()&&(!Number.isFinite(l.quantity)||!Number.isFinite(l.price)||l.quantity<=0||l.price<0||(l.unit==='pcs'&&!Number.isInteger(l.quantity))))){setError('Enter valid quantities and prices for every named item. Pieces must be whole numbers.');return;}
     const cleaned = lines
       .filter(l => l.itemName.trim() && l.quantity > 0 && l.price >= 0)
-      .map(l => ({ itemName: l.itemName.trim(), unit: l.unit, quantity: l.quantity, unitPrice: l.price, lineTotal: Math.round(l.price * l.quantity * 100) / 100 }));
+      .map(l => ({ itemName: l.itemName.trim(), unit: l.unit, quantity: l.quantity, unitPrice: l.price, lineTotal: financialLineTotal(l.quantity,l.price) }));
     if (cleaned.length === 0) { setError('Add at least one item with a name, quantity above 0 and a valid price.'); return; }
     savingInFlightRef.current = true;
     setSaving(true);
     try {
-      // Stock was only ever debited if this bill was already marked paid
-      // (markDispatchInvoicePaid) — full reverse of the ORIGINAL items' debit
-      // then reapply of the EDITED items' debit, same approach
-      // EditWalkinBillModal uses rather than a line-by-line diff (this bill
-      // has no downstream contributingOrderIds-style totals a diff would
-      // need to protect, so the simpler approach is safe here too).
-      if (bill.status === 'paid') {
-        for (const line of bill.items) {
-          try {
-            const result = await recordLeftoverMovement({
-              itemName: line.itemName, unit: line.unit === 'pcs' ? 'pcs' : 'kg',
-              delta: Math.abs(line.quantity), businessDate: kolkataToday(), reason: 'return',
-              recordedBy: currentUser?.displayName || 'Planner',
-              notes: `Edited Sample Bill ${bill.invoiceNo} — reverting original items`,
-            });
-            if ('error' in result) console.error('[EditSampleBillModal] stock reversal failed:', result.error);
-          } catch (err) { console.error('[EditSampleBillModal] stock reversal threw:', err); }
-        }
-        for (const line of cleaned) {
-          try {
-            const result = await recordLeftoverMovement({
-              itemName: line.itemName, unit: line.unit === 'pcs' ? 'pcs' : 'kg',
-              delta: -Math.abs(line.quantity), businessDate: kolkataToday(), reason: 'dispatch',
-              recordedBy: currentUser?.displayName || 'Planner',
-              notes: `Edited Sample Bill ${bill.invoiceNo}`,
-            });
-            if ('error' in result) console.error('[EditSampleBillModal] stock debit failed:', result.error);
-          } catch (err) { console.error('[EditSampleBillModal] stock debit threw:', err); }
-        }
-      }
-
-      // Same subtotal/discount/round-off formula as saveDispatchInvoice, so
-      // this stays internally consistent with every other dispatch invoice
-      // row (whole-rupee total, difference tracked in round_off).
-      const subtotal = Math.round(cleaned.reduce((s, l) => s + l.lineTotal, 0) * 100) / 100;
-      const discountAmount = Math.round(subtotal * (clampedPct / 100) * 100) / 100;
-      const preRound = subtotal - discountAmount;
-      const total = Math.max(0, Math.round(preRound));
-      const roundOff = Math.round((total - preRound) * 100) / 100;
-
-      // notes is deliberately left untouched (stays exactly SAMPLE_BILL_NOTE)
-      // — see the comment above this component for why.
-      const { error: updateError } = await supabase.from('dispatch_invoices').update({
-        items: cleaned, subtotal, discount_pct: clampedPct, discount_amount: discountAmount,
-        round_off: roundOff, total,
-      }).eq('id', bill.id);
-      if (updateError) throw updateError;
+      await changeSampleInvoice(bill,'edit',{items:cleaned,discountPct:clampedPct},'Edited sample bill');
 
       onSaved();
     } catch (err) {
@@ -7958,7 +7811,7 @@ function EditSampleBillModal({ bill, onClose, onSaved }: {
               </select>
               <input type="number" min="0" step="0.01" value={l.price} onChange={e => updateLine(l.key, { price: Math.max(0, Number(e.target.value) || 0) })} placeholder="Price" className="h-9 rounded-lg border border-border bg-background px-2 text-xs font-bold" />
               <input type="number" min="0" step={l.unit === 'kg' ? 0.001 : 1} value={l.quantity} onChange={e => updateLine(l.key, { quantity: clampQtyForUnit(Number(e.target.value) || 0, l.unit) })} placeholder="Qty" className="h-9 rounded-lg border border-border bg-background px-2 text-xs font-bold" />
-              <button onClick={() => removeLine(l.key)} className="flex h-9 items-center justify-center rounded-lg border border-destructive/30 bg-destructive/10 text-destructive hover:bg-destructive/20"><X className="size-3.5" /></button>
+              <button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it." onClick={() => removeLine(l.key)} className="flex h-9 items-center justify-center rounded-lg border border-destructive/30 bg-destructive/10 text-destructive hover:bg-destructive/20"><X className="size-3.5" /></button>
             </div>
           ))}
         </div>
@@ -8033,6 +7886,7 @@ function SampleBillTab() {
   const [lastBill, setLastBill] = useState<DispatchInvoiceRecord | null>(null);
   const [recent, setRecent] = useState<DispatchInvoiceRecord[]>([]);
   const [loadingRecent, setLoadingRecent] = useState(true);
+  const [sampleHistoryError,setSampleHistoryError]=useState('');
 
   const [counterOpen, setCounterOpen] = useState<boolean | null>(null);
   const [counterError, setCounterError] = useState('');
@@ -8062,12 +7916,13 @@ function SampleBillTab() {
 
   const loadRecent = useCallback(async () => {
     setLoadingRecent(true);
+    setSampleHistoryError('');
     try {
       const to = new Date(); to.setDate(to.getDate() + 1);
       const from = new Date(); from.setDate(from.getDate() - 90);
       const all = await listDispatchInvoices({ fromDate: from.toISOString(), toDate: to.toISOString() });
-      setRecent(all.filter(r => r.notes === SAMPLE_BILL_NOTE));
-    } catch { /* best-effort */ }
+      setRecent(all.filter(r => r.notes?.startsWith(SAMPLE_BILL_NOTE)));
+    } catch (cause) {setSampleHistoryError(cause instanceof Error?cause.message:'Sample bill history could not load.');}
     setLoadingRecent(false);
   }, []);
   useEffect(() => { loadRecent().catch(() => {}); }, [loadRecent]);
@@ -8338,7 +8193,7 @@ function SampleBillTab() {
             <RefreshCw className={cn('size-3.5', loadingRecent && 'animate-spin')} /> Refresh
           </button>
         </div>
-        {loadingRecent ? (
+        {sampleHistoryError ? <div role="alert" className="p-4 text-sm text-red-700">Sample bill history could not load: {sampleHistoryError}. Use Refresh to retry this list.</div> : loadingRecent ? (
           <div className="flex justify-center py-8"><Loader2 className="size-5 animate-spin text-muted-foreground" /></div>
         ) : recent.length === 0 ? (
           <div className="p-4"><EmptyState text="No sample bills yet." /></div>
@@ -8430,26 +8285,6 @@ function computeAvailableForRow(row: ProductionRow, leftoverBalance: number): nu
 // Extracts every Hosur shop-order id tagged onto this row's contributing
 // bakery orders (HOSUR_ORDER_ID / HOSUR_ORDER_IDS in notes — see
 // mergeOrdersForStore's collectHosurIds for how these get written/merged).
-function collectHosurOrderIds(row: ProductionRow, orders: BakeryOrder[]): string[] {
-  // BUG FIX (audit 2026-08-26): this used to require targetBranch ===
-  // 'Hosur' — but mergeOrdersForStore already correctly preserves the
-  // HOSUR_ORDER_IDS tag in notes from every contributing order, even when
-  // the merge's surviving primary order isn't itself Hosur-targeted (a
-  // date-only cross-branch merge could combine a Hosur order with a
-  // VRSNB/SNB one). Checking the tag's actual presence in notes, rather
-  // than a branch field a merged order may not carry, means this doesn't
-  // silently drop shop-level tracking for a merged order.
-  const contributing = orders.filter(o => row.contributingOrderIds.includes(o.id) && /HOSUR_ORDER_IDS?:/.test(o.notes ?? ''));
-  const ids = new Set<string>();
-  for (const o of contributing) {
-    const text = String(o.notes ?? '');
-    const plural = text.match(/HOSUR_ORDER_IDS:([^|]+)/);
-    if (plural?.[1]) { plural[1].split(',').map(s => s.trim()).filter(Boolean).forEach(id => ids.add(id)); continue; }
-    const singular = text.match(/HOSUR_ORDER_ID:([^|]+)/);
-    if (singular?.[1]) ids.add(singular[1].trim());
-  }
-  return Array.from(ids);
-}
 
 // NEW: per-shop breakdown for a Hosur-filtered dispatch row — joins back to
 // the original hosur_orders/hosur_order_items via the tag above, so instead
@@ -8469,15 +8304,16 @@ function HosurShopBreakdown({ row, orders }: { row: ProductionRow; orders: Baker
 
   useEffect(() => {
     let cancelled = false;
-    if (hosurOrderIds.length === 0) { setShops([]); return; }
+    const queryIds = hosurOrderIdsKey ? hosurOrderIdsKey.split(',') : [];
+    if (queryIds.length === 0) { setShops([]); return; }
     (async () => {
       // BUG FIX (2026-09-16): same unpaginated-`.in()` cap bug as
       // useHosurShopOrders just above (see that fix's comment) — this
       // sibling component runs the identical two-query pattern against the
       // same fast-growing tables and was never covered by that fix.
       const [{ data: ordersData, error: ordersErr }, { data: itemsData, error: itemsErr }] = await Promise.all([
-        fetchAllRows<Record<string, unknown>>('hosur_orders', (q) => q.select('id, shop_name').in('id', hosurOrderIds).order('id')),
-        fetchAllRows<Record<string, unknown>>('hosur_order_items', (q) => q.select('order_id, item_name, quantity, dispatched_quantity').in('order_id', hosurOrderIds).order('order_id')),
+        fetchAllRows<Record<string, unknown>>('hosur_orders', (q) => q.select('id, shop_name').in('id', queryIds).order('id')),
+        fetchAllRows<Record<string, unknown>>('hosur_order_items', (q) => q.select('order_id, item_name, quantity, dispatched_quantity').in('order_id', queryIds).order('order_id')),
       ]);
       if (cancelled) return;
       // AUDIT FIX (2026-09-03): neither error was ever checked — a transient
@@ -8500,9 +8336,7 @@ function HosurShopBreakdown({ row, orders }: { row: ProductionRow; orders: Baker
       setShops(Array.from(byShop.entries()).map(([shopName, v]) => ({ shopName, ...v })).sort((a, b) => a.shopName.localeCompare(b.shopName)));
     })();
     return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally
-    // keyed on the stable joined string, not the unstable array reference.
-  }, [hosurOrderIdsKey, row.itemName]);
+}, [hosurOrderIdsKey, row.itemName]);
 
   if (hosurOrderIds.length === 0) return null;
   if (shops === null) return <p className="mt-2 text-[11px] font-bold text-muted-foreground">Loading shop breakdown…</p>;
@@ -8532,150 +8366,6 @@ function bakeryOrderCoversHosurShopOrder(order: BakeryOrder, hosurOrderId: strin
   if (plural?.[1]) return plural[1].split(',').map(s => s.trim()).includes(hosurOrderId);
   const singular = text.match(/HOSUR_ORDER_ID:([^|]+)/);
   return singular?.[1]?.trim() === hosurOrderId;
-}
-
-interface HosurShopOrderCard {
-  orderId: string;
-  orderNumber: string;
-  shopName: string;
-  shopId: string | null;
-  shopPhone: string | null;
-  // ROOT-CAUSE FIX (2026-08-09, "cancel item throws P0001 Order item not
-  // found"): `itemName` here is the *display* name after sameItem() groups
-  // spelling variants under one canonical row name (see below) — it can
-  // legitimately differ from what's actually stored in
-  // hosur_order_items.item_name. cancel_hosur_order_item_remaining_secure
-  // does an EXACT `item_name = p_item_name` match against that raw column,
-  // so passing the display name through to the RPC failed whenever the two
-  // diverged. `rawItemName` carries the untouched hosur_order_items value
-  // specifically so cancel calls always match a real row.
-  items: { itemName: string; rawItemName: string; unit: string; requested: number; dispatched: number; cancelled: number; cancellationReason: string | null }[];
-  // FEATURE (2026-08-30): "Only for Hosur sub tab keep the date wise
-  // orders" — the shop-first view (this card's own dispatch panel) is the
-  // one Planner actually sees by default (hosurView defaults to 'shop'),
-  // but only the item-first view had date-grouping (see rowDateGroups in
-  // DispatchTab) — invisible in normal use. Each card is exactly one Hosur
-  // order, so its own created_at is the real date to group by, no proxying
-  // through a contributing BakeryOrder needed.
-  createdAt: string;
-}
-
-// Shop-centric Hosur dispatch view: one card per shop ORDER (not just shop
-// name — a shop can have more than one order in flight), with every item
-// that order contains listed underneath, mirroring the same order-card
-// pattern already used in the Hosur Shops & Billing → Dispatch queue so both
-// screens feel consistent. Batches a single query across every row's Hosur
-// order ids rather than one query per item.
-function useHosurShopOrders(rows: ProductionRow[], orders: BakeryOrder[]) {
-  const hosurOrderIds = useMemo(() => {
-    const ids = new Set<string>();
-    for (const row of rows) collectHosurOrderIds(row, orders).forEach(id => ids.add(id));
-    return Array.from(ids);
-  }, [rows, orders]);
-  const idsKey = hosurOrderIds.join(',');
-  const [shopOrders, setShopOrders] = useState<HosurShopOrderCard[] | null>(null);
-  // BUG FIX (audit): the effect below only re-fires when the SET of Hosur
-  // order ids changes — but sending a shop's order changes those same ids'
-  // dispatched_quantity, not the set itself, so the just-sent card kept
-  // showing pre-dispatch numbers until an unrelated re-render. reloadTick
-  // gives callers (sendCard) an explicit way to force a refetch.
-  const [reloadTick, setReloadTick] = useState(0);
-
-  useEffect(() => {
-    let cancelled = false;
-    if (hosurOrderIds.length === 0) { setShopOrders([]); return; }
-    (async () => {
-      // BUG FIX (2026-09-16): "dispatched to Jos bakery theni... not visible
-      // in the hosur dispatched [tab]" — these were plain `.in(...)` queries
-      // with no pagination, silently capped at PostgREST's 1000-row response
-      // limit (same bug class as the 2026-09-08 fix on listDispatchInvoices/
-      // useCafeOrderSales — see fetchAllRows's own comment in lib/supabase.ts).
-      // Confirmed live: with the Hosur order history now past ~230 order ids,
-      // hosur_order_items' true match count was 1,050 rows for a 233-id
-      // `.in()` — Supabase returned exactly 1000 with no error, silently
-      // dropping whichever orders' items happened to fall in the truncated
-      // tail (that day it was Jos Bakery Theni + mathampatti). Since neither
-      // query is ordered, which shop(s) go missing is arbitrary and shifts
-      // day to day as more Hosur history accumulates — paginating with
-      // fetchAllRows (already used elsewhere for this exact cap) fixes it
-      // for good instead of just for today's specific shops.
-      const [{ data: ordersData, error: ordersErr }, { data: itemsData, error: itemsErr }] = await Promise.all([
-        fetchAllRows<Record<string, unknown>>('hosur_orders', (q) => q.select('id, order_number, shop_name, shop_id, created_at').in('id', hosurOrderIds).order('id')),
-        fetchAllRows<Record<string, unknown>>('hosur_order_items', (q) => q.select('order_id, item_name, unit, quantity, dispatched_quantity, cancelled_quantity, cancellation_reason').in('order_id', hosurOrderIds).order('order_id')),
-      ]);
-      if (cancelled) return;
-      // AUDIT FIX (2026-09-03): neither error was ever checked — a transient
-      // fetch failure fell straight through to setShopOrders([]) below,
-      // making the whole "Dispatch & Billing Queue" (real, unbilled orders)
-      // vanish as if there were genuinely nothing pending. Leave whatever
-      // was already showing (or the loading state) alone instead of wiping
-      // it on a failed fetch — reload() (already called elsewhere on a
-      // timer/manual refresh) will pick it back up on the next success.
-      if (ordersErr || itemsErr) return;
-      // Invoice needs the shop's phone number ("if it's Hosur mention the
-      // shop name and number") — hosur_orders itself only stores shop_id, so
-      // resolve phone via a second lookup against hosur_shops.
-      const shopIds = Array.from(new Set(((ordersData ?? []) as Record<string, unknown>[]).map(o => o.shop_id as string | null).filter((id): id is string => !!id)));
-      const phoneByShopId = new Map<string, string>();
-      if (shopIds.length > 0) {
-        const { data: shopsData } = await supabase.from('hosur_shops').select('id, whatsapp_number').in('id', shopIds);
-        for (const s of (shopsData ?? []) as Record<string, unknown>[]) {
-          phoneByShopId.set(s.id as string, String(s.whatsapp_number ?? ''));
-        }
-      }
-      if (cancelled) return;
-      const metaById = new Map<string, { orderNumber: string; shopName: string; shopId: string | null; shopPhone: string | null; createdAt: string }>(
-        ((ordersData ?? []) as Record<string, unknown>[]).map((o) => {
-          const shopId = (o.shop_id as string | null) ?? null;
-          return [o.id as string, {
-            orderNumber: String(o.order_number ?? ''), shopName: String(o.shop_name ?? ''),
-            shopId, shopPhone: shopId ? (phoneByShopId.get(shopId) || null) : null,
-            createdAt: String(o.created_at ?? ''),
-          }];
-        }),
-      );
-      const byOrder = new Map<string, { itemName: string; rawItemName: string; unit: string; requested: number; dispatched: number; cancelled: number; cancellationReason: string | null }[]>();
-      for (const item of (itemsData ?? []) as Record<string, unknown>[]) {
-        const rawName = String(item.item_name ?? '');
-        // Only surface items that belong to the currently-visible row set
-        // (e.g. only "active" or only "dispatched" items, matching whichever
-        // sub-tab is open) — and display using the row's canonical name so
-        // spelling variants across shops collapse into one line.
-        const matchedRow = rows.find(r => sameItem(r.itemName, rawName));
-        if (!matchedRow) continue;
-        const orderId = item.order_id as string;
-        const list = byOrder.get(orderId) ?? [];
-        list.push({
-          itemName: matchedRow.itemName,
-          rawItemName: rawName,
-          unit: String(item.unit ?? matchedRow.unit ?? 'pcs'),
-          requested: Number(item.quantity ?? 0),
-          dispatched: Number(item.dispatched_quantity ?? 0),
-          cancelled: Number(item.cancelled_quantity ?? 0),
-          cancellationReason: (item.cancellation_reason as string | null) ?? null,
-        });
-        byOrder.set(orderId, list);
-      }
-      const cards: HosurShopOrderCard[] = [];
-      for (const [orderId, items] of byOrder) {
-        const meta = metaById.get(orderId);
-        if (!meta || items.length === 0) continue;
-        cards.push({
-          orderId, orderNumber: meta.orderNumber, shopName: meta.shopName,
-          shopId: meta.shopId, shopPhone: meta.shopPhone, createdAt: meta.createdAt,
-          items: items.sort((a, b) => a.itemName.localeCompare(b.itemName)),
-        });
-      }
-      cards.sort((a, b) => a.shopName.localeCompare(b.shopName));
-      setShopOrders(cards);
-    })();
-    return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the
-    // stable joined id string (plus an explicit manual-refresh counter), not
-    // the unstable rows/orders array references.
-  }, [idsKey, reloadTick]);
-
-  return { shopOrders, reload: () => setReloadTick(t => t + 1) };
 }
 
 // FEATURE (2026-08-07): "Sometimes the planner will dispatch additional
@@ -8782,7 +8472,7 @@ function HosurShopDispatchPanel({ rows, mode, orders, leftoverBalances, onDispat
   onDispatch: ReturnType<typeof useBakeryStore.getState>['submitDispatch']; dispatchedBy: string;
   onDone: () => void;
 }) {
-  const { shopOrders, reload } = useHosurShopOrders(rows, orders);
+  const { shopOrders, reload,error:shopOrdersError } = useHosurShopOrders(rows, orders, sameItem);
   // BUG FIX: same case-sensitivity bug as displayItems in DispatchReviewModal
   // — this map's key was the row's own (first-seen) casing, but every
   // lookup used a raw order item's itemName, which can differ in case from
@@ -9031,6 +8721,7 @@ function HosurShopDispatchPanel({ rows, mode, orders, leftoverBalances, onDispat
     finalizeReview(card, false);
   };
 
+  if(shopOrdersError)return <div role="alert" className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm"><p>Shop details could not load: {shopOrdersError}</p><button onClick={reload} className="mt-2 font-bold underline">Retry shop details</button></div>;
   if (shopOrders === null) return <p className="text-xs font-bold text-muted-foreground">Loading shop orders…</p>;
   // A card belongs to "Dispatched" only once every item ON THAT SHOP'S OWN
   // ORDER has been fully sent OR cancelled — independent of whether some
@@ -9146,7 +8837,7 @@ function HosurShopDispatchPanel({ rows, mode, orders, leftoverBalances, onDispat
                               onChange={e => { setQtyDraft(v => ({ ...v, [item.itemName]: sanitizeQtyForUnit(e.target.value, item.unit === 'kg' ? 'kg' : 'pcs') })); setOverOrderPrompt(null); }}
                               className="w-20 rounded-lg border border-border bg-background px-2 py-1 text-right"
                             />
-                            <button onClick={() => removeItem(item.itemName)} className="rounded-lg border border-border px-2 py-1 text-[10px] font-black text-muted-foreground hover:bg-muted" title="Not sending this item in this batch — set to 0, still owed">Skip</button>
+                            <button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it." onClick={() => removeItem(item.itemName)} className="rounded-lg border border-border px-2 py-1 text-[10px] font-black text-muted-foreground hover:bg-muted" title="Not sending this item in this batch — set to 0, still owed">Skip</button>
                             <button onClick={() => { setCancelPromptItem(item.itemName); setCancelReason(''); }} className="rounded-lg border border-red-300 px-2 py-1 text-[10px] font-black text-red-700 hover:bg-red-50" title="Permanently cancel what's left of this item (e.g. production issue)">Cancel item</button>
                           </div>
                         )}
@@ -9185,7 +8876,7 @@ function HosurShopDispatchPanel({ rows, mode, orders, leftoverBalances, onDispat
                 {(extraItemsByCard[card.orderId] ?? []).map((extra, idx) => (
                   <div key={`extra-${idx}-${extra.itemName}`} className="flex items-center justify-between gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-1.5">
                     <span className="text-xs font-bold text-foreground">{extra.itemName} <span className="text-muted-foreground">({qtyFmt(extra.quantity)} {extra.unit} · extra item)</span></span>
-                    <button type="button" onClick={() => removeExtraItem(card.orderId, idx)} className="rounded-lg border border-amber-300 px-2 py-0.5 text-[10px] font-black text-amber-800 hover:bg-amber-100">Remove</button>
+                    <button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it." type="button" onClick={() => removeExtraItem(card.orderId, idx)} className="rounded-lg border border-amber-300 px-2 py-0.5 text-[10px] font-black text-amber-800 hover:bg-amber-100">Remove</button>
                   </div>
                 ))}
                 <ExtraItemDispatchForm
@@ -9605,7 +9296,7 @@ function BranchFlatDispatchPanel({ branch, rows, orders, leftoverBalances, onDis
     <div className="space-y-2.5">
       <div className="flex items-center justify-between">
         <span className="text-[11px] font-black text-muted-foreground">{selected.size} of {lines.length} selected</span>
-        <button
+        <button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it."
           type="button"
           onClick={() => setSelected(prev => {
             const next = new Set(prev);
@@ -9684,7 +9375,7 @@ function BranchFlatDispatchPanel({ branch, rows, orders, leftoverBalances, onDis
             <p className="text-sm font-black text-foreground">
               {extra.itemName} <span className="font-bold text-muted-foreground">({qtyFmt(extra.quantity)} {extra.unit} · extra item)</span>
             </p>
-            <button type="button" onClick={() => removeExtraItem(idx)} className="rounded-lg border border-amber-300 px-2 py-1 text-[11px] font-black text-amber-800 hover:bg-amber-100">
+            <button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it." type="button" onClick={() => removeExtraItem(idx)} className="rounded-lg border border-amber-300 px-2 py-1 text-[11px] font-black text-amber-800 hover:bg-amber-100">
               Remove
             </button>
           </div>
@@ -10380,7 +10071,7 @@ function EditDispatchInvoiceModal({ invoice, onClose, onSaved }: {
                 value={l.unitPrice || ''} onChange={e => setChargeAmount(l.key, e.target.value)}
                 type="number" min={0} placeholder="Amount ₹" className="rounded-lg border border-border px-2 py-1.5 text-right text-xs font-bold"
               />
-              <button type="button" onClick={() => removeLine(l.key)} title="Remove this charge from the bill" className="flex items-center justify-center gap-1 rounded-lg border border-red-300 bg-red-50 px-2 py-1.5 text-[11px] font-black text-red-700 hover:bg-red-100">
+              <button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it." type="button" onClick={() => removeLine(l.key)} title="Remove this charge from the bill" className="flex items-center justify-center gap-1 rounded-lg border border-red-300 bg-red-50 px-2 py-1.5 text-[11px] font-black text-red-700 hover:bg-red-100">
                 <Trash2 className="size-3.5" />
               </button>
               <span className="col-span-full -mt-1 text-[10px] font-black uppercase text-slate-500">Charge — no quantity, shown separately on the bill</span>
@@ -10418,11 +10109,11 @@ function EditDispatchInvoiceModal({ invoice, onClose, onSaved }: {
                 type="number" min={0} placeholder="Price" className="rounded-lg border border-border px-2 py-1.5 text-right text-xs font-bold"
               />
               {l.key < invoice.items.length ? (
-                <button type="button" onClick={() => removeLine(l.key)} title="Return this item — restores it to stock and removes it from the bill total when you save" className="flex items-center justify-center gap-1 rounded-lg border border-amber-300 bg-amber-50 px-2 py-1.5 text-[11px] font-black text-amber-800 hover:bg-amber-100">
+                <button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it." type="button" onClick={() => removeLine(l.key)} title="Return this item — restores it to stock and removes it from the bill total when you save" className="flex items-center justify-center gap-1 rounded-lg border border-amber-300 bg-amber-50 px-2 py-1.5 text-[11px] font-black text-amber-800 hover:bg-amber-100">
                   <RotateCcw className="size-3.5" /> Return
                 </button>
               ) : (
-                <button type="button" onClick={() => removeLine(l.key)} title="Remove this line from the bill (never saved, nothing to return)" className="flex items-center justify-center gap-1 rounded-lg border border-red-300 bg-red-50 px-2 py-1.5 text-[11px] font-black text-red-700 hover:bg-red-100">
+                <button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it." type="button" onClick={() => removeLine(l.key)} title="Remove this line from the bill (never saved, nothing to return)" className="flex items-center justify-center gap-1 rounded-lg border border-red-300 bg-red-50 px-2 py-1.5 text-[11px] font-black text-red-700 hover:bg-red-100">
                   <Trash2 className="size-3.5" />
                 </button>
               )}
@@ -11812,7 +11503,8 @@ function DispatchChecklistModal({ row, orders, branchFilter, onClose, onDispatch
   // Which branches to actually dispatch right now — defaults to all, but the
   // planner can dispatch just VRSNB, just SNB, or both together.
   const [selectedBranches, setSelectedBranches] = useState<string[]>(branchKeys);
-  useEffect(() => { setSelectedBranches(branchKeys); }, [branchKeys.join(',')]);
+  const branchKeysKey = JSON.stringify(branchKeys);
+  useEffect(() => { setSelectedBranches(JSON.parse(branchKeysKey)); }, [branchKeysKey]);
   const toggleBranch = (b: string) => setSelectedBranches(prev => prev.includes(b) ? prev.filter(x => x !== b) : [...prev, b]);
 
   const qtyFor = (orderId: string, branch: string) => {
@@ -12517,61 +12209,16 @@ interface PlannerDispatchAndInvoicePayload {
 }
 
 async function runPlannerDispatchAndInvoiceCore(payload: PlannerDispatchAndInvoicePayload): Promise<DispatchInvoiceRecord> {
-  for (const a of payload.actions) {
-    await useBakeryStore.getState().submitDispatch(a.orderId, {
-      id: a.dispatchEntryId,
-      itemName: a.itemName,
-      quantity: a.quantity,
-      unit: a.unit,
-      branch: payload.scope,
-      dispatchedBy: payload.dispatchedBy,
-      dispatchedAt: new Date().toISOString(),
-      ...(a.targetHosurOrderId ? { targetHosurOrderId: a.targetHosurOrderId } : {}),
-      ...(a.isExtra ? { isExtra: true } : {}),
-      ...(a.isCustomSale ? { isCustomSale: true, customerName: a.customerName } : {}),
-    }, a.dispatchSource);
-  }
-
-  const record = await saveDispatchInvoice({
-    scope: payload.scope,
-    numberScope: payload.numberScope,
-    hosurShopId: payload.hosurShopId,
-    hosurShopName: payload.hosurShopName,
-    hosurShopPhone: payload.hosurShopPhone,
-    customerName: payload.customerName,
-    customerPhone: payload.customerPhone,
-    customerAddress: payload.customerAddress,
-    dispatchedBy: payload.dispatchedBy,
-    items: payload.invoiceItems,
-    discountPct: payload.discountPct,
-    dispatchEntryIds: payload.actions.map((a) => ({ orderId: a.orderId, dispatchEntryId: a.dispatchEntryId })),
-    notes: payload.notes,
-  });
-
-  // Same best-effort branch_incoming tagging as the online confirm() path —
-  // the dispatch + invoice above have already succeeded and must stand
-  // regardless of whether this works.
-  if ((payload.scope === 'SNB' || payload.scope === 'VRSNB') && !payload.customerName) {
-    const dispatchIds = payload.actions.map((a) => a.dispatchEntryId);
-    if (dispatchIds.length > 0) {
-      const tagIncoming = () => supabase.from('branch_incoming').update({ invoice_no: record.invoiceNo }).in('dispatch_id', dispatchIds);
-      let { error: tagError } = await tagIncoming();
-      if (tagError) ({ error: tagError } = await tagIncoming());
-      if (tagError) console.error('[PlannerDispatchReplay] Failed to tag branch_incoming with invoice number:', tagError.message);
-    }
-  }
-
-  return record;
+    const record=await saveDispatchInvoice({scope:payload.scope,numberScope:payload.numberScope,hosurShopId:payload.hosurShopId,hosurShopName:payload.hosurShopName,hosurShopPhone:payload.hosurShopPhone,customerName:payload.customerName,customerPhone:payload.customerPhone,customerAddress:payload.customerAddress,dispatchedBy:payload.dispatchedBy,items:payload.invoiceItems,discountPct:payload.discountPct,dispatchEntryIds:payload.actions.map(a=>({orderId:a.orderId,dispatchEntryId:a.dispatchEntryId})),notes:payload.notes,isGstInvoice:payload.isGstInvoice,gstSupplyType:payload.gstSupplyType,desktopActions:payload.actions.map(a=>({...a,stockSlug:closingStockItemSlug(a.itemName)})),desktopHosurBilling:payload.hosurBilling});
+    try{useBakeryStore.setState(state=>({orders:state.orders.map(order=>{const actions=payload.actions.filter(a=>a.orderId===order.id);if(!actions.length)return order;const dispatchLog=[...(order.dispatchLog||[])];for(const a of actions)if(!dispatchLog.some(d=>d.id===a.dispatchEntryId))dispatchLog.push({id:a.dispatchEntryId,itemName:a.itemName,quantity:a.quantity,unit:a.unit,branch:payload.scope,dispatchedBy:payload.dispatchedBy,dispatchedAt:record.createdAt,...(a.isExtra?{isExtra:true}:{}),...(a.targetHosurOrderId?{targetHosurOrderId:a.targetHosurOrderId}:{})});const updated={...order,dispatchLog};if(isAdvanceOrderTagged(order.notes))updated.status=advanceDispatchComplete(updated)?'dispatched':'produced';return updated;})}));
+    await setCached('bakery_orders_v3',useBakeryStore.getState().orders);
+    }catch(cause){record.workflowResult={...record.workflowResult,localWarning:'Invoice saved. Refresh the order list; the local display cache could not update.'};}
+    return record;
 }
 
 async function queuePlannerDispatchAndInvoice(payload: PlannerDispatchAndInvoicePayload): Promise<DispatchInvoiceRecord|void> {
-  if(automaticDesktopBilling()){
-    const record=await saveDispatchInvoice({scope:payload.scope,numberScope:payload.numberScope,hosurShopId:payload.hosurShopId,hosurShopName:payload.hosurShopName,hosurShopPhone:payload.hosurShopPhone,customerName:payload.customerName,customerPhone:payload.customerPhone,customerAddress:payload.customerAddress,dispatchedBy:payload.dispatchedBy,items:payload.invoiceItems,discountPct:payload.discountPct,dispatchEntryIds:payload.actions.map(a=>({orderId:a.orderId,dispatchEntryId:a.dispatchEntryId})),notes:payload.notes,isGstInvoice:payload.isGstInvoice,gstSupplyType:payload.gstSupplyType,desktopActions:payload.actions.map(a=>({...a,stockSlug:closingStockItemSlug(a.itemName)})),desktopHosurBilling:payload.hosurBilling});
-    useBakeryStore.setState(state=>({orders:state.orders.map(order=>{const actions=payload.actions.filter(a=>a.orderId===order.id);if(!actions.length)return order;const dispatchLog=[...(order.dispatchLog||[])];for(const a of actions)if(!dispatchLog.some(d=>d.id===a.dispatchEntryId))dispatchLog.push({id:a.dispatchEntryId,itemName:a.itemName,quantity:a.quantity,unit:a.unit,branch:payload.scope,dispatchedBy:payload.dispatchedBy,dispatchedAt:record.createdAt,...(a.isExtra?{isExtra:true}:{}),...(a.targetHosurOrderId?{targetHosurOrderId:a.targetHosurOrderId}:{})});const updated={...order,dispatchLog};if(isAdvanceOrderTagged(order.notes))updated.status=advanceDispatchComplete(updated)?'dispatched':'produced';return updated;})}));
-    await setCached('bakery_orders_v3',useBakeryStore.getState().orders);
-    return record;
-  }
-  await useOfflineQueueStore.getState().enqueue('planner_dispatch_and_invoice', payload);
+  if(automaticDesktopBilling()||navigator.onLine)return runPlannerDispatchAndInvoiceCore(payload);
+  await useOfflineQueueStore.getState().enqueue('planner_dispatch_and_invoice',payload);
 }
 
 registerReplayHandler('planner_dispatch_and_invoice', async (_kind, payload) => {
@@ -12583,7 +12230,7 @@ registerReplayHandler('planner_dispatch_and_invoice', async (_kind, payload) => 
   }
 });
 
-function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber, customer, actions, skippedItems, dispatchedBy, invoiceNotes, onDispatch, onClose, onDone }: {
+export function DispatchReviewModal({ scope, hosurShop, hosurOrderId, customer, actions, skippedItems, dispatchedBy, invoiceNotes, onClose, onDone }: {
   scope: Branch;
   invoiceNotes?: string;
   hosurShop?: { id: string; name: string; phone: string } | null;
@@ -12949,6 +12596,24 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
     </body></html>`);
   };
 
+  let pendingDispatch:ReturnType<typeof pendingRegularDispatch>=null;
+  let pendingReadError:string|null=null;
+  try{if(!automaticDesktopBilling())pendingDispatch=pendingRegularDispatch(actions.map(a=>a.orderId));}
+  catch(cause){pendingReadError='Saved dispatch details could not be read. Keep this screen open and contact support before sending the batch.';}
+  const recoverDispatch=async()=>{
+    if(sendingRef.current||!pendingDispatch)return;
+    sendingRef.current=true;setSending(true);setError(null);
+    try{
+      const row=await saveWebDispatch(pendingDispatch);
+      const recovered={...recordFromRow(row),workflowResult:row.workflow_result,workflowDuplicate:row.workflow_duplicate};
+      setResult(recovered);
+      if(recovered.workflowResult?.hosurBillId){const outcome=await notifyConfirmedHosurInvoice(recovered);setHosurBillOutcome({ok:true,billNo:outcome.billNo,whatsappStatus:outcome.whatsappStatus,whatsappError:outcome.whatsappError});}
+      if(recovered.isGstInvoice)setGstInvoiceResult({invoiceNo:recovered.invoiceNo,html:renderSavedDispatchTaxInvoice(recovered)});
+      onDone();
+    }catch(cause){setError(cause instanceof Error?cause.message:'Saved dispatch could not be confirmed.');}
+    finally{sendingRef.current=false;setSending(false);}
+  };
+
   const confirm = async () => {
     if (gstInvoiceOffered && gstEnabled && (!Number.isFinite(Number(gstPct)) || Number(gstPct)<=0 || Number(gstPct)>100)) {setError('Enter a valid GST percentage above 0 and up to 100.');return;}
     if (sendingRef.current) return;
@@ -13010,12 +12675,11 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
     // telling the planner "dispatched" while silently skipping a bill/
     // WhatsApp they were told would happen automatically. Blocked here with
     // a clear message instead; every other case queues for real.
-    if (automaticDesktopBilling() || !navigator.onLine) {
-      if (!automaticDesktopBilling() && gstInvoiceOffered && gstEnabled) {
+      if (!navigator.onLine && !automaticDesktopBilling() && gstInvoiceOffered && gstEnabled) {
         setError('No internet connection — a dispatch with a GST Tax Invoice needs a live connection. Uncheck the GST invoice box to send this offline, or try again once reconnected.');
         return;
       }
-      if (!automaticDesktopBilling() && scope === 'Hosur' && hosurShop?.id && hosurOrderId) {
+      if (!navigator.onLine && !automaticDesktopBilling() && scope === 'Hosur' && hosurShop?.id && hosurOrderId) {
         setError('No internet connection — this Hosur shop order needs a live connection to dispatch and auto-bill. Try again once reconnected.');
         return;
       }
@@ -13054,7 +12718,19 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
           customerAddress: customer?.address ?? null,
         });
         if (batchSignature) confirmedDispatchBatchSignatures.add(batchSignature);
-        if(savedDesktopDispatch){setResult(savedDesktopDispatch);try{await printDispatchInvoice(savedDesktopDispatch,'thermal');}catch(error){setError(`Invoice ${savedDesktopDispatch.invoiceNo} is saved; printing needs attention: ${(error as Error).message}`);}}else setQueuedOffline(true);
+        if(savedDesktopDispatch){
+          setResult(savedDesktopDispatch);
+          if(savedDesktopDispatch.workflowResult?.localWarning)setError(String(savedDesktopDispatch.workflowResult.localWarning));
+          if(automaticDesktopBilling())try{await printDispatchInvoice(savedDesktopDispatch,'thermal');}catch(error){setError(`Invoice ${savedDesktopDispatch.invoiceNo} is saved; printing needs attention: ${(error as Error).message}`);}
+          if(!automaticDesktopBilling()&&savedDesktopDispatch.workflowResult?.hosurBillId){
+            const outcome=await notifyConfirmedHosurInvoice(savedDesktopDispatch);
+            setHosurBillOutcome({ok:true,billNo:outcome.billNo,whatsappStatus:outcome.whatsappStatus,whatsappError:outcome.whatsappError});
+          }
+          if(gstInvoiceOffered&&gstEnabled){
+            try{setGstInvoiceResult({invoiceNo:savedDesktopDispatch.invoiceNo,html:renderSavedDispatchTaxInvoice(savedDesktopDispatch)});}
+            catch(cause){setGstError(cause instanceof Error?cause.message:'Invoice saved; tax print needs attention.');}
+          }
+        }else setQueuedOffline(true);
         onDone();
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Failed to queue this dispatch.');
@@ -13062,219 +12738,7 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
         sendingRef.current = false;
         setSending(false);
       }
-      return;
-    }
 
-    sendingRef.current = true;
-    setSending(true);
-    setError(null);
-    // BUG FIX (2026-09-20): "dispatched bread 80 — reached the SNB dashboard but
-    // the invoice isn't in SNB > Dispatched". Dispatch is two steps: (1) each item
-    // is written to its order + the branch's incoming list, (2) the invoice is
-    // saved. When the database timed out on step 2, the catch below only showed
-    // the raw error text — nothing said the items had ALREADY been sent, so the
-    // popup got closed and the batch was left with no invoice. Track which step
-    // failed so the message can say so and tell the planner the safe next move.
-    let itemsAlreadySent = false;
-    try {
-      for (const a of effectiveActions) {
-        // BUG FIX: "for pcs item never allow decimal points" — proportional
-        // splitting (across contributing orders, or across branches for a
-        // merged item) can produce a fractional result like 11.64 pcs,
-        // which is physically meaningless — you can't dispatch 0.64 of a
-        // piece. Rounded here, at the single point every dispatch flow
-        // (VRSNB/SNB, Hosur, Custom, Planned) funnels through to actually
-        // submit, rather than in each upstream split function separately.
-        // kg quantities are untouched — fractional kg is completely normal.
-        const quantity = a.unit === 'pcs' ? Math.round(a.quantity) : a.quantity;
-        if (a.unit === 'pcs' && quantity <= 0) continue; // rounds to nothing — skip rather than submit a zero/negative dispatch
-        await onDispatch(a.orderId, {
-          id: a.dispatchEntryId,
-          itemName: a.itemName,
-          quantity,
-          unit: a.unit,
-          branch: scope,
-          dispatchedBy,
-          dispatchedAt: new Date().toISOString(),
-          ...(a.targetHosurOrderId ? { targetHosurOrderId: a.targetHosurOrderId } : {}),
-          ...(a.isExtra ? { isExtra: true } : {}),
-          ...(customer ? { isCustomSale: true, customerName: customer.name } : {}),
-        });
-        itemsAlreadySent = true;
-      }
-      // FEATURE (2026-09-03): "Custom(Planned) order dispatch invoice number
-      // should also continue the SALES/26-27/N sequence" — Custom(Planned)
-      // dispatches are saved under scope='SNB' (see confirm()'s isCustomSale
-      // marker above / the comment near branchFilter==='Custom' elsewhere in
-      // this file), which would otherwise fall back to SNB/VRSNB's own
-      // shared 'TO/26-27/N' dispatch sequence inside saveDispatchInvoice.
-      // Draws from the same shared Sales sequence New Bill/Sample Bill/Hosur
-      // already draw from instead — scope stays 'SNB'/'VRSNB' purely to pick
-      // the right business letterhead, unrelated to the invoice number.
-      // BUG FIX (2026-09-11): "SALES/26-27/73 and /74 missing" — this used to
-      // fetch the number via a separate next_sales_bill_number() RPC call and
-      // THEN call saveDispatchInvoice with it — any failure on the save
-      // alone left the number burned with no invoice row. numberScope
-      // routes saveDispatchInvoice's own atomic RPC to the shared SALES
-      // sequence in the same transaction as the insert.
-      const record = await saveDispatchInvoice({
-        scope,
-        numberScope: customer ? 'Hosur' : undefined,
-        notes: invoiceNotes,
-        hosurShopId: hosurShop?.id ?? null,
-        hosurShopName: hosurShop?.name ?? null,
-        hosurShopPhone: hosurShop?.phone ?? null,
-        customerName: customer?.name ?? null,
-        customerPhone: customer?.phone ?? null,
-        customerAddress: customer?.address ?? null,
-        dispatchedBy,
-        // REDESIGN (2026-09-12): one flat GST%/HSN for the whole batch (not
-        // per line) — see the note above gstPct's declaration. Applied
-        // identically to every line so renderDispatchInvoiceHtml's "take the
-        // first line's rate" lookup is trivially the same value everywhere.
-        items: (gstInvoiceOffered && gstEnabled
-          ? [...invoiceLines, ...effectiveChargeLines].map(l => ({ ...l, hsnCode: gstHsnCode.trim(), gstPct: Number(gstPct), gstPricing:'exclusive' as const, gstBuyerDetails:{name:customer?.name ?? hosurShop?.name ?? '',address:gstBuyerAddress,gstin:gstBuyerGstin,stateName:gstBuyerStateName,stateCode:gstBuyerStateCode} }))
-          : [...invoiceLines, ...effectiveChargeLines]),
-        discountPct,
-        dispatchEntryIds: actions.map(a => ({ orderId: a.orderId, dispatchEntryId: a.dispatchEntryId })),
-        // FEATURE (2026-09-05): "only if we check the invoice box should the
-        // bill be called tax invoice, or else just invoice" — see
-        // DispatchInvoiceRecord.isGstInvoice. gstInvoiceOffered is false for
-        // SNB/VRSNB (no checkbox shown, gstEnabled stays false), so those
-        // print as a plain INVOICE exactly as asked.
-        isGstInvoice: gstInvoiceOffered && gstEnabled,
-        gstSupplyType,
-      });
-      setResult(record);
-      onDone();
-      // Marked done only now, on real success — a failed attempt above must
-      // still be retryable with the same batch (see the check at the top).
-      if (batchSignature) confirmedDispatchBatchSignatures.add(batchSignature);
-
-      // FEATURE (2026-09-12): "For the stock/incoming tab > incoming: for
-      // the items it should show the TO invoice number also" (SNB Order
-      // dashboard). branch_incoming rows are written by submitDispatch
-      // (onDispatch above) BEFORE the invoice number even exists — this
-      // invoice is only minted afterward, right here. Best-effort backfill:
-      // the dispatch + invoice have already both succeeded and must stand
-      // regardless of whether this tagging works. Only SNB/VRSNB ever write
-      // real branch_incoming rows (Hosur doesn't use that table; a Custom
-      // sale explicitly skips it — see submitDispatch's isCustomSale guard).
-      if ((scope === 'SNB' || scope === 'VRSNB') && !customer) {
-        const dispatchIds = actions.map(a => a.dispatchEntryId);
-        if (dispatchIds.length > 0) {
-          const tagIncoming = async () => supabase
-            .from('branch_incoming')
-            .update({ invoice_no: record.invoiceNo })
-            .in('dispatch_id', dispatchIds);
-          let { error: incomingTagError } = await tagIncoming();
-          if (incomingTagError) {
-            // One retry — covers a transient hiccup (network blip, brief
-            // timeout) instead of permanently leaving these items untagged
-            // on the first failure, same as hosurBillingBridge's attachInvoiceNo.
-            ({ error: incomingTagError } = await tagIncoming());
-          }
-          if (incomingTagError) {
-            console.error('[DispatchReviewModal] Failed to tag branch_incoming with invoice number:', incomingTagError.message);
-            setIncomingTagWarning(`Dispatched and invoiced (${record.invoiceNo}), but ${dispatchIds.length} item${dispatchIds.length === 1 ? '' : 's'} in ${scope}'s Incoming tab may still show no invoice number (${incomingTagError.message}). The dispatch and invoice are correct — open ${scope} Order Dashboard → Incoming and refresh; if the invoice number is still missing there, re-run this tag manually.`);
-          }
-        }
-      }
-
-      // FEATURE (2026-09-02): "already the hosur sales are billed in full
-      // credit — cant we directly dispatch and bill and send the whatsapp
-      // bill directly when we dispatch." Bill this batch as full credit (due
-      // in 2 days) and send the WhatsApp bill, using the exact prices/
-      // discount/charges already shown and confirmed above — no second price
-      // lookup, so the bill can never disagree with what was just dispatched
-      // and invoiced. Its own try/catch: the dispatch and invoice above have
-      // already succeeded and must stand regardless of whether this works.
-      if (scope === 'Hosur' && hosurShop?.id && hosurOrderId) {
-        setHosurBilling(true);
-        try {
-          const { data: itemRows, error: itemsErr } = await supabase
-            .from('hosur_order_items')
-            .select('id, item_name, dispatched_quantity')
-            .eq('order_id', hosurOrderId);
-          if (itemsErr) throw itemsErr;
-
-          const ledgerLines = gstEnabled ? hosurInvoiceLedgerLines(record.items, record.discountPct) : invoiceLines;
-          const priceByName = new Map(ledgerLines.filter(l=>l.unit!=='charge').map(l => [normalizeItemName(l.itemName), l.unitPrice]));
-          const unitByName = new Map(invoiceLines.map(l => [normalizeItemName(l.itemName), l.unit]));
-          const discountMult = 1 - clampedDiscountPct / 100;
-          const billItems: HosurOrderItemForBilling[] = ((itemRows ?? []) as { id: string; item_name: string; dispatched_quantity: number | null }[])
-            .map((row) => {
-              const qty = Number(row.dispatched_quantity ?? 0);
-              const key = normalizeItemName(row.item_name ?? '');
-              const price = priceByName.get(key);
-              if (qty <= 0 || price === undefined) return null;
-              return {
-                id: row.id, itemName: row.item_name,
-                unit: (unitByName.get(key) === 'kg' ? 'kg' : 'pcs') as 'pcs' | 'kg',
-                quantity: qty, unitPrice: gstEnabled ? price : Math.round(price * discountMult * 100) / 100, receivedQuantity: qty,
-              };
-            })
-            .filter((i): i is HosurOrderItemForBilling => i !== null);
-          if (billItems.length === 0) throw new Error('No dispatched items found to bill.');
-          // OFFLINE GUARD (2026-10-01): the dispatch + invoice above have
-          // already succeeded by this point (this block only runs after
-          // them), so this specific gap only matters for a mid-flight
-          // disconnect right here — already gracefully recoverable (caught
-          // below, dispatch stands, operator can bill from HosurShopOrderPanel
-          // once reconnected) but a clear message beats a raw network error.
-          if (!navigator.onLine) throw new Error('No internet connection — the dispatch is saved, but the credit bill needs a live connection. Bill this order from Hosur Shop Orders once reconnected.');
-
-          // Due in 2 days from today (IST) — fixed per Hosur's always-credit workflow, no picker.
-          const dueDate = kolkataDateKey(new Date(Date.now() + 2 * 86_400_000).toISOString());
-          const outcome = await dispatchReceiveAndBill({
-            order: { id: hosurOrderId, orderNumber: hosurOrderNumber ?? '', shopId: hosurShop.id, shopName: hosurShop.name, shopWhatsapp: hosurShop.phone },
-            items: billItems,
-            charges: gstEnabled ? ledgerLines.filter(l=>l.unit==='charge').map(l=>({name:l.itemName,amount:l.unitPrice})) : effectiveCharges,
-            payment: { paymentType: 'credit', dueDate },
-            userName: dispatchedBy,
-            requireCounterOpen: false,
-            // FEATURE (2026-09-05): the real GST invoice number this exact
-            // batch was just dispatched under (record, from saveDispatchInvoice
-            // above) — see dispatchReceiveAndBill's invoiceNo comment.
-            invoiceNo: record.invoiceNo,
-          });
-          setHosurBillOutcome({ ok: true, billNo: outcome.billNo, whatsappStatus: outcome.whatsappStatus, whatsappError: outcome.whatsappError });
-        } catch (billErr) {
-          setHosurBillOutcome({ ok: false, message: billErr instanceof Error ? billErr.message : 'Failed to create the credit bill.' });
-        } finally {
-          setHosurBilling(false);
-        }
-      }
-
-      // FEATURE (2026-09-03, restored 2026-09-12): optional GST Tax Invoice
-      // — see gstInvoiceOffered above. Uses this same batch's already-
-      // confirmed items/prices/discount/charges (invoiceLines/chargeLines),
-      // so it can never disagree with the dispatch invoice or the credit
-      // bill just created above. Its own try/catch: the dispatch, invoice,
-      // and credit bill have already succeeded and must stand regardless of
-      // whether this works.
-      if (gstInvoiceOffered && gstEnabled) {
-        setGstGenerating(true);
-        setGstError(null);
-        try {
-          const gstInvoiceNo = record.invoiceNo;
-          const html = renderSavedDispatchTaxInvoice(record);
-          setGstInvoiceResult({ invoiceNo: gstInvoiceNo, html });
-        } catch (gstErr) {
-          setGstError(gstErr instanceof Error ? gstErr.message : 'Could not generate the GST tax invoice.');
-        } finally {
-          setGstGenerating(false);
-        }
-      }
-    } catch (err) {
-      const reason = err instanceof Error ? err.message : 'Failed to dispatch.';
-      setError(itemsAlreadySent
-        ? `Items were already sent to ${scope}, but the invoice could not be saved (${reason}). Keep this window open and press Confirm Dispatch again — nothing is sent twice, it only saves the invoice.`
-        : reason);
-    } finally {
-      sendingRef.current = false;
-      setSending(false);
-    }
   };
 
   // OFFLINE FIX (2026-10-01): a distinct screen, not the normal result
@@ -13310,6 +12774,10 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
               </p>
               <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="size-4" /></button>
             </div>
+            {(pendingDispatch||pendingReadError)&&<div className="mt-3 rounded-xl border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900">
+              <p>{pendingReadError||'A previous dispatch for this order is awaiting confirmation. Recover its original invoice before sending another batch.'}</p>
+              {pendingDispatch&&<button type="button" disabled={sending} onClick={()=>void recoverDispatch()} className="mt-2 rounded-lg bg-amber-900 px-3 py-2 font-bold text-white disabled:opacity-50">Recover saved dispatch</button>}
+            </div>}
             <p className="mt-1 text-[11px] font-bold text-muted-foreground">
               {customer
                 ? `Double-check quantities, confirm prices, then dispatch. Nothing is sold to ${customer.name} until you confirm below.`
@@ -13441,7 +12909,7 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
                     <span>{c.name}</span>
                     <span className="flex items-center gap-2">
                       Rs. {Math.round(c.amount)}
-                      <button type="button" onClick={() => removeCharge(idx)} className="text-destructive hover:underline">Remove</button>
+                      <button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it." type="button" onClick={() => removeCharge(idx)} className="text-destructive hover:underline">Remove</button>
                     </span>
                   </div>
                 ))}
@@ -13511,7 +12979,7 @@ function DispatchReviewModal({ scope, hosurShop, hosurOrderId, hosurOrderNumber,
               <button onClick={() => printChecklist('thermal')} className="flex items-center gap-1.5 rounded-xl bg-muted px-3 py-2 text-xs font-bold text-muted-foreground hover:bg-slate-200"><Printer className="size-3.5" /> Checklist (Thermal)</button>
               <button onClick={() => printChecklist('a4')} className="flex items-center gap-1.5 rounded-xl bg-muted px-3 py-2 text-xs font-bold text-muted-foreground hover:bg-slate-200"><Printer className="size-3.5" /> Checklist (A4)</button>
               <button onClick={onClose} className="rounded-xl border border-border px-3 py-2 text-xs font-bold text-muted-foreground hover:bg-muted">Cancel</button>
-              <button onClick={confirm} disabled={sending} className="flex items-center gap-1.5 rounded-xl bg-teal-600 px-4 py-2 text-xs font-bold text-white hover:bg-teal-700 disabled:opacity-50">
+              <button onClick={confirm} disabled={sending||Boolean(pendingDispatch)||Boolean(pendingReadError)} className="flex items-center gap-1.5 rounded-xl bg-teal-600 px-4 py-2 text-xs font-bold text-white hover:bg-teal-700 disabled:opacity-50">
                 {sending ? <Loader2 className="size-3.5 animate-spin" /> : <CheckCircle2 className="size-3.5" />} Confirm Dispatch
               </button>
             </div>
@@ -13871,7 +13339,7 @@ function PlannerWasteLogsTab() {
               {lines.map(line => (
                 <div key={line.lineId} className="flex items-center justify-between gap-2 rounded-lg border border-border bg-card px-3 py-2">
                   <span className="text-sm font-bold text-foreground">{line.itemName} · {line.quantity} {line.unit}</span>
-                  <button type="button" onClick={() => removeLine(line.lineId)} className="rounded-lg p-1 text-muted-foreground hover:bg-red-50 hover:text-red-600"><X className="size-3.5" /></button>
+                  <button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it." type="button" onClick={() => removeLine(line.lineId)} className="rounded-lg p-1 text-muted-foreground hover:bg-red-50 hover:text-red-600"><X className="size-3.5" /></button>
                 </div>
               ))}
             </div>

@@ -1,3 +1,5 @@
+import {financialLineTotal} from '@/lib/financialRounding';
+import {printDispatchInvoice, type DispatchInvoiceRecord} from './dispatchInvoice';
 import {automaticDesktopBilling} from '@/lib/desktopBilling';
 import { calculatePlannerSalesGst } from './plannerSalesGst';
 // src/bakery/HosurShopOrderPanel.tsx
@@ -90,7 +92,7 @@ export function isOrderBillable(orderItems: Pick<HosurOrderItem, 'dispatchedQuan
     && orderItems.some(i => i.dispatchedQuantity > i.receivedQuantity + 0.009);
 }
 
-export default function HosurShopOrderPanel({ section: controlledSection, onPendingCountChange }: { section?: 'place' | 'dispatch'; onPendingCountChange?: (n: number) => void } = {}) {
+export default function HosurShopOrderPanel({ active = true, section: controlledSection, onPendingCountChange }: { active?: boolean; section?: 'place' | 'dispatch'; onPendingCountChange?: (n: number) => void } = {}) {
   const currentUser = useAuthStore(s => s.currentUser);
   const [shops, setShops] = useState<HosurShop[]>([]);
   const [prices, setPrices] = useState<HosurShopPrice[]>([]);
@@ -142,7 +144,7 @@ export default function HosurShopOrderPanel({ section: controlledSection, onPend
     setLoading(false);
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { if(active)void load(); }, [load,active]);
 
   // WORKFLOW CHANGE (2026-08-07): include 'dispatched' alongside
   // 'pending_packing' — see the file header comment. 'pending_packing' is a
@@ -206,7 +208,7 @@ export default function HosurShopOrderPanel({ section: controlledSection, onPend
       ) : section === 'place' ? (
         <PlaceOrderSection shops={shops} prices={prices} userName={currentUser?.displayName || 'Planner'} onSaved={load} />
       ) : (
-        <DispatchSection orders={pendingOrders} items={items} onDone={load} shops={shops} />
+        <DispatchSection active={active} orders={pendingOrders} items={items} onDone={load} shops={shops} />
       )}
     </div>
   );
@@ -566,7 +568,7 @@ function PlaceOrderSection({ shops, prices, userName, onSaved }: { shops: HosurS
               <div key={item.itemName} className="rounded-xl bg-muted/40 p-2.5">
                 <div className="flex justify-between gap-2">
                   <p className="text-xs font-black text-foreground">{item.itemName} {item.isCustom && <span className="text-accent">(custom)</span>}</p>
-                  <button onClick={() => removeItem(item.itemName)}><X className="size-3.5 text-destructive" /></button>
+                  <button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it." onClick={() => removeItem(item.itemName)}><X className="size-3.5 text-destructive" /></button>
                 </div>
                 <p className="text-[11px] font-bold text-muted-foreground">{num(item.quantity)} {item.unit} x {money(item.unitPrice)} = {money(item.lineTotal)}</p>
               </div>
@@ -611,7 +613,7 @@ const PAYMENT_MODES = [
   { key: 'cheque', label: 'Cheque' },
 ] as const;
 
-function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[]; items: HosurOrderItem[]; onDone: () => void; shops: HosurShop[] }) {
+function DispatchSection({ active, orders, items, onDone, shops }: { active:boolean; orders: HosurOrder[]; items: HosurOrderItem[]; onDone: () => void; shops: HosurShop[] }) {
   const currentUser = useAuthStore(s => s.currentUser);
   const [overrides, setOverrides] = useState<Record<string, string>>({});
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -742,17 +744,17 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
   // 'orderTotal' before initialization" every time this tab rendered,
   // crashing the whole Hosur Shops & Billing > Dispatch and Billing Queue
   // view. Depends only on `items`/`overrides`, both already in scope here.
-  const orderTotal = (order: HosurOrder) => {
+  const orderTotal = useCallback((order: HosurOrder) => {
     const orderItems = items.filter(i => i.orderId === order.id);
     return orderItems.reduce((sum, item) => {
       const qty = overrides[item.id] !== undefined ? Number(overrides[item.id] || 0) : item.dispatchedQuantity;
-      return sum + qty * item.unitPrice;
+      return sum + (Number.isFinite(qty) ? financialLineTotal(Math.max(0,qty-item.receivedQuantity),item.unitPrice) : 0);
     }, 0);
-  };
+  }, [items, overrides]);
 
   const selectedOrders = useMemo(() => fullyDispatchedOrders.filter(o => selected.has(o.id)), [fullyDispatchedOrders, selected]);
-  const selectedTotal = useMemo(() => selectedOrders.reduce((sum, o) => sum + orderTotal(o), 0), [selectedOrders]);
-  const backlogTotal = useMemo(() => orders.reduce((sum, o) => sum + orderTotal(o), 0), [orders]);
+  const selectedTotal = useMemo(() => selectedOrders.reduce((sum, o) => sum + orderTotal(o), 0), [selectedOrders, orderTotal]);
+  const backlogTotal = useMemo(() => orders.reduce((sum, o) => sum + orderTotal(o), 0), [orders, orderTotal]);
   const backlogOldest = useMemo(
     () => orders.reduce<string | null>((oldest, o) => (!oldest || o.createdAt < oldest ? o.createdAt : oldest), null),
     [orders],
@@ -812,6 +814,7 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
   const [counterOpen, setCounterOpen] = useState<boolean | null>(null);
   const checkCounter = useCallback(() => getPackingCounterStatus().then(s => setCounterOpen(s.isOpen)).catch(() => setCounterOpen(null)), []);
   useEffect(() => {
+    if(!active)return;
     void checkCounter();
     // EGRESS FIX (2026-08-15): dropped the 15s poll — visibilitychange
     // still self-corrects on return to this tab (the scenario the comment
@@ -821,7 +824,7 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
     const refreshOnVisible = () => { if (!document.hidden) void checkCounter(); };
     document.addEventListener('visibilitychange', refreshOnVisible);
     return () => document.removeEventListener('visibilitychange', refreshOnVisible);
-  }, [checkCounter]);
+  }, [checkCounter,active]);
 
   // Leftover pool rows the planner has chosen to apply against a currently
   // pending item (keyed by `${orderId}::${itemId}`) — the override quantity
@@ -860,7 +863,7 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
   // Bill snapshot kept per order purely for the "Print Physical Bill" button —
   // dispatchReceiveAndBill doesn't return line items, so this is reconstructed
   // from what was actually entered (post-override) at the moment of dispatch.
-  const [lastBillSnapshot, setLastBillSnapshot] = useState<Record<string, { billNo: string; order: HosurOrder; items: { itemName: string; unit: string; quantity: number; unitPrice: number }[] }>>({});
+  const [lastBillSnapshot, setLastBillSnapshot] = useState<Record<string, { billNo: string; order: HosurOrder; items: { itemName: string; unit: string; quantity: number; unitPrice: number }[];invoice?:DispatchInvoiceRecord }>>({});
 
   // AUDIT FIX (2026-09-03): returns whether this order's bill actually
   // succeeded, in addition to setting `result` state as before (unchanged
@@ -889,9 +892,9 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
       if (orderGstOn && (!Number.isFinite(orderGstPct) || orderGstPct <= 0 || orderGstPct > 100)) throw new Error('Enter a valid GST percentage above 0 and up to 100.');
       const savedGstBuyer = {name:order.shopName,address:gstBuyerAddress[order.id] || '',gstin:gstBuyerGstin[order.id] || '',stateName:gstBuyerStateName[order.id] || 'Tamil Nadu',stateCode:gstBuyerStateCode[order.id] || '33'};
       const invoiceItems = [
-        ...billItems.map(i => ({
-          itemName: i.itemName, unit: i.unit, quantity: i.receivedQuantity, unitPrice: i.unitPrice,
-          lineTotal: Math.round(i.receivedQuantity * i.unitPrice * 100) / 100,
+        ...billItems.filter(i=>i.receivedQuantity>(i.knownReceivedQuantity||0)).map(i => ({
+          itemName: i.itemName, unit: i.unit, quantity: i.receivedQuantity-(i.knownReceivedQuantity||0), unitPrice: i.unitPrice,
+          lineTotal: financialLineTotal(i.receivedQuantity-(i.knownReceivedQuantity||0),i.unitPrice),
           ...(orderGstOn ? { hsnCode: orderGstHsn, gstPct: orderGstPct } : {}),
         })),
         ...orderChargesToBill.map(c => ({ itemName: c.name, unit: 'charge', quantity: 1, unitPrice: c.amount, lineTotal: c.amount })),
@@ -966,7 +969,7 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
           : `Dispatched and billed (${outcome.billNo}), but WhatsApp send failed: ${outcome.whatsappError}. Retry from WhatsApp Logs below.`,
       }}));
       setLastBillSnapshot(v => ({ ...v, [order.id]: {
-        billNo: outcome.billNo, order,
+        billNo: outcome.billNo, order,invoice:outcome.invoice,
         items: [
           ...billItems.map(i => ({ itemName: i.itemName, unit: i.unit, quantity: i.receivedQuantity, unitPrice: i.unitPrice })),
           ...orderChargesToBill.map(c => ({ itemName: c.name, unit: 'charge', quantity: 1, unitPrice: c.amount })),
@@ -1047,7 +1050,8 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
   // onload/setTimeout guard) — the anti-pattern already fixed elsewhere via
   // printViaIframe. This was one of the print calls behind the "unable to
   // print any bill" report for Planner's Hosur Shops & Billing tab.
-  const printPhysicalBill = (snap: { billNo: string; order: HosurOrder; items: { itemName: string; unit: string; quantity: number; unitPrice: number }[] }) => {
+  const printPhysicalBill = (snap: { billNo: string; order: HosurOrder; items: { itemName: string; unit: string; quantity: number; unitPrice: number }[];invoice?:DispatchInvoiceRecord }) => {
+    if(snap.invoice){void printDispatchInvoice(snap.invoice,'thermal');return;}
     const taxInvoice = Object.values(gstInvoiceResult).find(i=>i.invoiceNo===snap.billNo);
     if (taxInvoice) { printHtml(taxInvoice.invoiceNo,taxInvoice.html);return; }
     const rows = snap.items.map(i => `<tr><td>${i.itemName}</td><td style="text-align:right">${num(i.quantity)} ${i.unit}</td><td style="text-align:right">${money(i.unitPrice)}</td><td style="text-align:right">${money(i.quantity * i.unitPrice)}</td></tr>`).join('');
@@ -1300,7 +1304,7 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
                       <span>{c.name}</span>
                       <span className="flex items-center gap-2">
                         {money(c.amount)}
-                        <button type="button" onClick={() => removeCharge(order.id, idx)} className="text-destructive hover:underline">Remove</button>
+                        <button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it." type="button" onClick={() => removeCharge(order.id, idx)} className="text-destructive hover:underline">Remove</button>
                       </span>
                     </div>
                   ))}
@@ -1486,6 +1490,7 @@ function DispatchSection({ orders, items, onDone, shops }: { orders: HosurOrder[
       })}
 
       <HosurLeftoverAndCancelPanel
+        active={active}
         pendingOrders={orders}
         pendingItems={items}
         appliedLeftovers={appliedLeftovers}
@@ -1535,7 +1540,8 @@ function mapLeftover(r: Record<string, unknown>): LeftoverRow {
 
 interface RecentDispatchedOrder { id: string; orderNumber: string; shopName: string; createdAt: string; billId: string | null; billStatus: string | null; creditAmount: number; }
 
-function HosurLeftoverAndCancelPanel({ pendingOrders, pendingItems, appliedLeftovers, overrides, onApply, refreshTick, shops }: {
+function HosurLeftoverAndCancelPanel({ active, pendingOrders, pendingItems, appliedLeftovers, overrides, onApply, refreshTick, shops }: {
+  active:boolean;
   pendingOrders: HosurOrder[]; pendingItems: HosurOrderItem[];
   appliedLeftovers: Record<string, { leftoverId: string; qty: number }>;
   // Needed so the "Apply" button's displayed/actual cap matches what
@@ -1597,10 +1603,11 @@ function HosurLeftoverAndCancelPanel({ pendingOrders, pendingItems, appliedLefto
   const [dispatchBillSnapshot, setDispatchBillSnapshot] = useState<Record<string, { billNo: string; shopName: string; orderNumber: string; itemName: string; unit: string; quantity: number; unitPrice: number }>>({});
   const [counterOpen, setCounterOpen] = useState<boolean | null>(null);
   useEffect(() => {
+    if(!active)return;
     let cancelled = false;
     getPackingCounterStatus().then(s => { if (!cancelled) setCounterOpen(s.isOpen); }).catch(() => { if (!cancelled) setCounterOpen(null); });
     return () => { cancelled = true; };
-  }, []);
+  }, [active]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -1633,7 +1640,7 @@ function HosurLeftoverAndCancelPanel({ pendingOrders, pendingItems, appliedLefto
     setLoading(false);
   }, []);
 
-  useEffect(() => { if (open) load(); }, [open, load, refreshTick]);
+  useEffect(() => { if (active && open)void load(); }, [open, load, refreshTick,active]);
 
   // BUG FIX: a leftover row's DB quantity only shrinks once the order it was
   // applied to is actually dispatched — but nothing stopped the planner from

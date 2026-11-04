@@ -1,3 +1,4 @@
+import {pendingGrnRequest} from './grnRequest';
 // src/bakery/invoiceStore.ts
 // Store invoice management - tracks supplier deliveries, syncs stock, notifies admin.
 
@@ -226,11 +227,17 @@ export const useInvoiceStore = create<InvoiceState>((set, get) => ({
   },
 
   createInvoice: async (data) => {
-    const rand = crypto.randomUUID().replace(/-/g, '').slice(0, 8).toUpperCase();
-    // Renamed from the old 'VRSNB-PENDING-' prefix (2026-08-06) now that this
-    // tab and its printed document are GRNs — this string is what actually
-    // prints as the "GRN No." on the receipt note.
-    const invoiceNumber = `GRN-${rand}`;
+    let intent: Awaited<ReturnType<typeof pendingGrnRequest>>;
+    try{intent=await pendingGrnRequest(useAuthStore.getState().currentUser?.id||'unknown',data);}
+    catch{return {invoice:null,error:'GRN request could not be saved safely on this computer. Check browser storage before retrying.'};}
+    const invoiceNumber=intent.number;
+    const confirmSaved=async()=>{
+      const {data:existing,error}=await supabase.from('store_invoices').select('id,invoice_number,synced_to_stock').eq('invoice_number',invoiceNumber).maybeSingle();
+      if(error||!existing)return null;
+      intent.confirmed();await get().load();
+      return {invoice:{id:String(existing.id),invoiceNumber:String(existing.invoice_number),syncedToStock:Boolean(existing.synced_to_stock)},error:null};
+    };
+    const previous=await confirmSaved();if(previous)return previous;
     const notes = data.notes.trim();
 
     const secureResult = await supabase.rpc('create_store_invoice_secure', {
@@ -251,6 +258,7 @@ export const useInvoiceStore = create<InvoiceState>((set, get) => ({
 
     if (!secureResult.error && secureResult.data) {
       const row = secureResult.data as unknown as Record<string, unknown>;
+      intent.confirmed();
       await get().load();
       return {
         invoice: {
@@ -261,6 +269,8 @@ export const useInvoiceStore = create<InvoiceState>((set, get) => ({
         error: null,
       };
     }
+
+    const recovered=await confirmSaved();if(recovered)return recovered;
 
     if (isMissingRpcError(secureResult.error)) {
       return {
@@ -321,34 +331,7 @@ export const useInvoiceStore = create<InvoiceState>((set, get) => ({
     });
 
     if (result.error && isMissingRpcError(result.error)) {
-      // A direct edit is safe only when stock has never been synchronized. Once
-      // inventory was updated, the database RPC is required so invoice and stock
-      // changes happen in one transaction.
-      if (data.syncedToStock) {
-        return 'The secure invoice update is not installed in the database. Apply the latest Supabase migration before editing a stock-synced invoice.';
-      }
-
-      const currentInvoice = get().invoices.find(invoice => invoice.id === id);
-      const editedAt = new Date().toISOString();
-      const { data: updated, error: fallbackError } = await supabase
-        .from('store_invoices')
-        .update({
-          supplier_id: data.supplierId,
-          supplier_name: data.supplierName,
-          delivery_date: data.deliveryDate,
-          line_items: data.lineItems,
-          grand_total: data.grandTotal,
-          notes,
-          edited_at: editedAt,
-          edit_count: (currentInvoice?.editCount ?? 0) + 1,
-        })
-        .eq('id', id)
-        .eq('status', 'pending_review')
-        .select('id')
-        .maybeSingle();
-
-      if (fallbackError) return friendlyInvoiceWriteError(fallbackError, 'update');
-      if (!updated) return 'This invoice is no longer pending and cannot be edited.';
+      return 'The secure invoice update service is unavailable. No invoice or stock changes were made; contact Admin before retrying.';
     } else if (result.error) {
       return friendlyInvoiceWriteError(result.error, 'update');
     } else if (!result.data) {
@@ -362,28 +345,13 @@ export const useInvoiceStore = create<InvoiceState>((set, get) => ({
   updateStatus: async (id, status, reviewNote) => {
     const reviewedAt = new Date().toISOString();
     const note = reviewNote?.trim() || null;
-    let result = await supabase.rpc('review_store_invoice_secure', {
+    const result = await supabase.rpc('review_store_invoice_secure', {
       p_invoice_id: id,
       p_status: status,
       p_review_note: note,
     });
 
-    // Compatibility fallback until the migration is deployed.
-    if (isMissingRpcError(result.error)) {
-      result = await supabase
-        .from('store_invoices')
-        .update({
-          status,
-          // Keep the legacy owner/purchase reporting field in sync as well.
-          purchase_status: status,
-          reviewed_at: reviewedAt,
-          review_note: note,
-        })
-        .eq('id', id)
-        .eq('status', 'pending_review')
-        .select('id, invoice_number, supplier_id, supplier_name, supplier_address, delivery_date, line_items, grand_total, status, purchase_status, notes, synced_to_stock, created_at, reviewed_at, review_note, edited_at, edit_count, supplier_invoice_number, supplier_invoice_date, vehicle_number, po_number, po_date, source_po_id')
-        .maybeSingle();
-    }
+    if(isMissingRpcError(result.error))return 'The secure invoice review service is unavailable. No review changes were made; contact Admin.';
 
     const { data, error } = result;
     if (error) {
@@ -407,31 +375,8 @@ export const useInvoiceStore = create<InvoiceState>((set, get) => ({
   },
 
   deleteInvoice: async (id) => {
-    // BUG FIX (audit 2026-09-02): unlike every sibling mutation in this store
-    // (updateStatus/updateInvoice), this had no guard against touching an invoice that's
-    // already been approved and synced to stock — it would silently flip an
-    // already-approved, stock-synced invoice to 'rejected' while the stock it already
-    // added stays in inventory, with no reversal. Currently unreachable from any UI (not
-    // called anywhere), but guard it the same way in case it's ever wired up.
-    const reviewedAt = new Date().toISOString();
-    const { error } = await supabase
-      .from('store_invoices')
-      .update({
-        status: 'rejected',
-        purchase_status: 'rejected',
-        reviewed_at: reviewedAt,
-        review_note: 'Cancelled from invoice screen. Record kept for audit.',
-      })
-      .eq('id', id)
-      .eq('status', 'pending_review');
-    if (error) return;
-    set(s => ({
-      invoices: s.invoices.map(x =>
-        x.id === id
-          ? { ...x, status: 'rejected', reviewedAt, reviewNote: 'Cancelled from invoice screen. Record kept for audit.' }
-          : x,
-      ),
-    }));
+    const error=await get().updateStatus(id,'rejected','Cancelled from invoice screen. Record kept for audit.');
+    if(error)throw new Error(error);
   },
 
   pendingCount: () => get().invoices.filter(i => i.status === 'pending_review').length,

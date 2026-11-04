@@ -24,8 +24,9 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { printViaIframe } from '@/lib/printViaIframe';
-import { supabase } from '@/lib/supabase';
+import { fetchAllRows } from '@/lib/supabase';
 import { useStoreStockStore } from './storeStockStore';
+import {pendingCustomDeduction,saveCustomDeduction} from './customDeductionRequest';
 import type { StockItem } from './storeStockStore';
 import { useAuthStore } from '@/stores/authStore';
 
@@ -81,76 +82,17 @@ const REASON_PRESETS = [
 ];
 
 // ─── DB helpers ────────────────────────────────────────────────────────────────
-async function fetchDeductions(): Promise<{ records: CustomDeduction[]; tableReady: boolean }> {
-  const { data, error } = await supabase
-    .from('store_custom_deductions')
-    .select('id, item_name, item_id, quantity, unit, reason, deducted_by, created_at, batch_id')
-    .order('created_at', { ascending: false })
-    .limit(100);
-
-  if (error) {
-    console.warn('store_custom_deductions fetch:', error.message);
-    return { records: [], tableReady: false };
-  }
-
-  const records = (data ?? []).map(r => ({
-    id: r.id as string,
-    itemName: r.item_name as string,
-    itemId: (r.item_id as string) ?? null,
-    quantity: Number(r.quantity),
-    unit: r.unit as string,
-    reason: r.reason as string,
-    deductedBy: (r.deducted_by as string) ?? null,
-    createdAt: r.created_at as string,
-    batchId: (r.batch_id as string) ?? null,
-  }));
-
-  return { records, tableReady: true };
+function mapDeduction(r:Record<string,unknown>):CustomDeduction{
+ return {id:String(r.id),itemName:String(r.item_name),itemId:r.item_id?String(r.item_id):null,quantity:Number(r.quantity),unit:String(r.unit),reason:String(r.reason),deductedBy:r.deducted_by?String(r.deducted_by):null,createdAt:String(r.created_at),batchId:r.batch_id?String(r.batch_id):null};
 }
-
-async function insertDeduction(
-  item: StockItem,
-  quantity: number,
-  reason: string,
-  deductedBy: string,
-  batchId: string,
-): Promise<CustomDeduction | null> {
-  const { data, error } = await supabase
-    .from('store_custom_deductions')
-    .insert({
-      item_name: item.name,
-      item_id: item.id,
-      quantity,
-      unit: item.unit,
-      reason: reason.trim(),
-      // BUG FIX: this never set deducted_by even though the interface/DB
-      // support it and the component's own header comment claims every
-      // deduction is logged with an audit trail. Every custom deduction was
-      // silently attributed to nobody (blank in history and in the Excel
-      // export's "By" column), unlike the recipe-based deduction path
-      // (storeStockStore.deductMaterials), which does thread this through.
-      deducted_by: deductedBy || null,
-      batch_id: batchId,
-    })
-    .select()
-    .single();
-
-  if (error || !data) {
-    console.error('insertDeduction failed:', error?.message);
-    return null;
-  }
-
-  return {
-    id: data.id as string,
-    itemName: data.item_name as string,
-    itemId: (data.item_id as string) ?? null,
-    quantity: Number(data.quantity),
-    unit: data.unit as string,
-    reason: data.reason as string,
-    deductedBy: (data.deducted_by as string) ?? null,
-    createdAt: data.created_at as string,
-    batchId: (data.batch_id as string) ?? null,
-  };
+async function fetchDeductions(): Promise<{ records: CustomDeduction[]; tableReady: boolean }> {
+  try {
+    const {data,error}=await fetchAllRows('store_custom_deductions',q=>q
+      .select('id,item_name,item_id,quantity,unit,reason,deducted_by,created_at,batch_id')
+      .order('created_at',{ascending:false}),{cursorColumn:'created_at'});
+    if(error)return {records:[],tableReady:false};
+    return {records:data.map(mapDeduction),tableReady:true};
+  } catch {return {records:[],tableReady:false};}
 }
 
 // ─── Batch Confirm Dialog ──────────────────────────────────────────────────────
@@ -394,7 +336,7 @@ function DeductionRowEditor({
         </div>
 
         {canRemove && (
-          <button
+          <button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it."
             onClick={() => onRemove(index)}
             className="size-10 flex items-center justify-center rounded-xl text-destructive hover:bg-destructive/10 transition-colors shrink-0"
           >
@@ -573,9 +515,10 @@ function sanitizeDeductionQty(raw: string, unit: string | undefined): string {
 
 // ─── Main Component ────────────────────────────────────────────────────────────
 export default function StoreCustomTab() {
-  const { items: stockItems, loaded: stockLoaded, load: loadStock, deductMaterials } = useStoreStockStore();
+  const { items: stockItems, loaded: stockLoaded, load: loadStock } = useStoreStockStore();
   const currentUser = useAuthStore((s) => s.currentUser);
-  const actorName = currentUser?.displayName || currentUser?.username || '';
+  const [pendingRequest,setPendingRequest]=useState(false);
+  const [pendingReady,setPendingReady]=useState(false);
 
   const [deductions, setDeductions] = useState<CustomDeduction[]>([]);
   const [tableReady, setTableReady]     = useState(true);
@@ -590,6 +533,11 @@ export default function StoreCustomTab() {
   const savingRef = useRef(false); // synchronous double-submit guard — see handleConfirm
   const [error, setError]             = useState('');
   const [success, setSuccess]         = useState('');
+  useEffect(()=>{
+    setPendingReady(false);
+    try{setPendingRequest(!!pendingCustomDeduction(currentUser?.id || ''));setPendingReady(true);}
+    catch(failure){setPendingRequest(true);setError(failure instanceof Error?failure.message:'Cannot read saved deductions.');}
+  },[currentUser?.id]);
 
   useEffect(() => { if (!stockLoaded) void loadStock(); }, [stockLoaded, loadStock]);
 
@@ -623,7 +571,7 @@ export default function StoreCustomTab() {
   const finalReason = reason === '__custom__' ? customReason.trim() : reason;
 
   const validRows = rows.filter(r => r.item && Number(r.quantity) > 0);
-  const canSubmit = validRows.length > 0 && finalReason.length > 0;
+  const canSubmit = validRows.length > 0 && finalReason.length > 0 && pendingReady && !pendingRequest && tableReady && !loadingHistory;
 
   const updateRow = (index: number, patch: Partial<DeductionRow>) => {
     setRows(prev => prev.map((r, i) => i === index ? { ...r, ...patch } : r));
@@ -638,81 +586,23 @@ export default function StoreCustomTab() {
     setRows(prev => [...prev.map(r => ({ ...r, showDD: false })), blankRow()]);
   };
 
-  const handleConfirm = async (withPrint: boolean) => {
-    // AUDIT FIX (2026-09-03): `saving` is a useState flag — it only blocks a
-    // second click once React has committed the re-render that disables the
-    // confirm buttons, which is not guaranteed to happen before a fast
-    // double-click/double-tap on the same button is dispatched. That could
-    // deduct the same batch of items from real stock twice. Guard
-    // synchronously with a ref, set before any `await`, same pattern used
-    // for every other double-submit fix in this codebase.
-    if (!canSubmit || saving || savingRef.current) return;
-    savingRef.current = true;
-    if (withPrint) printDeductionSlip(validRows, finalReason);
-    setSaving(true); setError('');
-
-    const results: string[] = [];
-    const newRecords: CustomDeduction[] = [];
-    // Every item in this submission shares one batchId, however many items
-    // there are — that's what lets Deduction History group them back
-    // together as the single batch this actually was, and what the new
-    // per-batch print button prints.
-    const batchId = crypto.randomUUID();
-
-    for (const r of validRows) {
-      const qty = Number(r.quantity);
-
-      // BUG FIX (audit 2026-09-02): omitting `unit` here made deductMaterials
-      // fall into its recipe-vs-stock-unit heuristic guess ("if the stock is
-      // kg-tracked and qty>100, assume the caller meant grams and divide by
-      // 1000") — but a Custom Deduction is entered directly against this
-      // item's own already-known unit, not a recipe in a possibly-different
-      // unit, so that heuristic has no business running here at all. A
-      // legitimate 150 kg deduction was silently becoming 0.15 kg. Passing
-      // the item's real unit routes through convertToStockUnit's identity
-      // case (same unit in and out) instead, deducting exactly what was typed.
-      const deductErr = await deductMaterials([{ name: r.item!.name, qty, unit: r.item!.unit }]);
-      if (deductErr && !deductErr.startsWith('Note:')) {
-        results.push(`${r.item!.name}: deduction failed — ${deductErr}`);
-        continue;
-      }
-
-      // Log to DB
-      const record = await insertDeduction(r.item!, qty, finalReason, actorName, batchId);
-      if (record) {
-        newRecords.push(record);
-      } else {
-        // AUDIT FIX (2026-09-03): insertDeduction failing used to be
-        // completely silent — the stock deduction above still went through
-        // (real inventory really was reduced), but the row this file's own
-        // header comment promises as "logged... for audit trail" silently
-        // never got written, and the user still saw a plain "Deducted
-        // successfully" toast with no way to know the audit trail was
-        // incomplete. Surface it the same way a deduction failure is
-        // surfaced, so it's at least visible and can be manually reconciled.
-        results.push(`${r.item!.name}: stock was deducted, but saving the audit log entry failed — this deduction won't appear in Deduction History.`);
-      }
-    }
-
-    setSaving(false);
-    savingRef.current = false;
-
-    if (newRecords.length > 0) {
-      setDeductions(prev => [...newRecords.reverse(), ...prev]);
-    }
-
-    // Reset form
-    setShowConfirm(false);
-    setRows([blankRow()]);
-    setReason('');
-    setCustomReason('');
-
-    if (results.length > 0) {
-      setError(`Some items had errors:\n${results.join('\n')}`);
-    } else {
-      setSuccess(`Deducted ${validRows.length} item${validRows.length > 1 ? 's' : ''} successfully.`);
-      setTimeout(() => setSuccess(''), 4000);
-    }
+  const handleConfirm = async (withPrint: boolean, retry = false) => {
+    if ((!retry && (!canSubmit || pendingRequest || !pendingReady)) || saving || savingRef.current) return;
+    savingRef.current=true;setSaving(true);setError('');
+    try {
+      const records=await saveCustomDeduction(currentUser?.id || '',retry?undefined:{
+        items:validRows.map(r=>({id:r.item!.id,quantity:Number(r.quantity),unit:r.item!.unit})),reason:finalReason,
+      });
+      const mapped=records.map(mapDeduction);
+      setDeductions(prev=>[...mapped,...prev.filter(r=>!mapped.some(m=>m.id===r.id))]);
+      setPendingRequest(false);setShowConfirm(false);setRows([blankRow()]);setReason('');setCustomReason('');
+      setSuccess(`Recorded ${mapped.length} item${mapped.length===1?'':'s'} successfully.`);
+      await loadStock();
+      if(withPrint)printDeductionSlip(validRows,finalReason);
+    } catch(failure) {
+      setError(failure instanceof Error?failure.message:'Unable to confirm deduction.');
+      try{setPendingRequest(!!pendingCustomDeduction(currentUser?.id || ''));}catch{setPendingRequest(true);}
+    } finally {savingRef.current=false;setSaving(false);}
   };
 
   return (
@@ -729,15 +619,20 @@ export default function StoreCustomTab() {
         </p>
       </div>
 
+      {pendingRequest&&<div className="rounded-2xl border border-amber-300 bg-amber-50 p-4 text-sm">
+        <p>A deduction request needs confirmation. Check the saved request before entering another deduction.</p>
+        <button disabled={saving||!pendingReady} onClick={()=>void handleConfirm(false,true)} className="mt-2 rounded-xl bg-amber-900 px-3 py-2 font-bold text-white disabled:opacity-40">Check & retry saved deduction</button>
+      </div>}
       {/* DB not ready warning */}
       {!tableReady && (
         <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 flex gap-3">
           <AlertCircle className="size-5 text-amber-600 shrink-0 mt-0.5" />
           <div>
-            <p className="text-sm font-body font-bold text-amber-800">Database table not set up</p>
+            <p className="text-sm font-body font-bold text-amber-800">Deduction history could not load completely</p>
             <p className="text-xs font-body text-amber-700 mt-1">
-              Run the <strong>migration</strong> at the top of <code>StoreCustomTab.tsx</code> in your Supabase SQL editor, then refresh. Stock deductions still work — history won't be saved until then.
+              Refresh to load the saved records. New deductions are blocked until the history is available.
             </p>
+            <button type="button" onClick={()=>{setLoadingHistory(true);void fetchDeductions().then(result=>{setDeductions(result.records);setTableReady(result.tableReady);setLoadingHistory(false);});}} className="mt-2 rounded-xl border px-3 py-2 text-xs font-bold">Retry deduction history</button>
           </div>
         </div>
       )}

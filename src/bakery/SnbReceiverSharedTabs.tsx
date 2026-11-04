@@ -680,7 +680,7 @@ export function SnbStockMovementPanel({ mode, branch = "SNB" }: { mode: StockMov
                 {lines.map((line) => (
                   <div key={line.lineId} className="flex items-center justify-between gap-2 rounded-xl bg-white px-3 py-2 ring-1 ring-slate-200">
                     <div className="text-xs font-bold"><span className="font-black">{line.itemName}</span> · {formatQty(Number(line.quantity), line.unit)} · {money(priceForItem(line.itemName, line.barcode))}/unit</div>
-                    <div className="flex items-center gap-2"><span className="text-xs font-black text-slate-700">{money(priceForItem(line.itemName, line.barcode) * Number(line.quantity || 0))}</span><button type="button" onClick={() => removeLine(line.lineId)} className="grid size-7 place-items-center rounded-lg text-slate-400 hover:bg-red-50 hover:text-red-600"><X className="size-3.5" /></button></div>
+                    <div className="flex items-center gap-2"><span className="text-xs font-black text-slate-700">{money(priceForItem(line.itemName, line.barcode) * Number(line.quantity || 0))}</span><button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it." type="button" onClick={() => removeLine(line.lineId)} className="grid size-7 place-items-center rounded-lg text-slate-400 hover:bg-red-50 hover:text-red-600"><X className="size-3.5" /></button></div>
                   </div>
                 ))}
               </div>

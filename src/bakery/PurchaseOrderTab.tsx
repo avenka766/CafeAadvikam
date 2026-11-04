@@ -107,7 +107,7 @@ function POCard({ po, onStatusChange, onDelete, currentStockFor }: {
               </button>
             )}
             {po.status !== 'received' && po.status !== 'cancelled' && (
-              <button
+              <button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it."
                 onClick={() => onDelete(po.id)}
                 title="Cancel purchase order"
                 className="size-9 rounded-xl bg-destructive/10 text-destructive flex items-center justify-center active:scale-95"
@@ -280,7 +280,7 @@ function CreatePOForm({ onClose, branchScope }: { onClose: () => void; branchSco
                     <input type="number" min={1} step={line.unit === 'kg' ? 0.001 : 1} value={line.quantity} onChange={e => setQty(i, Number(e.target.value))}
                       className="w-16 h-10 px-2 rounded-xl border border-border bg-background text-sm font-body text-center focus:outline-none" />
                     <span className="text-xs font-body text-muted-foreground w-8">{line.unit}</span>
-                    <button onClick={() => removeLine(i)} disabled={lines.length === 1}
+                    <button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it." onClick={() => removeLine(i)} disabled={lines.length === 1}
                       className="size-9 rounded-xl bg-destructive/10 text-destructive flex items-center justify-center disabled:opacity-30">
                       <Trash2 className="size-3.5" />
                     </button>

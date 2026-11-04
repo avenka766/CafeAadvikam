@@ -1,3 +1,8 @@
+import {changeSampleInvoice} from './sampleInvoiceRequest';
+import {combineDispatchReturns,dispatchRevisionError} from './dispatchRevisionValidation';
+import {financialLineTotal,financialPercent} from '@/lib/financialRounding';
+import {saveWebDispatch} from './webDispatchRequest';
+import {closingStockItemSlug} from './itemMatcher';
 import {isElectronApp} from '@/lib/platform';
 import {automaticDesktopBilling,captureDesktopBill,billingSnapshot,desktopCheckoutIdentity,finishDesktopCheckout} from '@/lib/desktopBilling';
 // src/bakery/dispatchInvoice.ts
@@ -21,7 +26,6 @@ import { supabase, fetchAllRows } from '@/lib/supabase';
 import { getAppSessionToken } from '@/lib/appSession';
 import { printViaIframe } from '@/lib/printViaIframe';
 import type { Branch } from './types';
-import { clampQtyForUnit } from './bakeryStore';
 import { jsPDF } from 'jspdf';
 import { calculatePlannerSalesGst } from './plannerSalesGst';
 import { hosurInvoiceLedgerLines,reconcileHosurLedgerTotal } from './hosurGstLedger';
@@ -173,6 +177,8 @@ export interface DispatchInvoiceRecord {
   // caller's own checkbox state applies; defaults false for every scope
   // that never offers the checkbox at all.
   isGstInvoice: boolean;
+  workflowResult?: Record<string,any>;
+  workflowDuplicate?: boolean;
   // 'intra' -> CGST+SGST split, 'inter' -> IGST — same field the separate
   // GST Tax Invoice document already uses (gstSupplyType). Only meaningful
   // when isGstInvoice is true; defaults 'intra'.
@@ -252,9 +258,10 @@ export async function saveDispatchInvoice(input: {
   // caller; the DB now also enforces the same 0-100 range as a hard backstop
   // (dispatch_invoices_discount_pct_range constraint) in case a future write
   // path bypasses this function entirely.
+  if(input.desktopHosurBilling || input.desktopCakeOrders?.length) input={...input,items:input.items.map(i=>({...i,lineTotal:financialLineTotal(i.quantity,i.unitPrice)}))};
   const safeDiscountPct = Math.min(100, Math.max(0, input.discountPct || 0));
   const subtotal = Math.round(input.items.reduce((s, i) => s + i.lineTotal, 0) * 100) / 100;
-  const discountAmount = Math.round(subtotal * (safeDiscountPct / 100) * 100) / 100;
+  const discountAmount = financialPercent(subtotal,safeDiscountPct);
   const preRound = subtotal - discountAmount;
   const exclusiveGst = input.isGstInvoice && input.items.some(i => i.gstPricing === 'exclusive');
   const total = exclusiveGst ? calculatePlannerSalesGst(subtotal, discountAmount, true, input.items.find(i=>i.gstPricing === 'exclusive')?.gstPct || 0, input.gstSupplyType).total : Math.round(preRound);
@@ -299,14 +306,16 @@ export async function saveDispatchInvoice(input: {
   const desktop=automaticDesktopBilling()?await captureDesktopBill({kind:'dispatch',family:(input.numberScope==='Hosur'||input.scope==='Hosur')?'SALES':'TO',key:input.desktopKey||((input.dispatchEntryIds?.length)?'dispatch:'+input.dispatchEntryIds.map(r=>r.dispatchEntryId).sort().join(','):'invoice:'+desktopCheckoutIdentity('dispatch-invoice:'+input.scope)),rpc:'save_dispatch_invoice_secure',args:rpcArgs,
     dispatchActions:input.desktopActions||[],cakeOrders:input.desktopCakeOrders||[],hosurBilling:input.desktopHosurBilling?{...input.desktopHosurBilling,ledgerLines:desktopLedgerLines,total}:undefined,
     receipt:{...input,subtotal,discountPct:safeDiscountPct,discountAmount,roundOff,total,status}}):null;
-  const {data,error}=desktop?{data:desktop.data,error:null}:await supabase.rpc('save_dispatch_invoice_secure',rpcArgs).single();
+  const regular=Boolean(input.desktopActions?.length);
+  const {data,error}=desktop?{data:desktop.data,error:null}:(regular || input.desktopHosurBilling || input.desktopCakeOrders?.length) ? {data:await saveWebDispatch({p_invoice:regular?{...rpcArgs,p_regular_actions:input.desktopActions,p_regular_hosur:input.desktopHosurBilling||null}:rpcArgs,p_hosur:!regular&&input.desktopHosurBilling?{...input.desktopHosurBilling,ledgerLines:desktopLedgerLines,total}:null,p_cakes:input.desktopCakeOrders||[]}),error:null} : await supabase.rpc('save_dispatch_invoice_secure',rpcArgs).single();
   if (error) throw error;
   if(desktop)finishDesktopCheckout('dispatch-invoice:'+input.scope);
-  const row = data as { id: string; invoice_no: string; created_at: string; paid_at: string | null };
+  const row = data as { id: string; invoice_no: string; created_at: string; paid_at: string | null;workflow_result?:Record<string,any>;workflow_duplicate?:boolean };
   const invoiceNo = row.invoice_no;
 
   return {
     id: row.id,
+    workflowResult:row.workflow_result,workflowDuplicate:row.workflow_duplicate,
     invoiceNo,
     scope: input.scope,
     hosurShopId: input.hosurShopId ?? null,
@@ -343,32 +352,9 @@ export async function saveDispatchInvoice(input: {
 // negative rather than ever blocking the sale). Tagged in the Movement Log
 // as "Sales Online" per the owner's explicit ask, distinguishing it from a
 // regular Billing (Walk-in) sale that deducts stock immediately at creation.
-export async function markDispatchInvoicePaid(record: DispatchInvoiceRecord, recordedBy: string): Promise<{ ok: true } | { error: string }> {
-  if (record.status === 'paid') return { ok: true };
-  const paidAt = new Date().toISOString();
-  const { error } = await supabase.from('dispatch_invoices').update({ status: 'paid', paid_at: paidAt }).eq('id', record.id);
-  if (error) return { error: error.message };
-
-  const { recordLeftoverMovement, kolkataToday } = await import('./PlannerLeftoverTab');
-  for (const item of record.items) {
-    try {
-      const result = await recordLeftoverMovement({
-        itemName: item.itemName,
-        unit: item.unit === 'pcs' ? 'pcs' : 'kg',
-        delta: -Math.abs(item.quantity),
-        businessDate: kolkataToday(),
-        reason: 'dispatch',
-        recordedBy,
-        notes: `Sales Online — Sample Bill ${record.invoiceNo}${record.customerName ? ` — ${record.customerName}` : ''}`,
-      });
-      if ('error' in result) {
-        console.error('[markDispatchInvoicePaid] Closing Stock pool debit failed:', result.error);
-      }
-    } catch (err) {
-      console.error('[markDispatchInvoicePaid] Closing Stock pool debit threw:', err);
-    }
-  }
-  return { ok: true };
+export async function markDispatchInvoicePaid(record: DispatchInvoiceRecord, _recordedBy: string): Promise<{ ok: true } | { error: string }> {
+  try { await changeSampleInvoice(record,'pay'); return {ok:true}; }
+  catch(cause){return {error:cause instanceof Error?cause.message:'Invoice could not be confirmed.'};}
 }
 
 // Sales (New Bill / Sample Bill, bakery_walkin_bills) shares dispatch
@@ -376,7 +362,7 @@ export async function markDispatchInvoicePaid(record: DispatchInvoiceRecord, rec
 // (2026-09-03, previously PlannerDashboard.tsx-local) so Admin's Dispatch
 // Details tab can render/print Sales rows through the identical invoice
 // template without importing that whole page module.
-export interface WalkinBillItem { itemName: string; unit: string; price: number; quantity: number; lineTotal: number; hsnCode?: string; gstPct?: number; gstPricing?: 'exclusive'; gstBuyerDetails?: GstPartyDetails }
+export interface WalkinBillItem { stockSlug?: string; itemName: string; unit: string; price: number; quantity: number; lineTotal: number; hsnCode?: string; gstPct?: number; gstPricing?: 'exclusive'; gstBuyerDetails?: GstPartyDetails }
 export interface WalkinBillRow {
   id: string; billNo: string; items: WalkinBillItem[]; subtotal: number;
   discountType: 'none' | 'percent' | 'amount'; discountValue: number; discountAmount: number; total: number;
@@ -431,23 +417,28 @@ export async function saveWalkinBillSecure(input: {
   customerMobile: string | null;
   isGstInvoice?: boolean;
   gstSupplyType?: 'intra' | 'inter';
-}): Promise<WalkinBillRow> {
-  const { data, error } = await supabase.rpc('save_walkin_bill_secure', {
-    p_items: input.items,
-    p_subtotal: input.subtotal,
-    p_discount_type: input.discountType,
-    p_discount_value: input.discountValue,
-    p_discount_amount: input.discountAmount,
-    p_total: input.total,
-    p_payment_mode: input.paymentMode,
-    p_cashier_name: input.cashierName,
-    p_customer_name: input.customerName,
-    p_customer_mobile: input.customerMobile,
-    p_is_gst_invoice: input.isGstInvoice ?? false,
-    p_gst_supply_type: input.gstSupplyType ?? 'intra',
+}, requestId: string = crypto.randomUUID()): Promise<WalkinBillRow> {
+  const {data,error} = await supabase.rpc('save_walkin_bill_atomic_v1', {
+    p_request_id: requestId,
+    p_sale: {...input,items:input.items.map(i=>({...i,...(i.unit!=='charge'?{stockSlug:closingStockItemSlug(i.itemName)}:{})}))},
   }).single();
   if (error) throw error;
   return mapWalkinBill(data as Record<string, unknown>);
+}
+
+export function walkinExpectedSnapshot(bill: WalkinBillRow) {
+  return {items:bill.items,subtotal:bill.subtotal,discountType:bill.discountType,discountValue:bill.discountValue,
+    discountAmount:bill.discountAmount,total:bill.total,paymentMode:bill.paymentMode,status:bill.status,
+    customerName:bill.customerName,customerMobile:bill.customerMobile,isGstInvoice:bill.isGstInvoice,gstSupplyType:bill.gstSupplyType};
+}
+export async function changeWalkinBillAtomic(bill:WalkinBillRow,action:'edit'|'cancel',change:Record<string,unknown>,reason:string,requestId:string):Promise<WalkinBillRow> {
+  const update={...change,...(Array.isArray(change.items)?{items:(change.items as WalkinBillItem[]).map(i=>({...i,...(i.unit!=='charge'?{stockSlug:closingStockItemSlug(i.itemName)}:{})}))}:{})};
+  const {data,error}=await supabase.rpc('change_walkin_bill_atomic_v1',{
+    p_request_id:requestId,p_bill_id:bill.id,p_expected:walkinExpectedSnapshot(bill),p_action:action,p_change:update,
+    p_original_slugs:bill.items.map(i=>closingStockItemSlug(i.itemName)),p_reason:reason,
+  }).single();
+  if(error)throw new Error(error.message);
+  return mapWalkinBill(data as Record<string,unknown>);
 }
 
 // WORKFLOW CHANGE (2026-08-09): "All bills in this dashboard should use a
@@ -899,747 +890,68 @@ export async function listDispatchInvoices(opts: {
   return [...remote,...local].sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
 }
 
-// FEATURE (2026-08-10): "for the dispatched items bill we need the edit
-// option — delete the item, change price/quantity/unit/discount/name...
-// complete edit access. If we minus or delete the item it should come back
-// to stock, and if we add an item it should minus from stock and get marked
-// as extra item if it wasn't in the original dispatch."
-//
-// Rather than re-implementing branch-stock / Closing-Stock-pool / Hosur-sync
-// bookkeeping a second time here, every quantity-affecting edit is expressed
-// as a delete + (re)create of the underlying bakery_orders dispatch_log
-// entry, reusing submitDispatch/deleteDispatchEntry from bakeryStore — the
-// same two functions every other dispatch surface in the app already goes
-// through — so a bill edit rolls back/reapplies stock exactly the way a
-// normal dispatch/undo already does (branch stock, Closing Stock ledger,
-// Hosur shop sync, branch_incoming), instead of a second, easier-to-drift
-// copy of that logic living only here.
-//
-// Matching an edited item back to its real dispatch_log entry: the invoice's
-// own items have no direct link to one (an item can even be split across
-// several dispatch_log rows/orders — see autoSplitForItem). What DOES carry
-// that link is `dispatchEntryIds`, saved alongside every branch/Hosur/
-// Custom-sale invoice — each {orderId, dispatchEntryId} pair points at one
-// real DispatchEntry, which itself carries the true itemName/quantity/unit.
-// Resolving every ref against live order data gives an exact map of "which
-// entries make up which invoice line" with no guessing.
-//
-// Cake invoices are the one dispatch_invoices row this can't reconcile stock
-// for — cake_master_orders never has a bakery_orders/dispatch_log entry at
-// all, and a made-to-order cake isn't part of the shared Closing Stock pool
-// in the first place (it's a bespoke, one-off line, not a catalog balance).
-// When no ref resolves to a real dispatch_log entry, this falls back to a
-// bill-only edit (name/qty/unit/price/discount on the invoice itself) with
-// no stock reconciliation attempted — there's nothing to reconcile. The
-// `stockSynced` flag on the result tells the caller which case happened, so
-// the UI can be honest with the planner about what did/didn't touch stock.
+// Invoice, stock, credit and return audit changes are committed by one RPC.
 export async function updateDispatchInvoice(params: {
-  invoiceId: string;
-  updatedItems: DispatchInvoiceItem[];
-  updatedDiscountPct: number;
-  editedBy: string;
-  // FEATURE (2026-09-12): "when we click on edit bill also the check box
-  // should be there" — same fix EditWalkinBillModal got for bakery_walkin_bills;
-  // this is the equivalent for dispatch_invoices (SNB/VRSNB/Hosur/Cake/Custom
-  // edits — see EditDispatchInvoiceModal). Omitted (existing callers that
-  // never touch GST) keeps the invoice's current isGstInvoice/gstSupplyType
-  // exactly as before.
-  isGstInvoice?: boolean;
-  gstSupplyType?: 'intra' | 'inter';
-}): Promise<{ ok: true; record: DispatchInvoiceRecord; stockSynced: boolean; hosurWhatsapp?: { ok: boolean; billNo?: string; whatsappStatus?: 'sent' | 'failed'; whatsappError?: string | null; message?: string } } | { error: string }> {
-  const { data: invRow, error: invErr } = await supabase.from('dispatch_invoices').select('*').eq('id', params.invoiceId).single();
-  if (invErr || !invRow) return { error: invErr?.message || 'Invoice not found — it may have been removed.' };
-  const original = recordFromRow(invRow as Record<string, unknown>);
-  if (original.status === 'cancelled') return { error: 'This invoice has been cancelled and can no longer be edited.' };
-
-  // AUDIT FIX (2026-09-03): quantities used to be trusted verbatim from the
-  // caller — the only defense was the Edit Bill modal's own per-keystroke
-  // clamp on the qty box, which isn't reapplied if the unit dropdown is
-  // switched afterward (e.g. type "10.5" while unit=kg, then switch to
-  // pcs). That let a fractional-pcs quantity reach here, get saved/printed
-  // on the invoice verbatim, while the real stock write below (submitDispatch,
-  // step 3) independently rounds it — the printed bill and the actual stock
-  // movement could silently disagree on how much left the shelf. Clamp here
-  // too, at the single choke point every edit funnels through, same as the
-  // real stock write already does.
-  // BUG FIX (2026-09-10): a charge line (unit === 'charge' — a Delivery Fee
-  // etc.) carries its amount in unitPrice with quantity conceptually pinned
-  // to 1. Filtering it on `quantity > 0` meant that if any caller ever sent
-  // it with quantity 0 (the Edit Bill modal did exactly this when a planner
-  // zeroed the fake "Qty" box trying to change the amount), the whole charge
-  // was silently dropped from the bill — confirmed live on SALES/26-27/156.
-  // Keep charge lines on name + non-negative amount alone, and always
-  // normalise their quantity back to 1.
-  const cleanedUpdatedItems = params.updatedItems
-    .filter(i => i.itemName.trim() && i.unitPrice >= 0 && (i.unit === 'charge' || i.quantity > 0))
-    .map(i => ({ ...i, itemName: i.itemName.trim(), quantity: i.unit === 'charge' ? 1 : clampQtyForUnit(i.quantity, i.unit === 'kg' ? 'kg' : 'pcs') }));
-  if (cleanedUpdatedItems.length === 0) {
-    return { error: 'A bill needs at least one item with a name, quantity above 0 and a valid price — cancel the whole bill instead if it should no longer exist.' };
+  invoiceId:string;updatedItems:DispatchInvoiceItem[];updatedDiscountPct:number;editedBy:string;
+  isGstInvoice?:boolean;gstSupplyType?:'intra'|'inter';
+}):Promise<{ok:true;record:DispatchInvoiceRecord;stockSynced:boolean;hosurWhatsapp?:{ok:boolean;billNo?:string;whatsappStatus?:'sent'|'failed';whatsappError?:string|null;message?:string}}|{error:string}>{
+ const invalid=dispatchRevisionError(params.updatedItems,params.updatedDiscountPct);if(invalid)return {error:invalid};
+ const {data,error}=await supabase.from('dispatch_invoices').select('*').eq('id',params.invoiceId).single();
+ if(error||!data)return {error:error?.message||'Invoice not found.'};const original=recordFromRow(data);
+ try {
+  const items=params.updatedItems.filter(i=>i.itemName.trim()&&(i.unit==='charge'||i.quantity>0)).map(i=>({...i,itemName:i.itemName.trim(),quantity:i.unit==='charge'?1:i.quantity,lineTotal:financialLineTotal(i.unit==='charge'?1:i.quantity,i.unitPrice)}));
+  if(original.notes?.startsWith('Sample Bill')&&!original.dispatchEntryIds.length){
+   if(params.isGstInvoice)return {error:'Use the Sales GST billing workflow for a tax invoice.'};
+   return {ok:true,record:recordFromRow(await changeSampleInvoice(original,'edit',{items,discountPct:params.updatedDiscountPct},'Edited sample bill')),stockSynced:true};
   }
-
-  const key = (it: { itemName: string; unit: string }) => `${it.itemName.trim().toLowerCase()}|${it.unit}`;
-  const originalByKey = new Map(original.items.map(i => [key(i), i]));
-  const updatedByKey = new Map(cleanedUpdatedItems.map(i => [key(i), i]));
-
-  const { useBakeryStore } = await import('./bakeryStore');
-  // Force a fresh order fetch — this reconciliation reads dispatch_log
-  // straight off `orders`, and a bill can be edited long after the last poll.
-  await useBakeryStore.getState().fetchOrders(true, true);
-  const freshOrders = useBakeryStore.getState().orders;
-
-  type EntryDetail = { orderId: string; dispatchEntryId: string; itemName: string; unit: string; quantity: number; isExtra: boolean; targetHosurOrderId?: string; isCustomSale: boolean };
-  const entryDetails: EntryDetail[] = original.dispatchEntryIds
-    .map((ref): EntryDetail | null => {
-      const order = freshOrders.find(o => o.id === ref.orderId);
-      const entry = order?.dispatchLog?.find(d => d.id === ref.dispatchEntryId);
-      if (!entry) return null;
-      return {
-        orderId: ref.orderId, dispatchEntryId: ref.dispatchEntryId,
-        itemName: entry.itemName, unit: entry.unit ?? 'kg', quantity: entry.quantity,
-        isExtra: Boolean(entry.isExtra), targetHosurOrderId: entry.targetHosurOrderId, isCustomSale: Boolean(entry.isCustomSale),
-      };
-    })
-    .filter((x): x is EntryDetail => x !== null);
-
-  const stockSynced = entryDetails.length > 0;
-  const entriesByKey = new Map<string, EntryDetail[]>();
-  for (const e of entryDetails) {
-    const k = `${e.itemName.trim().toLowerCase()}|${e.unit}`;
-    if (!entriesByKey.has(k)) entriesByKey.set(k, []);
-    entriesByKey.get(k)!.push(e);
-  }
-
-  // AUDIT FIX (2026-09-03): charge lines (unit === 'charge' — a named fee
-  // like a delivery/packing charge, not a real catalog item) have no
-  // backing dispatch_log entry, so entriesByKey.get(k) for one is always
-  // empty. Step 2 below correctly no-ops on that (nothing to delete), but
-  // step 3 didn't know a charge key was different from a real item key —
-  // it reissued the "changed quantity" charge as a brand-new dispatch,
-  // coercing its unit to 'kg' and debiting the shared Closing Stock pool
-  // for a fabricated stock item literally named after the charge (e.g.
-  // "Packing Charge"), anchored onto an unrelated real order. Charges are
-  // bill-only lines — excluded from the whole stock-sync reconciliation,
-  // same as saveBill/cancelBill/EditWalkinBillModal already exclude them.
-  const isChargeKey = (k: string) => (originalByKey.get(k)?.unit ?? updatedByKey.get(k)?.unit) === 'charge';
-  const removedKeys = [...originalByKey.keys()].filter(k => !updatedByKey.has(k) && !isChargeKey(k));
-  const addedKeys = [...updatedByKey.keys()].filter(k => !originalByKey.has(k) && !isChargeKey(k));
-  const changedQtyKeys = [...updatedByKey.keys()].filter(k => {
-    if (!originalByKey.has(k) || isChargeKey(k)) return false;
-    return Math.abs(originalByKey.get(k)!.quantity - updatedByKey.get(k)!.quantity) > 0.001;
-  });
-
-  // TYPE NOTE (2026-09-03): only used below inside `if (stockSynced)`, which
-  // is only ever true when real dispatch_log entries were found (entryDetails
-  // resolved from bakeryOrders) — a Cake invoice (see its own doc comment
-  // above) never has those, so this cast is never actually exercised for
-  // scope 'Cake'; it's just here so submitDispatch's stricter Branch param
-  // type-checks for the SNB/VRSNB/Hosur cases that do reach it.
-  const branch = original.scope as Branch;
-  // Fallback anchor for a genuinely brand-new item (never had any entry to
-  // anchor off) — any order already targeting this branch, same as
-  // ExtraItemDispatchForm's own anchorOrderId logic elsewhere in Dispatch.
-  const fallbackAnchorOrderId = entryDetails[0]?.orderId ?? freshOrders.find(o => o.targetBranch === branch)?.id ?? null;
-  // BUG FIX (audit): a changed-quantity item used to always get re-anchored
-  // onto the SAME single order as entryDetails[0], even when its own
-  // original entries lived on a *different* order. That order may not even
-  // list this item in its own `items` array, which several dispatched-total
-  // calculations elsewhere (branchDispatchedForRow, dispatchedQtyForItem)
-  // key off via `row.contributingOrderIds` — landing a reissued entry on the
-  // wrong order risked it silently dropping out of those totals even though
-  // it's correctly on the invoice. Anchor each changed item on ONE of its
-  // OWN original entries' orders (captured before deletion) instead, and
-  // only fall back to the generic branch anchor for items with no prior
-  // entry of their own (true adds).
-  const anchorFor = (itemKey: string): string | null => entriesByKey.get(itemKey)?.[0]?.orderId ?? fallbackAnchorOrderId;
-  const anchorHosurOrderId = branch === 'Hosur' ? entryDetails.find(e => e.targetHosurOrderId)?.targetHosurOrderId : undefined;
-  const isCustomSale = entryDetails[0]?.isCustomSale ?? Boolean(original.customerName && !original.hosurShopId);
-
-  if (stockSynced && (removedKeys.length > 0 || changedQtyKeys.length > 0 || addedKeys.length > 0) && !fallbackAnchorOrderId) {
-    return { error: `Can't apply this edit — no linked ${branch} order was found to attach the stock change to. Refresh and try again, or ask an admin to check this order.` };
-  }
-
-  const store = useBakeryStore.getState();
-  const reissuedRefs: { orderId: string; dispatchEntryId: string }[] = [];
-
-  if (stockSynced) {
-    // 1. Fully-removed items: delete every backing dispatch_log entry —
-    //    restores branch stock, the Closing Stock pool, and Hosur sync in
-    //    one call each (exactly what "Remove" already does everywhere else
-    //    in Dispatch).
-    for (const k of removedKeys) {
-      for (const e of entriesByKey.get(k) ?? []) {
-        await store.deleteDispatchEntry(e.orderId, e.dispatchEntryId);
-      }
-    }
-    // 2. Quantity/unit/name changes: delete the old entry/entries the same
-    //    way (full restock) — the fresh entry with the new value is
-    //    (re)created in step 3 below.
-    for (const k of changedQtyKeys) {
-      for (const e of entriesByKey.get(k) ?? []) {
-        await store.deleteDispatchEntry(e.orderId, e.dispatchEntryId);
-      }
-    }
-    // 3. Brand-new items AND changed-quantity items (just deleted above) get
-    //    a fresh dispatch_log entry — debits branch stock / Closing Stock /
-    //    Hosur sync exactly like a normal dispatch. Brand-new items are
-    //    tagged isExtra=true per the "mark it as an extra item" ask;
-    //    changed-quantity items carry forward whatever isExtra they already
-    //    had (editing quantity alone doesn't turn a normal item into extra).
-    const toReissue = [
-      ...addedKeys.map(k => ({ k, isExtra: true })),
-      ...changedQtyKeys.map(k => ({ k, isExtra: entriesByKey.get(k)?.[0]?.isExtra ?? false })),
-    ];
-    // BUG FIX (audit): explicitly minting each new entry's id here (instead
-    // of letting submitDispatch auto-generate one) so the dispatchEntryIds
-    // rebuild below can record EXACTLY the entry this call created — the
-    // previous version re-fetched the anchor order afterward and matched by
-    // itemName+unit, which could wrongly pick up an unrelated dispatch_log
-    // entry already sitting on that same order for the same item (e.g. from
-    // a completely different invoice), silently mis-linking this bill to
-    // someone else's dispatch record.
-    for (const { k, isExtra } of toReissue) {
-      const item = updatedByKey.get(k);
-      const orderId = anchorFor(k);
-      if (!item || item.quantity <= 0 || !orderId) continue;
-      const newId = crypto.randomUUID();
-      await store.submitDispatch(orderId, {
-        id: newId,
-        itemName: item.itemName,
-        quantity: item.quantity,
-        unit: item.unit === 'pcs' ? 'pcs' : 'kg',
-        branch,
-        dispatchedBy: params.editedBy,
-        dispatchedAt: new Date().toISOString(),
-        ...(anchorHosurOrderId ? { targetHosurOrderId: anchorHosurOrderId } : {}),
-        isExtra,
-        ...(isCustomSale ? { isCustomSale: true, customerName: original.customerName ?? undefined } : {}),
-      });
-      reissuedRefs.push({ orderId, dispatchEntryId: newId });
-    }
-  }
-
-  // 4. Recompute the invoice's own numbers from the final edited item list —
-  //    identical formula to saveDispatchInvoice, so a reprint looks the same
-  //    as any freshly-created bill.
-  // BUG FIX (2026-09-12): this used to rebuild each item field-by-field with
-  // no hsnCode/gstPct — even editing an ALREADY-GST invoice's quantity/price
-  // silently stripped its per-item GST fields on save, since finalItems
-  // (not cleanedUpdatedItems, which does still carry them via `...i`) is
-  // what actually gets written to the row below. Carried through explicitly
-  // now.
-  const finalItems: DispatchInvoiceItem[] = cleanedUpdatedItems.map(i => {
-    const k = key(i);
-    // A charge line's amount is its unitPrice (quantity is always 1); a real
-    // item's is quantity × unitPrice.
-    const lineTotal = i.unit === 'charge'
-      ? Math.round((Number(i.unitPrice) || 0) * 100) / 100
-      : Math.round(i.quantity * i.unitPrice * 100) / 100;
-    return {
-      itemName: i.itemName,
-      unit: i.unit,
-      quantity: i.quantity,
-      unitPrice: i.unitPrice,
-      lineTotal,
-      isExtra: addedKeys.includes(k) ? true : (originalByKey.get(k)?.isExtra ?? i.isExtra ?? false),
-      ...(i.hsnCode !== undefined ? { hsnCode: i.hsnCode } : {}),
-      ...(i.gstPct !== undefined ? { gstPct: i.gstPct } : {}),
-      ...(i.gstPricing ? {gstPricing:i.gstPricing, gstBuyerDetails:i.gstBuyerDetails} : {}),
-    };
-  });
-  // AUDIT FIX (2026-09-02): same clamp as saveDispatchInvoice — see its comment.
-  const safeUpdatedDiscountPct = Math.min(100, Math.max(0, params.updatedDiscountPct || 0));
-  const finalIsGstInvoice = params.isGstInvoice ?? original.isGstInvoice;
-  const finalGstSupplyType = params.gstSupplyType ?? original.gstSupplyType;
-  const subtotal = Math.round(finalItems.reduce((s, i) => s + i.lineTotal, 0) * 100) / 100;
-  const discountAmount = Math.round(subtotal * (safeUpdatedDiscountPct / 100) * 100) / 100;
-  const preRound = subtotal - discountAmount;
-  const exclusiveGst = finalIsGstInvoice && finalItems.some(i => i.gstPricing === 'exclusive');
-  const total = exclusiveGst ? calculatePlannerSalesGst(subtotal, discountAmount, true, finalItems.find(i=>i.gstPricing === 'exclusive')?.gstPct || 0, finalGstSupplyType).total : Math.round(preRound);
-  const roundOff = exclusiveGst ? 0 : Math.round((total - preRound) * 100) / 100;
-
-  // Re-collect dispatchEntryIds for the edited bill: keep every ref whose
-  // item wasn't touched, drop refs for removed/changed items, and add the
-  // exact refs step 3 just created — keeps a FUTURE edit of this same bill
-  // able to trace back correctly again.
-  let finalDispatchEntryIds = original.dispatchEntryIds;
-  if (stockSynced) {
-    const keptRefs = original.dispatchEntryIds.filter(ref => {
-      const entry = entryDetails.find(e => e.orderId === ref.orderId && e.dispatchEntryId === ref.dispatchEntryId);
-      if (!entry) return true; // unresolved — leave untouched rather than silently drop
-      const k = `${entry.itemName.trim().toLowerCase()}|${entry.unit}`;
-      return !removedKeys.includes(k) && !changedQtyKeys.includes(k);
-    });
-    finalDispatchEntryIds = [...keptRefs, ...reissuedRefs];
-  }
-
-  const editNote = `Edited by ${params.editedBy} on ${new Date().toLocaleString('en-IN')}`;
-  const finalNotes = original.notes ? `${original.notes} · ${editNote}` : editNote;
-  const { error: updateErr } = await supabase.from('dispatch_invoices').update({
-    items: finalItems,
-    subtotal,
-    discount_pct: safeUpdatedDiscountPct,
-    discount_amount: discountAmount,
-    round_off: roundOff,
-    total,
-    dispatch_entry_ids: finalDispatchEntryIds,
-    notes: finalNotes,
-    is_gst_invoice: finalIsGstInvoice,
-    gst_supply_type: finalGstSupplyType,
-  }).eq('id', params.invoiceId);
-  if (updateErr) return { error: updateErr.message || 'Failed to save the edited bill.' };
-
-  const { useAuthStore } = await import('@/stores/authStore');
-  const user = useAuthStore.getState().currentUser;
-  if (user) {
-    const { useActivityLogStore } = await import('./activityLogStore');
-    void useActivityLogStore.getState().log({
-      staffId: user.id, staffName: user.displayName, role: user.role,
-      action: 'Edited Dispatch Invoice',
-      detail: `Invoice ${original.invoiceNo} (${original.scope}) edited — ${finalItems.length} item(s), new total Rs. ${Math.round(total)}`,
-      branch: original.scope,
-    });
-  }
-
-  // FEATURE (2026-09-03): "if they edit the bill the new invoice should go
-  // to the client with the update invoice in whatsapp" — Hosur is the only
-  // scope with a real client-facing WhatsApp bill (hosur_bills/hosur_bill_
-  // items, created by dispatchReceiveAndBill at dispatch time); this pushes
-  // the corrected amount there too and resends it. Best-effort: an edit to
-  // the dispatch_invoices record above has already succeeded and must stand
-  // regardless of whether the shop's bill/WhatsApp resync works.
-  let hosurWhatsapp: { ok: boolean; billNo?: string; whatsappStatus?: 'sent' | 'failed'; whatsappError?: string | null; message?: string } | undefined;
-  if (branch === 'Hosur' && anchorHosurOrderId) {
-    try {
-      // BUG FIX (2026-09-03, live incident — Shree Skanda Villas): a single
-      // Hosur order can be dispatched across multiple separate batches, each
-      // with its OWN dispatch_invoices row, but they all share ONE hosur_bills
-      // row (dispatchReceiveAndBill reuses the existing draft bill by
-      // order_id). Syncing only THIS invoice's items would silently discard
-      // whatever the order's OTHER invoice(s) already contributed to that
-      // shared bill. Pull every other non-cancelled Hosur invoice for the
-      // same shop, keep only the ones whose own dispatch entries resolve to
-      // this SAME hosur order, apply EACH one's own discount to get its real
-      // billed prices, and combine with this edit's own final items before
-      // syncing — so the shop's credit bill always reflects the full,
-      // combined total across every batch, not just the one just edited.
-      const finalPriced = hosurInvoiceLedgerLines;
-      let combinedItems = finalPriced(finalItems, safeUpdatedDiscountPct);
-      if (original.hosurShopId) {
-        const { data: siblingRows } = await supabase.from('dispatch_invoices')
-          .select('id, items, discount_pct, dispatch_entry_ids')
-          .eq('scope', 'Hosur').eq('hosur_shop_id', original.hosurShopId).neq('status', 'cancelled').neq('id', params.invoiceId);
-        for (const row of (siblingRows ?? []) as { id: string; items: DispatchInvoiceItem[]; discount_pct: number; dispatch_entry_ids: { orderId: string; dispatchEntryId: string }[] }[]) {
-          const belongsToSameOrder = (row.dispatch_entry_ids ?? []).some(ref => {
-            const order = freshOrders.find(o => o.id === ref.orderId);
-            const entry = order?.dispatchLog?.find(d => d.id === ref.dispatchEntryId);
-            return entry?.targetHosurOrderId === anchorHosurOrderId;
-          });
-          if (belongsToSameOrder) combinedItems = combinedItems.concat(finalPriced(row.items ?? [], row.discount_pct ?? 0));
-        }
-      }
-      const { syncHosurBillWithInvoiceEdit } = await import('./hosurBillingBridge');
-      hosurWhatsapp = await syncHosurBillWithInvoiceEdit({ hosurOrderId: anchorHosurOrderId, items: combinedItems });
-    } catch (err) {
-      hosurWhatsapp = { ok: false, message: err instanceof Error ? err.message : 'Failed to sync the updated invoice to the shop.' };
-    }
-  }
-
-  return {
-    ok: true,
-    stockSynced,
-    hosurWhatsapp,
-    record: {
-      ...original,
-      items: finalItems,
-      subtotal, discountPct: safeUpdatedDiscountPct, discountAmount, roundOff, total,
-      dispatchEntryIds: finalDispatchEntryIds,
-      notes: finalNotes,
-      isGstInvoice: finalIsGstInvoice,
-      gstSupplyType: finalGstSupplyType,
-    },
-  };
+  const {reviseDispatchInvoice}=await import('./dispatchInvoiceRevision');
+  const row=await reviseDispatchInvoice(original,'edit',{items,discountPct:params.updatedDiscountPct,isGstInvoice:params.isGstInvoice??original.isGstInvoice,gstSupplyType:params.gstSupplyType??original.gstSupplyType});
+  const record=recordFromRow(row);const hosurWhatsapp=await notifyRevisedHosur(row,record);
+  return {ok:true,record,stockSynced:true,hosurWhatsapp};
+ }catch(cause){return {error:cause instanceof Error?cause.message:'The correction could not be confirmed.'};}
 }
 
-// FEATURE (2026-09-06): "next to the dispatch invoices add a cancel button —
-// once confirmed all items should return to stock, the invoice should be
-// cancelled, reprinting shows it as a cancelled invoice, and it should be
-// recorded in the report and Admin Dispatch Details tab too." Reuses the
-// exact same stock-reversal primitive updateDispatchInvoice's own "fully
-// removed items" step already uses (deleteDispatchEntry per backing
-// dispatch_log entry) — cancelling is that same reversal applied to every
-// item on the invoice at once, then a status flip instead of a re-save.
-export async function cancelDispatchInvoice(params: {
-  invoiceId: string;
-  reason?: string;
-}): Promise<{ ok: true; record: DispatchInvoiceRecord } | { error: string }> {
-  const { data: invRow, error: invErr } = await supabase.from('dispatch_invoices').select('*').eq('id', params.invoiceId).single();
-  if (invErr || !invRow) return { error: invErr?.message || 'Invoice not found — it may have been removed.' };
-  const original = recordFromRow(invRow as Record<string, unknown>);
-  if (original.status === 'cancelled') return { error: 'This invoice is already cancelled.' };
-
-  const { useAuthStore } = await import('@/stores/authStore');
-  const user = useAuthStore.getState().currentUser;
-  const cancelledByName = user?.displayName || 'Planner';
-
-  const cancelledAt = new Date().toISOString();
-  const cancelNote = `Cancelled by ${cancelledByName} on ${new Date().toLocaleString('en-IN')}${params.reason ? ` — ${params.reason}` : ''}`;
-  const finalNotes = original.notes ? `${original.notes} · ${cancelNote}` : cancelNote;
-
-  // BUG FIX (2026-09-06, audit): flip the status FIRST, atomically — the
-  // early `original.status === 'cancelled'` check above reads a snapshot
-  // that two concurrent cancel clicks (two admins, or one impatient
-  // double-click that slipped past the client-side ref guard) could both
-  // pass before either write lands, and both would then reverse stock below
-  // — a real double-restock. `.neq('status','cancelled')` makes this update
-  // a compare-and-swap: only the request that actually flips a row is
-  // allowed to proceed to stock reversal; a request that loses the race gets
-  // back zero affected rows and stops here instead.
-  const { data: claimed, error: claimErr } = await supabase.from('dispatch_invoices').update({
-    status: 'cancelled',
-    cancelled_by: cancelledByName,
-    cancelled_at: cancelledAt,
-    cancelled_reason: params.reason ?? null,
-    notes: finalNotes,
-  }).eq('id', params.invoiceId).neq('status', 'cancelled').select('id');
-  if (claimErr) return { error: claimErr.message || 'Failed to cancel the invoice.' };
-  if (!claimed || claimed.length === 0) return { error: 'This invoice is already cancelled.' };
-
-  // Cake invoices (see updateDispatchInvoice's own doc comment above) never
-  // have a real dispatch_log entry to reconcile — nothing to restock, so
-  // cancelling one is a pure status flip.
-  const { useBakeryStore } = await import('./bakeryStore');
-  // Resolve each ref's real targetHosurOrderId BEFORE deleting anything below
-  // — deleteDispatchEntry removes the entry from the order's own dispatchLog,
-  // so looking this up AFTER deletion would always come back empty and the
-  // Hosur bill resync further down could never find the order to sync.
-  let anchorHosurOrderId: string | undefined;
-  if (original.scope !== 'Cake' && original.dispatchEntryIds.length > 0) {
-    try {
-      await useBakeryStore.getState().fetchOrders(true, true);
-      const freshOrders = useBakeryStore.getState().orders;
-      const store = useBakeryStore.getState();
-      anchorHosurOrderId = original.dispatchEntryIds
-        .map(ref => freshOrders.find(o => o.id === ref.orderId)?.dispatchLog?.find(d => d.id === ref.dispatchEntryId)?.targetHosurOrderId)
-        .find((id): id is string => Boolean(id));
-      for (const ref of original.dispatchEntryIds) {
-        const order = freshOrders.find(o => o.id === ref.orderId);
-        const entry = order?.dispatchLog?.find(d => d.id === ref.dispatchEntryId);
-        if (!entry) continue; // already gone/unresolved — nothing left to reverse
-        await store.deleteDispatchEntry(ref.orderId, ref.dispatchEntryId);
-      }
-    } catch (err) {
-      // BUG FIX (2026-09-06, audit): the status claim above already
-      // committed — if stock reversal then throws partway through, the
-      // invoice would be stuck permanently "cancelled" with some (or all)
-      // of its stock never actually returned, and no way to retry (the
-      // Cancel button only shows for a non-cancelled invoice). Revert the
-      // claim so the planner can see the failure and try again, instead of
-      // silently losing stock.
-      await supabase.from('dispatch_invoices').update({
-        status: original.status, cancelled_by: null, cancelled_at: null, cancelled_reason: null, notes: original.notes,
-      }).eq('id', params.invoiceId);
-      return { error: err instanceof Error ? `Stock reversal failed partway through — the invoice was NOT cancelled, please try again: ${err.message}` : 'Stock reversal failed partway through — the invoice was NOT cancelled, please try again.' };
-    }
-  }
-
-  if (user) {
-    const { useActivityLogStore } = await import('./activityLogStore');
-    void useActivityLogStore.getState().log({
-      staffId: user.id, staffName: user.displayName, role: user.role,
-      action: 'Cancelled Dispatch Invoice',
-      detail: `Invoice ${original.invoiceNo} (${original.scope}) cancelled — ${original.items.length} item(s), Rs. ${Math.round(original.total)} returned to stock${params.reason ? ` — ${params.reason}` : ''}`,
-      branch: original.scope,
-    });
-  }
-
-  // Best-effort: for a Hosur shop invoice, recompute the shop's combined
-  // WhatsApp bill/credit ledger from whatever OTHER (still non-cancelled)
-  // invoices share the same underlying Hosur order — same reconciliation
-  // updateDispatchInvoice's own edit-sync already does; this cancelled
-  // invoice naturally drops out since the sibling query excludes cancelled
-  // rows. If NOTHING else was ever billed for that order (this was the only
-  // invoice), there's nothing left to sync — the shop's hosur_bills row
-  // itself is marked cancelled/zeroed instead so its credit ledger doesn't
-  // keep showing money owed for goods that came back. Never blocks the
-  // invoice cancellation itself if any of this fails.
-  if (original.scope === 'Hosur' && original.hosurShopId) {
-    try {
-      const freshOrders = useBakeryStore.getState().orders;
-      if (anchorHosurOrderId) {
-        const { data: siblingRows } = await supabase.from('dispatch_invoices')
-          .select('items, discount_pct, dispatch_entry_ids')
-          .eq('scope', 'Hosur').eq('hosur_shop_id', original.hosurShopId).neq('status', 'cancelled').neq('id', params.invoiceId);
-        const finalPriced = hosurInvoiceLedgerLines;
-        let combinedItems: { itemName: string; unit: string; quantity: number; unitPrice: number }[] = [];
-        for (const row of (siblingRows ?? []) as { items: DispatchInvoiceItem[]; discount_pct: number; dispatch_entry_ids: { orderId: string; dispatchEntryId: string }[] }[]) {
-          const belongsToSameOrder = (row.dispatch_entry_ids ?? []).some(ref => {
-            const order = freshOrders.find(o => o.id === ref.orderId);
-            const entry = order?.dispatchLog?.find(d => d.id === ref.dispatchEntryId);
-            return entry?.targetHosurOrderId === anchorHosurOrderId;
-          });
-          if (belongsToSameOrder) combinedItems = combinedItems.concat(finalPriced(row.items ?? [], row.discount_pct ?? 0));
-        }
-        if (combinedItems.length > 0) {
-          const { syncHosurBillWithInvoiceEdit } = await import('./hosurBillingBridge');
-          await syncHosurBillWithInvoiceEdit({ hosurOrderId: anchorHosurOrderId, items: combinedItems });
-        } else {
-          const { data: zeroedBill } = await supabase.from('hosur_bills').update({ status: 'cancelled', subtotal: 0, credit_amount: 0, updated_at: cancelledAt })
-            .eq('order_id', anchorHosurOrderId).neq('status', 'cancelled').select('id').maybeSingle();
-          // BUG FIX (2026-09-28): this used to stop at hosur_bills — the
-          // linked branch_credit_sales row (what Owner/Admin credit reports
-          // actually read) kept showing the full amount as outstanding
-          // credit forever, since nothing ever zeroed it when the bill was
-          // cancelled. Found via 6 cancelled Hosur bills silently
-          // overstating outstanding credit by ~13.4K.
-          if (zeroedBill?.id) {
-            await supabase.from('branch_credit_sales').update({ subtotal: 0, credit_amount: 0, status: 'settled' })
-              .eq('source', 'hosur').eq('source_id', zeroedBill.id);
-          }
-        }
-      }
-    } catch (err) {
-      console.error('[cancelDispatchInvoice] Hosur bill resync failed (non-fatal):', err);
-    }
-  }
-
-  return {
-    ok: true,
-    record: {
-      ...original,
-      status: 'cancelled',
-      cancelledBy: cancelledByName,
-      cancelledAt,
-      cancelledReason: params.reason ?? null,
-      notes: finalNotes,
-    },
-  };
+async function notifyRevisedHosur(row:Record<string,unknown>,record:DispatchInvoiceRecord){
+ if(!row.revision_hosur_bill_id||row.revision_duplicate)return undefined;
+ try {const {notifyConfirmedHosurInvoice}=await import('./hosurBillingBridge');
+  const sent=await notifyConfirmedHosurInvoice({...record,workflowResult:{hosurBillId:row.revision_hosur_bill_id}});
+  return {ok:sent.whatsappStatus==='sent',billNo:sent.billNo,whatsappStatus:sent.whatsappStatus,whatsappError:sent.whatsappError};
+ }catch(cause){return {ok:false,message:cause instanceof Error?cause.message:'Invoice saved; WhatsApp needs retry.'};}
 }
 
-// FEATURE (2026-09-06): "In dispatch tab create a Return sub tab — search by
-// invoice number, show items+qty, let them edit the return qty, on save the
-// items should go back to stock, the updated bill should go on WhatsApp, and
-// the reprinted invoice should clearly show the return items/quantity and
-// the already-sent items." A return is expressed as a normal quantity
-// reduction — updateDispatchInvoice above already does the hard part (stock
-// reversal via deleteDispatchEntry/submitDispatch, recomputing subtotal/
-// total, the Activity Log entry, and for Hosur the shop-bill/WhatsApp
-// resync). This wraps that call with: per-item validation against what's
-// still actually on the bill, a durable return record (originalItems snapshot
-// + returnLog audit trail — see the DispatchInvoiceRecord fields above) so a
-// reprint can show both figures, a distinct "Returned" activity-log entry,
-// and (for scopes updateDispatchInvoice doesn't already WhatsApp — i.e.
-// anything but Hosur) a best-effort WhatsApp send of the corrected invoice
-// PDF to whatever phone is on file (Custom's customerPhone; SNB/VRSNB have
-// none, so nothing is sent for them, only the stock/bill correction happens).
-//
-// NOTE (2026-09-28): a SIBLING function, noteDispatchInvoiceReturnOnly
-// (below this one is defined further down — see its own comment), exists
-// for the OTHER return path in this app (Disputes & Returns' branch-return
-// confirm) where the stock movement already happened through a different
-// mechanism and only the bill needs to catch up — that one deliberately does
-// NOT call updateDispatchInvoice, to avoid double-crediting stock. Don't
-// reuse this function (returnDispatchInvoiceItems) for that case.
-// FEATURE (2026-09-28): "If the planner confirms the return then it should
-// also get reflected in the Dispatched bill also." — for a return that comes
-// from the branch's own Incoming → Return flow (Disputes & Returns panel),
-// NOT the Dispatch tab's manual Return sub-tab above. That real stock
-// movement already happened at confirm time — the branch's Closing Stock
-// credit was already recorded (see ConfirmReturnRow in
-// PackingDailyClosureTab.tsx). Calling the full returnDispatchInvoiceItems
-// above for this case double-credits stock: updateDispatchInvoice's own step
-// 1 ("Fully-removed items") calls deleteDispatchEntry, which credits Closing
-// Stock AGAIN for the same physical return whenever the original order's
-// dispatch_log entry still resolves — confirmed live as the cause of a real
-// "getting an error" report right after this feature first shipped calling
-// returnDispatchInvoiceItems directly (updateDispatchInvoice's deeper
-// reconciliation has failure modes this simpler case never needs to hit,
-// e.g. its own fallbackAnchorOrderId guard). This function does ONLY the
-// bill-side bookkeeping — items/original_items/return_log/subtotal/discount/
-// round_off/total — identical math to updateDispatchInvoice's own step 4,
-// with zero interaction with dispatch_log, branch_stock, or Closing Stock.
-// Use this whenever the real stock movement already happened through a
-// different path and only the printed bill needs to catch up.
-export async function noteDispatchInvoiceReturnOnly(params: {
-  invoiceId: string;
-  returns: { itemName: string; unit: string; qty: number }[];
-  reason?: string;
-  returnedBy: string;
-}): Promise<{ ok: true; record: DispatchInvoiceRecord } | { error: string }> {
-  const cleanedReturns = params.returns
-    .filter(r => r.itemName.trim() && r.qty > 0)
-    .map(r => ({ ...r, itemName: r.itemName.trim() }));
-  if (cleanedReturns.length === 0) return { error: 'Enter a return quantity for at least one item.' };
-
-  const { data: invRow, error: invErr } = await supabase.from('dispatch_invoices').select('*').eq('id', params.invoiceId).single();
-  if (invErr || !invRow) return { error: invErr?.message || 'Invoice not found — it may have been removed.' };
-  const original = recordFromRow(invRow as Record<string, unknown>);
-  if (original.status === 'cancelled') return { error: 'This invoice is cancelled — there is nothing to return.' };
-
-  const key = (it: { itemName: string; unit: string }) => `${it.itemName.trim().toLowerCase()}|${it.unit}`;
-  const currentByKey = new Map(original.items.map(i => [key(i), i]));
-  for (const r of cleanedReturns) {
-    const current = currentByKey.get(key(r));
-    if (!current) return { error: `"${r.itemName}" (${r.unit}) isn't on this invoice — it may have already been returned.` };
-    if (r.qty > current.quantity + 0.01) {
-      return { error: `Can't return ${r.qty} ${r.unit} of ${r.itemName} — only ${current.quantity % 1 === 0 ? current.quantity : current.quantity.toFixed(3)} ${r.unit} is currently on this invoice.` };
-    }
-  }
-
-  const updatedItems: DispatchInvoiceItem[] = original.items
-    .map(i => {
-      const ret = cleanedReturns.find(r => key(r) === key(i));
-      if (!ret) return i;
-      const newQty = Math.max(0, i.quantity - ret.qty);
-      return { ...i, quantity: newQty, lineTotal: Math.round(newQty * i.unitPrice * 100) / 100 };
-    })
-    .filter(i => i.quantity > 0.001);
-  if (updatedItems.length === 0) {
-    return { error: 'That would return every item on this bill — ask an admin to cancel the invoice instead.' };
-  }
-
-  // Same formula as updateDispatchInvoice's own step 4 (see its comment) —
-  // keeps a reprint's totals internally consistent either way.
-  const subtotal = Math.round(updatedItems.reduce((s, i) => s + i.lineTotal, 0) * 100) / 100;
-  const discountAmount = Math.round(subtotal * (original.discountPct / 100) * 100) / 100;
-  const preRound = subtotal - discountAmount;
-  const exclusiveGst = original.isGstInvoice && updatedItems.some(i => i.gstPricing === 'exclusive');
-  const total = exclusiveGst ? calculatePlannerSalesGst(subtotal, discountAmount, true, updatedItems.find(i=>i.gstPricing === 'exclusive')?.gstPct || 0, original.gstSupplyType).total : Math.round(preRound);
-  const roundOff = exclusiveGst ? 0 : Math.round((total - preRound) * 100) / 100;
-
-  const returnLogEntry = { at: new Date().toISOString(), by: params.returnedBy, reason: params.reason?.trim() || null, items: cleanedReturns };
-  const newOriginalItems = original.originalItems ?? original.items;
-  const newReturnLog = [...original.returnLog, returnLogEntry];
-
-  const { data: afterRow, error: updateErr } = await supabase.from('dispatch_invoices').update({
-    items: updatedItems,
-    original_items: newOriginalItems,
-    return_log: newReturnLog,
-    subtotal, discount_amount: discountAmount, round_off: roundOff, total,
-  }).eq('id', params.invoiceId).select('*').single();
-  if (updateErr) return { error: updateErr.message || 'Failed to save the return on the bill.' };
-
-  const { useAuthStore } = await import('@/stores/authStore');
-  const user = useAuthStore.getState().currentUser;
-  if (user) {
-    const { useActivityLogStore } = await import('./activityLogStore');
-    const itemsDesc = cleanedReturns.map(r => `${r.qty % 1 === 0 ? r.qty : r.qty.toFixed(3)} ${r.unit} ${r.itemName}`).join(', ');
-    void useActivityLogStore.getState().log({
-      staffId: user.id, staffName: user.displayName, role: user.role,
-      action: 'Returned Dispatch Invoice Items (bill only)',
-      detail: `Invoice ${original.invoiceNo} (${original.scope}) — noted return of ${itemsDesc}${params.reason ? ` — ${params.reason}` : ''} (stock already synced elsewhere). New total Rs. ${Math.round(total)}`,
-      branch: original.scope,
-    });
-  }
-
-  return { ok: true, record: recordFromRow(afterRow as Record<string, unknown>) };
+export async function cancelDispatchInvoice(params:{invoiceId:string;reason?:string}):Promise<{ok:true;record:DispatchInvoiceRecord}|{error:string}>{
+ const {data,error}=await supabase.from('dispatch_invoices').select('*').eq('id',params.invoiceId).single();
+ if(error||!data)return {error:error?.message||'Invoice not found.'};const original=recordFromRow(data);
+ try {
+  let row:Record<string,unknown>;
+  if(original.notes?.startsWith('Sample Bill')&&!original.dispatchEntryIds.length)row=await changeSampleInvoice(original,'cancel',{},params.reason||'Cancelled sample bill');
+  else if(['SNB','VRSNB'].includes(original.scope)&&!original.customerName&&!original.hosurShopId){const {cancelBranchTransfer}=await import('./branchTransferCancellation');row=await cancelBranchTransfer(original,params.reason);}
+  else {const {reviseDispatchInvoice}=await import('./dispatchInvoiceRevision');row=await reviseDispatchInvoice(original,'cancel',{},params.reason||'Cancelled invoice');}
+  return {ok:true,record:recordFromRow(row)};
+ }catch(cause){return {error:cause instanceof Error?cause.message:'Cancellation could not be confirmed.'};}
 }
 
-export async function returnDispatchInvoiceItems(params: {
-  invoiceId: string;
-  returns: { itemName: string; unit: string; qty: number }[];
-  reason?: string;
-  returnedBy: string;
-}): Promise<{ ok: true; record: DispatchInvoiceRecord; whatsapp?: { ok: boolean; error?: string } } | { error: string }> {
-  const cleanedReturns = params.returns
-    .filter(r => r.itemName.trim() && r.qty > 0)
-    .map(r => ({ ...r, itemName: r.itemName.trim() }));
-  if (cleanedReturns.length === 0) return { error: 'Enter a return quantity for at least one item.' };
-
-  const { data: invRow, error: invErr } = await supabase.from('dispatch_invoices').select('*').eq('id', params.invoiceId).single();
-  if (invErr || !invRow) return { error: invErr?.message || 'Invoice not found — it may have been removed.' };
-  const original = recordFromRow(invRow as Record<string, unknown>);
-  if (original.status === 'cancelled') return { error: 'This invoice is cancelled — there is nothing to return.' };
-
-  const key = (it: { itemName: string; unit: string }) => `${it.itemName.trim().toLowerCase()}|${it.unit}`;
-  const currentByKey = new Map(original.items.map(i => [key(i), i]));
-  for (const r of cleanedReturns) {
-    const current = currentByKey.get(key(r));
-    if (!current) return { error: `"${r.itemName}" (${r.unit}) isn't on this invoice — refresh and try again.` };
-    if (r.qty > current.quantity + 0.01) {
-      return { error: `Can't return ${r.qty} ${r.unit} of ${r.itemName} — only ${current.quantity % 1 === 0 ? current.quantity : current.quantity.toFixed(3)} ${r.unit} is currently on this invoice.` };
-    }
+export async function returnDispatchInvoiceItems(params:{invoiceId:string;returns:{itemName:string;unit:string;qty:number}[];reason?:string;returnedBy:string}):Promise<{ok:true;record:DispatchInvoiceRecord;whatsapp?:{ok:boolean;error?:string}}|{error:string}>{
+ let returns:ReturnType<typeof combineDispatchReturns>;
+ try {returns=combineDispatchReturns(params.returns);}catch(cause){return {error:cause instanceof Error?cause.message:'Invalid return quantities.'};}
+ if(!returns.length)return {error:'Enter a return quantity for at least one item.'};
+ const {data,error}=await supabase.from('dispatch_invoices').select('*').eq('id',params.invoiceId).single();
+ if(error||!data)return {error:error?.message||'Invoice not found.'};const original=recordFromRow(data);
+ try {
+  const {reviseDispatchInvoice,hasPendingDispatchInvoiceRevision}=await import('./dispatchInvoiceRevision');
+  if(!hasPendingDispatchInvoiceRevision(original.id)){
+ const invalid=dispatchRevisionError(original.items,original.discountPct);if(invalid)return {error:invalid};
+ const key=(i:{itemName:string;unit:string})=>JSON.stringify([i.itemName.trim().toLowerCase(),i.unit]);
+ const current=new Map(original.items.map(i=>[key(i),i]));if(current.size!==original.items.length)return {error:'Repeated invoice lines need reconciliation before returning items.'};
+ for(const ret of returns){const item=current.get(key(ret));if(!item||ret.qty>item.quantity+1e-9)return {error:`Can't return ${ret.qty} ${ret.unit} of ${ret.itemName}; it exceeds the remaining invoice quantity.`};}
   }
-
-  const updatedItems: DispatchInvoiceItem[] = original.items
-    .map(i => {
-      const ret = cleanedReturns.find(r => key(r) === key(i));
-      if (!ret) return i;
-      const newQty = Math.max(0, i.quantity - ret.qty);
-      return { ...i, quantity: newQty, lineTotal: Math.round(newQty * i.unitPrice * 100) / 100 };
-    })
-    .filter(i => i.quantity > 0.001);
-  if (updatedItems.length === 0) {
-    return { error: 'That would return every item on this bill — use Cancel Invoice instead so it prints as a proper cancellation.' };
-  }
-
-  const updateResult = await updateDispatchInvoice({
-    invoiceId: params.invoiceId,
-    updatedItems,
-    updatedDiscountPct: original.discountPct,
-    editedBy: params.returnedBy,
-  });
-  if ('error' in updateResult) return { error: updateResult.error };
-
-  // Record the return itself — separate from updateDispatchInvoice's own
-  // "Edited Dispatch Invoice" write above, which only knows about the final
-  // item list, not that this particular edit was a customer return. Never
-  // block on this: the stock/bill correction above already succeeded and
-  // must stand even if this bookkeeping write fails.
-  const returnLogEntry = { at: new Date().toISOString(), by: params.returnedBy, reason: params.reason?.trim() || null, items: cleanedReturns };
-  const newOriginalItems = original.originalItems ?? original.items;
-  const newReturnLog = [...original.returnLog, returnLogEntry];
-  const { data: afterRow, error: afterErr } = await supabase.from('dispatch_invoices')
-    .update({ original_items: newOriginalItems, return_log: newReturnLog })
-    .eq('id', params.invoiceId)
-    .select('*')
-    .single();
-  if (afterErr) console.error('[returnDispatchInvoiceItems] Return succeeded but saving the return record failed:', afterErr);
-  const finalRecord = afterRow ? recordFromRow(afterRow as Record<string, unknown>) : updateResult.record;
-
-  const { useAuthStore } = await import('@/stores/authStore');
-  const user = useAuthStore.getState().currentUser;
-  if (user) {
-    const { useActivityLogStore } = await import('./activityLogStore');
-    const itemsDesc = cleanedReturns.map(r => `${r.qty % 1 === 0 ? r.qty : r.qty.toFixed(3)} ${r.unit} ${r.itemName}`).join(', ');
-    void useActivityLogStore.getState().log({
-      staffId: user.id, staffName: user.displayName, role: user.role,
-      action: 'Returned Dispatch Invoice Items',
-      detail: `Invoice ${original.invoiceNo} (${original.scope}) — returned ${itemsDesc}${params.reason ? ` — ${params.reason}` : ''}. New total Rs. ${Math.round(finalRecord.total)}`,
-      branch: original.scope,
-    });
-  }
-
-  // WhatsApp: Hosur is already handled inside updateDispatchInvoice (it
-  // resyncs the shop's real hosur_bills row and resends via the proven
-  // sendHosurWhatsapp path) — just surface that result. Everything else with
-  // a phone on file (currently only Custom) gets a new, generic PDF send;
-  // SNB/VRSNB have no phone at all, so nothing is attempted for them.
-  let whatsapp: { ok: boolean; error?: string } | undefined;
-  if (updateResult.hosurWhatsapp) {
-    whatsapp = {
-      ok: updateResult.hosurWhatsapp.ok && updateResult.hosurWhatsapp.whatsappStatus !== 'failed',
-      error: updateResult.hosurWhatsapp.whatsappError ?? updateResult.hosurWhatsapp.message ?? undefined,
-    };
-  } else {
-    const phone = finalRecord.customerPhone || finalRecord.hosurShopPhone;
-    if (phone) {
-      try {
-        await sendDispatchInvoiceWhatsapp(finalRecord, cleanedReturns, phone);
-        whatsapp = { ok: true };
-      } catch (err) {
-        whatsapp = { ok: false, error: err instanceof Error ? err.message : 'WhatsApp send failed.' };
-      }
-    }
-  }
-
-  return { ok: true, record: finalRecord, whatsapp };
+  const row=await reviseDispatchInvoice(original,'return',{returns},params.reason||'Returned invoice items');const record=recordFromRow(row);
+  const sent=await notifyRevisedHosur(row,record);let whatsapp=sent?{ok:sent.ok,error:sent.whatsappError||sent.message}:undefined;
+  if(!sent&&!row.revision_duplicate){const phone=record.customerPhone||record.hosurShopPhone;if(phone){try{await sendDispatchInvoiceWhatsapp(record,returns,phone);whatsapp={ok:true,error:undefined};}catch(cause){whatsapp={ok:false,error:cause instanceof Error?cause.message:'Invoice saved; WhatsApp needs retry.'};}}}
+  return {ok:true,record,whatsapp};
+ }catch(cause){return {error:cause instanceof Error?cause.message:'The return could not be confirmed.'};}
 }
 
-// Hand-drawn jsPDF bill, same technique as HosurDashboard's own
-// createWhatsappBillDocument (proven in production) — deliberately not an
-// html2canvas render of renderDispatchInvoiceHtml, since html2canvas isn't a
-// project dependency and this keeps the WhatsApp media generation entirely
-// client-side with a library already in use.
 export async function createDispatchInvoiceWhatsappPdf(
   record: DispatchInvoiceRecord,
   justReturned: { itemName: string; unit: string; qty: number }[] = [],

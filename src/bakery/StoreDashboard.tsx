@@ -38,7 +38,6 @@ import StoreReportTab from './StoreReportTab';
 import { searchItems, getSuppliersForItem, getAllSupplierNames, getItemsForSupplier } from './storeItemMaster';
 import { useAuthStore } from '@/stores/authStore';
 import { useNotificationStore } from './notificationStore';
-import type { DeductionContext } from './storeStockStore';
 import { resolveItemWeightGrams, canonicalItemSlug } from './itemMatcher';
 import { matForItem } from './materialCalc';
 import InvoiceTab from './InvoiceTab';
@@ -591,7 +590,7 @@ function ItemRow({ order, item, category, selectionEnabled = false, selected = f
 // ─── Order Card ──────────────────────────────────────────────────────────────
 function OrderCard({ order, searchTerm = '' }: { order: BakeryOrder; searchTerm?: string }) {
   const { confirmStockSelected, acceptOrder, releaseToProduction } = useBakeryStore();
-  const { deductMaterials } = useStoreStockStore();
+
   const bakeryItems = useBakeryItemsStore(s => s.items);
   const currentUser = useAuthStore(s => s.currentUser);
 
@@ -779,56 +778,16 @@ function OrderCard({ order, searchTerm = '' }: { order: BakeryOrder; searchTerm?
       return;
     }
 
-    // Deduction and the status write below are two separate awaits, not one
-    // atomic transaction — if the status write fails after deduction already
-    // committed, a blind retry would deduct the same materials a second
-    // time. Track that explicitly so a failure here can say so plainly and
-    // force the planner to make a conscious decision instead of just
-    // clicking the same button again.
-    let deducted = false;
-    let deductionWarning: string | null = null;
     try {
-      // Deduct stock for the selected lines, then hand the order to Planner.
-      if (allMats.length > 0) {
-        const ctx: DeductionContext = {
-          orderId:     order.id,
-          orderNumber: order.orderNumber ?? order.id,
-          deductedBy:  currentUser?.displayName ?? 'Store',
-        };
-        deductionWarning = await deductMaterials(
-          allMats.map(m => ({ name: m.material, qty: m.quantity, unit: m.unit })),
-          ctx,
-        );
-        deducted = true;
-      }
-      await confirmStockSelected(order.id, selectedIndexes, currentUser?.displayName ?? 'Store');
-      const remainingCount = order.items.length - selectedEntries.length;
-      if (remainingCount === 0) setSent(true);
+      await confirmStockSelected(order.id,selectedIndexes,currentUser?.displayName??'Store');
+      const remainingCount=order.items.length-selectedEntries.length;
+      if(remainingCount===0)setSent(true);
       setSelectedIndexes([]);
-      const baseNotice = remainingCount === 0
-        ? `${selectedEntries.length} item${selectedEntries.length === 1 ? '' : 's'} confirmed and sent to Planner for production.`
-        : `${selectedEntries.length} item${selectedEntries.length === 1 ? '' : 's'} sent to Planner. ${remainingCount} item${remainingCount === 1 ? '' : 's'} still pending here.`;
-      // BUG FIX (2026-08-17): this warning used to get set here, then
-      // immediately clobbered by the unconditional setSendNotice below it —
-      // never actually visible to anyone. Appending to the final notice
-      // instead of setting its own.
-      setSendNotice(deductionWarning ? `${baseNotice} ⚠ ${deductionWarning}` : baseNotice);
-    } catch (sendFailure) {
-      const baseMsg = sendFailure instanceof Error ? sendFailure.message : 'Failed to confirm stock.';
-      if (deducted) {
-        // Materials were already deducted from stock before this failed —
-        // clear the selection instead of leaving it primed for an easy
-        // re-click, so re-sending this same batch is a conscious choice,
-        // not a reflex tap that deducts the same materials twice.
-        setSelectedIndexes([]);
-        setSendError(`${baseMsg} Stock was already deducted for these items before this failed — do NOT just retry the same items. Check Inventory, and only re-select what still genuinely needs to go to Planner.`);
-      } else {
-        setSendError(`${baseMsg} Please try again.`);
-      }
-    } finally {
-      sendingRef.current = false;
-      setSending(false);
-    }
+      setSendNotice(`${selectedEntries.length} item(s) confirmed with their stock deductions and audit records. ${remainingCount} item(s) remain.`);
+    } catch(failure) {
+      setSendError(`${failure instanceof Error?failure.message:'Unable to confirm stock.'} Retry the same selection to check its saved result.`);
+    } finally {sendingRef.current=false;setSending(false);}
+
   };
 
   const branchColor: Record<string, string> = {
@@ -1046,7 +1005,7 @@ function StockRow({ item, onEdit, onDelete, selectMode = false, selected = false
           <button onClick={() => onEdit(item)} className="size-8 flex items-center justify-center rounded-lg hover:bg-muted active:scale-90">
             <Pencil className="size-3.5 text-muted-foreground" />
           </button>
-          <button onClick={() => onDelete(item.id)} className="size-8 flex items-center justify-center rounded-lg hover:bg-red-50 active:scale-90">
+          <button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it." onClick={() => onDelete(item.id)} className="size-8 flex items-center justify-center rounded-lg hover:bg-red-50 active:scale-90">
             <Trash2 className="size-3.5 text-red-400" />
           </button>
         </>
@@ -2471,7 +2430,7 @@ function SupplierCard({ supplier, onEdit, onDelete }: { supplier: Supplier; onEd
               className="flex-1 h-9 rounded-xl border border-border text-xs font-body font-semibold text-foreground flex items-center justify-center gap-1.5 hover:bg-muted active:scale-[0.98]">
               <Pencil className="size-3.5" /> Edit
             </button>
-            <button onClick={() => void handleDelete()} disabled={deleting}
+            <button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it." onClick={() => void handleDelete()} disabled={deleting}
               className="flex-1 h-9 rounded-xl border border-red-200 text-xs font-body font-semibold text-red-600 bg-red-50 flex items-center justify-center gap-1.5 hover:bg-red-100 active:scale-[0.98] disabled:opacity-50">
               {deleting ? <Loader2 className="size-3.5 animate-spin" /> : <Trash2 className="size-3.5" />} Delete
             </button>
@@ -2617,7 +2576,7 @@ function SupplierItemsSelector({
             {selectedItems.map(item => (
               <span key={normaliseName(item)} className="inline-flex max-w-full items-center gap-1 rounded-full border border-primary/20 bg-primary/10 px-2.5 py-1 text-[11px] font-body font-semibold text-primary">
                 <span className="truncate">{item}</span>
-                <button
+                <button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it."
                   type="button"
                   onClick={() => removeItem(item)}
                   className="rounded-full p-0.5 hover:bg-primary/10"

@@ -324,7 +324,7 @@ export default function PackingTransferInTab() {
                     <p className="font-bold truncate">{line.itemName}</p>
                     <p className="text-muted-foreground">Expected {line.expected || '0'} · Received {line.received} {line.unit}</p>
                   </div>
-                  <button type="button" onClick={() => removeLine(i)} aria-label={`Remove ${line.itemName}`} className="shrink-0 rounded-lg p-1.5 text-muted-foreground hover:bg-red-100 hover:text-red-600"><X className="size-3.5" /></button>
+                  <button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it." type="button" onClick={() => removeLine(i)} aria-label={`Remove ${line.itemName}`} className="shrink-0 rounded-lg p-1.5 text-muted-foreground hover:bg-red-100 hover:text-red-600"><X className="size-3.5" /></button>
                 </div>
               ))}
             </div>

@@ -9,7 +9,7 @@ import { supabase, fetchAllRows } from '@/lib/supabase';
 import { ensureCakeDispatchIncoming, cakeIncomingDispatchId } from '@/branch/cakeDispatchSync';
 import { printHtml } from '@/branch/printUtils';
 import { printViaIframe } from '@/lib/printViaIframe';
-import { saveDispatchInvoice, printDispatchInvoice, recordFromRow as recordFromDispatchInvoiceRow, type DispatchInvoiceRecord, type DispatchInvoiceItem, type DispatchInvoiceScope } from './dispatchInvoice';
+import { saveDispatchInvoice, printDispatchInvoice, recordFromRow as recordFromDispatchInvoiceRow, type DispatchInvoiceRecord, type DispatchInvoiceItem } from './dispatchInvoice';
 import { useOfflineQueueStore, registerReplayHandler } from '@/lib/offlineQueue';
 import { CAKE_DESIGNS, cakeTypesFor, calculateCakePrice, type CakeCreamType, type CakeDesignType } from '@/branch/cakePricing';
 // FEATURE (2026-08-10): "the custom cake order sub tab... should be same
@@ -776,10 +776,10 @@ interface CakeDispatchAndInvoicePayload {
   discountPct: number;
 }
 
-async function runCakeDispatchAndInvoiceCore(payload: CakeDispatchAndInvoicePayload): Promise<DispatchInvoiceRecord[]> {
+export async function runCakeDispatchAndInvoiceCore(payload: CakeDispatchAndInvoicePayload): Promise<DispatchInvoiceRecord[]> {
   const clampedDiscountPct = Math.max(0, Math.min(100, Number(payload.discountPct) || 0));
   for (const order of payload.orders) {
-    if(!automaticDesktopBilling())await performCakeDispatch(order, payload.dispatchedBy);
+    if(order.branch==='Planner')await performCakeDispatch(order, payload.dispatchedBy);
   }
   const byBranch = new Map<CakeOrderRow['branch'], CakeOrderRow[]>();
   for (const o of payload.orders) {
@@ -795,16 +795,11 @@ async function runCakeDispatchAndInvoiceCore(payload: CakeDispatchAndInvoicePayl
       unitPrice: Number(o.order_value), lineTotal: Number(o.order_value),
     }));
     const record = await saveDispatchInvoice({
-      scope: 'Cake', dispatchedBy: payload.dispatchedBy, items, discountPct: clampedDiscountPct,desktopCakeOrders:automaticDesktopBilling()?group:undefined,
+      scope: 'Cake', dispatchedBy: payload.dispatchedBy, items, discountPct: clampedDiscountPct,desktopCakeOrders:group,
       dispatchEntryIds: group.map((o) => ({ orderId: o.id, dispatchEntryId: o.id })),
     });
     records.push(record);
-    if(automaticDesktopBilling())continue;
-    const dispatchIds = group.map((o) => cakeIncomingDispatchId(o.id));
-    const tagIncoming = () => supabase.from('branch_incoming').update({ invoice_no: record.invoiceNo }).in('dispatch_id', dispatchIds);
-    let { error: incomingTagError } = await tagIncoming();
-    if (incomingTagError) ({ error: incomingTagError } = await tagIncoming());
-    if (incomingTagError) console.error('[CakeDispatchReplay] Failed to tag branch_incoming with invoice number:', incomingTagError.message);
+
   }
   return records;
 }
@@ -846,19 +841,8 @@ function CakeDispatchReviewModal({ orders, dispatchedBy, onClose, onDone }: {
   // this renders a distinct "queued" panel instead of the normal results
   // screen, which would otherwise have nothing real to show or print.
   const [queuedOffline, setQueuedOffline] = useState(false);
-  // RETRY-SAFETY FIX (2026-08-08 audit): a batch here can span 2 branches
-  // (SNB + VRSNB cakes together), each getting its own saveDispatchInvoice
-  // call in a loop below. If branch A's invoice saves fine but branch B's
-  // throws (network blip, etc.), the modal stays open for a retry — without
-  // this cache, retrying would call saveDispatchInvoice for branch A again
-  // too, creating a second duplicate invoice for cakes that already have one.
-  const createdInvoicesRef = useRef<Map<DispatchInvoiceScope, DispatchInvoiceRecord>>(new Map());
-  // AUDIT FIX (2026-09-03): `createdInvoicesRef` only protects a RETRY after
-  // a partial failure (checked once the first pass has already set an
-  // entry) — it's still a check-then-act race for two genuinely concurrent
-  // calls (a fast double-click), which could both read "not yet created"
-  // for the same branch before either write lands, double-dispatching and
-  // double-invoicing. A synchronous flag set before any await closes that.
+  // Each branch group has a durable server receipt; a synchronous guard also
+  // prevents two submissions from this modal before React renders.
   const sendingInFlightRef = useRef(false);
 
   const byBranch = useMemo(() => {
@@ -904,84 +888,13 @@ function CakeDispatchReviewModal({ orders, dispatchedBy, onClose, onDone }: {
     // above instead of running the live loop below — see
     // runCakeDispatchAndInvoiceCore's comment for why this is safe to retry
     // and why it queues the exact reviewed snapshot.
-    if(automaticDesktopBilling()){
-      sendingInFlightRef.current=true;setSending(true);setError(null);
-      try{const records=await runCakeDispatchAndInvoiceCore({orders,dispatchedBy,discountPct:clampedDiscountPct});setResults(records);for(const record of records)void printDispatchInvoice(record,'thermal');onDone();}
-      catch(e){setError((e as Error).message);}finally{sendingInFlightRef.current=false;setSending(false);}return;
-    }
-    if (!navigator.onLine) {
-      sendingInFlightRef.current = true;
-      setSending(true);
-      setError(null);
-      try {
-        await queueCakeDispatchAndInvoice({ orders, dispatchedBy, discountPct: clampedDiscountPct });
-        setQueuedOffline(true);
-        onDone();
-      } catch (e) {
-        setError(e instanceof Error ? e.message : 'Failed to queue this cake dispatch.');
-      } finally {
-        sendingInFlightRef.current = false;
-        setSending(false);
-      }
-      return;
-    }
-
-    sendingInFlightRef.current = true;
-    setSending(true);
-    setError(null);
+    sendingInFlightRef.current=true;setSending(true);setError(null);
     try {
-      for (const order of orders) {
-        await performCakeDispatch(order, dispatchedBy);
-      }
-      const records: DispatchInvoiceRecord[] = [];
-      for (const [branch, group] of byBranch) {
-        if (branch === 'Planner') continue; // no dispatch invoice for Planner-scope cakes
-        const already = createdInvoicesRef.current.get(branch);
-        if (already) { records.push(already); continue; }
-        const items: DispatchInvoiceItem[] = group.map(o => ({
-          itemName: cakeItemLabel(o), unit: 'pcs', quantity: 1,
-          unitPrice: Number(o.order_value), lineTotal: Number(o.order_value),
-        }));
-        const record = await saveDispatchInvoice({
-          // FEATURE (2026-09-03): was `scope: branch` (SNB/VRSNB) — cake
-          // invoices now always use scope 'Cake' (own sequence, excluded
-          // from the SNB/VRSNB invoice lists). `branch` is still the group
-          // key here (kept for the per-branch batching itself), just no
-          // longer what gets persisted as the invoice's scope.
-          scope: 'Cake', dispatchedBy, items, discountPct: clampedDiscountPct,
-          dispatchEntryIds: group.map(o => ({ orderId: o.id, dispatchEntryId: o.id })),
-        });
-        createdInvoicesRef.current.set(branch, record);
-        records.push(record);
-        // BUG FIX (2026-09-16): "for the second one there is no TO or ADV
-        // number" — ensureCakeDispatchIncoming (called via performCakeDispatch
-        // above) writes each cake's branch_incoming row BEFORE this invoice
-        // even exists, and unlike the regular (non-cake) dispatch flow in
-        // PlannerDashboard.tsx's DispatchReviewModal, nothing ever backfilled
-        // the invoice number back onto it afterward — every cake's Stock/
-        // Incoming row was permanently missing its Cake/26-27/N badge.
-        // Same best-effort pattern as that regular-dispatch backfill: the
-        // dispatch + invoice have already both succeeded and must stand
-        // regardless of whether this tagging works. (branch === 'Planner'
-        // is already skipped by the `continue` above — no branch_incoming
-        // row exists for those, so nothing to tag.)
-        {
-          const dispatchIds = group.map(o => cakeIncomingDispatchId(o.id));
-          const { error: incomingTagError } = await supabase
-            .from('branch_incoming')
-            .update({ invoice_no: record.invoiceNo })
-            .in('dispatch_id', dispatchIds);
-          if (incomingTagError) console.error('[CakeDispatchReview] Failed to tag branch_incoming with invoice number:', incomingTagError.message);
-        }
-      }
-      setResults(records);
-      onDone();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to dispatch.');
-    } finally {
-      setSending(false);
-      sendingInFlightRef.current = false;
-    }
+      if(!automaticDesktopBilling()&&!navigator.onLine){await queueCakeDispatchAndInvoice({orders,dispatchedBy,discountPct:clampedDiscountPct});setQueuedOffline(true);onDone();return;}
+      const records=await runCakeDispatchAndInvoiceCore({orders,dispatchedBy,discountPct:clampedDiscountPct});setResults(records);if(automaticDesktopBilling())for(const record of records)void printDispatchInvoice(record,'thermal');onDone();
+    } catch(cause){setError(cause instanceof Error?cause.message:'Dispatch could not be confirmed. Retry the saved batch.');}
+    finally{sendingInFlightRef.current=false;setSending(false);}
+
   };
 
   // OFFLINE FIX (2026-10-01): a distinct screen, not the normal results

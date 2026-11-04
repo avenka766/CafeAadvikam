@@ -48,6 +48,7 @@ import { useBranchOpsStore } from "@/branch/branchOpsStore";
 import { cn, roundQty, sanitizeDecimalInput } from "@/lib/utils";
 import type { UserRole } from "@/types";
 import { supabase, fetchAllRows } from "@/lib/supabase";
+import {loadReceiverSharedRecords,sharedOperationIdentity} from './receiverSharedRecords';
 import { useOperationalBranchCatalog } from "@/hooks/useOperationalBranchCatalog";
 import {
   claimStockCountGroup,
@@ -643,28 +644,7 @@ function SharedBranchOperationsPanel({ branch }: { branch: Branch }) {
     setLoading(true);
     setError("");
     try {
-      const [invoiceRes, returnRes, wasteRes, operationRes] = await Promise.all([
-        supabase
-          .from("snb_purchase_invoices")
-          .select("id,supplier_name,invoice_number,invoice_date,total_amount,balance_amount,sync_status,created_at")
-          .order("created_at", { ascending: false })
-          .limit(500),
-        supabase
-          .from("snb_purchase_returns")
-          .select("id,return_no,supplier_name,invoice_number,return_date,reason_type,settlement_type,total_amount,status,created_at")
-          .order("created_at", { ascending: false })
-          .limit(500),
-        supabase
-          .from("branch_waste_logs")
-          .select("id,log_type,item_name,quantity,unit,reason,verified_by,created_by_username,created_at")
-          .eq("branch", branch)
-          .order("created_at", { ascending: false })
-          .limit(500),
-        supabase.rpc("get_branch_receiver_shared_operations", { p_branch: branch }),
-      ]);
-      if ([invoiceRes, returnRes, wasteRes, operationRes].every((result) => Boolean(result.error))) {
-        throw invoiceRes.error || returnRes.error || wasteRes.error || operationRes.error || new Error("Shared records are unavailable.");
-      }
+      const [invoiceRes, returnRes, wasteRes, operationRes] = await loadReceiverSharedRecords(branch);
       const next: SharedOperationRow[] = [];
       for (const raw of invoiceRes.error ? [] : invoiceRes.data ?? []) {
         const row = raw as Record<string, unknown>;
@@ -732,9 +712,10 @@ function SharedBranchOperationsPanel({ branch }: { branch: Branch }) {
         });
       }
       const unique = new Map<string, SharedOperationRow>();
-      next.forEach((row) => unique.set(`${row.type}|${row.reference}`, row));
+      next.forEach((row) => unique.set(sharedOperationIdentity(row), row));
       setRows([...unique.values()].sort((a, b) => Number(new Date(b.createdAt)) - Number(new Date(a.createdAt))));
     } catch (loadError) {
+      setRows([]);
       setError(loadError instanceof Error ? loadError.message : "Unable to load shared operations");
     } finally {
       setLoading(false);
@@ -1435,7 +1416,7 @@ function PlacedOrdersPanel({
                 >
                   Cancel
                 </button>
-                <button
+                <button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it."
                   onClick={handleRemoveItem}
                   disabled={removing || !finalRemoveReason}
                   className="flex-1 h-10 rounded-xl bg-red-600 text-white text-sm font-body font-semibold flex items-center justify-center gap-2 disabled:opacity-50 active:scale-[0.98]"
@@ -1700,7 +1681,7 @@ function HosurOrderPanel({
               <div key={item.itemName} className="rounded-2xl border border-border bg-muted/30 p-3">
                 <div className="flex justify-between gap-2">
                   <p className="text-sm font-black text-foreground">{item.itemName}</p>
-                  <button type="button" className="text-red-600" onClick={() => setCart((prev) => { const next = { ...prev }; delete next[item.itemName]; return next; })}>
+                  <button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it." type="button" className="text-red-600" onClick={() => setCart((prev) => { const next = { ...prev }; delete next[item.itemName]; return next; })}>
                     <X className="size-4" />
                   </button>
                 </div>

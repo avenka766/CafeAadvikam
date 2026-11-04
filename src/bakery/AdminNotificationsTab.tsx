@@ -577,7 +577,7 @@ function NotificationDetailModal({
         </p>
 
         {/* Actions */}
-        <button
+        <button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it."
           onClick={handleDelete}
           className="w-full h-11 rounded-xl border border-red-200 bg-red-50 text-red-700 text-sm font-body font-semibold flex items-center justify-center gap-2 active:scale-[0.98]"
         >

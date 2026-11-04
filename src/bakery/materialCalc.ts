@@ -51,9 +51,15 @@ export function combinedMaterialsForItems(items: BakeryOrder['items']): { materi
   const combined: { material: string; quantity: number; unit: string }[] = [];
   for (const item of items) {
     for (const m of matForItem(item)) {
-      const existing = combined.find(x => x.material === m.material);
-      if (existing) existing.quantity = parseFloat((existing.quantity + m.quantity).toFixed(4));
-      else combined.push({ ...m });
+      if(!Number.isFinite(m.quantity)||m.quantity<0)throw Error(`Invalid recipe quantity for ${m.material}. Review the recipe before production.`);
+      if(m.quantity===0)continue;
+      const unit=m.unit.trim().toLowerCase();
+      const canonical={...m,material:m.material.trim(),unit:unit==='g'?'kg':unit==='ml'||unit==='l'?'ltr':unit==='nos'?'pcs':unit,
+        quantity:unit==='g'||unit==='ml'?m.quantity/1000:m.quantity};
+      const existing = combined.find(x => x.material.toLowerCase() === canonical.material.toLowerCase());
+      if(existing&&existing.unit!==canonical.unit)throw Error(`Recipe units disagree for ${canonical.material}. Review the recipes before production.`);
+      if (existing) existing.quantity = parseFloat((existing.quantity + canonical.quantity).toFixed(6));
+      else combined.push(canonical);
     }
   }
   return combined;

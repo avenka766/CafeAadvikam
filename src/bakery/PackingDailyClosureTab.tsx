@@ -1,3 +1,4 @@
+import {confirmPackingReturn} from './packingReturnConfirmation';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
@@ -26,8 +27,8 @@ import { useAuthStore } from '@/stores/authStore';
 import { useBakeryStore } from './bakeryStore';
 import { BRANCHES } from './types';
 import type { Branch } from './types';
-import { mapWalkinBill, noteDispatchInvoiceReturnOnly, type WalkinBillRow } from './dispatchInvoice';
-import { recordLeftoverMovement, sanitizeQtyForUnit } from './PlannerLeftoverTab';
+import { mapWalkinBill, type WalkinBillRow } from './dispatchInvoice';
+import { sanitizeQtyForUnit } from './PlannerLeftoverTab';
 import { printViaIframe } from '@/lib/printViaIframe';
 import { generateExcelReport, type ExcelSectionSpec, type PdfSectionSpec } from './reportExport';
 
@@ -174,87 +175,15 @@ function ConfirmReturnRow({ row, staffName, onDone }: { row: PendingReturnRow; s
     const received = Number(qty);
     if (!Number.isFinite(received) || received <= 0) { setErr('Enter a received quantity greater than zero.'); return; }
     setSaving(true);
-    const { data, error } = await supabase.rpc('confirm_packing_transfer_in_secure', {
-      p_id: row.id, p_received_quantity: received, p_remarks: remarks.trim() || null,
-    });
-    if (error) { setErr(error.message); setSaving(false); return; }
-    // Sync into Closing Stock — this is the step post_packing_transfer_in_secure
-    // itself doesn't do (it only writes inventory_ledger for the Packing location).
-    const posted = data as { item_name: string; unit: 'kg' | 'pcs'; received_quantity: number; source_branch: string; transfer_reference: string } | null;
-    if (posted) {
-      const leftoverResult = await recordLeftoverMovement({
-        itemName: posted.item_name, unit: posted.unit, delta: Number(posted.received_quantity),
-        businessDate: packingBusinessDateToday(), reason: 'closing_stock', recordedBy: staffName,
-        branch: posted.source_branch as Branch, notes: `Return confirmed from ${posted.source_branch} · ${posted.transfer_reference}`,
-      });
-      if ('error' in leftoverResult) { setErr(`Return confirmed, but closing stock sync failed: ${leftoverResult.error}`); setSaving(false); return; }
+    try {
+      await confirmPackingReturn(row, received, remarks);
+      setDone(true);
+    } catch (cause) {
+      setErr(cause instanceof Error ? cause.message : 'The return could not be confirmed.');
+      setSaving(false);
+      return;
     }
-
-    // BUG FIX (2026-09-28): "Even after the planner confirmed the return
-    // still the item is showing in the SNB Order > Incoming tab." Requesting
-    // a return (request_packing_transfer_in_return_secure) sets
-    // branch_incoming.return_requested=true but leaves confirmed=false —
-    // and confirming the return on the Planner side
-    // (confirm_packing_transfer_in_secure) never touches branch_incoming at
-    // all, so the row sat "locked" in the branch's Incoming list forever,
-    // looking like a still-open request. It isn't a real incoming delivery
-    // any more (the goods went back to Packing, not into branch stock), so
-    // mark it confirmed here — WITHOUT running it through the stock-add RPC
-    // (that would wrongly credit branch_stock for goods that were returned,
-    // not received) — purely to drop it out of the active Incoming queue.
-    if (posted && row.source_incoming_id) {
-      const { error: closeErr } = await supabase.from('branch_incoming')
-        .update({ confirmed: true }).eq('id', row.source_incoming_id);
-      if (closeErr) console.error('[ConfirmReturnRow] Failed to clear the source Incoming row:', closeErr.message);
-    }
-
-    // FEATURE (2026-09-28): "If the planner confirms the return then it
-    // should also get reflected in the Dispatched bill also. All the
-    // returned items should be tracked and it should be noted." Trace this
-    // return back to the exact branch_incoming row it came from (recorded on
-    // request via source_incoming_id), read its invoice_no, find the
-    // matching dispatch_invoices row, and note the return on it via
-    // noteDispatchInvoiceReturnOnly — a bill-only sibling of the Dispatch
-    // tab's own manual Return sub-tab's returnDispatchInvoiceItems. Uses the
-    // bill-only version, not that one: the branch-side Closing Stock credit
-    // just above is already the real stock movement, and the full
-    // returnDispatchInvoiceItems would touch stock a second time via
-    // dispatch_log (confirmed live as a real bug — see its own comment in
-    // dispatchInvoice.ts). Best-effort and non-blocking either way: the
-    // branch-side return + Closing Stock sync above are the real,
-    // already-completed action; a missing/already-adjusted invoice link
-    // must never undo or block that.
-    // setNotice() is async (state), so a same-tick `if (notice)` read below
-    // would still see the pre-update value — track it in a plain local too.
-    let invoiceNotice = '';
-    if (posted && row.source_incoming_id) {
-      try {
-        const { data: incRow } = await supabase.from('branch_incoming')
-          .select('invoice_no, branch').eq('id', row.source_incoming_id).maybeSingle();
-        const invoiceNo = (incRow as { invoice_no?: string | null; branch?: string } | null)?.invoice_no;
-        if (invoiceNo) {
-          const { data: invRow } = await supabase.from('dispatch_invoices')
-            .select('id').eq('invoice_no', invoiceNo).eq('scope', posted.source_branch)
-            .neq('status', 'cancelled').order('created_at', { ascending: false }).limit(1).maybeSingle();
-          if (invRow?.id) {
-            const result = await noteDispatchInvoiceReturnOnly({
-              invoiceId: invRow.id as string,
-              returns: [{ itemName: posted.item_name, unit: posted.unit, qty: Number(posted.received_quantity) }],
-              reason: remarks.trim() || 'Returned from branch (confirmed via Disputes & Returns)',
-              returnedBy: staffName,
-            });
-            if ('error' in result) invoiceNotice = `Return confirmed, but the dispatched bill (${invoiceNo}) wasn't updated: ${result.error}`;
-          } else {
-            invoiceNotice = `Return confirmed. Dispatched bill ${invoiceNo} couldn't be found to mark the return on it.`;
-          }
-        }
-      } catch (e) {
-        invoiceNotice = `Return confirmed, but updating the dispatched bill failed: ${e instanceof Error ? e.message : 'unknown error'}`;
-      }
-    }
-
     setSaving(false);
-    if (invoiceNotice) { setNotice(invoiceNotice); setDone(true); return; } // keep the row visible so the notice is seen before the list refreshes
     onDone();
   };
 

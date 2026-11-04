@@ -489,7 +489,7 @@ function CreatePOModal({ onClose, onCreated }: { onClose: () => void; onCreated:
                     <div className="flex h-10 items-center justify-end rounded-xl bg-primary/5 px-2.5">
                       <span className="text-sm font-body font-bold tabular-nums text-primary">₹{Math.round(poLineTotal(line))}</span>
                     </div>
-                    <button type="button" onClick={() => removeLine(line.rowId)} disabled={lines.length === 1} className="flex size-9 items-center justify-center rounded-xl text-red-500 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-25" aria-label={`Remove item ${index + 1}`}>
+                    <button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it." type="button" onClick={() => removeLine(line.rowId)} disabled={lines.length === 1} className="flex size-9 items-center justify-center rounded-xl text-red-500 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-25" aria-label={`Remove item ${index + 1}`}>
                       <Trash2 className="size-4" />
                     </button>
                   </div>

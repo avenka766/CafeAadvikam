@@ -22,27 +22,9 @@ import { recordLeftoverMovement, kolkataToday } from './PlannerLeftoverTab';
 // the exact same calculation.
 import { combinedMaterialsForItems } from './materialCalc';
 import { useRecipeStore } from './recipeStore';
-import { useStoreStockStore, type DeductionContext } from './storeStockStore';
-
-// AUDIT FIX (2026-09-03): mergeOrdersForStore / confirmStockSelected /
-// releaseToProduction each do a two-step write (create/update the primary
-// row, then delete-or-update the secondary rows) that isn't a real Postgres
-// transaction — if step 2 fails right after step 1 already committed, the
-// same physical items can end up live on two rows at once (double-counted
-// stock/production). A full RPC/transaction rewrite of these three
-// money/stock-critical functions was judged too risky to make casually on a
-// live system without a staging environment to test against. As a bounded,
-// purely-additive mitigation, retry the second step a few times with a short
-// backoff before giving up — this closes the most common real-world cause
-// (a transient network blip) without changing any logic or write shape.
-async function retrySecondStep<T extends { error: unknown }>(fn: () => PromiseLike<T>, attempts = 3): Promise<T> {
-  let result = await fn();
-  for (let i = 1; i < attempts && result.error; i++) {
-    await new Promise(resolve => setTimeout(resolve, 400 * i));
-    result = await fn();
-  }
-  return result;
-}
+import { useStoreStockStore, convertToStockUnit } from './storeStockStore';
+import {saveStoreRelease} from './storeReleaseRequest';
+import {saveStoreMerge} from './storeMergeRequest';
 
 // Planner's "Planning" tab tags a proactive/extra-production batch with this
 // marker in `notes` (target_branch stays null since the destination branch
@@ -171,35 +153,31 @@ function clampOrderItems(items: BakeryOrderItem[]): BakeryOrderItem[] {
 // allowed to THROW — deduction failing should abort the send, same as the
 // original flow (an order was never supposed to reach 'store_confirmed'
 // without its materials being deducted first).
-async function deductForOrder(items: BakeryOrderItem[], orderId: string, orderNumber: number): Promise<string | null> {
-  // BUG FIX: useRecipeStore starts with only a small hardcoded seed list
-  // (RECIPE_DEFINITIONS) until something calls loadRecipes() to pull the
-  // real, current recipes from bakery_recipes. That call has only ever
-  // lived in components Store itself renders (StoreDashboard.tsx,
-  // RecipeManagement.tsx, BranchStockForm.tsx) — never anywhere in
-  // Planner's dashboard, which is what actually calls this function via
-  // mergeOrdersForStore. So for any item not in that small seed set (e.g.
-  // MYSORE PAK isn't in it at all), combinedMaterialsForItems below was
-  // silently computing zero materials whenever Planner sent the order —
-  // no deduction, no store_material_deductions row, no error of any kind.
-  // loadRecipes() no-ops immediately if already loaded, so this is safe to
-  // call unconditionally on every send.
+async function commitStoreRelease(order:BakeryOrder,indexes:number[],mode:'confirm'|'release') {
   await useRecipeStore.getState().loadRecipes();
-  const materials = combinedMaterialsForItems(items);
-  if (materials.length === 0) return null;
-  const { useAuthStore } = await import('@/stores/authStore');
-  const deductedBy = useAuthStore.getState().currentUser?.displayName ?? 'Store';
-  const ctx: DeductionContext = { orderId, orderNumber, deductedBy };
-  const warn = await useStoreStockStore.getState().deductMaterials(
-    materials.map(m => ({ name: m.material, qty: m.quantity, unit: m.unit })),
-    ctx,
-  );
-  // BUG FIX (2026-08-17): this used to only console.warn — invisible to
-  // actual staff, who never open devtools. A "stock not deducted, units
-  // don't match" warning needs to reach a person, not just a log nobody
-  // reads. Returned up through releaseToProduction now instead.
-  if (warn) console.warn('[mergeOrdersForStore] Stock deduction note:', warn);
-  return warn;
+  if(useRecipeStore.getState().error)throw Error('Live recipes could not load. Retry before releasing stock.');
+  await useStoreStockStore.getState().load();
+  if(useStoreStockStore.getState().error)throw Error('Live raw stock could not load. Retry before releasing stock.');
+  const selected=order.items.filter((_,i)=>indexes.includes(i));
+  if(!selected.length)throw Error('Select items before releasing stock.');
+  for(const item of selected){
+    const recipe=useRecipeStore.getState().getRecipe(item.itemId,item.itemName);
+    if(!recipe?.outputQty||!Number.isFinite(recipe.outputQty)||!recipe.outputUnit||!recipe.materials.length)throw Error(`Review the recipe for ${item.itemName} before production.`);
+  }
+  const materials=combinedMaterialsForItems(selected);
+  if(!materials.length)throw Error('No valid raw materials were calculated. Review recipe units before production.');
+  const stock=useStoreStockStore.getState().items;
+  const lines=materials.map(m=>{
+    const matches=stock.filter(i=>i.name.trim().toLowerCase()===m.material.trim().toLowerCase());
+    if(matches.length!==1)throw Error(`Raw material ${m.material} is missing or has duplicate catalogue records. Review Inventory.`);
+    const item=matches[0],quantity=convertToStockUnit(m.quantity,m.unit,item.unit);
+    if(quantity===null||!Number.isFinite(quantity)||quantity<=0)throw Error(`Review the stock unit for ${m.material}.`);
+    return {id:item.id,quantity:['pcs','nos'].includes(item.unit.toLowerCase())?Math.round(quantity):quantity,unit:item.unit};
+  });
+  const {useAuthStore}=await import('@/stores/authStore');
+  const result=await saveStoreRelease(useAuthStore.getState().currentUser?.id||'',{p_order:order.id,p_expected_items:order.items,p_indexes:indexes,p_materials:lines,p_mode:mode});
+  useStoreStockStore.setState(state=>({items:state.items.map(item=>{const saved=result.stock.find(s=>s.id===item.id);return saved?{...item,quantity:Number(saved.quantity)}:item;})}));
+  return result;
 }
 
 interface BakeryState {
@@ -251,7 +229,6 @@ interface BakeryState {
   // branch_incoming insert, and the Closing Stock ledger debit) correctly
   // recognize "this already happened" instead of double-counting it.
   submitDispatch: (orderId: string, entry: Omit<DispatchEntry, 'id'> & { id?: string }, source?: 'advance') => Promise<void>;
-  deleteDispatchEntry: (orderId: string, entryId: string) => Promise<void>;
   markDone: (orderId: string) => Promise<void>;
   subscribe: () => () => void; // returns unsubscribe fn
 }
@@ -588,6 +565,7 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
       .map(id => get().orders.find(o => o.id === id))
       .filter((o): o is BakeryOrder => Boolean(o));
     if (group.length === 0) return;
+    if (group.length !== uniqueOrderIds.length) throw Error('Some selected orders are no longer available. Refresh before sending.');
     // Keep each customer's advance order and its invoice links intact.
     // Merging advances used to discard every customer's notes except one.
     if (group.length > 1 && group.some(order => isAdvanceOrderTagged(order.notes))) {
@@ -616,17 +594,12 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     // runs from Store's own dashboard, which already reliably loads live
     // recipes, so there's no path left where deduction runs from a context
     // that might still be on the seed recipe list.
-    const now = new Date().toISOString();
+    const { useAuthStore: mergeAuth } = await import('@/stores/authStore');
+    const mergeStaff = mergeAuth.getState().currentUser?.id ?? '';
 
     if (group.length === 1) {
-      const { error } = await supabase
-        .from('bakery_orders')
-        .update({ status: 'store_confirmed', store_confirmed_at: now })
-        .eq('id', group[0].id);
-      if (error) throw new Error('Failed to send order to Store — please try again.');
-      set(s => ({
-        orders: s.orders.map(o => o.id === group[0].id ? { ...o, status: 'store_confirmed' as WorkflowStatus, storeConfirmedAt: now } : o),
-      }));
+      const saved = await saveStoreMerge(mergeStaff, group, group[0].items, group[0].producedItems ?? [], group[0].notes ?? null);
+      set(s => ({orders:s.orders.map(o => o.id === group[0].id ? rowToOrder(saved.order) : o)}));
       const { useAuthStore } = await import('@/stores/authStore');
       const user = useAuthStore.getState().currentUser;
       if (user) {
@@ -676,7 +649,11 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
             ? item.branchSplit
             : (o.targetBranch ? { [o.targetBranch]: item.quantity } : {});
         if (existing) {
-          existing.quantity += item.quantity;
+          const detailKeys = ['weightGrams','advanceUnitPrice','attachmentName','attachmentDataUrl','isCustom'] as const;
+          if (detailKeys.some(key => (existing[key] ?? null) !== (item[key] ?? null))) {
+            throw Error(`Cannot combine ${item.itemName}: weight, price or custom details differ. Send these orders separately.`);
+          }
+          existing.quantity = Math.round((existing.quantity + item.quantity) * 1000) / 1000;
           if (item.originalPcs != null) existing.originalPcs = (existing.originalPcs ?? 0) + item.originalPcs;
           if (Object.keys(itemSplit).length > 0) {
             const nextSplit = { ...existing.branchSplit };
@@ -706,7 +683,7 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
       }
     }
 
-    const [primary, ...others] = group;
+    const [primary] = group;
 
     // BUG FIX: every order in this merge group may carry its own Hosur
     // shop-order tag (HOSUR_ORDER_ID:<id>, written by HosurShopOrderPanel/
@@ -744,25 +721,8 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     // releaseToProduction — see the matching comment on the single-order
     // path above.
 
-    const { error: updateError } = await supabase
-      .from('bakery_orders')
-      .update({ items: combined, status: 'store_confirmed', store_confirmed_at: now, notes: mergedNotes, produced_items: combinedProduced })
-      .eq('id', primary.id);
-    if (updateError) throw new Error('Failed to merge orders for Store — please try again.');
-
-    if (others.length > 0) {
-      // See retrySecondStep's comment above — this delete is step 2 of a
-      // non-atomic pair with the update above it.
-      const { error: deleteError } = await retrySecondStep(() =>
-        supabase.from('bakery_orders').delete().in('id', others.map(o => o.id)));
-      if (deleteError) throw new Error('Merged order saved, but the old separate entries could not be cleaned up.');
-    }
-
-    set(s => ({
-      orders: s.orders
-        .filter(o => !others.some(x => x.id === o.id))
-        .map(o => o.id === primary.id ? { ...o, items: combined, producedItems: combinedProduced, status: 'store_confirmed' as WorkflowStatus, storeConfirmedAt: now, notes: mergedNotes ?? undefined } : o),
-    }));
+    const saved = await saveStoreMerge(mergeStaff, group, combined, combinedProduced, mergedNotes);
+    set(s => ({orders:s.orders.filter(o => !saved.removed_ids.includes(o.id)).map(o => o.id === primary.id ? rowToOrder(saved.order) : o)}));
 
     const { useAuthStore } = await import('@/stores/authStore');
     const user = useAuthStore.getState().currentUser;
@@ -793,184 +753,24 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
   // Store confirms it has deducted raw-material stock against the Planner's
   // merged order — replaces the old "send to production" step.
   confirmStock: async (orderId) => {
-    const now = new Date().toISOString();
-    const { error } = await supabase
-      .from('bakery_orders')
-      .update({ status: 'store_confirmed', store_confirmed_at: now, production_released_at: now })
-      .eq('id', orderId);
-    if (error) throw new Error('Failed to confirm stock — please try again.');
-    set(s => ({
-      orders: s.orders.map(o => o.id === orderId ? { ...o, status: 'store_confirmed', storeConfirmedAt: now, productionReleasedAt: now } : o),
-    }));
-    const { useAuthStore } = await import('@/stores/authStore');
-    const user = useAuthStore.getState().currentUser;
-    if (user) {
-      const { useActivityLogStore } = await import('./activityLogStore');
-      const order = get().orders.find(o => o.id === orderId);
-      void useActivityLogStore.getState().log({
-        staffId: user.id, staffName: user.displayName, role: user.role,
-        action: 'Confirmed Stock', detail: `Order #${order?.orderNumber} — stock deducted by Store`,
-        branch: order?.targetBranch,
-      });
-    }
+    const order=get().orders.find(o=>o.id===orderId);
+    if(!order)throw Error('Order was not found. Refresh and try again.');
+    await get().confirmStockSelected(orderId,order.items.map((_,i)=>i));
   },
-
-  // Planner enters the actual produced quantity per item, next to the order.
-  // Replaces the old baker "submitPrepared"/staging flow.
-  confirmStockSelected: async (orderId, selectedIndexes, sentBy) => {
-    const order = get().orders.find(o => o.id === orderId);
-    if (!order) throw new Error('Order was not found — please refresh.');
-    const selectedSet = new Set(selectedIndexes);
-    const selectedItems = order.items.filter((_, i) => selectedSet.has(i));
-    const remainingItems = order.items.filter((_, i) => !selectedSet.has(i));
-    if (selectedItems.length === 0) return;
-
-    // Nothing left behind — same as confirming the whole order.
-    if (remainingItems.length === 0) {
-      await get().confirmStock(orderId);
-      return;
-    }
-
-    const now = new Date().toISOString();
-    // BUG FIX: this used to overwrite notes with a plain "Store batch from
-    // order #N" string, discarding any HOSUR_ORDER_ID(S) tag the original
-    // order carried. That silently broke the Hosur dispatch-tab sync for
-    // any Hosur shop order that Store only partially confirmed (a very
-    // common case — Store rarely has every ingredient for every item at
-    // once). Carry the tag forward so submitDispatch can still find it.
-    // Also now carries an advance-order tag forward the same way — see
-    // buildSplitOrderNotes's own comment above.
-    const carriedNotes = buildSplitOrderNotes(order);
-    const { data, error: insertError } = await supabase
-      .from('bakery_orders')
-      .insert({
-        items: selectedItems,
-        status: 'store_confirmed',
-        created_by: order.createdBy,
-        target_branch: order.targetBranch,
-        notes: carriedNotes,
-        store_confirmed_at: now,
-        production_released_at: now,
-        store_source_order_number: order.orderNumber,
-      })
-      .select()
-      .single();
-    if (insertError || !data) throw new Error('Failed to send selected items — please try again.');
-    const sentOrder = rowToOrder(data as Record<string, unknown>);
-
-    // See retrySecondStep's comment above — this update is step 2 of a
-    // non-atomic pair with the insert above it.
-    const { error: updateError } = await retrySecondStep(() =>
-      supabase.from('bakery_orders').update({ items: remainingItems }).eq('id', orderId));
-    if (updateError) throw new Error('Items were sent, but the remaining order could not be updated — please refresh.');
-
-    set(s => ({
-      orders: [sentOrder, ...s.orders.map(o => o.id === orderId ? { ...o, items: remainingItems } : o)],
-    }));
-
-    const { useAuthStore } = await import('@/stores/authStore');
-    const user = useAuthStore.getState().currentUser;
-    if (user) {
-      const { useActivityLogStore } = await import('./activityLogStore');
-      void useActivityLogStore.getState().log({
-        staffId: user.id, staffName: user.displayName, role: user.role,
-        action: 'Confirmed Stock (Partial)',
-        detail: `Order #${order.orderNumber} — ${selectedItems.length} item(s) sent as Order #${sentOrder.orderNumber}, ${remainingItems.length} left in Orders`,
-        branch: order.targetBranch,
-      });
-    }
-    void sentBy;
+  confirmStockSelected: async (orderId, selectedIndexes, _sentBy) => {
+    const order=get().orders.find(o=>o.id===orderId);
+    if(!order)throw Error('Order was not found. Refresh and try again.');
+    const result=await commitStoreRelease(order,selectedIndexes,'confirm');
+    const source=rowToOrder(result.source),released=rowToOrder(result.released);
+    set(s=>({orders:[...s.orders.filter(o=>o.id!==source.id&&o.id!==released.id),source,...(released.id!==source.id?[released]:[])]}));
   },
-
-  // Companion to confirmStockSelected, for orders that arrived via Planner's
-  // "Send to Store" merge (mergeOrdersForStore) rather than Store's own
-  // manual confirm. This is now the single point where materials actually
-  // leave the shelf for a Planner-merged order — deduction was moved here
-  // from mergeOrdersForStore (2026-08-13): stock should come off when Store
-  // actually selects an item and hands it to the Baker, not when Planner
-  // merely sends the order administratively.
   releaseToProduction: async (orderId, selectedIndexes) => {
-    const order = get().orders.find(o => o.id === orderId);
-    if (!order) throw new Error('Order was not found — please refresh.');
-    // BUG FIX (audit 2026-08-27): "unable to send to production, multiple
-    // send to production buttons" — this only ever accepted 'store_confirmed',
-    // but the eligibility check that puts an order on this screen in the
-    // first place (needsProductionRelease, StoreDashboard.tsx) also treats
-    // 'produced'-status orders with no productionReleasedAt yet as needing
-    // release. Any such order rendered its "Send to Production" button, but
-    // clicking it always threw this exact error — no retry could ever
-    // succeed, since the order's status never changes on its own. Accept
-    // both statuses here, matching needsProductionRelease's own definition.
-    if (order.status !== 'store_confirmed' && order.status !== 'produced') {
-      throw new Error('This order is not awaiting production release.');
-    }
-    const selectedSet = new Set(selectedIndexes);
-    const selectedItems = order.items.filter((_, i) => selectedSet.has(i));
-    const remainingItems = order.items.filter((_, i) => !selectedSet.has(i));
-    if (selectedItems.length === 0) return null;
-
-    // Deduct before writing anything — deductForOrder deliberately throws on
-    // failure (see its own comment), which aborts this whole call rather
-    // than releasing items whose materials were never actually deducted.
-    // BUG FIX (2026-08-17): now captures and returns the warning instead of
-    // discarding it — a "stock not deducted, units don't match" note needs
-    // to reach whoever's looking at this screen, not just the console.
-    const deductionWarning = await deductForOrder(selectedItems, orderId, order.orderNumber);
-
-    const now = new Date().toISOString();
-
-    // Nothing left behind — release the whole order in place, no split needed.
-    if (remainingItems.length === 0) {
-      const { error } = await supabase
-        .from('bakery_orders')
-        .update({ production_released_at: now })
-        .eq('id', orderId);
-      if (error) throw new Error('Failed to send selected items — please try again.');
-      set(s => ({ orders: s.orders.map(o => o.id === orderId ? { ...o, productionReleasedAt: now } : o) }));
-    } else {
-      const carriedNotes = buildSplitOrderNotes(order);
-      const { data, error: insertError } = await supabase
-        .from('bakery_orders')
-        .insert({
-          items: selectedItems,
-          status: 'store_confirmed',
-          created_by: order.createdBy,
-          target_branch: order.targetBranch,
-          notes: carriedNotes,
-          // Materials are deducted right now (above), at release time — so
-          // unlike the pre-2026-08-13 version of this code, `now` here is
-          // also genuinely when the accounting happened, not a placeholder.
-          store_confirmed_at: now,
-          production_released_at: now,
-          store_source_order_number: order.orderNumber,
-        })
-        .select()
-        .single();
-      if (insertError || !data) throw new Error('Failed to send selected items — please try again.');
-      const releasedOrder = rowToOrder(data as Record<string, unknown>);
-
-      // See retrySecondStep's comment above — this update is step 2 of a
-      // non-atomic pair with the insert above it.
-      const { error: updateError } = await retrySecondStep(() =>
-        supabase.from('bakery_orders').update({ items: remainingItems }).eq('id', orderId));
-      if (updateError) throw new Error('Items were sent, but the remaining order could not be updated — please refresh.');
-
-      set(s => ({
-        orders: [releasedOrder, ...s.orders.map(o => o.id === orderId ? { ...o, items: remainingItems } : o)],
-      }));
-    }
-
-    const { useAuthStore } = await import('@/stores/authStore');
-    const user = useAuthStore.getState().currentUser;
-    if (user) {
-      const { useActivityLogStore } = await import('./activityLogStore');
-      void useActivityLogStore.getState().log({
-        staffId: user.id, staffName: user.displayName, role: user.role,
-        action: 'Released to Production', detail: `Order #${order.orderNumber} — ${selectedItems.length} item(s) sent to Baker, materials deducted`,
-        branch: order.targetBranch,
-      });
-    }
-    return deductionWarning;
+    const order=get().orders.find(o=>o.id===orderId);
+    if(!order)throw Error('Order was not found. Refresh and try again.');
+    const result=await commitStoreRelease(order,selectedIndexes,'release');
+    const source=rowToOrder(result.source),released=rowToOrder(result.released);
+    set(s=>({orders:[...s.orders.filter(o=>o.id!==source.id&&o.id!==released.id),source,...(released.id!==source.id?[released]:[])]}));
+    return null;
   },
 
   recordProduction: async (orderId, producedItems) => {
@@ -1623,240 +1423,6 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
       const orderNo = (fullOrderData.notes as string).split('|')[0]?.trim();
       if (orderNo) useBranchOpsStore.getState().updateAdvanceStoreStatusByOrderNo(orderNo, 'dispatched', by);
     }
-  },
-
-  deleteDispatchEntry: async (orderId, entryId) => {
-    const order = get().orders.find(o => o.id === orderId);
-    if (!order) return;
-    const removedEntry = (order.dispatchLog || []).find(d => d.id === entryId);
-    const updatedLog = (order.dispatchLog || []).filter(d => d.id !== entryId);
-    // BUG #6 FIX: don't use log.length to decide status — check actual coverage.
-    // If remaining dispatches still fully cover all prepared items → dispatched.
-    // Otherwise (or if log is empty) → back to 'packed' so packing can continue.
-    const preparedItems = order.producedItems || [];
-    const allStillCovered = updatedLog.length > 0 && preparedItems.length > 0 && preparedItems.every(p => {
-      const orderItem = order.items.find(i => i.itemName === p.itemName);
-      const totalDispatched = updatedLog
-        .filter(d => d.itemName === p.itemName)
-        .reduce((sum, d) => sum + d.quantity, 0);
-      if (orderItem?.dispatchUnit === 'pcs' && orderItem.weightGrams && orderItem.weightGrams > 0) {
-        const requiredPcs = Math.floor((p.quantityPrepared * 1000) / orderItem.weightGrams);
-        return totalDispatched >= requiredPcs;
-      }
-      return totalDispatched >= p.quantityPrepared - 0.001;
-    });
-    const isOrderFullyPrepared = order.items.length > 0 &&
-      order.items.every(oi => preparedItems.some(p => p.itemId === oi.itemId));
-    const newStatus: WorkflowStatus = allStillCovered && isOrderFullyPrepared ? 'dispatched' : 'produced';
-
-    const { error } = await supabase
-      .from('bakery_orders')
-      .update({ dispatch_log: updatedLog, status: newStatus, leftover_status: 'pending' })
-      .eq('id', orderId);
-    // BUG FIX: silently returning on error left the caller with no idea the
-    // undo failed — matches the same silent-failure pattern already fixed
-    // elsewhere in this file. Throw like every other action here does.
-    if (error) throw new Error(error.message || 'Failed to remove dispatch entry — please try again.');
-
-    if (removedEntry) {
-      // M-02 FIX: always call decrement_branch_stock regardless of whether the row exists.
-      // The old guard `if (existingStock)` skipped rollback when the row was missing, leaving
-      // incorrect stock totals. The RPC handles missing rows gracefully (no-op or creates at 0).
-      await supabase.rpc('decrement_branch_stock', {
-        p_branch:    removedEntry.branch,
-        p_item_name: removedEntry.itemName,
-        p_qty:       removedEntry.quantity,
-      });
-
-      await supabase.from('branch_incoming')
-        .delete()
-        .eq('dispatch_id', entryId);
-
-      // BUG FIX (deep-dive audit): submitDispatch debits the shared Closing
-      // Stock / leftover pool by this entry's quantity every time a dispatch
-      // is recorded (recordLeftoverMovement, reason='dispatch', negative
-      // delta) — but this undo path never credited it back. Every deleted/
-      // corrected dispatch was silently leaving the Closing Stock ledger
-      // permanently short by that quantity, even though the destination
-      // branch's own stock (decrement_branch_stock above) was correctly
-      // rolled back. Credit the pool back here, mirroring the debit.
-      // Non-fatal by the same reasoning submitDispatch uses: a ledger
-      // hiccup must never block the undo the user actually asked for.
-      try {
-        const creditResult = await recordLeftoverMovement({
-          itemName: removedEntry.itemName,
-          unit: removedEntry.unit === 'pcs' ? 'pcs' : 'kg',
-          delta: Math.abs(Number(removedEntry.quantity) || 0),
-          businessDate: kolkataToday(),
-          // FEATURE (2026-08-25): "record returns in a report" — this
-          // function is exclusively called from updateDispatchInvoice's
-          // line-removal path (confirmed: its only two call sites are both
-          // there), so every credit-back through here genuinely represents
-          // a return, not a generic adjustment. Shows up distinctly in the
-          // existing Closing Stock ledger view via reasonLabel().
-          reason: 'return',
-          recordedBy: removedEntry.dispatchedBy || 'Planner',
-          branch: removedEntry.branch,
-          orderId,
-          orderNumber: order.orderNumber != null ? Number(order.orderNumber) : undefined,
-          notes: 'Dispatch entry deleted — reversing Closing Stock debit',
-        });
-        if ('error' in creditResult) {
-          console.error('[deleteDispatchEntry] Closing Stock pool credit-back failed:', creditResult.error);
-        }
-      } catch (ledgerErr) {
-        console.error('[deleteDispatchEntry] Closing Stock pool credit-back threw:', ledgerErr);
-      }
-
-      // BUG FIX: submitDispatch mirrors a Hosur dispatch into
-      // hosur_order_items.dispatched_quantity and flips hosur_orders.status
-      // to 'dispatched'/'pending_packing' — but this undo path never
-      // reversed either write. Deleting a mis-dispatched entry correctly
-      // reverted the bakery order to 'produced', while the corresponding
-      // Hosur shop order(s) stayed stuck showing 'dispatched' with a stale
-      // dispatched_quantity, so Hosur Receiving could show an order as ready
-      // to receive when it actually wasn't.
-      //
-      // BUG FIX (audit, 2026-08-10): the reversal used to recompute
-      // `itemDispatchTotal` from THIS order's own post-removal `updatedLog`
-      // alone, then write that as an ABSOLUTE dispatched_quantity for EVERY
-      // shop sharing this Hosur group — the exact same two bugs that were
-      // already found and fixed on the forward (submitDispatch) path but
-      // never carried over to this undo path:
-      //   1. Ignored sibling bakery_orders rows — the same item routinely
-      //      lives on more than one row (e.g. confirmStockSelected splits a
-      //      Store batch), so deleting one entry silently discarded every
-      //      OTHER row's contribution to that item's total.
-      //   2. Recomputed and overwrote EVERY shop's dispatched_quantity
-      //      proportionally, including shops with an explicit TARGETED
-      //      allocation from the By-Shop dispatch panel — clawing back a
-      //      real, deliberate per-shop number back down to a proportional
-      //      guess just because an unrelated untargeted entry was deleted.
-      // Mirrors submitDispatch's now-correct approach: a targeted removal
-      // only decrements that ONE shop's own total; an untargeted removal
-      // gathers every sibling order's log entries first, excludes shops with
-      // their own targeted total from the pool being redistributed, and
-      // only recomputes shares for the remaining untargeted shops.
-      if (removedEntry.branch === 'Hosur') {
-        const hosurIdsMatch = String(order.notes ?? '').match(/HOSUR_ORDER_IDS?:([^|]+)/);
-        const hosurOrderIds = hosurIdsMatch?.[1]
-          ? hosurIdsMatch[1].split(',').map(s => s.trim()).filter(Boolean)
-          : [];
-        if (hosurOrderIds.length > 0) {
-          if (removedEntry.targetHosurOrderId && hosurOrderIds.includes(removedEntry.targetHosurOrderId)) {
-            // TARGETED removal: decrement exactly this shop's own total by
-            // exactly what this entry contributed — never touches any other
-            // shop, mirroring submitDispatch's targeted increment.
-            const { data: existingRow, error: existingErr } = await supabase
-              .from('hosur_order_items')
-              .select('dispatched_quantity')
-              .eq('order_id', removedEntry.targetHosurOrderId)
-              .eq('item_name', removedEntry.itemName)
-              .maybeSingle();
-            if (existingErr) {
-              console.error('[deleteDispatchEntry] Hosur targeted reversal read failed:', existingErr);
-            } else {
-              const newDispatched = Math.max(0, Math.round((Number(existingRow?.dispatched_quantity ?? 0) - Number(removedEntry.quantity || 0)) * 100) / 100);
-              const { error: hosurItemError } = await supabase
-                .from('hosur_order_items')
-                .update({ dispatched_quantity: newDispatched })
-                .eq('order_id', removedEntry.targetHosurOrderId)
-                .eq('item_name', removedEntry.itemName);
-              if (hosurItemError) console.error('[deleteDispatchEntry] Hosur targeted reversal write failed:', hosurItemError);
-            }
-          } else {
-            // UNTARGETED removal: gather this item's dispatch entries across
-            // every sibling order sharing this Hosur group (not just this
-            // order's own log), split shops into "has its own targeted
-            // total" (left untouched) vs. "untargeted pool" (recomputed),
-            // exactly like submitDispatch's own untargeted path.
-            const { data: siblingOrders, error: siblingErr } = await supabase
-              .from('bakery_orders')
-              .select('id, dispatch_log')
-              .eq('target_branch', 'Hosur')
-              .or(hosurOrderIds.map(id => `notes.ilike.%${id}%`).join(','));
-            if (siblingErr) {
-              console.error('[deleteDispatchEntry] Hosur sibling lookup failed:', siblingErr);
-            } else {
-              const allKnownLogEntries: DispatchEntry[] = [
-                ...updatedLog,
-                ...(siblingOrders ?? [])
-                  .filter(o => o.id !== orderId)
-                  .flatMap(o => (o.dispatch_log as DispatchEntry[]) || []),
-              ];
-              const targetedTotalsByShop = new Map<string, number>();
-              for (const d of allKnownLogEntries) {
-                if (d.branch === 'Hosur' && d.itemName === removedEntry.itemName && d.targetHosurOrderId) {
-                  targetedTotalsByShop.set(d.targetHosurOrderId, (targetedTotalsByShop.get(d.targetHosurOrderId) ?? 0) + Number(d.quantity || 0));
-                }
-              }
-              const untargetedTotal = allKnownLogEntries
-                .filter(d => d.branch === 'Hosur' && d.itemName === removedEntry.itemName && !d.targetHosurOrderId)
-                .reduce((sum, d) => sum + Number(d.quantity || 0), 0);
-
-              const { data: itemRows, error: itemRowsError } = await supabase
-                .from('hosur_order_items')
-                .select('order_id, quantity')
-                .in('order_id', hosurOrderIds)
-                .eq('item_name', removedEntry.itemName);
-
-              if (itemRowsError) {
-                console.error('[deleteDispatchEntry] Hosur item reversal sync failed:', itemRowsError);
-              } else {
-                const rows = itemRows ?? [];
-                const untargetedRows = rows.filter(r => !targetedTotalsByShop.has(r.order_id as string));
-                const totalRequested = untargetedRows.reduce((s, r) => s + Number(r.quantity || 0), 0) || 1;
-                for (const row of untargetedRows) {
-                  const share = Math.round(untargetedTotal * (Number(row.quantity || 0) / totalRequested) * 100) / 100;
-                  const { error: hosurItemError } = await supabase
-                    .from('hosur_order_items')
-                    .update({ dispatched_quantity: share })
-                    .eq('order_id', row.order_id as string)
-                    .eq('item_name', removedEntry.itemName);
-                  if (hosurItemError) console.error('[deleteDispatchEntry] Hosur item reversal write failed:', hosurItemError);
-                }
-                // Targeted shops keep their own explicit total — rewritten
-                // explicitly (not just skipped) so it's corrected too if it
-                // had drifted for any reason, without ever being blended
-                // into the untargeted proportional pool above.
-                for (const [shopId, total] of targetedTotalsByShop) {
-                  const { error: targetedRewriteError } = await supabase
-                    .from('hosur_order_items')
-                    .update({ dispatched_quantity: Math.round(total * 100) / 100 })
-                    .eq('order_id', shopId)
-                    .eq('item_name', removedEntry.itemName);
-                  if (targetedRewriteError) console.error('[deleteDispatchEntry] Hosur targeted total rewrite failed:', targetedRewriteError);
-                }
-              }
-            }
-          }
-
-          for (const hosurOrderId of hosurOrderIds) {
-            const { data: allItems, error: allItemsError } = await supabase
-              .from('hosur_order_items')
-              .select('quantity, dispatched_quantity')
-              .eq('order_id', hosurOrderId);
-            if (allItemsError) {
-              console.error('[deleteDispatchEntry] Hosur order status reversal sync failed:', allItemsError);
-              continue;
-            }
-            const fullyDone = (allItems ?? []).length > 0 &&
-              (allItems ?? []).every(r => Number(r.dispatched_quantity || 0) >= Number(r.quantity || 0) - 0.01);
-            const { error: hosurOrderError } = await supabase
-              .from('hosur_orders')
-              .update({ status: fullyDone ? 'dispatched' : 'pending_packing' })
-              .eq('id', hosurOrderId);
-            if (hosurOrderError) console.error('[deleteDispatchEntry] Hosur order status reversal write failed:', hosurOrderError);
-          }
-        }
-      }
-    }
-
-    set(s => ({
-      orders: s.orders.map(o =>
-        o.id === orderId ? { ...o, dispatchLog: updatedLog, status: newStatus } : o
-      ),
-    }));
   },
 
   // Realtime subscription — patches the changed row directly into local state

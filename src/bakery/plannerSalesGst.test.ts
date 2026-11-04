@@ -40,7 +40,7 @@ it('saves tax metadata and payable amount through the same atomic Sales RPC and 
   const single=vi.fn().mockResolvedValue({data:{id:'test',bill_no:'SALES/26-27/900',items:bill.items,total:1050,subtotal:1000,created_at:bill.createdAt,is_gst_invoice:true},error:null});
   const rpc=vi.spyOn(supabase,'rpc').mockReturnValue({single} as never);
   const saved=await saveWalkinBillSecure({items:bill.items,subtotal:1000,discountType:'none',discountValue:0,discountAmount:0,total:1050,paymentMode:'cash',cashierName:'Planner',customerName:'Customer',customerMobile:null,isGstInvoice:true});
-  expect(rpc).toHaveBeenCalledTimes(1);expect(rpc).toHaveBeenCalledWith('save_walkin_bill_secure',expect.objectContaining({p_items:bill.items,p_total:1050}));expect(saved.billNo).toBe('SALES/26-27/900');expect(saved.items[0].gstPricing).toBe('exclusive');expect(saved.items[0].gstBuyerDetails).toEqual(buyer);
+  expect(rpc).toHaveBeenCalledTimes(1);expect(rpc).toHaveBeenCalledWith('save_walkin_bill_atomic_v1',expect.objectContaining({p_sale:expect.objectContaining({items:expect.arrayContaining([expect.objectContaining({gstPricing:'exclusive',gstPct:5,gstBuyerDetails:buyer,stockSlug:'festival-pack'})]),total:1050})}));expect(saved.billNo).toBe('SALES/26-27/900');expect(saved.items[0].gstPricing).toBe('exclusive');expect(saved.items[0].gstBuyerDetails).toEqual(buyer);
 });
 it('reports a failed save without returning a fake saved bill',async()=>{
   vi.spyOn(supabase,'rpc').mockReturnValue({single:vi.fn().mockResolvedValue({data:null,error:{message:'Save failed'}})} as never);

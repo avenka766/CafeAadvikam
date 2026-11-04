@@ -43,11 +43,6 @@ export interface MaterialDeductionLog {
   deductedAt: string;
 }
 
-export interface DeductionContext {
-  orderId: string;
-  orderNumber: string | number;
-  deductedBy: string;
-}
 
 interface StoreStockState {
   items: StockItem[];
@@ -71,10 +66,7 @@ interface StoreStockState {
   // for a one-time cleanup pass.
   bulkSetCategory: (ids: string[], category: StockCategory) => Promise<string | null>;
   subscribe: () => () => void;
-  deductMaterials: (
-    deductions: { name: string; qty: number; unit?: string }[],
-    ctx?: DeductionContext,
-  ) => Promise<string | null>;
+
 }
 
 export function convertToStockUnit(qty: number, recipeUnit: string, stockUnit: string): number | null {
@@ -130,16 +122,6 @@ function roundForUnit(qty: number, unit: string): number {
 // unique constraint on name, so this could actually create two rows for
 // the same ingredient. Track in-flight adds per normalised name.
 const addItemInFlight = new Set<string>();
-
-// AUDIT FIX (2026-09-03): deductMaterials touches real stock via an atomic
-// RPC per item, but nothing stopped the *function itself* from being
-// invoked twice concurrently for the same order (a double-click on
-// "Send to Production", or a caller that doesn't guard it) — each call
-// would run its own full set of RPCs, double-decrementing stock. Track
-// in-flight calls per order id, same in-flight-promise shape as
-// bakeryItemsStore.ts's loadItemsPromise, so a concurrent call for the
-// same order awaits the first call's result instead of re-running it.
-const deductMaterialsInFlight = new Map<string, Promise<string | null>>();
 
 export function getAllRecipeMaterials(): { name: string; unit: StockUnit }[] {
   return useRecipeStore.getState().getAllMaterials().map((material) => {
@@ -213,6 +195,7 @@ export const useStoreStockStore = create<StoreStockState>()((set, get) => ({
   },
 
   addItem: async (name, unit, quantity, minThreshold, suppliers = [], category = 'raw') => {
+    if(!Number.isFinite(quantity)||quantity<0||!Number.isFinite(minThreshold)||minThreshold<0)return 'Enter finite, non-negative stock and alert quantities.';
     const key = normaliseName(name);
     // AUDIT FIX (2026-09-03): in-flight guard — see comment on
     // addItemInFlight above. A concurrent add for the same name is
@@ -249,6 +232,8 @@ export const useStoreStockStore = create<StoreStockState>()((set, get) => ({
 
   updateQuantity: async (id, quantity) => {
     const existingItem = get().items.find(i => i.id === id);
+    if(!existingItem)return 'Stock is not loaded. Refresh before changing its quantity.';
+    if(!Number.isFinite(quantity)||quantity<0)return 'Enter a finite, non-negative stock quantity.';
     // AUDIT FIX (2026-09-05): "raw material should never go into negative" —
     // the Add/Edit form already has min={0} on its input, but that's only a
     // soft browser hint, not an enforced floor; clamp for real here too, the
@@ -258,7 +243,7 @@ export const useStoreStockStore = create<StoreStockState>()((set, get) => ({
     // AUDIT FIX (2026-09-03): this was a blind "set quantity to X" write
     // with no compare-and-swap — the exact absolute-overwrite pattern
     // already found and fixed for branchStore.ts's manualUpdateStock this
-    // session (expectedCurrentQty guard). If deductMaterials (an order
+    // session (expectedCurrentQty guard). If production (an order
     // being sent to production) or another session's edit changes the real
     // DB quantity between whoever called this reading the old value and
     // this write landing, the blind overwrite would silently discard that
@@ -275,17 +260,20 @@ export const useStoreStockStore = create<StoreStockState>()((set, get) => ({
       }
     }
 
-    const { error } = await supabase
+    const { data:saved, error } = await supabase
       .from('store_raw_stock')
       .update({ quantity: sanitizedQuantity })
-      .eq('id', id);
+      .eq('id', id).eq('quantity',existingItem.quantity).select('id').maybeSingle();
     if (error) return error.message;
+    if(!saved)return 'Stock changed while saving. Refresh and review the current quantity.';
     set(s => ({ items: s.items.map(i => i.id === id ? { ...i, quantity: sanitizedQuantity } : i) }));
     return null;
   },
 
   updateItem: async (id, updates) => {
     const existingItem = get().items.find(i => i.id === id);
+    if(updates.quantity!==undefined&&(!existingItem||!Number.isFinite(updates.quantity)||updates.quantity<0))return 'Refresh stock and enter a finite, non-negative quantity.';
+    if(updates.minThreshold!==undefined&&(!Number.isFinite(updates.minThreshold)||updates.minThreshold<0))return 'Enter a finite, non-negative alert quantity.';
     const payload: Record<string, unknown> = {};
     if (updates.name !== undefined)         payload.name = updates.name.trim();
     if (updates.unit !== undefined)         payload.unit = updates.unit;
@@ -319,8 +307,11 @@ export const useStoreStockStore = create<StoreStockState>()((set, get) => ({
       }
     }
 
-    const { error } = await supabase.from('store_raw_stock').update(payload).eq('id', id);
+    let query=supabase.from('store_raw_stock').update(payload).eq('id',id);
+    if(sanitizedQuantity!==undefined)query=query.eq('quantity',existingItem!.quantity);
+    const {data:saved,error}=await query.select('id').maybeSingle();
     if (error) return error.message;
+    if(!saved)return 'Stock changed or is unavailable. Refresh and review before saving.';
     set(s => ({
       items: s.items
         .map(i => i.id === id ? { ...i, ...updates, ...(sanitizedQuantity !== undefined ? { quantity: sanitizedQuantity } : {}) } : i)
@@ -373,155 +364,6 @@ export const useStoreStockStore = create<StoreStockState>()((set, get) => ({
     return { added: newItems.length, skipped: existing.length };
   },
 
-  deductMaterials: async (deductions, ctx?) => {
-    // AUDIT FIX (2026-09-03): in-flight guard — see comment on
-    // deductMaterialsInFlight above. A second concurrent call for the same
-    // order awaits the first call's own result instead of re-running its
-    // own duplicate set of deductions.
-    const inFlightKey = ctx?.orderId;
-    if (inFlightKey) {
-      const existingRun = deductMaterialsInFlight.get(inFlightKey);
-      if (existingRun) return existingRun;
-    }
-
-    const run = (async (): Promise<string | null> => {
-      const items = get().items;
-
-      const updates: { id: string; name: string; unit: string; deductQty: number }[] = [];
-      const warnings: string[] = [];
-      for (const d of deductions) {
-        const match = items.find(i => normaliseName(i.name) === normaliseName(d.name));
-        if (!match) { warnings.push(`${d.name} not in stock`); continue; }
-        let deductQty = d.qty;
-        if (d.unit) {
-          const converted = convertToStockUnit(d.qty, d.unit, match.unit);
-          // BUG FIX (2026-08-17): this used to fall back to the raw,
-          // unconverted number whenever the recipe's unit and the stock
-          // item's unit were genuinely different kinds of unit (mass vs
-          // volume vs count) — e.g. a recipe calling for grams of ghee
-          // against stock tracked in litres. That silently deducted the
-          // wrong amount from real stock every single time — confirmed as
-          // the actual cause of NANDHINI GHEE and MILK MAID showing negative
-          // balances. Skipping and warning loudly (same pattern as "not in
-          // stock" below) stops the ongoing corruption; the recipe's unit or
-          // the stock item's unit needs to be fixed to match before this
-          // material can be deducted automatically again.
-          if (converted === null) {
-            warnings.push(`${d.name}: recipe uses "${d.unit}" but stock is tracked in "${match.unit}" — these can't be converted automatically (different kind of unit). Stock NOT deducted for this material — fix the recipe or stock unit to match.`);
-            continue;
-          }
-          deductQty = converted;
-        } else {
-          if (match.unit === 'g' && deductQty <= 10) {
-            deductQty = deductQty * 1000;
-          } else if (match.unit === 'kg' && deductQty > 100) {
-            deductQty = deductQty / 1000;
-          }
-        }
-
-        // AUDIT FIX (2026-09-03): pcs/nos are whole-piece counts — recipe
-        // conversion math above can land on a fractional value (this is the
-        // confirmed live source of MILK MAID's 17.928542 nos and similar
-        // rows — see roundForUnit). Round before it's ever sent to the DB.
-        // If that rounds down to zero there's nothing meaningful left to
-        // deduct — skip with a warning instead of sending the RPC a p_qty
-        // of 0, which it rejects outright.
-        deductQty = roundForUnit(deductQty, match.unit);
-        if (deductQty <= 0) {
-          warnings.push(`${d.name}: computed deduction rounds to 0 ${match.unit} — skipped`);
-          continue;
-        }
-
-        // AUDIT FIX (2026-09-05): "the stock should not go into negative...
-        // show the store manager that this item is not in stock so please
-        // check." deduct_materials (the RPC below) now clamps at 0 itself,
-        // but that alone is silent — this is the actual warning surfaced to
-        // Store staff (via the existing sendNotice banner every caller of
-        // deductMaterials already shows) when a deduction is about to run
-        // short, so it reads as a real alert rather than stock quietly
-        // being capped with no explanation.
-        if (match.quantity < deductQty) {
-          warnings.push(`${d.name} is not in stock (have ${match.quantity} ${match.unit}, need ${deductQty} ${match.unit}) — please check`);
-        }
-
-        updates.push({ id: match.id, name: match.name, unit: match.unit, deductQty });
-      }
-
-      const finalUpdates: { id: string; stockBefore: number; newQty: number }[] = [];
-      // AUDIT FIX (2026-09-03): this used to `return error.message` the
-      // instant any single item's RPC call failed, abandoning the loop.
-      // Every deduction before that point had already committed for real
-      // (deduct_materials is its own transaction per call — there's nothing
-      // to roll back), but the early return skipped the local state sync,
-      // the deduction-log insert, and the low-stock check below for ALL of
-      // them, including the ones that succeeded — real stock changes left
-      // with zero audit trail. Collect per-item failures as warnings and
-      // keep going instead, matching the "not in stock" pattern above.
-      for (const u of updates) {
-        const currentQty = items.find(i => i.id === u.id)?.quantity ?? 0;
-        const { data: newQty, error } = await supabase
-          .rpc('deduct_materials', { p_id: u.id, p_qty: u.deductQty });
-        if (error) { warnings.push(`${u.name}: deduction failed (${error.message})`); continue; }
-        finalUpdates.push({ id: u.id, stockBefore: currentQty, newQty: Number(newQty) });
-      }
-
-      set(s => ({
-        items: s.items.map(i => {
-          const upd = finalUpdates.find(u => u.id === i.id);
-          return upd ? { ...i, quantity: upd.newQty } : i;
-        }),
-      }));
-
-      if (ctx) {
-        const now = new Date().toISOString();
-        // Only log the deductions that actually succeeded — build from
-        // finalUpdates (not the full `updates` list) now that a partial
-        // failure is possible.
-        const logRows = finalUpdates.map(finalU => {
-          const u = updates.find(x => x.id === finalU.id)!;
-          return {
-            order_id:          ctx.orderId,
-            order_number:      String(ctx.orderNumber),
-            material_name:     u.name,
-            quantity_deducted: u.deductQty,
-            unit:              u.unit,
-            stock_before:      finalU.stockBefore,
-            stock_after:       finalU.newQty,
-            deducted_by:       ctx.deductedBy,
-            deducted_at:       now,
-          };
-        });
-        if (logRows.length > 0) {
-          supabase.from('store_material_deductions').insert(logRows).then(({ error }) => {
-            if (error) console.warn('[storeStockStore] deduction log insert failed:', error.message);
-          });
-        }
-      }
-
-      const currentItems = get().items;
-      const lowItems = finalUpdates
-        .map(u => currentItems.find(i => i.id === u.id))
-        .filter((i): i is StockItem => !!i && i.quantity <= i.minThreshold)
-        .map(i => ({ name: i.name, quantity: i.quantity, minThreshold: i.minThreshold, unit: i.unit }));
-      if (lowItems.length > 0) {
-        const { useNotificationStore } = await import('./notificationStore');
-        await useNotificationStore.getState().pushLowStock(lowItems);
-      }
-
-      return warnings.length > 0 ? `Note: ${warnings.join(', ')}` : null;
-    })();
-
-    if (inFlightKey) {
-      deductMaterialsInFlight.set(inFlightKey, run);
-      try {
-        return await run;
-      } finally {
-        deductMaterialsInFlight.delete(inFlightKey);
-      }
-    }
-    return run;
-  },
-
   // REALTIME FIX (2026-09-01): this used to debounce-then-refetch the whole
   // table on every change — replaced with a direct row-level patch (matches
   // branchStore.ts's applyBranchRealtimeChange pattern), so one item's
@@ -571,6 +413,7 @@ export const useStoreStockStore = create<StoreStockState>()((set, get) => ({
 // concurrency risk (nothing else mutates them in the background) and are
 // queued as a plain field update, same shape updateItem already writes.
 interface StoreStockEditPayload {
+  replayVersion?: 2;
   id: string;
   quantityDelta: number;
   unit?: StockUnit;
@@ -578,31 +421,27 @@ interface StoreStockEditPayload {
   category?: StockCategory;
 }
 
-async function runStoreStockEditCore(payload: StoreStockEditPayload): Promise<void> {
-  if (payload.quantityDelta !== 0) {
-    const { error } = await supabase.rpc('adjust_store_raw_stock_quantity', {
-      p_id: payload.id,
-      p_delta: payload.quantityDelta,
-    });
-    if (error) throw new Error(error.message);
-  }
+async function runStoreStockEditCore(payload: StoreStockEditPayload, requestId: string): Promise<void> {
   const fields: Record<string, unknown> = {};
   if (payload.unit !== undefined) fields.unit = payload.unit;
   if (payload.minThreshold !== undefined) fields.min_threshold = payload.minThreshold;
   if (payload.category !== undefined) fields.item_category = payload.category;
-  if (Object.keys(fields).length > 0) {
-    const { error } = await supabase.from('store_raw_stock').update(fields).eq('id', payload.id);
-    if (error) throw new Error(error.message);
-  }
+  const {data,error} = await supabase.rpc('apply_store_stock_edit_once_v1', {
+    p_request:requestId,p_id:payload.id,p_delta:payload.quantityDelta,p_fields:fields,
+  });
+  if(error)throw new Error(error.message);
+  if(!data?.item?.id)throw new Error('Stock adjustment confirmation is incomplete. Retry the saved request.');
 }
 
 export async function queueStoreStockEdit(payload: StoreStockEditPayload): Promise<void> {
-  await useOfflineQueueStore.getState().enqueue('store_stock_edit', payload);
+  await useOfflineQueueStore.getState().enqueue('store_stock_edit', {...payload,replayVersion:2});
 }
 
-registerReplayHandler('store_stock_edit', async (_kind, payload) => {
+registerReplayHandler('store_stock_edit', async (_kind, payload, requestId) => {
   try {
-    await runStoreStockEditCore(payload as StoreStockEditPayload);
+    const edit=payload as StoreStockEditPayload;
+    if(edit.replayVersion!==2)throw new Error('This older stock adjustment needs Admin reconciliation before replay: an earlier attempt may already have changed stock. The original entry is preserved.');
+    await runStoreStockEditCore(edit, requestId);
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : 'Failed to sync this stock edit.' };

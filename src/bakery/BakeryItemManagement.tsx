@@ -86,7 +86,7 @@ function ItemRow({
         >
           <Pencil className="size-4" />
         </button>
-        <button
+        <button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it."
           onClick={() => onDelete(item)}
           className="size-8 rounded-lg flex items-center justify-center text-destructive hover:bg-destructive/10 transition-colors active:scale-95"
           title="Delete item"

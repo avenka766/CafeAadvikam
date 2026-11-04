@@ -1202,7 +1202,7 @@ export default function PlannerLeftoverTab({ active = true, onExportDataChange }
                           {!isBackorder && (
                             <button onClick={() => setAdjustingSlug(key)} className="inline-flex items-center gap-1 rounded-lg bg-red-50 px-2 py-1 text-[10px] font-black text-red-700"><Minus className="size-3" />Write-off</button>
                           )}
-                          <button
+                          <button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it."
                             onClick={() => { if (window.confirm(`Delete "${row.itemName}" (${qtyFmt(row.balance)} ${row.unit}) from Current Leftover Balance? This records a correction to zero it out — full history stays in the Daily Report / Movement Log.`)) void deleteBalanceRow(row); }}
                             disabled={deletingKey === key}
                             className="inline-flex items-center gap-1 rounded-lg bg-red-600 px-2 py-1 text-[10px] font-black text-white disabled:opacity-50"
@@ -1808,7 +1808,7 @@ export function PlannerTransferOutTab() {
                     <p className="font-bold text-foreground truncate">{line.itemName}</p>
                     <p className="text-muted-foreground">{qtyFmt(line.qty)} {line.unit} {line.totalValue != null ? `· Rs. ${Math.round(line.totalValue)}` : '· Price N/A'}</p>
                   </div>
-                  <button type="button" onClick={() => removeTransferLine(i)} aria-label={`Remove ${line.itemName}`} className="shrink-0 rounded-lg p-1.5 text-muted-foreground hover:bg-red-100 hover:text-red-600"><X className="size-3.5" /></button>
+                  <button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it." type="button" onClick={() => removeTransferLine(i)} aria-label={`Remove ${line.itemName}`} className="shrink-0 rounded-lg p-1.5 text-muted-foreground hover:bg-red-100 hover:text-red-600"><X className="size-3.5" /></button>
                 </div>
               ))}
               <p className="text-right text-xs font-black text-orange-900">Total Rs. {Math.round(transferLinesGrandTotal)}</p>

@@ -148,7 +148,7 @@ function MatRow({
       >
         {['kg','g','L','ml','nos','pcs'].map(u => <option key={u} value={u}>{u}</option>)}
       </select>
-      <button onClick={() => onRemove(idx)} disabled={isLast}
+      <button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it." onClick={() => onRemove(idx)} disabled={isLast}
         aria-label="Remove ingredient"
         className="size-8 flex items-center justify-center rounded-lg text-destructive hover:bg-destructive/10 disabled:opacity-20 transition-colors">
         <Trash2 className="size-3.5" />

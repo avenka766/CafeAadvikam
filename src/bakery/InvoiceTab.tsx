@@ -751,7 +751,7 @@ function InvoiceLineEditor({
       </div>
 
       <div className="mt-2 flex justify-end md:mt-1">
-        <button
+        <button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it."
           type="button"
           onClick={onRemove}
           disabled={!canRemove}

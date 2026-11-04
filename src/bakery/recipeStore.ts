@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { supabase } from '@/lib/supabase';
+import { supabase, fetchAllRows } from '@/lib/supabase';
 import { makeSingletonSubscriber } from '@/lib/realtimeChannel';
 import { RECIPE_DEFINITIONS, type RecipeDefinition } from './recipeDefinitions';
 import { canonicalItemSlug, nameToSlug } from './itemMatcher';
@@ -97,6 +97,7 @@ interface RecipeState {
   getAllMaterials: () => { name: string; unit: string }[];
 }
 
+let recipeLoadPromise:Promise<void>|null=null;
 export const useRecipeStore = create<RecipeState>((set, get) => ({
   recipes: seedRecipes(),
   loaded: false,
@@ -104,11 +105,13 @@ export const useRecipeStore = create<RecipeState>((set, get) => ({
   error: null,
 
   loadRecipes: async (force = false) => {
-    if (!force && (get().loaded || get().loading)) return;
+    if(recipeLoadPromise)return recipeLoadPromise;
+    if (!force && get().loaded) return;
     set({ loading: true, error: null });
+    recipeLoadPromise=(async()=>{
     try {
-      const { data, error } = await supabase.from('bakery_recipes').select('item_id, item_name, output_qty, output_unit, materials, updated_at, updated_by');
-      if (error) throw error;
+      const { data, error } = await fetchAllRows('bakery_recipes',q=>q.select('item_id,item_name,output_qty,output_unit,materials,updated_at,updated_by').order('item_id',{ascending:true}));
+      if (error) throw Error(error);
       const merged = seedRecipes();
       (data ?? []).forEach((row) => {
         const recipe = mapRow(row as Record<string, unknown>);
@@ -118,12 +121,14 @@ export const useRecipeStore = create<RecipeState>((set, get) => ({
     } catch (error) {
       set({
         recipes: get().recipes,
-        loaded: true,
+        loaded: false,
         error: error instanceof Error ? error.message : 'Failed to load recipes.',
       });
     } finally {
       set({ loading: false });
     }
+    })();
+    try{await recipeLoadPromise;}finally{recipeLoadPromise=null;}
   },
 
   saveRecipe: async (itemId, itemName, recipe, updatedBy) => {

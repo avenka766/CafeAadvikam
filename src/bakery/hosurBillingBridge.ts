@@ -1,6 +1,8 @@
+import {financialLineTotal} from '@/lib/financialRounding';
+import {webDispatchIdentity,finishWebDispatchIdentity} from './webDispatchRequest';
 import {automaticDesktopBilling,billingSnapshot,desktopCheckoutIdentity,finishDesktopCheckout} from '@/lib/desktopBilling';
 import { hosurInvoiceLedgerLines } from './hosurGstLedger';
-import type { DispatchInvoiceItem } from './dispatchInvoice';
+import type { DispatchInvoiceItem, DispatchInvoiceRecord } from './dispatchInvoice';
 import type { GstPartyDetails } from './gstTaxInvoice';
 // src/bakery/hosurBillingBridge.ts
 // Standalone version of HosurDashboard's "receive -> create bill -> confirm
@@ -9,10 +11,10 @@ import type { GstPartyDetails } from './gstTaxInvoice';
 // Reuses the exact same bill/QR/WhatsApp generation helpers as HosurDashboard
 // (imported, not duplicated) so behavior stays identical to the existing,
 // already-proven billing flow.
-import { supabase } from '@/lib/supabase';
+import { supabase, fetchAllRows } from '@/lib/supabase';
 import { getAppSessionToken } from '@/lib/appSession';
 import {
-  BRANCH, cleanPhone, notifyAdmin, buildBillMessage, nextBillNo,
+  BRANCH, cleanPhone, notifyAdmin, buildBillMessage,
   createWhatsappQrMedia, createWhatsappBillDocument, createWhatsappBillImage, uploadWhatsappMedia,
   mapBill, mapBillItem, safeMediaFileName, base64MediaBlob,
   type PaymentType, type BillStatus, type HosurBill, type HosurBillItem, type HosurWhatsappLog,
@@ -138,7 +140,7 @@ async function sendHosurWhatsapp(params: {
  * three separate manual tab visits.
  */
 export function computePaymentSplit(total: number, payment: PaymentCapture): { paid: number; credit: number; status: BillStatus } {
-  let paid = 0, credit = 0;
+  let paid: number, credit: number;
   if (payment.paymentType === 'full') { paid = total; credit = 0; }
   else if (payment.paymentType === 'credit') { paid = 0; credit = total; }
   else { paid = Math.max(0, Math.min(total, Number(payment.paidAmount || 0))); credit = Math.max(0, total - paid); }
@@ -177,344 +179,6 @@ export function hasUnbilledQuantity(
 // existing draft bill" path below is a same-order retry-idempotency
 // safeguard — re-adding charges there on a retry would duplicate them).
 export interface HosurBillCharge { name: string; amount: number }
-
-export async function dispatchReceiveAndBill(params: {
-  order: HosurOrderForBilling;
-  items: HosurOrderItemForBilling[];
-  charges?: HosurBillCharge[];
-  payment: PaymentCapture;
-  userName: string;
-  // FEATURE (2026-09-02): "for hosur dispatch no need to open the counter
-  // because everything is recorded as credit — don't block the physical
-  // dispatch." The counter gate exists to reconcile cash/UPI/card actually
-  // collected at billing time; a pure-credit bill collects nothing, so
-  // there's nothing to reconcile. Defaults to true (unchanged behavior) for
-  // the existing manual Hosur tab caller, which still allows full/partial
-  // payment and does need the counter open for that cash.
-  requireCounterOpen?: boolean;
-  // FEATURE (2026-09-05): "dont use bill number anywhere... use invoice
-  // number" — the real GST-sequence number (SALES/26-27/N), captured
-  // straight from the same saveDispatchInvoice() call this batch's dispatch
-  // just made (see PlannerDashboard.tsx's DispatchReviewModal.confirm(),
-  // the only caller that has one to pass — HosurShopOrderPanel.tsx's two
-  // direct callers bill without an accompanying dispatch invoice and simply
-  // omit this). Optional and additive, never overwrites: a bill reused
-  // across multiple dispatch batches (see syncHosurBillWithInvoiceEdit's
-  // comment on this exact pattern) appends each new invoice number rather
-  // than replacing the ones already recorded.
-  invoiceNo?: string;
-}): Promise<{ billId: string; billNo: string; whatsappStatus: 'sent' | 'failed'; whatsappError: string | null }> {
-  const { order, items, payment, userName, requireCounterOpen = true } = params;
-  const charges = (params.charges ?? []).filter(c => c.name.trim() && Number.isFinite(c.amount) && c.amount > 0);
-  const chargesTotal = Math.round(charges.reduce((sum, c) => sum + c.amount, 0) * 100) / 100;
-
-  if (requireCounterOpen) {
-    const counter = await getPackingCounterStatus();
-    if (!counter.isOpen) {
-      throw new Error("Planner's counter is closed. Open today's counter in Daily Closure before billing.");
-    }
-  }
-
-  // BUG FIX (2026-09-14): confirmed live — a stale "still needs billing" entry
-  // (e.g. re-selected in Bulk Bill, or this called a second time before the
-  // order's own status caught up) re-ran this whole function for an order
-  // that had already been billed, with `items` unchanged since the last
-  // bill. The "already confirmed — merge" branch below has no way to tell
-  // "this batch is new stock" apart from "this is a stale repeat" — it just
-  // concatenates whatever `items` says on top of everything already billed,
-  // so a repeat call silently re-bills the same goods again. Root-caused a
-  // 2026-09-13 incident: a stale bulk-bill pass re-billed 43 already-billed
-  // orders across 15 Hosur shops, ₹63,104 of duplicate credit (corrected via
-  // hosur_bill_adjustments — see project_hosur_duplicate_rebill memory).
-  // Guard here, before step 1 overwrites received_quantity with this call's
-  // figures: if every item's incoming receivedQuantity is no greater than
-  // what's already recorded as received (i.e. nothing new actually went out
-  // since the last bill) and there are no new charges, refuse outright
-  // instead of silently doubling the bill. A genuine new batch always shows
-  // a real increase (dispatchedQuantity only ever grows), so this never
-  // blocks legitimate multi-batch billing.
-  if (items.length > 0 && charges.length === 0) {
-    const { data: currentItemRows, error: currentItemsError } = await supabase
-      .from('hosur_order_items').select('id, received_quantity').in('id', items.map(i => i.id));
-    if (currentItemsError) throw currentItemsError;
-    const currentReceivedById = new Map((currentItemRows ?? []).map(r => [r.id, Number(r.received_quantity ?? 0)]));
-    if (!hasUnbilledQuantity(items, currentReceivedById)) {
-      throw new Error(`${order.shopName}'s order has nothing new to bill — it looks like it was already billed for this quantity. If new stock was just dispatched, refresh the page and try again.`);
-    }
-  }
-
-  // 1. Mark items received == what was dispatched (Planner is both sender and
-  //    confirmer now, so there is no separate physical receiving step).
-  for (const item of items) {
-    const { error } = await supabase.from('hosur_order_items')
-      .update({ received_quantity: item.receivedQuantity }).eq('id', item.id);
-    if (error) throw error;
-  }
-  await supabase.from('hosur_orders').update({ status: 'received_confirmed', received_at: new Date().toISOString() }).eq('id', order.id);
-
-  // 2. Create the draft bill (idempotent — reuses an existing draft bill for this order if present).
-  const { data: existingBillRow } = await supabase.from('hosur_bills').select('id').eq('order_id', order.id).neq('status', 'cancelled').maybeSingle();
-  let billId: string;
-  let billNo: string;
-  // BUG FIX (2026-09-02, alongside the charges feature): payment capture
-  // below used to recompute `total` fresh from `items` alone — correct when
-  // this is a brand-new bill, but on the "reuse an existing draft bill"
-  // retry path, that recompute would silently drop any charges that were
-  // already added to the bill on the FIRST attempt (charges only ever get
-  // (re-)inserted when creating a new bill, not on a retry). Track the
-  // bill's own authoritative subtotal in both branches and use that for
-  // payment capture instead of recomputing it.
-  let billSubtotal: number;
-  if (existingBillRow?.id) {
-    billId = existingBillRow.id;
-    const { data: b } = await supabase.from('hosur_bills').select('bill_no, subtotal').eq('id', billId).single();
-    billNo = b?.bill_no ?? '';
-    billSubtotal = Number(b?.subtotal ?? 0);
-  } else {
-    billNo = await nextBillNo();
-    const subtotal = Math.round((items.reduce((sum, i) => sum + Math.round(i.receivedQuantity * i.unitPrice * 100) / 100, 0) + chargesTotal) * 100) / 100;
-    billSubtotal = subtotal;
-    const { data: billData, error: billError } = await supabase.from('hosur_bills').insert({
-      bill_no: billNo, order_id: order.id, shop_id: order.shopId, shop_name: order.shopName,
-      shop_whatsapp: order.shopWhatsapp, subtotal, paid_amount: 0, credit_amount: 0,
-      status: 'draft', whatsapp_status: 'pending',
-    }).select('id').single();
-    // AUDIT FIX (2026-09-03): the SELECT-then-INSERT above is a genuine
-    // check-then-act race — two near-simultaneous calls for the same order
-    // (two tabs, a slow retry) could both pass the SELECT before either
-    // INSERT lands, and used to both succeed, creating two separate bills
-    // for one dispatch. A DB-level unique constraint on order_id now makes
-    // the SECOND insert fail instead (code 23505) — recover gracefully by
-    // re-fetching the bill the OTHER call just created, rather than
-    // surfacing a raw constraint-violation error for what is, from the
-    // planner's point of view, a real success (their order did get billed —
-    // just by the other in-flight request).
-    if (billError?.code === '23505') {
-      const { data: raceBillRow } = await supabase.from('hosur_bills').select('id, bill_no, subtotal').eq('order_id', order.id).neq('status', 'cancelled').maybeSingle();
-      if (!raceBillRow) throw billError;
-      billId = raceBillRow.id;
-      billNo = raceBillRow.bill_no;
-      billSubtotal = Number(raceBillRow.subtotal ?? 0);
-    } else {
-    if (billError) throw billError;
-    billId = billData.id;
-
-    const rows = [
-      ...items.map(i => ({
-        bill_id: billId, item_name: i.itemName, unit: i.unit,
-        quantity: i.receivedQuantity, unit_price: i.unitPrice,
-        line_total: Math.round(i.receivedQuantity * i.unitPrice * 100) / 100,
-      })),
-      // Charges: quantity 1, unit_price == the charge amount == its own
-      // line_total — same shape a real 1-unit line item would have, so
-      // every downstream reader (bill print, WhatsApp message, exports)
-      // that just sums line_total needs no special-casing for these.
-      ...charges.map(c => ({
-        bill_id: billId, item_name: c.name.trim(), unit: 'charge',
-        quantity: 1, unit_price: Math.round(c.amount * 100) / 100,
-        line_total: Math.round(c.amount * 100) / 100,
-      })),
-    ];
-    const { error: itemsError } = await supabase.from('hosur_bill_items').insert(rows);
-    if (itemsError) { await supabase.from('hosur_bills').delete().eq('id', billId); throw itemsError; }
-    }
-  }
-
-  // BUG FIX (2026-09-06, audit): "reuses an existing draft bill" above only
-  // ever meant a bill still literally in `draft` (its very first batch,
-  // re-entered before payment was ever captured) — it silently assumed a
-  // bill that had ALREADY been confirmed by an earlier batch would never be
-  // reused at all. In reality a single Hosur order is routinely dispatched
-  // across several separate batches throughout the day, each its own
-  // dispatchReceiveAndBill call sharing this ONE bill (order_id is unique).
-  // From the second batch onward: no new hosur_bill_items ever got
-  // inserted (only the "brand-new bill" branch above does that), subtotal
-  // stayed frozen at whatever the FIRST batch billed, and step 3 below would
-  // then throw outright ("already confirmed...") because its `.eq('status',
-  // 'draft')` guard no longer matched. Net effect, confirmed live: real
-  // stock left the kitchen and a real dispatch invoice was created for every
-  // batch, but only the first batch's items/amount ever reached the shop's
-  // actual bill — Shree Skanda Villas had ₹1,051.60 of genuinely dispatched
-  // goods across two batches that never made it into what they were billed.
-  // Reconciles via the exact same "combined items across every batch, each
-  // priced at its own invoice's discount" merge already proven for
-  // updateDispatchInvoice's edit-sync and cancelDispatchInvoice's resync —
-  // then hands off to syncHosurBillWithInvoiceEdit (below, same file) to
-  // replace hosur_bill_items, recompute subtotal/credit, sync the credit
-  // ledger, and resend the WhatsApp bill, instead of duplicating any of that
-  // here a third time.
-  if (existingBillRow?.id) {
-    const { data: billStateRow } = await supabase.from('hosur_bills').select('status, invoice_no').eq('id', billId).single();
-    const billStatus = billStateRow?.status ?? 'draft';
-    const priorInvoiceNos = (billStateRow?.invoice_no ?? '').split(',').map((s: string) => s.trim()).filter(Boolean);
-
-    if (billStatus === 'draft') {
-      // Rarer edge case: a bill row exists (its very first batch created it)
-      // but was never actually confirmed — append this batch's items to it
-      // and fall through to the normal first-time-confirmation flow below,
-      // which still expects (and will find) status 'draft'.
-      const rows = [
-        ...items.map(i => ({ bill_id: billId, item_name: i.itemName, unit: i.unit, quantity: i.receivedQuantity, unit_price: i.unitPrice, line_total: Math.round(i.receivedQuantity * i.unitPrice * 100) / 100 })),
-        ...charges.map(c => ({ bill_id: billId, item_name: c.name.trim(), unit: 'charge', quantity: 1, unit_price: Math.round(c.amount * 100) / 100, line_total: Math.round(c.amount * 100) / 100 })),
-      ];
-      const { error: itemsError } = await supabase.from('hosur_bill_items').insert(rows);
-      if (itemsError) throw itemsError;
-      const { data: allItemRows } = await supabase.from('hosur_bill_items').select('line_total').eq('bill_id', billId);
-      billSubtotal = Math.round((allItemRows ?? []).reduce((s, r) => s + Number(r.line_total || 0), 0) * 100) / 100;
-      const { error: subtotalErr } = await supabase.from('hosur_bills').update({ subtotal: billSubtotal }).eq('id', billId);
-      if (subtotalErr) throw subtotalErr;
-    } else {
-      // Already confirmed by an earlier batch — merge instead of falling
-      // through to step 3 (which would just throw on this bill's status).
-      const finalPriced = hosurInvoiceLedgerLines;
-      let combinedItems: { itemName: string; unit: string; quantity: number; unitPrice: number }[] = [];
-      if (priorInvoiceNos.length > 0) {
-        const { data: priorInvoiceRows } = await supabase.from('dispatch_invoices')
-          .select('items, discount_pct')
-          .eq('scope', 'Hosur').in('invoice_no', priorInvoiceNos).neq('status', 'cancelled');
-        for (const row of (priorInvoiceRows ?? []) as { items: DispatchInvoiceItem[]; discount_pct: number }[]) {
-          combinedItems = combinedItems.concat(finalPriced(row.items ?? [], row.discount_pct ?? 0));
-        }
-      }
-      combinedItems = combinedItems.concat(
-        items.map(i => ({ itemName: i.itemName, unit: i.unit, quantity: i.receivedQuantity, unitPrice: i.unitPrice })),
-        charges.map(c => ({ itemName: c.name.trim(), unit: 'charge', quantity: 1, unitPrice: c.amount })),
-      );
-      // Record this batch's own invoice number on the bill before syncing —
-      // step 2b below never runs for this path since we return early.
-      if (params.invoiceNo && !priorInvoiceNos.includes(params.invoiceNo)) {
-        await supabase.from('hosur_bills').update({ invoice_no: [...priorInvoiceNos, params.invoiceNo].join(', ') }).eq('id', billId);
-      }
-      const sync = await syncHosurBillWithInvoiceEdit({ hosurOrderId: order.id, items: combinedItems });
-      return { billId, billNo, whatsappStatus: sync.whatsappStatus ?? 'failed', whatsappError: sync.whatsappError ?? sync.message ?? null };
-    }
-  }
-
-  // 2b. Record the real invoice number this bill was billed against —
-  // appended (not overwritten) since a bill can be reused across multiple
-  // dispatch batches, each with its own invoice. Runs regardless of which
-  // branch above resolved billId (new / reused-draft / race-recovered).
-  //
-  // BUG FIX (2026-09-06): "should always show the invoice number" — this
-  // used to silently swallow a failed SELECT/UPDATE (neither destructured
-  // `error`), so a real, already-consumed invoice number could vanish
-  // without a trace, leaving the bill's invoice_no permanently null (found
-  // live: 2 real Hosur bills with a valid dispatch_invoices row each, but no
-  // invoice_no ever recorded on the bill). Errors are now surfaced via
-  // console.error and one retry is attempted — a numbering hiccup must
-  // still never block the bill/dispatch itself.
-  if (params.invoiceNo) {
-    const attachInvoiceNo = async (): Promise<boolean> => {
-      const { data: currentBill, error: selectErr } = await supabase.from('hosur_bills').select('invoice_no').eq('id', billId).single();
-      if (selectErr) { console.error('[dispatchReceiveAndBill] Could not read current invoice_no before appending:', selectErr); return false; }
-      const existing = (currentBill?.invoice_no ?? '').split(',').map((s: string) => s.trim()).filter(Boolean);
-      if (existing.includes(params.invoiceNo!)) return true;
-      existing.push(params.invoiceNo!);
-      const { error: updateErr } = await supabase.from('hosur_bills').update({ invoice_no: existing.join(', ') }).eq('id', billId);
-      if (updateErr) { console.error('[dispatchReceiveAndBill] Failed to attach invoice number to bill:', updateErr); return false; }
-      return true;
-    };
-    if (!(await attachInvoiceNo())) {
-      // One retry — covers a transient hiccup (the exact class of bug this
-      // fix responds to had no visibility at all before this).
-      await attachInvoiceNo();
-    }
-  }
-
-  // 3. Capture payment (full / partial / credit) — mirrors confirmBill exactly.
-  const total = billSubtotal;
-  const { paid, credit, status } = computePaymentSplit(total, payment);
-
-  if ((payment.paymentType === 'credit' || payment.paymentType === 'partial') && !payment.dueDate) {
-    throw new Error('Due date is mandatory for Credit and Partial Payment bills.');
-  }
-  if (payment.paymentType === 'partial' && paid <= 0) throw new Error('Enter paid amount for partial payment.');
-  if (payment.paymentType === 'partial' && paid >= total) throw new Error('Partial payment paid amount must be less than bill total.');
-
-  const now = new Date().toISOString();
-  const paymentMode = payment.paymentType === 'credit' ? null : (payment.paymentMode ?? 'cash');
-
-  // BUG FIX (2026-08-12, audit): guard against confirming the same draft bill
-  // twice (this bridge racing with itself, or with HosurDashboard's own
-  // confirmBill, on the same bill) — mirrors the same fix in confirmBill.
-  const { data: updatedBillRow, error: billUpdateError } = await supabase.from('hosur_bills').update({
-    paid_amount: paid, credit_amount: credit, payment_type: payment.paymentType,
-    payment_mode: paymentMode, due_date: credit > 0 ? payment.dueDate : null,
-    status, confirmed_by: userName, confirmed_at: now,
-  }).eq('id', billId).eq('status', 'draft').select('id').maybeSingle();
-  if (billUpdateError) throw billUpdateError;
-  if (!updatedBillRow) throw new Error('This bill has already been confirmed (possibly from another tab/device) — refresh and check its status before retrying.');
-
-  const { error: orderStatusError } = await supabase.from('hosur_orders').update({ status: 'billed', bill_id: billId }).eq('id', order.id);
-  if (orderStatusError) console.warn('[hosurBillingBridge] failed to mark order billed:', orderStatusError.message);
-
-  if (credit > 0) {
-    // BUG FIX (2026-08-12, audit): roll the bill back to 'draft' if the
-    // credit ledger insert fails, same reasoning as confirmBill — otherwise
-    // it's left confirmed with a credit balance no ledger row backs.
-    const rollbackToDraft = async () => {
-      await supabase.from('hosur_bills').update({
-        paid_amount: 0, credit_amount: 0, payment_type: null, payment_mode: null,
-        due_date: null, status: 'draft', confirmed_by: null, confirmed_at: null,
-      }).eq('id', billId).eq('status', status);
-    };
-    const { data: creditSale, error: ledgerError } = await supabase.from('branch_credit_sales').insert({
-      branch: BRANCH, source: 'hosur', source_id: billId, customer_ref: order.shopId, customer_name: order.shopName,
-      customer_phone: order.shopWhatsapp,
-      items: [
-        ...items.map(i => ({ itemName: i.itemName, quantity: i.receivedQuantity, sellUnit: i.unit, price: i.unitPrice, lineTotal: i.receivedQuantity * i.unitPrice })),
-        ...charges.map(c => ({ itemName: c.name.trim(), quantity: 1, sellUnit: 'charge', price: c.amount, lineTotal: c.amount })),
-      ],
-      subtotal: total, amount_paid: paid, credit_amount: credit, sold_by: userName, bill_no: billNo,
-      due_date: payment.dueDate, status: paid > 0 ? 'partial' : 'pending', notes: 'Hosur credit bill',
-    }).select('id').single();
-    if (ledgerError) { await rollbackToDraft(); throw ledgerError; }
-    if (paid > 0 && creditSale?.id) {
-      const { error: paymentError } = await supabase.from('branch_credit_payments').insert({
-        credit_sale_id: creditSale.id, branch: BRANCH, bill_no: billNo, amount: paid,
-        payment_mode: paymentMode, payment_purpose: 'partial_at_billing', remarks: 'Hosur partial payment at billing',
-        collected_by: userName, created_at: now,
-      });
-      if (paymentError) { await rollbackToDraft(); await supabase.from('branch_credit_sales').delete().eq('id', creditSale.id); throw paymentError; }
-    }
-    await notifyAdmin('Hosur credit bill created', `${order.shopName} has credit of ₹${Math.round(credit)} on bill ${billNo}.`, billId, billNo, { billId, amount: credit });
-  }
-
-  if (paid > 0 && items.length > 0) {
-    const salesRows = items.map(i => ({
-      branch: BRANCH, item_name: i.itemName, quantity_sold: i.receivedQuantity, sold_at: now,
-      sold_by: userName, payment_method: paymentMode, unit_price: i.unitPrice, bill_no: billNo, source: 'hosur_wholesale',
-    }));
-    // AUDIT FIX (2026-09-03): un-awaited, console.warn-only on failure — the
-    // real bill/credit record above is correct either way, but a failure
-    // here silently under-reports this sale on the branch sales dashboard
-    // forever (nothing retries it, nothing else surfaces it). Notify admin
-    // on failure too, same as the credit-bill notification right above.
-    void supabase.from('branch_sales').insert(salesRows).then(({ error }) => {
-      if (error) {
-        console.warn('[hosurBillingBridge] branch_sales mirror failed:', error.message);
-        void notifyAdmin('Hosur sale missing from branch_sales report', `Bill ${billNo} (${order.shopName}) was billed correctly, but its branch_sales report row failed to save: ${error.message}. This sale is under-reported in Branch Sales until fixed manually.`, billId, billNo, { billId, error: error.message });
-      }
-    });
-  }
-
-  // 4. Send the WhatsApp bill — the actual automation the user asked for.
-  const { data: billRow } = await supabase.from('hosur_bills').select('*').eq('id', billId).single();
-  const { data: billItemRows } = await supabase.from('hosur_bill_items').select('*').eq('bill_id', billId);
-  const finalBill = mapBill(billRow);
-  const finalItems = (billItemRows ?? []).map(mapBillItem);
-  const body = buildBillMessage(finalBill, finalItems);
-  const displayNo = finalBill.invoiceNo ?? billNo;
-  const whatsapp = await sendHosurWhatsapp({
-    shopId: order.shopId, shopName: order.shopName, phone: order.shopWhatsapp,
-    billId, billNo: displayNo, messageType: 'bill', body, billForMedia: finalBill, itemsForMedia: finalItems,
-  });
-  if (whatsapp.status === 'failed') {
-    await notifyAdmin('Hosur WhatsApp bill failed', `${displayNo} for ${order.shopName} could not be sent. Retry from WhatsApp Logs.`, billId, displayNo, { error: whatsapp.errorMessage });
-  }
-
-  return { billId, billNo: displayNo, whatsappStatus: whatsapp.status, whatsappError: whatsapp.errorMessage };
-}
 
 // OFFLINE SUPPORT (2026-10-01): "I need complete offline bill when network is
 // not there" — HosurShopOrderPanel.tsx's "Dispatch & Bill" quick action
@@ -565,30 +229,39 @@ export interface HosurDispatchAndBillPayload {
   appliedLeftovers: { leftoverId: string; qty: number }[];
 }
 
-export async function runHosurDispatchAndBillCore(payload: HosurDispatchAndBillPayload): Promise<{ billNo: string; whatsappStatus: 'sent' | 'failed'; whatsappError: string | null }> {
+// A provider/read failure after commit must never repeat financial writes.
+export async function notifyConfirmedHosurInvoice(invoiceRecord:DispatchInvoiceRecord):Promise<{billNo:string;whatsappStatus:'sent'|'failed';whatsappError:string|null;invoice:DispatchInvoiceRecord}>{
+  if(invoiceRecord.workflowDuplicate)return {billNo:invoiceRecord.invoiceNo,whatsappStatus:'failed',whatsappError:'This batch was already saved. Check WhatsApp Logs before resending.',invoice:invoiceRecord};
+  try {
+    const id=invoiceRecord.workflowResult?.hosurBillId;
+    if(!id)throw Error('Confirmed Hosur bill reference is unavailable.');
+    const [billResult,itemResult]=await Promise.all([supabase.from('hosur_bills').select('*').eq('id',id).single(),fetchAllRows<Record<string,unknown>>('hosur_bill_items',q=>q.select('*').eq('bill_id',id).order('id'))]);
+    if(billResult.error||itemResult.error||!billResult.data)throw billResult.error||(itemResult.error?Error(itemResult.error):Error('Confirmed bill could not load for WhatsApp.'));
+    const bill=mapBill(billResult.data),items=(itemResult.data||[]).map(mapBillItem);
+    const sent=await sendHosurWhatsapp({shopId:bill.shopId,shopName:bill.shopName,phone:bill.shopWhatsapp,billId:bill.id,billNo:invoiceRecord.invoiceNo,messageType:'bill',body:buildBillMessage(bill,items),billForMedia:bill,itemsForMedia:items});
+    return {billNo:invoiceRecord.invoiceNo,whatsappStatus:sent.status==='sent'?'sent':'failed',whatsappError:sent.errorMessage||null,invoice:invoiceRecord};
+  } catch(cause){return {billNo:invoiceRecord.invoiceNo,whatsappStatus:'failed',whatsappError:cause instanceof Error?cause.message:'Bill saved; notification could not complete.',invoice:invoiceRecord};}
+}
+
+export async function runHosurDispatchAndBillCore(payload: HosurDispatchAndBillPayload): Promise<{ billNo: string; whatsappStatus: 'sent' | 'failed'; whatsappError: string | null;invoice?:DispatchInvoiceRecord }> {
   const { order, charges, gst } = payload;
-  let billItems=payload.billItems;
-  if(automaticDesktopBilling()){
     if(payload.payment.paymentType!=='credit' && !(await getPackingCounterStatus()).isOpen)throw Error('Open the Planner counter before collecting payment.');
     // The form's received quantity is cumulative. Invoice only the unbilled increment.
-    const state=await billingSnapshot();
+    const state=automaticDesktopBilling()?await billingSnapshot():{actions:[]};
     const prior=state.actions.filter(a=>a.hosurBilling?.orderId===order.id && a.sync?.state!=='rejected');
-    billItems=payload.billItems.map(i=>{const known=Math.max(i.knownReceivedQuantity||0,...prior.flatMap(a=>(a.hosurBilling?.targets||[]).filter((t:any)=>t.id===i.id).map((t:any)=>t.target)));return {...i,knownReceivedQuantity:known,receivedQuantity:Math.max(0,Math.round((i.receivedQuantity-known)*1000)/1000)};}).filter(i=>i.receivedQuantity>0);
+    const billItems=payload.billItems.map(i=>{const known=Math.max(i.knownReceivedQuantity||0,...prior.flatMap(a=>(a.hosurBilling?.targets||[]).filter((t:any)=>t.id===i.id).map((t:any)=>t.target)));return {...i,knownReceivedQuantity:known,receivedQuantity:Math.max(0,Math.round((i.receivedQuantity-known)*1000)/1000)};}).filter(i=>i.receivedQuantity>0);
     if(!billItems.length)throw Error('This quantity has already been billed. Refresh before sending a new batch.');
-  }
 
   const invoiceItems: DispatchInvoiceItem[] = [
     ...billItems.map(i => ({
       itemName: i.itemName, unit: i.unit, quantity: i.receivedQuantity, unitPrice: i.unitPrice,
-      lineTotal: Math.round(i.receivedQuantity * i.unitPrice * 100) / 100,
+      lineTotal: financialLineTotal(i.receivedQuantity,i.unitPrice),
       ...(gst?.on ? { hsnCode: gst.hsn, gstPct: gst.pct, gstPricing: 'exclusive' as const, gstBuyerDetails:gst.buyer } : {}),
     })),
     ...charges.map(c => ({ itemName: c.name, unit: 'charge', quantity: 1, unitPrice: c.amount, lineTotal: c.amount })),
   ];
 
   if (gst?.on && (!Number.isFinite(gst.pct) || gst.pct <= 0 || gst.pct > 100)) throw new Error('Enter a valid GST percentage above 0 and up to 100.');
-  const ledgerLines = hosurInvoiceLedgerLines(invoiceItems, 0);
-  const ledgerCharges = ledgerLines.filter(i=>i.unit==='charge').map(i=>({name:i.itemName,amount:i.unitPrice}));
   const invoiceRecord = await saveDispatchInvoice({
     scope: 'Hosur',
     hosurShopId: order.shopId, hosurShopName: order.shopName, hosurShopPhone: order.shopWhatsapp,
@@ -597,64 +270,10 @@ export async function runHosurDispatchAndBillCore(payload: HosurDispatchAndBillP
     discountPct: 0,
     isGstInvoice: gst?.on ?? false,
     gstSupplyType: gst?.supplyType ?? 'intra',
-    ...(automaticDesktopBilling()?{desktopKey:'hosur:'+order.id+':'+JSON.stringify(payload.billItems.map(i=>[i.id,i.receivedQuantity])),desktopHosurBilling:{orderId:order.id,shopId:order.shopId,payment:payload.payment,targets:billItems.map(i=>({id:i.id,base:i.knownReceivedQuantity||0,target:(i.knownReceivedQuantity||0)+i.receivedQuantity})),appliedLeftovers:payload.appliedLeftovers}}:{}),
+    ...{desktopKey:'hosur:'+order.id+':'+JSON.stringify(payload.billItems.map(i=>[i.id,i.receivedQuantity])),desktopHosurBilling:{orderId:order.id,shopId:order.shopId,payment:payload.payment,targets:billItems.map(i=>({id:i.id,base:i.knownReceivedQuantity||0,target:(i.knownReceivedQuantity||0)+i.receivedQuantity})),appliedLeftovers:payload.appliedLeftovers}},
   });
-  if(automaticDesktopBilling())return {billNo:invoiceRecord.invoiceNo,whatsappStatus:'failed',whatsappError:'Bill saved on this computer. Check synchronization status before sending WhatsApp.'};
-  const mintedInvoiceNo = invoiceRecord.invoiceNo;
-  const mintedInvoiceId = invoiceRecord.id;
-
-  let outcome: Awaited<ReturnType<typeof dispatchReceiveAndBill>>;
-  try {
-    outcome = await dispatchReceiveAndBill({
-      order, items: billItems, charges: gst?.on ? ledgerCharges : charges,
-      payment: payload.payment,
-      userName: payload.userName,
-      invoiceNo: mintedInvoiceNo,
-    });
-  } catch (err) {
-    if (mintedInvoiceId) {
-      await supabase.from('dispatch_invoices').delete().eq('id', mintedInvoiceId)
-        .then(({ error }) => { if (error) console.error('[runHosurDispatchAndBillCore] Failed to roll back orphaned invoice:', error); });
-    }
-    throw err;
-  }
-
-  // Shortfall tracking and applied-leftover consumption — same best-effort,
-  // warn-on-failure semantics as the online path always had (the bill above
-  // has already succeeded either way; these are stock-pool bookkeeping, not
-  // the money-bearing record).
-  const shortfalls = billItems
-    .map(i => ({ ...i, shortfall: Math.round((i.quantity - i.receivedQuantity) * 1000) / 1000 }))
-    .filter(i => i.shortfall > 0.01);
-  if (shortfalls.length > 0) {
-    const { error: shortfallError } = await supabase.from('hosur_leftover_pool').insert(shortfalls.map(s => ({
-      item_name: s.itemName, unit: s.unit, quantity: s.shortfall, unit_price: s.unitPrice,
-      source_order_id: order.id, source_shop_name: order.shopName, reason: 'dispatch_shortfall',
-    })));
-    if (shortfallError) console.warn('[runHosurDispatchAndBillCore] Failed to record dispatch shortfall in leftover pool:', shortfallError.message);
-  }
-
-  for (const applied of payload.appliedLeftovers) {
-    const { data: leftoverRow, error: leftoverReadError } = await supabase.from('hosur_leftover_pool').select('quantity').eq('id', applied.leftoverId).maybeSingle();
-    if (leftoverReadError || !leftoverRow) {
-      console.warn(`[runHosurDispatchAndBillCore] Could not read leftover pool row ${applied.leftoverId} to consume it — left untouched to avoid corrupting real stock:`, leftoverReadError?.message);
-      continue;
-    }
-    const currentQty = Number(leftoverRow.quantity ?? 0);
-    const remaining = Math.round((currentQty - applied.qty) * 1000) / 1000;
-    if (remaining <= 0.01) {
-      await supabase.from('hosur_leftover_pool').update({
-        status: 'resolved', quantity: Math.max(0, remaining), resolved_at: new Date().toISOString(),
-        resolved_order_id: order.id, resolved_shop_name: order.shopName,
-      }).eq('id', applied.leftoverId);
-    } else {
-      await supabase.from('hosur_leftover_pool').update({
-        quantity: remaining, resolved_order_id: order.id, resolved_shop_name: order.shopName,
-      }).eq('id', applied.leftoverId);
-    }
-  }
-
-  return outcome;
+  if(automaticDesktopBilling())return {billNo:invoiceRecord.invoiceNo,whatsappStatus:'failed',whatsappError:'Bill saved on this computer. Check synchronization status before sending WhatsApp.',invoice:invoiceRecord};
+  return notifyConfirmedHosurInvoice(invoiceRecord);
 }
 
 /**
@@ -700,42 +319,14 @@ export interface HosurLeftoverDispatchPayload {
 
 export async function runHosurLeftoverDispatchCore(payload: HosurLeftoverDispatchPayload): Promise<{ billNo: string; whatsappStatus: 'sent' | 'failed'; whatsappError: string | null; orderNumber: string }> {
   const { shop, qty, price } = payload;
-  if(automaticDesktopBilling()){
+  {
    if(!Number.isFinite(qty)||qty<=0||!Number.isFinite(price)||price<0||(payload.unit==='pcs'&&!Number.isInteger(qty)))throw Error('Enter a valid quantity and price.');
    if(payload.payment.paymentType!=='credit'&&!(await getPackingCounterStatus()).isOpen)throw Error('Open the Planner counter before collecting payment.');
-   const scope='hosur-leftover:'+payload.leftoverRowId;const id=desktopCheckoutIdentity(scope);const itemId=desktopCheckoutIdentity(scope+':item');const orderNumber='HSR-LO-'+id.slice(0,8).toUpperCase();
-   const record=await saveDispatchInvoice({scope:'Hosur',hosurShopId:shop.id,hosurShopName:shop.shopName,hosurShopPhone:shop.whatsappNumber,dispatchedBy:payload.userName,items:[{itemName:payload.itemName,unit:payload.unit,quantity:qty,unitPrice:price,lineTotal:Math.round(qty*price*100)/100}],discountPct:0,desktopKey:'hosur-leftover:'+id,desktopHosurBilling:{orderId:id,shopId:shop.id,payment:payload.payment,newOrder:{id,orderNumber,itemId,itemName:payload.itemName,unit:payload.unit,quantity:qty,unitPrice:price,shopName:shop.shopName,shopWhatsapp:shop.whatsappNumber,shopAddress:shop.address},targets:[{id:itemId,base:0,target:qty}],appliedLeftovers:[{leftoverId:payload.leftoverRowId,qty}]}});
-   finishDesktopCheckout(scope);finishDesktopCheckout(scope+':item');return {billNo:record.invoiceNo,whatsappStatus:'failed',whatsappError:'Saved on this computer; check synchronization before sending WhatsApp.',orderNumber};
+   const scope='hosur-leftover:'+payload.leftoverRowId;const identity=automaticDesktopBilling()?desktopCheckoutIdentity:webDispatchIdentity;const id=identity(scope);const itemId=identity(scope+':item');const orderNumber='HSR-LO-'+id.slice(0,8).toUpperCase();
+   const record=await saveDispatchInvoice({scope:'Hosur',hosurShopId:shop.id,hosurShopName:shop.shopName,hosurShopPhone:shop.whatsappNumber,dispatchedBy:payload.userName,items:[{itemName:payload.itemName,unit:payload.unit,quantity:qty,unitPrice:price,lineTotal:financialLineTotal(qty,price)}],discountPct:0,desktopKey:'hosur-leftover:'+id,desktopHosurBilling:{orderId:id,shopId:shop.id,payment:payload.payment,newOrder:{id,orderNumber,itemId,itemName:payload.itemName,unit:payload.unit,quantity:qty,unitPrice:price,shopName:shop.shopName,shopWhatsapp:shop.whatsappNumber,shopAddress:shop.address},targets:[{id:itemId,base:0,target:qty}],appliedLeftovers:[{leftoverId:payload.leftoverRowId,qty}]}});
+   const finish=automaticDesktopBilling()?finishDesktopCheckout:finishWebDispatchIdentity;finish(scope);finish(scope+':item');if(!automaticDesktopBilling())return {...await notifyConfirmedHosurInvoice(record),orderNumber};return {billNo:record.invoiceNo,whatsappStatus:'failed',whatsappError:'Saved on this computer; check synchronization before sending WhatsApp.',orderNumber};
   }
 
-  const orderDate = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: '2-digit', month: '2-digit', day: '2-digit' }).format(new Date()).replace(/-/g, '');
-  const orderNumber = 'HSR-LO-' + orderDate + '-' + crypto.randomUUID().slice(0, 4).toUpperCase();
-  const lineTotal = Math.round(qty * price * 100) / 100;
-
-  const { data: newOrder, error: orderError } = await supabase.from('hosur_orders').insert({
-    order_number: orderNumber, shop_id: shop.id, shop_name: shop.shopName,
-    shop_whatsapp: shop.whatsappNumber, shop_address: shop.address,
-    status: 'pending_packing', subtotal: lineTotal, created_by: payload.userName,
-    notes: `Leftover dispatch (${payload.reason === 'dispatch_shortfall' ? 'not sent at earlier dispatch' : payload.reason === 'manual_entry' ? 'manually recorded stock' : 'cancelled after dispatch'})`,
-  }).select('id').single();
-  if (orderError || !newOrder) throw orderError || new Error('Failed to create the order for this dispatch.');
-
-  const { data: newItem, error: itemError } = await supabase.from('hosur_order_items').insert({
-    order_id: newOrder.id, item_name: payload.itemName, unit: payload.unit, quantity: qty,
-    unit_price: price, line_total: lineTotal, dispatched_quantity: 0, received_quantity: 0,
-  }).select('id').single();
-  if (itemError || !newItem) throw itemError || new Error('Failed to create the item for this dispatch.');
-
-  const outcome = await runHosurDispatchAndBillCore({
-    order: { id: newOrder.id, orderNumber, shopId: shop.id, shopName: shop.shopName, shopWhatsapp: shop.whatsappNumber },
-    billItems: [{ id: newItem.id, itemName: payload.itemName, unit: payload.unit, quantity: qty, unitPrice: price, receivedQuantity: qty }],
-    charges: [],
-    payment: payload.payment,
-    userName: payload.userName,
-    gst: null,
-    appliedLeftovers: [{ leftoverId: payload.leftoverRowId, qty }],
-  });
-  return { ...outcome, orderNumber };
 }
 
 export async function queueHosurLeftoverDispatch(payload: HosurLeftoverDispatchPayload): Promise<void> {
@@ -780,80 +371,28 @@ export interface HosurConfirmBillPayload {
   userRole: string;
 }
 
-export async function runHosurConfirmBillCore(payload: HosurConfirmBillPayload): Promise<void> {
-  const { bill, items } = payload;
-  const { paid, credit, status } = computePaymentSplit(bill.subtotal, {
-    paymentType: payload.paymentType, paidAmount: payload.paidAmount, paymentMode: payload.paymentMode, dueDate: payload.dueDate,
+export async function runHosurConfirmBillCore(payload: HosurConfirmBillPayload): Promise<{bill:HosurBill;items:HosurBillItem[];duplicate:boolean;notificationWarning?:string}> {
+  const {data,error}=await supabase.rpc('confirm_hosur_draft_once_v1',{
+    p_bill:payload.bill.id,p_payment_type:payload.paymentType,p_paid_amount:payload.paymentType==='partial'?Number(payload.paidAmount||0):null,
+    p_payment_mode:payload.paymentType==='credit'?null:payload.paymentMode,p_due_date:payload.paymentType==='full'?null:payload.dueDate,p_expected_subtotal:payload.bill.subtotal,
   });
-  if ((payload.paymentType === 'credit' || payload.paymentType === 'partial') && !payload.dueDate) {
-    throw new Error('Due date is mandatory for Credit and Partial Payment bills.');
-  }
-  if (payload.paymentType === 'partial' && paid <= 0) throw new Error('Enter paid amount for partial payment.');
-  if (payload.paymentType === 'partial' && paid >= bill.subtotal) throw new Error('Partial payment paid amount must be less than bill total.');
-
-  const now = new Date().toISOString();
-  const { data: updatedBill, error: billError } = await supabase.from('hosur_bills').update({
-    paid_amount: paid, credit_amount: credit, payment_type: payload.paymentType,
-    payment_mode: payload.paymentType === 'credit' ? null : payload.paymentMode,
-    due_date: credit > 0 ? payload.dueDate : null,
-    status, confirmed_by: payload.userName, confirmed_at: now,
-  }).eq('id', bill.id).eq('status', 'draft').select('id').maybeSingle();
-  if (billError) throw billError;
-  if (!updatedBill) throw new Error('This bill has already been confirmed (possibly from another tab/device) — refresh and check its status before retrying.');
-
-  if (bill.orderId) {
-    const { error: orderStatusError } = await supabase.from('hosur_orders').update({ status: 'billed' }).eq('id', bill.orderId);
-    if (orderStatusError) console.error('[runHosurConfirmBillCore] Failed to mark hosur_orders as billed (bill itself is confirmed):', orderStatusError);
-  }
-
-  if (credit > 0) {
-    const rollbackToDraft = async () => {
-      const { error: rollbackError } = await supabase.from('hosur_bills').update({
-        paid_amount: 0, credit_amount: 0, payment_type: null, payment_mode: null,
-        due_date: null, status: 'draft', confirmed_by: null, confirmed_at: null,
-      }).eq('id', bill.id).eq('status', status);
-      if (rollbackError) console.error('[runHosurConfirmBillCore] Rollback-to-draft itself failed:', rollbackError);
-    };
-    const { data: creditSale, error: ledgerError } = await supabase.from('branch_credit_sales').insert({
-      branch: BRANCH, source: 'hosur', source_id: bill.id, customer_ref: bill.shopId, customer_name: bill.shopName,
-      customer_phone: bill.shopWhatsapp,
-      items: items.map((item) => ({ itemName: item.itemName, quantity: item.quantity, sellUnit: item.unit, price: item.unitPrice, lineTotal: item.lineTotal })),
-      subtotal: bill.subtotal, amount_paid: paid, credit_amount: credit, sold_by: payload.userName, bill_no: bill.billNo,
-      due_date: payload.dueDate, status: paid > 0 ? 'partial' : 'pending', notes: 'Hosur credit bill',
-    }).select('id').single();
-    if (ledgerError) { await rollbackToDraft(); throw ledgerError; }
-    if (paid > 0 && creditSale?.id) {
-      const { error: paymentError } = await supabase.from('branch_credit_payments').insert({
-        credit_sale_id: creditSale.id, branch: BRANCH, bill_no: bill.billNo, amount: paid,
-        payment_mode: payload.paymentMode, payment_purpose: 'partial_at_billing', remarks: 'Hosur partial payment at billing',
-        collected_by: payload.userName, collected_role: payload.userRole, created_at: now,
-      });
-      if (paymentError) { await rollbackToDraft(); await supabase.from('branch_credit_sales').delete().eq('id', creditSale.id); throw paymentError; }
+  if(error)throw error;
+  if(data?.bill?.id!==payload.bill.id)throw Error('Bill confirmation is incomplete. Retry this same bill before collecting anything again.');
+  const bill=mapBill(data.bill);let items:HosurBillItem[]=[];
+  try {
+    const itemResult=await fetchAllRows<Record<string,unknown>>('hosur_bill_items',q=>q.select('*').eq('bill_id',bill.id).order('id'));
+    if(itemResult.error)throw Error(itemResult.error);
+    items=(itemResult.data||[]).map(mapBillItem);
+    if(!items.length)throw Error('Saved bill items could not load. Print from bill history after refreshing.');
+    if(!data.duplicate){
+      const sent=await sendHosurWhatsapp({shopId:bill.shopId,shopName:bill.shopName,phone:bill.shopWhatsapp,billId:bill.id,billNo:bill.invoiceNo||bill.billNo,messageType:'bill',body:buildBillMessage(bill,items),billForMedia:bill,itemsForMedia:items});
+      if(sent.status==='failed')throw Error(sent.errorMessage||'WhatsApp delivery needs attention. Retry from WhatsApp Logs.');
     }
-    await notifyAdmin('Hosur credit bill created', `${bill.shopName} has credit of ₹${Math.round(credit)} on bill ${bill.invoiceNo ?? bill.billNo}. Due ${payload.dueDate}.`, bill.id, bill.invoiceNo ?? bill.billNo, { billId: bill.id, amount: credit });
-  }
-
-  if (paid > 0 && items.length > 0) {
-    const salesRows = items.map((item) => ({
-      branch: BRANCH, item_name: item.itemName, quantity_sold: item.quantity, sold_at: now,
-      sold_by: payload.userName, payment_method: payload.paymentMode, unit_price: item.unitPrice, bill_no: bill.billNo, source: 'hosur_wholesale',
-    }));
-    const { error: salesError } = await supabase.from('branch_sales').insert(salesRows);
-    if (salesError) console.warn('[runHosurConfirmBillCore] branch_sales mirror failed:', salesError.message);
-  }
-
-  const { data: billRow } = await supabase.from('hosur_bills').select('*').eq('id', bill.id).single();
-  const { data: billItemRows } = await supabase.from('hosur_bill_items').select('*').eq('bill_id', bill.id);
-  const finalBill = mapBill(billRow);
-  const finalItems = (billItemRows ?? []).map(mapBillItem);
-  const body = buildBillMessage(finalBill, finalItems);
-  const displayNo = finalBill.invoiceNo ?? bill.billNo;
-  const whatsapp = await sendHosurWhatsapp({
-    shopId: bill.shopId, shopName: bill.shopName, phone: bill.shopWhatsapp,
-    billId: bill.id, billNo: displayNo, messageType: 'bill', body, billForMedia: finalBill, itemsForMedia: finalItems,
-  });
-  if (whatsapp.status === 'failed') {
-    await notifyAdmin('Hosur WhatsApp bill failed', `${displayNo} for ${bill.shopName} could not be sent. Retry from WhatsApp Logs.`, bill.id, displayNo, { error: whatsapp.errorMessage });
+    return {bill,items,duplicate:Boolean(data.duplicate)};
+  }catch(cause){
+    // Confirmation already committed. A provider or print-data failure must
+    // never rewind money or leave an offline replay repeating collections.
+    return {bill,items,duplicate:Boolean(data.duplicate),notificationWarning:cause instanceof Error?cause.message:'Bill saved; notification needs attention.'};
   }
 }
 
@@ -870,84 +409,3 @@ registerReplayHandler('hosur_confirm_bill', async (_kind, payload) => {
   }
 });
 
-// FEATURE (2026-09-03): "if they edit the bill the new invoice should go to
-// the client with the update invoice in whatsapp" — a Hosur dispatch is
-// auto-billed the moment it's confirmed (dispatchReceiveAndBill above), but
-// Planner can later correct that same dispatch from Dispatch tab → Recent
-// Dispatch Invoices → Edit Bill (updateDispatchInvoice in dispatchInvoice.ts).
-// That edit only ever touched the printable dispatch_invoices record — the
-// actual credit ledger (hosur_bills/hosur_bill_items/branch_credit_sales)
-// and the WhatsApp bill the shop already has in hand were left silently out
-// of sync with the corrected amount. Called from updateDispatchInvoice
-// itself right after a Hosur-scope edit saves, so the shop's copy never
-// disagrees with what Planner actually billed.
-export async function syncHosurBillWithInvoiceEdit(params: {
-  hosurOrderId: string;
-  // FINAL (already-discounted, actually-billed) line items — the caller is
-  // responsible for applying each source invoice's own discount_pct before
-  // calling this. BUG FIX (2026-09-03): a single Hosur order is very often
-  // dispatched across multiple separate batches, each getting its own
-  // dispatch_invoices row but sharing ONE hosur_bills row (dispatchReceiveAndBill
-  // reuses the existing draft bill by order_id — see its "2. Create the
-  // draft bill" comment above). The caller must pass the FULL combined item
-  // list across every dispatch_invoices row for this Hosur order, not just
-  // the one that was just edited — passing only one invoice's items here
-  // silently discards whatever the order's OTHER invoice(s) already
-  // contributed (confirmed live: Shree Skanda Villas' first ₹905.28 batch
-  // vanished from the credit ledger when its second ₹1,132.20 batch was
-  // edited, because the caller used to pass only the edited invoice's items).
-  items: { itemName: string; unit: string; quantity: number; unitPrice: number }[];
-// Single optional-field shape (not a discriminated union) — this repo's
-// strictNullChecks:false gotcha silently breaks `ok`-based narrowing on a
-// real union, see project memory / other `ok:boolean` result shapes in
-// this codebase.
-}): Promise<{ ok: boolean; billNo?: string; whatsappStatus?: 'sent' | 'failed'; whatsappError?: string | null; message?: string }> {
-  const { data: billRow, error: billErr } = await supabase.from('hosur_bills').select('*').eq('order_id', params.hosurOrderId).neq('status', 'cancelled').maybeSingle();
-  if (billErr) return { ok: false, message: billErr.message };
-  if (!billRow) return { ok: false, message: 'No linked Hosur bill found for this order — nothing to sync.' };
-  const bill = mapBill(billRow);
-  if (bill.status === 'draft') return { ok: false, message: 'This order has not been billed yet — nothing to sync.' };
-
-  const rows = params.items
-    .filter(i => i.itemName.trim() && i.quantity > 0)
-    .map(i => {
-      const unitPrice = Math.round(i.unitPrice * 100) / 100;
-      return { bill_id: bill.id, item_name: i.itemName.trim(), unit: i.unit, quantity: i.quantity, unit_price: unitPrice, line_total: Math.round(i.quantity * unitPrice * 100) / 100 };
-    });
-  if (rows.length === 0) return { ok: false, message: 'No items left to bill.' };
-  const newSubtotal = Math.round(rows.reduce((s, r) => s + r.line_total, 0) * 100) / 100;
-
-  const { error: delErr } = await supabase.from('hosur_bill_items').delete().eq('bill_id', bill.id);
-  if (delErr) return { ok: false, message: delErr.message };
-  const { error: insErr } = await supabase.from('hosur_bill_items').insert(rows);
-  if (insErr) return { ok: false, message: insErr.message };
-
-  // Hosur is always full credit (see dispatchReceiveAndBill's payment param
-  // above) — paid_amount stays whatever it already was (0 in practice).
-  const newCredit = Math.max(0, newSubtotal - bill.paidAmount);
-  const { error: updBillErr } = await supabase.from('hosur_bills').update({ subtotal: newSubtotal, credit_amount: newCredit, updated_at: new Date().toISOString() }).eq('id', bill.id);
-  if (updBillErr) return { ok: false, message: updBillErr.message };
-
-  // Keep the credit ledger of record (branch_credit_sales, linked via the
-  // same source_id used when it was first created) matching too — otherwise
-  // Owner/Admin credit reports would keep showing the pre-edit amount.
-  const { error: ledgerErr } = await supabase.from('branch_credit_sales').update({
-    items: rows.map(r => ({ itemName: r.item_name, quantity: r.quantity, sellUnit: r.unit, price: r.unit_price, lineTotal: r.line_total })),
-    subtotal: newSubtotal, credit_amount: newCredit,
-  }).eq('source', 'hosur').eq('source_id', bill.id);
-  if (ledgerErr) console.warn('[syncHosurBillWithInvoiceEdit] credit ledger sync failed:', ledgerErr.message);
-
-  const { data: freshBillRow } = await supabase.from('hosur_bills').select('*').eq('id', bill.id).single();
-  const { data: freshItemRows } = await supabase.from('hosur_bill_items').select('*').eq('bill_id', bill.id);
-  const finalBill = mapBill(freshBillRow);
-  const finalItems = (freshItemRows ?? []).map(mapBillItem);
-  const body = `*UPDATED INVOICE — please discard the earlier copy*\n\n${buildBillMessage(finalBill, finalItems)}`;
-  const whatsapp = await sendHosurWhatsapp({
-    shopId: finalBill.shopId, shopName: finalBill.shopName, phone: finalBill.shopWhatsapp,
-    billId: bill.id, billNo: bill.billNo, messageType: 'bill', body, billForMedia: finalBill, itemsForMedia: finalItems,
-  });
-  if (whatsapp.status === 'failed') {
-    await notifyAdmin('Hosur updated invoice WhatsApp failed', `${bill.billNo} for ${finalBill.shopName} was corrected but the updated invoice could not be sent. Retry from WhatsApp Logs.`, bill.id, bill.billNo, { error: whatsapp.errorMessage });
-  }
-  return { ok: true, billNo: bill.billNo, whatsappStatus: whatsapp.status, whatsappError: whatsapp.errorMessage };
-}
