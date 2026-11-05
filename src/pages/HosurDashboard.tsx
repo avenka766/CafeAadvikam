@@ -43,6 +43,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { supabase, fetchAllRows } from '@/lib/supabase';
+import { gstBuyerError } from '@/bakery/plannerSalesGst';
 import { getAppSessionToken } from '@/lib/appSession';
 import { useAuthStore } from '@/stores/authStore';
 import { useBranchStore } from '@/branch/branchStore';
@@ -128,6 +129,8 @@ interface HosurShop {
   updatedAt?: string | null;
   /** Default discount % for items not in the shop's custom price list (0 = no discount) */
   discountPercent: number;
+  gstName: string;
+  gstin: string;
 }
 
 interface HosurShopPrice {
@@ -387,6 +390,8 @@ function mapShop(row: any): HosurShop {
     createdAt: row.created_at ?? new Date().toISOString(),
     updatedAt: row.updated_at ?? null,
     discountPercent: Number(row.discount_percent ?? 0),
+    gstName: String(row.gst_name ?? ''),
+    gstin: String(row.gstin ?? ''),
   };
 }
 
@@ -1138,7 +1143,7 @@ export default function HosurDashboard({ hideNav = false, active = true }: { hid
         disputesRes,
         notificationsRes,
       ] = await Promise.all([
-        supabase.from('hosur_shops').select('id, shop_name, whatsapp_number, address, is_active, created_at, updated_at, discount_percent').eq('is_active', true).order('shop_name', { ascending: true }),
+        supabase.from('hosur_shops').select('id, shop_name, whatsapp_number, address, is_active, created_at, updated_at, discount_percent, gst_name, gstin').eq('is_active', true).order('shop_name', { ascending: true }),
         supabase.from('hosur_shop_price_lists').select('id, shop_id, item_name, item_unit, unit_price, is_active, updated_at').eq('is_active', true),
         // BUG FIX (2026-09-28): "check the Hosur Shops & Billing tab too" —
         // `.limit(250)` does NOT override PostgREST's hard 1000-row response
@@ -1775,7 +1780,8 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
   withBusy: (fn: () => Promise<void>, success?: string) => Promise<void>;
   priceFor: (shopId: string, item: BranchCatalogItem | HosurCatalogItem | string) => number;
 }) {
-  const [form, setForm] = useState({ shopName: '', whatsappNumber: '', address: '', discountPercent: '' });
+  const emptyShop = { shopName: '', whatsappNumber: '', address: '', discountPercent: '', gstName: '', gstin: '' };
+  const [form, setForm] = useState(emptyShop);
   const [editingShopId, setEditingShopId] = useState<string | null>(null);
   const [selectedShopId, setSelectedShopId] = useState('');
   // FEATURE (2026-08-30): "Need the ability to delete the shop as well" —
@@ -1823,6 +1829,10 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
 
   const saveShop = async () => {
     if (!form.shopName.trim()) throw new Error('Shop name is required.');
+    if (form.gstName.trim() || form.gstin.trim()) {
+      const error = gstBuyerError(form.gstName, form.gstin);
+      if (error) throw Error(error);
+    }
     const whatsappNumber = cleanPhone(form.whatsappNumber);
     const payload = {
       shop_name: form.shopName.trim(),
@@ -1831,6 +1841,8 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
       whatsapp_number: whatsappNumber.length > 10 ? whatsappNumber.slice(-10) : whatsappNumber,
       address: form.address.trim(),
       discount_percent: Number(form.discountPercent) || 0,
+      gst_name: form.gstName.trim() || null,
+      gstin: form.gstin.trim().toUpperCase() || null,
       is_active: true,
       updated_at: new Date().toISOString(),
     };
@@ -1839,7 +1851,7 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
       : await supabase.from('hosur_shops').insert(payload).select('id').single();
     if (result.error) throw result.error;
     setEditingShopId(null);
-    setForm({ shopName: '', whatsappNumber: '', address: '', discountPercent: '' });
+    setForm(emptyShop);
   };
 
   // Soft-delete only, same convention as every other master-data "delete" in
@@ -1853,7 +1865,7 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
     const { error } = await supabase.from('hosur_shops').update({ is_active: false, updated_at: new Date().toISOString() }).eq('id', shop.id);
     if (error) throw error;
     setDeletingShopId(null);
-    if (editingShopId === shop.id) { setEditingShopId(null); setForm({ shopName: '', whatsappNumber: '', address: '', discountPercent: '' }); }
+    if (editingShopId === shop.id) { setEditingShopId(null); setForm(emptyShop); }
     if (selectedShopId === shop.id) setSelectedShopId('');
   };
 
@@ -1989,6 +2001,8 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
             <Field label="Shop name"><input className={inputClass} value={form.shopName} onChange={(e) => setForm({ ...form, shopName: e.target.value })} placeholder="Example: Sri Lakshmi Bakery" /></Field>
             <Field label="WhatsApp number (optional)"><input className={inputClass} value={form.whatsappNumber} onChange={(e) => setForm({ ...form, whatsappNumber: e.target.value })} placeholder="10 digit mobile number" /></Field>
             <Field label="Address"><textarea className={cn(inputClass, 'min-h-24 resize-none')} value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} placeholder="Shop address" /></Field>
+            <Field label="Registered GST name"><input className={inputClass} value={form.gstName} onChange={e => setForm({...form, gstName: e.target.value})} /></Field>
+            <Field label="GST number"><input className={inputClass} value={form.gstin} onChange={e => setForm({...form, gstin: e.target.value.toUpperCase()})} /></Field>
             <Field label="Default Discount % (optional)">
               <input
                 className={inputClass}
@@ -2000,7 +2014,7 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
                 placeholder="e.g. 10 for 10% off"
               />
             </Field>
-            <div className="flex gap-2"><button className={primaryButton} disabled={busy} onClick={() => withBusy(saveShop, editingShopId ? 'Shop updated.' : 'Shop saved.')}>{busy ? <Loader2 className="size-4 animate-spin" /> : <Plus className="size-4" />} {editingShopId ? 'Update Shop' : 'Save Shop'}</button>{editingShopId && <button className={softButton} onClick={() => { setEditingShopId(null); setForm({ shopName: '', whatsappNumber: '', address: '', discountPercent: '' }); }}>Cancel</button>}</div>
+            <div className="flex gap-2"><button className={primaryButton} disabled={busy} onClick={() => withBusy(saveShop, editingShopId ? 'Shop updated.' : 'Shop saved.')}>{busy ? <Loader2 className="size-4 animate-spin" /> : <Plus className="size-4" />} {editingShopId ? 'Update Shop' : 'Save Shop'}</button>{editingShopId && <button className={softButton} onClick={() => { setEditingShopId(null); setForm(emptyShop); }}>Cancel</button>}</div>
           </Card>
           <Card className="space-y-2">
             <h3 className="font-black">Shops</h3>
@@ -2014,7 +2028,7 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
                   <p className="mt-1 text-xs font-semibold text-emerald-700">{shop.discountPercent}% discount applied to non-custom items</p>
                 )}
                 <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                  <span onClick={(e) => { e.stopPropagation(); setEditingShopId(shop.id); setSelectedShopId(shop.id); setForm({ shopName: shop.shopName, whatsappNumber: shop.whatsappNumber, address: shop.address, discountPercent: String(shop.discountPercent || '') }); }} className="inline-flex rounded-lg bg-white px-2 py-1 text-[10px] font-black text-emerald-700 ring-1 ring-emerald-200">Edit details</span>
+                  <span onClick={(e) => { e.stopPropagation(); setEditingShopId(shop.id); setSelectedShopId(shop.id); setForm({ shopName: shop.shopName, whatsappNumber: shop.whatsappNumber, address: shop.address, discountPercent: String(shop.discountPercent || ''), gstName: shop.gstName, gstin: shop.gstin }); }} className="inline-flex rounded-lg bg-white px-2 py-1 text-[10px] font-black text-emerald-700 ring-1 ring-emerald-200">Edit details</span>
                   {deletingShopId === shop.id ? (
                     <>
                       <span
