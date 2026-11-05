@@ -1,7 +1,8 @@
 import {financialLineTotal} from '@/lib/financialRounding';
 import {printDispatchInvoice, type DispatchInvoiceRecord} from './dispatchInvoice';
 import {automaticDesktopBilling} from '@/lib/desktopBilling';
-import { calculatePlannerSalesGst } from './plannerSalesGst';
+import { calculatePlannerSalesGst, gstBuyerError } from './plannerSalesGst';
+import { rememberHosurShopGst } from './hosurShopGst';
 // src/bakery/HosurShopOrderPanel.tsx
 // Planner's Hosur shop-order placement (price-list dropdown + custom item)
 // and the Dispatch step that was previously missing entirely.
@@ -54,14 +55,14 @@ const money = (v: number | null | undefined) => 'Rs.' + (v ?? 0).toLocaleString(
 const num = (v: number | null | undefined) => (v ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
 const normalize = (s: string) => s.trim().toLowerCase();
 
-interface HosurShop { id: string; shopName: string; whatsappNumber: string; address: string; isActive: boolean; discountPercent: number; }
+interface HosurShop { id: string; shopName: string; whatsappNumber: string; address: string; isActive: boolean; discountPercent: number; gstName: string; gstin: string; }
 interface HosurShopPrice { id: string; shopId: string; itemName: string; itemUnit: 'pcs' | 'kg'; unitPrice: number; isActive: boolean; }
 interface HosurOrder { id: string; orderNumber: string; shopId: string; shopName: string; shopWhatsapp: string; status: string; subtotal: number; createdAt: string; }
 interface HosurOrderItem { id: string; orderId: string; itemName: string; unit: 'pcs' | 'kg'; quantity: number; unitPrice: number; lineTotal: number; dispatchedQuantity: number; receivedQuantity: number; cancelledQuantity: number; }
 interface DraftItem { itemName: string; unit: 'pcs' | 'kg'; quantity: number; unitPrice: number; lineTotal: number; isCustom?: boolean; }
 
 function mapShop(r: Record<string, unknown>): HosurShop {
-  return { id: r.id as string, shopName: String(r.shop_name ?? ''), whatsappNumber: String(r.whatsapp_number ?? ''), address: String(r.address ?? ''), isActive: r.is_active !== false, discountPercent: Number(r.discount_percent ?? 0) };
+  return { id: r.id as string, shopName: String(r.shop_name ?? ''), whatsappNumber: String(r.whatsapp_number ?? ''), address: String(r.address ?? ''), isActive: r.is_active !== false, discountPercent: Number(r.discount_percent ?? 0), gstName: String(r.gst_name ?? ''), gstin: String(r.gstin ?? '') };
 }
 function mapPrice(r: Record<string, unknown>): HosurShopPrice {
   return { id: r.id as string, shopId: r.shop_id as string, itemName: String(r.item_name ?? ''), itemUnit: r.item_unit === 'kg' ? 'kg' : 'pcs', unitPrice: Number(r.unit_price ?? 0), isActive: r.is_active !== false };
@@ -105,7 +106,7 @@ export default function HosurShopOrderPanel({ active = true, section: controlled
 
   const load = useCallback(async () => {
     const [shopsRes, pricesRes, ordersRes, itemsRes] = await Promise.all([
-      supabase.from('hosur_shops').select('id, shop_name, whatsapp_number, address, is_active, discount_percent').order('shop_name'),
+      supabase.from('hosur_shops').select('id, shop_name, whatsapp_number, address, is_active, discount_percent, gst_name, gstin').order('shop_name'),
       supabase.from('hosur_shop_price_lists').select('id, shop_id, item_name, item_unit, unit_price, is_active').eq('is_active', true),
       // BUG FIX (2026-09-28): "check the other Planner sub-tabs too" —
       // `.limit(200)` with no status filter was already actively hiding real
@@ -664,6 +665,7 @@ function DispatchSection({ active, orders, items, onDone, shops }: { active:bool
   // Keyed by orderId, same Record pattern as every other per-order draft
   // state above (paymentType, charges, etc.).
   const [gstEnabled, setGstEnabled] = useState<Record<string, boolean>>({});
+  const [gstBuyerName, setGstBuyerName] = useState<Record<string, string>>({});
   const [gstBuyerGstin, setGstBuyerGstin] = useState<Record<string, string>>({});
   const [gstBuyerAddress, setGstBuyerAddress] = useState<Record<string, string>>({});
   const [gstBuyerStateName, setGstBuyerStateName] = useState<Record<string, string>>({});
@@ -890,7 +892,19 @@ function DispatchSection({ active, orders, items, onDone, shops }: { active:bool
       const orderGstHsn = (gstHsnCode[order.id] || '').trim();
       const orderGstSupplyType = gstSupplyType[order.id] || 'intra';
       if (orderGstOn && (!Number.isFinite(orderGstPct) || orderGstPct <= 0 || orderGstPct > 100)) throw new Error('Enter a valid GST percentage above 0 and up to 100.');
-      const savedGstBuyer = {name:order.shopName,address:gstBuyerAddress[order.id] || '',gstin:gstBuyerGstin[order.id] || '',stateName:gstBuyerStateName[order.id] || 'Tamil Nadu',stateCode:gstBuyerStateCode[order.id] || '33'};
+      const shop = shops.find(shop => shop.id === order.shopId);
+      const savedGstBuyer = {
+        name: (gstBuyerName[order.id] ?? shop?.gstName ?? '').trim(),
+        gstin: (gstBuyerGstin[order.id] ?? shop?.gstin ?? '').trim(),
+        address: gstBuyerAddress[order.id] || '',
+        stateName: gstBuyerStateName[order.id] || 'Tamil Nadu',
+        stateCode: gstBuyerStateCode[order.id] || '33',
+      };
+      if (orderGstOn) {
+        const error = gstBuyerError(savedGstBuyer.name, savedGstBuyer.gstin);
+        if (error) throw Error(error);
+        await rememberHosurShopGst(order.shopId, savedGstBuyer.name, savedGstBuyer.gstin);
+      }
       const invoiceItems = [
         ...billItems.filter(i=>i.receivedQuantity>(i.knownReceivedQuantity||0)).map(i => ({
           itemName: i.itemName, unit: i.unit, quantity: i.receivedQuantity-(i.knownReceivedQuantity||0), unitPrice: i.unitPrice,
@@ -992,10 +1006,7 @@ function DispatchSection({ active, orders, items, onDone, shops }: { active:bool
             uom: l.unit === 'pcs' ? 'Nos' : l.unit === 'kg' ? 'Kg' : l.unit,
             rate: l.unitPrice, gstPct: orderGstPct,
           }));
-          const buyer = {
-            name: order.shopName, address: gstBuyerAddress[order.id] || '', gstin: gstBuyerGstin[order.id] || '',
-            stateName: gstBuyerStateName[order.id] || 'Tamil Nadu', stateCode: gstBuyerStateCode[order.id] || '33',
-          };
+          const buyer = savedGstBuyer;
           const { html } = buildGstTaxInvoiceHtml({
             buyer, consignee: buyer,
             invoiceNo: outcome.billNo, invoiceDate,
@@ -1169,6 +1180,7 @@ function DispatchSection({ active, orders, items, onDone, shops }: { active:bool
         </div>
       )}
       {filteredOrders.map(order => {
+        const shop = shops.find(shop => shop.id === order.shopId);
         const orderItems = items.filter(i => i.orderId === order.id);
         const pType = paymentType[order.id] ?? 'full';
         // itemsTotal stays the pure items figure (used unchanged by
@@ -1343,7 +1355,9 @@ function DispatchSection({ active, orders, items, onDone, shops }: { active:bool
                   </label>
                   {gstEnabled[order.id] === true && (
                     <div className="grid grid-cols-2 gap-2">
-                      <input value={gstBuyerGstin[order.id] ?? ''} onChange={e => setGstBuyerGstin(v => ({ ...v, [order.id]: e.target.value.toUpperCase() }))} placeholder="Buyer GSTIN (optional)" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
+                      <p className="col-span-full text-xs text-purple-800">Enter the shop's registered details. The first pair saved online will fill future GST bills.</p>
+                      <input required aria-label="Registered GST name" value={gstBuyerName[order.id] ?? shop?.gstName ?? ''} onChange={e => setGstBuyerName(v => ({ ...v, [order.id]: e.target.value }))} placeholder="Registered GST name" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
+                      <input required aria-label="GST number" value={gstBuyerGstin[order.id] ?? shop?.gstin ?? ''} onChange={e => setGstBuyerGstin(v => ({ ...v, [order.id]: e.target.value.toUpperCase() }))} placeholder="GST number" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
                       <input value={gstBuyerAddress[order.id] ?? ''} onChange={e => setGstBuyerAddress(v => ({ ...v, [order.id]: e.target.value }))} placeholder="Buyer address" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
                       <input value={gstBuyerStateName[order.id] ?? ''} onChange={e => setGstBuyerStateName(v => ({ ...v, [order.id]: e.target.value }))} placeholder="State Name" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
                       <input value={gstBuyerStateCode[order.id] ?? ''} onChange={e => setGstBuyerStateCode(v => ({ ...v, [order.id]: e.target.value }))} placeholder="State Code" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />

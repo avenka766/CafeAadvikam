@@ -10,7 +10,8 @@ import type {MergedCatalogItemWithPrice} from './PlannerLeftoverTab';
 import CustomerSuggestionsInput from './CustomerSuggestionsInput';
 import FestivalSalesPanel from './FestivalSalesPanel';
 import PlannerSalesGstFields from './PlannerSalesGstFields';
-import { calculatePlannerSalesGst } from './plannerSalesGst';
+import { calculatePlannerSalesGst, gstBuyerError } from './plannerSalesGst';
+import { rememberHosurShopGst, useHosurShopGstDefaults } from './hosurShopGst';
 import { hosurInvoiceLedgerLines } from './hosurGstLedger';
 import { renderSavedSalesTaxInvoice, renderSavedDispatchTaxInvoice } from './dispatchInvoice';
 import { createFestivalSaleDrafts, festivalSaleCart } from './festivalSales';
@@ -6994,6 +6995,8 @@ function BillingTab() {
     if (!customerName.trim()) { setError('Enter the customer name before billing.'); return; }
     if (cartLines.length === 0) { setError('Add at least one item.'); return; }
     if (festivalSales && festivalCart.error) { setError(festivalCart.error); return; }
+    const buyerError = gstEnabled ? gstBuyerError(gstBuyerName, gstBuyerGstin) : undefined;
+    if (buyerError) { setError(buyerError); return; }
     if (gstEnabled && (!Number.isFinite(Number(gstPct)) || Number(gstPct) <= 0 || Number(gstPct) > 100)) { setError('Enter a valid GST rate between 0 and 100%.'); return; }
     savingInFlightRef.current = true;
     try {
@@ -7025,7 +7028,7 @@ function BillingTab() {
       // to every cart line so renderDispatchInvoiceHtml's "take the first
       // line's rate" lookup is trivially the same value everywhere.
       const items: WalkinBillItem[] = [
-        ...cartLines.map((l, index) => ({ itemName: l.itemName, unit: l.unit, price: l.price, quantity: l.quantity, lineTotal: Math.round(l.price * l.quantity * 100) / 100, ...(gstEnabled ? { hsnCode: gstHsnCode.trim(), gstPct: Math.max(0, Number(gstPct) || 0), gstPricing: 'exclusive' as const, ...(index === 0 ? {gstBuyerDetails: {name: gstBuyerName.trim() || customerName.trim() || 'Walk-in Customer',address:gstBuyerAddress,gstin:gstBuyerGstin,stateName:gstBuyerStateName,stateCode:gstBuyerStateCode}} : {}) } : {}) })),
+        ...cartLines.map((l, index) => ({ itemName: l.itemName, unit: l.unit, price: l.price, quantity: l.quantity, lineTotal: Math.round(l.price * l.quantity * 100) / 100, ...(gstEnabled ? { hsnCode: gstHsnCode.trim(), gstPct: Math.max(0, Number(gstPct) || 0), gstPricing: 'exclusive' as const, ...(index === 0 ? {gstBuyerDetails: {name: gstBuyerName.trim(),address:gstBuyerAddress,gstin:gstBuyerGstin.trim().toUpperCase(),stateName:gstBuyerStateName,stateCode:gstBuyerStateCode}} : {}) } : {}) })),
         ...charges.map(c => ({ itemName: c.name, unit: 'charge', price: Number(c.amount) || 0, quantity: 1, lineTotal: Math.round((Number(c.amount) || 0) * 100) / 100 })),
       ];
       const billInput:DesktopSaleInput = {
@@ -7499,9 +7502,11 @@ function EditWalkinBillModal({ bill, onClose, onSaved }: {
       .map((l, index) => ({
         itemName: l.itemName.trim(), unit: l.unit, quantity: l.quantity, price: l.price,
         lineTotal: Math.round(l.price * l.quantity * 100) / 100,
-        ...(gstEnabled ? { hsnCode: gstHsnCode.trim(), gstPct: Math.max(0, Number(gstPct) || 0), ...(exclusiveGst ? {gstPricing:'exclusive' as const,...(index===0 ? {gstBuyerDetails:{name:gstBuyerName.trim() || customerName.trim() || 'Walk-in Customer',address:gstBuyerAddress,gstin:gstBuyerGstin,stateName:gstBuyerStateName,stateCode:gstBuyerStateCode}} : {})} : {}) } : {}),
+        ...(gstEnabled ? { hsnCode: gstHsnCode.trim(), gstPct: Math.max(0, Number(gstPct) || 0), ...(exclusiveGst ? {gstPricing:'exclusive' as const} : {}), ...(index===0 ? {gstBuyerDetails:{name:gstBuyerName.trim(),address:gstBuyerAddress,gstin:gstBuyerGstin.trim().toUpperCase(),stateName:gstBuyerStateName,stateCode:gstBuyerStateCode}} : {}) } : {}),
       }));
     if (cleaned.length === 0) { setError('Add at least one item with a name, quantity above 0 and a valid price.'); return; }
+    const buyerError = gstEnabled ? gstBuyerError(gstBuyerName, gstBuyerGstin) : undefined;
+    if (buyerError) { setError(buyerError); return; }
     if (gstEnabled && (!Number.isFinite(Number(gstPct)) || Number(gstPct)<=0 || Number(gstPct)>100)) {setError('Enter a valid GST percentage above 0 and up to 100.');return;}
     savingInFlightRef.current = true;
     setSaving(true);
@@ -7674,8 +7679,8 @@ function EditWalkinBillModal({ bill, onClose, onSaved }: {
           </label>
           {gstEnabled && (
             <div className="grid grid-cols-2 gap-2">
-              <input value={gstBuyerName} onChange={e => setGstBuyerName(e.target.value)} placeholder={`Buyer name (blank = ${customerName.trim() || 'Walk-in Customer'})`} className="col-span-2 h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
-              <input value={gstBuyerGstin} onChange={e => setGstBuyerGstin(e.target.value.toUpperCase())} placeholder="Buyer GSTIN (optional)" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
+              <input required aria-label="Registered GST name" value={gstBuyerName} onChange={e => setGstBuyerName(e.target.value)} placeholder="Registered GST name" className="col-span-2 h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
+              <input required aria-label="GST number" value={gstBuyerGstin} onChange={e => setGstBuyerGstin(e.target.value.toUpperCase())} placeholder="GST number" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
               <input value={gstBuyerAddress} onChange={e => setGstBuyerAddress(e.target.value)} placeholder="Buyer address" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
               <input value={gstBuyerStateName} onChange={e => setGstBuyerStateName(e.target.value)} placeholder="State Name" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
               <input value={gstBuyerStateCode} onChange={e => setGstBuyerStateCode(e.target.value)} placeholder="State Code" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
@@ -9861,6 +9866,7 @@ function EditDispatchInvoiceModal({ invoice, onClose, onSaved }: {
   const savedBuyer = firstGstLine?.gstBuyerDetails;
   const [gstBuyerName, setGstBuyerName] = useState(savedBuyer?.name || '');
   const [gstBuyerGstin, setGstBuyerGstin] = useState(savedBuyer?.gstin || '');
+  useHosurShopGstDefaults(invoice.hosurShopId, gstEnabled && !invoice.isGstInvoice, setGstBuyerName, setGstBuyerGstin);
   const [gstBuyerAddress, setGstBuyerAddress] = useState(savedBuyer?.address || '');
   const [gstBuyerStateName, setGstBuyerStateName] = useState(savedBuyer?.stateName || 'Tamil Nadu');
   const [gstBuyerStateCode, setGstBuyerStateCode] = useState(savedBuyer?.stateCode || '33');
@@ -9961,6 +9967,8 @@ function EditDispatchInvoiceModal({ invoice, onClose, onSaved }: {
       setError(`Enter a price above 0 for: ${zeroPriceItems.map(l => l.itemName).join(', ')} before saving.`);
       return;
     }
+    const buyerError = gstEnabled ? gstBuyerError(gstBuyerName, gstBuyerGstin) : undefined;
+    if (buyerError) { setError(buyerError); return; }
     if (gstEnabled && (!Number.isFinite(Number(gstPct)) || Number(gstPct)<=0 || Number(gstPct)>100)) {setError('Enter a valid GST percentage above 0 and up to 100.');return;}
     savingInFlightRef.current = true;
     setSaving(true);
@@ -9971,8 +9979,9 @@ function EditDispatchInvoiceModal({ invoice, onClose, onSaved }: {
       // them) before re-adding the current overall values when enabled.
       const cleanedForSave = cleaned.map(({ key: _key, hsnCode: _oldHsn, gstPct: _oldGst, gstPricing: _oldPricing, gstBuyerDetails: _oldBuyer, ...rest }) => ({
         ...rest,
-        ...(gstEnabled ? { hsnCode: gstHsnCode.trim(), gstPct: Number(gstPct), ...(exclusiveGst ? {gstPricing:'exclusive' as const,gstBuyerDetails:{name:gstBuyerName.trim() || invoice.customerName || invoice.hosurShopName || '',gstin:gstBuyerGstin,address:gstBuyerAddress,stateName:gstBuyerStateName,stateCode:gstBuyerStateCode}} : {}) } : {}),
+        ...(gstEnabled ? { hsnCode: gstHsnCode.trim(), gstPct: Number(gstPct), ...(exclusiveGst ? {gstPricing:'exclusive' as const} : {}), gstBuyerDetails:{name:gstBuyerName.trim(),gstin:gstBuyerGstin.trim(),address:gstBuyerAddress,stateName:gstBuyerStateName,stateCode:gstBuyerStateCode} } : {}),
       }));
+      if (gstEnabled && invoice.hosurShopId) await rememberHosurShopGst(invoice.hosurShopId, gstBuyerName, gstBuyerGstin);
       const result = await updateDispatchInvoice({
         invoiceId: invoice.id,
         updatedItems: cleanedForSave,
@@ -10190,8 +10199,9 @@ function EditDispatchInvoiceModal({ invoice, onClose, onSaved }: {
           </label>
           {gstEnabled && (
             <div className="grid grid-cols-2 gap-2">
-              <input value={gstBuyerName} onChange={e => setGstBuyerName(e.target.value)} placeholder={`Buyer name (blank = ${invoice.customerName || invoice.hosurShopName || `${invoice.scope} Branch`})`} className="col-span-2 h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
-              <input value={gstBuyerGstin} onChange={e => setGstBuyerGstin(e.target.value.toUpperCase())} placeholder="Buyer GSTIN (optional)" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
+              {invoice.hosurShopId && <p className="col-span-full text-xs text-purple-800">Enter the shop's registered details if they haven't been saved yet.</p>}
+              <input required aria-label="Registered GST name" value={gstBuyerName} onChange={e => setGstBuyerName(e.target.value)} placeholder="Registered GST name" className="col-span-2 h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
+              <input required aria-label="GST number" value={gstBuyerGstin} onChange={e => setGstBuyerGstin(e.target.value.toUpperCase())} placeholder="GST number" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
               <input value={gstBuyerAddress} onChange={e => setGstBuyerAddress(e.target.value)} placeholder="Buyer address" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
               <input value={gstBuyerStateName} onChange={e => setGstBuyerStateName(e.target.value)} placeholder="State Name" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
               <input value={gstBuyerStateCode} onChange={e => setGstBuyerStateCode(e.target.value)} placeholder="State Code" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
@@ -12430,7 +12440,9 @@ export function DispatchReviewModal({ scope, hosurShop, hosurOrderId, customer, 
   // project_gst_checkbox_overall_fix memory for the full history.
   const gstInvoiceOffered = (scope === 'Hosur' && !!hosurShop) || !!customer;
   const [gstEnabled, setGstEnabled] = useState(false);
+  const [gstBuyerName, setGstBuyerName] = useState('');
   const [gstBuyerGstin, setGstBuyerGstin] = useState('');
+  useHosurShopGstDefaults(hosurShop?.id, gstEnabled, setGstBuyerName, setGstBuyerGstin);
   // Custom sales already know the buyer's address (entered when the sale
   // was created) — no reason to make the planner retype it.
   const [gstBuyerAddress, setGstBuyerAddress] = useState(customer?.address ?? '');
@@ -12656,6 +12668,8 @@ export function DispatchReviewModal({ scope, hosurShop, hosurOrderId, customer, 
   };
 
   const confirm = async () => {
+    const buyerError = gstInvoiceOffered && gstEnabled ? gstBuyerError(gstBuyerName, gstBuyerGstin) : undefined;
+    if (buyerError) { setError(buyerError); return; }
     if (gstInvoiceOffered && gstEnabled && (!Number.isFinite(Number(gstPct)) || Number(gstPct)<=0 || Number(gstPct)>100)) {setError('Enter a valid GST percentage above 0 and up to 100.');return;}
     if (sendingRef.current) return;
     // FEATURE (2026-09-13): checked before missingPriceItems on purpose — an
@@ -12728,6 +12742,7 @@ export function DispatchReviewModal({ scope, hosurShop, hosurOrderId, customer, 
       setSending(true);
       setError(null);
       try {
+        if (gstInvoiceOffered && gstEnabled && hosurShop?.id) await rememberHosurShopGst(hosurShop.id, gstBuyerName, gstBuyerGstin);
         const roundedActions = effectiveActions
           .map((a) => ({ ...a, quantity: a.unit === 'pcs' ? Math.round(a.quantity) : a.quantity }))
           .filter((a) => !(a.unit === 'pcs' && a.quantity <= 0));
@@ -12747,7 +12762,7 @@ export function DispatchReviewModal({ scope, hosurShop, hosurOrderId, customer, 
           })),
           isGstInvoice:gstInvoiceOffered&&gstEnabled,gstSupplyType,
           hosurBilling:scope==='Hosur'&&hosurShop?.id&&hosurOrderId?{orderId:hosurOrderId,shopId:hosurShop.id,shopName:hosurShop.name,shopWhatsapp:hosurShop.phone,invoiceItems:[...invoiceLines,...effectiveChargeLines],payment:{paymentType:'credit',dueDate:kolkataDateKey(new Date(Date.now()+2*86400000).toISOString())}}:undefined,
-          invoiceItems: gstInvoiceOffered&&gstEnabled?[...invoiceLines,...effectiveChargeLines].map(l=>({...l,hsnCode:gstHsnCode.trim(),gstPct:Number(gstPct),gstPricing:'exclusive' as const,gstBuyerDetails:{name:customer?.name||hosurShop?.name||'',address:gstBuyerAddress,gstin:gstBuyerGstin,stateName:gstBuyerStateName,stateCode:gstBuyerStateCode}})):[...invoiceLines, ...effectiveChargeLines],
+          invoiceItems: gstInvoiceOffered&&gstEnabled?[...invoiceLines,...effectiveChargeLines].map(l=>({...l,hsnCode:gstHsnCode.trim(),gstPct:Number(gstPct),gstPricing:'exclusive' as const,gstBuyerDetails:{name:gstBuyerName.trim(),address:gstBuyerAddress,gstin:gstBuyerGstin.trim(),stateName:gstBuyerStateName,stateCode:gstBuyerStateCode}})):[...invoiceLines, ...effectiveChargeLines],
           discountPct,
           dispatchedBy,
           numberScope: customer ? 'Hosur' : undefined,
@@ -12984,7 +12999,9 @@ export function DispatchReviewModal({ scope, hosurShop, hosurOrderId, customer, 
                 </label>
                 {gstEnabled && (
                   <div className="grid gap-2 sm:grid-cols-2">
-                    <input value={gstBuyerGstin} onChange={e => setGstBuyerGstin(e.target.value.toUpperCase())} placeholder="Buyer GSTIN (optional)" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
+                    {hosurShop?.id && <p className="col-span-full text-xs text-purple-800">Enter the shop's registered details. The first pair saved online will fill future GST bills.</p>}
+                    <input required aria-label="Registered GST name" value={gstBuyerName} onChange={e => setGstBuyerName(e.target.value)} placeholder="Registered GST name" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
+                    <input required aria-label="GST number" value={gstBuyerGstin} onChange={e => setGstBuyerGstin(e.target.value.toUpperCase())} placeholder="GST number" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
                     <input value={gstBuyerAddress} onChange={e => setGstBuyerAddress(e.target.value)} placeholder="Buyer address" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
                     <input value={gstBuyerStateName} onChange={e => setGstBuyerStateName(e.target.value)} placeholder="State Name" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
                     <input value={gstBuyerStateCode} onChange={e => setGstBuyerStateCode(e.target.value)} placeholder="State Code" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />

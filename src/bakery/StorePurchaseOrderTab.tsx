@@ -10,8 +10,9 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import {
   ClipboardList, Plus, Trash2, ChevronDown, ChevronUp, CheckCircle2,
-  XCircle, Clock, X, Check, Loader2, AlertTriangle, Search, ArrowRightCircle,
+  XCircle, Clock, X, Check, Loader2, AlertTriangle, Search, ArrowRightCircle, Printer,
 } from 'lucide-react';
+import { printHtml } from '@/branch/printUtils';
 import { cn } from '@/lib/utils';
 import { businessDate } from '@/lib/businessDate';
 import { useSupplierStore } from './supplierStore';
@@ -71,7 +72,7 @@ function poLineTotal(line: POLineDraft): number {
 }
 
 // ─── PO Card (list view) ───────────────────────────────────────────────────
-function POCard({ po, onConvert }: { po: StorePurchaseOrder; onConvert: (po: StorePurchaseOrder) => void }) {
+export function POCard({ po, onConvert }: { po: StorePurchaseOrder; onConvert: (po: StorePurchaseOrder) => void }) {
   const [expanded, setExpanded] = useState(false);
 
   const statusMeta = {
@@ -81,10 +82,31 @@ function POCard({ po, onConvert }: { po: StorePurchaseOrder; onConvert: (po: Sto
     converted: { label: 'Converted to GRN', color: 'bg-blue-50 text-blue-700 border-blue-200', dot: 'bg-blue-500', Icon: CheckCircle2 },
   }[po.status];
   const StatusIcon = statusMeta.Icon;
+  const printOrder = () => {
+    const escape = (value: string) => value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const amount = (value: number) => value.toLocaleString('en-IN', {style: 'currency', currency: 'INR'});
+    const date = (value: string) => new Date(value).toLocaleDateString('en-IN', {timeZone: 'Asia/Kolkata'});
+    printHtml('Purchase Order ' + po.poNumber, `
+      <h2>VRSNB Foods LLP</h2>
+      <div class="stamp">${statusMeta.label}</div>
+      <div class="row"><span>Supplier</span><b>${escape(po.supplierName)}</b></div>
+      ${po.supplierAddress ? '<p>' + escape(po.supplierAddress) + '</p>' : ''}
+      <div class="row"><span>Raised on</span><b>${date(po.createdAt)}</b></div>
+      <div class="row"><span>Expected delivery</span><b>${po.expectedDeliveryDate ? date(po.expectedDeliveryDate) : 'Not set'}</b></div>
+      <table><thead><tr><th>Item</th><th>Code</th><th>Quantity</th><th>Rate</th><th>Amount</th></tr></thead><tbody>
+        ${po.lineItems.map(line => `<tr><td>${escape(line.itemName)}</td><td>${escape(line.itemCode || '')}</td><td>${num(line.quantity)} ${escape(line.unit)}</td><td>${amount(line.pricePerUnit)}</td><td>${amount(line.totalPrice)}</td></tr>`).join('')}
+      </tbody></table>
+      <div class="row"><span>Grand total</span><b>${amount(po.grandTotal)}</b></div>
+      ${po.notes ? '<p><b>Notes</b> ' + escape(po.notes) + '</p>' : ''}
+      ${po.reviewedByName ? '<p><b>Reviewed by</b> ' + escape(po.reviewedByName) + '</p>' : ''}
+      ${po.reviewNote ? '<p><b>Review note</b> ' + escape(po.reviewNote) + '</p>' : ''}
+    `);
+  };
 
   return (
     <div className="rounded-2xl border border-border bg-card overflow-hidden">
-      <button className="w-full px-4 py-3.5 flex items-center gap-3 text-left active:bg-muted/20" onClick={() => setExpanded(v => !v)}>
+      <div className="flex items-center gap-1 pr-3">
+      <button className="min-w-0 flex-1 px-4 py-3.5 flex items-center gap-3 text-left active:bg-muted/20" onClick={() => setExpanded(v => !v)}>
         <div className={cn('size-9 rounded-xl flex items-center justify-center shrink-0',
           po.status === 'pending_approval' ? 'bg-amber-50' : po.status === 'approved' ? 'bg-emerald-50' : po.status === 'converted' ? 'bg-blue-50' : 'bg-red-50')}>
           <StatusIcon className={cn('size-4',
@@ -104,6 +126,10 @@ function POCard({ po, onConvert }: { po: StorePurchaseOrder; onConvert: (po: Sto
         </div>
         {expanded ? <ChevronUp className="size-4 text-muted-foreground shrink-0" /> : <ChevronDown className="size-4 text-muted-foreground shrink-0" />}
       </button>
+      <button type="button" onClick={printOrder} aria-label={`Print ${po.poNumber}`} className="inline-flex shrink-0 items-center gap-1 rounded-lg border px-2 py-1.5 text-xs font-semibold">
+        <Printer className="size-4" /> Print
+      </button>
+      </div>
 
       {expanded && (
         <div className="border-t border-border/50 px-4 pb-4 pt-3 space-y-3">
