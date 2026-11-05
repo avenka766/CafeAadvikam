@@ -2,7 +2,6 @@ import {financialLineTotal} from '@/lib/financialRounding';
 import {printDispatchInvoice, type DispatchInvoiceRecord} from './dispatchInvoice';
 import {automaticDesktopBilling} from '@/lib/desktopBilling';
 import { calculatePlannerSalesGst, gstBuyerError } from './plannerSalesGst';
-import { rememberHosurShopGst } from './hosurShopGst';
 // src/bakery/HosurShopOrderPanel.tsx
 // Planner's Hosur shop-order placement (price-list dropdown + custom item)
 // and the Dispatch step that was previously missing entirely.
@@ -93,7 +92,7 @@ export function isOrderBillable(orderItems: Pick<HosurOrderItem, 'dispatchedQuan
     && orderItems.some(i => i.dispatchedQuantity > i.receivedQuantity + 0.009);
 }
 
-export default function HosurShopOrderPanel({ active = true, section: controlledSection, onPendingCountChange }: { active?: boolean; section?: 'place' | 'dispatch'; onPendingCountChange?: (n: number) => void } = {}) {
+export default function HosurShopOrderPanel({ active = true, section: controlledSection, onPendingCountChange, onOpenShopGst }: { active?: boolean; section?: 'place' | 'dispatch'; onPendingCountChange?: (n: number) => void; onOpenShopGst?: (shopId: string) => void } = {}) {
   const currentUser = useAuthStore(s => s.currentUser);
   const [shops, setShops] = useState<HosurShop[]>([]);
   const [prices, setPrices] = useState<HosurShopPrice[]>([]);
@@ -209,7 +208,7 @@ export default function HosurShopOrderPanel({ active = true, section: controlled
       ) : section === 'place' ? (
         <PlaceOrderSection shops={shops} prices={prices} userName={currentUser?.displayName || 'Planner'} onSaved={load} />
       ) : (
-        <DispatchSection active={active} orders={pendingOrders} items={items} onDone={load} shops={shops} />
+        <DispatchSection active={active} orders={pendingOrders} items={items} onDone={load} shops={shops} onOpenShopGst={onOpenShopGst} />
       )}
     </div>
   );
@@ -614,7 +613,7 @@ const PAYMENT_MODES = [
   { key: 'cheque', label: 'Cheque' },
 ] as const;
 
-function DispatchSection({ active, orders, items, onDone, shops }: { active:boolean; orders: HosurOrder[]; items: HosurOrderItem[]; onDone: () => void; shops: HosurShop[] }) {
+function DispatchSection({ active, orders, items, onDone, shops, onOpenShopGst }: { active:boolean; orders: HosurOrder[]; items: HosurOrderItem[]; onDone: () => void; shops: HosurShop[]; onOpenShopGst?: (shopId: string) => void }) {
   const currentUser = useAuthStore(s => s.currentUser);
   const [overrides, setOverrides] = useState<Record<string, string>>({});
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -665,8 +664,6 @@ function DispatchSection({ active, orders, items, onDone, shops }: { active:bool
   // Keyed by orderId, same Record pattern as every other per-order draft
   // state above (paymentType, charges, etc.).
   const [gstEnabled, setGstEnabled] = useState<Record<string, boolean>>({});
-  const [gstBuyerName, setGstBuyerName] = useState<Record<string, string>>({});
-  const [gstBuyerGstin, setGstBuyerGstin] = useState<Record<string, string>>({});
   const [gstBuyerAddress, setGstBuyerAddress] = useState<Record<string, string>>({});
   const [gstBuyerStateName, setGstBuyerStateName] = useState<Record<string, string>>({});
   const [gstBuyerStateCode, setGstBuyerStateCode] = useState<Record<string, string>>({});
@@ -894,16 +891,15 @@ function DispatchSection({ active, orders, items, onDone, shops }: { active:bool
       if (orderGstOn && (!Number.isFinite(orderGstPct) || orderGstPct <= 0 || orderGstPct > 100)) throw new Error('Enter a valid GST percentage above 0 and up to 100.');
       const shop = shops.find(shop => shop.id === order.shopId);
       const savedGstBuyer = {
-        name: (gstBuyerName[order.id] ?? shop?.gstName ?? '').trim(),
-        gstin: (gstBuyerGstin[order.id] ?? shop?.gstin ?? '').trim(),
+        name: shop?.gstName.trim() ?? '',
+        gstin: shop?.gstin.trim() ?? '',
         address: gstBuyerAddress[order.id] || '',
         stateName: gstBuyerStateName[order.id] || 'Tamil Nadu',
         stateCode: gstBuyerStateCode[order.id] || '33',
       };
       if (orderGstOn) {
         const error = gstBuyerError(savedGstBuyer.name, savedGstBuyer.gstin);
-        if (error) throw Error(error);
-        await rememberHosurShopGst(order.shopId, savedGstBuyer.name, savedGstBuyer.gstin);
+        if (error) throw Error('Save the required GST name and GST number for this shop in Shop Master before billing.');
       }
       const invoiceItems = [
         ...billItems.filter(i=>i.receivedQuantity>(i.knownReceivedQuantity||0)).map(i => ({
@@ -1355,9 +1351,14 @@ function DispatchSection({ active, orders, items, onDone, shops }: { active:bool
                   </label>
                   {gstEnabled[order.id] === true && (
                     <div className="grid grid-cols-2 gap-2">
-                      <p className="col-span-full text-xs text-purple-800">Enter the shop's registered details. The first pair saved online will fill future GST bills.</p>
-                      <input required aria-label="Registered GST name" value={gstBuyerName[order.id] ?? shop?.gstName ?? ''} onChange={e => setGstBuyerName(v => ({ ...v, [order.id]: e.target.value }))} placeholder="Registered GST name" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
-                      <input required aria-label="GST number" value={gstBuyerGstin[order.id] ?? shop?.gstin ?? ''} onChange={e => setGstBuyerGstin(v => ({ ...v, [order.id]: e.target.value.toUpperCase() }))} placeholder="GST number" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
+                      <label className="text-xs font-bold">Registered GST name <span className="text-red-700">(required)</span><input readOnly value={shop?.gstName ?? ''} className="mt-1 h-9 w-full rounded-lg border border-purple-300 bg-white px-2" /></label>
+                      <label className="text-xs font-bold">GST number <span className="text-red-700">(required)</span><input readOnly value={shop?.gstin ?? ''} className="mt-1 h-9 w-full rounded-lg border border-purple-300 bg-white px-2" /></label>
+                      {gstBuyerError(shop?.gstName ?? '', shop?.gstin ?? '') && (
+                        <div className="col-span-full space-y-2 text-xs text-purple-900">
+                          <p>Save both GST details for {order.shopName} in Shop Master to continue.</p>
+                          {onOpenShopGst && <button type="button" onClick={() => onOpenShopGst(order.shopId)} className="rounded-lg bg-purple-700 px-3 py-2 font-bold text-white">Open this shop in Shop Master</button>}
+                        </div>
+                      )}
                       <input value={gstBuyerAddress[order.id] ?? ''} onChange={e => setGstBuyerAddress(v => ({ ...v, [order.id]: e.target.value }))} placeholder="Buyer address" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
                       <input value={gstBuyerStateName[order.id] ?? ''} onChange={e => setGstBuyerStateName(v => ({ ...v, [order.id]: e.target.value }))} placeholder="State Name" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />
                       <input value={gstBuyerStateCode[order.id] ?? ''} onChange={e => setGstBuyerStateCode(v => ({ ...v, [order.id]: e.target.value }))} placeholder="State Code" className="h-9 rounded-lg border border-purple-300 bg-white px-2 text-xs font-bold" />

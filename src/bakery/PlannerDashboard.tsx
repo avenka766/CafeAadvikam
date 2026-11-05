@@ -3247,6 +3247,7 @@ function HosurUnifiedSection({ embedded = false }: { embedded?: boolean } = {}) 
   const selectTab = (key: HosurSubTab) => {
     const params = new URLSearchParams(searchParams);
     params.set('hosurTab', key);
+    params.delete('gstShop');
     // BUG FIX (2026-08-12): when embedded inside Owner Dashboard, this `tab`
     // key belongs to Owner's OWN outer tab switcher (e.g. `/owner?tab=planner`)
     // — writing 'hosur' into it here would silently knock Owner off its
@@ -3267,6 +3268,14 @@ function HosurUnifiedSection({ embedded = false }: { embedded?: boolean } = {}) 
   const panelSection: 'place' | 'dispatch' | undefined = activeTab === 'place' || activeTab === 'dispatch' ? activeTab : undefined;
   const lastPanelSection = useRef<'place' | 'dispatch'>(panelSection ?? 'place');
   if(panelSection)lastPanelSection.current=panelSection;
+
+  const openShopGst = (shopId: string) => {
+    const params = new URLSearchParams(searchParams);
+    params.set('hosurTab', 'shops');
+    params.set('gstShop', shopId);
+    if (!embedded) params.set('tab', 'hosur');
+    setSearchParams(params);
+  };
 
   return (
     <div className="space-y-4">
@@ -3298,7 +3307,7 @@ function HosurUnifiedSection({ embedded = false }: { embedded?: boolean } = {}) 
       </div>
 
       <RetainedPanel active={Boolean(panelSection)}>
-        <HosurShopOrderPanel active={Boolean(panelSection)} section={lastPanelSection.current} onPendingCountChange={setPendingDispatchCount} />
+        <HosurShopOrderPanel active={Boolean(panelSection)} section={lastPanelSection.current} onPendingCountChange={setPendingDispatchCount} onOpenShopGst={openShopGst} />
       </RetainedPanel>
       <RetainedPanel active={!panelSection}>
         <HosurDashboard hideNav active={!panelSection} />
