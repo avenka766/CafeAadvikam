@@ -1741,7 +1741,13 @@ export default function HosurDashboard({ hideNav = false, active = true }: { hid
             <div className="flex min-h-[360px] items-center justify-center"><Loader2 className="size-8 animate-spin text-emerald-600" /></div>
           ) : (
             <div className="space-y-4">
-              {tab === 'shops' && <ShopMasterTab shops={shops} prices={prices} busy={busy} withBusy={withBusy} priceFor={priceFor} />}
+              {tab === 'shops' && <ShopMasterTab key={searchParams.get('gstShop') ?? 'shops'} shops={shops} prices={prices} busy={busy} withBusy={withBusy} priceFor={priceFor}
+                gstShopId={searchParams.get('gstShop')} onBackToBilling={() => {
+                  const params = new URLSearchParams(searchParams);
+                  params.delete('gstShop');
+                  params.set('hosurTab', 'dispatch');
+                  setSearchParams(params, { replace: true });
+                }} />}
               {tab === 'newOrder' && <NewOrderTab shops={activeShops} prices={prices} busy={busy} withBusy={withBusy} priceFor={priceFor} userName={userName} />}
               {tab === 'receiving' && <ReceivingTab orders={orders} orderItems={orderItems} busy={busy} withBusy={withBusy} createDraftBill={createDraftBill} userName={userName} />}
               {tab === 'billing' && <BillingTab bills={bills} billItems={billItems} busy={busy} withBusy={withBusy} confirmBill={confirmBill} resendBillWhatsapp={resendBillWhatsapp} counterOpen={hosurCounterOpen} counterLoading={hosurCounterLoading} counterError={hosurCounterError} openCounter={goToPlannerDailyClosure} />}
@@ -1773,17 +1779,31 @@ function Sidebar({ tabs, active, setActive }: { tabs: { id: HosurTab; label: str
   );
 }
 
-function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
+function ShopMasterTab({ shops, prices, busy, withBusy, priceFor, gstShopId, onBackToBilling }: {
   shops: HosurShop[];
   prices: HosurShopPrice[];
   busy: boolean;
   withBusy: (fn: () => Promise<void>, success?: string) => Promise<void>;
   priceFor: (shopId: string, item: BranchCatalogItem | HosurCatalogItem | string) => number;
+  gstShopId: string | null;
+  onBackToBilling: () => void;
 }) {
   const emptyShop = { shopName: '', whatsappNumber: '', address: '', discountPercent: '', gstName: '', gstin: '' };
   const [form, setForm] = useState(emptyShop);
   const [editingShopId, setEditingShopId] = useState<string | null>(null);
   const [selectedShopId, setSelectedShopId] = useState('');
+  const openedGstShop = useRef(false);
+  const gstNameInput = useRef<HTMLInputElement>(null);
+  const gstShop = shops.find(shop => shop.id === gstShopId);
+  useEffect(() => {
+    if (!gstShop || openedGstShop.current) return;
+    openedGstShop.current = true;
+    setEditingShopId(gstShop.id);
+    setSelectedShopId(gstShop.id);
+    setForm({ shopName: gstShop.shopName, whatsappNumber: gstShop.whatsappNumber, address: gstShop.address,
+      discountPercent: String(gstShop.discountPercent || ''), gstName: gstShop.gstName, gstin: gstShop.gstin });
+    gstNameInput.current?.focus();
+  }, [gstShop]);
   // FEATURE (2026-08-30): "Need the ability to delete the shop as well" —
   // Shop Master previously only had Edit, no way to remove a shop at all.
   // deletingShopId gates a one-tap "Delete" into an explicit "Confirm
@@ -1829,7 +1849,8 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
 
   const saveShop = async () => {
     if (!form.shopName.trim()) throw new Error('Shop name is required.');
-    if (form.gstName.trim() || form.gstin.trim()) {
+    if (gstShopId && editingShopId !== gstShopId) throw Error('Open the selected shop before saving its GST details.');
+    if (gstShopId || form.gstName.trim() || form.gstin.trim()) {
       const error = gstBuyerError(form.gstName, form.gstin);
       if (error) throw Error(error);
     }
@@ -1850,6 +1871,7 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
       ? await supabase.from('hosur_shops').update(payload).eq('id', editingShopId).select('id').single()
       : await supabase.from('hosur_shops').insert(payload).select('id').single();
     if (result.error) throw result.error;
+    if (gstShopId) return;
     setEditingShopId(null);
     setForm(emptyShop);
   };
@@ -2001,8 +2023,9 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
             <Field label="Shop name"><input className={inputClass} value={form.shopName} onChange={(e) => setForm({ ...form, shopName: e.target.value })} placeholder="Example: Sri Lakshmi Bakery" /></Field>
             <Field label="WhatsApp number (optional)"><input className={inputClass} value={form.whatsappNumber} onChange={(e) => setForm({ ...form, whatsappNumber: e.target.value })} placeholder="10 digit mobile number" /></Field>
             <Field label="Address"><textarea className={cn(inputClass, 'min-h-24 resize-none')} value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} placeholder="Shop address" /></Field>
-            <Field label="Registered GST name"><input className={inputClass} value={form.gstName} onChange={e => setForm({...form, gstName: e.target.value})} /></Field>
-            <Field label="GST number"><input className={inputClass} value={form.gstin} onChange={e => setForm({...form, gstin: e.target.value.toUpperCase()})} /></Field>
+            {gstShopId && <button type="button" className={softButton} disabled={busy} onClick={onBackToBilling}>Back to Dispatch &amp; Billing</button>}
+            <Field label={gstShopId ? 'Registered GST name (required)' : 'Registered GST name'}><input ref={gstNameInput} className={inputClass} value={form.gstName} onChange={e => setForm({...form, gstName: e.target.value})} /></Field>
+            <Field label={gstShopId ? 'GST number (required)' : 'GST number'}><input className={inputClass} value={form.gstin} onChange={e => setForm({...form, gstin: e.target.value.toUpperCase()})} /></Field>
             <Field label="Default Discount % (optional)">
               <input
                 className={inputClass}
