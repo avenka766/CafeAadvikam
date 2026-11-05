@@ -2308,9 +2308,55 @@ function AdminDashboard() {
   const [hosurShop,setHosurShop]=useState('All');
   const [hosurPayment,setHosurPayment]=useState('All');
   const [hosurBalance,setHosurBalance]=useState('All');
+  const [taxInvoiceRefresh, setTaxInvoiceRefresh] = useState(0);
+  const [taxInvoicePage, setTaxInvoicePage] = useState(1);
+  const [taxInvoiceReport, setTaxInvoiceReport] = useState<{
+    key: string;
+    error?: string;
+    rows: Array<{id: string; invoiceNo: string; invoiceDate: string; issuedAt: string; buyer: string; gstin: string;
+      reference: string; taxableValue: number; cgst: number; sgst: number; igst: number; roundOff: number; invoiceValue: number; status: string}>;
+  }>({key: '', rows: []});
+  const taxInvoiceKey = `${fromDate}|${toDate}|${taxInvoiceRefresh}`;
+  const taxInvoicesLoading = taxInvoiceReport.key !== taxInvoiceKey;
+  const taxInvoiceError = taxInvoicesLoading ? undefined : taxInvoiceReport.error;
+  useEffect(() => {
+    if (activeTab !== 'hosur' || !fromDate || !toDate) return;
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        const {data, error} = await fetchAllRows<Record<string, unknown>>('gst_tax_invoices', q => q
+          .select('id,invoice_no,invoice_date,created_at,buyer_name,buyer_gstin,reference_no,taxable_value,cgst_amount,sgst_amount,igst_amount,round_off,total')
+          .gte('invoice_date', fromDate).lte('invoice_date', toDate)
+          .order('invoice_date', {ascending: false}).order('created_at', {ascending: false}).order('id')
+          .abortSignal(controller.signal));
+        if (error) throw Error(error);
+        if (controller.signal.aborted) return;
+        setTaxInvoiceReport({key: taxInvoiceKey, rows: data.map(row => ({
+          id: String(row.id), invoiceNo: String(row.invoice_no), invoiceDate: String(row.invoice_date),
+          issuedAt: String(row.created_at), buyer: String(row.buyer_name ?? ''), gstin: String(row.buyer_gstin ?? ''),
+          reference: String(row.reference_no ?? ''), taxableValue: Number(row.taxable_value), cgst: Number(row.cgst_amount),
+          sgst: Number(row.sgst_amount), igst: Number(row.igst_amount), roundOff: Number(row.round_off),
+          invoiceValue: Number(row.total), status: 'Issued',
+        }))});
+      } catch (error) {
+        if (!controller.signal.aborted) setTaxInvoiceReport({key: taxInvoiceKey, rows: [], error: error instanceof Error ? error.message : 'Could not load Planner tax invoices.'});
+      }
+    })();
+    return () => controller.abort();
+  }, [activeTab, fromDate, toDate, taxInvoiceKey]);
+  useEffect(() => { setTaxInvoicePage(1); }, [taxInvoiceKey, hosurSearch, hosurShop]);
+  const issuedTaxInvoices = taxInvoicesLoading ? [] : taxInvoiceReport.rows.filter(invoice => {
+    const search = hosurSearch.trim().toLowerCase();
+    return (hosurShop === 'All' || invoice.buyer === hosurShop) &&
+      `${invoice.invoiceNo} ${invoice.buyer} ${invoice.gstin} ${invoice.reference}`.toLowerCase().includes(search);
+  });
+  const currentTaxInvoicePage = Math.min(taxInvoicePage, Math.max(1, Math.ceil(issuedTaxInvoices.length / 100)));
   const allHosurBillsInRange = useMemo(() => realBillsInRange.filter(b => b.branch === 'Hosur')
     .sort((a, b) => (b.invoiceNo || b.billNo || '').localeCompare(a.invoiceNo || a.billNo || '', undefined, { numeric: true, sensitivity: 'base' })), [realBillsInRange]);
-  const hosurShopOptions=useMemo(()=>Array.from(new Set(allHosurBillsInRange.map(b=>b.biller).filter(Boolean))).sort(),[allHosurBillsInRange]);
+  const hosurShopOptions = Array.from(new Set([
+    ...allHosurBillsInRange.map(b => b.biller),
+    ...(taxInvoicesLoading ? [] : taxInvoiceReport.rows.map(invoice => invoice.buyer)),
+  ].filter(Boolean))).sort();
   const hosurBillsInRange = useMemo(()=>allHosurBillsInRange.filter(b=>{
     const paid=billPaidByMode.get(b.id)||{cash:0,upi:0,card:0};const balance=b.total-paid.cash-paid.upi-paid.card;
     return (!hosurGstOnly||isGstCheckedBill(b))&&(hosurShop==='All'||b.biller===hosurShop)&&(!hosurSearch.trim()||`${b.invoiceNo||''} ${b.billNo} ${b.biller}`.toLowerCase().includes(hosurSearch.trim().toLowerCase()))&&(hosurPayment==='All'||paid[hosurPayment as keyof typeof paid]>0)&&(hosurBalance==='All'||(hosurBalance==='Outstanding'?balance>.01:balance<=.01));
@@ -2425,7 +2471,19 @@ function AdminDashboard() {
     if(splitIndex!==undefined&&bill.invoiceTaxes?.[numbers[splitIndex]])return bill.invoiceTaxes[numbers[splitIndex]];
     return Object.fromEntries(['taxableValue','cgst','sgst','igst','invoiceValue','printedInvoiceValue','ledgerAdjustment'].map(k=>[k,splitIndex===undefined?tax[k as keyof typeof tax]:splitAmountByRatio(tax[k as keyof typeof tax],ratios)[splitIndex]]));
   };
-  const exportHosurExcel = () => { if(hosurItemReconciliation.errors.length){window.alert('Export blocked: '+hosurItemReconciliation.errors.join('; '));return;} return exportWorkbook(`Admin_Hosur_${fromDate}_${toDate}`, [
+  const plannerTaxInvoiceSheet = {
+    name: 'Planner Tax Invoices',
+    title: `Issued Planner tax invoices (${fromDate} to ${toDate})`,
+    columns: [
+      {header: 'Invoice Number', key: 'invoiceNo'}, {header: 'Invoice Date', key: 'invoiceDate'},
+      {header: 'Issued At (IST)', key: 'issuedAt'}, {header: 'Customer', key: 'buyer', width: 34},
+      {header: 'GSTIN', key: 'gstin', width: 20}, {header: 'Reference', key: 'reference'},
+      {header: 'Status', key: 'status'}, ...hosurTaxColumns.slice(0, 5), {header: 'Round Off', key: 'roundOff'},
+    ],
+    rows: issuedTaxInvoices.map(invoice => ({...invoice, issuedAt: fmtDateTime(invoice.issuedAt)})),
+  };
+  const exportHosurExcel = () => { if(taxInvoicesLoading || taxInvoiceError || realSalesLoading || realSalesError)return; if(hosurItemReconciliation.errors.length){window.alert('Export blocked: '+hosurItemReconciliation.errors.join('; '));return;} return exportWorkbook(`Admin_Hosur_${fromDate}_${toDate}`, [
+    plannerTaxInvoiceSheet,
     {name:'Invoice Exceptions',title:'Historical invoice exceptions — excluded from confirmed sales totals',columns:[{header:'Invoice Number',key:'invoiceNo'},{header:'Branch',key:'scope'},{header:'Customer / Shop',key:'who'},{header:'Status',key:'status'},{header:'Recorded Value (not sales)',key:'total'},{header:'Date',key:'createdAt'}],rows:hosurGstOnly?[]:hosurReviewInvoices},
     {name:'GST Checked Bills', title:`GST checked bills (${fromDate} to ${toDate})`, columns:[{header:'Invoice Number',key:'invoiceNo',width:24},{header:'Customer / Shop',key:'biller',width:26},{header:'Date',key:'date'},...hosurTaxColumns], rows:hosurBillsInRange.filter(isGstCheckedBill).map(b=>({invoiceNo:b.invoiceNo||b.billNo,biller:b.biller,date:fmtDate(b.createdAt),...hosurTaxValues(b)}))},
     {
@@ -2559,14 +2617,14 @@ function AdminDashboard() {
               same fetchRealSalesData source as Branches Sales, only ever
               re-fetching on a fromDate/toDate change with no manual refresh. */}
           <button
-            onClick={() => void fetchRealSalesData()}
-            disabled={realSalesLoading}
+            onClick={() => { setTaxInvoiceRefresh(value => value + 1); void fetchRealSalesData(); }}
+            disabled={realSalesLoading || taxInvoicesLoading}
             className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700 hover:bg-slate-50 disabled:opacity-60">
             <RefreshCw className={cn('size-3.5', realSalesLoading && 'animate-spin')} />Refresh
           </button>
           <div className="flex flex-wrap gap-3"><select aria-label="Filter Hosur payment" value={hosurPayment} onChange={e=>setHosurPayment(e.target.value)} className="rounded-lg border p-2 text-sm"><option value="All">All payment methods</option><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option></select><select aria-label="Filter Hosur balance" value={hosurBalance} onChange={e=>setHosurBalance(e.target.value)} className="rounded-lg border p-2 text-sm"><option value="All">All balances</option><option value="Outstanding">Credit / outstanding</option><option value="Settled">Settled</option></select><input aria-label="Search Hosur bill or shop" value={hosurSearch} onChange={e=>setHosurSearch(e.target.value)} placeholder="Search bill number or shop name" className="rounded-lg border p-2 text-sm"/><select aria-label="Filter Hosur shop" value={hosurShop} onChange={e=>setHosurShop(e.target.value)} className="rounded-lg border p-2 text-sm"><option value="All">All shops</option>{hosurShopOptions.map(shop=><option key={shop} value={shop}>{shop}</option>)}</select><label className="inline-flex items-center gap-2 text-sm font-semibold"><input type="checkbox" checked={hosurGstOnly} onChange={e=>setHosurGstOnly(e.target.checked)} /> GST checked bills only</label></div>
-          <button onClick={exportHosurExcel}
-            className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-3 py-2 text-xs font-black text-white">
+          <button onClick={exportHosurExcel} disabled={taxInvoicesLoading || !!taxInvoiceError || realSalesLoading || !!realSalesError}
+            className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-3 py-2 text-xs font-black text-white disabled:opacity-50">
             <FileSpreadsheet className="size-3.5" /> Excel
           </button>
           <button onClick={exportHosurPdf}
@@ -2602,6 +2660,46 @@ function AdminDashboard() {
           Data check failed on {hosurDataIntegrityIssues.length} bill{hosurDataIntegrityIssues.length === 1 ? '' : 's'} — stored total doesn't match credit + paid: {hosurDataIntegrityIssues.map(b => b.invoiceNo || b.billNo).join(', ')}. Do not send this range's Excel/PDF to anyone until these are corrected — the figures below and in the export may be wrong for these bills specifically.
         </div>
       )}
+
+      <Panel title="Planner Tax Invoices" subtitle="Issued invoices from Planner Sales → Invoice, filtered by invoice date. Payment and balance filters apply to confirmed shop bills.">
+        {taxInvoiceError ? (
+          <div role="alert" className="flex flex-wrap items-center gap-2 text-sm text-red-700">
+            <span>Planner tax invoices could not load. {taxInvoiceError}</span>
+            <button className="rounded-lg border px-3 py-1 font-semibold" onClick={() => setTaxInvoiceRefresh(value => value + 1)}>Retry</button>
+          </div>
+        ) : taxInvoicesLoading || !issuedTaxInvoices.length ? (
+          <EmptyState label={taxInvoicesLoading ? 'Loading Planner tax invoices…' : 'No issued tax invoices match this range and search.'} />
+        ) : (
+          <>
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-sm">
+              <button className="inline-flex items-center gap-2 rounded-lg border px-3 py-1 font-semibold" onClick={() => void exportWorkbook('Planner_Tax_Invoices_' + fromDate + '_' + toDate, [plannerTaxInvoiceSheet])}>
+                <FileSpreadsheet className="size-3.5" /> Tax Invoice Excel
+              </button>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm">
+                <thead className="border-b bg-slate-50 text-xs text-slate-600">
+                  <tr>{['Invoice Number', 'Invoice Date', 'Issued At (IST)', 'Customer', 'GSTIN', 'Taxable Value', 'CGST', 'SGST', 'IGST', 'Invoice Value', 'Status'].map(label => <th key={label} className="whitespace-nowrap px-3 py-2">{label}</th>)}</tr>
+                </thead>
+                <tbody className="divide-y">
+                  {issuedTaxInvoices.slice((currentTaxInvoicePage - 1) * 100, currentTaxInvoicePage * 100).map(invoice => (
+                    <tr key={invoice.id}>
+                      <td className="whitespace-nowrap px-3 py-2 font-semibold">{invoice.invoiceNo}</td>
+                      <td className="whitespace-nowrap px-3 py-2">{fmtDate(invoice.invoiceDate)}</td>
+                      <td className="whitespace-nowrap px-3 py-2">{fmtDateTime(invoice.issuedAt)}</td>
+                      <td className="px-3 py-2">{invoice.buyer}</td>
+                      <td className="px-3 py-2">{invoice.gstin || '—'}</td>
+                      {[invoice.taxableValue, invoice.cgst, invoice.sgst, invoice.igst, invoice.invoiceValue].map((value, index) => <td key={index} className="whitespace-nowrap px-3 py-2 tabular-nums">{value.toLocaleString('en-IN', {style: 'currency', currency: 'INR'})}</td>)}
+                      <td className="px-3 py-2">{invoice.status}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <ReportPager count={issuedTaxInvoices.length} page={currentTaxInvoicePage} onPage={setTaxInvoicePage} />
+          </>
+        )}
+      </Panel>
 
       <Panel title="Dispatched, Not Yet Billed" subtitle="Orders sitting in the Dispatch & Billing Queue that were never confirmed into a bill">
         {hosurUnbilledDispatched.length === 0 ? <EmptyState label="Nothing outstanding — every dispatched order in this range has been billed." /> : (
