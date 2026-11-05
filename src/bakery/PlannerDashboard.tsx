@@ -9905,10 +9905,47 @@ function EditDispatchInvoiceModal({ invoice, onClose, onSaved }: {
   const discountAmount = Math.round(subtotal * (clampedDiscountPct / 100) * 100) / 100;
   const total = exclusiveGst ? calculatePlannerSalesGst(subtotal,discountAmount,true,Number(gstPct)||0,gstSupplyType).total : Math.max(0, Math.round(subtotal-discountAmount));
 
+  const returnedLines = invoice.items.filter((item, index) =>
+    item.unit !== 'charge' && !lines.some(line => line.key === index));
+
   const save = async () => {
     if (savingInFlightRef.current) return;
     setError(null);
     setWarning(null);
+    if (returnedLines.length) {
+      const unchangedLines = lines.every(({ key, ...line }) =>
+        JSON.stringify(line) === JSON.stringify(invoice.items[key]));
+      const remainingCount = invoice.items.length - returnedLines.length;
+      if (!unchangedLines || lines.length !== remainingCount || discountPct !== invoice.discountPct ||
+          gstEnabled !== invoice.isGstInvoice || gstSupplyType !== (invoice.gstSupplyType || 'intra') ||
+          gstPct !== String(firstGstLine?.gstPct ?? 5) || gstHsnCode !== (firstGstLine?.hsnCode || '') ||
+          gstBuyerName !== (savedBuyer?.name || '') || gstBuyerGstin !== (savedBuyer?.gstin || '') ||
+          gstBuyerAddress !== (savedBuyer?.address || '') || gstBuyerStateName !== (savedBuyer?.stateName || 'Tamil Nadu') ||
+          gstBuyerStateCode !== (savedBuyer?.stateCode || '33')) {
+        setError('Save the return separately from item, price, discount or GST edits. Reopen the bill and select only the items being returned.');
+        return;
+      }
+      savingInFlightRef.current = true;
+      setSaving(true);
+      try {
+        const result = await returnDispatchInvoiceItems({
+          invoiceId: invoice.id,
+          returns: returnedLines.map(item => ({itemName:item.itemName,unit:item.unit,qty:item.quantity})),
+          returnedBy: currentUser?.displayName || currentUser?.username || 'Planner',
+        });
+        if ('error' in result) { setError(result.error); return; }
+        if (result.whatsapp && !result.whatsapp.ok) {
+          setWarning(`Return saved. WhatsApp needs a retry${result.whatsapp.error ? ` (${result.whatsapp.error})` : ''}.`);
+        }
+        setSavedRecord(result.record);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'The return could not be saved.');
+      } finally {
+        savingInFlightRef.current = false;
+        setSaving(false);
+      }
+      return;
+    }
     // Charge lines (Delivery Fee etc.) are kept regardless of quantity —
     // they carry their amount in unitPrice with quantity pinned to 1, and
     // must never be dropped by a quantity check meant for real items.
@@ -10174,7 +10211,7 @@ function EditDispatchInvoiceModal({ invoice, onClose, onSaved }: {
         <div className="mt-4 flex flex-wrap justify-end gap-2">
           <button onClick={onClose} disabled={saving} className="rounded-xl border border-border px-3 py-2 text-xs font-bold text-muted-foreground hover:bg-muted disabled:opacity-50">Cancel</button>
           <button onClick={save} disabled={saving} className="flex items-center gap-1.5 rounded-xl bg-teal-600 px-4 py-2 text-xs font-bold text-white hover:bg-teal-700 disabled:opacity-50">
-            {saving ? <Loader2 className="size-3.5 animate-spin" /> : <CheckCircle2 className="size-3.5" />} Save Changes
+            {saving ? <Loader2 className="size-3.5 animate-spin" /> : <CheckCircle2 className="size-3.5" />} {returnedLines.length ? 'Save Return' : 'Save Changes'}
           </button>
         </div>
       </div>
