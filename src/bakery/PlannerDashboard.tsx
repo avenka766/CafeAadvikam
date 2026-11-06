@@ -8420,11 +8420,13 @@ function ExtraItemDispatchForm({ contextLabel, suggestions, onAdd }: {
   const [qty, setQty] = useState('');
   const [unit, setUnit] = useState<'kg' | 'pcs'>('kg');
   const [added, setAdded] = useState<string | null>(null);
+  const amount = Number(qty);
+  const canAdd = Boolean(name.trim()) && Number.isFinite(amount) && amount > 0 &&
+    (unit !== 'pcs' || Number.isInteger(amount));
 
   const add = () => {
     const trimmedName = name.trim();
-    const amount = Number(qty);
-    if (!trimmedName || !qty || amount <= 0) return;
+    if (!canAdd) return;
     onAdd({ itemName: trimmedName, unit, quantity: amount });
     setAdded(`Added "${trimmedName}" (${amount} ${unit}) to the list below — dispatch it along with everything else when you're ready.`);
     setName(''); setSelectedSuggestion(null); setQty('');
@@ -8456,14 +8458,18 @@ function ExtraItemDispatchForm({ contextLabel, suggestions, onAdd }: {
           items={suggestions ?? []}
           placeholder={`Item name (${contextLabel})`}
         />
-        <input value={qty} onChange={e => setQty(e.target.value)} type="number" min={0} placeholder="Qty" className="w-20 rounded-lg border border-amber-300 bg-white px-2.5 py-1.5 text-xs font-bold" />
-        <select value={unit} onChange={e => setUnit(e.target.value as 'kg' | 'pcs')} className="rounded-lg border border-amber-300 bg-white px-2 py-1.5 text-xs font-bold">
+        <input value={qty} onChange={e => setQty(sanitizeQtyForUnit(e.target.value, unit))} type="number" min={0} step={unit === 'pcs' ? 1 : 0.001} placeholder="Qty" className="w-20 rounded-lg border border-amber-300 bg-white px-2.5 py-1.5 text-xs font-bold" />
+        <select value={unit} onChange={e => {
+          const nextUnit = e.target.value as 'kg' | 'pcs';
+          setUnit(nextUnit);
+          setQty(sanitizeQtyForUnit(qty, nextUnit));
+        }} className="rounded-lg border border-amber-300 bg-white px-2 py-1.5 text-xs font-bold">
           <option value="kg">kg</option>
           <option value="pcs">pcs</option>
         </select>
         <button
           onClick={add}
-          disabled={!name.trim() || !qty || Number(qty) <= 0}
+          disabled={!canAdd}
           className="flex items-center justify-center gap-1.5 rounded-lg bg-amber-700 px-3 py-1.5 text-xs font-black text-white hover:bg-amber-800 disabled:opacity-50"
         >
           <Plus className="size-3.5" /> Add
@@ -8643,7 +8649,7 @@ function HosurShopDispatchPanel({ rows, mode, orders, leftoverBalances, onDispat
     // calls only run from the confirmed review's onDone, which is never
     // reached when there's nothing to send. Verified live against this
     // exact scenario (see project_hosur_dispatch_bugs_20260902 memory).
-    const anchorOrderId = orders.find(o => bakeryOrderCoversHosurShopOrder(o, card.orderId))?.id ?? null;
+    const anchorOrderId = orders.find(o => !isAdvanceOrderTagged(o.notes) && bakeryOrderCoversHosurShopOrder(o, card.orderId))?.id ?? null;
     for (const item of card.items) {
       // CRITICAL BUG FIX (2026-08-07, preserved) + FEATURE (2026-08-15):
       // the order-linked portion is still hard-capped at this item's true
@@ -9277,7 +9283,8 @@ function BranchFlatDispatchPanel({ branch, rows, orders, leftoverBalances, onDis
   // cross-branch merge (surviving order's own targetBranch now something
   // else), the old check would find no anchor at all even though a
   // perfectly valid one exists.
-  const anchorOrderId = orders.find(o => o.targetBranch === branch || o.items.some(i => i.branchSplit?.[branch]))?.id ?? null;
+  const anchorOrderId = orders.find(o => !isAdvanceOrderTagged(o.notes) &&
+    (o.targetBranch === branch || o.items.some(i => i.branchSplit?.[branch])))?.id ?? null;
 
   const reviewModal = reviewActions && (
     <DispatchReviewModal
@@ -12292,6 +12299,8 @@ registerReplayHandler('planner_dispatch_and_invoice', async (_kind, payload) => 
   }
 });
 
+const dispatchReviewItemKey = (itemName: string, unit: string) => JSON.stringify([itemName.trim().toLowerCase(), unit]);
+
 export function DispatchReviewModal({ scope, hosurShop, hosurOrderId, customer, actions, skippedItems, dispatchedBy, invoiceNotes, onClose, onDone }: {
   scope: Branch;
   invoiceNotes?: string;
@@ -12477,7 +12486,7 @@ export function DispatchReviewModal({ scope, hosurShop, hosurOrderId, customer, 
   useEffect(() => {
     if (scope !== 'Hosur' || !hosurShop) return;
     let cancelled = false;
-    const cacheKey = `hosur_shop_prices_v1_${hosurShop.id}`;
+    const cacheKey = `hosur_shop_prices_by_unit_${hosurShop.id}`;
     (async () => {
       setLoadingPrices(true);
       // OFFLINE FIX (2026-10-01): "Phase 2 — Planner/dispatch offline" — this
@@ -12490,12 +12499,12 @@ export function DispatchReviewModal({ scope, hosurShop, hosurOrderId, customer, 
       // succeeds, same pattern as every other offline fix this session.
       const cached = await getCached<Record<string, number>>(cacheKey);
       if (!cancelled && cached) setHosurPrices(cached);
-      const { data, error: err } = await supabase.from('hosur_shop_price_lists').select('item_name, unit_price').eq('shop_id', hosurShop.id).eq('is_active', true);
+      const { data, error: err } = await supabase.from('hosur_shop_price_lists').select('item_name, item_unit, unit_price').eq('shop_id', hosurShop.id).eq('is_active', true);
       if (cancelled) return;
       if (!err && data) {
         const map: Record<string, number> = {};
-        for (const row of data as { item_name: string; unit_price: number }[]) {
-          map[row.item_name.trim().toLowerCase()] = Number(row.unit_price) || 0;
+        for (const row of data as { item_name: string; item_unit: string; unit_price: number }[]) {
+          map[dispatchReviewItemKey(row.item_name, row.item_unit)] = Number(row.unit_price) || 0;
         }
         setHosurPrices(map);
         void setCached(cacheKey, map);
@@ -12522,7 +12531,7 @@ export function DispatchReviewModal({ scope, hosurShop, hosurOrderId, customer, 
       // throughout this file) — the row still displays whichever casing
       // was seen first, so nothing changes for the normal case where
       // every contributing order already agrees on casing.
-      const key = a.itemName.trim().toLowerCase();
+      const key = dispatchReviewItemKey(a.itemName, a.unit);
       const cur = byName.get(key) ?? { itemName: a.itemName, unit: a.unit, quantity: 0 };
       // BUG FIX: "for pcs item never allow decimal points" — round each
       // action's own contribution before summing, matching exactly how
@@ -12543,10 +12552,13 @@ export function DispatchReviewModal({ scope, hosurShop, hosurOrderId, customer, 
     return Array.from(byName.values());
   }, [effectiveActions]);
 
-  const priceFor = (itemName: string): number | null => {
-    const agreedPrice = actions.find(action => action.itemName === itemName && action.unitPrice != null)?.unitPrice;
+  const agreedPriceFor = (itemName: string, unit: string) => effectiveActions.find(action =>
+    dispatchReviewItemKey(action.itemName, action.unit) === dispatchReviewItemKey(itemName, unit) && action.unitPrice != null)?.unitPrice;
+  const priceFor = (itemName: string, unit: string): number | null => {
+    const agreedPrice = agreedPriceFor(itemName, unit);
     if (agreedPrice != null) return agreedPrice;
-    const override = priceOverrides[itemName];
+    const key = dispatchReviewItemKey(itemName, unit);
+    const override = priceOverrides[key];
     // BUG FIX (2026-09-03, found before deploy): this had no floor — typing
     // a negative number into the price-override box (the input itself only
     // has `min={0}` as an HTML hint, not an enforced constraint) flowed
@@ -12554,7 +12566,10 @@ export function DispatchReviewModal({ scope, hosurShop, hosurOrderId, customer, 
     // that line (and everything computed from it: credit_amount on the new
     // Hosur auto-bill path, the printed total) without ever tripping the
     // "missingPriceItems" check, since a valid negative number isn't null.
-    if (override !== undefined && override.trim() !== '') return Math.max(0, Number(override) || 0);
+    if (override !== undefined && override.trim() !== '') {
+      const value = Number(override);
+      return Number.isFinite(value) && value >= 0 ? value : null;
+    }
     if (customer) {
       // Combined SNB + VRSNB lookup — matches how the Planning tab's item
       // picker sources items in the first place.
@@ -12563,7 +12578,7 @@ export function DispatchReviewModal({ scope, hosurShop, hosurOrderId, customer, 
       return match && match.price > 0 ? match.price : null;
     }
     if (scope === 'Hosur') {
-      const p = hosurPrices[itemName.trim().toLowerCase()];
+      const p = hosurPrices[key];
       return p !== undefined && p > 0 ? p : null;
     }
     const list = catalogItems[scope as 'SNB' | 'VRSNB'] ?? [];
@@ -12572,9 +12587,9 @@ export function DispatchReviewModal({ scope, hosurShop, hosurOrderId, customer, 
   };
 
   const invoiceLines: DispatchInvoiceItem[] = displayItems.flatMap(d => {
-    const price = priceFor(d.itemName);
+    const price = priceFor(d.itemName, d.unit);
     const unitPrice = price ?? 0;
-    const extra = actions.some(action => action.dispatchSource === 'advance') ? effectiveActions.filter(action => action.isExtra && action.itemName === d.itemName && action.unit === d.unit).reduce((sum, action) => sum + action.quantity, 0) : 0;
+    const extra = actions.some(action => action.dispatchSource === 'advance') ? effectiveActions.filter(action => action.isExtra && dispatchReviewItemKey(action.itemName, action.unit) === dispatchReviewItemKey(d.itemName, d.unit)).reduce((sum, action) => sum + (action.unit === 'pcs' ? Math.round(action.quantity) : action.quantity), 0) : 0;
     const normal = Math.round((d.quantity - extra) * 1000) / 1000;
     if (extra > 0) return [
       ...(normal > 0 ? [{itemName:d.itemName,unit:d.unit,quantity:normal,unitPrice,lineTotal:Math.round(normal*unitPrice*100)/100}] : []),
@@ -12582,7 +12597,7 @@ export function DispatchReviewModal({ scope, hosurShop, hosurOrderId, customer, 
     ];
     return [{ itemName: d.itemName, unit: d.unit, quantity: d.quantity, unitPrice, lineTotal: Math.round(d.quantity * unitPrice * 100) / 100 }];
   });
-  const missingPriceItems = displayItems.filter(d => priceFor(d.itemName) === null);
+  const missingPriceItems = displayItems.filter(d => priceFor(d.itemName, d.unit) === null);
   // FEATURE (2026-09-13): "if the planner tries to send items that are not
   // in SNB items then... throw a message stating the item is not in SNB
   // items so it can't be sent due to mismatch, contact SNB branch manager"
@@ -12915,11 +12930,13 @@ export function DispatchReviewModal({ scope, hosurShop, hosurOrderId, customer, 
                 </thead>
                 <tbody>
                   {displayItems.map((d, idx) => {
-                    const price = priceFor(d.itemName);
+                    const price = priceFor(d.itemName, d.unit);
+                    const priceKey = dispatchReviewItemKey(d.itemName, d.unit);
+                    const hasAgreedPrice = agreedPriceFor(d.itemName, d.unit) != null;
                     const missing = price === null;
                     const mismatch = catalogMismatches.find(x => x.itemName === d.itemName);
                     return (
-                      <tr key={d.itemName} className={cn('border-t border-border', mismatch ? 'bg-red-100' : missing && 'bg-red-50')}>
+                      <tr key={priceKey} className={cn('border-t border-border', mismatch ? 'bg-red-100' : missing && 'bg-red-50')}>
                         <td className="px-3 py-2 text-right text-muted-foreground">{idx + 1}</td>
                         <td className="px-3 py-2 font-bold text-foreground">
                           {d.itemName}
@@ -12954,9 +12971,9 @@ export function DispatchReviewModal({ scope, hosurShop, hosurOrderId, customer, 
                         <td className="px-3 py-2 text-right">
                           <input
                             type="number" min={0} placeholder={loadingPrices ? '…' : '0.00'}
-                            disabled={actions.some(action => action.itemName === d.itemName && action.unitPrice != null)}
-                            value={actions.some(action => action.itemName === d.itemName && action.unitPrice != null) ? String(price ?? '') : priceOverrides[d.itemName] ?? (price !== null ? String(price) : '')}
-                            onChange={e => setPriceOverrides(v => ({ ...v, [d.itemName]: e.target.value }))}
+                            disabled={hasAgreedPrice}
+                            value={hasAgreedPrice ? String(price ?? '') : priceOverrides[priceKey] ?? (price !== null ? String(price) : '')}
+                            onChange={e => setPriceOverrides(v => ({ ...v, [priceKey]: e.target.value }))}
                             className={cn('w-20 rounded-lg border px-2 py-1 text-right', missing ? 'border-red-400 bg-white' : 'border-border')}
                           />
                         </td>
