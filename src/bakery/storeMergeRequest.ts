@@ -1,6 +1,42 @@
 import {supabase} from '@/lib/supabase';
 import type {BakeryOrder, BakeryOrderItem, PreparedItem} from './types';
 
+function itemKey(item: BakeryOrderItem) {
+  return JSON.stringify([item.itemName.trim().toLowerCase(), item.dispatchUnit ?? 'kg']);
+}
+
+function itemDetails(item: BakeryOrderItem) {
+  return JSON.stringify([item.weightGrams ?? null, item.advanceUnitPrice ?? null,
+    item.attachmentName ?? null, item.attachmentDataUrl ?? null, item.isCustom ?? null]);
+}
+
+export function partitionStoreMergeOrders(orders: BakeryOrder[], keepSeparate: (order: BakeryOrder) => boolean): BakeryOrder[][] {
+  const batches: {orders: BakeryOrder[]; details: Map<string, string> | null}[] = [];
+  for (const order of orders) {
+    const details = new Map<string, string>();
+    let standalone = keepSeparate(order);
+    for (const item of order.items) {
+      const key = itemKey(item);
+      const signature = itemDetails(item);
+      if (details.has(key) && details.get(key) !== signature) standalone = true;
+      details.set(key, signature);
+    }
+    if (standalone) {
+      batches.push({orders: [order], details: null});
+      continue;
+    }
+    const batch = batches.find(candidate => candidate.details && candidate.orders.length < 100 &&
+      [...details].every(([key, signature]) => !candidate.details!.has(key) || candidate.details!.get(key) === signature));
+    if (!batch) {
+      batches.push({orders: [order], details});
+      continue;
+    }
+    batch.orders.push(order);
+    for (const [key, signature] of details) batch.details!.set(key, signature);
+  }
+  return batches.map(batch => batch.orders);
+}
+
 export async function saveStoreMerge(staff:string,orders:BakeryOrder[],items:BakeryOrderItem[],produced:PreparedItem[],notes:string|null){
  if(!staff)throw Error('Sign in before sending orders to Store.');
  const expected=orders.map(o=>({id:o.id,items:o.items,produced_items:o.producedItems??[],status:o.status,notes:o.notes??null,target_branch:o.targetBranch??null}));

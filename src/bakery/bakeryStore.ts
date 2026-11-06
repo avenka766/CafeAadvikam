@@ -25,7 +25,7 @@ import { combinedMaterialsForItems } from './materialCalc';
 import { useRecipeStore } from './recipeStore';
 import { useStoreStockStore, convertToStockUnit } from './storeStockStore';
 import {saveStoreRelease} from './storeReleaseRequest';
-import {saveStoreMerge} from './storeMergeRequest';
+import {partitionStoreMergeOrders, saveStoreMerge} from './storeMergeRequest';
 
 // Planner's "Planning" tab tags a proactive/extra-production batch with this
 // marker in `notes` (target_branch stays null since the destination branch
@@ -207,7 +207,7 @@ interface BakeryState {
   // Combines several branch orders (same target branch) into a single
   // order before handing it to Store, so Store sees one combined order
   // instead of several separate ones.
-  mergeOrdersForStore: (orderIds: string[]) => Promise<void>;
+  mergeOrdersForStore: (orderIds: string[]) => Promise<number>;
   updateExpectedOutput: (orderId: string, qty: number) => Promise<void>;
   confirmStock: (orderId: string) => Promise<void>;
   // Store selects a subset of items to confirm/send; the rest stays behind
@@ -567,17 +567,21 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     const group = uniqueOrderIds
       .map(id => get().orders.find(o => o.id === id))
       .filter((o): o is BakeryOrder => Boolean(o));
-    if (group.length === 0) return;
+    if (group.length === 0) return 0;
     if (group.length !== uniqueOrderIds.length) throw Error('Some selected orders are no longer available. Refresh before sending.');
-    // Keep each customer's advance order and its invoice links intact.
-    // Merging advances used to discard every customer's notes except one.
-    if (group.length > 1 && group.some(order => isAdvanceOrderTagged(order.notes))) {
-      for (const order of group.filter(order => isAdvanceOrderTagged(order.notes))) {
-        await get().mergeOrdersForStore([order.id]);
+    const batches = partitionStoreMergeOrders(group, order => isAdvanceOrderTagged(order.notes));
+    if (batches.length > 1) {
+      let sent = 0;
+      for (const batch of batches) {
+        try {
+          sent += await get().mergeOrdersForStore(batch.map(order => order.id));
+        } catch (error) {
+          if (!sent) throw error;
+          const reason = error instanceof Error ? error.message : 'Store did not confirm the next batch.';
+          throw Error(`${sent} of ${batches.length} Store orders were confirmed. ${reason} Retry from Merged Summary.`);
+        }
       }
-      const regularIds = group.filter(order => !isAdvanceOrderTagged(order.notes)).map(order => order.id);
-      if (regularIds.length) await get().mergeOrdersForStore(regularIds);
-      return;
+      return sent;
     }
 
     // AUTO-CONFIRM (2026-08-06): sending (merged or single) orders to Store
@@ -613,7 +617,7 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
           branch: group[0].targetBranch,
         });
       }
-      return;
+      return 1;
     }
 
     // Combine items with the same name + unit across all orders in the group.
@@ -738,6 +742,7 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
         branch: primary.targetBranch,
       });
     }
+    return 1;
   },
 
   updateExpectedOutput: async (orderId, qty) => {

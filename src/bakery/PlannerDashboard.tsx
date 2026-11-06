@@ -2137,6 +2137,7 @@ function MergedSummaryTab({ orders }: { orders: BakeryOrder[] }) {
     if (sendingRef.current) return;
     sendingRef.current = true;
     setSendingAll(true); setNotice(null); setSendError(null);
+    let sentOrders = 0;
     try {
       const ids = Array.from(new Set(merged.flatMap(r => r.contributingOrderIds)));
       const contributing = orders.filter(o => ids.includes(o.id) && o.status === 'pending');
@@ -2150,9 +2151,9 @@ function MergedSummaryTab({ orders }: { orders: BakeryOrder[] }) {
         byBranch.set(bucket, list);
       }
       for (const branchOrderIds of byBranch.values()) {
-        await mergeOrdersForStore(branchOrderIds);
+        sentOrders += await mergeOrdersForStore(branchOrderIds);
       }
-      setNotice(`Combined order sent to Store for ${byBranch.size} branch${byBranch.size === 1 ? '' : 'es'}.`);
+      setNotice(sentOrders ? `Sent ${sentOrders} order${sentOrders === 1 ? '' : 's'} to Store.` : 'No pending orders to send.');
     } catch (err) {
       // BUG FIX: this had no catch at all — any Supabase failure (e.g. the
       // material-deduction step inside mergeOrdersForStore throwing because
@@ -2161,6 +2162,7 @@ function MergedSummaryTab({ orders }: { orders: BakeryOrder[] }) {
       // same silent-failure class as the Combine Orders bug on Store
       // Dashboard's sibling button.
       setSendError(err instanceof Error ? err.message : 'Failed to send to Store — please try again.');
+      if (sentOrders) setNotice(`${sentOrders} Store order${sentOrders === 1 ? ' was' : 's were'} confirmed before the error.`);
     } finally {
       sendingRef.current = false;
       setSendingAll(false);
