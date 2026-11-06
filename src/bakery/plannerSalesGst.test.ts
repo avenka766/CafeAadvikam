@@ -8,6 +8,19 @@ const buyer={name:'GST Buyer',address:'Hosur',gstin:'TEST-GSTIN',stateName:'Tami
 const bill:WalkinBillRow={id:'test',billNo:'SALES/26-27/TEST',items:[{itemName:'Festival pack',unit:'pcs',quantity:2,price:500,lineTotal:1000,gstPct:5,hsnCode:'2106',gstPricing:'exclusive',gstBuyerDetails:buyer}],subtotal:1000,discountType:'none',discountValue:0,discountAmount:0,total:1050,paymentMode:'cash',cashierName:'Planner',customerName:'Customer',customerMobile:'9999999999',status:'active',createdAt:'2026-10-16T02:00:00Z',isGstInvoice:true,gstSupplyType:'intra',cancelledAt:null,cancelledReason:null};
 afterEach(()=>vi.restoreAllMocks());
 
+it.each(['thermal','a4'] as const)('prints the current invoice without internal return history (%s)', paper => {
+  const current = {itemName:'Egg Puff',unit:'pcs',quantity:5,unitPrice:24,lineTotal:120};
+  const removed = {itemName:'Samosa',unit:'pcs',quantity:15,unitPrice:16,lineTotal:240};
+  const record = {...walkinBillToInvoiceRecord(bill), items:[current], originalItems:[current,removed],
+    returnLog:[{at:bill.createdAt,by:'Planner',reason:'Internal reason',items:[{itemName:'Samosa',unit:'pcs',qty:15}]}],
+    total:120, subtotal:120, isGstInvoice:false};
+  const html = renderDispatchInvoiceHtml(record, paper);
+  expect(html).toContain('Egg Puff');
+  expect(html).toContain('Net Bill Amount');
+  expect(html).toMatch(/Rs 120(?:\.00)?</);
+  expect(html).not.toMatch(/Samosa|Returned|Internal reason|>360</);
+});
+
 it('requires both buyer fields and validates GST number length and characters', () => {
   expect(gstBuyerError(' ', '33ABCDE1234F1Z5')).toMatch(/registered GST name/);
   expect(gstBuyerError('Shop Legal Name', '')).toMatch(/GST number/);

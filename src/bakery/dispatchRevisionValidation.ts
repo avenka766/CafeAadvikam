@@ -1,6 +1,31 @@
 type RevisionItem = { itemName: string; unit: string; quantity: number; unitPrice: number };
 export type DispatchReturnQuantity = { itemName: string; unit: string; qty: number };
 
+export function planDispatchEditReturns<T extends RevisionItem>(original: T[], lines: (T & {key: number})[]) {
+  const returns: DispatchReturnQuantity[] = [];
+  let otherEdits = lines.some(line => !original[line.key]);
+  const byKey = new Map(lines.map(line => [line.key, line]));
+  original.forEach((item, key) => {
+    const edited = byKey.get(key);
+    if (!edited) {
+      if (item.unit === 'charge') otherEdits = true;
+      else returns.push({itemName: item.itemName, unit: item.unit, qty: item.quantity});
+      return;
+    }
+    const {key: _key, ...values} = edited;
+    if (JSON.stringify({...values, quantity: item.quantity}) !== JSON.stringify(item) ||
+        !Number.isFinite(edited.quantity) || edited.quantity < 0 || edited.quantity > item.quantity) {
+      otherEdits = true;
+    }
+    if (edited.itemName === item.itemName && edited.unit === item.unit &&
+        edited.quantity >= 0 && edited.quantity < item.quantity) {
+      if (item.unit === 'charge') otherEdits = true;
+      else returns.push({itemName: item.itemName, unit: item.unit, qty: Number((item.quantity - edited.quantity).toFixed(9))});
+    }
+  });
+  return {returns, otherEdits};
+}
+
 export function dispatchRevisionError(items: RevisionItem[], discountPct: number): string | null {
   if (!Number.isFinite(discountPct) || discountPct < 0 || discountPct > 100) {
     return 'Discount must be between 0 and 100%.';

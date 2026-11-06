@@ -577,72 +577,28 @@ export function renderDispatchInvoiceHtml(record: DispatchInvoiceRecord, mode: '
   const sgstAmt = isGst && record.gstSupplyType === 'intra' ? Math.round((totalTax - cgstAmt) * 100) / 100 : 0;
   const igstAmt = isGst && record.gstSupplyType === 'inter' ? totalTax : 0;
 
-  // FEATURE (2026-09-06): "the invoice should clearly show the return items
-  // and quantity and already sent items" — when this invoice has ever been
-  // returned against (originalItems set — see returnDispatchInvoiceItems),
-  // iterate the ORIGINAL item list (so a fully-returned line still shows,
-  // with Net 0) and add Sent/Returned/Net columns instead of a single Qty
-  // column. A never-returned invoice (the overwhelming majority) keeps
-  // today's exact single-Qty layout — originalItems is null, isReturned is
-  // false, nothing here changes for it.
-  const isReturned = !!record.originalItems;
-  const itemKey = (name: string, unit: string) => `${name.trim().toLowerCase()}|${unit}`;
+  const itemKey = (name: string, unit: string) => JSON.stringify([name.trim().toLowerCase(), unit]);
   const fmtQty = (n: number) => (n % 1 === 0 ? n : n.toFixed(3));
-  const returnedByKey = new Map<string, number>();
-  for (const entry of record.returnLog) {
-    for (const it of entry.items) {
-      const k = itemKey(it.itemName, it.unit);
-      returnedByKey.set(k, (returnedByKey.get(k) ?? 0) + it.qty);
+  const rowSourceItems = record.items.filter(item => item.unit !== 'charge');
+  const merged = new Map<string, {itemName: string; quantity: number; lineTotal: number}>();
+  for (const item of rowSourceItems) {
+    const key = itemKey(item.itemName, item.unit);
+    const row = merged.get(key);
+    if (row) {
+      row.quantity += item.quantity;
+      row.lineTotal += item.lineTotal;
+    } else {
+      merged.set(key, {itemName: item.itemName, quantity: item.quantity, lineTotal: item.lineTotal});
     }
   }
-  // BUG FIX (2026-09-28): "DILPASAND was sent 200 pcs but its showing as 2"
-  // — a dispatch can split one item into an ordered line + an "EXTRA
-  // (non-requested item)" line (see submitDispatch's extraNote in
-  // bakeryStore.ts). Those were kept as separate DispatchInvoiceItem array
-  // entries, so this printed tax invoice showed the same item name twice
-  // with no explanation at all (worse than the app, which at least has a
-  // ledger note) — matches the same duplicate-row complaint already fixed
-  // in the branch Incoming tab (StockTab.tsx), now applied here too. Sum
-  // same-key entries into ONE aggregated value, keyed the same way
-  // returnedByKey already was, instead of the old last-write-wins Map.
-  const netByKey = new Map<string, { quantity: number; lineTotal: number }>();
-  for (const i of record.items) {
-    const k = itemKey(i.itemName, i.unit);
-    const existing = netByKey.get(k);
-    if (existing) { existing.quantity += i.quantity; existing.lineTotal += i.lineTotal; }
-    else netByKey.set(k, { quantity: i.quantity, lineTotal: i.lineTotal });
-  }
-  // Charge lines never belong in the real-item table (see chargeItems above)
-  // — same exclusion applied to whichever source array (returned invoices
-  // read from originalItems instead of record.items).
-  const rowSourceItems = (isReturned ? (record.originalItems ?? record.items) : record.items).filter(i => i.unit !== 'charge');
-  interface MergedRow { itemName: string; unit: string; quantity: number; lineTotal: number }
-  const mergedByKey = new Map<string, MergedRow>();
-  const mergedOrder: string[] = [];
-  for (const i of rowSourceItems) {
-    const k = itemKey(i.itemName, i.unit);
-    const existing = mergedByKey.get(k);
-    if (existing) { existing.quantity += i.quantity; existing.lineTotal += i.lineTotal; }
-    else { mergedByKey.set(k, { itemName: i.itemName, unit: i.unit, quantity: i.quantity, lineTotal: i.lineTotal }); mergedOrder.push(k); }
-  }
-  const rows = mergedOrder.map((k, idx) => {
-    const m = mergedByKey.get(k)!;
-    const netItem = netByKey.get(k);
-    const netQty = netItem ? netItem.quantity : 0;
-    const netAmount = netItem ? netItem.lineTotal : 0;
-    const returnedQty = returnedByKey.get(k) ?? 0;
-    const effectiveRate = m.quantity > 0 ? m.lineTotal / m.quantity : 0;
-    return `
+  const rows = [...merged.values()].map((row, index) => `
     <tr>
-      <td>${idx + 1}</td>
-      <td>${esc(m.itemName)}</td>
-      ${isReturned
-        ? `<td class="num">${fmtQty(m.quantity)}</td><td class="num">${returnedQty > 0 ? fmtQty(returnedQty) : '-'}</td><td class="num">${fmtQty(netQty)}</td>`
-        : `<td class="num">${fmtQty(m.quantity)}</td>`}
-      <td class="num">${formatAmount(effectiveRate)}</td>
-      <td class="num">${formatAmount(netAmount)}</td>
-    </tr>`;
-  }).join('');
+      <td>${index + 1}</td>
+      <td>${esc(row.itemName)}</td>
+      <td class="num">${fmtQty(row.quantity)}</td>
+      <td class="num">${formatAmount(row.quantity > 0 ? row.lineTotal / row.quantity : 0)}</td>
+      <td class="num">${formatAmount(row.lineTotal)}</td>
+    </tr>`).join('');
   // The item table's own Total must now sum only the rows actually printed
   // in it (charges excluded) — record.subtotal itself still includes
   // charges (nothing about how it's computed upstream changes), so using it
@@ -656,13 +612,6 @@ export function renderDispatchInvoiceHtml(record: DispatchInvoiceRecord, mode: '
   const chargesHtml = chargeItems.length > 0 ? `
     <div class="row" style="margin-top:6px"><span style="font-weight:900">Other Charges</span><span></span></div>
     ${chargeItems.map(c => `<div class="row"><span>${esc(c.itemName)}</span><span>${formatAmount(c.lineTotal)}</span></div>`).join('')}` : '';
-  const returnNoteHtml = record.returnLog.length > 0 ? `
-    <div class="stamp-return">
-      ${record.returnLog.map(entry => {
-        const itemsDesc = entry.items.map(it => `${fmtQty(it.qty)} ${it.unit} ${esc(it.itemName)}`).join(', ');
-        return `<div>Returned by ${esc(entry.by)} on ${esc(new Date(entry.at).toLocaleString('en-IN'))}: ${itemsDesc}${entry.reason ? ` — ${esc(entry.reason)}` : ''}</div>`;
-      }).join('')}
-    </div>` : '';
 
   // ONE row for the whole bill (not per item/rate) — matches the client's
   // explicit ask; see the REDESIGN comment above gstPct.
@@ -709,8 +658,6 @@ export function renderDispatchInvoiceHtml(record: DispatchInvoiceRecord, mode: '
     .paytitle{border-top:1px solid #111;border-bottom:1px solid #111;display:inline-block;min-width:64%;padding:2px 0}
     .footer{margin-top:12px;text-align:center;font-size:13px;font-weight:800}
     .stamp-cancel{border:2px solid #b91c1c;color:#b91c1c;text-align:center;font-weight:900;font-size:14px;letter-spacing:1px;padding:4px 0;margin:6px 0}
-    .stamp-return{border:1.5px solid #b45309;color:#92400e;font-size:10.5px;font-weight:700;padding:5px 6px;margin:8px 0;border-radius:2px}
-    .stamp-return div+div{margin-top:3px}
   </style></head><body>
     <div class="c" style="font-weight:900;font-size:${mode === 'thermal' ? '16px' : '20px'}">${esc(business.name)}</div>
     <div class="c small">${business.lines.map(esc).join('<br/>')}</div>
@@ -723,15 +670,14 @@ export function renderDispatchInvoiceHtml(record: DispatchInvoiceRecord, mode: '
     ${record.deliveryDate ? `<div class="row"><span>Delivery : ${esc(new Date(record.deliveryDate).toLocaleDateString('en-GB'))}${record.deliveryTime ? ` ${esc(record.deliveryTime)}` : ''}</span><span></span></div>` : ''}
     <div class="dash"></div>
     <table>
-      <thead><tr><th>Sn</th><th>Item Name</th>${isReturned ? '<th class="num">Sent</th><th class="num">Returned</th><th class="num">Net</th>' : '<th class="num">Qty</th>'}<th class="num">Rate</th><th class="num">Amount</th></tr></thead>
+      <thead><tr><th>Sn</th><th>Item Name</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">Amount</th></tr></thead>
       <tbody>
         ${rows}
-        <tr class="total-row"><td></td><td>Total</td>${isReturned ? `<td></td><td></td><td class="num">${fmtQty(totalQty)}</td>` : `<td class="num">${fmtQty(totalQty)}</td>`}<td></td><td class="num">${formatAmount(itemsSubtotal)}</td></tr>
+        <tr class="total-row"><td></td><td>Total</td><td class="num">${fmtQty(totalQty)}</td><td></td><td class="num">${formatAmount(itemsSubtotal)}</td></tr>
       </tbody>
     </table>
     ${chargesHtml}
     ${gstSummaryHtml}
-    ${returnNoteHtml}
     <div class="summary">
       <div class="row"><span>Discount${record.discountPct ? ` (${record.discountPct}%)` : ''} :</span><span>${formatAmount(record.discountAmount)}</span></div>
       <div class="row"><span>Round-Off :</span><span>${record.roundOff >= 0 ? '+' : ''}${formatAmount(record.roundOff)}</span></div>
@@ -933,7 +879,7 @@ export async function cancelDispatchInvoice(params:{invoiceId:string;reason?:str
  }catch(cause){return {error:cause instanceof Error?cause.message:'Cancellation could not be confirmed.'};}
 }
 
-export async function returnDispatchInvoiceItems(params:{invoiceId:string;returns:{itemName:string;unit:string;qty:number}[];reason?:string;returnedBy:string}):Promise<{ok:true;record:DispatchInvoiceRecord;whatsapp?:{ok:boolean;error?:string}}|{error:string}>{
+export async function returnDispatchInvoiceItems(params:{invoiceId:string;returns:{itemName:string;unit:string;qty:number}[];reason?:string;returnedBy:string;expectedInvoice?:Pick<DispatchInvoiceRecord,'items'|'total'|'status'>}):Promise<{ok:true;record:DispatchInvoiceRecord;whatsapp?:{ok:boolean;error?:string}}|{error:string}>{
  let returns:ReturnType<typeof combineDispatchReturns>;
  try {returns=combineDispatchReturns(params.returns);}catch(cause){return {error:cause instanceof Error?cause.message:'Invalid return quantities.'};}
  if(!returns.length)return {error:'Enter a return quantity for at least one item.'};
@@ -942,6 +888,8 @@ export async function returnDispatchInvoiceItems(params:{invoiceId:string;return
  try {
   const {reviseDispatchInvoice,hasPendingDispatchInvoiceRevision}=await import('./dispatchInvoiceRevision');
   if(!hasPendingDispatchInvoiceRevision(original.id)){
+ const expected=params.expectedInvoice;
+ if(expected&&(expected.total!==original.total||expected.status!==original.status||JSON.stringify(expected.items)!==JSON.stringify(original.items)))return {error:'This invoice changed after you opened it. Refresh and review it before returning items.'};
  const invalid=dispatchRevisionError(original.items,original.discountPct);if(invalid)return {error:invalid};
  const key=(i:{itemName:string;unit:string})=>JSON.stringify([i.itemName.trim().toLowerCase(),i.unit]);
  const current=new Map(original.items.map(i=>[key(i),i]));if(current.size!==original.items.length)return {error:'Repeated invoice lines need reconciliation before returning items.'};
@@ -949,17 +897,16 @@ export async function returnDispatchInvoiceItems(params:{invoiceId:string;return
   }
   const row=await reviseDispatchInvoice(original,'return',{returns},params.reason||'Returned invoice items');const record=recordFromRow(row);
   const sent=await notifyRevisedHosur(row,record);let whatsapp=sent?{ok:sent.ok,error:sent.whatsappError||sent.message}:undefined;
-  if(!sent&&!row.revision_duplicate){const phone=record.customerPhone||record.hosurShopPhone;if(phone){try{await sendDispatchInvoiceWhatsapp(record,returns,phone);whatsapp={ok:true,error:undefined};}catch(cause){whatsapp={ok:false,error:cause instanceof Error?cause.message:'Invoice saved; WhatsApp needs retry.'};}}}
+  if(!sent&&!row.revision_duplicate){const phone=record.customerPhone||record.hosurShopPhone;if(phone){try{await sendDispatchInvoiceWhatsapp(record,phone);whatsapp={ok:true,error:undefined};}catch(cause){whatsapp={ok:false,error:cause instanceof Error?cause.message:'Invoice saved; WhatsApp needs retry.'};}}}
   return {ok:true,record,whatsapp};
  }catch(cause){return {error:cause instanceof Error?cause.message:'The return could not be confirmed.'};}
 }
 
 export async function createDispatchInvoiceWhatsappPdf(
   record: DispatchInvoiceRecord,
-  justReturned: { itemName: string; unit: string; qty: number }[] = [],
 ): Promise<{ base64: string; mimeType: 'application/pdf'; fileName: string; caption: string }> {
   const business = businessFor(record.scope);
-  const pageHeight = Math.max(190, 140 + record.items.length * 10 + justReturned.length * 6);
+  const pageHeight = Math.max(190, 140 + record.items.length * 10);
   const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: [80, pageHeight], compress: true });
   const left = 5;
   const right = 75;
@@ -980,7 +927,7 @@ export async function createDispatchInvoiceWhatsappPdf(
   };
 
   line(business.name.toUpperCase(), 11, true, 'center');
-  line('UPDATED INVOICE (RETURN PROCESSED)', 8, true, 'center');
+  line('UPDATED INVOICE', 8, true, 'center');
   divider();
   line(`Invoice No: ${record.invoiceNo}`, 8, true);
   line(`Date: ${new Date(record.createdAt).toLocaleString('en-IN')}`, 7.5);
@@ -997,22 +944,12 @@ export async function createDispatchInvoiceWhatsappPdf(
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(7.2);
     doc.text(`${item.quantity % 1 === 0 ? item.quantity : item.quantity.toFixed(3)} ${item.unit}`, 53, y, { align: 'right' });
-    doc.text(`Rs. ${Math.round(item.lineTotal)}`, right, y, { align: 'right' });
+    doc.text(`Rs. ${item.lineTotal.toFixed(2)}`, right, y, { align: 'right' });
     y += itemHeight + 1.5;
   });
   divider();
-  line(`New Total: Rs. ${Math.round(record.total)}`, 10, true, 'right');
+  line(`Net Bill Amount: Rs. ${record.total.toFixed(2)}`, 10, true, 'right');
   divider();
-
-  if (justReturned.length > 0) {
-    doc.setTextColor(180, 40, 40);
-    line('ITEMS RETURNED', 8.5, true, 'center');
-    justReturned.forEach(r => {
-      line(`- ${r.qty % 1 === 0 ? r.qty : r.qty.toFixed(3)} ${r.unit} ${r.itemName}`, 7.5, false, 'left');
-    });
-    doc.setTextColor(0, 0, 0);
-    divider();
-  }
 
   line('Thank you!', 9, true, 'center');
 
@@ -1022,7 +959,7 @@ export async function createDispatchInvoiceWhatsappPdf(
     base64: dataUri.slice(comma + 1),
     mimeType: 'application/pdf',
     fileName: `${record.invoiceNo.replace(/[^a-z0-9._-]+/gi, '-')}-updated.pdf`,
-    caption: `${record.invoiceNo} — Updated (return processed) — New Total Rs. ${Math.round(record.total)}`,
+    caption: `${record.invoiceNo} — Updated invoice — Rs. ${record.total.toFixed(2)}`,
   };
 }
 
@@ -1035,16 +972,14 @@ export async function createDispatchInvoiceWhatsappPdf(
 // payment collection ask.
 async function sendDispatchInvoiceWhatsapp(
   record: DispatchInvoiceRecord,
-  justReturned: { itemName: string; unit: string; qty: number }[],
   phone: string,
 ): Promise<void> {
   const supabaseUrl = String(import.meta.env.VITE_SUPABASE_URL || '').replace(/\/$/, '');
   const anonKey = String(import.meta.env.VITE_SUPABASE_ANON_KEY || '');
   if (!supabaseUrl || !anonKey) throw new Error('Supabase URL or publishable key is missing in the deployed app.');
 
-  const pdf = await createDispatchInvoiceWhatsappPdf(record, justReturned);
-  const itemsDesc = justReturned.map(r => `${r.qty % 1 === 0 ? r.qty : r.qty.toFixed(3)} ${r.unit} ${r.itemName}`).join(', ');
-  const message = `Hello, your bill ${record.invoiceNo} has been updated — ${itemsDesc} returned. New total: Rs. ${Math.round(record.total)}. Updated invoice attached.`;
+  const pdf = await createDispatchInvoiceWhatsappPdf(record);
+  const message = `Hello, your bill ${record.invoiceNo} has been updated. Total: Rs. ${record.total.toFixed(2)}. Updated invoice attached.`;
   const normalizedPhone = phone.replace(/\D/g, '');
 
   const controller = new AbortController();

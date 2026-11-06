@@ -1,8 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import { combineDispatchReturns, dispatchRevisionError } from './dispatchRevisionValidation';
+import { combineDispatchReturns, dispatchRevisionError, planDispatchEditReturns } from './dispatchRevisionValidation';
 
 const item = { itemName: 'Bun', unit: 'pcs', quantity: 2, unitPrice: 10 };
 describe('dispatch correction input guards', () => {
+  it('plans both a reduced quantity and a removed line as recorded returns', () => {
+    const bread = {itemName: 'Bread', unit: 'kg', quantity: 0.3, unitPrice: 40};
+    expect(planDispatchEditReturns([item, bread], [{...bread, key: 1, quantity: 0.1}])).toEqual({
+      returns: [{itemName:'Bun',unit:'pcs',qty:2},{itemName:'Bread',unit:'kg',qty:0.2}], otherEdits:false,
+    });
+    expect(planDispatchEditReturns([item], [{...item,key:0,quantity:1,unitPrice:12}])).toMatchObject({
+      returns:[{itemName:'Bun',unit:'pcs',qty:1}], otherEdits:true,
+    });
+  });
   it('rejects non-finite money and quantities instead of silently dropping a line', () => {
     for (const bad of [NaN, Infinity, -Infinity, -1]) {
       expect(dispatchRevisionError([{ ...item, quantity: bad }], 0)).toBeTruthy();

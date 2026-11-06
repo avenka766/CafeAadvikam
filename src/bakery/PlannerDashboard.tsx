@@ -12,6 +12,7 @@ import FestivalSalesPanel from './FestivalSalesPanel';
 import PlannerSalesGstFields from './PlannerSalesGstFields';
 import { calculatePlannerSalesGst, gstBuyerError } from './plannerSalesGst';
 import { rememberHosurShopGst, useHosurShopGstDefaults } from './hosurShopGst';
+import { planDispatchEditReturns } from './dispatchRevisionValidation';
 import { hosurInvoiceLedgerLines } from './hosurGstLedger';
 import { renderSavedSalesTaxInvoice, renderSavedDispatchTaxInvoice } from './dispatchInvoice';
 import { createFestivalSaleDrafts, festivalSaleCart } from './festivalSales';
@@ -9929,18 +9930,14 @@ function EditDispatchInvoiceModal({ invoice, onClose, onSaved }: {
   const discountAmount = Math.round(subtotal * (clampedDiscountPct / 100) * 100) / 100;
   const total = exclusiveGst ? calculatePlannerSalesGst(subtotal,discountAmount,true,Number(gstPct)||0,gstSupplyType).total : Math.max(0, Math.round(subtotal-discountAmount));
 
-  const returnedLines = invoice.items.filter((item, index) =>
-    item.unit !== 'charge' && !lines.some(line => line.key === index));
+  const {returns: pendingReturns, otherEdits} = planDispatchEditReturns(invoice.items, lines);
 
   const save = async () => {
     if (savingInFlightRef.current) return;
     setError(null);
     setWarning(null);
-    if (returnedLines.length) {
-      const unchangedLines = lines.every(({ key, ...line }) =>
-        JSON.stringify(line) === JSON.stringify(invoice.items[key]));
-      const remainingCount = invoice.items.length - returnedLines.length;
-      if (!unchangedLines || lines.length !== remainingCount || discountPct !== invoice.discountPct ||
+    if (pendingReturns.length) {
+      if (otherEdits || discountPct !== invoice.discountPct ||
           gstEnabled !== invoice.isGstInvoice || gstSupplyType !== (invoice.gstSupplyType || 'intra') ||
           gstPct !== String(firstGstLine?.gstPct ?? 5) || gstHsnCode !== (firstGstLine?.hsnCode || '') ||
           gstBuyerName !== (savedBuyer?.name || '') || gstBuyerGstin !== (savedBuyer?.gstin || '') ||
@@ -9954,7 +9951,8 @@ function EditDispatchInvoiceModal({ invoice, onClose, onSaved }: {
       try {
         const result = await returnDispatchInvoiceItems({
           invoiceId: invoice.id,
-          returns: returnedLines.map(item => ({itemName:item.itemName,unit:item.unit,qty:item.quantity})),
+          returns: pendingReturns,
+          expectedInvoice: invoice,
           returnedBy: currentUser?.displayName || currentUser?.username || 'Planner',
         });
         if ('error' in result) { setError(result.error); return; }
@@ -10120,7 +10118,7 @@ function EditDispatchInvoiceModal({ invoice, onClose, onSaved }: {
           <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="size-4" /></button>
         </div>
         <p className="mt-1 text-[11px] font-bold text-muted-foreground">
-          Removing or reducing an item credits it back to stock. Adding an item (or increasing a quantity) debits stock and is marked as an extra/non-requested item on the record.
+          Select Return to remove a whole line, or reduce its quantity for a partial return. Use a new dispatch for extra goods already being sent to a customer.
         </p>
 
         <div className="mt-3 space-y-2">
@@ -10239,7 +10237,7 @@ function EditDispatchInvoiceModal({ invoice, onClose, onSaved }: {
         <div className="mt-4 flex flex-wrap justify-end gap-2">
           <button onClick={onClose} disabled={saving} className="rounded-xl border border-border px-3 py-2 text-xs font-bold text-muted-foreground hover:bg-muted disabled:opacity-50">Cancel</button>
           <button onClick={save} disabled={saving} className="flex items-center gap-1.5 rounded-xl bg-teal-600 px-4 py-2 text-xs font-bold text-white hover:bg-teal-700 disabled:opacity-50">
-            {saving ? <Loader2 className="size-3.5 animate-spin" /> : <CheckCircle2 className="size-3.5" />} {returnedLines.length ? 'Save Return' : 'Save Changes'}
+            {saving ? <Loader2 className="size-3.5 animate-spin" /> : <CheckCircle2 className="size-3.5" />} {pendingReturns.length ? 'Save Return' : 'Save Changes'}
           </button>
         </div>
       </div>
