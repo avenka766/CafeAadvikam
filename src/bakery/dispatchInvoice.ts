@@ -879,7 +879,7 @@ export async function cancelDispatchInvoice(params:{invoiceId:string;reason?:str
  }catch(cause){return {error:cause instanceof Error?cause.message:'Cancellation could not be confirmed.'};}
 }
 
-export async function returnDispatchInvoiceItems(params:{invoiceId:string;returns:{itemName:string;unit:string;qty:number}[];reason?:string;returnedBy:string;expectedInvoice?:Pick<DispatchInvoiceRecord,'items'|'total'|'status'>}):Promise<{ok:true;record:DispatchInvoiceRecord;whatsapp?:{ok:boolean;error?:string}}|{error:string}>{
+export async function returnDispatchInvoiceItems(params:{invoiceId:string;returns:{itemName:string;unit:string;qty:number}[];reason?:string;returnedBy:string}):Promise<{ok:true;record:DispatchInvoiceRecord;whatsapp?:{ok:boolean;error?:string}}|{error:string}>{
  let returns:ReturnType<typeof combineDispatchReturns>;
  try {returns=combineDispatchReturns(params.returns);}catch(cause){return {error:cause instanceof Error?cause.message:'Invalid return quantities.'};}
  if(!returns.length)return {error:'Enter a return quantity for at least one item.'};
@@ -888,8 +888,6 @@ export async function returnDispatchInvoiceItems(params:{invoiceId:string;return
  try {
   const {reviseDispatchInvoice,hasPendingDispatchInvoiceRevision}=await import('./dispatchInvoiceRevision');
   if(!hasPendingDispatchInvoiceRevision(original.id)){
- const expected=params.expectedInvoice;
- if(expected&&(expected.total!==original.total||expected.status!==original.status||JSON.stringify(expected.items)!==JSON.stringify(original.items)))return {error:'This invoice changed after you opened it. Refresh and review it before returning items.'};
  const invalid=dispatchRevisionError(original.items,original.discountPct);if(invalid)return {error:invalid};
  const key=(i:{itemName:string;unit:string})=>JSON.stringify([i.itemName.trim().toLowerCase(),i.unit]);
  const current=new Map(original.items.map(i=>[key(i),i]));if(current.size!==original.items.length)return {error:'Repeated invoice lines need reconciliation before returning items.'};

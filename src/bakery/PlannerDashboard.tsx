@@ -9952,7 +9952,6 @@ function EditDispatchInvoiceModal({ invoice, onClose, onSaved }: {
         const result = await returnDispatchInvoiceItems({
           invoiceId: invoice.id,
           returns: pendingReturns,
-          expectedInvoice: invoice,
           returnedBy: currentUser?.displayName || currentUser?.username || 'Planner',
         });
         if ('error' in result) { setError(result.error); return; }
@@ -9966,6 +9965,22 @@ function EditDispatchInvoiceModal({ invoice, onClose, onSaved }: {
         savingInFlightRef.current = false;
         setSaving(false);
       }
+      return;
+    }
+    // Do not send an empty "edit" request for a delivered bill. Apart from
+    // wasting a live request, it makes the return workflow look broken when
+    // the planner has not yet pressed Return or reduced a quantity.
+    const gstFieldsUnchanged = gstEnabled === invoice.isGstInvoice &&
+      gstSupplyType === (invoice.gstSupplyType || 'intra') &&
+      gstPct === String(firstGstLine?.gstPct ?? 5) &&
+      gstHsnCode === (firstGstLine?.hsnCode || '') &&
+      gstBuyerName === (savedBuyer?.name || '') &&
+      gstBuyerGstin === (savedBuyer?.gstin || '') &&
+      gstBuyerAddress === (savedBuyer?.address || '') &&
+      gstBuyerStateName === (savedBuyer?.stateName || 'Tamil Nadu') &&
+      gstBuyerStateCode === (savedBuyer?.stateCode || '33');
+    if (!otherEdits && discountPct === invoice.discountPct && gstFieldsUnchanged) {
+      setError('No changes selected. Press Return to remove a full line, or reduce the quantity for a partial return, then save the return.');
       return;
     }
     // Charge lines (Delivery Fee etc.) are kept regardless of quantity —

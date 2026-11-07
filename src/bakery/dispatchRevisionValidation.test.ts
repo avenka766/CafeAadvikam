@@ -11,6 +11,12 @@ describe('dispatch correction input guards', () => {
     expect(planDispatchEditReturns([item], [{...item,key:0,quantity:1,unitPrice:12}])).toMatchObject({
       returns:[{itemName:'Bun',unit:'pcs',qty:1}], otherEdits:true,
     });
+    // Saved invoice lines may have extra display fields. A quantity-only
+    // reduction must still go through the recorded return flow.
+    const displayed = {...item, lineTotal:20, isExtra:false};
+    expect(planDispatchEditReturns([displayed], [{...displayed,key:0,quantity:1}])).toEqual({
+      returns:[{itemName:'Bun',unit:'pcs',qty:1}], otherEdits:false,
+    });
   });
   it('rejects non-finite money and quantities instead of silently dropping a line', () => {
     for (const bad of [NaN, Infinity, -Infinity, -1]) {

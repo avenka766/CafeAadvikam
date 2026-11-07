@@ -12,12 +12,18 @@ export function planDispatchEditReturns<T extends RevisionItem>(original: T[], l
       else returns.push({itemName: item.itemName, unit: item.unit, qty: item.quantity});
       return;
     }
-    const {key: _key, ...values} = edited;
-    if (JSON.stringify({...values, quantity: item.quantity}) !== JSON.stringify(item) ||
-        !Number.isFinite(edited.quantity) || edited.quantity < 0 || edited.quantity > item.quantity) {
+    // A return is the only safe physical change an already-delivered invoice
+    // can make. Compare the fields the editor actually lets a planner change
+    // rather than serialising whole objects: saved rows can contain optional
+    // display metadata in a different property order, which used to make a
+    // genuine partial return look like an ordinary edit.
+    const sameIdentity = edited.itemName === item.itemName && edited.unit === item.unit;
+    const sameIdentityAndPrice = sameIdentity && edited.unitPrice === item.unitPrice;
+    if (!sameIdentityAndPrice || !Number.isFinite(edited.quantity) ||
+        edited.quantity < 0 || edited.quantity > item.quantity) {
       otherEdits = true;
     }
-    if (edited.itemName === item.itemName && edited.unit === item.unit &&
+    if (sameIdentity &&
         edited.quantity >= 0 && edited.quantity < item.quantity) {
       if (item.unit === 'charge') otherEdits = true;
       else returns.push({itemName: item.itemName, unit: item.unit, qty: Number((item.quantity - edited.quantity).toFixed(9))});
