@@ -26,3 +26,17 @@ it('exposes a failed source and retries only the shop details',async()=>{
  m.fetch.mockResolvedValueOnce({data:[],error:'Statement timeout'});await render([row('Bun')]);expect(result.shopOrders).toBeNull();expect(result.error).toBe('Statement timeout');
  await act(async()=>result.reload());expect(result.error).toBeNull();expect(result.shopOrders?.[0].items[0].itemName).toBe('Bun');expect(m.fetch).toHaveBeenCalledTimes(4);
 });
+
+it('refreshes only the opened order and retains the other shop cards',async()=>{
+ const linkedOrders=[{id:'production',notes:'HOSUR_ORDER_IDS:shop-a,shop-b'}] as BakeryOrder[];
+ const requested:string[][]=[];
+ m.fetch.mockImplementation(async(table:string,build:(q:unknown)=>unknown)=>{
+  let ids:string[]=[];const q={select:()=>q,in:(_column:string,values:string[])=>{ids=values;return q;},order:()=>q};build(q);requested.push(ids);
+  return {data:ids.map(id=>table==='hosur_orders'?{id,order_number:id,shop_name:id,created_at:'2026-11-04'}:{id:'item-'+id,order_id:id,item_name:'Bun',unit:'pcs',quantity:5,dispatched_quantity:0}),error:null};
+ });
+ function TargetHarness(){result=useHosurShopOrders([row('Bun')],linkedOrders,same);return null;}
+ await act(async()=>root.render(createElement(TargetHarness)));
+ expect(result.shopOrders).toHaveLength(2);requested.length=0;
+ await act(async()=>result.reload('shop-a'));
+ expect(requested).toEqual([['shop-a'],['shop-a']]);expect(result.shopOrders?.map(c=>c.orderId)).toEqual(['shop-a','shop-b']);expect(result.refreshing).toBe(false);
+});

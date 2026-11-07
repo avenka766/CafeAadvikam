@@ -8499,7 +8499,7 @@ function HosurShopDispatchPanel({ rows, mode, orders, leftoverBalances, onDispat
   onDispatch: ReturnType<typeof useBakeryStore.getState>['submitDispatch']; dispatchedBy: string;
   onDone: () => void;
 }) {
-  const { shopOrders, reload,error:shopOrdersError } = useHosurShopOrders(rows, orders, sameItem);
+  const { shopOrders, reload,error:shopOrdersError,refreshing:shopOrdersRefreshing } = useHosurShopOrders(rows, orders, sameItem);
   // BUG FIX: same case-sensitivity bug as displayItems in DispatchReviewModal
   // — this map's key was the row's own (first-seen) casing, but every
   // lookup used a raw order item's itemName, which can differ in case from
@@ -8585,7 +8585,7 @@ function HosurShopDispatchPanel({ rows, mode, orders, leftoverBalances, onDispat
     // reload had landed, still suggesting the full original amount instead
     // of 0. This narrows that staleness window; the hard per-item cap in
     // sendCard below is what actually makes over-dispatch impossible.
-    reload();
+    reload(card.orderId);
   };
   const cancel = () => { setSelectedOrderId(null); setQtyDraft({}); setResult(null); setOverOrderPrompt(null); };
   // "Remove" only zeroes this batch's quantity draft — the item is still
@@ -8732,6 +8732,7 @@ function HosurShopDispatchPanel({ rows, mode, orders, leftoverBalances, onDispat
   };
 
   const openReviewForCard = (card: HosurShopOrderCard) => {
+    if (shopOrdersRefreshing) {setResult({ok:false,message:'Please wait for this shop’s latest quantities to finish refreshing.'});return;}
     setResult(null);
     // Detect-only pass first — if anything is typed above what's still
     // owed, stop and show exactly what before touching anything. Confirming
@@ -8748,7 +8749,7 @@ function HosurShopDispatchPanel({ rows, mode, orders, leftoverBalances, onDispat
     finalizeReview(card, false);
   };
 
-  if(shopOrdersError)return <div role="alert" className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm"><p>Shop details could not load: {shopOrdersError}</p><button onClick={reload} className="mt-2 font-bold underline">Retry shop details</button></div>;
+  if(shopOrdersError)return <div role="alert" className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm"><p>Shop details could not load: {shopOrdersError}</p><button onClick={() => reload()} className="mt-2 font-bold underline">Retry shop details</button></div>;
   if (shopOrders === null) return <p className="text-xs font-bold text-muted-foreground">Loading shop orders…</p>;
   // A card belongs to "Dispatched" only once every item ON THAT SHOP'S OWN
   // ORDER has been fully sent OR cancelled — independent of whether some
@@ -8800,7 +8801,7 @@ function HosurShopDispatchPanel({ rows, mode, orders, leftoverBalances, onDispat
             DispatchTab's own RefreshOrdersButton (which only refetches the
             shared bakery_orders store). Same inline refresh pattern already
             used for RecentDispatchInvoices below. */}
-        <button type="button" onClick={reload} title="Refresh shop orders" className="flex shrink-0 items-center gap-1 text-[10px] font-bold text-teal-700 hover:underline"><RefreshCw className="size-3" /> Refresh</button>
+        <button type="button" onClick={() => reload()} title="Refresh shop orders" className="flex shrink-0 items-center gap-1 text-[10px] font-bold text-teal-700 hover:underline"><RefreshCw className="size-3" /> Refresh</button>
       </div>
       {filtered.length === 0 && <EmptyState text={`No shop orders match "${shopSearch}".`} />}
       {cardDateGroups.map(group => (
@@ -8956,7 +8957,7 @@ function HosurShopDispatchPanel({ rows, mode, orders, leftoverBalances, onDispat
                 )}
                 <div className="flex flex-wrap justify-end gap-2 pt-1">
                   <button onClick={cancel} className="rounded-xl border border-border px-3 py-2 text-xs font-bold text-muted-foreground hover:bg-muted">Cancel</button>
-                  <button onClick={() => openReviewForCard(card)} className="flex items-center gap-1.5 rounded-xl bg-teal-600 px-3 py-2 text-xs font-bold text-white hover:bg-teal-700 disabled:opacity-50">
+                  <button onClick={() => openReviewForCard(card)} disabled={shopOrdersRefreshing} className="flex items-center gap-1.5 rounded-xl bg-teal-600 px-3 py-2 text-xs font-bold text-white hover:bg-teal-700 disabled:opacity-50">
                     <Truck className="size-3.5" /> Send {card.shopName}'s Order
                   </button>
                 </div>
@@ -9744,7 +9745,7 @@ function RecentDispatchInvoices({ scope, hosurShopId, title, customSalesOnly }: 
     try {
       const to = new Date(); to.setDate(to.getDate() + 1);
       const from = new Date(); from.setDate(from.getDate() - 90);
-      const records = await listDispatchInvoices({ fromDate: from.toISOString(), toDate: to.toISOString(), scope });
+      const records = await listDispatchInvoices({ fromDate: from.toISOString(), toDate: to.toISOString(), scope, hosurShopId });
       // Custom (Planned) walk-in sales are saved under scope='SNB' with no
       // hosurShopId but a customerName set (see DispatchReviewModal's confirm())
       // — that's the only marker distinguishing them from SNB's own branch

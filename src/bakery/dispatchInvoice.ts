@@ -812,6 +812,7 @@ export async function listDispatchInvoices(opts: {
   fromDate: string; // inclusive, ISO date (yyyy-mm-dd) or full timestamp
   toDate: string;   // exclusive, ISO date/timestamp — pass the START of the day AFTER the range end
   scope?: DispatchInvoiceScope;
+  hosurShopId?: string;
 }): Promise<DispatchInvoiceRecord[]> {
   // BUG FIX (2026-09-08): a plain `.limit(5000)` here is silently capped at
   // 1000 rows by PostgREST's project-wide response cap — see fetchAllRows
@@ -826,6 +827,7 @@ export async function listDispatchInvoices(opts: {
         .lt('created_at', opts.toDate)
         .order('created_at', { ascending: false });
       if (opts.scope) query = query.eq('scope', opts.scope);
+      if (opts.hosurShopId) query = query.eq('hosur_shop_id', opts.hosurShopId);
       return query;
     },
     { maxRows: 20000 },
@@ -834,7 +836,7 @@ export async function listDispatchInvoices(opts: {
   const remote=(data??[]).map(recordFromRow);
   if(!automaticDesktopBilling())return remote;
   const local=(await billingSnapshot()).actions.filter(a=>a.kind==='dispatch'&&a.sync?.state!=='synced'&&(!opts.scope||a.receipt.scope===opts.scope)&&new Date(a.createdAt)>=new Date(opts.fromDate)&&new Date(a.createdAt)<new Date(opts.toDate)).filter(a=>!remote.some(r=>r.invoiceNo===a.billNo)).map(a=>({...a.receipt,id:a.id,invoiceNo:a.billNo,createdAt:a.createdAt,paidAt:a.receipt.status==='unpaid'?null:a.createdAt,dispatchEntryIds:a.receipt.dispatchEntryIds||[],cancelledBy:null,cancelledAt:null,cancelledReason:null,originalItems:null,returnLog:[]} as unknown as DispatchInvoiceRecord));
-  return [...remote,...local].sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
+  return [...remote,...local].filter(r=>!opts.hosurShopId||r.hosurShopId===opts.hosurShopId).sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
 }
 
 // Invoice, stock, credit and return audit changes are committed by one RPC.
@@ -852,7 +854,14 @@ export async function updateDispatchInvoice(params: {
    return {ok:true,record:recordFromRow(await changeSampleInvoice(original,'edit',{items,discountPct:params.updatedDiscountPct},'Edited sample bill')),stockSynced:true};
   }
   const {reviseDispatchInvoice}=await import('./dispatchInvoiceRevision');
-  const row=await reviseDispatchInvoice(original,'edit',{items,discountPct:params.updatedDiscountPct,isGstInvoice:params.isGstInvoice??original.isGstInvoice,gstSupplyType:params.gstSupplyType??original.gstSupplyType});
+  const {planInvoiceQuantityReturn}=await import('./dispatchRevisionValidation');
+  const plan=planInvoiceQuantityReturn(original.items,items);
+  const onlyReturn=plan.returns.length>0&&!plan.otherEdits&&params.updatedDiscountPct===original.discountPct&&
+    (params.isGstInvoice??original.isGstInvoice)===original.isGstInvoice&&
+    (params.gstSupplyType??original.gstSupplyType)===original.gstSupplyType;
+  const row=onlyReturn
+    ? await reviseDispatchInvoice(original,'return',{returns:plan.returns},'Returned invoice items')
+    : await reviseDispatchInvoice(original,'edit',{items,discountPct:params.updatedDiscountPct,isGstInvoice:params.isGstInvoice??original.isGstInvoice,gstSupplyType:params.gstSupplyType??original.gstSupplyType});
   const record=recordFromRow(row);const hosurWhatsapp=await notifyRevisedHosur(row,record);
   return {ok:true,record,stockSynced:true,hosurWhatsapp};
  }catch(cause){return {error:cause instanceof Error?cause.message:'The correction could not be confirmed.'};}

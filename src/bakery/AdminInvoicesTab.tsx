@@ -13,7 +13,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import {
   FileText, ChevronDown, ChevronUp,
-  Printer, Search, RefreshCw,
+  Printer, Search, RefreshCw, FileSpreadsheet,
   AlertCircle, Eye, Loader2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -24,6 +24,8 @@ import { useInvoiceStore, type StoreInvoice } from './invoiceStore';
 // in InvoiceTab.tsx so Store and Admin always print the identical document.
 import { printInvoice } from './InvoiceTab';
 import { useStorePurchaseOrderStore, type StorePurchaseOrder } from './storePurchaseOrderStore';
+import {adminInvoiceExportRows} from './adminInvoiceExport';
+import {generateExcelReport} from './reportExport';
 
 // ─── Linked Purchase Order block ───────────────────────────────────────────
 // When a GRN was created by converting an Owner-approved PO, Admin should be
@@ -273,6 +275,15 @@ export default function AdminInvoicesTab() {
 
       {/* Search + Refresh */}
       <div className="flex gap-2">
+        <button type="button" disabled={loading || !loaded || !!error} onClick={() => {
+          const rows = adminInvoiceExportRows(filtered);
+          generateExcelReport({filename: 'Admin_GRN_Invoices.xlsx', sections: [{prefix: 'GRNs', sheets: [
+            {name: 'Invoices', rows: rows.invoices, fallback: 'No GRNs match the current filters.'},
+            {name: 'Items', rows: rows.items, fallback: 'No GRN items match the current filters.'},
+          ]}]});
+        }} className="inline-flex h-10 items-center gap-1.5 rounded-xl bg-emerald-600 px-3 text-xs font-bold text-white disabled:opacity-50">
+          <FileSpreadsheet className="size-4" /> Excel
+        </button>
         <div className="flex-1 relative">
           <Search className="size-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
           <input

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { combineDispatchReturns, dispatchRevisionError, planDispatchEditReturns } from './dispatchRevisionValidation';
+import { combineDispatchReturns, dispatchRevisionError, planDispatchEditReturns, planInvoiceQuantityReturn } from './dispatchRevisionValidation';
 
 const item = { itemName: 'Bun', unit: 'pcs', quantity: 2, unitPrice: 10 };
 describe('dispatch correction input guards', () => {
@@ -45,4 +45,13 @@ describe('dispatch correction input guards', () => {
     expect(() => combineDispatchReturns([{ itemName: ' ', unit: 'pcs', qty: 1 }])).toThrow();
     expect(combineDispatchReturns([{ itemName: '', unit: 'pcs', qty: 0 }])).toEqual([]);
   });
+});
+
+it('routes a legacy quantity-only edit to returns while preserving GST edits', () => {
+ const original = [{itemName:'Cake', unit:'kg', quantity:2, unitPrice:650, gstPct:5}];
+ expect(planInvoiceQuantityReturn(original,[{...original[0],quantity:1}])).toEqual({returns:[{itemName:'Cake',unit:'kg',qty:1}],otherEdits:false});
+ expect(planInvoiceQuantityReturn(original,[]).returns[0].qty).toBe(2);
+ expect(planInvoiceQuantityReturn(original,[{...original[0],quantity:1,gstPct:12}]).otherEdits).toBe(true);
+ expect(planInvoiceQuantityReturn(original,[{...original[0],quantity:3}]).otherEdits).toBe(true);
+ expect(planInvoiceQuantityReturn([...original,...original],[]).otherEdits).toBe(true);
 });

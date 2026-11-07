@@ -59,7 +59,8 @@ export interface HosurShopOrderCard {
 export function useHosurShopOrders(rows: ProductionRow[], orders: BakeryOrder[], sameItem:(a:string,b:string)=>boolean) {
   const hosurOrderIds = useMemo(() => {
     const ids = new Set<string>();
-    for (const row of rows) collectHosurOrderIds(row, orders).forEach(id => ids.add(id));
+    const ordersById = new Map(orders.map(order => [order.id, order]));
+    for (const row of rows) collectHosurOrderIds(row, row.contributingOrderIds.flatMap(id => ordersById.has(id) ? [ordersById.get(id)!] : [])).forEach(id => ids.add(id));
     return Array.from(ids).sort();
   }, [rows, orders]);
   const idsKey = hosurOrderIds.join(',');
@@ -71,14 +72,17 @@ export function useHosurShopOrders(rows: ProductionRow[], orders: BakeryOrder[],
   // dispatched_quantity, not the set itself, so the just-sent card kept
   // showing pre-dispatch numbers until an unrelated re-render. reloadTick
   // gives callers (sendCard) an explicit way to force a refetch.
-  const [reloadTick, setReloadTick] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
+  const [refresh, setRefresh] = useState({tick: 0, orderId: '', idsKey: '', visibleRowsKey: ''});
 
   useEffect(() => {
     let cancelled = false;
-    const queryIds = idsKey ? idsKey.split(',') : [];
+    const targeted = !!refresh.orderId && refresh.idsKey === idsKey && refresh.visibleRowsKey === visibleRowsKey;
+    const queryIds = targeted ? [refresh.orderId] : idsKey ? idsKey.split(',') : [];
     const visibleRows = JSON.parse(visibleRowsKey) as {itemName:string;unit:string}[];
-    setError(null);setShopOrders(null);
-    if (queryIds.length === 0) { setShopOrders([]); return; }
+    setError(null);setRefreshing(true);
+    if (!targeted) setShopOrders(null);
+    if (queryIds.length === 0) { setShopOrders([]);setRefreshing(false); return; }
     (async () => {
       // BUG FIX (2026-09-16): "dispatched to Jos bakery theni... not visible
       // in the hosur dispatched [tab]" — these were plain `.in(...)` queries
@@ -95,8 +99,8 @@ export function useHosurShopOrders(rows: ProductionRow[], orders: BakeryOrder[],
       // fetchAllRows (already used elsewhere for this exact cap) fixes it
       // for good instead of just for today's specific shops.
       const [{ data: ordersData, error: ordersErr }, { data: itemsData, error: itemsErr }] = await Promise.all([
-        fetchRowsForIds<Record<string, unknown>>('hosur_orders','id',queryIds,'id, order_number, shop_name, shop_id, created_at'),
-        fetchRowsForIds<Record<string, unknown>>('hosur_order_items','order_id',queryIds,'id, order_id, item_name, unit, quantity, dispatched_quantity, cancelled_quantity, cancellation_reason'),
+        fetchRowsForIds<Record<string, unknown>>('hosur_orders','id',queryIds,'id, order_number, shop_name, shop_id, created_at',3),
+        fetchRowsForIds<Record<string, unknown>>('hosur_order_items','order_id',queryIds,'id, order_id, item_name, unit, quantity, dispatched_quantity, cancelled_quantity, cancellation_reason',3),
       ]);
       if (cancelled) return;
       // AUDIT FIX (2026-09-03): neither error was ever checked — a transient
@@ -163,11 +167,14 @@ export function useHosurShopOrders(rows: ProductionRow[], orders: BakeryOrder[],
         });
       }
       cards.sort((a, b) => a.shopName.localeCompare(b.shopName));
-      setShopOrders(cards);
-    })();
+      setShopOrders(previous => targeted && previous
+        ? [...previous.filter(card => card.orderId !== refresh.orderId), ...cards].sort((a,b)=>a.shopName.localeCompare(b.shopName))
+        : cards);
+    })().catch(cause => {if (!cancelled) setError(cause instanceof Error ? cause.message : 'Could not refresh shop orders.');})
+      .finally(()=>{if (!cancelled) setRefreshing(false);});
     return () => { cancelled = true; };
-  }, [idsKey, visibleRowsKey, reloadTick, sameItem]);
+  }, [idsKey, visibleRowsKey, refresh, sameItem]);
 
-  return { shopOrders,error, reload: () => setReloadTick(t => t + 1) };
+  return { shopOrders,error, refreshing, reload: (orderId = '') => setRefresh(current => ({tick:current.tick+1,orderId,idsKey,visibleRowsKey})) };
 }
 

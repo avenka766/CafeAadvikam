@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { fetchAdminRows } from '@/lib/adminReportData';
 import { recordFromRow, type DispatchInvoiceRecord } from './dispatchInvoice';
@@ -24,18 +24,22 @@ export function indexDispatchHistory(records: DispatchInvoiceRecord[], orders?: 
   return map;
 }
 export function useDispatchHistoryInvoices(enabled: boolean, revision: unknown, orders?: BakeryOrder[]) {
-  const [byOrder, setByOrder] = useState(new Map<string, DispatchInvoiceRecord[]>());
+  const [records, setRecords] = useState<DispatchInvoiceRecord[]>([]);
   const [error, setError] = useState('');
+  const [refresh, setRefresh] = useState(0);
+  const revisionKey = JSON.stringify(Array.isArray(revision) ? revision.map(row => ({id:row.id,updatedAt:row.updatedAt,status:row.status,dispatchLog:row.dispatchLog})) : revision);
+  useEffect(()=>{const changed=()=>setRefresh(n=>n+1);window.addEventListener('dispatch-invoices-changed',changed);return()=>window.removeEventListener('dispatch-invoices-changed',changed);},[]);
   useEffect(() => {
     if (!enabled) return;
     let active = true;
     setError('');
-    fetchAdminRows<any>(() => supabase.from('dispatch_invoices').select('*')).then(result => {
+    fetchAdminRows<Record<string,unknown>>(() => supabase.from('dispatch_invoices').select('*').neq('status','cancelled')).then(result => {
       if (!active) return;
       if (result.error) { setError(result.error.message); return; }
-      setByOrder(indexDispatchHistory(result.data.map(recordFromRow), orders));
-    });
+      setRecords(result.data.map(recordFromRow));
+    }).catch(cause=>{if(active)setError(cause instanceof Error?cause.message:'Could not load dispatch history.');});
     return () => { active = false; };
-  }, [enabled, revision, orders]);
+  }, [enabled, revisionKey, refresh]);
+  const byOrder=useMemo(()=>indexDispatchHistory(records,orders),[records,orders]);
   return { byOrder, error };
 }

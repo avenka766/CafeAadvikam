@@ -36,6 +36,7 @@ export function reviseDispatchInvoice(record:DispatchInvoiceRecord,action:'edit'
   }
   if(data?.id!==record.id||!['paid','unpaid','cancelled'].includes(data.status))throw Error('The correction confirmation is incomplete. Retry the saved correction.');
   localStorage.removeItem(key);
+  if(typeof window!=='undefined')window.dispatchEvent(new Event('dispatch-invoices-changed'));
   void useBakeryStore.getState().fetchOrders(true,true).catch(cause=>console.warn('Corrected invoice refresh failed',cause));
   return data;
  })().finally(()=>running.delete(key));running.set(key,{intent,promise});return promise;

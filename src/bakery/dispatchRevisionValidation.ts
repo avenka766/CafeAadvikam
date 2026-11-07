@@ -1,5 +1,23 @@
-type RevisionItem = { itemName: string; unit: string; quantity: number; unitPrice: number };
+type RevisionItem = { itemName: string; unit: string; quantity: number; unitPrice: number; hsnCode?: string; gstPct?: number; gstPricing?: string; gstBuyerDetails?: unknown };
 export type DispatchReturnQuantity = { itemName: string; unit: string; qty: number };
+
+export function planInvoiceQuantityReturn(original: RevisionItem[], edited: RevisionItem[]) {
+  const key = (i: RevisionItem) => JSON.stringify([i.itemName.trim().toLowerCase(), i.unit]);
+  const index = new Map(original.map((item, keyIndex) => [key(item), keyIndex]));
+  if (index.size !== original.length || new Set(edited.map(key)).size !== edited.length) {
+    return {returns: [] as DispatchReturnQuantity[], otherEdits: true};
+  }
+  const plan = planDispatchEditReturns(original, edited.map(item => ({...item, key: index.get(key(item)) ?? -1})));
+  const stable = (value: unknown): string => {
+    if (value && typeof value === 'object' && !Array.isArray(value)) return JSON.stringify(Object.keys(value).sort().map(k => [k, stable((value as Record<string, unknown>)[k])]));
+    return JSON.stringify(value ?? null);
+  };
+  for (const item of edited) {
+    const saved = original[index.get(key(item)) ?? -1];
+    if (saved && ['hsnCode', 'gstPct', 'gstPricing', 'gstBuyerDetails'].some(field => stable(saved[field as keyof RevisionItem]) !== stable(item[field as keyof RevisionItem]))) plan.otherEdits = true;
+  }
+  return plan;
+}
 
 export function planDispatchEditReturns<T extends RevisionItem>(original: T[], lines: (T & {key: number})[]) {
   const returns: DispatchReturnQuantity[] = [];
