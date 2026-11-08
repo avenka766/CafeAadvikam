@@ -1,0 +1,22 @@
+import {act} from 'react';import {createRoot,type Root} from 'react-dom/client';import {afterEach,beforeEach,expect,it,vi} from 'vitest';
+const m=vi.hoisted(()=>({save:vi.fn(),load:vi.fn(),done:vi.fn(),dispatch:vi.fn()}));
+vi.mock('../webDispatchRequest',()=>({pendingRegularDispatch:()=>null,saveWebDispatch:vi.fn()}));
+vi.mock('../dispatchInvoice',async original=>({...await original<typeof import('../dispatchInvoice')>(),saveDispatchInvoice:m.save}));
+vi.mock('@/lib/desktopBilling',async original=>({...await original<typeof import('@/lib/desktopBilling')>(),automaticDesktopBilling:()=>false}));
+vi.mock('@/lib/localCache',()=>({getCached:vi.fn().mockResolvedValue(null),setCached:vi.fn().mockResolvedValue(undefined)}));
+vi.mock('@/stores/branchCatalogStore',()=>({useBranchCatalogStore:()=>({items:{SNB:[{name:'Bun',price:10,active:true}],VRSNB:[{name:'Bun',price:10,active:true}],Hosur:[]},loadCatalog:m.load})}));
+vi.mock('@/lib/supabase',()=>({supabase:{rpc:vi.fn(),from:()=>{const q={select:()=>q,eq:()=>q,then:(resolve:(v:unknown)=>unknown)=>Promise.resolve({data:[],error:null}).then(resolve)};return q;}},fetchAllRows:vi.fn()}));
+import {DispatchReviewModal} from '../PlannerDashboard';
+(globalThis as {IS_REACT_ACT_ENVIRONMENT?:boolean}).IS_REACT_ACT_ENVIRONMENT=true;
+let host:HTMLDivElement,root:Root;
+beforeEach(()=>{vi.clearAllMocks();m.load.mockResolvedValue(undefined);host=document.createElement('div');document.body.append(host);root=createRoot(host);});
+afterEach(()=>{act(()=>root.unmount());host.remove();});
+for(const scope of ['SNB','VRSNB','Hosur'] as const)it(`dispatches a priced non-catalogue extra item to ${scope}`,async()=>{
+ const item={itemName:'Festival Special',unit:'pcs' as const,quantity:2,unitPrice:25,lineTotal:50};
+ m.save.mockResolvedValue({id:'invoice-'+scope,invoiceNo:'FIX/'+scope,scope,items:[item],total:50,subtotal:50,discountPct:0,discountAmount:0,roundOff:0,status:'paid',createdAt:'2026-11-08T05:00:00Z',dispatchEntryIds:[],isGstInvoice:false,gstSupplyType:'intra',returnLog:[]});
+ await act(async()=>root.render(<DispatchReviewModal scope={scope} actions={[{orderId:'extra-order-'+scope,dispatchEntryId:'extra-'+scope,itemName:item.itemName,unit:'pcs',quantity:2,unitPrice:25,isExtra:true}]} hosurShop={scope==='Hosur'?{id:'shop',name:'Fixture Shop',phone:''}:undefined} hosurOrderId={scope==='Hosur'?'shop-order':undefined} dispatchedBy="Fixture" onDispatch={m.dispatch} onClose={()=>{}} onDone={m.done}/>));
+ const confirm=[...host.querySelectorAll('button')].find(b=>b.textContent?.includes('Confirm Dispatch'))!;
+ await act(async()=>confirm.click());
+ expect(m.save).toHaveBeenCalledTimes(1);expect(m.save.mock.calls[0][0]).toMatchObject({scope,items:[item],desktopActions:[{isExtra:true,itemName:item.itemName,quantity:2}]});
+ expect(m.done).toHaveBeenCalledTimes(1);expect(host.textContent).not.toContain("Can't send");
+});
