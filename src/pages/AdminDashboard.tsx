@@ -604,7 +604,7 @@ function AdminDashboard() {
         // dispatchReceiveAndBill at billing time (see hosurBillingBridge.ts)
         // rather than inferred here — no join needed.
         () => !needHosur ? empty() : fetchAllRows(() => supabase.from('hosur_bills')
-          .select('id, bill_no, invoice_no, shop_id, shop_name, subtotal, paid_amount, credit_amount, payment_mode, confirmed_at, status, created_at, updated_at')
+          .select('id, bill_no, invoice_no, shop_id, shop_name, subtotal, paid_amount, credit_amount, return_credit_amount, payment_mode, confirmed_at, status, created_at, updated_at')
           .not('confirmed_at', 'is', null)
           .neq('status', 'cancelled')
           .gte('confirmed_at', fromTs).lte('confirmed_at', hosurConfirmedFetchToTs)),
@@ -837,7 +837,7 @@ function AdminDashboard() {
             salesperson: '', biller: String(h.shop_name ?? ''),
             invoiceNo: active.map(r=>String(r.invoice_no)).join(', ') || String(h.invoice_no ?? '') || String(h.bill_no ?? ''),
             isGstInvoice: active.some(r=>r.is_gst_invoice===true),
-            dataCheckOk: Math.abs(Number(h.subtotal || 0) - (Number(h.credit_amount || 0) + Number(h.paid_amount || 0))) < 0.01,
+            dataCheckOk: Math.abs(Number(h.subtotal || 0) - (Number(h.credit_amount || 0) + Number(h.paid_amount || 0) - Number(h.return_credit_amount || 0))) < 0.01,
           };
         // The confirmed_at fetch above was deliberately widened past toTs so
         // a late-confirmed bill dispatched inside the selected range isn't
