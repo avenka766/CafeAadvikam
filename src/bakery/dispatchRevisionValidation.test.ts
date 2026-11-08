@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { combineDispatchReturns, dispatchRevisionError, planDispatchEditReturns, planInvoiceQuantityReturn } from './dispatchRevisionValidation';
+import { combineDispatchReturns, dispatchRevisionError, planDispatchEditReturns, planInvoiceQuantityReturn, invoiceReturnItems } from './dispatchRevisionValidation';
 
 const item = { itemName: 'Bun', unit: 'pcs', quantity: 2, unitPrice: 10 };
+it('groups normal/extra return lines once, separates units and excludes charges',()=>{
+ expect(invoiceReturnItems([item,{...item,itemName:'BUN',quantity:3},{...item,unit:'kg',quantity:.5},{...item,itemName:'Delivery',unit:'charge',quantity:1}])).toEqual([
+  {itemName:'Bun',unit:'pcs',quantity:5},{itemName:'Bun',unit:'kg',quantity:.5},
+ ]);
+});
 describe('dispatch correction input guards', () => {
   it('plans both a reduced quantity and a removed line as recorded returns', () => {
     const bread = {itemName: 'Bread', unit: 'kg', quantity: 0.3, unitPrice: 40};

@@ -899,10 +899,10 @@ export async function returnDispatchInvoiceItems(params:{invoiceId:string;return
   if(!hasPendingDispatchInvoiceRevision(original.id)){
  const invalid=dispatchRevisionError(original.items,original.discountPct);if(invalid)return {error:invalid};
  const key=(i:{itemName:string;unit:string})=>JSON.stringify([i.itemName.trim().toLowerCase(),i.unit]);
- const current=new Map(original.items.map(i=>[key(i),i]));if(current.size!==original.items.length)return {error:'Repeated invoice lines need reconciliation before returning items.'};
+ const current=new Map<string,{quantity:number}>();for(const item of original.items){const k=key(item);current.set(k,{quantity:(current.get(k)?.quantity??0)+item.quantity});}
  for(const ret of returns){const item=current.get(key(ret));if(!item||ret.qty>item.quantity+1e-9)return {error:`Can't return ${ret.qty} ${ret.unit} of ${ret.itemName}; it exceeds the remaining invoice quantity.`};}
   }
-  const row=await reviseDispatchInvoice(original,'return',{returns},params.reason||'Returned invoice items');const record=recordFromRow(row);
+  const row=await reviseDispatchInvoice(original,'return',{returns},params.reason||'Returned invoice items');const record={...recordFromRow(row),workflowResult:{returnCreditAmount:Number(row.revision_return_credit_amount||0)}};
   const sent=await notifyRevisedHosur(row,record);let whatsapp=sent?{ok:sent.ok,error:sent.whatsappError||sent.message}:undefined;
   if(!sent&&!row.revision_duplicate){const phone=record.customerPhone||record.hosurShopPhone;if(phone){try{await sendDispatchInvoiceWhatsapp(record,phone);whatsapp={ok:true,error:undefined};}catch(cause){whatsapp={ok:false,error:cause instanceof Error?cause.message:'Invoice saved; WhatsApp needs retry.'};}}}
   return {ok:true,record,whatsapp};

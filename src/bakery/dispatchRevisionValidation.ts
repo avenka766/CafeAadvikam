@@ -1,6 +1,17 @@
 type RevisionItem = { itemName: string; unit: string; quantity: number; unitPrice: number; hsnCode?: string; gstPct?: number; gstPricing?: string; gstBuyerDetails?: unknown };
 export type DispatchReturnQuantity = { itemName: string; unit: string; qty: number };
 
+export function invoiceReturnItems(items: {itemName: string; unit: string; quantity: number}[]) {
+  const grouped = new Map<string, {itemName: string; unit: string; quantity: number}>();
+  for (const item of items) {
+    if (item.unit !== 'kg' && item.unit !== 'pcs') continue;
+    const key = JSON.stringify([item.itemName.trim().toLowerCase(), item.unit]);
+    const previous = grouped.get(key);
+    grouped.set(key, {itemName: previous?.itemName ?? item.itemName, unit: item.unit, quantity: (previous?.quantity ?? 0) + item.quantity});
+  }
+  return [...grouped.values()];
+}
+
 export function planInvoiceQuantityReturn(original: RevisionItem[], edited: RevisionItem[]) {
   const key = (i: RevisionItem) => JSON.stringify([i.itemName.trim().toLowerCase(), i.unit]);
   const index = new Map(original.map((item, keyIndex) => [key(item), keyIndex]));

@@ -1,3 +1,4 @@
+import {invoiceReturnItems} from './dispatchRevisionValidation';
 import {collectHosurOrderIds,useHosurShopOrders,type HosurShopOrderCard} from './useHosurShopOrders';
 import {financialLineTotal,financialPercent} from '@/lib/financialRounding';
 import {changeSampleInvoice} from './sampleInvoiceRequest';
@@ -8650,7 +8651,7 @@ function HosurShopDispatchPanel({ rows, mode, orders, leftoverBalances, onDispat
     // calls only run from the confirmed review's onDone, which is never
     // reached when there's nothing to send. Verified live against this
     // exact scenario (see project_hosur_dispatch_bugs_20260902 memory).
-    const anchorOrderId = orders.find(o => !isAdvanceOrderTagged(o.notes) && bakeryOrderCoversHosurShopOrder(o, card.orderId))?.id ?? null;
+    const anchorOrderId = orders.find(o => !isAdvanceOrderTagged(o.notes) && bakeryOrderCoversHosurShopOrder(o, card.orderId))?.id ?? getId(`extra-order:${card.orderId}`);
     for (const item of card.items) {
       // CRITICAL BUG FIX (2026-08-07, preserved) + FEATURE (2026-08-15):
       // the order-linked portion is still hard-capped at this item's true
@@ -9286,7 +9287,7 @@ function BranchFlatDispatchPanel({ branch, rows, orders, leftoverBalances, onDis
   // else), the old check would find no anchor at all even though a
   // perfectly valid one exists.
   const anchorOrderId = orders.find(o => !isAdvanceOrderTagged(o.notes) &&
-    (o.targetBranch === branch || o.items.some(i => i.branchSplit?.[branch])))?.id ?? null;
+    (o.targetBranch === branch || o.items.some(i => i.branchSplit?.[branch])))?.id ?? getId(`extra-order:${branch}`);
 
   const reviewModal = reviewActions && (
     <DispatchReviewModal
@@ -9523,10 +9524,7 @@ function DispatchTab({ orders: sourceOrders, allOrders, productionCutoff }: { or
           <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-700">
             "To Dispatch" clears every night at 11 PM — items here won't carry over to tomorrow. The Dispatched sub-tab and Reports still keep everything.
           </div>
-          {allOrders.length === 0 && <EmptyState text="Nothing waiting on dispatch." />}
-          {allOrders.length > 0 && (
-            <DispatchDateGroup dateKey="all" label="Pending Dispatch" orders={orders} allOrders={allOrders.filter(order => !isAdvanceOrderTagged(order.notes))} search={search} defaultOpen />
-          )}
+          <DispatchDateGroup dateKey="all" label="Pending Dispatch" orders={orders} allOrders={allOrders.filter(order => !isAdvanceOrderTagged(order.notes))} search={search} defaultOpen />
         </>
       )}
     </div>
@@ -9585,8 +9583,9 @@ function DispatchReturnPanel() {
 
   const itemKey = (it: { itemName: string; unit: string }) => `${it.itemName.trim().toLowerCase()}|${it.unit}`;
   const activeInvoice = result?.record ?? invoice;
+  const returnableItems = invoiceReturnItems(activeInvoice?.items ?? []);
   const returns = activeInvoice
-    ? (activeInvoice.items
+    ? (returnableItems
         .map(i => ({ itemName: i.itemName, unit: i.unit, qty: returnQty[itemKey(i)] || 0 }))
         .filter(r => r.qty > 0))
     : [];
@@ -9671,7 +9670,7 @@ function DispatchReturnPanel() {
           ) : (
             <>
               <div className="mt-3 space-y-1.5">
-                {activeInvoice.items.map(item => {
+                {returnableItems.map(item => {
                   const k = itemKey(item);
                   return (
                     <div key={k} className="grid grid-cols-[1fr_5rem_6rem] items-center gap-2 rounded-xl border border-border/70 px-2.5 py-1.5">
@@ -9710,6 +9709,7 @@ function DispatchReturnPanel() {
           {result && (
             <div className="mt-3 rounded-xl border border-emerald-300 bg-emerald-50 p-2.5 text-[11px] font-bold text-emerald-800">
               <p>Return saved. New total: Rs. {Math.round(result.record.total)}. Items returned to stock.</p>
+              {Number(result.record.workflowResult?.returnCreditAmount)>0 && <p className="mt-2 text-amber-900">Payment / credit adjustment pending: Rs. {Number(result.record.workflowResult?.returnCreditAmount).toFixed(2)}. Recorded collections were preserved; no cash refund was posted.</p>}
               {result.whatsapp ? (
                 <p className="mt-1 flex items-center gap-1">
                   <MessageCircle className="size-3.5" />
@@ -9959,6 +9959,7 @@ function EditDispatchInvoiceModal({ invoice, onClose, onSaved }: {
         if (result.whatsapp && !result.whatsapp.ok) {
           setWarning(`Return saved. WhatsApp needs a retry${result.whatsapp.error ? ` (${result.whatsapp.error})` : ''}.`);
         }
+        if(Number(result.record.workflowResult?.returnCreditAmount)>0)setWarning(`Return saved. Payment / credit adjustment pending: Rs. ${Number(result.record.workflowResult?.returnCreditAmount).toFixed(2)}. Recorded collections were preserved; no cash refund was posted.`);
         setSavedRecord(result.record);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'The return could not be saved.');
@@ -12712,18 +12713,7 @@ export function DispatchReviewModal({ scope, hosurShop, hosurOrderId, customer, 
     if (buyerError) { setError(buyerError); return; }
     if (gstInvoiceOffered && gstEnabled && (!Number.isFinite(Number(gstPct)) || Number(gstPct)<=0 || Number(gstPct)>100)) {setError('Enter a valid GST percentage above 0 and up to 100.');return;}
     if (sendingRef.current) return;
-    // FEATURE (2026-09-13): checked before missingPriceItems on purpose — an
-    // item that isn't in this branch's list at all shouldn't be "fixable" by
-    // just typing a price into the override box below (that would silently
-    // create a phantom item at the branch's counter); it needs the name
-    // corrected or the branch's item master updated, not a manual price.
-    if (catalogMismatches.length > 0) {
-      const lines = catalogMismatches.map(x => x.result.status === 'mismatch'
-        ? `"${x.itemName}" — not in ${scope}'s item list (did you mean "${x.result.match}"?)`
-        : `"${x.itemName}" — not in ${scope}'s item list`);
-      setError(`Can't send — the following item${catalogMismatches.length > 1 ? 's' : ''} don't match ${scope}'s item list due to a name mismatch. Fix the name or contact the ${scope} branch manager:\n${lines.join('\n')}`);
-      return;
-    }
+    // A non-catalogue product is valid once its price has been entered.
     if (missingPriceItems.length > 0) {
       setError(`Enter a price for: ${missingPriceItems.map(i => i.itemName).join(', ')} before dispatching.`);
       return;
@@ -12908,19 +12898,19 @@ export function DispatchReviewModal({ scope, hosurShop, hosurOrderId, customer, 
                 on Send) so every mismatched item is visible while reviewing,
                 with a suggestion when it looks like a plausible typo. */}
             {catalogMismatches.length > 0 && (
-              <div className="mt-3 rounded-xl border-2 border-red-300 bg-red-50 p-3">
-                <p className="text-[11px] font-black text-red-900">
-                  {catalogMismatches.length} item{catalogMismatches.length > 1 ? 's are' : ' is'} not in {scope}'s item list — can't be sent due to a name mismatch. Fix the name below, or contact the {scope} branch manager:
+              <div className="mt-3 rounded-xl border-2 border-amber-300 bg-amber-50 p-3">
+                <p className="text-[11px] font-black text-amber-900">
+                  {catalogMismatches.length} item{catalogMismatches.length > 1 ? 's are' : ' is'} not in {scope}'s item list. You can send it with an entered price, or choose a suggested name:
                 </p>
                 <ul className="mt-1 space-y-1">
                   {catalogMismatches.map(x => (
-                    <li key={x.itemName} className="flex flex-wrap items-center gap-1.5 text-[11px] font-bold text-red-800">
+                    <li key={x.itemName} className="flex flex-wrap items-center gap-1.5 text-[11px] font-bold text-amber-800">
                       <span>"{x.itemName}"{x.result.status === 'mismatch' ? ` — did you mean "${x.result.match}"?` : ' — no similar item found'}</span>
                       {x.result.status === 'mismatch' && x.result.match && (
                         <button
                           type="button"
                           onClick={() => applyItemNameOverride(x.itemName, x.result.match as string)}
-                          className="rounded-full bg-red-700 px-2 py-0.5 text-[10px] font-black text-white hover:bg-red-800"
+                          className="rounded-full bg-amber-700 px-2 py-0.5 text-[10px] font-black text-white hover:bg-amber-800"
                         >
                           Use "{x.result.match}"
                         </button>
