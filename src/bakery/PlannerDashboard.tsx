@@ -7866,7 +7866,7 @@ function EditSampleBillModal({ bill, onClose, onSaved }: {
   );
 }
 
-function SampleBillTab() {
+export function SampleBillTab() {
   const { items: catalogItems, loadCatalog } = useBranchCatalogStore();
   const currentUser = useAuthStore(s => s.currentUser);
   const [search, setSearch] = useState('');
@@ -7901,6 +7901,10 @@ function SampleBillTab() {
   // same customer.
   const savingInFlightRef = useRef(false);
   const [markingPaidId, setMarkingPaidId] = useState<string | null>(null);
+  const [cancellingSampleId, setCancellingSampleId] = useState<string | null>(null);
+  const sampleActionInFlight = useRef(false);
+  const [sampleActionError, setSampleActionError] = useState('');
+  const sampleActionBusy = markingPaidId !== null || cancellingSampleId !== null;
   // FEATURE (2026-09-30): "need the ability to edit the bill and remove the
   // item in sample bill" — see EditSampleBillModal above.
   const [editingBill, setEditingBill] = useState<DispatchInvoiceRecord | null>(null);
@@ -8035,6 +8039,9 @@ function SampleBillTab() {
   };
 
   const markPaid = async (record: DispatchInvoiceRecord) => {
+    if (sampleActionInFlight.current || record.status !== 'unpaid') return;
+    sampleActionInFlight.current = true;
+    setSampleActionError('');
     setMarkingPaidId(record.id);
     try {
       const result = await markDispatchInvoicePaid(record, currentUser?.displayName || 'Planner');
@@ -8042,7 +8049,33 @@ function SampleBillTab() {
       if (lastBill?.id === record.id) setLastBill({ ...record, status: 'paid', paidAt: new Date().toISOString() });
       loadRecent();
     } finally {
+      sampleActionInFlight.current = false;
       setMarkingPaidId(null);
+    }
+  };
+
+  const cancelSampleBill = async (bill: DispatchInvoiceRecord) => {
+    if (sampleActionInFlight.current || bill.status === 'cancelled') return;
+    if (!window.confirm(`Cancel sample bill ${bill.invoiceNo}? It will remain in history as Cancelled and cannot be marked paid or edited.`)) return;
+    sampleActionInFlight.current = true;
+    setCancellingSampleId(bill.id);
+    setSampleActionError('');
+    try {
+      const result = await cancelDispatchInvoice({invoiceId: bill.id, reason: 'Cancelled from Planner Sample Bill'});
+      if ('error' in result) {
+        const message = result.error.includes('RECORDED_REFUND_REQUIRED')
+          ? 'This sample bill is already paid. Record its refund before cancelling it. Nothing was cancelled.'
+          : result.error;
+        setSampleActionError(`${bill.invoiceNo}: ${message}`);
+        return;
+      }
+      setRecent(rows => rows.map(row => row.id === bill.id ? result.record : row));
+      setLastBill(current => current?.id === bill.id ? result.record : current);
+    } catch (cause) {
+      setSampleActionError(`${bill.invoiceNo}: ${cause instanceof Error ? cause.message : 'Cancellation could not be confirmed. Retry the same cancellation.'}`);
+    } finally {
+      sampleActionInFlight.current = false;
+      setCancellingSampleId(null);
     }
   };
 
@@ -8189,16 +8222,19 @@ function SampleBillTab() {
           </button>
 
           {lastBill && (
-            <div className={cn('rounded-xl border p-3', lastBill.status === 'paid' ? 'border-teal-200 bg-teal-50' : 'border-amber-200 bg-amber-50')}>
-              <p className={cn('text-xs font-black', lastBill.status === 'paid' ? 'text-teal-800' : 'text-amber-800')}>
-                Sample Bill {lastBill.invoiceNo} — {invoiceMoney(lastBill.total)} · {lastBill.status === 'paid' ? 'Paid' : 'Awaiting Payment'}
+            <div className={cn('rounded-xl border p-3', lastBill.status === 'cancelled' ? 'border-red-200 bg-red-50' : lastBill.status === 'paid' ? 'border-teal-200 bg-teal-50' : 'border-amber-200 bg-amber-50')}>
+              <p className={cn('text-xs font-black', lastBill.status === 'cancelled' ? 'text-red-800' : lastBill.status === 'paid' ? 'text-teal-800' : 'text-amber-800')}>
+                Sample Bill {lastBill.invoiceNo} — {invoiceMoney(lastBill.total)} · {lastBill.status === 'cancelled' ? 'Cancelled' : lastBill.status === 'paid' ? 'Paid' : 'Awaiting Payment'}
               </p>
               <div className="mt-2 flex flex-wrap gap-1.5">
                 <button onClick={() => printDispatchInvoice(lastBill, 'thermal')} className="flex items-center gap-1 rounded-lg bg-muted px-2.5 py-1.5 text-[11px] font-bold text-muted-foreground hover:bg-slate-200"><Printer className="size-3.5" /> Thermal</button>
                 <button onClick={() => printDispatchInvoice(lastBill, 'a4')} className="flex items-center gap-1 rounded-lg bg-muted px-2.5 py-1.5 text-[11px] font-bold text-muted-foreground hover:bg-slate-200"><Printer className="size-3.5" /> A4</button>
-                <button onClick={() => setEditingBill(lastBill)} className="flex items-center gap-1 rounded-lg border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-[11px] font-black text-amber-800 hover:bg-amber-100"><Pencil className="size-3.5" /> Edit</button>
+                <button onClick={() => setEditingBill(lastBill)} disabled={sampleActionBusy || lastBill.status === 'cancelled'} className="flex items-center gap-1 rounded-lg border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-[11px] font-black text-amber-800 hover:bg-amber-100"><Pencil className="size-3.5" /> Edit</button>
+                {lastBill.status !== 'cancelled' && <button type="button" onClick={() => void cancelSampleBill(lastBill)} disabled={sampleActionBusy} className="flex items-center gap-1 rounded-lg border border-red-300 bg-red-50 px-2.5 py-1.5 text-[11px] font-black text-red-700 hover:bg-red-100 disabled:opacity-50">
+                  {cancellingSampleId === lastBill.id ? <Loader2 className="size-3.5 animate-spin" /> : <X className="size-3.5" />} Cancel Bill
+                </button>}
                 {lastBill.status === 'unpaid' && (
-                  <button onClick={() => markPaid(lastBill)} disabled={markingPaidId === lastBill.id} className="flex items-center gap-1 rounded-lg bg-teal-600 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-teal-700 disabled:opacity-50">
+                  <button onClick={() => markPaid(lastBill)} disabled={sampleActionBusy} className="flex items-center gap-1 rounded-lg bg-teal-600 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-teal-700 disabled:opacity-50">
                     {markingPaidId === lastBill.id ? <Loader2 className="size-3.5 animate-spin" /> : <CheckCircle2 className="size-3.5" />} Mark as Paid
                   </button>
                 )}
@@ -8215,6 +8251,7 @@ function SampleBillTab() {
             <RefreshCw className={cn('size-3.5', loadingRecent && 'animate-spin')} /> Refresh
           </button>
         </div>
+        {sampleActionError && <p role="alert" className="border-b border-red-200 bg-red-50 px-4 py-3 text-xs font-bold text-red-700">{sampleActionError}</p>}
         {sampleHistoryError ? <div role="alert" className="p-4 text-sm text-red-700">Sample bill history could not load: {sampleHistoryError}. Use Refresh to retry this list.</div> : loadingRecent ? (
           <div className="flex justify-center py-8"><Loader2 className="size-5 animate-spin text-muted-foreground" /></div>
         ) : recent.length === 0 ? (
@@ -8226,8 +8263,8 @@ function SampleBillTab() {
                 <div className="min-w-0">
                   <p className="text-xs font-black text-foreground">
                     {bill.invoiceNo} — {bill.customerName}
-                    <span className={cn('ml-1.5 rounded-full px-1.5 py-0.5 text-[10px] font-black', bill.status === 'paid' ? 'bg-teal-100 text-teal-700' : 'bg-amber-100 text-amber-700')}>
-                      {bill.status === 'paid' ? 'Paid' : 'Awaiting Payment'}
+                    <span className={cn('ml-1.5 rounded-full px-1.5 py-0.5 text-[10px] font-black', bill.status === 'cancelled' ? 'bg-red-100 text-red-700' : bill.status === 'paid' ? 'bg-teal-100 text-teal-700' : 'bg-amber-100 text-amber-700')}>
+                      {bill.status === 'cancelled' ? 'Cancelled' : bill.status === 'paid' ? 'Paid' : 'Awaiting Payment'}
                     </span>
                   </p>
                   <p className="text-[11px] font-bold text-muted-foreground">{new Date(bill.createdAt).toLocaleString('en-IN')} · {bill.items.length} item{bill.items.length === 1 ? '' : 's'} · {bill.customerPhone}</p>
@@ -8235,9 +8272,12 @@ function SampleBillTab() {
                 <div className="flex items-center gap-2">
                   <span className="text-sm font-black text-foreground">{invoiceMoney(bill.total)}</span>
                   <button onClick={() => printDispatchInvoice(bill, 'thermal')} className="rounded-lg border border-border bg-card p-1.5 text-muted-foreground hover:bg-muted" title="Print thermal"><Printer className="size-3.5" /></button>
-                  <button onClick={() => setEditingBill(bill)} className="flex items-center gap-1 rounded-lg border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-[11px] font-black text-amber-800 hover:bg-amber-100"><Pencil className="size-3.5" /> Edit</button>
+                  <button onClick={() => setEditingBill(bill)} disabled={sampleActionBusy || bill.status === 'cancelled'} className="flex items-center gap-1 rounded-lg border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-[11px] font-black text-amber-800 hover:bg-amber-100"><Pencil className="size-3.5" /> Edit</button>
+                  {bill.status !== 'cancelled' && <button type="button" onClick={() => void cancelSampleBill(bill)} disabled={sampleActionBusy} aria-label={`Cancel sample bill ${bill.invoiceNo}`} className="flex items-center gap-1 rounded-lg border border-red-300 bg-red-50 px-2.5 py-1.5 text-[11px] font-black text-red-700 hover:bg-red-100 disabled:opacity-50">
+                    {cancellingSampleId === bill.id ? <Loader2 className="size-3.5 animate-spin" /> : <X className="size-3.5" />} Cancel Bill
+                  </button>}
                   {bill.status === 'unpaid' && (
-                    <button onClick={() => markPaid(bill)} disabled={markingPaidId === bill.id} className="flex items-center gap-1 rounded-lg bg-teal-600 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-teal-700 disabled:opacity-50">
+                    <button onClick={() => markPaid(bill)} disabled={sampleActionBusy} className="flex items-center gap-1 rounded-lg bg-teal-600 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-teal-700 disabled:opacity-50">
                       {markingPaidId === bill.id ? <Loader2 className="size-3.5 animate-spin" /> : <CheckCircle2 className="size-3.5" />} Mark Paid
                     </button>
                   )}
