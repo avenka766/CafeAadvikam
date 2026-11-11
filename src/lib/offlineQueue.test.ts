@@ -31,6 +31,34 @@ describe('Offline queue safety', () => {
     await store.getState().enqueue('broken', {}); await store.getState().enqueue('good', {});
     await store.getState().flush(); expect(store.getState().pending.map(p => p.kind)).toEqual(['broken']);
   });
+  it('syncs independent branch records while preserving order for edits of the same record', async () => {
+    const {useOfflineQueueStore:store,registerReplayHandler}=await import('./offlineQueue');
+    const kind='branch_operation_record';
+    const row={branch:'SNB',record_type:'expense',record_id:'a'};
+    await store.getState().enqueue(kind,row);
+    await store.getState().enqueue(kind,{...row,amount:200});
+    mocks.owner='staff-b';
+    await store.getState().enqueue(kind,{...row,record_id:'b'});
+    const replay=vi.fn().mockResolvedValueOnce({ok:true}).mockResolvedValueOnce({ok:false,needsReview:true,error:'Permission'});
+    registerReplayHandler(kind,replay);
+    await store.getState().flush();
+    expect(replay.mock.calls[0][1].record_id).toBe('b');
+    mocks.owner='staff-a';
+    await store.getState().flush();
+    await store.getState().flush();
+    expect(replay).toHaveBeenCalledTimes(2);
+    expect(store.getState().pending).toHaveLength(2);
+    replay.mockResolvedValue({ok:true});
+    await store.getState().flush(true);
+    expect(store.getState().pending).toHaveLength(0);
+  });
+  it('keeps the operator who queued the record if login changes while saving', async () => {
+    const {useOfflineQueueStore:store}=await import('./offlineQueue');
+    const save=store.getState().enqueue('branch_operation_record',{});
+    mocks.owner='staff-b';
+    await save;
+    expect(store.getState().pending[0].staffId).toBe('staff-a');
+  });
   it('replays the same persisted request identity after an uncertain response and reload',async()=>{
     let module=await import('./offlineQueue');
     await module.useOfflineQueueStore.getState().enqueue('stock', {quantityDelta:2});

@@ -21,6 +21,7 @@ const sessionAwareFetch: typeof fetch = async (input, init: RequestInit = {}) =>
       : input.url;
   const isEdgeFunctionRequest = requestUrl.includes('/functions/v1/');
   const isDiagnosticRequest = requestUrl.includes('/rpc/report_client_error_secure');
+  const isOperationReplay = requestUrl.includes('/rest/v1/branch_operation_records') && headers.has('x-cafe-session') && init.method?.toUpperCase() === 'POST';
   // BUG FIX (2026-09-16): "make sure this issue won't occur in future" —
   // PostgREST silently caps any un-paginated query at exactly 1000 rows and
   // returns a normal 200, so a query that actually matches more rows just
@@ -42,7 +43,7 @@ const sessionAwareFetch: typeof fetch = async (input, init: RequestInit = {}) =>
   // never issue the POST request. PostgREST/RPC requests still receive them.
   if (!isEdgeFunctionRequest) {
     const token = typeof window !== 'undefined' ? getAppSessionToken() : null;
-    if (token) headers.set('x-cafe-session', token);
+    if (token && !headers.has('x-cafe-session')) headers.set('x-cafe-session', token);
     headers.set('x-client-app', 'cafe-aadvikam-web');
   }
   try {
@@ -75,7 +76,7 @@ const sessionAwareFetch: typeof fetch = async (input, init: RequestInit = {}) =>
           // instead of the scary generic red banner (which is what a VRSNB
           // Receiver device was stuck showing - "row-level security policy"
           // with no indication a re-login would fix it).
-          sessionExpired = /SESSION_REQUIRED/i.test(bodyText) || /row-level security policy/i.test(bodyText);
+          sessionExpired = /SESSION_REQUIRED/i.test(bodyText) || (!isOperationReplay && /row-level security policy/i.test(bodyText));
           try {
             const body = JSON.parse(bodyText) as { message?: unknown; code?: unknown; details?: unknown; hint?: unknown };
             if (typeof body.message === 'string') responseMessage = body.message;
@@ -90,7 +91,7 @@ const sessionAwareFetch: typeof fetch = async (input, init: RequestInit = {}) =>
         }
         if (sessionExpired) {
           window.dispatchEvent(new CustomEvent('cafe:session-expired', { detail: { at: Date.now() } }));
-        } else if (/LAST_ITEM_USE_CANCEL_ORDER/i.test(responseMessage) ||
+        } else if ((isOperationReplay && responseCode === '42501') || /LAST_ITEM_USE_CANCEL_ORDER/i.test(responseMessage) ||
           (requestUrl.includes('/rpc/cancel_branch_transfer_once_v1') && responseCode==='P0001' && /^TRANSFER_ALREADY_RECEIVED\b/.test(responseMessage))) {
           // BUG FIX (2026-08-21): "cancelling the last item on an order shows
           // a scary 'business data may be incomplete' banner." This is a

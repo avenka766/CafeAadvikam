@@ -31,7 +31,7 @@
 // event is being observed. This version goes back to that exact pattern
 // instead of re-inventing a parent-side listener.
 
-import { desktopSilentPrint } from './platform';
+import { submitAppPrint } from './appPrinting';
 
 // Last-resort path: a real window the user can print from manually. Only
 // reached if the hidden iframe could not be created at all.
@@ -69,11 +69,9 @@ export function printViaIframe(html: string) {
   // Electron main process instead, which prints it silently (no dialog).
   // See desktopSilentPrint()'s own comment for why this is a pure addition
   // everywhere else (web deployment, Android app): it's a no-op there.
-  const silent = desktopSilentPrint(html);
-  if (silent) {
-    void silent.then((result) => {
-      if (!result.success) console.error('[printViaIframe] Electron silent print failed:', result.errorType);
-    }).catch((err) => console.error('[printViaIframe] Electron silent print threw:', err));
+  const appPrint = submitAppPrint(html);
+  if (appPrint) {
+    void appPrint.catch(error => window.alert(error instanceof Error ? error.message : 'The print job could not be submitted.'));
     return;
   }
   let frame: HTMLIFrameElement | null = null;
