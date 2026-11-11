@@ -47,11 +47,30 @@ it('blocks double submission and competing payment actions while cancellation is
  await act(async()=>complete({ok:true,record:{...bill,status:'cancelled'}}));
  expect(m.paid).not.toHaveBeenCalled();
 });
-it('shows paid-bill refund errors without changing the paid status',async()=>{
- m.list.mockResolvedValue([{...bill,status:'paid'}]);m.cancel.mockResolvedValue({error:'RECORDED_REFUND_REQUIRED'});
+it('handles a stale unpaid bill that was paid on another device',async()=>{
+ m.cancel.mockResolvedValue({error:'RECORDED_REFUND_REQUIRED'});
  await render();await act(async()=>button('Cancel Bill').click());
- expect(host.querySelector('[role="alert"]')?.textContent).toContain('Record its refund');
- expect(host.textContent).toContain('Paid');expect(button('Cancel Bill').disabled).toBe(false);
+ expect(host.querySelector('[role="alert"]')?.textContent).toContain('Refresh the bill');
+ expect(host.textContent).toContain('Awaiting Payment');expect(button('Cancel Bill').disabled).toBe(false);
+});
+it('records the confirmed full refund before cancelling a paid bill',async()=>{
+ m.list.mockResolvedValue([{...bill,status:'paid'}]);
+ m.cancel.mockResolvedValue({ok:true,record:{...bill,status:'cancelled'}});
+ await render();await act(async()=>button('Record Refund & Cancel').click());
+ expect(host.textContent).toContain('₹20.00');
+ const form=host.querySelector('form')!;
+ await act(async()=>form.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true})));
+ expect(m.cancel).not.toHaveBeenCalled();
+ form.querySelector('select')!.value='upi';
+ form.querySelector<HTMLInputElement>('[name=reference]')!.value='UPI-123';
+ form.querySelector<HTMLInputElement>('[name=reason]')!.value='Customer returned the order';
+ form.querySelector<HTMLInputElement>('[name=confirmed]')!.checked=true;
+ form.querySelector<HTMLInputElement>('[name=restock]')!.checked=true;
+ await act(async()=>button('Confirm Refund & Cancel Bill').click());
+ expect(m.cancel).toHaveBeenCalledWith({invoiceId:bill.id,reason:'Customer returned the order',
+   sampleRefund:{bill:{...bill,status:'paid'},details:{amount:20,method:'upi',reference:'UPI-123',confirmed:true,restock:true}}});
+ expect(host.textContent).toContain('Cancelled');
+ expect(host.querySelector('form')).toBeNull();
 });
 it('shows transport errors and lets the same cancellation be retried',async()=>{
  m.cancel.mockRejectedValue(Error('Connection lost'));await render();await act(async()=>button('Cancel Bill').click());
