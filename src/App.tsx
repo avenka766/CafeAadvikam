@@ -122,13 +122,18 @@ function LiveMenuSync() {
 // time this app reopens, so a queued write doesn't just sit there until the
 // next `online` event or the 30s safety-retry fires.
 function OfflineQueueBootstrap() {
-  const { hydrate, flush } = useOfflineQueueStore();
+  const hydrate = useOfflineQueueStore(state => state.hydrate);
+  const flush = useOfflineQueueStore(state => state.flush);
+  const staffId = useAuthStore(state => state.currentUser?.id);
   useEffect(() => {
     void (async () => {
       await hydrate();
+      if (staffId && useOfflineQueueStore.getState().pending.some(entry => entry.kind === 'branch_operation_record' && entry.staffId === staffId)) {
+        await import('@/branch/durableOperationMirror');
+      }
       await flush();
     })();
-  }, [hydrate, flush]);
+  }, [hydrate, flush, staffId]);
   return null;
 }
 
@@ -303,6 +308,7 @@ function AppRoutes() {
 
   return (
     <>
+      {!['audit', 'finance'].includes(currentUser?.role || '') && <OfflineBanner showStaffQueue={!isPublicRoute} />}
       {useWorkspaceChrome && !isLandingRoute && location.pathname !== '/order' && location.pathname !== '/our-craft' && <Header />}
       {useWorkspaceChrome && currentUser && !isPublicRoute ? (
         <WorkspaceChrome>{routes}</WorkspaceChrome>
@@ -317,7 +323,6 @@ export default function App() {
   return (
     <ErrorBoundary>
       <DeleteConfirmationGuard />
-      {!auditOnly && <OfflineBanner />}
       <DataHealthBanner />
       <ElectronRefreshButton />
         <DesktopSalesBootstrap />
