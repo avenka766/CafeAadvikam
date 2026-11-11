@@ -304,7 +304,7 @@ export function BranchBillHistoryProTab({ branch }: ModuleProps) {
         // the reprint entirely - it's stale, but still better than nothing
         // if Supabase is briefly unreachable.
         setLedgerMessage(error ? `Could not refresh this bill before reprinting (${error.message}); printed the last-known copy.` : '');
-        void printCounterBill(bill, true);
+        await printCounterBill(bill, true);
         return;
       }
       const freshBill = mapLedgerBillRow(data as LedgerBillRow, branch);
@@ -319,7 +319,9 @@ export function BranchBillHistoryProTab({ branch }: ModuleProps) {
       const printedBill: BranchBillRecord = { ...freshBill, printCount: 2, status: 'Duplicate Bill' };
       setLedgerBills((current) => current.map((row) => row.id === bill.id ? printedBill : row));
       markBillDuplicate(bill.id, currentUser?.displayName || 'Staff');
-      void printCounterBill(printedBill, true);
+      await printCounterBill(printedBill, true);
+    } catch (error) {
+      setLedgerMessage(error instanceof Error ? error.message : 'Could not print this bill.');
     } finally {
       setReprintingId(null);
     }
@@ -1155,7 +1157,8 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch', c
       originalOrderValue: closingQty.placedOrderValue || o.originalOrderValue || o.orderValue,
       originalCakeKg: String(closingQty.placedQty || qtyValue(o.originalCakeKg) || qtyValue(o.cakeKg)),
     });
-    void printCounterBill({ ...finalBill, _advanceAmount: o.advanceAmount || 0 } as typeof finalBill, false);
+    void printCounterBill({ ...finalBill, _advanceAmount: o.advanceAmount || 0 } as typeof finalBill, false)
+      .catch(error => window.alert(`Bill ${billNo} was saved. ${error instanceof Error ? error.message : 'Printing failed.'}`));
     setCollectingId(null);
     setClosingOrder(null);
     return null;
@@ -1776,8 +1779,7 @@ export function ReturnsTab({ branch, branchStock }: ModuleProps) {
         returnPayMode,
       });
       if(!returnViewActive.current)return;
-      await fetchBranchData(branch, true, ['stock', 'sales', 'credit']); // EGRESS FIX: a return can touch stock, sales, and (credit-mode bill) credit sales
-      if(!returnViewActive.current)return;
+      void fetchBranchData(branch, true, ['stock', 'sales', 'credit']);
       const printableMode = ret.returnPayMode === 'credit_adjustment' ? 'credit' : (ret.returnPayMode || 'cash');
       void printCounterBill({
         id: ret.id,
@@ -1802,7 +1804,10 @@ export function ReturnsTab({ branch, branchStock }: ModuleProps) {
         _originalBillNo: selected.billNo,
         notes: `${ret.reason} | Refund: ${money(ret.refundAmount||0)} | Credit reduced: ${money(ret.creditAdjusted||0)}`,
         _returnReason: `${reason}${Number(ret.creditAdjusted || 0) > 0 ? ` - Credit reduced ${money(Number(ret.creditAdjusted || 0))}` : ''}${Number(ret.refundAmount || 0) > 0 ? ` - Refunded ${money(Number(ret.refundAmount || 0))}` : ''}`,
-      } as BranchBillRecord & { _isReturn: boolean; _originalBillNo: string; _returnReason: string }, !!ret.duplicate);
+      } as BranchBillRecord & { _isReturn: boolean; _originalBillNo: string; _returnReason: string }, !!ret.duplicate)
+        .catch(error => {
+          if (returnViewActive.current) setReturnError(`Return was saved. ${error instanceof Error ? error.message : 'Printing failed.'}`);
+        });
       setSelected(null); setBillNo(''); setQtys({});
     } catch (error) {
       setReturnError(error instanceof Error ? error.message : 'Return could not be completed.');

@@ -72,6 +72,7 @@ type Props = {
   billingBlockedMessage?: string;
   beforeCheckout?: () => Promise<void>;
   onOpenCounter?: () => void;
+  recordsLoading?: boolean;
 };
 
 const TAX_RATE = 0;
@@ -205,13 +206,6 @@ function stockFor(stock: StockItem[], itemName: string, barcode?: number) {
   return Number(found?.quantity ?? 0);
 }
 
-function stockAvailable(stock: StockItem[], map: Map<string, number>, itemName: string, barcode?: number) {
-  return (barcode != null ? stock.find((s) => s.itemBarcode === barcode)?.quantity : undefined)
-    ?? map.get(normalizeItemName(itemName))
-    ?? stock.find((s) => s.itemName.toLowerCase().trim() === itemName.toLowerCase().trim())?.quantity
-    ?? 0;
-}
-
 function formatQty(qty: number, unit: 'pcs' | 'kg') {
   return formatBranchQuantity(qty, unit);
 }
@@ -268,12 +262,13 @@ export default function BranchBillingProTab({
   onOpenTab,
   billingAllowed = true,
   billingBlockedMessage = 'Open the cashier counter before billing.',
+  recordsLoading = false,
   beforeCheckout,
   onOpenCounter,
 }: Props) {
   const desktopCounter=automaticDesktopBilling()&&(branch==='SNB'||branch==='VRSNB');
-  const { currentUser } = useAuthStore();
-  const { fetchBranchData } = useBranchStore();
+  const currentUser = useAuthStore(state => state.currentUser);
+  const fetchBranchData = useBranchStore(state => state.fetchBranchData);
   const bills = useBranchOpsStore((s) => s.bills);
   const holds = useBranchOpsStore((s) => s.holds);
   const salespeople = useBranchOpsStore((s) => s.salespeople);
@@ -283,14 +278,12 @@ export default function BranchBillingProTab({
   const addHold = useBranchOpsStore((s) => s.addHold);
   const removeHold = useBranchOpsStore((s) => s.removeHold);
   const addNotification = useBranchOpsStore((s) => s.addNotification);
-  const refreshSalespeople = useBranchOpsStore((s) => s.refreshSalespeople);
   const addSalesperson = useBranchOpsStore((s) => s.addSalesperson);
 
   // URGENT FIX: don't rely solely on the general branch-ops hydration for
   // this — fetch the salesperson roster directly whenever this billing
   // screen is opened, so a stale/incomplete persisted snapshot can never
   // block billing by leaving the dropdown empty.
-  useEffect(() => { void refreshSalespeople(branch); }, [branch, refreshSalespeople]);
 
   // BUG FIX (2026-08-08): "even though the counter is opened still its
   // saying to open the counter for billing" — this screen used to decide
@@ -466,6 +459,7 @@ export default function BranchBillingProTab({
   }, [branch, salespeople]);
 
   const handleAddSalesperson = useCallback(async () => {
+    if (recordsLoading) return;
     const name = newSalespersonName.trim();
     if (!name) { setAddSalespersonError('Enter a name.'); return; }
     const dup = (branchPeople as string[]).some((p) => p.toLowerCase() === name.toLowerCase());
@@ -481,15 +475,22 @@ export default function BranchBillingProTab({
     setSalesperson(name);
     setNewSalespersonName('');
     setAddingSalesperson(false);
-  }, [newSalespersonName, branchPeople, addSalesperson, branch, userName]);
+  }, [recordsLoading, newSalespersonName, branchPeople, addSalesperson, branch, userName]);
 
   const billingStaff = requiresSalesperson ? salesperson : userName;
   const shortcutHelp = useMemo(() => requiresSalesperson ? BASE_SHORTCUTS : BASE_SHORTCUTS.filter(([key]) => key !== 'F1'), [requiresSalesperson]);
 
-  const stockMap = useMemo(() => {
-    const map = new Map<string, number>();
-    branchStock.forEach((s) => map.set(normalizeItemName(s.itemName), Number(s.quantity || 0)));
-    return map;
+  const availableStock = useMemo(() => {
+    const byName = new Map<string, number>();
+    const byBarcode = new Map<number, number>();
+    for (const item of branchStock) {
+      byName.set(normalizeItemName(item.itemName), Number(item.quantity || 0));
+      if (item.itemBarcode != null && !byBarcode.has(item.itemBarcode)) {
+        byBarcode.set(item.itemBarcode, item.quantity);
+      }
+    }
+    return (name: string, barcode?: number) =>
+      (barcode != null ? byBarcode.get(barcode) : undefined) ?? byName.get(normalizeItemName(name)) ?? 0;
   }, [branchStock]);
 
   const promotionLines = useMemo<PromotionCartLine[]>(() => {
@@ -502,7 +503,7 @@ export default function BranchBillingProTab({
         category: catalogItem?.category || 'Other',
         quantity: line.quantity,
         unitPrice: line.price,
-        inStock: isSnbFlexibleStockItem(branch, catalogItem) || stockAvailable(branchStock, stockMap, line.itemName, line.barcode) >= line.quantity,
+        inStock: isSnbFlexibleStockItem(branch, catalogItem) || availableStock(line.itemName, line.barcode) >= line.quantity,
       };
     });
     const suggestions = items
@@ -513,10 +514,10 @@ export default function BranchBillingProTab({
         category: item.category,
         quantity: 0,
         unitPrice: item.price,
-        inStock: isSnbFlexibleStockItem(branch, item) || stockAvailable(branchStock, stockMap, item.name, item.barcode) > 0,
+        inStock: isSnbFlexibleStockItem(branch, item) || availableStock(item.name, item.barcode) > 0,
       }));
     return [...cartLines, ...suggestions];
-  }, [branch, branchStock, cart, items, stockMap]);
+  }, [branch, cart, items, availableStock]);
   const handlePromotionChange = useCallback((evaluation: PromotionEvaluation) => setPromotionEvaluation(evaluation), []);
   const handleCouponChange = useCallback((value: string) => setCouponCode(value), []);
 
@@ -587,7 +588,7 @@ export default function BranchBillingProTab({
     && walletAmount <= total
     && (walletRemainder <= 0 || walletOtherMode)
   );
-  const checkoutDisabled = saving || cart.length === 0 || !paymentMode || !splitIsValid || !walletIsValid || (requiresSalesperson && !salesperson) || (paymentMode === 'cash' && Number(cashTendered || 0) < total);
+  const checkoutDisabled = recordsLoading || saving || cart.length === 0 || !paymentMode || !splitIsValid || !walletIsValid || (requiresSalesperson && !salesperson) || (paymentMode === 'cash' && Number(cashTendered || 0) < total);
   const due = Math.max(0, total - tendered);
   const balance = paymentMode === 'credit' ? Math.max(0, total - tendered) : Math.max(0, tendered - total);
   const todayBills = bills.filter((b) => b.branch === branch && new Date(b.createdAt).toDateString() === new Date().toDateString());
@@ -611,12 +612,13 @@ export default function BranchBillingProTab({
   const setItemQuantity = useCallback((item: BillingItem, amount = 1) => {
     setError('');
     if (!isCounterOpen()) {
+      if (recordsLoading) return;
       setError('Counter is not opened. Please open the counter in Cashier Closure, then Counter Open before billing.');
       setShowCounterClosedAlert(true);
       return;
     }
     const unit = unitOf(item);
-    const available = Number(stockAvailable(branchStock, stockMap, item.name, item.barcode));
+    const available = Number(availableStock(item.name, item.barcode));
     const allowInsufficientStock = isSnbFlexibleStockItem(branch, item);
     if (!allowInsufficientStock && available <= 0) {
       setError(`${item.name} is out of stock and cannot be billed.`);
@@ -638,7 +640,7 @@ export default function BranchBillingProTab({
       delete next[item.name];
       return next;
     });
-  }, [branch, branchStock, stockMap, isCounterOpen]);
+  }, [branch, availableStock, isCounterOpen, recordsLoading]);
 
   const submitQtyPopup = useCallback(() => {
     if (!qtyPopupItem) return;
@@ -654,7 +656,7 @@ export default function BranchBillingProTab({
       setShowCounterClosedAlert(true);
       return;
     }
-    const available = Number(stockAvailable(branchStock, stockMap, qtyPopupItem.name, qtyPopupItem.barcode));
+    const available = Number(availableStock(qtyPopupItem.name, qtyPopupItem.barcode));
     if (!isSnbFlexibleStockItem(branch, qtyPopupItem) && amount > available) {
       setError(`Only ${formatQty(available, unit)} available for ${qtyPopupItem.name}.`);
       return;
@@ -664,7 +666,7 @@ export default function BranchBillingProTab({
     setQtyPopupItem(null);
     setQtyPopupValue('');
     focusSearch(true);
-  }, [branch, branchStock, focusSearch, isCounterOpen, qtyPopupItem, qtyPopupValue, setItemQuantity, stockMap]);
+  }, [branch, focusSearch, isCounterOpen, qtyPopupItem, qtyPopupValue, setItemQuantity, availableStock]);
 
   const startCartQuantityEdit = (item: BranchBillItem) => {
     setError('');
@@ -703,7 +705,7 @@ export default function BranchBillingProTab({
     }
 
     const catalogItem = items.find((catalog) => catalog.barcode === item.barcode || catalog.name === item.itemName);
-    const available = Number(stockAvailable(branchStock, stockMap, item.itemName, item.barcode));
+    const available = Number(availableStock(item.itemName, item.barcode));
     if (!isSnbFlexibleStockItem(branch, catalogItem) && nextQty > available) {
       setError(`Only ${formatQty(available, item.unit)} available for ${item.itemName}. The previous quantity was kept.`);
       clearCartQuantityDraft(itemName);
@@ -719,14 +721,16 @@ export default function BranchBillingProTab({
   }, []);
 
   const holdBill = useCallback(() => {
+    if (recordsLoading) return;
     if (!cart.length) { setError('Cart is empty.'); return; }
     if (requiresSalesperson && !salesperson) { setError('Select salesperson before holding bill.'); return; }
     addHold({ branch, salesperson: billingStaff, items: cart, note: `Held by ${userName}` });
     clear();
     setShowHold(true);
-  }, [cart, requiresSalesperson, salesperson, branch, billingStaff, userName, addHold, clear]);
+  }, [recordsLoading, cart, requiresSalesperson, salesperson, branch, billingStaff, userName, addHold, clear]);
 
   const recallHold = (id: string) => {
+    if (recordsLoading) return;
     const h = branchHolds.find((x) => x.id === id);
     if (!h) return;
     setCart(h.items);
@@ -751,7 +755,7 @@ export default function BranchBillingProTab({
     if (!paymentMode) return 'Select a payment mode before billing.';
     for (const item of cart) {
       const catalogItem = items.find((catalog) => catalog.barcode === item.barcode || catalog.name === item.itemName);
-      const available = Number(stockAvailable(branchStock, stockMap, item.itemName, item.barcode));
+      const available = Number(availableStock(item.itemName, item.barcode));
       if (!isSnbFlexibleStockItem(branch, catalogItem)) {
         if (available <= 0) return `${item.itemName} is out of stock.`;
         if (item.quantity > available) return `${item.itemName}: ${formatQty(available, item.unit)} available.`;
@@ -829,6 +833,7 @@ export default function BranchBillingProTab({
 
   const checkout = async () => {
     if (checkoutInFlightRef.current) return;
+    if (recordsLoading) return;
     if (!billingAllowed) {
       setError(billingBlockedMessage);
       return;
@@ -963,8 +968,12 @@ export default function BranchBillingProTab({
         return;
       }
 
-      if (currentUser?.id) {
-        const { data: sessionRow, error: sessionError } = await supabase
+      const checkoutSplit = { cash: roundMoney(Number(split.cash || 0)), upi: roundMoney(Number(split.upi || 0)), card: roundMoney(Number(split.card || 0)) };
+      if (paymentMode === 'split' && roundMoney(checkoutSplit.cash + checkoutSplit.upi + checkoutSplit.card) !== roundMoney(total)) {
+        throw new Error('Split payment must exactly match the bill total.');
+      }
+      const counterCheck = currentUser?.id
+        ? supabase
           .from('branch_counter_sessions')
           .select('id,cashier_user_id,cashier_username,opened_at,business_date')
           .eq('branch', branch)
@@ -972,7 +981,16 @@ export default function BranchBillingProTab({
           .eq('status', 'open')
           .order('opened_at', { ascending: false })
           .limit(1)
-          .maybeSingle();
+          .maybeSingle()
+        : Promise.resolve({data: null, error: null});
+      const [{ data: sessionRow, error: sessionError }, { data: canonicalData, error: canonicalError }] = await Promise.all([
+        counterCheck,
+        supabase.rpc('canonicalize_branch_sale_items', {
+          p_branch: branch,
+          p_items: cart.map(item => ({ barcode: item.barcode, quantity: item.quantity, discount: item.discount || 0, tax: item.tax || 0 })),
+        }),
+      ]);
+      if (currentUser?.id) {
         const missingSessionTable = Boolean(sessionError && /branch_counter_sessions|does not exist|schema cache/i.test(sessionError.message || ''));
         if (sessionError && !missingSessionTable) throw new Error(`Could not verify cashier counter: ${sessionError.message}`);
         // BUG FIX (2026-09-10): a session left open from a previous day would
@@ -992,14 +1010,6 @@ export default function BranchBillingProTab({
           );
         }
       }
-      const checkoutSplit = { cash: roundMoney(Number(split.cash || 0)), upi: roundMoney(Number(split.upi || 0)), card: roundMoney(Number(split.card || 0)) };
-      if (paymentMode === 'split' && roundMoney(checkoutSplit.cash + checkoutSplit.upi + checkoutSplit.card) !== roundMoney(total)) {
-        throw new Error('Split payment must exactly match the bill total.');
-      }
-      const { data: canonicalData, error: canonicalError } = await supabase.rpc('canonicalize_branch_sale_items', {
-        p_branch: branch,
-        p_items: cart.map((item) => ({ barcode: item.barcode, quantity: item.quantity, discount: item.discount || 0, tax: item.tax || 0 })),
-      });
       if (canonicalError) {
         const missing = /canonicalize_branch_sale_items|could not find the function|does not exist|schema cache/i.test(canonicalError.message ?? '');
         throw new Error(missing ? 'The unified branch catalogue migration is not installed. Billing is blocked to prevent stale prices.' : canonicalError.message);
@@ -1416,7 +1426,7 @@ export default function BranchBillingProTab({
       }
       if (e.key === 'F9') { e.preventDefault(); holdBill(); return; }
       if (e.key === 'F10') { e.preventDefault(); void checkoutRef.current(); return; }
-      if (e.key === 'F11') { e.preventDefault(); setShowHold(true); return; }
+      if (e.key === 'F11') { e.preventDefault(); if (!recordsLoading) setShowHold(true); return; }
       if (e.key === 'F12') { e.preventDefault(); focusSearch(false); return; }
       const target = e.target as HTMLElement | null;
       const isEditing = Boolean(target?.matches('input, textarea, select, [contenteditable="true"]'));
@@ -1430,7 +1440,7 @@ export default function BranchBillingProTab({
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [focusCartQuantity, focusPaymentField, focusSearch, holdBill, paymentMode, requiresSalesperson, selectedIndex, showCounterClosedAlert, showHold, showQtyPopup, showShortcuts, visibleItems]);
+  }, [focusCartQuantity, focusPaymentField, focusSearch, holdBill, paymentMode, recordsLoading, requiresSalesperson, selectedIndex, showCounterClosedAlert, showHold, showQtyPopup, showShortcuts, visibleItems]);
 
   if (!billingAllowed) {
     return (
@@ -1487,7 +1497,7 @@ export default function BranchBillingProTab({
               >
                 <option value="">Select salesperson before billing</option>
                 {branchPeople.map((p) => <option key={p} value={p}>{p}</option>)}
-                <option value="__add_new__">+ Add new salesperson...</option>
+                <option value="__add_new__" disabled={recordsLoading}>+ Add new salesperson...</option>
               </select>
               {addingSalesperson && (
                 <div className="mt-1 flex items-center gap-1.5 rounded-xl border-2 border-amber-300 bg-amber-50 p-1.5">
@@ -1707,6 +1717,7 @@ export default function BranchBillingProTab({
                 <p className="text-xs font-bold text-amber-800">Credit due after upfront payment: {money(Math.max(0, total - creditPaid))}.</p>
               </div>
             ) : null}
+            {recordsLoading && <p role="status" className="mx-2.5 px-2.5 py-1.5 text-xs font-semibold text-slate-600">Loading saved counter records. You can browse items while billing gets ready.</p>}
             {error && <p className="mx-2.5 rounded-lg bg-red-50 px-2.5 py-1.5 text-xs font-bold text-red-700"><AlertTriangle className="mr-1 inline size-3.5"/>{error}</p>}
             <div className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-stretch gap-1.5 px-2.5 py-1.5">
               {paymentMode === 'split' || paymentMode === 'credit' || paymentMode === 'wallet' ? (
@@ -1719,18 +1730,19 @@ export default function BranchBillingProTab({
                   <input ref={cashTenderedRef} value={cashTendered} onChange={(e)=>setCashTendered(e.target.value)} placeholder={paymentMode === 'cash' ? 'Cash tendered' : 'Auto collected'} className="h-8 min-w-0 flex-1 bg-transparent text-base font-black outline-none"/>
                 </div>
               )}
-              <button onClick={holdBill} className="inline-flex min-w-[70px] items-center justify-center gap-1 rounded-xl bg-amber-100 px-2 py-1.5 text-xs font-black text-amber-800"><PauseCircle className="size-3.5"/>Hold <span className="text-[8px] opacity-70">F9</span></button>
+              <button onClick={holdBill} disabled={recordsLoading} className="inline-flex min-w-[70px] items-center justify-center gap-1 rounded-xl bg-amber-100 px-2 py-1.5 text-xs font-black text-amber-800 disabled:opacity-50"><PauseCircle className="size-3.5"/>Hold <span className="text-[8px] opacity-70">F9</span></button>
               <button onClick={checkout} disabled={checkoutDisabled} className="inline-flex min-w-[88px] items-center justify-center gap-1 rounded-xl bg-orange-500 px-2 py-1.5 text-xs font-black text-white shadow-md shadow-orange-200 disabled:opacity-50"><Printer className="size-3.5"/>{saving ? 'Saving' : 'Final Bill'} <span className="text-[8px] opacity-70">F10</span></button>
             </div>
             {lastBill && (
               <button
                 onClick={() => {
-                  if (lastBill.needsReprint) {
-                    useBranchOpsStore.setState((state) => ({
-                      bills: state.bills.map((b) => b.id === lastBill.id ? { ...b, needsReprint: false } : b),
-                    }));
-                  }
-                  void printCounterBill(lastBill, true);
+                  void printCounterBill(lastBill, true).then(() => {
+                    if (lastBill.needsReprint) {
+                      useBranchOpsStore.setState((state) => ({
+                        bills: state.bills.map((b) => b.id === lastBill.id ? { ...b, needsReprint: false } : b),
+                      }));
+                    }
+                  }).catch(error => setError(error instanceof Error ? error.message : 'Could not print this bill.'));
                 }}
                 className={cn(
                   'mx-2.5 mb-1.5 w-[calc(100%-1.25rem)] rounded-xl border py-1.5 text-xs font-black',
@@ -1768,7 +1780,7 @@ export default function BranchBillingProTab({
                   <button type="button" onClick={() => { setBillingInputMode('manual'); setQuery(''); setShowDropdown(false); }} className={cn('relative z-10 inline-flex items-center justify-center gap-1 rounded-lg text-[11px] font-black transition-colors duration-300 active:scale-95', billingInputMode === 'manual' ? 'text-white' : 'text-slate-500')}><Keyboard className="size-3"/>Manual</button>
                   <button type="button" onClick={() => { setBillingInputMode('barcode'); setQuery(''); setShowDropdown(false); setTimeout(() => searchRef.current?.focus(), 0); }} className={cn('relative z-10 inline-flex items-center justify-center gap-1 rounded-lg text-[11px] font-black transition-colors duration-300 active:scale-95', billingInputMode === 'barcode' ? 'text-white' : 'text-slate-500')}><ScanBarcode className="size-3"/>Barcode</button>
                 </div>
-                <button onClick={()=>setShowHold(true)} className="rounded-lg bg-slate-950 px-2.5 py-1.5 text-[11px] font-black text-white"><PauseCircle className="mr-1 inline size-3.5"/>Recall ({branchHolds.length})</button>
+                <button disabled={recordsLoading} onClick={()=>setShowHold(true)} className="rounded-lg bg-slate-950 px-2.5 py-1.5 text-[11px] font-black text-white disabled:opacity-50"><PauseCircle className="mr-1 inline size-3.5"/>Recall ({branchHolds.length})</button>
                 <button onClick={()=>setShowShortcuts(true)} className="rounded-lg bg-amber-400 px-2.5 py-1.5 text-[11px] font-black text-slate-950"><HelpCircle className="mr-1 inline size-3.5"/>Shortcuts</button>
             </div>
             <div className="mt-1 flex items-center gap-2 rounded-xl border-2 border-slate-200 bg-slate-50 px-2.5 py-0.5 focus-within:border-amber-400">
@@ -1827,7 +1839,7 @@ export default function BranchBillingProTab({
                 {showDropdown && visibleItems.length > 0 && (
                   <div className="absolute left-0 top-full z-50 mt-1 w-full overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl shadow-slate-200/70">
                     {visibleItems.slice(0, 10).map((item, idx) => {
-                      const st = Number(stockAvailable(branchStock, stockMap, item.name, item.barcode));
+                      const st = Number(availableStock(item.name, item.barcode));
                       const allowInsufficientStock = isSnbFlexibleStockItem(branch, item);
                       const unavailable = st <= 0 && !allowInsufficientStock;
                       return (
@@ -1855,7 +1867,7 @@ export default function BranchBillingProTab({
           <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-2.5">
             <div ref={itemsGridRef} className="grid grid-cols-[repeat(auto-fill,minmax(116px,1fr))] gap-1.5">
               {visibleItems.map((item, idx) => {
-                const stock = Number(stockAvailable(branchStock, stockMap, item.name, item.barcode));
+                const stock = Number(availableStock(item.name, item.barcode));
                 const allowInsufficientStock = isSnbFlexibleStockItem(branch, item);
                 const disabled = stock <= 0 && !allowInsufficientStock;
                 const inCart = cart.find((c)=>c.barcode===item.barcode || c.itemName===item.name);
@@ -1896,8 +1908,7 @@ export default function BranchBillingProTab({
           item={qtyPopupItem}
           value={qtyPopupValue}
           existingQuantity={cart.find((line) => line.barcode === qtyPopupItem.barcode || line.itemName === qtyPopupItem.name)?.quantity}
-          branchStock={branchStock}
-          stockMap={stockMap}
+          availableStock={availableStock}
           allowInsufficientStock={isSnbFlexibleStockItem(branch, qtyPopupItem)}
           onValue={setQtyPopupValue}
           onClose={() => setShowQtyPopup(false)}
@@ -1918,8 +1929,7 @@ function QuantityPopup({
   item,
   value,
   existingQuantity,
-  branchStock,
-  stockMap,
+  availableStock,
   allowInsufficientStock,
   onValue,
   onAdd,
@@ -1928,8 +1938,7 @@ function QuantityPopup({
   item: BillingItem;
   value: string;
   existingQuantity?: number;
-  branchStock: StockItem[];
-  stockMap: Map<string, number>;
+  availableStock: (name: string, barcode?: number) => number;
   allowInsufficientStock?: boolean;
   onValue: (value: string) => void;
   onAdd: () => void;
@@ -1938,7 +1947,7 @@ function QuantityPopup({
   const [attempted, setAttempted] = useState(false);
   const unit = unitOf(item);
   const isEditingExisting = existingQuantity !== undefined;
-  const available = Number(stockAvailable(branchStock, stockMap, item.name, item.barcode));
+  const available = Number(availableStock(item.name, item.barcode));
   const entered = normalizeQtyInput(value, unit);
   const validationMessage = entered <= 0
     ? `Enter a valid ${unit === 'kg' ? 'weight' : 'quantity'}.`
