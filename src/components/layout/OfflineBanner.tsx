@@ -55,7 +55,7 @@ const KIND_LABELS: Record<string, string> = {
   store_stock_edit: 'Store raw-material stock edit',
 };
 
-export default function OfflineBanner() {
+export default function OfflineBanner({showStaffQueue = true}: {showStaffQueue?: boolean}) {
   const [offline, setOffline] = useState(!connectionIsOnline());
   const [backOnline,setBackOnline]=useState(false);
   const [expanded, setExpanded] = useState(false);
@@ -81,14 +81,16 @@ export default function OfflineBanner() {
     return()=>{clearTimeout(notice);clearTimeout(timeout);clearInterval(retry);controller?.abort();window.removeEventListener('offline',goOffline);window.removeEventListener('online',goOnline);window.removeEventListener(CONNECTIVITY_EVENT,changed);};
   }, []);
 
-  const pendingCount = pending.length;
-  const failed = pending.filter((e) => e.attempts > 0);
+  const visible = pending.filter(entry => entry.anonymous ? !currentUserId : Boolean(showStaffQueue && currentUserId));
+  const eligible = visible.filter(entry => !entry.staffId || entry.staffId === currentUserId);
+  const pendingCount = visible.length;
+  const failed = eligible.filter((e) => e.attempts > 0);
   // AUDIT FIX (2026-09-09): entries queued by a DIFFERENT staff member than
   // whoever's logged in right now — flush() deliberately leaves these alone
   // rather than replaying them under the wrong session (see
   // offlineQueue.ts). Surfaced separately so it doesn't just look like a
   // stuck sync with no explanation.
-  const waitingForOwner = pending.filter((e) => e.staffId && e.staffId !== currentUserId && e.attempts === 0);
+  const waitingForOwner = visible.filter((e) => e.staffId && e.staffId !== currentUserId);
 
   if (!offline && pendingCount === 0 && !backOnline && !storageError) return null;
 
@@ -137,9 +139,7 @@ export default function OfflineBanner() {
             <div key={entry.id} className="flex items-start justify-between gap-3 border-b border-violet-100 px-4 py-3">
               <div className="min-w-0">
                 <p className="text-sm font-bold text-slate-900">{KIND_LABELS[entry.kind] || entry.kind}</p>
-                <p className="mt-0.5 text-xs text-violet-700">
-                  Queued by {entry.staffUsername || 'another staff member'} — log back in as them to sync this
-                </p>
+                <p className="mt-0.5 text-xs text-violet-700">The original staff member can sync this from their account.</p>
                 <p className="mt-0.5 text-[11px] text-slate-500">
                   Queued {new Date(entry.createdAt).toLocaleString('en-IN')}
                 </p>
@@ -163,7 +163,7 @@ export default function OfflineBanner() {
               </div>
               <div className="flex shrink-0 gap-2">
                 <button
-                  onClick={() => void flush()}
+                  onClick={() => void flush(true)}
                   disabled={flushing || !navigator.onLine}
                   className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-bold text-white disabled:opacity-40"
                 >

@@ -3,11 +3,11 @@ import {createRoot,type Root} from 'react-dom/client';
 import {beforeEach,afterEach,it,expect,vi} from 'vitest';
 import OfflineBanner from './OfflineBanner';
 import {reportConnection} from '@/lib/connectionStatus';
-const queue=vi.hoisted(()=>({pending:[] as any[],flushing:false,flush:vi.fn(async()=>{}),discard:vi.fn()}));
+const queue=vi.hoisted(()=>({pending:[] as any[],staffId:'test-staff' as string|null,flushing:false,flush:vi.fn(async()=>{}),discard:vi.fn()}));
 vi.mock('@/lib/offlineQueue',()=>({useOfflineQueueStore:Object.assign((select:any)=>select(queue),{getState:()=>queue})}));
-vi.mock('@/stores/authStore',()=>({useAuthStore:(select:any)=>select({currentUser:{id:'test-staff'}})}));
+vi.mock('@/stores/authStore',()=>({useAuthStore:(select:any)=>select({currentUser:queue.staffId ? {id:queue.staffId} : null})}));
 let root:Root,host:HTMLDivElement;
-beforeEach(()=>{vi.useFakeTimers();vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT',true);vi.spyOn(navigator,'onLine','get').mockReturnValue(true);reportConnection(true);window.cafeAadvikamDesktop={isElectron:true};queue.pending=[];queue.flush.mockClear();host=document.createElement('div');document.body.appendChild(host);root=createRoot(host);});
+beforeEach(()=>{vi.useFakeTimers();vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT',true);vi.spyOn(navigator,'onLine','get').mockReturnValue(true);reportConnection(true);window.cafeAadvikamDesktop={isElectron:true};queue.pending=[];queue.staffId='test-staff';queue.flush.mockClear();host=document.createElement('div');document.body.appendChild(host);root=createRoot(host);});
 afterEach(async()=>{await act(async()=>root.unmount());host.remove();delete window.cafeAadvikamDesktop;vi.restoreAllMocks();vi.useRealTimers();vi.unstubAllGlobals();});
 it('automatically shows offline, then Back online, and hides the notice after four seconds',async()=>{
  await act(async()=>root.render(<OfflineBanner/>));expect(host.textContent).toBe('');
@@ -29,4 +29,19 @@ it('does not mark a failing service as back online merely because it responds',a
  vi.stubGlobal('fetch',vi.fn(async()=>new Response('{}',{status:503})));
  await act(async()=>root.render(<OfflineBanner/>));await act(async()=>reportConnection(false));
  await act(async()=>{await vi.advanceTimersByTimeAsync(15000);});expect(host.textContent).toContain('Working offline');
+});
+it('shows staff failures only to their operator and keeps public pages clear of staff queue details',async()=>{
+ queue.pending=[{id:'1',staffId:'original',attempts:16,lastError:'Branch permissions'}];
+ queue.staffId=null;
+ await act(async()=>root.render(<OfflineBanner/>));
+ expect(host.textContent).toBe('');
+ queue.staffId='test-staff';
+ await act(async()=>root.render(<OfflineBanner/>));
+ expect(host.textContent).toContain('another staff member');
+ expect(host.textContent).not.toContain('failed to sync');
+ queue.staffId='original';
+ await act(async()=>root.render(<OfflineBanner/>));
+ expect(host.textContent).toContain('failed to sync');
+ await act(async()=>root.render(<OfflineBanner showStaffQueue={false}/>));
+ expect(host.textContent).toBe('');
 });
