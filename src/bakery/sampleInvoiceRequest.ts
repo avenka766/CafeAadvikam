@@ -4,7 +4,17 @@ import {closingStockItemSlug} from './itemMatcher';
 import type {DispatchInvoiceRecord,DispatchInvoiceItem} from './dispatchInvoice';
 const stable=(v:unknown)=>JSON.stringify(v,(_k,x)=>x&&typeof x==='object'&&!Array.isArray(x)?Object.fromEntries(Object.entries(x).sort(([a],[b])=>a.localeCompare(b))):x);
 const running=new Map<string,{intent:string;promise:Promise<any>}>();
-export function changeSampleInvoice(record:DispatchInvoiceRecord,action:'pay'|'edit'|'cancel',change:{items?:DispatchInvoiceItem[];discountPct?:number}={},reason=''):Promise<any>{
+export const sampleRefundMethods = {
+ cash: 'Cash', upi: 'UPI', card: 'Card', bank_transfer: 'Bank transfer', other: 'Other',
+} as const;
+export type SampleRefund = {
+ amount: number;
+ method: keyof typeof sampleRefundMethods;
+ reference: string;
+ confirmed: true;
+ restock: boolean;
+};
+export function changeSampleInvoice(record:DispatchInvoiceRecord,action:'pay'|'edit'|'cancel',change:{items?:DispatchInvoiceItem[];discountPct?:number;refund?:SampleRefund}={},reason=''):Promise<any>{
  const staff=useAuthStore.getState().currentUser?.id;if(!staff)return Promise.reject(Error('Sign in before changing this invoice.'));
  const key=`sample-invoice:${staff}:${record.id}`,intent=stable({action,change,reason});
  const inFlight=running.get(key);if(inFlight)return inFlight.intent===intent?inFlight.promise:Promise.reject(Error('This invoice is already being saved.'));

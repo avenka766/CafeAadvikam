@@ -1,7 +1,7 @@
 import {invoiceReturnItems} from './dispatchRevisionValidation';
 import {collectHosurOrderIds,useHosurShopOrders,type HosurShopOrderCard} from './useHosurShopOrders';
 import {financialLineTotal,financialPercent} from '@/lib/financialRounding';
-import {changeSampleInvoice} from './sampleInvoiceRequest';
+import {changeSampleInvoice, sampleRefundMethods, type SampleRefund} from './sampleInvoiceRequest';
 import {pendingRegularDispatch,saveWebDispatch} from './webDispatchRequest';
 import {loadPlannerGstRegister} from './plannerGstRegister';
 import PlannerGstRegister from './GstBillRegisterPanel';
@@ -7904,6 +7904,7 @@ export function SampleBillTab() {
   const [cancellingSampleId, setCancellingSampleId] = useState<string | null>(null);
   const sampleActionInFlight = useRef(false);
   const [sampleActionError, setSampleActionError] = useState('');
+  const [refundBill, setRefundBill] = useState<DispatchInvoiceRecord | null>(null);
   const sampleActionBusy = markingPaidId !== null || cancellingSampleId !== null;
   // FEATURE (2026-09-30): "need the ability to edit the bill and remove the
   // item in sample bill" — see EditSampleBillModal above.
@@ -7948,6 +7949,7 @@ export function SampleBillTab() {
       const from = new Date(); from.setDate(from.getDate() - 90);
       const all = await listDispatchInvoices({ fromDate: from.toISOString(), toDate: to.toISOString() });
       setRecent(all.filter(r => r.notes?.startsWith(SAMPLE_BILL_NOTE)));
+      setLastBill(current => current ? all.find(row => row.id === current.id) ?? current : current);
     } catch (cause) {setSampleHistoryError(cause instanceof Error?cause.message:'Sample bill history could not load.');}
     setLoadingRecent(false);
   }, []);
@@ -8054,23 +8056,35 @@ export function SampleBillTab() {
     }
   };
 
-  const cancelSampleBill = async (bill: DispatchInvoiceRecord) => {
+  const cancelSampleBill = async (bill: DispatchInvoiceRecord, sampleRefund?: SampleRefund, reason = 'Cancelled from Planner Sample Bill') => {
     if (sampleActionInFlight.current || bill.status === 'cancelled') return;
-    if (!window.confirm(`Cancel sample bill ${bill.invoiceNo}? It will remain in history as Cancelled and cannot be marked paid or edited.`)) return;
+    if (!sampleRefund) {
+      if (bill.status === 'paid' && bill.total > 0) {
+        setSampleActionError('');
+        setRefundBill(bill);
+        return;
+      }
+      if (!window.confirm(`Cancel sample bill ${bill.invoiceNo}? It will remain in history as Cancelled and cannot be marked paid or edited.`)) return;
+    }
     sampleActionInFlight.current = true;
     setCancellingSampleId(bill.id);
     setSampleActionError('');
     try {
-      const result = await cancelDispatchInvoice({invoiceId: bill.id, reason: 'Cancelled from Planner Sample Bill'});
+      const result = await cancelDispatchInvoice({
+        invoiceId: bill.id,
+        reason,
+        ...(sampleRefund ? {sampleRefund: {bill, details: sampleRefund}} : {}),
+      });
       if ('error' in result) {
         const message = result.error.includes('RECORDED_REFUND_REQUIRED')
-          ? 'This sample bill is already paid. Record its refund before cancelling it. Nothing was cancelled.'
+          ? 'This sample bill is already paid. Refresh the bill and use Record Refund & Cancel.'
           : result.error;
         setSampleActionError(`${bill.invoiceNo}: ${message}`);
         return;
       }
       setRecent(rows => rows.map(row => row.id === bill.id ? result.record : row));
       setLastBill(current => current?.id === bill.id ? result.record : current);
+      setRefundBill(null);
     } catch (cause) {
       setSampleActionError(`${bill.invoiceNo}: ${cause instanceof Error ? cause.message : 'Cancellation could not be confirmed. Retry the same cancellation.'}`);
     } finally {
@@ -8230,8 +8244,8 @@ export function SampleBillTab() {
                 <button onClick={() => printDispatchInvoice(lastBill, 'thermal')} className="flex items-center gap-1 rounded-lg bg-muted px-2.5 py-1.5 text-[11px] font-bold text-muted-foreground hover:bg-slate-200"><Printer className="size-3.5" /> Thermal</button>
                 <button onClick={() => printDispatchInvoice(lastBill, 'a4')} className="flex items-center gap-1 rounded-lg bg-muted px-2.5 py-1.5 text-[11px] font-bold text-muted-foreground hover:bg-slate-200"><Printer className="size-3.5" /> A4</button>
                 <button onClick={() => setEditingBill(lastBill)} disabled={sampleActionBusy || lastBill.status === 'cancelled'} className="flex items-center gap-1 rounded-lg border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-[11px] font-black text-amber-800 hover:bg-amber-100"><Pencil className="size-3.5" /> Edit</button>
-                {lastBill.status !== 'cancelled' && <button type="button" onClick={() => void cancelSampleBill(lastBill)} disabled={sampleActionBusy} className="flex items-center gap-1 rounded-lg border border-red-300 bg-red-50 px-2.5 py-1.5 text-[11px] font-black text-red-700 hover:bg-red-100 disabled:opacity-50">
-                  {cancellingSampleId === lastBill.id ? <Loader2 className="size-3.5 animate-spin" /> : <X className="size-3.5" />} Cancel Bill
+                {lastBill.status !== 'cancelled' && <button type="button" onClick={() => void cancelSampleBill(lastBill)} disabled={sampleActionBusy || refundBill !== null} className="flex items-center gap-1 rounded-lg border border-red-300 bg-red-50 px-2.5 py-1.5 text-[11px] font-black text-red-700 hover:bg-red-100 disabled:opacity-50">
+                  {cancellingSampleId === lastBill.id ? <Loader2 className="size-3.5 animate-spin" /> : <X className="size-3.5" />} {lastBill.status === 'paid' && lastBill.total > 0 ? 'Record Refund & Cancel' : 'Cancel Bill'}
                 </button>}
                 {lastBill.status === 'unpaid' && (
                   <button onClick={() => markPaid(lastBill)} disabled={sampleActionBusy} className="flex items-center gap-1 rounded-lg bg-teal-600 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-teal-700 disabled:opacity-50">
@@ -8252,6 +8266,48 @@ export function SampleBillTab() {
           </button>
         </div>
         {sampleActionError && <p role="alert" className="border-b border-red-200 bg-red-50 px-4 py-3 text-xs font-bold text-red-700">{sampleActionError}</p>}
+        {refundBill && (
+          <form className="border-b border-border bg-muted/20 p-4" onSubmit={event => {
+            event.preventDefault();
+            const fields = new FormData(event.currentTarget);
+            const method = fields.get('method');
+            const reason = String(fields.get('reason') ?? '').trim();
+            if (typeof method !== 'string' || !Object.prototype.hasOwnProperty.call(sampleRefundMethods, method) || !reason || fields.get('confirmed') !== 'on') {
+              setSampleActionError('Choose the refund method, enter a reason, and confirm that the customer received the full amount.');
+              return;
+            }
+            void cancelSampleBill(refundBill, {
+              amount: refundBill.total,
+              method: method as SampleRefund['method'],
+              reference: String(fields.get('reference') ?? '').trim(),
+              confirmed: true,
+              restock: fields.get('restock') === 'on',
+            }, reason);
+          }}>
+            <fieldset disabled={sampleActionBusy} className="grid max-w-lg gap-3 text-sm">
+              <legend className="mb-2 font-black">Refund {refundBill.invoiceNo} · ₹{refundBill.total.toFixed(2)}</legend>
+              <p className="text-xs text-muted-foreground">Refund the customer first. This form records the refund and cancels the bill.</p>
+              <label className="grid gap-1">Refund method
+                <select autoFocus required name="method" defaultValue="" className="rounded-lg border border-border bg-white p-2">
+                  <option value="" disabled>Select method</option>
+                  {Object.entries(sampleRefundMethods).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                </select>
+              </label>
+              <label className="grid gap-1">Refund reference (optional)
+                <input name="reference" maxLength={120} className="rounded-lg border border-border bg-white p-2" />
+              </label>
+              <label className="grid gap-1">Cancellation reason
+                <input required name="reason" maxLength={250} className="rounded-lg border border-border bg-white p-2" />
+              </label>
+              <label className="flex items-center gap-2"><input required type="checkbox" name="confirmed" /> The customer has received the full refund.</label>
+              <label className="flex items-center gap-2"><input type="checkbox" name="restock" /> All goods were returned and should be added back to stock.</label>
+              <div className="flex gap-2">
+                <button type="button" onClick={() => { setRefundBill(null); setSampleActionError(''); }} className="rounded-lg border border-border px-3 py-2">Back</button>
+                <button type="submit" className="rounded-lg bg-red-700 px-3 py-2 font-bold text-white disabled:opacity-50">{sampleActionBusy ? 'Saving…' : 'Confirm Refund & Cancel Bill'}</button>
+              </div>
+            </fieldset>
+          </form>
+        )}
         {sampleHistoryError ? <div role="alert" className="p-4 text-sm text-red-700">Sample bill history could not load: {sampleHistoryError}. Use Refresh to retry this list.</div> : loadingRecent ? (
           <div className="flex justify-center py-8"><Loader2 className="size-5 animate-spin text-muted-foreground" /></div>
         ) : recent.length === 0 ? (
@@ -8273,8 +8329,8 @@ export function SampleBillTab() {
                   <span className="text-sm font-black text-foreground">{invoiceMoney(bill.total)}</span>
                   <button onClick={() => printDispatchInvoice(bill, 'thermal')} className="rounded-lg border border-border bg-card p-1.5 text-muted-foreground hover:bg-muted" title="Print thermal"><Printer className="size-3.5" /></button>
                   <button onClick={() => setEditingBill(bill)} disabled={sampleActionBusy || bill.status === 'cancelled'} className="flex items-center gap-1 rounded-lg border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-[11px] font-black text-amber-800 hover:bg-amber-100"><Pencil className="size-3.5" /> Edit</button>
-                  {bill.status !== 'cancelled' && <button type="button" onClick={() => void cancelSampleBill(bill)} disabled={sampleActionBusy} aria-label={`Cancel sample bill ${bill.invoiceNo}`} className="flex items-center gap-1 rounded-lg border border-red-300 bg-red-50 px-2.5 py-1.5 text-[11px] font-black text-red-700 hover:bg-red-100 disabled:opacity-50">
-                    {cancellingSampleId === bill.id ? <Loader2 className="size-3.5 animate-spin" /> : <X className="size-3.5" />} Cancel Bill
+                  {bill.status !== 'cancelled' && <button type="button" onClick={() => void cancelSampleBill(bill)} disabled={sampleActionBusy || refundBill !== null} aria-label={`${bill.status === 'paid' && bill.total > 0 ? 'Record refund and cancel' : 'Cancel'} sample bill ${bill.invoiceNo}`} className="flex items-center gap-1 rounded-lg border border-red-300 bg-red-50 px-2.5 py-1.5 text-[11px] font-black text-red-700 hover:bg-red-100 disabled:opacity-50">
+                    {cancellingSampleId === bill.id ? <Loader2 className="size-3.5 animate-spin" /> : <X className="size-3.5" />} {bill.status === 'paid' && bill.total > 0 ? 'Record Refund & Cancel' : 'Cancel Bill'}
                   </button>}
                   {bill.status === 'unpaid' && (
                     <button onClick={() => markPaid(bill)} disabled={sampleActionBusy} className="flex items-center gap-1 rounded-lg bg-teal-600 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-teal-700 disabled:opacity-50">
