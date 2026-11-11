@@ -587,7 +587,7 @@ export default function AdminSNBDashboard() {
   }, [loadCatalog, subscribe]);
 
   useEffect(() => {
-    fetchBranchData(BRANCH);
+    void fetchBranchData(BRANCH, false, ['stock', 'sales', 'credit']);
     fetchCreditPayments(BRANCH);
   }, [fetchBranchData, fetchCreditPayments]);
 
