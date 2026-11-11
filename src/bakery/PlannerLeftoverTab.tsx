@@ -114,8 +114,9 @@ function mapLedgerRow(row: Record<string, unknown>): LeftoverLedgerRow {
 // accidentally DELETE real stock records).
 const CLOSING_STOCK_CUTOFF_KEY = 'planner_closing_stock_cutoff';
 
-export async function getClosingStockCutoff(): Promise<string | null> {
-  const { data } = await supabase.from('app_state').select('value').eq('key', CLOSING_STOCK_CUTOFF_KEY).maybeSingle();
+export async function getClosingStockCutoff(requireSuccess = false): Promise<string | null> {
+  const { data, error } = await supabase.from('app_state').select('value').eq('key', CLOSING_STOCK_CUTOFF_KEY).maybeSingle();
+  if (requireSuccess && error) throw new Error(error.message);
   const iso = (data?.value as { cutoff?: string } | null)?.cutoff;
   return iso ?? null;
 }

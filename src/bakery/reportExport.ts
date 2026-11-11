@@ -19,6 +19,9 @@ export interface ExcelSheetSpec {
   name: string;
   rows: Record<string, unknown>[];
   fallback: string;
+  loadRows?: () => Promise<Record<string, unknown>[]>;
+  filterRows?: boolean;
+  skipAutomaticTotals?: boolean;
 }
 
 export interface ExcelSectionSpec {
@@ -35,22 +38,40 @@ const sanitizeSheetName = (raw: string) => raw.replace(/[:\\/?*[\]]/g, '-');
 export function generateExcelReport(opts: { filename: string; sections: ExcelSectionSpec[] }): void {
   const wb = XLSX.utils.book_new();
   const usedNames = new Set<string>();
+  const skipTotals = new Set<string>();
   const combined = opts.sections.length > 1;
-  const addSheet = (rawName: string, rows: Record<string, unknown>[], fallback: string) => {
+  const addSheet = (rawName: string, {rows, fallback, filterRows, skipAutomaticTotals}: ExcelSheetSpec) => {
     const cleanName = sanitizeSheetName(rawName);
     let name = cleanName.slice(0, 31);
     let i = 2;
     while (usedNames.has(name)) { const suffix = ` (${i++})`; name = `${cleanName.slice(0, 31 - suffix.length)}${suffix}`; }
     usedNames.add(name);
     const data = rows.length ? rows : [{ Note: fallback }];
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(data), name);
+    const ws = XLSX.utils.json_to_sheet(data);
+    if (filterRows && rows.length) {
+      ws['!autofilter'] = {ref: ws['!ref']!};
+      ws['!cols'] = Object.keys(rows[0]).map(header => ({
+        wch: Math.min(50, rows.reduce((width, row) => Math.max(width, String(row[header] ?? '').length + 2), header.length + 3)),
+      }));
+    }
+    if (skipAutomaticTotals) skipTotals.add(name);
+    XLSX.utils.book_append_sheet(wb, ws, name);
   };
   opts.sections.forEach((section) => {
     section.sheets.forEach((sheet) => {
-      addSheet(combined ? `${section.prefix} - ${sheet.name}` : sheet.name, sheet.rows, sheet.fallback);
+      addSheet(combined ? `${section.prefix} - ${sheet.name}` : sheet.name, sheet);
     });
   });
-  XLSX.writeFile(addWorkbookTotals(wb), opts.filename);
+  XLSX.writeFile(addWorkbookTotals(wb, skipTotals), opts.filename);
+}
+
+export async function generatePreparedExcelReport(opts: {filename: string; sections: ExcelSectionSpec[]}) {
+  const sections = await Promise.all(opts.sections.map(async section => ({
+    ...section,
+    sheets: await Promise.all(section.sheets.map(async sheet =>
+      sheet.loadRows ? {...sheet, rows: await sheet.loadRows()} : sheet)),
+  })));
+  generateExcelReport({...opts, sections});
 }
 
 export interface PdfTableSpec {

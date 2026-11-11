@@ -60,7 +60,7 @@ import {RetainedPanel} from '@/components/RetainedPanel';
 import { notifyConfirmedHosurInvoice } from './hosurBillingBridge';
 import PackingCakeOrdersTab from './PackingCakeOrdersTab';
 import { useCakeReadyCount } from './useCakeReadyCount';
-import PlannerLeftoverTab, { PlannerTransferOutTab, useLeftoverBalanceMap, closingStockBalanceKey, recordLeftoverMovement, kolkataToday, qtyFmt, sanitizeQtyForUnit, type LeftoverUnit, useMergedLeftoverCatalog, useMergedCatalogWithPrice, useBranchOnlyCatalog, ItemSearchPicker, type MergedCatalogItem } from './PlannerLeftoverTab';
+import PlannerLeftoverTab, { PlannerTransferOutTab, useLeftoverBalanceMap, closingStockBalanceKey, getClosingStockCutoff, recordLeftoverMovement, kolkataToday, qtyFmt, sanitizeQtyForUnit, type LeftoverUnit, useMergedLeftoverCatalog, useMergedCatalogWithPrice, useBranchOnlyCatalog, ItemSearchPicker, type MergedCatalogItem } from './PlannerLeftoverTab';
 import { canonicalItemSlug, closingStockItemSlug, kgToPcs, parseWeightGrams, pcsToKg, resolveItemWeightGrams, VRSNB_DEFAULT_PACKET_GRAMS, pcsToKgForItem, kgToPcsForItem } from './itemMatcher';
 import { closestRecipeMatch } from './recipeNameMatch';
 import { useBranchCatalogStore } from '@/stores/branchCatalogStore';
@@ -68,7 +68,8 @@ import { useRecipeStore } from './recipeStore';
 import { useBranchStore } from '@/branch/branchStore';
 import { useBranchOpsStore } from '@/branch/branchOpsStore';
 import { useNotificationStore } from '@/bakery/notificationStore';
-import { generateExcelReport, generatePdfReport, type ExcelSectionSpec, type PdfSectionSpec } from './reportExport';
+import { generateExcelReport, generatePreparedExcelReport, generatePdfReport, type ExcelSectionSpec, type PdfSectionSpec } from './reportExport';
+import { buildProductionDispatchSheet, type ProductionReportMovement } from './plannerProductionReport';
 import { printWasteLogBatch } from '@/pages/AdminSNBDashboard';
 import {
   businessFor, defaultDiscountPct, saveDispatchInvoice, printDispatchInvoice, listDispatchInvoices, markDispatchInvoicePaid, updateDispatchInvoice, cancelDispatchInvoice,
@@ -4014,6 +4015,27 @@ async function getProductionCutoff(): Promise<string | null> {
   return cutoff ?? null;
 }
 
+function usePlannerExcelDownload() {
+  const [exporting, setExporting] = useState(false);
+  const [error, setError] = useState('');
+  const inFlight = useRef(false);
+  const download = async (filename: string, sections: ExcelSectionSpec[]) => {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    setExporting(true);
+    setError('');
+    try {
+      await generatePreparedExcelReport({filename, sections});
+    } catch (cause) {
+      setError(`Excel report could not be prepared. ${cause instanceof Error ? cause.message : 'Please try again.'}`);
+    } finally {
+      inFlight.current = false;
+      setExporting(false);
+    }
+  };
+  return {download, exporting, error};
+}
+
 function ReportsTab({ orders, onExportDataChange }: {
   orders: BakeryOrder[];
   // FEATURE (2026-09-15): lets the merged Reports tab's top-level "Export
@@ -4022,6 +4044,7 @@ function ReportsTab({ orders, onExportDataChange }: {
   // whenever the combined tab is open.
   onExportDataChange?: (data: { excel: ExcelSectionSpec; pdf: PdfSectionSpec }) => void;
 }) {
+  const excelDownload = usePlannerExcelDownload();
   // FEATURE (2026-09-15): "The reports sub tab date should always default be
   // on Today" — was '7d' (a rolling week), which meant every fresh visit
   // to Reports (and every combined Export All) silently included 6 days of
@@ -4424,6 +4447,25 @@ function ReportsTab({ orders, onExportDataChange }: {
     ? new Date(`${dateFrom}T00:00:00`).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
     : `${new Date(`${dateFrom}T00:00:00`).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })} – ${new Date(`${dateTo}T00:00:00`).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}`;
 
+  const loadProductionDispatchSheet = useCallback(async () => {
+    const from = reportsCutoff && reportsCutoff > dateFrom ? reportsCutoff : dateFrom;
+    if (from > dateTo) return [];
+    const [stockCutoff, ledger] = await Promise.all([
+      getClosingStockCutoff(true),
+      fetchAllRows<ProductionReportMovement>('planner_leftover_ledger', query => query
+        .select('id,item_slug,item_name,unit,business_date,delta,reason,created_at')
+        .lte('business_date', dateTo)
+        .order('created_at', {ascending: false}), {cursorColumn: 'created_at'}),
+    ]);
+    if (ledger.error) throw new Error(`Could not read the closing-stock ledger. ${ledger.error}`);
+    return buildProductionDispatchSheet({
+      productionRows: computeProductionRows(producedSource),
+      dispatches: orders.flatMap(order => order.dispatchLog ?? []),
+      movements: ledger.data,
+      from, to: dateTo, stockCutoff, categoryFor: categoryForItem,
+    });
+  }, [orders, producedSource, dateFrom, dateTo, reportsCutoff]);
+
   // Built once per data change, shared by this tab's own Excel/PDF buttons
   // AND reported upward (below) for the top-level "Export All" button — see
   // reportExport.ts for why this replaced the old hand-rolled jsPDF code.
@@ -4445,13 +4487,8 @@ function ReportsTab({ orders, onExportDataChange }: {
           ...Object.fromEntries(DISPLAY_BUCKETS.map(b => [b, row.perBranch[b] ?? ''])),
           Total: row.totalRequested,
         })) },
-        // FEATURE (2026-09-15): "Remove Production Variance %, Dispatch
-        // Variance %, Status" — kept Requested/Produced/Dispatched only, the
-        // raw numbers the owner asked to see without the derived columns.
-        { name: 'Production & Dispatch', fallback: 'No data', rows: varianceRows.map(r => ({
-          Category: r.category, Item: r.itemName, Unit: r.unit,
-          Requested: r.requested, Produced: r.produced, Dispatched: r.dispatched,
-        })) },
+        { name: 'Production & Dispatch', fallback: 'No production or dispatch in this range', rows: [],
+          loadRows: loadProductionDispatchSheet, filterRows: true, skipAutomaticTotals: true },
         // FEATURE (2026-09-15): "show the kgs in the pcs by ()" — folds each
         // "(kg equiv)" column into its main quantity column as "10 (~2kg)"
         // instead of a separate column, matching how the PDF table already
@@ -4552,11 +4589,11 @@ function ReportsTab({ orders, onExportDataChange }: {
         },
       ],
     },
-  }), [rangeLabel, placedOrders, varianceRows, underRows, onTargetRows, overRows, notStartedRows, merged, storeBakerPlannerRows, storeBakerPlannerTotals, extraDispatchRows, hosurShopSummary, hosurLeftovers, hosurAdjustments, hosurLeftoverAvailable, hosurCancelledValue, dateFrom, dateTo]);
+  }), [rangeLabel, placedOrders, varianceRows, underRows, onTargetRows, overRows, notStartedRows, merged, storeBakerPlannerRows, storeBakerPlannerTotals, extraDispatchRows, hosurShopSummary, hosurLeftovers, hosurAdjustments, hosurLeftoverAvailable, hosurCancelledValue, dateFrom, dateTo, loadProductionDispatchSheet]);
 
   useEffect(() => { onExportDataChange?.(reportsExportSpecs); }, [reportsExportSpecs, onExportDataChange]);
 
-  const exportExcelReport = () => generateExcelReport({ filename: `planner-report-${dateFrom}_to_${dateTo}.xlsx`, sections: [reportsExportSpecs.excel] });
+  const exportExcelReport = () => void excelDownload.download(`planner-report-${dateFrom}_to_${dateTo}.xlsx`, [reportsExportSpecs.excel]);
   const exportPdfReport = () => generatePdfReport({ filename: `planner-report-${dateFrom}_to_${dateTo}.pdf`, docTitle: 'Planner Report', docSubtitle: `Period: ${rangeLabel}`, sections: [reportsExportSpecs.pdf] });
 
   return (
@@ -4579,8 +4616,8 @@ function ReportsTab({ orders, onExportDataChange }: {
           >
             <RefreshCw className={cn('size-4', refreshingReport && 'animate-spin')} /> Refresh
           </button>
-          <button onClick={exportExcelReport} className="flex items-center gap-1.5 rounded-xl border border-teal-200 bg-teal-50 px-3 py-2 text-xs font-bold text-teal-700 hover:bg-teal-100">
-            <FileSpreadsheet className="size-4" /> Excel Report
+          <button onClick={exportExcelReport} disabled={excelDownload.exporting} className="flex items-center gap-1.5 rounded-xl border border-teal-200 bg-teal-50 px-3 py-2 text-xs font-bold text-teal-700 hover:bg-teal-100 disabled:opacity-60">
+            <FileSpreadsheet className="size-4" /> {excelDownload.exporting ? 'Preparing Excel…' : 'Excel Report'}
           </button>
           <button onClick={exportPdfReport} className="flex items-center gap-1.5 rounded-xl border border-slate-300 bg-slate-50 px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-100">
             <FileText className="size-4" /> PDF Report
@@ -4588,6 +4625,7 @@ function ReportsTab({ orders, onExportDataChange }: {
         </div>
       </div>
 
+      {excelDownload.error && <p role="alert" className="text-sm font-semibold text-red-700">{excelDownload.error}</p>}
       {reportsCutoff && (
         <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-700">
           Showing data from {new Date(`${reportsCutoff}T00:00:00`).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })} onward — earlier report data has been cleared from view.
@@ -5538,8 +5576,9 @@ function PlannerReportsAndClosingStockTab({ orders, activeLeftovers, doneOrders 
 
   const allSections = [reportsData, dispatchData, closingStockData, disputesData].filter((d): d is NonNullable<SectionExportData> => d != null);
   const today = kolkataToday();
+  const excelDownload = usePlannerExcelDownload();
 
-  const exportAllExcel = () => generateExcelReport({ filename: `planner-combined-report-${today}.xlsx`, sections: allSections.map(s => s.excel) });
+  const exportAllExcel = () => void excelDownload.download(`planner-combined-report-${today}.xlsx`, allSections.map(s => s.excel));
   const exportAllPdf = () => generatePdfReport({
     filename: `planner-combined-report-${today}.pdf`,
     docTitle: 'Combined Planner Report',
@@ -5563,14 +5602,15 @@ function PlannerReportsAndClosingStockTab({ orders, activeLeftovers, doneOrders 
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-[10px] font-black uppercase tracking-wide text-muted-foreground">Export everything:</span>
-          <button onClick={exportAllExcel} disabled={allSections.length === 0} className="flex items-center gap-1.5 rounded-xl border border-teal-700 bg-teal-700 px-3 py-2 text-xs font-black text-white hover:bg-teal-800 disabled:cursor-wait disabled:opacity-60">
-            <FileSpreadsheet className="size-4" /> Excel (Normal reports)
+          <button onClick={exportAllExcel} disabled={allSections.length === 0 || excelDownload.exporting} className="flex items-center gap-1.5 rounded-xl border border-teal-700 bg-teal-700 px-3 py-2 text-xs font-black text-white hover:bg-teal-800 disabled:cursor-wait disabled:opacity-60">
+            <FileSpreadsheet className="size-4" /> {excelDownload.exporting ? 'Preparing Excel…' : 'Excel (Normal reports)'}
           </button>
           <button onClick={exportAllPdf} disabled={allSections.length === 0} className="flex items-center gap-1.5 rounded-xl bg-slate-950 px-3 py-2 text-xs font-black text-white hover:bg-slate-800 disabled:cursor-wait disabled:opacity-60">
             <FileText className="size-4" /> PDF (Normal reports)
           </button>
         </div>
       </div>
+      {excelDownload.error && <p role="alert" className="text-sm font-semibold text-red-700">{excelDownload.error}</p>}
       {/* Kept mounted (CSS-hidden) rather than unmounted on tab switch — same
           reasoning as Dispatch's own date-group visibility toggle elsewhere
           in this file: several of these sections (Closing Stock's Add form,
