@@ -217,7 +217,7 @@ interface BakeryState {
   // at send time, no separate accounting step needed here) — lets Store
   // still choose which items physically go to the Baker right now, without
   // re-deducting anything. See mergeOrdersForStore's AUTO-CONFIRM comment.
-  releaseToProduction: (orderId: string, selectedIndexes: number[]) => Promise<string | null>;
+  releaseToProduction: (orderId: string, selectedIndexes: number[], queueOrder?: BakeryOrder) => Promise<string | null>;
   recordProduction: (orderId: string, producedItems: PreparedItem[]) => Promise<void>;
   setDispatchSplit: (orderId: string, split: Record<string, Record<string, number>>) => Promise<void>;
   // RETRY-SAFETY FIX (2026-08-06): `entry.id` is now optional and, when the
@@ -772,8 +772,8 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     const source=rowToOrder(result.source),released=rowToOrder(result.released);
     set(s=>({orders:[...s.orders.filter(o=>o.id!==source.id&&o.id!==released.id),source,...(released.id!==source.id?[released]:[])]}));
   },
-  releaseToProduction: async (orderId, selectedIndexes) => {
-    const order=get().orders.find(o=>o.id===orderId);
+  releaseToProduction: async (orderId, selectedIndexes, queueOrder) => {
+    const order=queueOrder?.id===orderId ? queueOrder : get().orders.find(o=>o.id===orderId);
     if(!order)throw Error('Order was not found. Refresh and try again.');
     const result=await commitStoreRelease(order,selectedIndexes,'release');
     const source=rowToOrder(result.source),released=rowToOrder(result.released);

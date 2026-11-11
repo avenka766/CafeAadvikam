@@ -12,6 +12,7 @@ import {
 import { Layers } from 'lucide-react';
 import { supabase, fetchAllRows } from '@/lib/supabase';
 import { useBakeryStore } from './bakeryStore';
+import { useStoreOrderQueue } from './useStoreOrderQueue';
 import { BAKERY_ITEMS } from './types';
 import { useRecipeStore } from './recipeStore';
 // Every raw-material requirement shown on this dashboard (the "Raw
@@ -1773,7 +1774,7 @@ function aggregateReleasableItems(orders: BakeryOrder[]): AggregatedProductionIt
     // days now renders as two separate rows, one under each date's
     // section, instead of one row silently blending quantities from
     // different days together.
-    const dateKey = kolkataDateKey(order.createdAt);
+    const dateKey = kolkataDateKey(order.storeConfirmedAt ?? order.createdAt);
     order.items.forEach((item, index) => {
       // AUDIT FIX (2026-09-03): a raw trim().toLowerCase() key only
       // catches case differences — it does NOT catch the singular/plural
@@ -1822,8 +1823,8 @@ function aggregateReleasableItems(orders: BakeryOrder[]): AggregatedProductionIt
     b.dateKey.localeCompare(a.dateKey) || a.itemName.localeCompare(b.itemName));
 }
 
-function ProductionReadyPanel({ orders }: { orders: BakeryOrder[] }) {
-  const { releaseToProduction } = useBakeryStore();
+function ProductionReadyPanel({ orders, refresh }: { orders: BakeryOrder[]; refresh: () => Promise<void> }) {
+  const releaseToProduction = useBakeryStore(state => state.releaseToProduction);
   const bakeryItems = useBakeryItemsStore(s => s.items);
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -1886,24 +1887,19 @@ function ProductionReadyPanel({ orders }: { orders: BakeryOrder[] }) {
     sendingRef.current = true;
     setSending(true); setSendError(null); setSendNotice(null);
     try {
-      const warnings: string[] = [];
+      const byOrder = new Map<string, number[]>();
       for (const agg of selectedItems) {
-        // Group this aggregated item's contributions by the real order they
-        // came from — releaseToProduction operates per order, exactly the
-        // same call OrderCard made per selected checkbox before this panel
-        // existed. Looping it here per contributing order (invisibly, from
-        // Store's point of view) is what keeps Planner's and SNB's own
-        // order/status data identical to before this change.
-        const byOrder = new Map<string, number[]>();
         for (const c of agg.contributions) {
           const list = byOrder.get(c.orderId) ?? [];
           list.push(c.index);
           byOrder.set(c.orderId, list);
         }
-        for (const [orderId, indexes] of byOrder) {
-          const warning = await releaseToProduction(orderId, indexes);
-          if (warning) warnings.push(`${agg.itemName}: ${warning}`);
-        }
+      }
+      const warnings: string[] = [];
+      const ordersById = new Map(orders.map(order => [order.id, order]));
+      for (const [orderId, indexes] of byOrder) {
+        const warning = await releaseToProduction(orderId, indexes, ordersById.get(orderId));
+        if (warning) warnings.push(warning);
       }
       setSelected(new Set());
       setSendNotice(
@@ -1913,6 +1909,7 @@ function ProductionReadyPanel({ orders }: { orders: BakeryOrder[] }) {
     } catch (err) {
       setSendError(`${err instanceof Error ? err.message : 'Failed to send selected items.'} Please try again.`);
     } finally {
+      await refresh();
       sendingRef.current = false;
       setSending(false);
     }
@@ -2029,32 +2026,22 @@ function ProductionReadyPanel({ orders }: { orders: BakeryOrder[] }) {
 // (needsProductionRelease — status store_confirmed/produced) — it no longer
 // looks at 'pending' or 'accepted' orders, has no accept step, and no merge
 // capability of its own. Merging is entirely Planner's job now.
-function OrdersTab() {
-  const { orders, fetchOrders, subscribe: subscribeOrders } = useBakeryStore();
+function OrdersTab({orders: pending, loading: initialLoading, error, refresh}: ReturnType<typeof useStoreOrderQueue>) {
   const { load: loadStock, subscribe: subscribeStock } = useStoreStockStore();
   const { loadAllItems, subscribe: subscribeBakeryItems } = useBakeryItemsStore();
-  const [initialLoading, setInitialLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   useEffect(() => {
-    fetchOrders().finally(() => setInitialLoading(false));
     loadStock();
     void loadAllItems();
-    const unsubOrders = subscribeOrders();
     const unsubStock  = subscribeStock();
     const unsubBakeryItems = subscribeBakeryItems();
-    return () => { unsubOrders(); unsubStock(); unsubBakeryItems(); };
-  }, [fetchOrders, loadStock, loadAllItems, subscribeOrders, subscribeStock, subscribeBakeryItems]);
-
-  // Store's entire world: orders Planner has already merged and sent
-  // (needsProductionRelease — status store_confirmed/produced, not yet
-  // released). Raw 'pending'/'accepted' branch orders are never read here —
-  // see the block comment above OrdersTab.
-  const pending = orders.filter(o => needsProductionRelease(o));
+    return () => { unsubStock(); unsubBakeryItems(); };
+  }, [loadStock, loadAllItems, subscribeStock, subscribeBakeryItems]);
 
   const refreshNow = async () => {
     if (refreshing) return;
     setRefreshing(true);
-    try { await fetchOrders(true, true); } finally { setRefreshing(false); }
+    try { await refresh(); } finally { setRefreshing(false); }
   };
 
   const downloadExcel = () => {
@@ -2186,9 +2173,10 @@ function OrdersTab() {
         </button>
       </div>
 
-      <ProductionReadyPanel orders={pending} />
+      {error && <p role="alert" className="text-sm text-red-700">Could not refresh Store orders. {error}</p>}
+      <ProductionReadyPanel orders={pending} refresh={refresh} />
 
-      {pending.length === 0 && (
+      {pending.length === 0 && !error && (
         <div className="flex flex-col items-center py-24 gap-4">
           <div className="size-20 rounded-3xl bg-muted flex items-center justify-center"><Store className="size-10 text-muted-foreground opacity-30" /></div>
           <div className="text-center"><p className="text-sm font-body font-semibold text-foreground">No new orders</p><p className="text-xs font-body text-muted-foreground mt-1">Waiting on Planner to send a merged order — nothing to release yet.</p></div>
@@ -3102,7 +3090,8 @@ export default function StoreDashboard() {
   // never disagree with what each tab actually shows. OrdersTab no longer
   // reads 'accepted' orders at all (audit 2026-08-27 — Store only ever sees
   // what Planner has explicitly merged/sent), so this must match exactly.
-  const pending = orders.filter(o => needsProductionRelease(o));
+  const orderQueue = useStoreOrderQueue();
+  const pending = orderQueue.orders;
   const sentOrders = orders.filter(o =>
     o.status === 'dispatched' ||
     ((o.status === 'produced' || o.status === 'store_confirmed') && !needsProductionRelease(o)));
@@ -3119,7 +3108,7 @@ export default function StoreDashboard() {
   const poPendingCount = purchaseOrders.filter(po => po.status === 'pending_approval').length;
   const poApprovedCount = purchaseOrders.filter(po => po.status === 'approved').length;
   const tabs = [
-    { id: 'orders',    label: 'Orders',             description: 'Pending + sent today', icon: Package,     badge: pending.length > 0 ? String(pending.length) : null, badgeColor: 'bg-amber-500' },
+    { id: 'orders',    label: 'Orders',             description: 'Pending since the last 11 PM cutoff', icon: Package,     badge: pending.length > 0 ? String(pending.length) : null, badgeColor: 'bg-amber-500' },
     { id: 'history',   label: 'Sent by Planner',    description: 'Past orders & follow-up', icon: History,     badge: sentOrders.length > 0 ? String(sentOrders.length) : null, badgeColor: 'bg-emerald-500' },
     { id: 'inventory', label: 'Inventory',          description: 'Raw stock control',  icon: Warehouse,   badge: lowStock.length > 0 ? String(lowStock.length) : null, badgeColor: 'bg-red-500' },
     { id: 'suppliers', label: 'Suppliers',          description: 'Vendor directory',   icon: Truck,       badge: suppliers.length > 0 ? String(suppliers.length) : null, badgeColor: 'bg-primary' },
@@ -3177,7 +3166,18 @@ export default function StoreDashboard() {
             </div>
 
             <div className="min-w-0 overflow-hidden">
-              {tab === 'orders'    && <OrdersTab />}
+              {tab === 'orders' && (
+                <>
+                  <aside className="mb-4 flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
+                    <Clock aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
+                    <p>
+                      <strong>Orders clear daily at 11:00 PM India time.</strong>{' '}
+                      Orders with no linked work are automatically deleted. Orders linked to production, stock, dispatch, or advance orders are removed from this tab and kept in the system.
+                    </p>
+                  </aside>
+                  <OrdersTab {...orderQueue} />
+                </>
+              )}
               {tab === 'history'   && <StoreHistoryTab />}
               {tab === 'inventory' && <StoreInventoryTab />}
               {tab === 'suppliers' && <SuppliersTab />}
