@@ -4,13 +4,13 @@ import {createRoot,type Root} from 'react-dom/client';
 let root:Root,host:HTMLDivElement;
 import {MemoryRouter} from 'react-router-dom';
 import {afterEach,beforeEach,expect,it,vi} from 'vitest';
-const m=vi.hoisted(()=>({fetch:vi.fn(),sync:vi.fn(),stock:{} as any,ops:{} as any}));
+const m=vi.hoisted(()=>({fetch:vi.fn(),sync:vi.fn(),stock:{} as any,ops:{} as any,hydrated:true}));
 vi.mock('./branchStore',()=>({hydrateBranchDataFromCache:async()=>{},useBranchStore:(select:any)=>select(m.stock)}));
-vi.mock('./branchOpsStore',()=>({money:(v:number)=>String(v),useBranchOpsStore:Object.assign((select:any)=>select(m.ops),{persist:{hasHydrated:()=>true,onFinishHydration:()=>()=>{},rehydrate:async()=>{}}})}));
+vi.mock('./branchOpsStore',()=>({money:(v:number)=>String(v),useBranchOpsStore:Object.assign((select:any)=>select(m.ops),{persist:{hasHydrated:()=>m.hydrated,onFinishHydration:()=>()=>{},rehydrate:async()=>{}}})}));
 vi.mock('@/stores/authStore',()=>({useAuthStore:()=>({currentUser:{id:'staff',username:'Fixture',role:'branch_snb'},logout:vi.fn()})}));
 vi.mock('@/lib/platform',()=>({isNativeApp:()=>false}));
 vi.mock('@/stores/snbTabStripStore',()=>({useSnbTabStripStore:(select:any)=>select({expanded:true})}));
-vi.mock('./tabs/BranchBillingProTab',()=>({default:()=> <div>Billing fixture</div>}));
+vi.mock('./tabs/BranchBillingProTab',()=>({default:({recordsLoading}: {recordsLoading:boolean})=> <div>Billing fixture {recordsLoading && 'loading counter records'}</div>}));
 vi.mock('./tabs/SettingsTab',()=>({SettingsTab:()=>null}));
 vi.mock('./tabs/ReportsTab',()=>({ReportsTab:()=>null}));
 vi.mock('./tabs/PaymentModeEditTab',()=>({PaymentModeEditTab:()=>null}));
@@ -19,15 +19,23 @@ vi.mock('./tabs/BranchBusinessModules',()=>{
 });
 import BranchDashboard from './BranchDashboard';
 beforeEach(()=>{
+ m.hydrated=true;
  host=document.createElement('div');document.body.append(host);root=createRoot(host);
  vi.useFakeTimers();m.fetch.mockReset().mockResolvedValue(undefined);m.sync.mockReset().mockResolvedValue(undefined);
  m.stock={stock:{SNB:[]},sales:{SNB:[]},advanceOrders:{SNB:[]},thresholds:{SNB:{}},loading:false,fetchBranchData:m.fetch,syncIncomingFromDispatches:m.sync,cleanOldData:vi.fn(),seedBranchItems:vi.fn(),subscribeToStock:()=>()=>{}};
  m.ops={advanceCakeOrders:[],notifications:[],refreshSalespeople:vi.fn()};
 });
+it('shows SNB billing while saved counter records are still loading',async()=>{
+ m.hydrated=false;
+ await act(async()=>root.render(<MemoryRouter><BranchDashboard branch="SNB"/></MemoryRouter>));
+ expect(host.textContent).toContain('Billing fixture loading counter records');
+});
 afterEach(()=>{act(()=>root.unmount());host.remove();vi.useRealTimers();});
 it('opens billing without downloading credit/payment history or unrelated report data',async()=>{
  await act(async()=>root.render(<MemoryRouter><BranchDashboard branch="SNB"/></MemoryRouter>));await act(()=>vi.advanceTimersByTimeAsync(1000));
- expect(host.textContent).toContain('Billing fixture');expect(m.fetch).toHaveBeenCalledTimes(1);expect(m.fetch.mock.calls[0]).toEqual(['SNB',false,['stock','thresholds','advance']]);
+ expect(host.textContent).toContain('Billing fixture');expect(m.fetch.mock.calls).toEqual([
+  ['SNB',false,['stock','thresholds']], ['SNB',false,['advance']],
+ ]);
 });
 it('lets closure own its session reads instead of fetching all branch slices',async()=>{
  await act(async()=>root.render(<MemoryRouter initialEntries={['/?tab=closure']}><BranchDashboard branch="SNB"/></MemoryRouter>));await act(()=>vi.advanceTimersByTimeAsync(1000));
@@ -36,7 +44,7 @@ it('lets closure own its session reads instead of fetching all branch slices',as
 it('does not refetch dispatch history on every quick return to the browser',async()=>{
  await act(async()=>root.render(<MemoryRouter><BranchDashboard branch="SNB"/></MemoryRouter>));await act(()=>vi.advanceTimersByTimeAsync(1000));
  await act(async()=>{for(let n=0;n<5;n++)document.dispatchEvent(new Event('visibilitychange'));});
- expect(m.fetch).toHaveBeenCalledTimes(1);expect(m.sync).toHaveBeenCalledTimes(1);
+ expect(m.fetch).toHaveBeenCalledTimes(2);expect(m.sync).toHaveBeenCalledTimes(1);
  await act(()=>vi.advanceTimersByTimeAsync(60_000));await act(async()=>document.dispatchEvent(new Event('visibilitychange')));await act(()=>vi.advanceTimersByTimeAsync(200));
- expect(m.fetch).toHaveBeenCalledTimes(2);expect(m.sync).toHaveBeenCalledTimes(2);
+ expect(m.fetch).toHaveBeenCalledTimes(3);expect(m.sync).toHaveBeenCalledTimes(2);
 });

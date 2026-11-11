@@ -5,7 +5,8 @@ import { BRANCH_LABELS } from './types';
 import type { BranchBillRecord } from './branchOpsStore';
 import { supabase } from '@/lib/supabase';
 import { printViaIframe } from '@/lib/printViaIframe';
-import { desktopSilentPrint,isElectronApp } from '@/lib/platform';
+import { desktopSilentPrint,isElectronApp,isNativeApp } from '@/lib/platform';
+import { submitAppPrint } from '@/lib/appPrinting';
 
 export const BRANCH_PRINT_COMPLETE_EVENT = 'cafe-aadvikam:branch-print-complete';
 
@@ -148,7 +149,7 @@ export function printHtml(title: string, body: string) {
 
 // ─── VRSNB receipt-style counter bill ─────────────────────────────────────────
 // Matches the physical receipt format from the SNB/VRSNB receipt image.
-function printVrsnbReceiptBill(bill: BranchBillRecord, duplicate = false, target?: Window | null) {
+function vrsnbReceiptHtml(bill: BranchBillRecord, duplicate = false) {
   const returnBill = bill as BranchBillRecord & { _isReturn?: boolean; _originalBillNo?: string; _returnReason?: string };
   const printedAt = new Date(bill.createdAt);
 
@@ -248,12 +249,11 @@ function printVrsnbReceiptBill(bill: BranchBillRecord, duplicate = false, target
     ${PRINT_TRIGGER}
   </body></html>`;
 
-  const win = target ?? window.open('', '_blank', 'width=420,height=680');
-  if (win) { win.document.open(); win.document.write(html); win.document.close(); triggerPrintWithFallback(win); }
+  return html;
 }
 
 // ─── Full-format counter bill (SNB style / tax invoice) ───────────────────────
-function printSnbCounterBill(bill: BranchBillRecord, duplicate = false, target?: Window | null) {
+function snbReceiptHtml(bill: BranchBillRecord, duplicate = false) {
   const returnBill = bill as BranchBillRecord & { _isReturn?: boolean; _originalBillNo?: string; _returnReason?: string };
   const advanceInfo = bill as BranchBillRecord & { _advanceAmount?: number; _advancePaymentMode?: string };
   const title = returnBill._isReturn ? 'RETURN BILL' : duplicate ? 'DUPLICATE BILL' : 'ORIGINAL BILL';
@@ -288,8 +288,7 @@ function printSnbCounterBill(bill: BranchBillRecord, duplicate = false, target?:
     <div class="footer">Thank you, Visit Again</div>
     ${PRINT_TRIGGER}
   </body></html>`;
-  const win = target ?? window.open('', '_blank', 'width=420,height=680');
-  if (win) { win.document.open(); win.document.write(html); win.document.close(); triggerPrintWithFallback(win); }
+  return html;
 }
 
 // ─── Branch Cashier Closure print — same layout/style as the Biller (DailyClosure) print ──
@@ -387,6 +386,7 @@ export function printAccountingVoucher(input: AccountingVoucherPrintInput) {
     <section class="signatures"><div class="signature">Created By: ${safeHtml(input.createdBy)}</div><div class="signature">Checked By</div><div class="signature">Approved By</div><div class="signature">Received By</div></section>
     <section class="words"><div>Paid INR ${safeHtml(amountInIndianWords(amount))}</div><div>${safeHtml(inr(amount))}</div></section>
   </main>${PRINT_TRIGGER}</body></html>`;
+  if (isNativeApp()) return printViaIframe(html);
   const win = window.open('', '_blank', 'width=920,height=900');
   if (!win) return;
   win.document.open();
@@ -637,6 +637,7 @@ export function printBranchCashierClosure(
   // the counter still doesn't require the operator to click Print), it just
   // does so through a real, visible print dialog so an A4-capable printer
   // can actually be selected instead of blindly assuming the receipt printer.
+  if (isNativeApp()) return printViaIframe(html);
   const win = window.open('', '_blank', 'width=920,height=900');
   if (!win) return;
   win.document.write(html);
@@ -651,7 +652,14 @@ export function printBranchCashierClosure(
 // a compact 80mm thermal receipt auto-printed the moment the counter is
 // opened or closed, via the same silent iframe approach used for bills so
 // it goes straight to the thermal printer with no popup window.
-function printThermalHtml(html: string) {
+function printThermalHtml(html: string, onSubmitted?: () => void): Promise<void> | void {
+  const documentHtml = html.replace(PRINT_TRIGGER, '');
+  const appPrint = submitAppPrint(documentHtml);
+  if (appPrint) {
+    if (onSubmitted) return appPrint.then(onSubmitted);
+    void appPrint.catch(error => window.alert(error instanceof Error ? error.message : 'The print job could not be submitted.'));
+    return;
+  }
   const frame = document.createElement('iframe');
   frame.setAttribute('aria-hidden', 'true');
   frame.style.position = 'fixed';
@@ -664,15 +672,21 @@ function printThermalHtml(html: string) {
   frame.style.pointerEvents = 'none';
   document.body.appendChild(frame);
   const target = frame.contentWindow;
-  if (!target) { frame.remove(); return; }
+  if (!target) { frame.remove(); throw new Error('Unable to open the print document.'); }
   let cleaned = false;
-  const cleanup = () => { if (cleaned) return; cleaned = true; frame.remove(); };
-  target.onafterprint = cleanup;
-  window.setTimeout(cleanup, 60_000);
-  target.document.open();
-  target.document.write(html);
-  target.document.close();
-  triggerPrintWithFallback(target);
+  const cleanup = () => { if (cleaned) return; cleaned = true; window.clearTimeout(timer); frame.remove(); };
+  const timer = window.setTimeout(cleanup, 120_000);
+  try {
+    target.document.open();
+    target.document.write(documentHtml);
+    target.document.close();
+    target.onafterprint = () => { cleanup(); onSubmitted?.(); };
+    target.focus();
+    target.print();
+  } catch (error) {
+    cleanup();
+    throw error;
+  }
 }
 
 const THERMAL_SLIP_STYLE = `
@@ -772,69 +786,47 @@ export function printCounterCloseSlip(input: {
 
 export async function printCounterBill(bill: BranchBillRecord, duplicate = false) {
   if(isElectronApp()&&bill.paymentMode==='wallet'){const {archiveDesktopConfirmedBill}=await import('@/lib/desktopBilling');await archiveDesktopConfirmedBill(bill.branch as 'SNB'|'VRSNB',bill.billNo,bill);}
-  // Allocate the controlled copy first, then print through an off-screen iframe.
-  // This avoids opening or leaving a visible "Preparing print" browser page.
-  //
-  // PERF FIX: on a slow or flaky branch connection this RPC round trip is the
-  // single biggest source of the delay between "Finish Bill" and paper coming
-  // out of the printer. It must stay in the loop (it's what stamps a re-print
-  // as DUPLICATE for tax/audit compliance), but it must never hang the
-  // counter indefinitely — a 4-second budget keeps a bad connection from
-  // blocking the cashier. If it times out or errors, we fall back to the
-  // copy type the cashier explicitly asked for (Finish Bill = original,
-  // "Print duplicate" button = duplicate) rather than leaving the till stuck.
+  // A provisional receipt has no server document to allocate.
   let isDuplicate = duplicate;
-  try {
-    if(!(isElectronApp()&&bill.pendingSync)){
-    const allocation = await Promise.race([
-      supabase.rpc('allocate_document_print', {
-        p_document_type: 'branch_bill',
-        p_document_id: bill.id || bill.billNo,
-        p_branch: bill.branch,
-        p_reason: duplicate ? 'User-requested duplicate print' : null,
-        p_device_info: navigator.userAgent,
-      }),
-      new Promise<never>((_, reject) => window.setTimeout(() => reject(new Error('print-allocation-timeout')), 4000)),
-    ]);
-    const { data, error } = allocation;
-    if (error || !data) throw new Error(error?.message || 'Unable to allocate controlled print copy.');
-    const row = Array.isArray(data) ? data[0] : data;
-    isDuplicate = String((row as { copy_type?: string }).copy_type) === 'duplicate';
+  if (!bill.pendingSync && navigator.onLine) {
+    const isSnbReceipt = bill.branch === 'SNB';
+    const controller = new AbortController();
+    const auditTimeout = window.setTimeout(() => controller.abort(), isSnbReceipt ? 5000 : 1200);
+    const allocation = (async () => {
+      try {
+        const { data, error } = await supabase.rpc('allocate_document_print', {
+          p_document_type: 'branch_bill',
+          p_document_id: bill.id || bill.billNo,
+          p_branch: bill.branch,
+          p_reason: duplicate ? 'User-requested duplicate print' : 'Branch counter receipt',
+          p_device_info: navigator.userAgent,
+        }).abortSignal(controller.signal);
+        if (error || !data) throw new Error(error?.message || 'Unable to allocate controlled print copy.');
+        const row = Array.isArray(data) ? data[0] : data;
+        return row?.copy_type === 'duplicate';
+      } catch (error) {
+        console.warn('[printCounterBill] Could not confirm the print audit record:', error);
+        return undefined;
+      } finally {
+        window.clearTimeout(auditTimeout);
+      }
+    })();
+    // Reprints already carry a duplicate label. A new SNB receipt gives
+    // allocation a short head start and lets the audit finish in the background.
+    if (!duplicate || !isSnbReceipt) {
+      let printTimeout: number | undefined;
+      const result = await Promise.race([
+        allocation,
+        new Promise<undefined>(resolve => { printTimeout = window.setTimeout(resolve, isSnbReceipt ? 600 : 1200); }),
+      ]);
+      window.clearTimeout(printTimeout);
+      isDuplicate = duplicate || result === true;
     }
-  } catch (allocationError) {
-    console.error('[printCounterBill] allocate_document_print unavailable, printing with requested copy type:', allocationError);
   }
-  const frame = document.createElement('iframe');
-  frame.setAttribute('aria-hidden', 'true');
-  frame.style.position = 'fixed';
-  frame.style.left = '-10000px';
-  frame.style.bottom = '0';
-  frame.style.width = '1px';
-  frame.style.height = '1px';
-  frame.style.border = '0';
-  frame.style.opacity = '0';
-  frame.style.pointerEvents = 'none';
-  document.body.appendChild(frame);
-
-  const target = frame.contentWindow;
-  if (!target) {
-    frame.remove();
-    throw new Error('Unable to create the direct print frame.');
-  }
-  let cleaned = false;
-  const cleanup = (notify = false) => {
-    if (cleaned) return;
-    cleaned = true;
-    frame.remove();
-    if (notify) {
-      window.dispatchEvent(new CustomEvent(BRANCH_PRINT_COMPLETE_EVENT, {
-        detail: { billNo: bill.billNo, branch: bill.branch },
-      }));
-    }
-  };
-  target.onafterprint = () => cleanup(true);
-  window.setTimeout(() => cleanup(false), 60_000);
-
-  if (bill.branch === 'VRSNB') printVrsnbReceiptBill(bill, isDuplicate, target);
-  else printSnbCounterBill(bill, isDuplicate, target);
+  const html = bill.branch === 'VRSNB' ? vrsnbReceiptHtml(bill, isDuplicate) : snbReceiptHtml(bill, isDuplicate);
+  await printThermalHtml(html, () => {
+    window.dispatchEvent(new CustomEvent(BRANCH_PRINT_COMPLETE_EVENT, {
+      detail: { billNo: bill.billNo, branch: bill.branch },
+    }));
+  });
 }

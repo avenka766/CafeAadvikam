@@ -1,5 +1,5 @@
 // src/branch/BranchDashboard.tsx
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type React from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
@@ -18,25 +18,27 @@ import { SettingsTab } from './tabs/SettingsTab';
 import { ReportsTab } from './tabs/ReportsTab';
 import BranchBillingProTab from './tabs/BranchBillingProTab';
 import { PaymentModeEditTab } from './tabs/PaymentModeEditTab';
-import {
-  AdvanceCakeOrdersTab,
-  AdminNotificationsBranchTab,
-  AuditLogsTab,
-  BankTab,
-  BranchAdminKpiStrip,
-  BranchBillHistoryProTab,
-  CashierClosureTab,
-  CurrentCashTab,
-  PurchaseOrderTab,
-  PurchasePayTab,
-  PurchaseTab,
-  ReturnsTab,
-  SalespersonReportTab,
-} from './tabs/BranchBusinessModules';
 import type { Branch } from './types';
 import { BRANCH_COLORS, BRANCH_LABELS } from './types';
 import { useBranchOpsStore, money } from './branchOpsStore';
 import { useSnbTabStripStore } from '@/stores/snbTabStripStore';
+
+function lazyBusinessTab<Key extends keyof typeof import('./tabs/BranchBusinessModules')>(name: Key) {
+  return lazy(async () => ({default: (await import('./tabs/BranchBusinessModules'))[name]}));
+}
+
+const AdvanceCakeOrdersTab = lazyBusinessTab('AdvanceCakeOrdersTab');
+const AdminNotificationsBranchTab = lazyBusinessTab('AdminNotificationsBranchTab');
+const AuditLogsTab = lazyBusinessTab('AuditLogsTab');
+const BankTab = lazyBusinessTab('BankTab');
+const BranchBillHistoryProTab = lazyBusinessTab('BranchBillHistoryProTab');
+const CashierClosureTab = lazyBusinessTab('CashierClosureTab');
+const CurrentCashTab = lazyBusinessTab('CurrentCashTab');
+const PurchaseOrderTab = lazyBusinessTab('PurchaseOrderTab');
+const PurchasePayTab = lazyBusinessTab('PurchasePayTab');
+const PurchaseTab = lazyBusinessTab('PurchaseTab');
+const ReturnsTab = lazyBusinessTab('ReturnsTab');
+const SalespersonReportTab = lazyBusinessTab('SalespersonReportTab');
 
 type TabId =
   | 'bill'
@@ -98,18 +100,16 @@ export default function BranchDashboard({ branch }: Props) {
   const native = isNativeApp();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
-  const {stock,sales,advanceOrders,thresholds,loading,fetchBranchData,syncIncomingFromDispatches,cleanOldData,seedBranchItems,subscribeToStock}=useBranchStore(useShallow(state=>({stock:state.stock,sales:state.sales,advanceOrders:state.advanceOrders,thresholds:state.thresholds,loading:state.loading,fetchBranchData:state.fetchBranchData,syncIncomingFromDispatches:state.syncIncomingFromDispatches,cleanOldData:state.cleanOldData,seedBranchItems:state.seedBranchItems,subscribeToStock:state.subscribeToStock})));
+  const {stock,sales,advanceOrders,fetchBranchData,syncIncomingFromDispatches,cleanOldData,seedBranchItems,subscribeToStock}=useBranchStore(useShallow(state=>({stock:state.stock,sales:state.sales,advanceOrders:state.advanceOrders,fetchBranchData:state.fetchBranchData,syncIncomingFromDispatches:state.syncIncomingFromDispatches,cleanOldData:state.cleanOldData,seedBranchItems:state.seedBranchItems,subscribeToStock:state.subscribeToStock})));
   const {advanceCakeOrders,notifications,refreshSalespeople}=useBranchOpsStore(useShallow(state=>({advanceCakeOrders:state.advanceCakeOrders,notifications:state.notifications,refreshSalespeople:state.refreshSalespeople})));
   const tabStripExpanded = useSnbTabStripStore((s) => s.expanded);
 
-  const initializedRef = useRef<Branch | null>(null);
   const alertedDeliveryIdsRef = useRef<Set<string>>(new Set());
   const [showDeliveryAlert, setShowDeliveryAlert] = useState(false);
 
   const branchStock = useMemo(() => stock[branch] || [], [stock, branch]);
   const branchAdvance = useMemo(() => advanceOrders?.[branch] || [], [advanceOrders, branch]);
   const branchSales = useMemo(() => sales[branch] || [], [sales, branch]);
-  const branchThresholds = useMemo(() => thresholds[branch] || {}, [thresholds, branch]);
   const colors           = BRANCH_COLORS[branch];
   const role = currentUser?.role || '';
   const isAdminUser = role === 'admin' || role === 'owner' || (branch === 'SNB' && role === 'admin_snb') || (branch === 'VRSNB' && role === 'admin_vrsnb');
@@ -129,7 +129,17 @@ export default function BranchDashboard({ branch }: Props) {
   const requestedTab = searchParams.get('tab') as TabId | null;  const tab: TabId = requestedTab && tabs.some((t) => t.id === requestedTab) ? requestedTab : 'bill';
   const activeScopes=useMemo(()=>Array.from(new Set([...dashboardReadScopes(tab),'advance' as const])),[tab]);
   const activeScopesRef=useRef(activeScopes);activeScopesRef.current=activeScopes;
-  useEffect(()=>{void fetchBranchData(branch,false,activeScopes);},[branch,activeScopes,fetchBranchData]);
+  useEffect(() => {
+    let cancelled = false;
+    if (tab === 'bill') {
+      void fetchBranchData(branch, false, dashboardReadScopes(tab)).then(() => {
+        if (!cancelled) void fetchBranchData(branch, false, ['advance']);
+      });
+    } else {
+      void fetchBranchData(branch, false, activeScopes);
+    }
+    return () => { cancelled = true; };
+  }, [branch, tab, activeScopes, fetchBranchData]);
   const openTab = useCallback((id: TabId | string) => {
     const next = id as TabId;
     if (next === 'bill') setSearchParams({});
@@ -190,14 +200,11 @@ export default function BranchDashboard({ branch }: Props) {
     void hydrateBranchDataFromCache(branch);
 
 
-    if (initializedRef.current !== branch) {
-      initializedRef.current = branch;
-      timers.push(window.setTimeout(() => {
-        syncIncomingFromDispatches(branch);
-        seedBranchItems(branch);
-        cleanOldData();
-      }, 300));
-    }
+    timers.push(window.setTimeout(() => { void syncIncomingFromDispatches(branch); }, 750));
+    timers.push(window.setTimeout(() => {
+      void seedBranchItems(branch);
+      void cleanOldData();
+    }, 5000));
 
     const unsubscribe = subscribeToStock(branch);
     // Realtime handles normal stock/order changes. These slower polls are
@@ -260,8 +267,8 @@ export default function BranchDashboard({ branch }: Props) {
   }, [requestedTab, tabs, openTab]);
 
   const todayIso = businessDate();
-  const todayLegacyDeliveries = branchAdvance.filter((o) => o.status === 'pending' && o.deliveryDate === todayIso);
-  const todayCakeDeliveries = advanceCakeOrders.filter((o) => o.branch === branch && !['Paid In Full', 'Cancelled'].includes(o.status) && o.deliveryDate === todayIso);
+  const todayLegacyDeliveries = useMemo(() => branchAdvance.filter(o => o.status === 'pending' && o.deliveryDate === todayIso), [branchAdvance, todayIso]);
+  const todayCakeDeliveries = useMemo(() => advanceCakeOrders.filter(o => o.branch === branch && !['Paid In Full', 'Cancelled'].includes(o.status) && o.deliveryDate === todayIso), [advanceCakeOrders, branch, todayIso]);
   const todayDeliveryCount = todayLegacyDeliveries.length + todayCakeDeliveries.length;
 
   useEffect(() => {
@@ -274,7 +281,7 @@ export default function BranchDashboard({ branch }: Props) {
     }
   }, [branch, todayDeliveryCount, todayIso, todayLegacyDeliveries, todayCakeDeliveries]);
 
-  if (!opsHydrated) {
+  if (!opsHydrated && (branch !== 'SNB' || tab !== 'bill')) {
     return (
       <div className="branch-command-screen min-h-0 bg-transparent pt-0" style={{ minHeight: 'calc(100dvh - var(--header-h, 4rem))', paddingBottom: 'var(--nav-h, 5.25rem)' }}>
         <div className="grid min-h-0 place-items-center px-3 py-10 md:px-5">
@@ -398,7 +405,8 @@ export default function BranchDashboard({ branch }: Props) {
         )}
         <main className={cn('h-full min-h-0 min-w-0 flex-1 overflow-hidden border border-slate-200 bg-white/70 shadow-lg shadow-slate-200/50', tab === 'bill' ? 'rounded-[1.35rem]' : 'rounded-[1.6rem]')}>
           <div className={cn('h-full min-h-0', tab === 'bill' ? 'p-1 sm:p-1.5' : 'branch-compact-tab overflow-hidden p-1.5 sm:p-2')}>
-            {tab === 'bill' && <BranchBillingProTab branch={branch} branchStock={branchStock} onOpenTab={openTab} />}
+            {tab === 'bill' && <BranchBillingProTab branch={branch} branchStock={branchStock} onOpenTab={openTab} recordsLoading={!opsHydrated} />}
+            <Suspense fallback={<p role="status" className="p-4 text-sm text-slate-600">Loading tab…</p>}>
             {tab === 'advance' && <AdvanceCakeOrdersTab branch={branch} branchStock={branchStock} onOpenTab={openTab} />}
             {tab === 'returns' && <ReturnsTab branch={branch} branchStock={branchStock} />}
             {tab === 'purchase' && isAdminUser && <PurchaseTab branch={branch} branchStock={branchStock} />}
@@ -415,6 +423,7 @@ export default function BranchDashboard({ branch }: Props) {
             {tab === 'reports' && canViewReports && <ReportsTab branch={branch} branchSales={branchSales} advanceOrders={branchAdvance} />}
             {tab === 'audit' && isAdminUser && <AuditLogsTab branch={branch} branchStock={branchStock} />}
             {tab === 'settings' && isAdminUser && <SettingsTab branch={branch} branchStock={branchStock} />}
+            </Suspense>
           </div>
         </main>
       </div>

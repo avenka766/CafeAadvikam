@@ -750,8 +750,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       // Only stock rows need a price lookup — skip the catalog load entirely
       // for a scope that never touches stock.
       const catalogBranch = branch === 'VRSNB' ? 'VRSNB' : branch === 'SNB' || branch === 'Hosur' ? 'SNB' : null;
-      if (wantStock && catalogBranch) await useBranchCatalogStore.getState().loadCatalog(catalogBranch);
-      const catalogItems = (wantStock && catalogBranch) ? useBranchCatalogStore.getState().items[catalogBranch] : [];
+      const catalogReady = wantStock && catalogBranch ? useBranchCatalogStore.getState().loadCatalog(catalogBranch) : null;
 
       // EGRESS FIX (2026-09-01): each entry below now only fires its real
       // query when its scope was actually requested — skipped ones resolve
@@ -761,7 +760,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       // null can never be mistaken for "fetched, genuinely empty" and wipe
       // out already-correct state for that branch.
       const SKIP = Promise.resolve({ data: null } as { data: null });
-      const queryResults = await Promise.all([
+      const [queryResults] = await Promise.all([Promise.all([
         // EGRESS FIX (2026-09-01): real observed counts checked directly
         // against live data before shrinking these — branch_stock's actual
         // max across all 3 branches is ~450 rows, so 2000 was ~4.4x oversized
@@ -843,7 +842,8 @@ export const useBranchStore = create<BranchState>((set, get) => ({
           .eq('confirmed', false)
           .order('received_at', { ascending: false })
           .limit(300) : SKIP,
-      ]);
+      ]), catalogReady]);
+      const catalogItems = (wantStock && catalogBranch) ? useBranchCatalogStore.getState().items[catalogBranch] : [];
       const failed=queryResults.filter(result=>'error' in result&&result.error);
       if(failed.length)throw Error(failed.map(result=>'error' in result&&result.error?result.error.message:'Read failed').join(' | '));
       const [

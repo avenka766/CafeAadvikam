@@ -1245,14 +1245,25 @@ const branchOpsSupabaseStorage: PersistStorage<BranchOpsState> = {
         complaintQuery = complaintQuery.eq("branch", sessionBranch);
       }
 
-      const wave1 = await Promise.all([
+      const primaryReads = [
         supabase
           .from("app_state")
           .select("value")
           .eq("key", name)
           .maybeSingle(),
         opQuery,
-      ]);
+      ] as const;
+      if (sessionBranch) {
+        // The branch-bounded history can run alongside the small primary
+        // reads. Keep the larger, unscoped admin load staggered below.
+        const [primary, sparse] = await Promise.all([
+          Promise.all(primaryReads),
+          loadSparseOperationHistory(sessionBranch),
+        ]);
+        const dedicated = await Promise.all([stockCountQuery, varianceQuery, complaintQuery]);
+        return [...primary, ...dedicated, sparse] as const;
+      }
+      const wave1 = await Promise.all(primaryReads);
       await new Promise((resolve) => setTimeout(resolve, 150));
       const wave2 = await Promise.all([stockCountQuery, varianceQuery, complaintQuery]);
       await new Promise((resolve) => setTimeout(resolve, 150));
