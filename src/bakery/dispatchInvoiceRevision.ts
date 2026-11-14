@@ -21,7 +21,7 @@ export function reviseDispatchInvoice(record:DispatchInvoiceRecord,action:'edit'
   if(!request){
    const slugs:Record<string,string>={};
    for(const item of record.items)slugs[`item:${item.itemName.trim().toLowerCase()}|${item.unit}`]=closingStockItemSlug(item.itemName);
-   if(action!=='return'&&['SNB','VRSNB'].includes(record.scope)&&record.dispatchEntryIds.length){
+   if(action==='cancel'&&['SNB','VRSNB'].includes(record.scope)&&record.dispatchEntryIds.length){
     await useBakeryStore.getState().fetchOrders(true,true);
     for(const ref of record.dispatchEntryIds){const entry=useBakeryStore.getState().orders.find(o=>o.id===ref.orderId)?.dispatchLog?.find(e=>e.id===ref.dispatchEntryId);if(entry)slugs[ref.dispatchEntryId]=closingStockItemSlug(entry.itemName);}
    }

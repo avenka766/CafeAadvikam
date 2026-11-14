@@ -10271,7 +10271,7 @@ function EditDispatchInvoiceModal({ invoice, onClose, onSaved }: {
           <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="size-4" /></button>
         </div>
         <p className="mt-1 text-[11px] font-bold text-muted-foreground">
-          Select Return to remove a whole line, or reduce its quantity for a partial return. Use a new dispatch for extra goods already being sent to a customer.
+          Increase a quantity or add an item to record additional goods on this invoice. Save quantity reductions separately as returns.
         </p>
 
         <div className="mt-3 space-y-2">
@@ -10314,7 +10314,7 @@ function EditDispatchInvoiceModal({ invoice, onClose, onSaved }: {
                   const n = Number(e.target.value) || 0;
                   updateLine(l.key, { quantity: l.unit === 'pcs' ? Math.round(n) : n });
                 }}
-                type="number" min={0} step={l.unit === 'pcs' ? 1 : undefined} placeholder="Qty" className="rounded-lg border border-border px-2 py-1.5 text-right text-xs font-bold"
+                type="number" min={0} step={l.unit === 'pcs' ? 1 : 0.001} placeholder="Qty" className="rounded-lg border border-border px-2 py-1.5 text-right text-xs font-bold"
               />
               <select
                 value={l.unit} onChange={e => updateLine(l.key, { unit: e.target.value })}

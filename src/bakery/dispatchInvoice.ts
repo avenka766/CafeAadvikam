@@ -577,18 +577,18 @@ export function renderDispatchInvoiceHtml(record: DispatchInvoiceRecord, mode: '
   const sgstAmt = isGst && record.gstSupplyType === 'intra' ? Math.round((totalTax - cgstAmt) * 100) / 100 : 0;
   const igstAmt = isGst && record.gstSupplyType === 'inter' ? totalTax : 0;
 
-  const itemKey = (name: string, unit: string) => JSON.stringify([name.trim().toLowerCase(), unit]);
+  const itemKey = (name: string, unit: string, price: number) => JSON.stringify([name.trim().toLowerCase(), unit, price]);
   const fmtQty = (n: number) => (n % 1 === 0 ? n : n.toFixed(3));
   const rowSourceItems = record.items.filter(item => item.unit !== 'charge');
-  const merged = new Map<string, {itemName: string; quantity: number; lineTotal: number}>();
+  const merged = new Map<string, {itemName: string; quantity: number; lineTotal: number; unitPrice: number}>();
   for (const item of rowSourceItems) {
-    const key = itemKey(item.itemName, item.unit);
+    const key = itemKey(item.itemName, item.unit, item.unitPrice);
     const row = merged.get(key);
     if (row) {
       row.quantity += item.quantity;
       row.lineTotal += item.lineTotal;
     } else {
-      merged.set(key, {itemName: item.itemName, quantity: item.quantity, lineTotal: item.lineTotal});
+      merged.set(key, {itemName: item.itemName, quantity: item.quantity, lineTotal: item.lineTotal, unitPrice: item.unitPrice});
     }
   }
   const rows = [...merged.values()].map((row, index) => `
@@ -596,7 +596,7 @@ export function renderDispatchInvoiceHtml(record: DispatchInvoiceRecord, mode: '
       <td>${index + 1}</td>
       <td>${esc(row.itemName)}</td>
       <td class="num">${fmtQty(row.quantity)}</td>
-      <td class="num">${formatAmount(row.quantity > 0 ? row.lineTotal / row.quantity : 0)}</td>
+      <td class="num">${formatAmount(row.unitPrice)}</td>
       <td class="num">${formatAmount(row.lineTotal)}</td>
     </tr>`).join('');
   // The item table's own Total must now sum only the rows actually printed
@@ -845,7 +845,7 @@ export async function updateDispatchInvoice(params: {
   isGstInvoice?:boolean;gstSupplyType?:'intra'|'inter';
 }):Promise<{ok:true;record:DispatchInvoiceRecord;stockSynced:boolean;hosurWhatsapp?:{ok:boolean;billNo?:string;whatsappStatus?:'sent'|'failed';whatsappError?:string|null;message?:string}}|{error:string}>{
  const invalid=dispatchRevisionError(params.updatedItems,params.updatedDiscountPct);if(invalid)return {error:invalid};
- const {data,error}=await supabase.from('dispatch_invoices').select('*').eq('id',params.invoiceId).single();
+ const {data,error}=await supabase.rpc('get_dispatch_invoice_for_change_v1',{p_invoice:params.invoiceId});
  if(error||!data)return {error:error?.message||'Invoice not found.'};const original=recordFromRow(data);
  try {
   const items=params.updatedItems.filter(i=>i.itemName.trim()&&(i.unit==='charge'||i.quantity>0)).map(i=>({...i,itemName:i.itemName.trim(),quantity:i.unit==='charge'?1:i.quantity,lineTotal:financialLineTotal(i.unit==='charge'?1:i.quantity,i.unitPrice)}));
