@@ -843,6 +843,7 @@ export async function listDispatchInvoices(opts: {
 export async function updateDispatchInvoice(params: {
   invoiceId:string;updatedItems:DispatchInvoiceItem[];updatedDiscountPct:number;editedBy:string;
   isGstInvoice?:boolean;gstSupplyType?:'intra'|'inter';
+  afterReturn?:DispatchInvoiceRecord;
 }):Promise<{ok:true;record:DispatchInvoiceRecord;stockSynced:boolean;hosurWhatsapp?:{ok:boolean;billNo?:string;whatsappStatus?:'sent'|'failed';whatsappError?:string|null;message?:string}}|{error:string}>{
  const invalid=dispatchRevisionError(params.updatedItems,params.updatedDiscountPct);if(invalid)return {error:invalid};
  const {data,error}=await supabase.rpc('get_dispatch_invoice_for_change_v1',{p_invoice:params.invoiceId});
@@ -856,12 +857,12 @@ export async function updateDispatchInvoice(params: {
   const {reviseDispatchInvoice}=await import('./dispatchInvoiceRevision');
   const {planInvoiceQuantityReturn}=await import('./dispatchRevisionValidation');
   const plan=planInvoiceQuantityReturn(original.items,items);
-  const onlyReturn=plan.returns.length>0&&!plan.otherEdits&&params.updatedDiscountPct===original.discountPct&&
+  const onlyReturn=!params.afterReturn&&plan.returns.length>0&&!plan.otherEdits&&params.updatedDiscountPct===original.discountPct&&
     (params.isGstInvoice??original.isGstInvoice)===original.isGstInvoice&&
     (params.gstSupplyType??original.gstSupplyType)===original.gstSupplyType;
   const row=onlyReturn
     ? await reviseDispatchInvoice(original,'return',{returns:plan.returns},'Returned invoice items')
-    : await reviseDispatchInvoice(original,'edit',{items,discountPct:params.updatedDiscountPct,isGstInvoice:params.isGstInvoice??original.isGstInvoice,gstSupplyType:params.gstSupplyType??original.gstSupplyType});
+    : await reviseDispatchInvoice(params.afterReturn?.id===original.id?params.afterReturn:original,'edit',{items,discountPct:params.updatedDiscountPct,isGstInvoice:params.isGstInvoice??original.isGstInvoice,gstSupplyType:params.gstSupplyType??original.gstSupplyType});
   const record=recordFromRow(row);const hosurWhatsapp=await notifyRevisedHosur(row,record);
   return {ok:true,record,stockSynced:true,hosurWhatsapp};
  }catch(cause){return {error:cause instanceof Error?cause.message:'The correction could not be confirmed.'};}
@@ -893,11 +894,11 @@ export async function cancelDispatchInvoice(params:{invoiceId:string;reason?:str
  }catch(cause){return {error:cause instanceof Error?cause.message:'Cancellation could not be confirmed.'};}
 }
 
-export async function returnDispatchInvoiceItems(params:{invoiceId:string;returns:{itemName:string;unit:string;qty:number}[];reason?:string;returnedBy:string}):Promise<{ok:true;record:DispatchInvoiceRecord;whatsapp?:{ok:boolean;error?:string}}|{error:string}>{
+export async function returnDispatchInvoiceItems(params:{invoiceId:string;returns:{itemName:string;unit:string;qty:number}[];reason?:string;returnedBy:string;deferWhatsapp?:boolean;reviewedInvoice?:DispatchInvoiceRecord}):Promise<{ok:true;record:DispatchInvoiceRecord;whatsapp?:{ok:boolean;error?:string}}|{error:string}>{
  let returns:ReturnType<typeof combineDispatchReturns>;
  try {returns=combineDispatchReturns(params.returns);}catch(cause){return {error:cause instanceof Error?cause.message:'Invalid return quantities.'};}
  if(!returns.length)return {error:'Enter a return quantity for at least one item.'};
- const {data,error}=await supabase.from('dispatch_invoices').select('*').eq('id',params.invoiceId).single();
+ const {data,error}=await supabase.rpc('get_dispatch_invoice_for_change_v1',{p_invoice:params.invoiceId});
  if(error||!data)return {error:error?.message||'Invoice not found.'};const original=recordFromRow(data);
  try {
   const {reviseDispatchInvoice,hasPendingDispatchInvoiceRevision}=await import('./dispatchInvoiceRevision');
@@ -907,7 +908,9 @@ export async function returnDispatchInvoiceItems(params:{invoiceId:string;return
  const current=new Map<string,{quantity:number}>();for(const item of original.items){const k=key(item);current.set(k,{quantity:(current.get(k)?.quantity??0)+item.quantity});}
  for(const ret of returns){const item=current.get(key(ret));if(!item||ret.qty>item.quantity+1e-9)return {error:`Can't return ${ret.qty} ${ret.unit} of ${ret.itemName}; it exceeds the remaining invoice quantity.`};}
   }
-  const row=await reviseDispatchInvoice(original,'return',{returns},params.reason||'Returned invoice items');const record={...recordFromRow(row),workflowResult:{returnCreditAmount:Number(row.revision_return_credit_amount||0)}};
+  const reviewed=params.reviewedInvoice?.id===original.id?params.reviewedInvoice:original;
+  const row=await reviseDispatchInvoice(reviewed,'return',{returns},params.reason||'Returned invoice items');const record={...recordFromRow(row),workflowResult:{returnCreditAmount:Number(row.revision_return_credit_amount||0)}};
+  if(params.deferWhatsapp)return {ok:true,record};
   const sent=await notifyRevisedHosur(row,record);let whatsapp=sent?{ok:sent.ok,error:sent.whatsappError||sent.message}:undefined;
   if(!sent&&!row.revision_duplicate){const phone=record.customerPhone||record.hosurShopPhone;if(phone){try{await sendDispatchInvoiceWhatsapp(record,phone);whatsapp={ok:true,error:undefined};}catch(cause){whatsapp={ok:false,error:cause instanceof Error?cause.message:'Invoice saved; WhatsApp needs retry.'};}}}
   return {ok:true,record,whatsapp};

@@ -10067,28 +10067,37 @@ function EditDispatchInvoiceModal({ invoice, onClose, onSaved }: {
   const discountAmount = Math.round(subtotal * (clampedDiscountPct / 100) * 100) / 100;
   const total = exclusiveGst ? calculatePlannerSalesGst(subtotal,discountAmount,true,Number(gstPct)||0,gstSupplyType).total : Math.max(0, Math.round(subtotal-discountAmount));
 
+  const [recordedReturn, setRecordedReturn] = useState<DispatchInvoiceRecord | null>(null);
   const {returns: pendingReturns, otherEdits} = planDispatchEditReturns(invoice.items, lines);
+  const gstFieldsUnchanged = gstEnabled === invoice.isGstInvoice &&
+    (!gstEnabled || (gstSupplyType === (invoice.gstSupplyType || 'intra') &&
+      gstPct === String(firstGstLine?.gstPct ?? 5) &&
+      gstHsnCode === (firstGstLine?.hsnCode || '') &&
+      gstBuyerName === (savedBuyer?.name || '') &&
+      gstBuyerGstin === (savedBuyer?.gstin || '') &&
+      gstBuyerAddress === (savedBuyer?.address || '') &&
+      gstBuyerStateName === (savedBuyer?.stateName || 'Tamil Nadu') &&
+      gstBuyerStateCode === (savedBuyer?.stateCode || '33')));
+  const mixedEdit = pendingReturns.length > 0 &&
+    (otherEdits || discountPct !== invoice.discountPct || !gstFieldsUnchanged);
+  const closeEditor = () => {
+    if (savingInFlightRef.current) return;
+    if (recordedReturn) onSaved();
+    else onClose();
+  };
 
   const save = async () => {
     if (savingInFlightRef.current) return;
     setError(null);
     setWarning(null);
-    if (pendingReturns.length) {
-      if (otherEdits || discountPct !== invoice.discountPct ||
-          gstEnabled !== invoice.isGstInvoice || gstSupplyType !== (invoice.gstSupplyType || 'intra') ||
-          gstPct !== String(firstGstLine?.gstPct ?? 5) || gstHsnCode !== (firstGstLine?.hsnCode || '') ||
-          gstBuyerName !== (savedBuyer?.name || '') || gstBuyerGstin !== (savedBuyer?.gstin || '') ||
-          gstBuyerAddress !== (savedBuyer?.address || '') || gstBuyerStateName !== (savedBuyer?.stateName || 'Tamil Nadu') ||
-          gstBuyerStateCode !== (savedBuyer?.stateCode || '33')) {
-        setError('Save the return separately from item, price, discount or GST edits. Reopen the bill and select only the items being returned.');
-        return;
-      }
+    if (pendingReturns.length && !mixedEdit && !recordedReturn) {
       savingInFlightRef.current = true;
       setSaving(true);
       try {
         const result = await returnDispatchInvoiceItems({
           invoiceId: invoice.id,
           returns: pendingReturns,
+          reviewedInvoice: invoice,
           returnedBy: currentUser?.displayName || currentUser?.username || 'Planner',
         });
         if ('error' in result) { setError(result.error); return; }
@@ -10108,16 +10117,7 @@ function EditDispatchInvoiceModal({ invoice, onClose, onSaved }: {
     // Do not send an empty "edit" request for a delivered bill. Apart from
     // wasting a live request, it makes the return workflow look broken when
     // the planner has not yet pressed Return or reduced a quantity.
-    const gstFieldsUnchanged = gstEnabled === invoice.isGstInvoice &&
-      gstSupplyType === (invoice.gstSupplyType || 'intra') &&
-      gstPct === String(firstGstLine?.gstPct ?? 5) &&
-      gstHsnCode === (firstGstLine?.hsnCode || '') &&
-      gstBuyerName === (savedBuyer?.name || '') &&
-      gstBuyerGstin === (savedBuyer?.gstin || '') &&
-      gstBuyerAddress === (savedBuyer?.address || '') &&
-      gstBuyerStateName === (savedBuyer?.stateName || 'Tamil Nadu') &&
-      gstBuyerStateCode === (savedBuyer?.stateCode || '33');
-    if (!otherEdits && discountPct === invoice.discountPct && gstFieldsUnchanged) {
+    if (!pendingReturns.length && !otherEdits && discountPct === invoice.discountPct && gstFieldsUnchanged) {
       setError('No changes selected. Press Return to remove a full line, or reduce the quantity for a partial return, then save the return.');
       return;
     }
@@ -10139,8 +10139,23 @@ function EditDispatchInvoiceModal({ invoice, onClose, onSaved }: {
     const buyerError = gstEnabled ? gstBuyerError(gstBuyerName, gstBuyerGstin) : undefined;
     if (buyerError) { setError(buyerError); return; }
     if (gstEnabled && (!Number.isFinite(Number(gstPct)) || Number(gstPct)<=0 || Number(gstPct)>100)) {setError('Enter a valid GST percentage above 0 and up to 100.');return;}
+    if (mixedEdit && !recordedReturn) {
+      if (!invoice.dispatchEntryIds.length || !['SNB', 'VRSNB', 'Hosur'].includes(invoice.scope) ||
+          (invoice.scope !== 'Hosur' && invoice.customerName?.trim())) {
+        setError('This invoice cannot record a return and additional goods together.');
+        return;
+      }
+      if (!lines.some(line => line.key < invoice.items.length && line.unit !== 'charge' && line.quantity > 0 &&
+        line.itemName === invoice.items[line.key]?.itemName && line.unit === invoice.items[line.key]?.unit)) {
+        setError('Returning all original items closes this invoice. Use a new dispatch for replacement goods.');
+        return;
+      }
+      if (!window.confirm('Save the return and then update the invoice? If the additions fail, the return will remain saved and you can retry the remaining changes.')) return;
+    }
     savingInFlightRef.current = true;
     setSaving(true);
+    let returnSaved = Boolean(recordedReturn);
+    let afterReturn = recordedReturn;
     try {
       // REDESIGN (2026-09-12): one flat GST%/HSN for the whole invoice (not
       // per line) — see the note above gstEnabled's declaration. Strips any
@@ -10150,10 +10165,24 @@ function EditDispatchInvoiceModal({ invoice, onClose, onSaved }: {
         ...rest,
         ...(gstEnabled ? { hsnCode: gstHsnCode.trim(), gstPct: Number(gstPct), ...(exclusiveGst ? {gstPricing:'exclusive' as const} : {}), gstBuyerDetails:{name:gstBuyerName.trim(),gstin:gstBuyerGstin.trim(),address:gstBuyerAddress,stateName:gstBuyerStateName,stateCode:gstBuyerStateCode} } : {}),
       }));
+      if (mixedEdit && !recordedReturn) {
+        const returned = await returnDispatchInvoiceItems({
+          invoiceId: invoice.id,
+          returns: pendingReturns,
+          reviewedInvoice: invoice,
+          deferWhatsapp: true,
+          returnedBy: currentUser?.displayName || currentUser?.username || 'Planner',
+        });
+        if ('error' in returned) { setError(returned.error); return; }
+        returnSaved = true;
+        afterReturn = returned.record;
+        setRecordedReturn(returned.record);
+      }
       if (gstEnabled && invoice.hosurShopId) await rememberHosurShopGst(invoice.hosurShopId, gstBuyerName, gstBuyerGstin);
       const result = await updateDispatchInvoice({
         invoiceId: invoice.id,
         updatedItems: cleanedForSave,
+        afterReturn: afterReturn ?? undefined,
         // BUG FIX: the input's own onChange clamps discountPct to 0-100,
         // but only when it actually fires — if the invoice's original,
         // stored discountPct was already out of range (e.g. from before
@@ -10165,7 +10194,7 @@ function EditDispatchInvoiceModal({ invoice, onClose, onSaved }: {
         isGstInvoice: gstEnabled,
         gstSupplyType,
       });
-      if ('error' in result) { setError(result.error); return; }
+      if ('error' in result) { setError(returnSaved ? `Return saved. Remaining changes were not confirmed. ${result.error}` : result.error); return; }
       // FEATURE (2026-09-03): surface whether the shop's WhatsApp bill was
       // resynced with the correction (Hosur only — see syncHosurBillWithInvoiceEdit).
       const notes: string[] = [];
@@ -10220,7 +10249,8 @@ function EditDispatchInvoiceModal({ invoice, onClose, onSaved }: {
       // (re)generated GST invoice.
       setSavedRecord(result.record);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save changes — please try again.');
+      const message = err instanceof Error ? err.message : 'Failed to save changes. Try again.';
+      setError(returnSaved ? `Return saved. Remaining changes were not confirmed. ${message}` : message);
     } finally {
       setSaving(false);
       savingInFlightRef.current = false;
@@ -10268,10 +10298,10 @@ function EditDispatchInvoiceModal({ invoice, onClose, onSaved }: {
       <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white p-5 shadow-xl">
         <div className="flex items-center justify-between gap-2">
           <p className="text-sm font-black text-foreground">Edit Bill — {invoice.invoiceNo}</p>
-          <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="size-4" /></button>
+          <button onClick={closeEditor} disabled={saving} aria-label="Close invoice editor" className="text-muted-foreground hover:text-foreground"><X className="size-4" /></button>
         </div>
         <p className="mt-1 text-[11px] font-bold text-muted-foreground">
-          Increase a quantity or add an item to record additional goods on this invoice. Save quantity reductions separately as returns.
+          Reduce a quantity to record a return. Increase a quantity or add an item to record additional goods.
         </p>
 
         <div className="mt-3 space-y-2">
@@ -10388,9 +10418,9 @@ function EditDispatchInvoiceModal({ invoice, onClose, onSaved }: {
         {warning && <p className="mt-2 text-[11px] font-bold text-amber-700">{warning}</p>}
 
         <div className="mt-4 flex flex-wrap justify-end gap-2">
-          <button onClick={onClose} disabled={saving} className="rounded-xl border border-border px-3 py-2 text-xs font-bold text-muted-foreground hover:bg-muted disabled:opacity-50">Cancel</button>
+          <button onClick={closeEditor} disabled={saving} className="rounded-xl border border-border px-3 py-2 text-xs font-bold text-muted-foreground hover:bg-muted disabled:opacity-50">{recordedReturn ? 'Close' : 'Cancel'}</button>
           <button onClick={save} disabled={saving} className="flex items-center gap-1.5 rounded-xl bg-teal-600 px-4 py-2 text-xs font-bold text-white hover:bg-teal-700 disabled:opacity-50">
-            {saving ? <Loader2 className="size-3.5 animate-spin" /> : <CheckCircle2 className="size-3.5" />} {pendingReturns.length ? 'Save Return' : 'Save Changes'}
+            {saving ? <Loader2 className="size-3.5 animate-spin" /> : <CheckCircle2 className="size-3.5" />} {recordedReturn ? 'Save Remaining Changes' : mixedEdit ? 'Save Return & Changes' : pendingReturns.length ? 'Save Return' : 'Save Changes'}
           </button>
         </div>
       </div>
