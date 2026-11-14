@@ -23,13 +23,13 @@ it('rejects the combined return exceeding the available quantity without writing
     { itemName: 'Burfi', unit: 'kg', qty: 0.3 }, { itemName: 'BURFI', unit: 'kg', qty: 0.3 },
   ] });
   expect(result).toHaveProperty('error', expect.stringContaining("Can't return"));
-  expect(m.from).toHaveBeenCalledTimes(1); expect(m.rpc).not.toHaveBeenCalled();
+  expect(m.from).not.toHaveBeenCalled(); expect(m.rpc).toHaveBeenCalledExactlyOnceWith('get_dispatch_invoice_for_change_v1', expect.anything());
 });
 it('does not allow a 5 gram over-return through the old 10 gram tolerance', async () => {
   const result = await returnDispatchInvoiceItems({ invoiceId: 'invoice', returnedBy: 'Fixture',
     returns: [{ itemName: 'Burfi', unit: 'kg', qty: 0.505 }] });
   expect(result).toHaveProperty('error', expect.stringContaining("Can't return"));
-  expect(m.from).toHaveBeenCalledTimes(1); expect(m.rpc).not.toHaveBeenCalled();
+  expect(m.from).not.toHaveBeenCalled(); expect(m.rpc).toHaveBeenCalledExactlyOnceWith('get_dispatch_invoice_for_change_v1', expect.anything());
 });
 it('rejects fractional piece returns before accessing the database', async () => {
   const result = await returnDispatchInvoiceItems({ invoiceId: 'invoice', returnedBy: 'Fixture',
