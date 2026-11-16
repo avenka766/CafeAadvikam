@@ -21,10 +21,6 @@ export function reviseDispatchInvoice(record:DispatchInvoiceRecord,action:'edit'
   if(!request){
    const slugs:Record<string,string>={};
    for(const item of record.items)slugs[`item:${item.itemName.trim().toLowerCase()}|${item.unit}`]=closingStockItemSlug(item.itemName);
-   if(action==='cancel'&&['SNB','VRSNB'].includes(record.scope)&&record.dispatchEntryIds.length){
-    await useBakeryStore.getState().fetchOrders(true,true);
-    for(const ref of record.dispatchEntryIds){const entry=useBakeryStore.getState().orders.find(o=>o.id===ref.orderId)?.dispatchLog?.find(e=>e.id===ref.dispatchEntryId);if(entry)slugs[ref.dispatchEntryId]=closingStockItemSlug(entry.itemName);}
-   }
    request={p_request:crypto.randomUUID(),p_invoice:record.id,p_expected:{items:record.items,total:record.total,discountPct:record.discountPct,status:record.status,dispatchEntryIds:record.dispatchEntryIds,isGstInvoice:record.isGstInvoice,gstSupplyType:record.gstSupplyType,returnLog:record.returnLog},p_action:action,p_change:change,p_slugs:slugs,p_reason:reason};
    localStorage.setItem(key,JSON.stringify({intent,request}));
   }

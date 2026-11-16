@@ -30,6 +30,7 @@ function fixtureRows() {
       movement('bun', 'pcs', '2026-11-11', 12, 'production_carryover'),
       movement('bun', 'pcs', '2026-11-11', -10, 'dispatch'),
       movement('bun', 'pcs', '2026-11-12', 5),
+      movement('bun', 'pcs', '2026-11-11', 2, 'return'),
       movement('bun', 'kg', '2026-11-11', 2.5),
     ],
     from: '2026-11-11', to: '2026-11-11', stockCutoff: '2026-11-08T00:00:00Z',
@@ -41,8 +42,8 @@ it('uses the report end-date balance and counts each extra in dispatch totals on
   const rows = fixtureRows();
   expect(rows).toHaveLength(3);
   expect(rows.find(row => row.Item === 'Bun' && row.Unit === 'pcs')).toEqual({
-    Category: 'Bakery', Item: 'Bun', Unit: 'pcs', Requested: 10, 'Closing Stock': 8,
-    Produced: 12, 'Regular Dispatch': 8, 'Extra Dispatch': 2, 'Total Dispatched': 10,
+    Category: 'Bakery', Item: 'Bun', Unit: 'pcs', Requested: 10, 'Closing Stock': 10,
+    Produced: 12, 'Regular Dispatch': 8, 'Extra Dispatch': 2, 'Total Dispatched': 10, 'Returned to Stock': 2,
   });
   expect(rows.find(row => row.Item === 'Bun' && row.Unit === 'kg')).toMatchObject({
     Requested: 0, 'Closing Stock': 2.5, 'Extra Dispatch': 1.25, 'Total Dispatched': 1.25,
@@ -65,11 +66,11 @@ it('writes numeric cells and an Excel filter in both report downloads', async ()
     });
     const workbook = output.writeFile.mock.lastCall![0] as XLSX.WorkBook;
     const sheet = workbook.Sheets[workbook.SheetNames[0]];
-    expect(sheet['!autofilter']?.ref).toBe('A1:I4');
+    expect(sheet['!autofilter']?.ref).toBe('A1:J4');
     expect(sheet.D1.v).toBe('Requested');
     expect(sheet.E1.v).toBe('Closing Stock');
     expect(sheet.E2.t).toBe('n');
     expect(sheet['!cols']?.[4].wch).toBeGreaterThan(12);
-    expect(sheet['!ref']).toBe('A1:I4');
+    expect(sheet['!ref']).toBe('A1:J4');
   }
 });

@@ -876,7 +876,7 @@ async function notifyRevisedHosur(row:Record<string,unknown>,record:DispatchInvo
  }catch(cause){return {ok:false,message:cause instanceof Error?cause.message:'Invoice saved; WhatsApp needs retry.'};}
 }
 
-export async function cancelDispatchInvoice(params:{invoiceId:string;reason?:string;sampleRefund?:{bill:DispatchInvoiceRecord;details:SampleRefund}}):Promise<{ok:true;record:DispatchInvoiceRecord}|{error:string}>{
+export async function cancelDispatchInvoice(params:{invoiceId:string;reason?:string;plannerReturn?:boolean;sampleRefund?:{bill:DispatchInvoiceRecord;details:SampleRefund}}):Promise<{ok:true;record:DispatchInvoiceRecord}|{error:string}>{
  if(automaticDesktopBilling()&&(await billingSnapshot()).actions.some(a=>a.id===params.invoiceId&&a.sync?.state!=='synced'))return {error:'This invoice is saved on this computer and is waiting to sync. Reconnect and wait for Synced before cancelling it.'};
  const {data,error}=await supabase.rpc('get_dispatch_invoice_for_change_v1',{p_invoice:params.invoiceId});
  if(error||!data)return {error:error?.message||'Invoice confirmation could not load. Refresh before cancelling; nothing was changed.'};const original=recordFromRow(data);
@@ -888,9 +888,9 @@ export async function cancelDispatchInvoice(params:{invoiceId:string;reason?:str
    row=await changeSampleInvoice(refund?.bill ?? original,'cancel',refund ? {refund:refund.details} : {},params.reason||'Cancelled sample bill');
   }
   else if(params.sampleRefund)return {error:'Refunds from this form apply only to Sample Bills.'};
-  else if(['SNB','VRSNB'].includes(original.scope)&&!original.customerName&&!original.hosurShopId){const {cancelBranchTransfer}=await import('./branchTransferCancellation');row=await cancelBranchTransfer(original,params.reason);}
+  else if(!params.plannerReturn&&['SNB','VRSNB'].includes(original.scope)&&!original.customerName&&!original.hosurShopId){const {cancelBranchTransfer}=await import('./branchTransferCancellation');row=await cancelBranchTransfer(original,params.reason);}
   else {const {reviseDispatchInvoice}=await import('./dispatchInvoiceRevision');row=await reviseDispatchInvoice(original,'cancel',{},params.reason||'Cancelled invoice');}
-  return {ok:true,record:recordFromRow(row)};
+  return {ok:true,record:{...recordFromRow(row),workflowResult:{returnCreditAmount:Number(row.revision_return_credit_amount||0)}}};
  }catch(cause){return {error:cause instanceof Error?cause.message:'Cancellation could not be confirmed.'};}
 }
 

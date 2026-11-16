@@ -1,4 +1,5 @@
 import {invoiceReturnItems} from './dispatchRevisionValidation';
+import {businessDateTime} from '@/lib/businessDate';
 import {collectHosurOrderIds,useHosurShopOrders,type HosurShopOrderCard} from './useHosurShopOrders';
 import {financialLineTotal,financialPercent} from '@/lib/financialRounding';
 import {changeSampleInvoice, sampleRefundMethods, type SampleRefund} from './sampleInvoiceRequest';
@@ -4466,6 +4467,30 @@ function ReportsTab({ orders, onExportDataChange }: {
     });
   }, [orders, producedSource, dateFrom, dateTo, reportsCutoff]);
 
+  const loadCancelledInvoices = useCallback(async () => {
+    const from = reportsCutoff && reportsCutoff > dateFrom ? reportsCutoff : dateFrom;
+    if (from > dateTo) return [];
+    const nextDay = new Date(Date.parse(`${dateTo}T00:00:00Z`) + 86400000).toISOString().slice(0, 10);
+    const {data, error} = await fetchAllRows<Record<string, unknown>>('dispatch_invoices', query => query
+      .select('id,invoice_no,scope,hosur_shop_name,cancelled_at,cancelled_by,cancelled_reason,original_items,items,return_log')
+      .eq('status', 'cancelled').gte('cancelled_at', `${from}T00:00:00+05:30`)
+      .lt('cancelled_at', `${nextDay}T00:00:00+05:30`)
+      .order('cancelled_at', {ascending: false}), {cursorColumn:'cancelled_at'});
+    if (error) throw new Error(`Could not read cancelled invoices. ${error}`);
+    return data.map(row => {
+      const events = (row.return_log ?? []) as DispatchInvoiceRecord['returnLog'];
+      const returned = events.flatMap(event => event.items ?? []);
+      const original = (row.original_items ?? row.items ?? []) as DispatchInvoiceItem[];
+      return {
+        Invoice: row.invoice_no, Branch: row.scope, Shop: row.hosur_shop_name ?? '',
+        'Cancelled At (IST)': businessDateTime(String(row.cancelled_at)),
+        'Cancelled By': row.cancelled_by ?? '', Reason: row.cancelled_reason ?? '',
+        'Invoice Items': original.map(item => item.unit === 'charge' ? item.itemName : `${item.itemName} × ${item.quantity} ${item.unit}`).join(', '),
+        'Recorded Returns': returned.map(item => `${item.itemName} × ${item.qty} ${item.unit}`).join(', '),
+      };
+    });
+  }, [dateFrom, dateTo, reportsCutoff]);
+
   // Built once per data change, shared by this tab's own Excel/PDF buttons
   // AND reported upward (below) for the top-level "Export All" button — see
   // reportExport.ts for why this replaced the old hand-rolled jsPDF code.
@@ -4489,6 +4514,8 @@ function ReportsTab({ orders, onExportDataChange }: {
         })) },
         { name: 'Production & Dispatch', fallback: 'No production or dispatch in this range', rows: [],
           loadRows: loadProductionDispatchSheet, filterRows: true, skipAutomaticTotals: true },
+        { name: 'Cancelled Invoices', fallback: 'No invoices cancelled in this range', rows: [],
+          loadRows: loadCancelledInvoices, filterRows: true, skipAutomaticTotals: true },
         // FEATURE (2026-09-15): "show the kgs in the pcs by ()" — folds each
         // "(kg equiv)" column into its main quantity column as "10 (~2kg)"
         // instead of a separate column, matching how the PDF table already
@@ -4589,7 +4616,7 @@ function ReportsTab({ orders, onExportDataChange }: {
         },
       ],
     },
-  }), [rangeLabel, placedOrders, varianceRows, underRows, onTargetRows, overRows, notStartedRows, merged, storeBakerPlannerRows, storeBakerPlannerTotals, extraDispatchRows, hosurShopSummary, hosurLeftovers, hosurAdjustments, hosurLeftoverAvailable, hosurCancelledValue, dateFrom, dateTo, loadProductionDispatchSheet]);
+  }), [rangeLabel, placedOrders, varianceRows, underRows, onTargetRows, overRows, notStartedRows, merged, storeBakerPlannerRows, storeBakerPlannerTotals, extraDispatchRows, hosurShopSummary, hosurLeftovers, hosurAdjustments, hosurLeftoverAvailable, hosurCancelledValue, dateFrom, dateTo, loadProductionDispatchSheet, loadCancelledInvoices]);
 
   useEffect(() => { onExportDataChange?.(reportsExportSpecs); }, [reportsExportSpecs, onExportDataChange]);
 
@@ -9923,10 +9950,12 @@ function RecentDispatchInvoices({ scope, hosurShopId, title, customSalesOnly }: 
     cancelInFlightRef.current = true;
     setCancellingId(inv.id);
     try {
-      const result = await cancelDispatchInvoice({ invoiceId: inv.id });
+      const result = await cancelDispatchInvoice({ invoiceId: inv.id, plannerReturn: true, reason: 'Cancelled in Planner and goods returned' });
       if ('error' in result) {
         window.alert(result.error);
       } else {
+        const credit = Number(result.record.workflowResult?.returnCreditAmount || 0);
+        if (credit > 0) window.alert(`Invoice cancelled. Customer credit to reconcile: Rs. ${credit.toFixed(2)}.`);
         void load();
       }
     } catch (err) {

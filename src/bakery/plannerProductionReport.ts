@@ -28,6 +28,7 @@ export function buildProductionDispatchSheet({
   const rows = new Map<string, {item: string; unit: string; requested: number; prepared: number; dispatched: number; extra: number}>();
   const stock = new Map<string, number>();
   const produced = new Map<string, number>();
+  const returned = new Map<string, number>();
   const ensure = (key: string, item: string, unit: string) => {
     const current = rows.get(key);
     if (current) return current;
@@ -61,6 +62,10 @@ export function buildProductionDispatchSheet({
       ensure(key, movement.item_name || movement.item_slug, movement.unit);
       produced.set(key, (produced.get(key) ?? 0) + quantity);
     }
+    if (movement.reason === 'return' && inRange(movement.business_date)) {
+      ensure(key, movement.item_name || movement.item_slug, movement.unit);
+      returned.set(key, (returned.get(key) ?? 0) + quantity);
+    }
   }
 
   return Array.from(rows, ([key, row]) => ({
@@ -73,5 +78,6 @@ export function buildProductionDispatchSheet({
     'Regular Dispatch': round(row.dispatched - row.extra),
     'Extra Dispatch': round(row.extra),
     'Total Dispatched': round(row.dispatched),
+    'Returned to Stock': round(returned.get(key) ?? 0),
   })).sort((a, b) => a.Category.localeCompare(b.Category) || a.Item.localeCompare(b.Item) || a.Unit.localeCompare(b.Unit));
 }
