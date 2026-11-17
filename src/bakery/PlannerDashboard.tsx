@@ -8790,6 +8790,7 @@ function HosurShopDispatchPanel({ rows, mode, orders, leftoverBalances, onDispat
   const buildActionsForCard = (card: HosurShopOrderCard, includeExtra: boolean) => {
     const actions: PendingDispatchAction[] = [];
     let skippedNoLink = false;
+    let unitMismatch: string | undefined;
     const overs: { itemName: string; unit: string; owed: number; typed: number; extra: number }[] = [];
     // FEATURE (2026-08-24): "under-qty confirmation" — mirrors the overs
     // pattern right above (which already exists for the opposite case).
@@ -8841,8 +8842,13 @@ function HosurShopDispatchPanel({ rows, mode, orders, leftoverBalances, onDispat
               const orderItem = order.items.find(i => sameItem(i.itemName, row.itemName));
               const orderQty = split[order.id] ?? 0;
               if (!orderItem || orderQty <= 0) continue;
+              const dispatchUnit = orderItem.dispatchUnit || 'kg';
+              if (dispatchUnit !== item.unit) {
+                unitMismatch ??= `${item.itemName}: the shop order uses ${item.unit}, but the Planner order uses ${dispatchUnit}. Correct the order unit before dispatching.`;
+                continue;
+              }
               actions.push({
-                orderId: order.id, itemName: orderItem.itemName, quantity: orderQty, unit: orderItem.dispatchUnit || 'kg',
+                orderId: order.id, itemName: orderItem.itemName, quantity: orderQty, unit: dispatchUnit,
                 dispatchEntryId: getId(`${order.id}:${row.itemName}:${card.orderId}`), targetHosurOrderId: card.orderId,
               });
             }
@@ -8859,11 +8865,15 @@ function HosurShopDispatchPanel({ rows, mode, orders, leftoverBalances, onDispat
         }
       }
     }
-    return { actions, overs, unders, skippedNoLink, anchorOrderId };
+    return { actions, overs, unders, skippedNoLink, anchorOrderId, unitMismatch };
   };
 
   const finalizeReview = (card: HosurShopOrderCard, includeExtra: boolean) => {
-    const { actions, unders, skippedNoLink, anchorOrderId } = buildActionsForCard(card, includeExtra);
+    const { actions, unders, skippedNoLink, anchorOrderId, unitMismatch } = buildActionsForCard(card, includeExtra);
+    if (unitMismatch) {
+      setResult({ ok: false, message: unitMismatch });
+      return;
+    }
     const extras = extraItemsByCard[card.orderId] ?? [];
     if (extras.length > 0) {
       // BUG FIX (2026-08-08 audit): same silent-drop issue as
@@ -8901,7 +8911,11 @@ function HosurShopDispatchPanel({ rows, mode, orders, leftoverBalances, onDispat
     // Detect-only pass first — if anything is typed above what's still
     // owed, stop and show exactly what before touching anything. Confirming
     // that prompt is what actually calls finalizeReview(card, true).
-    const { overs, unders } = buildActionsForCard(card, false);
+    const { overs, unders, unitMismatch } = buildActionsForCard(card, false);
+    if (unitMismatch) {
+      setResult({ ok: false, message: unitMismatch });
+      return;
+    }
     if (overs.length > 0) {
       setOverOrderPrompt({ card, overs });
       return;
