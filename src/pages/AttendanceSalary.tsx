@@ -1,7 +1,9 @@
+import type { ChangeEvent } from 'react';
+import { downloadAttendanceTemplate, readAttendanceTemplate } from '@/lib/attendanceWorkbook';
 import {payrollPf, visiblePayrollEmployee} from '@/lib/payrollPf';
 import EmployeeExitDialog from '@/components/admin/EmployeeExitDialog';
 import EmployeeExitsPanel from '@/components/admin/EmployeeExitsPanel';
-import {savePayrollDay,savePayrollDeduction} from '@/lib/payrollPersistence';
+import {savePayrollDay,savePayrollDeduction,savePayrollAttendanceImport} from '@/lib/payrollPersistence';
 import AdminPayrollGate from '@/components/admin/AdminPayrollGate';
 import {payrollWeekOffLimit as weekOffLimit} from '@/lib/payrollWeekOff';
 import ContractTeamsPanel, { type ContractTeam } from '@/components/admin/ContractTeamsPanel';
@@ -1926,7 +1928,7 @@ function AttendanceSalaryContent() {
       const teamResult = await supabase.from('attendance_contract_teams').select('id,name').order('name');
       if (teamResult.error) setTeamError('Contract teams could not load. Refresh to try again.');
       else { setTeams(teamResult.data || []); setTeamError(''); }
-      const [emps, attData, decData, advResult,paidResult,monthlyAdvances] = await Promise.all([
+      const [emps, attData, decData, advResult,monthlyAdvances,paidResult] = await Promise.all([
         fetchEmployees(),
         fetchAttendance(activeMonth.year, activeMonth.month),
         fetchDeductionDecisions(activeMonth.year, activeMonth.month),
@@ -1938,8 +1940,12 @@ function AttendanceSalaryContent() {
       if(!advResult.tableReady)throw new Error('Salary advances could not load. Reload before calculating payroll.');
       if(paidResult.error)throw Error('Paid payroll history could not load. Retry before calculating salary.');
       if(monthlyAdvances.error)throw Error('Recorded advance deductions could not load. Retry before calculating salary.');
+      if (!Array.isArray(paidResult.data)) throw Error('Paid payroll history returned an unexpected format. Reload payroll data.');
+      if (!monthlyAdvances.data || typeof monthlyAdvances.data !== 'object' || Array.isArray(monthlyAdvances.data)) {
+        throw Error('Recorded advance deductions returned an unexpected format. Reload payroll data.');
+      }
       const attendanceIds = new Set(Object.keys(attData).map(key => key.slice(0,key.lastIndexOf('_'))));
-      const paid=new Map((paidResult.data||[]).map((r:{employee_id:string;snapshot:Record<string,number>})=>[r.employee_id,r.snapshot]));
+      const paid=new Map(paidResult.data.map((r:{employee_id:string;snapshot:Record<string,number>})=>[r.employee_id,r.snapshot]));
       setEmployees(sortByName(emps.filter(e=>(visiblePayrollEmployee(e,activeMonth.year,activeMonth.month) || attendanceIds.has(e.id) || paid.has(e.id) || monthlyAdvances.data?.[e.id])).map(e=>({...e,payrollYear:activeMonth.year,payrollMonth:activeMonth.month,recordedAdvanceDeduction:monthlyAdvances.data?.[e.id],paidSalary:paid.get(e.id) as Record<string,number>|undefined}))));
       setAtt(attData);
       setDecisions(decData);
@@ -1975,7 +1981,7 @@ function AttendanceSalaryContent() {
     if(employee?.isActive===false&&(!employee.leftOn||date>=employee.leftOn)){setSaveError('This employee has left. Attendance cannot be marked from the leaving date.');return;}
     if(employee?.paidSalary){setSaveError('This payroll is paid. Its attendance must be reviewed through a recorded correction.');return;}
     const period=`${activeMonth.year}-${activeMonth.month}`;const k=ak(empId,day);const lock=`${period}:${k}`;
-    if(writeLocks.current.has(lock))return;
+    if(writeLocks.current.has('attendance-import') || writeLocks.current.has(lock))return;
     writeLocks.current.add(lock);setPendingWrites(n=>n+1);setSaveError('');
     const previous=attRef.current[k]??defaultDay();
     attRef.current={...attRef.current,[k]:val};setAtt(p=>({...p,[k]:val}));
@@ -1989,7 +1995,7 @@ function AttendanceSalaryContent() {
 
   const updateDecision = useCallback(async(empId:string,d:DeductionDecision)=>{
     const period=`${activeMonth.year}-${activeMonth.month}`;const lock=`${period}:deduction:${empId}`;
-    if(writeLocks.current.has(lock))return;
+    if(writeLocks.current.has('attendance-import') || writeLocks.current.has(lock))return;
     const previous=decisions[empId]??defaultDecision();writeLocks.current.add(lock);setPendingWrites(n=>n+1);setSaveError('');
     setDecisions(p=>({...p,[empId]:d}));
     try{await savePayrollDeduction(empId,activeMonth.year,activeMonth.month,d);}
@@ -2058,6 +2064,74 @@ function AttendanceSalaryContent() {
     if(tab === 'salary' && pfOnly) list=list.filter(e=>calcSalary(e,att,activeMonth.daysInMonth,getDecision(e.id)).pfDed>0);
     return list;
   }, [employees, branch, dept, matchesContractor, search, tab, pfOnly, att, activeMonth.daysInMonth, getDecision]);
+
+  const [importMessage, setImportMessage] = useState('');
+  const templatePeriod = activeMonth.year + '-' + String(activeMonth.month).padStart(2, '0');
+
+  const downloadTemplate = () => {
+    const rows = filtered.flatMap(employee =>
+      Array.from({length: activeMonth.daysInMonth}, (_, index) => index + 1)
+        .filter(day => attendanceEditable(employee, day))
+        .map(day => [employee.id, employee.name, templatePeriod + '-' + String(day).padStart(2, '0'), '', '', '', '']),
+    );
+    downloadAttendanceTemplate(templatePeriod, rows);
+  };
+
+  const importAttendance = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.currentTarget.files?.[0];
+    event.currentTarget.value = '';
+    if (!file || refreshing || writeLocks.current.size > 0) return;
+    const period = activePeriod.current;
+    writeLocks.current.add('attendance-import');
+    setPendingWrites(count => count + 1);
+    setSaveError('');
+    setImportMessage('');
+    try {
+      const rows = await readAttendanceTemplate(file, templatePeriod, activeMonth.daysInMonth);
+      if (activePeriod.current !== period) throw new Error('The selected month changed. Upload the workbook again.');
+      const employeesById = new Map(employees.map(employee => [employee.id, employee]));
+      const next = { ...attRef.current };
+      const affected = new Set<Employee>();
+      let replacements = 0;
+      for (const { employeeId, date, day, value } of rows) {
+        const employee = employeesById.get(employeeId);
+        if (!employee) throw new Error('Unknown employee ID ' + employeeId + ' on ' + date + '.');
+        if (!attendanceEditable(employee, day)) throw new Error(employee.name + ' has protected attendance on ' + date + '.');
+        const key = ak(employeeId, day);
+        if (next[key]) replacements++;
+        next[key] = value;
+        affected.add(employee);
+      }
+      for (const employee of affected) {
+        const countWeekOffs = (records: MonthAttendance) => {
+          let count = 0;
+          for (let day = 1; day <= activeMonth.daysInMonth; day++) if (records[ak(employee.id, day)]?.woff) count++;
+          return count;
+        };
+        const nextCount = countWeekOffs(next);
+        const limit = weekOffLimit(employee, activeMonth.year, activeMonth.month);
+        if (nextCount > limit && nextCount > countWeekOffs(attRef.current)) {
+          throw new Error(employee.name + ' would have ' + nextCount + ' week offs. The limit is ' + limit + '.');
+        }
+      }
+      const message = 'Import ' + rows.length + ' attendance rows for ' + activeMonth.label + '?' +
+        (replacements ? ' This replaces attendance and meal selections on ' + replacements + ' saved days.' : '');
+      if (!window.confirm(message)) return;
+      await savePayrollAttendanceImport(activeMonth.year, activeMonth.month, rows);
+      if (activePeriod.current === period) {
+        const updates = Object.fromEntries(rows.map(row => [ak(row.employeeId, row.day), row.value]));
+        attRef.current = { ...attRef.current, ...updates };
+        setAtt(current => ({ ...current, ...updates }));
+        setImportMessage('Imported ' + rows.length + ' attendance rows for ' + activeMonth.label + '.');
+      }
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : 'Attendance import could not be saved.');
+    } finally {
+      writeLocks.current.delete('attendance-import');
+      setPendingWrites(count => count - 1);
+    }
+  };
+
 
   const summary = useMemo(() => {
     const list = filtered;
@@ -2144,7 +2218,7 @@ function AttendanceSalaryContent() {
         <div className="flex items-center gap-2 shrink-0">
           <button
             onClick={() => loadData({ silent: true })}
-            disabled={refreshing}
+            disabled={refreshing || pendingWrites > 0}
             title="Refresh data"
             className="size-9 rounded-xl bg-card border border-border flex items-center justify-center text-muted-foreground hover:text-foreground active:scale-95 transition-all disabled:opacity-60"
           >
@@ -2313,6 +2387,18 @@ function AttendanceSalaryContent() {
           <div className="px-4 py-3 border-b border-border">
             <h2 className="font-display font-bold text-foreground">Daily Attendance — {activeMonth.label}</h2>
             <p className="text-[10px] font-body text-muted-foreground mt-0.5">Former staff are included in previous months. Blank days mean no saved attendance. Tap row to expand → tap day: blank → ✓ Present → ½ Half Day → W Week Off → X Absent → blank. Meals ₹10 each, on any day. Admin staff follow the month’s Sunday allowance (4 or 5); others have 4. Individual monthly exceptions appear in each employee’s Week Off limit.</p>
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <button type="button" onClick={downloadTemplate} disabled={refreshing || pendingWrites > 0 || filtered.length === 0}
+                className="rounded-lg border px-3 py-2 text-xs font-semibold disabled:opacity-50">Download Attendance Template</button>
+              <label className="text-xs font-semibold">
+                <span className="sr-only">Upload Attendance Excel</span>
+                <input type="file" accept=".xlsx" disabled={refreshing || pendingWrites > 0}
+                  onChange={event => void importAttendance(event)} className="max-w-full file:mr-2 file:rounded-lg file:border file:bg-muted file:px-3 file:py-2 file:text-xs file:font-semibold disabled:opacity-50" />
+              </label>
+            </div>
+            <p className="mt-2 text-xs text-muted-foreground">Fill attendance and Yes or No for each meal. Leave all four fields blank to skip a day.</p>
+            {importMessage && <p className="mt-2 text-xs text-emerald-700" role="status">{importMessage}</p>}
+
           </div>
           {filtered.length === 0
             ? <EmptyState icon="👥" message="No employees found" sub="Add staff in Staff Management to see them here." />
