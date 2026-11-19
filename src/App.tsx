@@ -52,6 +52,8 @@ const CafeOrderTrackingPage = lazy(() => import('@/pages/CafeOrderTrackingPage')
 const AttendanceSalary = lazy(() => import('@/pages/AttendanceSalary'));
 const OrderReceiverDashboard = lazy(() => import('@/bakery/OrderReceiverDashboard'));
 const StoreDashboard = lazy(() => import('@/bakery/StoreDashboard'));
+const StockWorkspace = lazy(() => import('@/bakery/StockWorkspace'));
+const GrnWorkspace = lazy(() => import('@/bakery/GrnWorkspace'));
 const CakeMasterDashboard = lazy(() => import('@/bakery/CakeMasterDashboard'));
 const PlannerDashboard = lazy(() => import('@/bakery/PlannerDashboard'));
 const BakeryItemManagement = lazy(() => import('@/bakery/BakeryItemManagement'));
@@ -266,6 +268,8 @@ function AppRoutes() {
         <Route path="/bakery/receive/vrsnb" element={<ProtectedRoute allowedRoles={['receiver_vrsnb']}><OrderReceiverDashboard /></ProtectedRoute>} />
         <Route path="/bakery/receive/snb"   element={<ProtectedRoute allowedRoles={['receiver_snb']}><OrderReceiverDashboard /></ProtectedRoute>} />
         <Route path="/bakery/store"   element={<ProtectedRoute allowedRoles={['store']}><StoreDashboard /></ProtectedRoute>} />
+        <Route path="/bakery/stock" element={<ProtectedRoute allowedRoles={['stock', 'owner']}><StockWorkspace /></ProtectedRoute>} />
+        <Route path="/bakery/grn" element={<ProtectedRoute allowedRoles={['grn', 'owner']}><GrnWorkspace /></ProtectedRoute>} />
         <Route path="/bakery/cake-master" element={<ProtectedRoute allowedRoles={['cake_master']}><CakeMasterDashboard /></ProtectedRoute>} />
         {/* AUDIT FIX (2026-09-02): 'branch_hosur' added — see routing.ts's getRoleDefaultPath comment. */}
         <Route path="/bakery/planner" element={<ProtectedRoute allowedRoles={['planner', 'owner', 'branch_hosur']}><PlannerDashboard /></ProtectedRoute>} />
