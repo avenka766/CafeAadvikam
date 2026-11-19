@@ -1,3 +1,4 @@
+import CatalogueExcelButton from '@/components/admin/CatalogueExcelButton';
 // src/bakery/BakeryItemManagement.tsx
 //
 // Unified Items management page for admin.
@@ -371,6 +372,15 @@ export function BakeryItemsPanel() {
         >
           <Plus className="size-4" /> Add
         </button>
+      </div>
+
+      <div className="mb-3 flex justify-end">
+        <CatalogueExcelButton filename="Bakery-Items.xlsx" disabled={loading || filtered.length === 0} sheet={() => ({
+          name: 'Bakery Items',
+          headings: ['Item ID', 'Item Name', 'Category', 'Price', 'Status'],
+          currency: [3],
+          rows: filtered.map(item => [item.id, item.name, item.category, item.price ?? '', item.enabled ? 'Active' : 'Disabled']),
+        })} />
       </div>
 
       {/* summary pills */}

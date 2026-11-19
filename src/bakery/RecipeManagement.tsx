@@ -1,3 +1,4 @@
+import CatalogueExcelButton from '@/components/admin/CatalogueExcelButton';
 // src/bakery/RecipeManagement.tsx — NEW FILE
 // Admin screen: view, edit, and add recipe data per item
 // Pulls live from supabase bakery_recipes table; falls back to RECIPE_DEFINITIONS
@@ -753,6 +754,24 @@ export default function RecipeManagement({ embedded = false, storeMode = false }
         </p>
       </div>
 
+
+      {(!storeMode || storeSection === 'recipes') && (
+        <div className="flex justify-end">
+          <CatalogueExcelButton filename="Bakery-Recipes.xlsx" disabled={loading || filteredItems.length === 0} sheet={() => ({
+            name: 'Bakery Recipes',
+            headings: ['Item ID', 'Item Name', 'Category', 'Output Quantity', 'Output Unit',
+              'Ingredient', 'Ingredient Quantity', 'Ingredient Unit', 'Recipe Source'],
+            rows: filteredItems.flatMap(item => {
+              const recipe = getRecipe(item.id);
+              const itemColumns = [item.id, item.name, item.category, recipe?.outputQty ?? '', recipe?.outputUnit ?? ''];
+              const source = recipe ? (recipe.source === 'db' ? 'Saved recipe' : 'Excel recipe') : 'No recipe';
+              return recipe?.materials.length
+                ? recipe.materials.map(ingredient => [...itemColumns, ingredient.material, ingredient.qty, ingredient.unit, source])
+                : [[...itemColumns, '', '', '', source]];
+            }),
+          })} />
+        </div>
+      )}
 
       {storeMode && (
         <div className="grid grid-cols-2 gap-2 rounded-2xl bg-muted/60 p-1">
