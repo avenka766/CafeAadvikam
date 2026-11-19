@@ -13,6 +13,8 @@ export function getRoleDefaultPath(role: UserRole): string {
     case 'receiver_vrsnb':  return '/bakery/receive/vrsnb';
     case 'receiver_snb':    return '/bakery/receive/snb';
     case 'store':          return '/bakery/store';
+    case 'stock':          return '/bakery/stock';
+    case 'grn':            return '/bakery/grn';
     case 'cake_master':    return '/bakery/cake-master';
     case 'planner':        return '/bakery/planner';
     case 'branch_vrsnb':   return '/branch/vrsnb';
@@ -43,3 +45,5 @@ export function getRoleDefaultPath(role: UserRole): string {
     default:               return '/billing';
   }
 }
+
+export const stockWorkspaceTabs = ['Opening Stock', 'Outward Report', 'Custom Stock Deduction', 'Bulk Import'] as const;
