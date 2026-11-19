@@ -2069,12 +2069,10 @@ function AttendanceSalaryContent() {
   const templatePeriod = activeMonth.year + '-' + String(activeMonth.month).padStart(2, '0');
 
   const downloadTemplate = () => {
-    const rows = filtered.flatMap(employee =>
-      Array.from({length: activeMonth.daysInMonth}, (_, index) => index + 1)
-        .filter(day => attendanceEditable(employee, day))
-        .map(day => [employee.id, employee.name, templatePeriod + '-' + String(day).padStart(2, '0'), '', '', '', '']),
+    const roster = filtered.filter(employee =>
+      Array.from({length: activeMonth.daysInMonth}, (_, index) => index + 1).some(day => attendanceEditable(employee, day)),
     );
-    downloadAttendanceTemplate(templatePeriod, rows);
+    downloadAttendanceTemplate(templatePeriod, activeMonth.daysInMonth, roster);
   };
 
   const importAttendance = async (event: ChangeEvent<HTMLInputElement>) => {
@@ -2087,7 +2085,7 @@ function AttendanceSalaryContent() {
     setSaveError('');
     setImportMessage('');
     try {
-      const rows = await readAttendanceTemplate(file, templatePeriod, activeMonth.daysInMonth);
+      const rows = await readAttendanceTemplate(file, templatePeriod, activeMonth.daysInMonth, (id, day) => attRef.current[ak(id, day)]);
       if (activePeriod.current !== period) throw new Error('The selected month changed. Upload the workbook again.');
       const employeesById = new Map(employees.map(employee => [employee.id, employee]));
       const next = { ...attRef.current };
@@ -2115,7 +2113,7 @@ function AttendanceSalaryContent() {
         }
       }
       const message = 'Import ' + rows.length + ' attendance rows for ' + activeMonth.label + '?' +
-        (replacements ? ' This replaces attendance and meal selections on ' + replacements + ' saved days.' : '');
+        (replacements ? ' This updates selections on ' + replacements + ' saved days.' : '');
       if (!window.confirm(message)) return;
       await savePayrollAttendanceImport(activeMonth.year, activeMonth.month, rows);
       if (activePeriod.current === period) {
@@ -2396,7 +2394,7 @@ function AttendanceSalaryContent() {
                   onChange={event => void importAttendance(event)} className="max-w-full file:mr-2 file:rounded-lg file:border file:bg-muted file:px-3 file:py-2 file:text-xs file:font-semibold disabled:opacity-50" />
               </label>
             </div>
-            <p className="mt-2 text-xs text-muted-foreground">Fill attendance and Yes or No for each meal. Leave all four fields blank to skip a day.</p>
+            <p className="mt-2 text-xs text-muted-foreground">Use the date-cell dropdowns in the Attendance and meal sheets. Blank cells keep saved values.</p>
             {importMessage && <p className="mt-2 text-xs text-emerald-700" role="status">{importMessage}</p>}
 
           </div>
