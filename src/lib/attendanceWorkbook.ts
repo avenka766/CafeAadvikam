@@ -12,23 +12,49 @@ export interface AttendanceImportRow {
   value: PayrollDay;
 }
 
-export function downloadAttendanceTemplate(period: string, rows: string[][]) {
+const gridSheets = [
+  { name: 'Attendance', choices: attendanceStatuses },
+  { name: 'Breakfast', choices: ['Yes', 'No'] },
+  { name: 'Lunch', choices: ['Yes', 'No'] },
+  { name: 'Dinner', choices: ['Yes', 'No'] },
+];
+const dateColumns = (period: string, daysInMonth: number) =>
+  Array.from({ length: daysInMonth }, (_, index) => period + '-' + String(index + 1).padStart(2, '0'));
+const gridHeaders = (period: string, daysInMonth: number) =>
+  ['Employee ID', 'Employee Name', ...dateColumns(period, daysInMonth)];
+
+export function buildAttendanceWorkbook(period: string, daysInMonth: number, employees: {id: string; name: string}[]) {
   const book = utils.book_new();
-  const sheet = utils.aoa_to_sheet([attendanceColumns, ...rows]);
-  sheet['!bold'] = [0];
-  sheet['!cols'] = [25, 34, 15, 18, 14, 14, 14].map(wch => ({ wch }));
-  sheet['!autofilter'] = { startRow: 0, endRow: rows.length, endColumn: 6 };
-  utils.book_append_sheet(book, sheet, 'Attendance Import');
-  utils.book_append_sheet(book, utils.aoa_to_sheet([
-    ['How to fill in this workbook'],
-    ['Keep the employee IDs, dates and column headings.'],
-    ['Fill all four input columns on each row you want to save. Leave the four inputs blank to skip a row.'],
-    ['Attendance values', attendanceStatuses.join(', ')],
-    ['Meal values', 'Yes or No for each meal. Payroll deducts ₹10 per Yes.'],
-    ['An uploaded row replaces the saved attendance and meal selections for that employee and day.'],
-  ]), 'Instructions');
-  writeFile(book, 'Attendance-Import-' + period + '.xlsx');
+  const headers = gridHeaders(period, daysInMonth);
+  for (const { name, choices } of gridSheets) {
+    const sheet = utils.aoa_to_sheet([headers, ...employees.map(employee => [
+      employee.id, employee.name, ...Array<string>(daysInMonth).fill(''),
+    ])]);
+    sheet['!bold'] = [0];
+    sheet['!cols'] = headers.map((_, index) => ({ wch: index === 0 ? 24 : index === 1 ? 32 : 15 }));
+    sheet['!autofilter'] = { startRow: 0, endRow: employees.length, endColumn: headers.length - 1 };
+    sheet['!freeze'] = { rows: 1, columns: 2 };
+    sheet['!dropdown'] = { values: choices, lastColumn: headers.length - 1, lastRow: employees.length + 1 };
+    utils.book_append_sheet(book, sheet, name);
+  }
+  const guide = utils.aoa_to_sheet([
+    ['Attendance & meals', period],
+    ['Attendance', 'Select a date cell and use its dropdown or press Alt + Down Arrow.'],
+    ['Breakfast, Lunch, Dinner', 'Use the matching meal sheet. Yes adds ₹10 to food deductions. No removes that meal.'],
+    ['Blank cells', 'Leave blank to keep the existing attendance or meal value.'],
+    ['Unmarked', 'Clears the attendance mark for that date.'],
+    ['Upload', 'Keep employee IDs, date headings, and worksheet names. Save as .xlsx and upload in Attendance.'],
+  ]);
+  guide['!bold'] = [0];
+  guide['!cols'] = [{ wch: 30 }, { wch: 105 }];
+  utils.book_append_sheet(book, guide, 'Instructions');
+  return book;
 }
+
+export function downloadAttendanceTemplate(period: string, daysInMonth: number, employees: {id: string; name: string}[]) {
+  writeFile(buildAttendanceWorkbook(period, daysInMonth, employees), 'Attendance-Import-' + period + '.xlsx');
+}
+
 
 export function parseAttendanceRows(rows: unknown[][], period: string, daysInMonth: number): AttendanceImportRow[] {
   const cell = (value: unknown) => String(value ?? '').trim();
@@ -64,13 +90,57 @@ export function parseAttendanceRows(rows: unknown[][], period: string, daysInMon
   return imported;
 }
 
-export async function readAttendanceTemplate(file: File, period: string, daysInMonth: number) {
+export function parseAttendanceGrid(
+  sheets: Record<string, unknown[][]>, period: string, daysInMonth: number,
+  current: (employeeId: string, day: number) => PayrollDay | undefined,
+) {
+  const text = (value: unknown) => String(value ?? '').trim();
+  const headers = gridHeaders(period, daysInMonth);
+  const datedRows = new Map<string, string[]>();
+  gridSheets.forEach(({ name, choices }, sheetIndex) => {
+    const rows = sheets[name];
+    if (!rows || !headers.every((header, index) => text(rows[0]?.[index]) === header)) {
+      throw new Error(name + ' — Download a template for ' + period + ' and keep the date headings.');
+    }
+    const employees = new Set<string>();
+    rows.slice(1).forEach((row, rowIndex) => {
+      const employeeId = text(row[0]);
+      const inputs = row.slice(2).map(text);
+      if (!employeeId && !inputs.some(Boolean)) return;
+      if (!employeeId || employees.has(employeeId)) throw new Error(name + ' — Missing or duplicate employee ID on row ' + (rowIndex + 2) + '.');
+      employees.add(employeeId);
+      inputs.forEach((input, dateIndex) => {
+        if (!input) return;
+        const date = headers[dateIndex + 2];
+        const value = choices.find(choice => choice.toLowerCase() === input.toLowerCase());
+        if (!date || !value) throw new Error(name + ' — Invalid selection on row ' + (rowIndex + 2) + ', ' + (date ?? 'outside the selected month') + '.');
+        const day = dateIndex + 1;
+        const key = employeeId + ':' + date;
+        let result = datedRows.get(key);
+        if (!result) {
+          const saved = current(employeeId, day);
+          result = [employeeId, text(row[1]), date,
+            saved?.present ? 'Present' : saved?.half ? 'Half Day' : saved?.woff ? 'Week Off' : saved?.absent ? 'Absent' : 'Unmarked',
+            ...[saved?.bf, saved?.lunch, saved?.dinner].map(flag => flag ? 'Yes' : 'No')];
+          datedRows.set(key, result);
+        }
+        result[3 + sheetIndex] = value;
+      });
+    });
+  });
+  return parseAttendanceRows([attendanceColumns, ...datedRows.values()], period, daysInMonth);
+}
+
+export async function readAttendanceTemplate(file: File, period: string, daysInMonth: number,
+  current: (employeeId: string, day: number) => PayrollDay | undefined,
+) {
   if (!/\.xlsx$/i.test(file.name) || file.size > 8 * 1024 * 1024) throw new Error('Choose an .xlsx workbook smaller than 8 MB.');
   const { read, utils: excel } = await import('xlsx');
   const book = read(await file.arrayBuffer(), { type: 'array', sheetRows: MAX_ROWS + 2 });
-  const sheet = book.Sheets['Attendance Import'];
-  if (!sheet) throw new Error('The workbook is missing the Attendance Import sheet.');
-  const rows = excel.sheet_to_json<unknown[]>(sheet, { header: 1, defval: '', raw: false });
-  return parseAttendanceRows(rows, period, daysInMonth);
+  const readSheet = (name: string) => {
+    const sheet = book.Sheets[name];
+    return sheet ? excel.sheet_to_json<unknown[]>(sheet, { header: 1, defval: '', raw: false }) : [];
+  };
+  if (book.Sheets['Attendance Import']) return parseAttendanceRows(readSheet('Attendance Import'), period, daysInMonth);
+  return parseAttendanceGrid(Object.fromEntries(gridSheets.map(({ name }) => [name, readSheet(name)])), period, daysInMonth, current);
 }
-

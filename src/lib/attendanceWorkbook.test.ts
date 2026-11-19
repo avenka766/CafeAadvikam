@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { attendanceColumns, parseAttendanceRows } from './attendanceWorkbook';
+import { attendanceColumns, buildAttendanceWorkbook, parseAttendanceGrid, parseAttendanceRows } from './attendanceWorkbook';
 
 const row = ['emp_1', 'Employee', '2026-11-08', 'Half Day', 'Yes', 'No', 'Yes'];
 
@@ -18,3 +18,25 @@ describe('attendance workbook import', () => {
   });
 });
 
+
+it('builds a month grid with frozen employee columns and dropdowns', () => {
+  const workbook = buildAttendanceWorkbook('2026-02', 28, [{ id: 'emp_1', name: 'Employee' }]);
+  expect(workbook.SheetNames).toEqual(['Attendance', 'Breakfast', 'Lunch', 'Dinner', 'Instructions']);
+  expect(workbook.Sheets.Attendance.rows[0].slice(2)).toHaveLength(28);
+  expect(workbook.Sheets.Attendance.rows[0].at(-1)).toBe('2026-02-28');
+  expect(workbook.Sheets.Attendance['!freeze']).toEqual({ rows: 1, columns: 2 });
+  expect(workbook.Sheets.Attendance['!dropdown']?.values).toContain('Week Off');
+  expect(workbook.Sheets.Dinner['!dropdown']?.values).toEqual(['Yes', 'No']);
+});
+
+it('merges dropdown edits across sheets and preserves blank cells', () => {
+  const workbook = buildAttendanceWorkbook('2026-02', 28, [{ id: 'emp_1', name: 'Employee' }]);
+  workbook.Sheets.Attendance.rows[1][2] = 'Half Day';
+  workbook.Sheets.Dinner.rows[1][2] = 'No';
+  const sheets = Object.fromEntries(Object.entries(workbook.Sheets).map(([name, sheet]) => [name, sheet.rows]));
+  expect(parseAttendanceGrid(sheets, '2026-02', 28, () => ({
+    present: true, half: false, woff: false, absent: false, bf: true, lunch: false, dinner: true,
+  }))).toEqual([{ employeeId: 'emp_1', date: '2026-02-01', day: 1,
+    value: { present: false, half: true, woff: false, absent: false, bf: true, lunch: false, dinner: false } }]);
+  expect(() => parseAttendanceGrid(sheets, '2026-03', 31, () => undefined)).toThrow('template for 2026-03');
+});
