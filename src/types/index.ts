@@ -6,6 +6,8 @@ export type UserRole =
   | 'admin'
   | 'kitchen'
   | 'store'
+  | 'stock'
+  | 'grn'
   | 'cake_master'
   | 'planner'
   | 'receiver_vrsnb'   // VRSNB Order Receiver (orders VRSNB items only)
