@@ -11,7 +11,7 @@ import { cn } from '@/lib/utils';
 
 const ROLE_LABELS: Record<string, string> = {
   admin: 'Administrator', order_taker: 'Order Staff', billing: 'Billing',
-  kitchen: 'Kitchen', receiver_vrsnb: 'VRSNB Receiver', receiver_snb: 'SNB Receiver', store: 'Store',
+  kitchen: 'Kitchen', receiver_vrsnb: 'VRSNB Receiver', receiver_snb: 'SNB Receiver', store: 'Store', stock: 'Stock', grn: 'GRN',
   baker: 'Baker', sweet_master: 'Sweet Master', savouries_master: 'Savouries Master',
   cookies_master: 'Cookies Master', puffs_master: 'Puffs Master', bakery_master: 'Bakery Master',
   cake_master: 'Cake Master', packing: 'Packing', branch_vrsnb: 'VR SNB Branch',

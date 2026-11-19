@@ -1,3 +1,4 @@
+import { stockWorkspaceTabs } from '@/lib/routing';
 import { useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
@@ -178,6 +179,8 @@ export function navForRole(role?: string): NavItem[] {
         { label: 'Branch Overview', path: '/owner?tab=branches', icon: <Store className="size-4" />, group: 'Main' },
         { label: 'Sales & Profit', path: '/owner?tab=sales', icon: <BarChart3 className="size-4" />, group: 'Reports' },
         { label: 'Credit Tracking', path: '/owner?tab=credit', icon: <CreditCard className="size-4" />, group: 'Reports' },
+        { label: 'GRN Approvals', path: '/bakery/grn', icon: <ShoppingCart className="size-4" />, group: 'Operations' },
+        { label: 'Stock', path: '/bakery/stock', icon: <Package className="size-4" />, group: 'Operations' },
         { label: 'Store Purchases', path: '/owner?tab=purchases', icon: <ShoppingCart className="size-4" />, group: 'Operations' },
         { label: 'PO Approvals', path: '/owner?tab=poApprovals', icon: <ClipboardList className="size-4" />, group: 'Operations' },
         { label: 'Daily Closure', path: '/owner?tab=closure', icon: <WalletCards className="size-4" />, group: 'Reports' },
@@ -215,6 +218,10 @@ export function navForRole(role?: string): NavItem[] {
         { label: 'History', path: '/order-history', icon: <History className="size-4" />, group: 'Reports' },
         { label: 'Waste Log', path: '/kitchen?tab=waste', icon: <Trash2 className="size-4" />, group: 'Reports' },
       ];
+    case 'stock':
+      return [{ label: 'Stock', path: '/bakery/stock', icon: <Package className="size-4" />, group: 'Main' }];
+    case 'grn':
+      return [{ label: 'GRN', path: '/bakery/grn', icon: <ShoppingCart className="size-4" />, group: 'Main' }];
     case 'store':
       return [
         { label: 'Orders', path: '/bakery/store', icon: <Package className="size-4" />, group: 'Main' },
@@ -459,7 +466,7 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
     // pattern as store/baker/packing/receive/planner) — same class of bug as
     // the earlier /bakery/planner fix in this file (see git history on this
     // line). Cake Master users were getting a redundant duplicate header.
-    || /^\/bakery\/(store|baker|packing|receive|planner|cake-master)/.test(location.pathname)
+    || /^\/bakery\/(store|stock|grn|baker|packing|receive|planner|cake-master)/.test(location.pathname)
     || /^\/branch\//.test(location.pathname)
     || /^\/admin-dashboard/.test(location.pathname)
     || /^\/admin-(snb|vrsnb)/.test(location.pathname)
@@ -537,10 +544,18 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
           const active = isQueryRoute
             ? currentRoute === item.path
             : (location.pathname === item.path && !location.search) || location.pathname.startsWith(item.path + '/');
+          const isStock = item.path === '/bakery/stock';
+          const grnTabs = ['Daily PO Report', 'Approved Status', 'GRN Report', 'Suppliers'];
+          const sections = isStock ? stockWorkspaceTabs : grnTabs;
+          const showSections = location.pathname === item.path && (isStock || item.path === '/bakery/grn');
+          const requestedSection = new URLSearchParams(location.search).get('tab');
+          const selectedSection = sections.find(tab => tab === requestedSection) ??
+            (isStock || currentUser?.role === 'grn' ? sections[0] : grnTabs[1]);
           const badgeCount = navBadges[item.path] ?? 0;
           return (
+            <div key={item.path}>
             <button
-              key={item.path}
+
               type="button"
               onClick={() => goTo(item.path)}
               className={cn('workspace-nav-item', mobile && 'min-h-12', active && 'workspace-nav-item-active')}
@@ -553,6 +568,12 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
                 </span>
               )}
             </button>
+            {showSections && <nav aria-label={isStock ? "Stock sections" : "GRN sections"} className="ml-4 mt-2 space-y-1 border-l border-white/15 pl-2">
+              {sections.map(tab => <button key={tab} type="button" aria-current={selectedSection === tab ? 'page' : undefined}
+                onClick={() => goTo(item.path + '?' + new URLSearchParams({ tab }))}
+                className={cn('workspace-nav-item', selectedSection === tab && 'workspace-nav-item-active')}>{tab}</button>)}
+            </nav>}
+            </div>
           );
         })}
       </div>

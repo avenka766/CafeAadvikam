@@ -3,7 +3,7 @@ import type {UserRole} from '@/types';import {getRoleDefaultPath} from '@/lib/ro
 const state=vi.hoisted(()=>({role:null as UserRole|null}));
 vi.mock('@/stores/authStore',()=>({useAuthStore:(selector:any)=>selector({currentUser:state.role?{id:'fixture',role:state.role}:null})}));
 import ProtectedRoute from './ProtectedRoute';
-const roles:UserRole[]=['order_taker','billing','admin','kitchen','store','cake_master','planner','receiver_vrsnb','receiver_snb','branch_vrsnb','branch_snb','branch_hosur','admin_vrsnb','admin_snb','audit','finance','owner'];
+const roles:UserRole[]=['order_taker','billing','admin','kitchen','store','stock','grn','cake_master','planner','receiver_vrsnb','receiver_snb','branch_vrsnb','branch_snb','branch_hosur','admin_vrsnb','admin_snb','audit','finance','owner'];
 const Location=()=>{const l=useLocation();return <p data-testid="location">{l.pathname}{l.search}</p>;};
 (globalThis as {IS_REACT_ACT_ENVIRONMENT?:boolean}).IS_REACT_ACT_ENVIRONMENT=true;
 let root:Root;let container:HTMLDivElement;
