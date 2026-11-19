@@ -1,3 +1,4 @@
+import CatalogueExcelButton from '@/components/admin/CatalogueExcelButton';
 import { useState, useMemo, useRef, useEffect } from 'react';
 import { useMenuStore } from '@/stores/menuStore';
 import {
@@ -466,6 +467,16 @@ export default function MenuManagement({ embedded = false }: { embedded?: boolea
           <p className="font-display text-xl font-bold text-foreground tabular-nums">{items.length}</p>
           <p className="text-[10px] font-body font-semibold text-muted-foreground uppercase">Total</p>
         </div>
+      </div>
+
+      <div className="flex justify-end px-4 pt-2">
+        <CatalogueExcelButton filename="Cafe-Items.xlsx" disabled={refreshing || filtered.length === 0} sheet={() => ({
+          name: 'Cafe Items',
+          headings: ['Item ID', 'Item Name', 'Category', 'Price', 'Timing', 'Status', 'GST Applicable'],
+          currency: [3],
+          rows: filtered.map(item => [item.id, item.name, categoryName(item.category), item.price, item.timing,
+            item.enabled ? 'Active' : 'Disabled', item.gstApplicable !== false ? 'Yes' : 'No']),
+        })} />
       </div>
 
       {/* Sticky search + filters */}

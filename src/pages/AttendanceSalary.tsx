@@ -37,6 +37,7 @@ interface Employee {
   weekOffOverrides?: Record<string, number>;
   isActive?: boolean;
   leftOn?: string;
+  recordedAdvanceDeduction?: number;
   paidSalary?: Record<string,number>;
   payrollYear?: number;
   payrollMonth?: number;
@@ -200,7 +201,7 @@ function dbRowToEmployee(d: Record<string, unknown>): Employee {
 }
 
 async function fetchEmployees(): Promise<Employee[]> {
-  const { data, error } = await fetchAllRows<Record<string, unknown>>('employees', q => q.select('id, name, branch, department, is_active, week_off_overrides, gross_salary, salary_advance, uniform_deduction, other_deduction, account_number, bank_name, ifsc_code, payment_mode, account_holder_name, bank_branch_location').order('id', { ascending: true }));
+  const { data, error } = await fetchAllRows<Record<string, unknown>>('employees', q => q.select('id, name, branch, department, is_active, left_on, week_off_overrides, gross_salary, salary_advance, uniform_deduction, other_deduction, account_number, bank_name, ifsc_code, payment_mode, account_holder_name, bank_branch_location').order('id', { ascending: true }));
   if (error) throw error;
   return (data || []).map(dbRowToEmployee);
 }
@@ -249,9 +250,9 @@ async function updateEmployee(emp: Employee): Promise<boolean> {
   return true;
 }
 
-async function clearAdvance(employeeId: string): Promise<void> {
-  const { error } = await supabase.rpc('clear_employee_salary_advances_v1', {p_employee_id: employeeId});
-  if (error) throw error;
+async function clearAdvance(employeeId: string, year: number, month: number, amount: number): Promise<void> {
+  const { error } = await supabase.rpc('record_monthly_advance_deduction_v1', {p_employee: employeeId,p_year:year,p_month:month,p_amount:amount});
+  if (error) throw new Error(error.message);
 }
 
 // ─── Advance Records DB helpers ───────────────────────────────────────────────
@@ -320,7 +321,7 @@ export function calcSalary(emp: Employee, att: MonthAttendance, daysInMonth: num
   const worked = presentDays + halfDays * 0.5 + woffDays;
   const wagePd = emp.grossSalary > 0 ? emp.grossSalary / daysInMonth : 0;
   const earned = Math.round(wagePd * worked);
-  const advanceDed  = decision.deductAdvance ? emp.salaryAdvance : 0;
+  const advanceDed = emp.recordedAdvanceDeduction ?? (decision.deductAdvance ? emp.salaryAdvance : 0);
   const uniformDed  = decision.deductUniform ? emp.uniformDeduction : 0;
   const otherDed    = decision.deductOther   ? emp.otherDeduction : 0;
   // LOGIC FIX: ESI and PF must be calculated on the *earned* (pro-rated) salary, not on gross.
@@ -1217,7 +1218,7 @@ function SalaryCard({ emp, att, decision, onDecisionChange, daysInMonth, monthLa
   emp: Employee; att: MonthAttendance; daysInMonth: number; monthLabel: string;
   decision: DeductionDecision;
   onDecisionChange: (empId: string, d: DeductionDecision) => void;
-  onAdvanceCleared: (empId: string) => void;
+  onAdvanceCleared: () => Promise<void>;
   saving: boolean;
 }) {
   const [clearing, setClearing] = useState(false);
@@ -1232,12 +1233,12 @@ function SalaryCard({ emp, att, decision, onDecisionChange, daysInMonth, monthLa
   const hasUniform = emp.uniformDeduction > 0;
 
   const handleMarkPaid = async () => {
-    if (!decision.deductAdvance || emp.salaryAdvance <= 0) return;
+    if (saving || emp.paidSalary || emp.recordedAdvanceDeduction || !decision.deductAdvance || emp.salaryAdvance <= 0 || !emp.payrollYear || !emp.payrollMonth) return;
     setClearing(true);
     setClearError(null);
     try {
-      await clearAdvance(emp.id);
-      onAdvanceCleared(emp.id);
+      await clearAdvance(emp.id, emp.payrollYear, emp.payrollMonth, emp.salaryAdvance);
+      await onAdvanceCleared();
     } catch {
       setClearError('Failed to clear advance — please try again.');
     } finally {
@@ -1290,7 +1291,7 @@ function SalaryCard({ emp, att, decision, onDecisionChange, daysInMonth, monthLa
         <SalRow label="Total Worked" value={`${worked} / ${daysInMonth}`} highlight />
         <SalRow label="Earned" value={`₹${earned.toLocaleString('en-IN')}`} highlight />
         <SalRow label="Food Deduction" value={canteenTotal > 0 ? `-₹${canteenTotal}` : '—'} neg={canteenTotal > 0} />
-        {decision.deductAdvance && advanceDed > 0 && <SalRow label="Salary Advance" value={`-₹${advanceDed.toLocaleString('en-IN')}`} neg />}
+        {advanceDed > 0 && <SalRow label="Salary Advance" value={`-₹${advanceDed.toLocaleString('en-IN')}`} neg />}
         {!decision.deductAdvance && hasAdvance && <SalRow label="Advance (Carry Fwd)" value={`₹${emp.salaryAdvance.toLocaleString('en-IN')}`} />}
         {decision.deductUniform && uniformDed > 0 && <SalRow label="Uniform Ded." value={`-₹${uniformDed}`} neg />}
         {decision.deductOther && otherDed > 0 && <SalRow label="Other Ded." value={`-₹${otherDed}`} neg />}
@@ -1302,10 +1303,10 @@ function SalaryCard({ emp, att, decision, onDecisionChange, daysInMonth, monthLa
         </div>
       </div>
 
-      {hasAdvance && decision.deductAdvance && (
+      {hasAdvance && decision.deductAdvance && !emp.recordedAdvanceDeduction && !emp.paidSalary && (
         <div className="px-4 pb-3">
-          <button onClick={handleMarkPaid} disabled={clearing} className="w-full h-9 rounded-xl bg-emerald-500 text-white text-xs font-body font-bold flex items-center justify-center gap-1.5 active:scale-95 transition-all disabled:opacity-50">
-            {clearing ? <Loader2 className="size-3.5 animate-spin" /> : <CheckCircle2 className="size-3.5" />} Mark Advance Cleared (removes from record)
+          <button onClick={handleMarkPaid} disabled={clearing || saving} className="w-full h-9 rounded-xl bg-emerald-500 text-white text-xs font-body font-bold flex items-center justify-center gap-1.5 active:scale-95 transition-all disabled:opacity-50">
+            {clearing ? <Loader2 className="size-3.5 animate-spin" /> : <CheckCircle2 className="size-3.5" />} Confirm Advance Deduction for This Month
           </button>
           {clearError && <p className="text-xs font-body text-destructive text-center mt-1">{clearError}</p>}
         </div>
@@ -1925,18 +1926,21 @@ function AttendanceSalaryContent() {
       const teamResult = await supabase.from('attendance_contract_teams').select('id,name').order('name');
       if (teamResult.error) setTeamError('Contract teams could not load. Refresh to try again.');
       else { setTeams(teamResult.data || []); setTeamError(''); }
-      const [emps, attData, decData, advResult,paidResult] = await Promise.all([
+      const [emps, attData, decData, advResult,paidResult,monthlyAdvances] = await Promise.all([
         fetchEmployees(),
         fetchAttendance(activeMonth.year, activeMonth.month),
         fetchDeductionDecisions(activeMonth.year, activeMonth.month),
         fetchAdvanceRecords(),
+        supabase.rpc('admin_monthly_advance_deductions_v1',{p_year:activeMonth.year,p_month:activeMonth.month}),
         supabase.rpc('admin_paid_payroll_snapshots_v1',{p_year:activeMonth.year,p_month:activeMonth.month}),
       ]);
       if(request!==loadRequest.current)return;
       if(!advResult.tableReady)throw new Error('Salary advances could not load. Reload before calculating payroll.');
       if(paidResult.error)throw Error('Paid payroll history could not load. Retry before calculating salary.');
+      if(monthlyAdvances.error)throw Error('Recorded advance deductions could not load. Retry before calculating salary.');
+      const attendanceIds = new Set(Object.keys(attData).map(key => key.slice(0,key.lastIndexOf('_'))));
       const paid=new Map((paidResult.data||[]).map((r:{employee_id:string;snapshot:Record<string,number>})=>[r.employee_id,r.snapshot]));
-      setEmployees(sortByName(emps.filter(e=>visiblePayrollEmployee(e,activeMonth.year,activeMonth.month)).map(e=>({...e,payrollYear:activeMonth.year,payrollMonth:activeMonth.month,paidSalary:paid.get(e.id) as Record<string,number>|undefined}))));
+      setEmployees(sortByName(emps.filter(e=>(visiblePayrollEmployee(e,activeMonth.year,activeMonth.month) || attendanceIds.has(e.id) || paid.has(e.id) || monthlyAdvances.data?.[e.id])).map(e=>({...e,payrollYear:activeMonth.year,payrollMonth:activeMonth.month,recordedAdvanceDeduction:monthlyAdvances.data?.[e.id],paidSalary:paid.get(e.id) as Record<string,number>|undefined}))));
       setAtt(attData);
       setDecisions(decData);
       setAdvanceRecords(advResult.records);
@@ -1996,13 +2000,8 @@ function AttendanceSalaryContent() {
   const getDecision = useCallback((empId: string): DeductionDecision =>
     decisions[empId] ?? defaultDecision(), [decisions]);
 
-  const handleAdvanceCleared = (empId: string) => {
-    // Zero out employee advance in local state
-    setEmployees(prev => prev.map(e => e.id === empId ? { ...e, salaryAdvance: 0 } : e));
-    // Mark all this employee's advance records as cleared in local state too
-    setAdvanceRecords(prev => prev.map(r => r.employeeId === empId ? { ...r, cleared: true } : r));
-    const cur = getDecision(empId);
-    updateDecision(empId, { ...cur, deductAdvance: false });
+  const handleAdvanceCleared = async () => {
+    if (activePeriod.current === `${activeMonth.year}-${activeMonth.month}`) await loadData({silent:true});
   };
 
   const handleAdvanceRecordAdded = (rec: SalaryAdvanceRecord) => {
