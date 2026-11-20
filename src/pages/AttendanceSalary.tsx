@@ -302,13 +302,14 @@ async function deleteOldAttendance(currentYear: number, currentMonth: number): P
 
 // ─── Salary Calc ──────────────────────────────────────────────────────────────
 export function calcSalary(emp: Employee, att: MonthAttendance, daysInMonth: number, decision: DeductionDecision) {
-  let presentDays = 0, halfDays = 0, woffDays = 0, canteenTotal = 0;
+  let presentDays = 0, halfDays = 0, woffDays = 0, absentDays = 0, canteenTotal = 0;
   for (let d = 1; d <= daysInMonth; d++) {
     const a = att[ak(emp.id, d)];
     if (!a) continue;
     if (a.present) presentDays++;
     if (a.half)    halfDays++;
     if (a.woff)    woffDays++;
+    if (a.absent) absentDays++;
     // AUDIT FIX (2026-09-05): "even if they are absent the food deduction
     // should show B L D" — this used to ALSO require present/half, so a
     // meal ticked on an absent day silently never counted.
@@ -335,7 +336,7 @@ export function calcSalary(emp: Employee, att: MonthAttendance, daysInMonth: num
   const esiDed      = decision.deductESI     ? calcESI(earned, emp.grossSalary) : 0;
   const pfDed       = decision.deductPF      ? calcPF(earned, emp.payrollYear, emp.payrollMonth)  : 0;
   const totalDed = advanceDed + canteenTotal + uniformDed + otherDed + esiDed + pfDed;
-  const calculated={ presentDays, halfDays, woffDays, worked, canteenTotal, earned, totalDed, advanceDed, uniformDed, otherDed, esiDed, pfDed, net: Math.max(0, earned - totalDed) };
+  const calculated={ presentDays, halfDays, woffDays, absentDays, worked, canteenTotal, earned, totalDed, advanceDed, uniformDed, otherDed, esiDed, pfDed, net: Math.max(0, earned - totalDed) };
   if(!emp.paidSalary)return calculated;
   const p=emp.paidSalary;
   return {...calculated,presentDays:p.present,halfDays:p.half,woffDays:p.week_off,worked:p.present+p.half*.5+p.week_off,canteenTotal:p.canteen,earned:p.earned,totalDed:p.deductions,advanceDed:p.advance,uniformDed:p.uniform,otherDed:p.other,esiDed:p.esi,pfDed:p.pf,net:p.net};
@@ -396,6 +397,7 @@ function generatePayslipPdf(emp: Employee, calc: ReturnType<typeof calcSalary>, 
   doc.setFont('helvetica', 'bold'); doc.setFontSize(10.5); doc.text('Attendance & Pay Days', left, y); y += 6.5;
   detailRow('Days in Month', String(daysInMonth), 'Days Present', String(calc.presentDays));
   detailRow('Half Days', `${calc.halfDays} (= ${calc.halfDays * 0.5}d)`, 'Week Offs', String(calc.woffDays));
+  detailRow('Days Absent', String(calc.absentDays), '', '');
   doc.setFontSize(9.5); doc.setFont('helvetica', 'normal'); doc.text('Total Days Paid', col1Label, y);
   doc.setFont('helvetica', 'bold'); doc.text(`${calc.worked} / ${daysInMonth}`, col1Val, y);
   y += rowH + 3;
@@ -495,7 +497,7 @@ export function exportExcel(
   // ── Sheet 1: Salary Summary ──
   const salaryHeaders = [
     '#', 'Name', 'Branch', 'Department', 'Gross Salary', 'Days Present', 'Half Days',
-    'Week Offs', 'Days Worked', 'Earned', 'Food Deduction', 'Advance Ded.',
+    'Week Offs', 'Days Absent', 'Days Worked', 'Earned', 'Food Deduction', 'Advance Ded.',
     'Uniform Ded.', 'Other Ded.', 'ESI (0.75%)', 'PF (12%)', 'Total Deductions', 'Net Payable', 'Bank', 'Account No.', 'IFSC',
   ];
   const salaryRows = employees.map((e, i) => {
@@ -503,7 +505,7 @@ export function exportExcel(
     const c = calcSalary(e, att, daysInMonth, d);
     return [
       i + 1, e.name, e.branch, e.department,
-      e.grossSalary, c.presentDays, c.halfDays, c.woffDays, c.worked,
+      e.grossSalary, c.presentDays, c.halfDays, c.woffDays, c.absentDays, c.worked,
       c.earned, c.canteenTotal, c.advanceDed, c.uniformDed, c.otherDed,
       c.esiDed, c.pfDed, c.totalDed, c.net,
       e.bankName || '', e.accountNumber || '', e.ifscCode || '',
@@ -512,7 +514,8 @@ export function exportExcel(
 
   // Totals row
   const totals = ['', 'TOTAL', '', '',
-    employees.reduce((s, e) => s + e.grossSalary, 0), '', '', '', '',
+    employees.reduce((s, e) => s + e.grossSalary, 0), '', '', '',
+    employees.reduce((s, e) => s + calcSalary(e, att, daysInMonth, getDecision(e.id)).absentDays, 0), '',
     employees.reduce((s, e) => s + calcSalary(e, att, daysInMonth, getDecision(e.id)).earned, 0),
     employees.reduce((s, e) => s + calcSalary(e, att, daysInMonth, getDecision(e.id)).canteenTotal, 0),
     employees.reduce((s, e) => s + calcSalary(e, att, daysInMonth, getDecision(e.id)).advanceDed, 0),
@@ -546,7 +549,7 @@ export function exportExcel(
   // ── Sheet 2: Attendance Detail ──
   const attHeaders = ['#', 'Name', 'Branch', 'Dept',
     ...Array.from({ length: daysInMonth }, (_, i) => String(i + 1)),
-    'Present', 'Week Off', 'Worked', 'Net Payable',
+    'Present', 'Week Off', 'Absent', 'Worked', 'Net Payable',
   ];
 
   const attRows = employees.map((e, i) => {
@@ -561,7 +564,7 @@ export function exportExcel(
       if (a.absent) return 'X';
       return '';
     });
-    return [i + 1, e.name, e.branch, e.department, ...days, c.presentDays, c.woffDays, c.worked, c.net];
+    return [i + 1, e.name, e.branch, e.department, ...days, c.presentDays, c.woffDays, c.absentDays, c.worked, c.net];
   });
 
   const ws2 = XLSX.utils.aoa_to_sheet([
@@ -638,7 +641,7 @@ export function exportAttendanceExcel(
   const attHeaders = [
     '#', 'Name', 'Branch', 'Department',
     ...Array.from({ length: daysInMonth }, (_, i) => String(i + 1)),
-    'Present', 'Half Days', 'Week Offs', 'Total Worked', 'Food Ded. (₹)', 'Net Payable (₹)',
+    'Present', 'Half Days', 'Week Offs', 'Absent', 'Total Worked', 'Food Ded. (₹)', 'Net Payable (₹)',
   ];
 
   const attRows = employees.map((e, i) => {
@@ -657,7 +660,7 @@ export function exportAttendanceExcel(
       // the explicit `absent` flag gets X now; everything else is blank.
       return a.absent ? 'X' : '';
     });
-    return [i + 1, e.name, e.branch, e.department, ...days, c.presentDays, c.halfDays, c.woffDays, c.worked, c.canteenTotal, c.net];
+    return [i + 1, e.name, e.branch, e.department, ...days, c.presentDays, c.halfDays, c.woffDays, c.absentDays, c.worked, c.canteenTotal, c.net];
   });
 
   // Totals row
@@ -667,6 +670,7 @@ export function exportAttendanceExcel(
     employees.reduce((s, e) => s + calcSalary(e, att, daysInMonth, getDecision(e.id)).presentDays, 0),
     employees.reduce((s, e) => s + calcSalary(e, att, daysInMonth, getDecision(e.id)).halfDays, 0),
     employees.reduce((s, e) => s + calcSalary(e, att, daysInMonth, getDecision(e.id)).woffDays, 0),
+    employees.reduce((s, e) => s + calcSalary(e, att, daysInMonth, getDecision(e.id)).absentDays, 0),
     '',
     employees.reduce((s, e) => s + calcSalary(e, att, daysInMonth, getDecision(e.id)).canteenTotal, 0),
     employees.reduce((s, e) => s + calcSalary(e, att, daysInMonth, getDecision(e.id)).net, 0),
@@ -1073,7 +1077,7 @@ function AttRow({ emp, att, onUpdate, expanded, onToggle, decision, onDecisionCh
   onDecisionChange: (empId: string, d: DeductionDecision) => void;
   year: number; month: number;
 }) {
-  const { presentDays, halfDays, woffDays, canteenTotal, net } = calcSalary(emp, att, daysInMonth, decision);
+  const { presentDays, halfDays, woffDays, absentDays, canteenTotal, net } = calcSalary(emp, att, daysInMonth, decision);
 
   const woffCount = useMemo(() =>
     Array.from({ length: daysInMonth }, (_, i) => i + 1).filter(d => att[ak(emp.id, d)]?.woff).length,
@@ -1142,7 +1146,7 @@ function AttRow({ emp, att, onUpdate, expanded, onToggle, decision, onDecisionCh
           </p>
         </div>
         <div className="text-right shrink-0 mr-1">
-          <p className="text-xs font-body font-bold tabular-nums">{presentDays + halfDays * 0.5 + woffDays}d</p>
+          <p className="text-xs font-body font-bold tabular-nums">{presentDays + halfDays * 0.5 + woffDays}d</p><p className="text-[10px] text-muted-foreground">{absentDays} absent</p>
           <p className={cn('text-[10px] font-body font-semibold tabular-nums', net < 0 ? 'text-destructive' : 'text-primary')}>{'₹'}{net.toLocaleString('en-IN')}</p>
         </div>
         {expanded ? <ChevronUp className="size-3.5 text-muted-foreground shrink-0" /> : <ChevronDown className="size-3.5 text-muted-foreground shrink-0" />}
@@ -1226,7 +1230,7 @@ function SalaryCard({ emp, att, decision, onDecisionChange, daysInMonth, monthLa
   const [clearing, setClearing] = useState(false);
   const [clearError, setClearError] = useState<string | null>(null);
   const calc = calcSalary(emp, att, daysInMonth, decision);
-  const { presentDays, halfDays, woffDays, worked, canteenTotal, earned, advanceDed, uniformDed, otherDed, esiDed, pfDed, net } = calc;
+  const { presentDays, halfDays, woffDays, absentDays, worked, canteenTotal, earned, advanceDed, uniformDed, otherDed, esiDed, pfDed, net } = calc;
   // Preview amounts shown in toggle labels: use earned as base, gross for ESI eligibility check
   const esiAmount = calcESI(earned, emp.grossSalary);
   const pfAmount  = calcPF(earned, emp.payrollYear, emp.payrollMonth);
@@ -1290,6 +1294,7 @@ function SalaryCard({ emp, att, decision, onDecisionChange, daysInMonth, monthLa
         <SalRow label="Days Present" value={String(presentDays)} />
         {halfDays > 0 && <SalRow label="Half Days" value={`${halfDays} (= ${halfDays * 0.5}d)`} />}
         <SalRow label="Week Offs" value={String(woffDays)} />
+        <SalRow label="Days Absent" value={String(absentDays)} />
         <SalRow label="Total Worked" value={`${worked} / ${daysInMonth}`} highlight />
         <SalRow label="Earned" value={`₹${earned.toLocaleString('en-IN')}`} highlight />
         <SalRow label="Food Deduction" value={canteenTotal > 0 ? `-₹${canteenTotal}` : '—'} neg={canteenTotal > 0} />
@@ -1399,7 +1404,7 @@ function AnalyticsTab({ employees, att, decisions, daysInMonth, monthLabel, getD
         name: e.name.split(' ')[0],
         present: c.presentDays,
         woff: c.woffDays,
-        absent: daysInMonth - c.presentDays - c.woffDays,
+        absent: c.absentDays,
         pct,
         fill: pct >= 90 ? '#059669' : pct >= 75 ? '#F59E0B' : '#DC2626',
       };
@@ -1946,12 +1951,13 @@ function AttendanceSalaryContent() {
       }
       const attendanceIds = new Set(Object.keys(attData).map(key => key.slice(0,key.lastIndexOf('_'))));
       const paid=new Map(paidResult.data.map((r:{employee_id:string;snapshot:Record<string,number>})=>[r.employee_id,r.snapshot]));
-      setEmployees(sortByName(emps.filter(e=>(visiblePayrollEmployee(e,activeMonth.year,activeMonth.month) || attendanceIds.has(e.id) || paid.has(e.id) || monthlyAdvances.data?.[e.id])).map(e=>({...e,payrollYear:activeMonth.year,payrollMonth:activeMonth.month,recordedAdvanceDeduction:monthlyAdvances.data?.[e.id],paidSalary:paid.get(e.id) as Record<string,number>|undefined}))));
+      const now = new Date();
+      const isCurrentMonth = activeMonth.year === now.getFullYear() && activeMonth.month === now.getMonth() + 1;
+      setEmployees(sortByName(emps.filter(e=>e.isActive !== false || (!isCurrentMonth && (visiblePayrollEmployee(e,activeMonth.year,activeMonth.month) || attendanceIds.has(e.id) || paid.has(e.id) || monthlyAdvances.data?.[e.id]))).map(e=>({...e,payrollYear:activeMonth.year,payrollMonth:activeMonth.month,recordedAdvanceDeduction:monthlyAdvances.data?.[e.id],paidSalary:paid.get(e.id) as Record<string,number>|undefined}))));
       setAtt(attData);
       setDecisions(decData);
       setAdvanceRecords(advResult.records);
       setAdvanceTableReady(advResult.tableReady);
-      const now = new Date();
       deleteOldAttendance(now.getFullYear(), now.getMonth() + 1);
     } catch (e) {
       if(request===loadRequest.current)setReadError(e instanceof Error?e.message:'Payroll data could not load.');
@@ -2394,7 +2400,7 @@ function AttendanceSalaryContent() {
                   onChange={event => void importAttendance(event)} className="max-w-full file:mr-2 file:rounded-lg file:border file:bg-muted file:px-3 file:py-2 file:text-xs file:font-semibold disabled:opacity-50" />
               </label>
             </div>
-            <p className="mt-2 text-xs text-muted-foreground">Use the date-cell dropdowns in the Attendance and meal sheets. Blank cells keep saved values.</p>
+            <p className="mt-2 text-xs text-muted-foreground">Use the date-cell dropdowns in the Attendance and Canteen sheets. Blank cells keep saved values.</p>
             {importMessage && <p className="mt-2 text-xs text-emerald-700" role="status">{importMessage}</p>}
 
           </div>

@@ -235,7 +235,7 @@ const TABS: Array<{
   },
   {
     id: "cashier-closure",
-    label: "Cashier Closure",
+    label: "Cashier Closed",
     icon: CalendarClock,
     adminOnly: true,
   },
@@ -3363,12 +3363,58 @@ function CreditTab({ userName, role, fromDate, toDate }: { userName: string; rol
   const credits = creditSales[BRANCH] || [];
   const payments = creditPayments[BRANCH] || [];
   const paymentsInRange = payments.filter((payment) => inRange(payment.createdAt, fromDate, toDate));
+  const [party, setParty] = useState('');
+  const [reportMode, setReportMode] = useState('all');
+  const partyKey = (credit: (typeof credits)[number]) =>
+    credit.customerRef ? 'customer:' + credit.customerRef : credit.customerPhone?.replace(/\D/g, '')
+      ? 'phone:' + credit.customerPhone.replace(/\D/g, '') : 'name:' + credit.customerName.trim().toLowerCase();
+  const parties = new Map(credits.map(credit => [partyKey(credit),
+    [credit.customerName, credit.customerPhone].filter(Boolean).join(' · ')]));
+  const creditsById = new Map(credits.map(credit => [credit.id, credit]));
+  const [discountEvents, setDiscountEvents] = useState<{id: string; credit_id: string; recorded_at: string; amount: number; reason: string | null}[]>([]);
+  const [reportError, setReportError] = useState('');
+  const [reportRefresh, setReportRefresh] = useState(0);
+  useEffect(() => {
+    let active = true;
+    setDiscountEvents([]);
+    setReportError('');
+    void supabase.rpc('snb_credit_discount_report_v1', { p_from: fromDate, p_to: toDate }).then(({ data, error }) => {
+      if (!active) return;
+      if (error) setReportError('Credit discount history could not load. Refresh to retry.');
+      else setDiscountEvents(data ?? []);
+    });
+    return () => { active = false; };
+  }, [fromDate, toDate, reportRefresh]);
+  const [editingName, setEditingName] = useState<{id: string; original: string; value: string} | null>(null);
+  const [nameSaving, setNameSaving] = useState(false);
+  const [nameMessage, setNameMessage] = useState('');
+  const saveName = async () => {
+    if (!editingName || nameSaving || !editingName.value.trim()) return;
+    setNameSaving(true);
+    setNameMessage('');
+    try {
+      const { error } = await supabase.rpc('rename_snb_credit_customer_v1', {
+        p_credit_id: editingName.id, p_expected_name: editingName.original, p_name: editingName.value.trim(),
+      });
+      if (error) throw new Error(error.message);
+      await fetchBranchData(BRANCH, true, ['credit']);
+      setEditingName(null);
+      setParty('');
+      setNameMessage('Customer name updated.');
+    } catch (error) {
+      setNameMessage(error instanceof Error ? error.message : 'Customer name could not be saved.');
+    } finally {
+      setNameSaving(false);
+    }
+  };
+
   const pending = credits.filter((credit) => credit.status !== "settled" && credit.creditAmount > 0);
   const [creditRefreshing, setCreditRefreshing] = useState(false);
   const refreshCredit = async () => {
     setCreditRefreshing(true);
     try {
       await Promise.all([fetchBranchData(BRANCH, true, ['credit']), fetchCreditPayments(BRANCH)]);
+      setReportRefresh(value => value + 1);
     } finally {
       setCreditRefreshing(false);
     }
@@ -3382,18 +3428,18 @@ function CreditTab({ userName, role, fromDate, toDate }: { userName: string; rol
   const [message, setMessage] = useState("");
   const selected = pending.find((credit) => credit.id === selectedId);
   const [creditSortField, setCreditSortField] = useState<
-    "billNo" | "customerName" | "customerPhone" | "subtotal" | "amountPaid" | "creditAmount" | "dueDate" | "status"
+    "billNo" | "createdAt" | "customerName" | "customerPhone" | "subtotal" | "amountPaid" | "creditAmount" | "dueDate" | "status"
   >("billNo");
   const [creditSortDir, setCreditSortDir] = useState<"asc" | "desc">("desc");
   const sortedCredits = useMemo(() => {
     const dir = creditSortDir === "asc" ? 1 : -1;
-    return [...credits].sort((a, b) => {
+    return credits.filter(credit => !party || partyKey(credit) === party).sort((a, b) => {
       const av = a[creditSortField];
       const bv = b[creditSortField];
       if (typeof av === "number" && typeof bv === "number") return (av - bv) * dir;
       return String(av ?? "").localeCompare(String(bv ?? "")) * dir;
     });
-  }, [credits, creditSortField, creditSortDir]);
+  }, [credits, party, creditSortField, creditSortDir]);
   const toggleCreditSort = (field: typeof creditSortField) => {
     if (creditSortField === field) setCreditSortDir((d) => (d === "asc" ? "desc" : "asc"));
     else { setCreditSortField(field); setCreditSortDir("asc"); }
@@ -3533,9 +3579,23 @@ function CreditTab({ userName, role, fromDate, toDate }: { userName: string; rol
     await Promise.all([fetchBranchData(BRANCH, false, ['credit']), fetchCreditPayments(BRANCH)]); // EGRESS FIX: credit discount only touches credit sales
     setDiscountMessage(`Discount of ${money(value)} applied to ${selected.billNo}.`);
     setSelectedId("");
+    setReportRefresh(value => value + 1);
     setDiscountAmount("");
     setDiscountReason("");
   };
+
+  const settlementRows = [
+    ...paymentsInRange.map(payment => ({ creditId: payment.creditSaleId, date: payment.createdAt, bill: payment.billNo,
+      mode: payment.paymentMode, amount: payment.amount, remarks: payment.remarks || '' })),
+    ...discountEvents.map(event => ({ creditId: event.credit_id, date: event.recorded_at,
+      bill: creditsById.get(event.credit_id)?.billNo ?? '—', mode: 'discount', amount: Number(event.amount), remarks: event.reason || '' })),
+  ].flatMap(row => {
+    const credit = creditsById.get(row.creditId);
+    if (party && (!credit || partyKey(credit) !== party)) return [];
+    if (reportMode !== 'all' && row.mode !== reportMode) return [];
+    return [{ ...row, party: credit?.customerName ?? '—' }];
+  }).sort((a, b) => b.date.localeCompare(a.date));
+
 
   return (
     <div className="space-y-4">
@@ -3641,18 +3701,58 @@ function CreditTab({ userName, role, fromDate, toDate }: { userName: string; rol
             <p className="text-[11px] text-slate-500">This writes off the balance directly — it is not counted as cash/UPI/card collected.</p>
           </div>
         </Panel>
-        <Panel className="xl:col-span-2" title="SNB Branch Credit Register" icon={<WalletCards className="size-4" />} action={<div className="flex flex-wrap gap-2"><button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => void refreshCredit()} disabled={creditRefreshing}><RefreshCcw className={cn("size-4", creditRefreshing && "animate-spin")} /> Refresh</button><button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Credit_Register.xls", sortedCredits.map((credit) => ({ Bill: credit.billNo, Customer: credit.customerName, Mobile: credit.customerPhone || "-", Total: credit.subtotal, Paid: credit.amountPaid, Balance: credit.creditAmount, Due: credit.dueDate || "-", Status: credit.status })))}><Download className="size-4" /> Excel</button></div>}>
+        <Panel className="xl:col-span-2" title="SNB Branch Credit Register" icon={<WalletCards className="size-4" />} action={<div className="flex flex-wrap gap-2"><button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => void refreshCredit()} disabled={creditRefreshing}><RefreshCcw className={cn("size-4", creditRefreshing && "animate-spin")} /> Refresh</button><button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Credit_Register.xls", sortedCredits.map((credit) => ({ Bill: credit.billNo, BillDate: fmtDateTime(credit.createdAt), CreditDiscount: credit.discountAmount ?? 0, Customer: credit.customerName, Mobile: credit.customerPhone || "-", Total: credit.subtotal, Paid: credit.amountPaid, Balance: credit.creditAmount, Due: credit.dueDate || "-", Status: credit.status })))}><Download className="size-4" /> Excel</button></div>}>
+          <div className="mb-3 flex flex-wrap items-end gap-3">
+            <Field label="Credit party"><select className={inputCls} value={party} onChange={event => { setParty(event.target.value); setDetailId(''); setEditingName(null); }}>
+              <option value="">All parties</option>
+              {[...parties].sort((a,b) => a[1].localeCompare(b[1])).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+            </select></Field>
+            {party && <p className="pb-2 text-sm font-bold">{sortedCredits.length} bills · Outstanding {money(sortedCredits.reduce((sum, credit) => sum + credit.creditAmount, 0))}</p>}
+          </div>
+
           <div className="grid min-h-[420px] gap-3 lg:grid-cols-[minmax(0,1.35fr)_minmax(280px,.65fr)]">
             <div className="overflow-auto rounded-2xl border border-slate-200">
-              <table className="w-full min-w-[720px] text-left text-xs"><thead className="sticky top-0 bg-slate-950 text-white"><tr>{([["Bill","billNo"],["Customer","customerName"],["Mobile","customerPhone"],["Total","subtotal"],["Paid","amountPaid"],["Balance","creditAmount"],["Due","dueDate"],["Status","status"]] as const).map(([label, field]) => <th key={label} onClick={() => toggleCreditSort(field)} className="cursor-pointer select-none px-3 py-2.5 font-black uppercase tracking-wide hover:bg-slate-800">{label}{creditSortArrow(field)}</th>)}</tr></thead><tbody>{sortedCredits.map((credit) => <tr key={credit.id} onClick={() => setDetailId(credit.id)} className={cn("cursor-pointer border-t border-slate-100 hover:bg-amber-50", detailId === credit.id && "bg-amber-100")}><td className="px-3 py-2.5 font-black text-blue-700 underline">{credit.billNo}</td><td className="px-3 py-2.5 font-bold">{credit.customerName}</td><td className="px-3 py-2.5">{credit.customerPhone || "-"}</td><td className="px-3 py-2.5 font-bold">{money(credit.subtotal)}</td><td className="px-3 py-2.5">{money(credit.amountPaid)}</td><td className="px-3 py-2.5 font-black text-red-600">{money(credit.creditAmount)}</td><td className="px-3 py-2.5">{credit.dueDate || "-"}</td><td className="px-3 py-2.5"><StatusBadge tone={credit.status === "settled" ? "green" : credit.status === "partial" ? "amber" : "red"}>{credit.status}</StatusBadge></td></tr>)}</tbody></table>
+              <table className="w-full min-w-[720px] text-left text-xs"><thead className="sticky top-0 bg-slate-950 text-white"><tr>{([["Bill","billNo"],["Bill Date","createdAt"],["Customer","customerName"],["Mobile","customerPhone"],["Total","subtotal"],["Paid","amountPaid"],["Balance","creditAmount"],["Due","dueDate"],["Status","status"]] as const).map(([label, field]) => <th key={label} onClick={() => toggleCreditSort(field)} className="cursor-pointer select-none px-3 py-2.5 font-black uppercase tracking-wide hover:bg-slate-800">{label}{creditSortArrow(field)}</th>)}</tr></thead><tbody>{sortedCredits.map((credit) => <tr key={credit.id} onClick={() => setDetailId(credit.id)} className={cn("cursor-pointer border-t border-slate-100 hover:bg-amber-50", detailId === credit.id && "bg-amber-100")}><td className="px-3 py-2.5 font-black text-blue-700 underline">{credit.billNo}</td><td className="px-3 py-2.5 whitespace-nowrap">{fmtDateTime(credit.createdAt)}</td><td className="px-3 py-2.5 font-bold">{credit.customerName}</td><td className="px-3 py-2.5">{credit.customerPhone || "-"}</td><td className="px-3 py-2.5 font-bold">{money(credit.subtotal)}</td><td className="px-3 py-2.5">{money(credit.amountPaid)}</td><td className="px-3 py-2.5 font-black text-red-600">{money(credit.creditAmount)}</td><td className="px-3 py-2.5">{credit.dueDate || "-"}</td><td className="px-3 py-2.5"><StatusBadge tone={credit.status === "settled" ? "green" : credit.status === "partial" ? "amber" : "red"}>{credit.status}</StatusBadge></td></tr>)}</tbody></table>
               {credits.length === 0 && <p className="p-8 text-center text-sm font-bold text-slate-500">No SNB credit sales found.</p>}
             </div>
             <aside className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              {detailCredit && <div className="mb-3">
+                {editingName?.id === detailCredit.id ? (
+                  <form className="space-y-2" onSubmit={event => { event.preventDefault(); void saveName(); }}>
+                    <Field label="Customer name"><input className={inputCls} value={editingName.value} required maxLength={120}
+                      onChange={event => setEditingName({ ...editingName, value: event.target.value })} /></Field>
+                    <div className="flex flex-wrap gap-2">
+                      <button type="submit" disabled={nameSaving} className={cn(btnCls, "bg-slate-950 text-white")}>Save name</button>
+                      <button type="button" disabled={nameSaving} onClick={() => setEditingName(null)} className={btnCls}>Cancel</button>
+                    </div>
+                  </form>
+                ) : <button type="button" disabled={nameSaving} className={btnCls} onClick={() => {
+                  setNameMessage('');
+                  setEditingName({ id: detailCredit.id, original: detailCredit.customerName, value: detailCredit.customerName });
+                }}><Pencil className="size-4" /> Edit customer name</button>}
+                {nameMessage && <p role="status" className="mt-2 text-xs">{nameMessage}</p>}
+              </div>}
+
               {!detailCredit ? <div className="grid h-full min-h-64 place-items-center text-center"><div><Receipt className="mx-auto size-8 text-slate-300"/><p className="mt-2 text-sm font-bold text-slate-500">Select a bill to see its details.</p></div></div> : <div className="space-y-3"><div><p className="text-xs font-black uppercase tracking-wide text-slate-400">Credit Bill</p><h4 className="text-lg font-black text-slate-950">{detailCredit.billNo}</h4><p className="text-sm font-bold text-slate-600">{detailCredit.customerName} · {detailCredit.customerPhone || "No mobile"}</p></div><div className="space-y-2">{detailCredit.items.map((item, index) => <div key={`${item.itemName}-${index}`} className="rounded-xl bg-white p-3 ring-1 ring-slate-200"><div className="flex justify-between gap-2"><span className="font-black">{item.itemName}</span><span className="font-black">{money(item.lineTotal)}</span></div><p className="text-xs font-bold text-slate-500">{item.quantity} {item.sellUnit} × {money(item.price)}</p></div>)}</div><div className="rounded-xl bg-white p-3 text-sm font-bold ring-1 ring-slate-200"><div className="flex justify-between"><span>Item Subtotal</span><b>{money(detailItemSubtotal)}</b></div>{detailBillDiscount > 0 && <div className="mt-1 flex justify-between text-amber-700"><span>Bill Discount</span><b>- {money(detailBillDiscount)}</b></div>}{detailTax > 0 && <div className="mt-1 flex justify-between"><span>Tax</span><b>+ {money(detailTax)}</b></div>}{Math.abs(detailRoundOff) > 0.001 && <div className="mt-1 flex justify-between"><span>Round-Off</span><b>{detailRoundOff > 0 ? "+ " : "- "}{money(Math.abs(detailRoundOff))}</b></div>}<div className="mt-1 flex justify-between border-t pt-1"><span>Bill Total</span><b>{money(detailBillTotal)}</b></div><div className="mt-1 flex justify-between"><span>Paid</span><b className="text-emerald-700">{money(detailCredit.amountPaid)}</b></div>{Number(detailCredit.discountAmount || 0) > 0 && <div className="mt-1 flex justify-between text-amber-700"><span>Credit Discount</span><b>- {money(Number(detailCredit.discountAmount || 0))}</b></div>}<div className="mt-1 flex justify-between border-t pt-1"><span>Pending</span><b className="text-red-700">{money(detailCredit.creditAmount)}</b></div></div><button type="button" onClick={() => void duplicateCreditBill(detailCredit)} className={cn(btnCls,"w-full bg-slate-950 text-white")}><Printer className="size-4"/>Print Duplicate Bill</button>{printError && <p className="rounded-xl bg-red-50 p-2 text-xs font-bold text-red-700">{printError}</p>}</div>}
             </aside>
           </div>
         </Panel>
       </div>
+      <Panel title="Credit Settlement Report" icon={<History className="size-4" />} action={<button disabled={Boolean(reportError) && ['all', 'discount'].includes(reportMode)} className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Credit_Settlements.xls", settlementRows.map(row => ({ Date: fmtDateTime(row.date), Party: row.party, Bill: row.bill, Mode: row.mode, Collected: row.mode === 'discount' ? 0 : row.amount, Discount: row.mode === 'discount' ? row.amount : 0, Remarks: row.remarks })))}><Download className="size-4" /> Excel</button>}>
+        <div className="mb-3 flex flex-wrap items-end gap-3">
+          <Field label="Settlement mode"><select className={inputCls} value={reportMode} onChange={event => setReportMode(event.target.value)}>
+            <option value="all">All modes</option><option value="cash">Cash</option><option value="discount">Discount</option>
+            <option value="upi">UPI</option><option value="card">Card</option><option value="bank">Bank</option><option value="mixed">Mixed</option>
+          </select></Field>
+          <p className="pb-2 text-sm font-bold">Collections {money(settlementRows.filter(row => row.mode !== 'discount').reduce((sum,row) => sum + row.amount,0))} · Discounts {money(settlementRows.filter(row => row.mode === 'discount').reduce((sum,row) => sum + row.amount,0))}</p>
+        </div>
+        {reportError && <p role="alert" className="mb-3 text-sm text-red-700">{reportError}</p>}
+        <DataTable headers={["Date", "Party", "Bill", "Mode", "Collected", "Discount", "Remarks"]}
+          rows={settlementRows.map(row => [fmtDateTime(row.date), row.party, row.bill, row.mode.toUpperCase(),
+            row.mode === 'discount' ? "—" : money(row.amount), row.mode === 'discount' ? money(row.amount) : "—", row.remarks])}
+          empty="No settlements match the selected dates, party and mode." />
+      </Panel>
+
       <Panel title="Credit Collection History" icon={<History className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Credit_Collections.xls", paymentsInRange.map((payment) => ({ Date: payment.createdAt, Bill: payment.billNo, Amount: payment.amount, Mode: payment.paymentMode, Reference: payment.reference || "-", CollectedBy: payment.collectedBy, Remarks: payment.remarks || "-" })))}><Download className="size-4" /> Excel</button>}>
         {correctionMessage && <p className="mb-3 rounded-2xl bg-emerald-50 p-3 text-sm font-black text-emerald-700 ring-1 ring-emerald-100">{correctionMessage}</p>}
         <DataTable
@@ -4115,72 +4215,36 @@ function DenominationAuditModal({ row, onClose }: { row: any; onClose: () => voi
   );
 }
 
-function CashierClosureTab(props: any) {
-  const db = props.dbReports as ReturnType<typeof useSnbAdminReports>;
-  const rows = props.dbReports.counterSessions as any[];
-  // BUG FIX (2026-08-09): branch_counter_sessions.status is actually either
-  // "open" or "finalized" (confirmed live - every closed session in the DB
-  // uses "finalized", none ever use "closed"). This tab everywhere checked
-  // for the literal "closed", which never matched a real row - so every
-  // session was treated as still-open: the status badge always showed amber
-  // "open", closedRows/mismatch KPIs were always zero, and the Counted /
-  // Difference columns always rendered "-" even for fully closed-out
-  // sessions with real counted-cash data. Match "finalized" instead.
-  const closedRows = rows.filter((row: any) => row.status === "finalized");
-  const totalDifference = closedRows.reduce((sum: number, row: any) => sum + asNumber(row.difference), 0);
-  const mismatches = closedRows.filter((row: any) => Math.abs(asNumber(row.difference)) > 0.009).length;
-  const openCounters = rows.filter((row: any) => row.status === "open").length;
-  const [denomRow, setDenomRow] = useState<any | null>(null);
+function CashierClosureTab(props: { dbReports: ReturnType<typeof useSnbAdminReports> }) {
+  const db = props.dbReports;
+  const rows = db.counterSessions.filter(row => row.status === "finalized");
+  const [denomRow, setDenomRow] = useState<(typeof rows)[number] | null>(null);
+  const exportDenominations = () => csvDownload("SNB_Cashier_Denominations.xls", rows.flatMap(row =>
+    [500, 200, 100, 50, 20, 10, 5, 2, 1].map(denomination => {
+      const opening = denominationRows(row.opening_denominations).find(entry => entry.denom === denomination);
+      const closing = denominationRows(row.closing_denominations).find(entry => entry.denom === denomination);
+      return { Date: row.business_date, Cashier: row.cashier_display_name || row.cashier_username,
+        ClosedAt: row.closed_at, Denomination: denomination, OpeningCount: opening?.count ?? '',
+        ClosingCount: closing?.count ?? '', ClosingValue: closing ? closing.count * denomination : '' };
+    }),
+  ));
 
   return (
-    <div className="space-y-4">
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <Kpi label="Closed Sessions" value={closedRows.length} icon={<CalendarClock className="size-5" />} />
-        <Kpi label="Open Counters" value={openCounters} icon={<Activity className="size-5" />} tone={openCounters ? "amber" : "green"} />
-        <Kpi label="Mismatches" value={mismatches} icon={<AlertTriangle className="size-5" />} tone={mismatches ? "red" : "green"} />
-        <Kpi label="Net Difference" value={money(totalDifference)} icon={<IndianRupee className="size-5" />} tone={Math.abs(totalDifference) < 0.01 ? "green" : "red"} />
-      </div>
-      <Panel title="Per-Cashier Counter Sessions" icon={<CalendarClock className="size-4" />} action={<div className="flex flex-wrap gap-2"><button disabled={db.loading} className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200 disabled:opacity-50")} onClick={() => void db.refresh()}><RefreshCcw className={cn("size-4", db.loading && "animate-spin")} /> Refresh</button><button className={cn(btnCls, "bg-slate-950 text-white")} onClick={() => csvDownload("SNB_Cashier_Closures.xls", rows.map((row: any) => ({ BusinessDate: row.business_date, CashierLogin: row.cashier_display_name || row.cashier_username || "Legacy / Unattributed", OpenedAt: row.opened_at, ClosedAt: row.closed_at || "", Status: row.status, OpeningCash: asNumber(row.opening_cash), GrossSales: asNumber(row.gross_sales), Discounts: asNumber(row.discounts), Returns: asNumber(row.returns), NetSales: asNumber(row.net_sales), CashSales: asNumber(row.cash_sales), UPISales: asNumber(row.upi_sales), CardSales: asNumber(row.card_sales), CreditSales: asNumber(row.credit_sales), CreditCollected: asNumber(row.credit_collected), AdvanceCollected: asNumber(row.advance_collected), Expenses: asNumber(row.expenses), SupplierPayments: asNumber(row.supplier_payments), BankDeposits: asNumber(row.bank_deposits), ExpectedCash: asNumber(row.expected_cash), CountedCash: asNumber(row.counted_cash), Difference: asNumber(row.difference), Bills: asNumber(row.bill_count), Notes: row.notes || "" })))}><Download className="size-4" /> Excel</button></div>}>
-        <DataTable
-          headers={["Date", "Cashier Login", "Session", "Status", "Opening", "Gross", "Returns", "Net", "Expected", "Counted", "Difference", "Bills", "Cash", "UPI", "Card", "Credit Collected", "Advance", "Expenses", "Supplier Payments", "Bank Deposits", "Notes", "Action"]}
-          rows={rows.map((row: any) => [
-            row.business_date,
-            row.cashier_display_name || row.cashier_username || "Legacy / Unattributed",
-            `${fmtDateTime(row.opened_at)}${row.closed_at ? ` → ${fmtDateTime(row.closed_at)}` : ""}`,
-            // BUG FIX (2026-09-08): 'void' rows are historical duplicate
-            // tills reconciled after the counter-session reuse-scoping bug
-            // fix (see Supabase migration reconcile_orphaned_open_counter_sessions_v2)
-            // — never really "open" (amber) and never really "closed"
-            // with real figures (green), so give them their own neutral
-            // label instead of falling into the "open" bucket by default.
-            <StatusBadge key="status" tone={row.status === "finalized" ? "green" : row.status === "void" ? "slate" : "amber"}>{row.status === "finalized" ? "closed" : row.status === "void" ? "voided (duplicate)" : row.status}</StatusBadge>,
-            money(asNumber(row.opening_cash)),
-            money(asNumber(row.gross_sales)),
-            money(asNumber(row.returns)),
-            money(asNumber(row.net_sales)),
-            money(asNumber(row.expected_cash)),
-            row.status === "finalized" ? money(asNumber(row.counted_cash)) : "-",
-            <span key="difference" className={cn("font-black", Math.abs(asNumber(row.difference)) < 0.01 ? "text-emerald-700" : "text-red-600")}>{row.status === "finalized" ? money(asNumber(row.difference)) : "-"}</span>,
-            asNumber(row.bill_count),
-            money(asNumber(row.cash_sales)),
-            money(asNumber(row.upi_sales)),
-            money(asNumber(row.card_sales)),
-            money(asNumber(row.credit_collected)),
-            money(asNumber(row.advance_collected)),
-            money(asNumber(row.expenses)),
-            money(asNumber(row.supplier_payments)),
-            money(asNumber(row.bank_deposits)),
-            row.notes || "-",
-            <button key="denom" className={cn(btnCls, "bg-indigo-50 px-3 py-1.5 text-indigo-700 ring-1 ring-indigo-200")} onClick={() => setDenomRow(row)}><WalletCards className="size-3.5" /> Denominations</button>,
-          ])}
-          empty="No cashier counter sessions found for the selected date range."
-        />
-      </Panel>
-
+    <Panel title="Cashier Closed · Cash Denominations" icon={<CalendarClock className="size-4" />}
+      action={<div className="flex flex-wrap gap-2">
+        <button disabled={db.loading} className={btnCls} onClick={() => void db.refresh()}><RefreshCcw className="size-4" /> Refresh</button>
+        <button disabled={!rows.length} className={cn(btnCls, "bg-slate-950 text-white")} onClick={exportDenominations}><Download className="size-4" /> Excel</button>
+      </div>}>
+      <DataTable headers={["Date", "Cashier", "Closed At", "Opening Cash", "Counted Cash", "Denominations"]}
+        rows={rows.map(row => [row.business_date, row.cashier_display_name || row.cashier_username || "Legacy / Unattributed",
+          row.closed_at ? fmtDateTime(row.closed_at) : "—", money(asNumber(row.opening_cash)), money(asNumber(row.counted_cash)),
+          <button key="denom" className={btnCls} onClick={() => setDenomRow(row)}><WalletCards className="size-4" /> View count</button>])}
+        empty="No closed counters in the selected date range." />
       {denomRow && <DenominationAuditModal row={denomRow} onClose={() => setDenomRow(null)} />}
-    </div>
+    </Panel>
   );
 }
+
 
 function PurchaseOrdersTab({ userName }: { userName: string }) {
   const catalogItems = useSNBCatalog();

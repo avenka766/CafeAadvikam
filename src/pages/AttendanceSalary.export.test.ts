@@ -9,7 +9,11 @@ it('exports actual PF and bank sheets for only the selected employees, retaining
  expect(calcSalary(e,attendance,30,d)).toMatchObject({earned:10000,pfDed:720,net:9280});
  exportExcel([e],attendance,{[e.id]:d},30,'November 2026',()=>d);
  const wb=m.write.mock.calls[0][0];const rows=wb.Sheets['Salary Summary'].rows;
- expect(rows.some((row:unknown[])=>row[1]==='Former employee'&&row[15]===720&&row[17]===9280)).toBe(true);
+ const headers: string[] = rows.find((row: string[]) => row.includes('Net Payable'));
+ const employee: unknown[] = rows.find((row: unknown[]) => row[1] === 'Former employee');
+ expect(employee[headers.indexOf('PF (12%)')]).toBe(720);
+ expect(employee[headers.indexOf('Net Payable')]).toBe(9280);
+ expect(employee[headers.indexOf('Days Absent')]).toBe(0);
  expect(wb.SheetNames).toContain('Salary Summary');
 });
 it('includes the right team on every sheet and a filterable roster across all three exports',()=>{
