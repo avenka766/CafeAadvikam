@@ -484,9 +484,10 @@ export default function BranchBillingProTab({
     const byName = new Map<string, number>();
     const byBarcode = new Map<number, number>();
     for (const item of branchStock) {
-      byName.set(normalizeItemName(item.itemName), Number(item.quantity || 0));
+      const sellable = Math.max(0, Number(item.quantity || 0) - Number(item.reservedQuantity || 0));
+      byName.set(normalizeItemName(item.itemName), sellable);
       if (item.itemBarcode != null && !byBarcode.has(item.itemBarcode)) {
-        byBarcode.set(item.itemBarcode, item.quantity);
+        byBarcode.set(item.itemBarcode, sellable);
       }
     }
     return (name: string, barcode?: number) =>
@@ -1339,9 +1340,15 @@ export default function BranchBillingProTab({
       // EGRESS FIX (2026-09-01): this checkout only ever touches stock,
       // today's sales, and (for credit-mode bills) credit sales — never
       // incoming/thresholds/advance orders, so skip those 7 queries here.
-      void fetchBranchData(branch, false, ['stock', 'sales', 'credit']);
+      void fetchBranchData(branch, false, saved.paymentMode === 'credit' ? ['stock', 'sales', 'credit'] : ['stock', 'sales']);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Billing failed.');
+      const message = e instanceof Error ? e.message : 'Billing failed.';
+      if (/reserved stock cannot be sold/i.test(message)) {
+        void fetchBranchData(branch, true, ['stock']);
+        setError('Stock available for billing changed. Stock is refreshing. Check the quantities and retry.');
+      } else {
+        setError(message);
+      }
       addNotification({ branch, type: 'Stock Dispute', title: 'Bill blocked during stock validation', details: String(e), raisedBy: userName });
     } finally {
       checkoutInFlightRef.current = false;
