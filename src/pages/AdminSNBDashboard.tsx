@@ -3359,6 +3359,7 @@ function QuotationsTab({ userName }: { userName: string }) {
 
 function CreditTab({ userName, role, fromDate, toDate }: { userName: string; role: string; fromDate: string; toDate: string }) {
   const { creditSales, creditPayments, settleCreditSale, applyCreditDiscount, fetchBranchData, fetchCreditPayments } = useBranchStore();
+  const creditUpdatesReady = import.meta.env.VITE_SNB_OPERATIONS_ROLLOUT !== "pending";
   const bills = useBranchOpsStore((state) => state.bills);
   const credits = creditSales[BRANCH] || [];
   const payments = creditPayments[BRANCH] || [];
@@ -3375,6 +3376,7 @@ function CreditTab({ userName, role, fromDate, toDate }: { userName: string; rol
   const [reportError, setReportError] = useState('');
   const [reportRefresh, setReportRefresh] = useState(0);
   useEffect(() => {
+    if (!creditUpdatesReady) return;
     let active = true;
     setDiscountEvents([]);
     setReportError('');
@@ -3384,7 +3386,7 @@ function CreditTab({ userName, role, fromDate, toDate }: { userName: string; rol
       else setDiscountEvents(data ?? []);
     });
     return () => { active = false; };
-  }, [fromDate, toDate, reportRefresh]);
+  }, [creditUpdatesReady, fromDate, toDate, reportRefresh]);
   const [editingName, setEditingName] = useState<{id: string; original: string; value: string} | null>(null);
   const [nameSaving, setNameSaving] = useState(false);
   const [nameMessage, setNameMessage] = useState('');
@@ -3716,7 +3718,7 @@ function CreditTab({ userName, role, fromDate, toDate }: { userName: string; rol
               {credits.length === 0 && <p className="p-8 text-center text-sm font-bold text-slate-500">No SNB credit sales found.</p>}
             </div>
             <aside className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-              {detailCredit && <div className="mb-3">
+              {creditUpdatesReady && detailCredit && <div className="mb-3">
                 {editingName?.id === detailCredit.id ? (
                   <form className="space-y-2" onSubmit={event => { event.preventDefault(); void saveName(); }}>
                     <Field label="Customer name"><input className={inputCls} value={editingName.value} required maxLength={120}
@@ -3738,7 +3740,7 @@ function CreditTab({ userName, role, fromDate, toDate }: { userName: string; rol
           </div>
         </Panel>
       </div>
-      <Panel title="Credit Settlement Report" icon={<History className="size-4" />} action={<button disabled={Boolean(reportError) && ['all', 'discount'].includes(reportMode)} className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Credit_Settlements.xls", settlementRows.map(row => ({ Date: fmtDateTime(row.date), Party: row.party, Bill: row.bill, Mode: row.mode, Collected: row.mode === 'discount' ? 0 : row.amount, Discount: row.mode === 'discount' ? row.amount : 0, Remarks: row.remarks })))}><Download className="size-4" /> Excel</button>}>
+      {creditUpdatesReady && <Panel title="Credit Settlement Report" icon={<History className="size-4" />} action={<button disabled={Boolean(reportError) && ['all', 'discount'].includes(reportMode)} className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Credit_Settlements.xls", settlementRows.map(row => ({ Date: fmtDateTime(row.date), Party: row.party, Bill: row.bill, Mode: row.mode, Collected: row.mode === 'discount' ? 0 : row.amount, Discount: row.mode === 'discount' ? row.amount : 0, Remarks: row.remarks })))}><Download className="size-4" /> Excel</button>}>
         <div className="mb-3 flex flex-wrap items-end gap-3">
           <Field label="Settlement mode"><select className={inputCls} value={reportMode} onChange={event => setReportMode(event.target.value)}>
             <option value="all">All modes</option><option value="cash">Cash</option><option value="discount">Discount</option>
@@ -3751,7 +3753,7 @@ function CreditTab({ userName, role, fromDate, toDate }: { userName: string; rol
           rows={settlementRows.map(row => [fmtDateTime(row.date), row.party, row.bill, row.mode.toUpperCase(),
             row.mode === 'discount' ? "—" : money(row.amount), row.mode === 'discount' ? money(row.amount) : "—", row.remarks])}
           empty="No settlements match the selected dates, party and mode." />
-      </Panel>
+      </Panel>}
 
       <Panel title="Credit Collection History" icon={<History className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Credit_Collections.xls", paymentsInRange.map((payment) => ({ Date: payment.createdAt, Bill: payment.billNo, Amount: payment.amount, Mode: payment.paymentMode, Reference: payment.reference || "-", CollectedBy: payment.collectedBy, Remarks: payment.remarks || "-" })))}><Download className="size-4" /> Excel</button>}>
         {correctionMessage && <p className="mb-3 rounded-2xl bg-emerald-50 p-3 text-sm font-black text-emerald-700 ring-1 ring-emerald-100">{correctionMessage}</p>}

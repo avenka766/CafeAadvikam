@@ -1,5 +1,5 @@
 import type { ChangeEvent } from 'react';
-import { downloadAttendanceTemplate, readAttendanceTemplate } from '@/lib/attendanceWorkbook';
+import { downloadAttendanceTemplate, readAttendanceTemplate, sameAttendanceDay } from '@/lib/attendanceWorkbook';
 import {payrollPf, visiblePayrollEmployee} from '@/lib/payrollPf';
 import EmployeeExitDialog from '@/components/admin/EmployeeExitDialog';
 import EmployeeExitsPanel from '@/components/admin/EmployeeExitsPanel';
@@ -2071,41 +2071,49 @@ function AttendanceSalaryContent() {
     return list;
   }, [employees, branch, dept, matchesContractor, search, tab, pfOnly, att, activeMonth.daysInMonth, getDecision]);
 
-  const [importMessage, setImportMessage] = useState('');
+  const [attendanceFile, setAttendanceFile] = useState<File | null>(null);
+  const [syncingAttendance, setSyncingAttendance] = useState(false);
+  const [importFeedback, setImportFeedback] = useState<{ text: string; error?: boolean } | null>(null);
   const templatePeriod = activeMonth.year + '-' + String(activeMonth.month).padStart(2, '0');
 
   const downloadTemplate = () => {
-    const roster = filtered.filter(employee =>
-      Array.from({length: activeMonth.daysInMonth}, (_, index) => index + 1).some(day => attendanceEditable(employee, day)),
+    downloadAttendanceTemplate(templatePeriod, activeMonth.daysInMonth, filtered,
+      (id, day) => attRef.current[ak(id, day)],
     );
-    downloadAttendanceTemplate(templatePeriod, activeMonth.daysInMonth, roster);
   };
 
-  const importAttendance = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.currentTarget.files?.[0];
+  const selectAttendanceFile = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.currentTarget.files?.[0] ?? null;
     event.currentTarget.value = '';
-    if (!file || refreshing || writeLocks.current.size > 0) return;
+    if (!file) return;
+    setAttendanceFile(file);
+    setImportFeedback(null);
+  };
+
+  const syncAttendance = async () => {
+    if (!attendanceFile || refreshing || writeLocks.current.size > 0) return;
     const period = activePeriod.current;
     writeLocks.current.add('attendance-import');
     setPendingWrites(count => count + 1);
-    setSaveError('');
-    setImportMessage('');
+    setSyncingAttendance(true);
+    setImportFeedback(null);
     try {
-      const rows = await readAttendanceTemplate(file, templatePeriod, activeMonth.daysInMonth, (id, day) => attRef.current[ak(id, day)]);
-      if (activePeriod.current !== period) throw new Error('The selected month changed. Upload the workbook again.');
+      const saved = attRef.current;
+      const rows = await readAttendanceTemplate(attendanceFile, templatePeriod, activeMonth.daysInMonth, (id, day) => saved[ak(id, day)]);
+      if (activePeriod.current !== period) return;
       const employeesById = new Map(employees.map(employee => [employee.id, employee]));
-      const next = { ...attRef.current };
+      const next = { ...saved };
       const affected = new Set<Employee>();
-      let replacements = 0;
-      for (const { employeeId, date, day, value } of rows) {
+      const changes = rows.filter(({ employeeId, date, day, value }) => {
         const employee = employeesById.get(employeeId);
         if (!employee) throw new Error('Unknown employee ID ' + employeeId + ' on ' + date + '.');
-        if (!attendanceEditable(employee, day)) throw new Error(employee.name + ' has protected attendance on ' + date + '.');
         const key = ak(employeeId, day);
-        if (next[key]) replacements++;
+        if (sameAttendanceDay(saved[key], value)) return false;
+        if (!attendanceEditable(employee, day)) throw new Error(employee.name + ' has protected attendance on ' + date + '.');
         next[key] = value;
         affected.add(employee);
-      }
+        return true;
+      });
       for (const employee of affected) {
         const countWeekOffs = (records: MonthAttendance) => {
           let count = 0;
@@ -2114,25 +2122,26 @@ function AttendanceSalaryContent() {
         };
         const nextCount = countWeekOffs(next);
         const limit = weekOffLimit(employee, activeMonth.year, activeMonth.month);
-        if (nextCount > limit && nextCount > countWeekOffs(attRef.current)) {
+        if (nextCount > limit && nextCount > countWeekOffs(saved)) {
           throw new Error(employee.name + ' would have ' + nextCount + ' week offs. The limit is ' + limit + '.');
         }
       }
-      const message = 'Import ' + rows.length + ' attendance rows for ' + activeMonth.label + '?' +
-        (replacements ? ' This updates selections on ' + replacements + ' saved days.' : '');
-      if (!window.confirm(message)) return;
-      await savePayrollAttendanceImport(activeMonth.year, activeMonth.month, rows);
+      await savePayrollAttendanceImport(activeMonth.year, activeMonth.month, changes);
       if (activePeriod.current === period) {
-        const updates = Object.fromEntries(rows.map(row => [ak(row.employeeId, row.day), row.value]));
+        const updates = Object.fromEntries(changes.map(row => [ak(row.employeeId, row.day), row.value]));
         attRef.current = { ...attRef.current, ...updates };
         setAtt(current => ({ ...current, ...updates }));
-        setImportMessage('Imported ' + rows.length + ' attendance rows for ' + activeMonth.label + '.');
+        setAttendanceFile(null);
+        setImportFeedback({ text: changes.length
+          ? `Synced ${changes.length} attendance ${changes.length === 1 ? 'day' : 'days'} for ${activeMonth.label}.`
+          : 'The workbook already matches the saved attendance.' });
       }
     } catch (error) {
-      setSaveError(error instanceof Error ? error.message : 'Attendance import could not be saved.');
+      setImportFeedback({ text: error instanceof Error ? error.message : 'Attendance could not be synced.', error: true });
     } finally {
       writeLocks.current.delete('attendance-import');
       setPendingWrites(count => count - 1);
+      setSyncingAttendance(false);
     }
   };
 
@@ -2252,7 +2261,13 @@ function AttendanceSalaryContent() {
       <div className="px-4 mb-3">
         <div className="flex items-center bg-card border border-border rounded-xl overflow-hidden">
           {TWO_MONTHS.map((m, i) => (
-            <button key={`${m.year}-${m.month}`} onClick={() => setMonthIdx(i)}
+            <button key={`${m.year}-${m.month}`} disabled={syncingAttendance}
+              onClick={() => {
+                if (i === monthIdx) return;
+                setAttendanceFile(null);
+                setImportFeedback(null);
+                setMonthIdx(i);
+              }}
               className={cn('flex-1 py-2.5 text-sm font-body font-bold transition-all flex items-center justify-center gap-1.5', i === monthIdx ? 'cafe-gradient text-primary-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-muted')}>
               <Calendar className="size-3.5" />
               {i === 0 ? 'Current' : 'Previous'}
@@ -2358,7 +2373,7 @@ function AttendanceSalaryContent() {
           )}
           {tab === 'attendance' && (
             <button onClick={handleAttendanceExcelExport} className="shrink-0 h-10 px-3 rounded-xl bg-emerald-600 text-white flex items-center gap-1 text-xs font-body font-semibold transition-colors hover:bg-emerald-700 active:scale-95">
-              <Download className="size-4" /> Excel
+              <Download className="size-4" /> Excel Report
             </button>
           )}
           {tab === 'salary' && (
@@ -2394,14 +2409,21 @@ function AttendanceSalaryContent() {
             <div className="mt-3 flex flex-wrap items-center gap-2">
               <button type="button" onClick={downloadTemplate} disabled={refreshing || pendingWrites > 0 || filtered.length === 0}
                 className="rounded-lg border px-3 py-2 text-xs font-semibold disabled:opacity-50">Download Attendance Template</button>
-              <label className="text-xs font-semibold">
-                <span className="sr-only">Upload Attendance Excel</span>
+              <label className="cursor-pointer rounded-lg border px-3 py-2 text-xs font-semibold focus-within:ring-2 focus-within:ring-ring has-[:disabled]:cursor-default has-[:disabled]:opacity-50">
+                Choose Attendance Excel
                 <input type="file" accept=".xlsx" disabled={refreshing || pendingWrites > 0}
-                  onChange={event => void importAttendance(event)} className="max-w-full file:mr-2 file:rounded-lg file:border file:bg-muted file:px-3 file:py-2 file:text-xs file:font-semibold disabled:opacity-50" />
+                  onChange={selectAttendanceFile} className="sr-only" />
               </label>
+              <button type="button" onClick={() => void syncAttendance()} disabled={!attendanceFile || refreshing || pendingWrites > 0}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground disabled:opacity-50">
+                <RefreshCw className={cn('size-3.5', syncingAttendance && 'animate-spin')} aria-hidden="true" />
+                {syncingAttendance ? 'Syncing Attendance…' : 'Sync Attendance'}
+              </button>
+              {attendanceFile && <span className="min-w-0 break-all text-xs text-muted-foreground">{attendanceFile.name}</span>}
             </div>
-            <p className="mt-2 text-xs text-muted-foreground">Use the date-cell dropdowns in the Attendance and Canteen sheets. Blank cells keep saved values.</p>
-            {importMessage && <p className="mt-2 text-xs text-emerald-700" role="status">{importMessage}</p>}
+            <p className="mt-2 text-xs text-muted-foreground">The template includes saved attendance and meals for the employees shown. Edit the date cells, choose the workbook, then click Sync Attendance. Blank cells keep saved values.</p>
+            {importFeedback && <p className={cn('mt-2 text-xs', importFeedback.error ? 'text-destructive' : 'text-emerald-700')}
+              role={importFeedback.error ? 'alert' : 'status'}>{importFeedback.text}</p>}
 
           </div>
           {filtered.length === 0
