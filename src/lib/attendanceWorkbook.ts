@@ -12,6 +12,8 @@ export interface AttendanceImportRow {
   value: PayrollDay;
 }
 
+type AttendanceLookup = (employeeId: string, day: number) => PayrollDay | undefined;
+
 const gridSheets = [
   { name: 'Attendance', choices: attendanceStatuses },
   { name: 'Breakfast', choices: ['Yes', 'No'] },
@@ -26,12 +28,44 @@ const dateColumns = (period: string, daysInMonth: number) =>
 const gridHeaders = (period: string, daysInMonth: number) =>
   ['Employee ID', 'Employee Name', ...dateColumns(period, daysInMonth)];
 
-export function buildAttendanceWorkbook(period: string, daysInMonth: number, employees: {id: string; name: string}[]) {
+function attendanceStatus(value?: PayrollDay) {
+  if (value?.present) return 'Present';
+  if (value?.half) return 'Half Day';
+  if (value?.woff) return 'Week Off';
+  if (value?.absent) return 'Absent';
+  return 'Unmarked';
+}
+
+function canteenSelection(value?: PayrollDay) {
+  const meals: string[] = [];
+  if (value?.bf) meals.push('Breakfast');
+  if (value?.lunch) meals.push('Lunch');
+  if (value?.dinner) meals.push('Dinner');
+  return meals.join(' + ') || 'No Meals';
+}
+
+export function sameAttendanceDay(saved: PayrollDay | undefined, incoming: PayrollDay) {
+  return attendanceStatus(saved) === attendanceStatus(incoming) &&
+    canteenSelection(saved) === canteenSelection(incoming);
+}
+
+export function buildAttendanceWorkbook(
+  period: string,
+  daysInMonth: number,
+  employees: { id: string; name: string }[],
+  current: AttendanceLookup = () => undefined,
+) {
   const book = utils.book_new();
   const headers = gridHeaders(period, daysInMonth);
   for (const { name, choices } of templateSheets) {
     const sheet = utils.aoa_to_sheet([headers, ...employees.map(employee => [
-      employee.id, employee.name, ...Array<string>(daysInMonth).fill(''),
+      employee.id, employee.name, ...Array.from({ length: daysInMonth }, (_, index) => {
+        const saved = current(employee.id, index + 1);
+        if (!saved) return '';
+        if (name === 'Canteen') return canteenSelection(saved);
+        const status = attendanceStatus(saved);
+        return status === 'Unmarked' ? '' : status;
+      }),
     ])]);
     sheet['!bold'] = [0];
     sheet['!cols'] = headers.map((_, index) => ({ wch: index === 0 ? 24 : index === 1 ? 32 : 15 }));
@@ -46,7 +80,7 @@ export function buildAttendanceWorkbook(period: string, daysInMonth: number, emp
     ['Canteen', 'Select the meals taken on each date. Each meal costs ₹10. Choose No Meals to clear all meals for the day.'],
     ['Blank cells', 'Leave blank to keep the existing attendance or meal value.'],
     ['Unmarked', 'Clears the attendance mark for that date.'],
-    ['Upload', 'Keep employee IDs, date headings, and worksheet names. Save as .xlsx and upload in Attendance.'],
+    ['Sync', 'Keep employee IDs, date headings, and worksheet names. Save as .xlsx, choose the file in Attendance, and click Sync Attendance.'],
   ]);
   guide['!bold'] = [0];
   guide['!cols'] = [{ wch: 30 }, { wch: 105 }];
@@ -54,8 +88,10 @@ export function buildAttendanceWorkbook(period: string, daysInMonth: number, emp
   return book;
 }
 
-export function downloadAttendanceTemplate(period: string, daysInMonth: number, employees: {id: string; name: string}[]) {
-  writeFile(buildAttendanceWorkbook(period, daysInMonth, employees), 'Attendance-Import-' + period + '.xlsx');
+export function downloadAttendanceTemplate(
+  period: string, daysInMonth: number, employees: { id: string; name: string }[], current: AttendanceLookup,
+) {
+  writeFile(buildAttendanceWorkbook(period, daysInMonth, employees, current), 'Attendance-Import-' + period + '.xlsx');
 }
 
 
@@ -95,7 +131,7 @@ export function parseAttendanceRows(rows: unknown[][], period: string, daysInMon
 
 export function parseAttendanceGrid(
   sheets: Record<string, unknown[][]>, period: string, daysInMonth: number,
-  current: (employeeId: string, day: number) => PayrollDay | undefined,
+  current: AttendanceLookup,
 ) {
   const text = (value: unknown) => String(value ?? '').trim();
   const headers = gridHeaders(period, daysInMonth);
@@ -143,8 +179,7 @@ export function parseAttendanceGrid(
         let result = datedRows.get(key);
         if (!result) {
           const saved = current(employeeId, day);
-          result = [employeeId, text(row[1]), date,
-            saved?.present ? 'Present' : saved?.half ? 'Half Day' : saved?.woff ? 'Week Off' : saved?.absent ? 'Absent' : 'Unmarked',
+          result = [employeeId, text(row[1]), date, attendanceStatus(saved),
             ...[saved?.bf, saved?.lunch, saved?.dinner].map(flag => flag ? 'Yes' : 'No')];
           datedRows.set(key, result);
         }
@@ -155,9 +190,7 @@ export function parseAttendanceGrid(
   return parseAttendanceRows([attendanceColumns, ...datedRows.values()], period, daysInMonth);
 }
 
-export async function readAttendanceTemplate(file: File, period: string, daysInMonth: number,
-  current: (employeeId: string, day: number) => PayrollDay | undefined,
-) {
+export async function readAttendanceTemplate(file: File, period: string, daysInMonth: number, current: AttendanceLookup) {
   if (!/\.xlsx$/i.test(file.name) || file.size > 8 * 1024 * 1024) throw new Error('Choose an .xlsx workbook smaller than 8 MB.');
   const { read, utils: excel } = await import('xlsx');
   const book = read(await file.arrayBuffer(), { type: 'array', sheetRows: MAX_ROWS + 2 });
