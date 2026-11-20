@@ -588,16 +588,16 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
     )}>
       {items.length > 0 && !isFullscreenBillingRoute && (
         <>
-          {!androidAdmin && <button
+          <button
             type="button"
             aria-label="Open dashboard menu"
             aria-expanded={mobileNavOpen}
             onClick={() => setMobileNavOpen(true)}
-            className="workspace-mobile-menu-button md:hidden"
+            className={cn('workspace-mobile-menu-button', !androidAdmin && 'md:hidden')}
           >
             <Menu className="size-5" />
             <span>Menu</span>
-          </button>}
+          </button>
 
           {mobileNavOpen && (
             <div className={cn('workspace-mobile-nav-layer', !androidAdmin && 'md:hidden')} role="dialog" aria-modal="true" aria-label="Dashboard navigation">
