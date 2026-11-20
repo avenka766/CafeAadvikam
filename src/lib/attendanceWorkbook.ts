@@ -18,6 +18,9 @@ const gridSheets = [
   { name: 'Lunch', choices: ['Yes', 'No'] },
   { name: 'Dinner', choices: ['Yes', 'No'] },
 ];
+const canteenChoices = ['No Meals', 'Breakfast', 'Lunch', 'Dinner', 'Breakfast + Lunch',
+  'Breakfast + Dinner', 'Lunch + Dinner', 'Breakfast + Lunch + Dinner'];
+const templateSheets = [gridSheets[0], { name: 'Canteen', choices: canteenChoices }];
 const dateColumns = (period: string, daysInMonth: number) =>
   Array.from({ length: daysInMonth }, (_, index) => period + '-' + String(index + 1).padStart(2, '0'));
 const gridHeaders = (period: string, daysInMonth: number) =>
@@ -26,7 +29,7 @@ const gridHeaders = (period: string, daysInMonth: number) =>
 export function buildAttendanceWorkbook(period: string, daysInMonth: number, employees: {id: string; name: string}[]) {
   const book = utils.book_new();
   const headers = gridHeaders(period, daysInMonth);
-  for (const { name, choices } of gridSheets) {
+  for (const { name, choices } of templateSheets) {
     const sheet = utils.aoa_to_sheet([headers, ...employees.map(employee => [
       employee.id, employee.name, ...Array<string>(daysInMonth).fill(''),
     ])]);
@@ -40,7 +43,7 @@ export function buildAttendanceWorkbook(period: string, daysInMonth: number, emp
   const guide = utils.aoa_to_sheet([
     ['Attendance & meals', period],
     ['Attendance', 'Select a date cell and use its dropdown or press Alt + Down Arrow.'],
-    ['Breakfast, Lunch, Dinner', 'Use the matching meal sheet. Yes adds ₹10 to food deductions. No removes that meal.'],
+    ['Canteen', 'Select the meals taken on each date. Each meal costs ₹10. Choose No Meals to clear all meals for the day.'],
     ['Blank cells', 'Leave blank to keep the existing attendance or meal value.'],
     ['Unmarked', 'Clears the attendance mark for that date.'],
     ['Upload', 'Keep employee IDs, date headings, and worksheet names. Save as .xlsx and upload in Attendance.'],
@@ -97,6 +100,27 @@ export function parseAttendanceGrid(
   const text = (value: unknown) => String(value ?? '').trim();
   const headers = gridHeaders(period, daysInMonth);
   const datedRows = new Map<string, string[]>();
+  if (sheets.Canteen) {
+    const rows = sheets.Canteen;
+    if (!headers.every((header, index) => text(rows[0]?.[index]) === header)) {
+      throw new Error('Canteen - Download a template for ' + period + ' and keep the date headings.');
+    }
+    sheets = { ...sheets };
+    for (const meal of ['Breakfast', 'Lunch', 'Dinner']) {
+      sheets[meal] = [rows[0], ...rows.slice(1).map((row, index) => [
+        ...row.slice(0, 2),
+        ...row.slice(2).map((cell, dateIndex) => {
+          const input = text(cell);
+          if (!input) return '';
+          const choice = canteenChoices.find(value => value.toLowerCase() === input.toLowerCase());
+          if (!choice || !headers[dateIndex + 2]) {
+            throw new Error('Canteen - Invalid meal selection on row ' + (index + 2) + '.');
+          }
+          return choice.split(' + ').includes(meal) ? 'Yes' : 'No';
+        }),
+      ])];
+    }
+  }
   gridSheets.forEach(({ name, choices }, sheetIndex) => {
     const rows = sheets[name];
     if (!rows || !headers.every((header, index) => text(rows[0]?.[index]) === header)) {
@@ -142,5 +166,5 @@ export async function readAttendanceTemplate(file: File, period: string, daysInM
     return sheet ? excel.sheet_to_json<unknown[]>(sheet, { header: 1, defval: '', raw: false }) : [];
   };
   if (book.Sheets['Attendance Import']) return parseAttendanceRows(readSheet('Attendance Import'), period, daysInMonth);
-  return parseAttendanceGrid(Object.fromEntries(gridSheets.map(({ name }) => [name, readSheet(name)])), period, daysInMonth, current);
+  return parseAttendanceGrid(Object.fromEntries((book.Sheets.Canteen ? templateSheets : gridSheets).map(({ name }) => [name, readSheet(name)])), period, daysInMonth, current);
 }
