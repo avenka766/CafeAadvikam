@@ -741,6 +741,7 @@ export function printCounterCloseSlip(input: {
   expected: number; counted: number; difference: number;
   billsCount: number;
   closedAt?: string;
+  cashOnly?: boolean;
   // Closing cash denomination count (note/coin breakdown counted at close),
   // same shape as printCounterOpenSlip's opening `denominations` - previously
   // missing here entirely, so the thermal close slip showed only the total
@@ -763,7 +764,7 @@ export function printCounterCloseSlip(input: {
     <div class="row"><span>Date</span><b>${safeHtml(closedAt.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }))}</b></div>
     <div class="row"><span>Time</span><b>${safeHtml(closedAt.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }))}</b></div>
     <div class="dash"></div>
-    <div class="row"><span>Bills Closed</span><b>${input.billsCount}</b></div>
+    ${input.cashOnly ? '' : `<div class="row"><span>Bills Closed</span><b>${input.billsCount}</b></div>
     <div class="row"><span>Cash</span><span>${safeHtml(inr(input.cash))}</span></div>
     <div class="row"><span>UPI</span><span>${safeHtml(inr(input.upi))}</span></div>
     <div class="row"><span>Card</span><span>${safeHtml(inr(input.card))}</span></div>
@@ -772,10 +773,11 @@ export function printCounterCloseSlip(input: {
     <div class="row"><span>Credit Sales</span><span>${safeHtml(inr(input.creditSales))}</span></div>
     <div class="row"><span>Credit Collected</span><span>${safeHtml(inr(input.creditCollected))}</span></div>
     <div class="dash"></div>
+`}
     <div class="row"><span>Opening Cash</span><span>${safeHtml(inr(input.openingCash))}</span></div>
-    <div class="row"><span>Expected Cash</span><span>${safeHtml(inr(input.expected))}</span></div>
+    ${input.cashOnly ? '' : `<div class="row"><span>Expected Cash</span><span>${safeHtml(inr(input.expected))}</span></div>`}
     <div class="row"><span>Physical Cash</span><span>${safeHtml(inr(input.counted))}</span></div>
-    <div class="row bold"><span>Difference</span><span>${safeHtml(inr(input.difference))}</span></div>
+    ${input.cashOnly ? '' : `<div class="row bold"><span>Difference</span><span>${safeHtml(inr(input.difference))}</span></div>`}
     ${denomRows ? `<div class="dash"></div><div class="row bold"><span>Closing Cash Denominations</span><span></span></div>${denomRows}` : ''}
     <div class="dash"></div>
     <div class="foot">Counter closed. Signature: ____________________</div>
