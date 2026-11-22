@@ -349,7 +349,7 @@ export function useLeftoverBalanceMap(): { balances: Map<string, { itemName: str
 }
 
 // ─── Merged, deduplicated SNB + VRSNB item search ──────────────────────────
-export interface MergedCatalogItem { slug: string; name: string; branches: Branch[] }
+export interface MergedCatalogItem { slug: string; name: string; branches: Branch[]; bakeryNames?: string[] }
 
 // Single-branch variant of the hook above — for the Dispatch tab's extra-item
 // field, which the planner asked to suggest ONLY that specific branch's
@@ -375,6 +375,21 @@ export function useBranchOnlyCatalog(branch: Branch | null): MergedCatalogItem[]
       .map((item) => ({ slug: closingStockItemSlug(item.name) || item.name.toLowerCase(), name: item.name, branches: [branch] }))
       .sort((a, b) => a.name.localeCompare(b.name));
   }, [catalogItems, branch]);
+}
+
+export function addBakeryCatalogItems(
+  catalog: MergedCatalogItem[],
+  bakeryItems: readonly { name: string; enabled: boolean }[],
+): MergedCatalogItem[] {
+  const merged = new Map(catalog.map(item => [item.slug, item]));
+  for (const item of bakeryItems) {
+    if (!item.enabled) continue;
+    const slug = closingStockItemSlug(item.name);
+    if (!slug) continue;
+    const existing = merged.get(slug) ?? { slug, name: item.name, branches: [] };
+    merged.set(slug, { ...existing, bakeryNames: [...new Set([...(existing.bakeryNames ?? []), item.name])] });
+  }
+  return [...merged.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
 export function useMergedLeftoverCatalog(): MergedCatalogItem[] {
@@ -456,7 +471,8 @@ export function ItemSearchPicker({ value, onChange, onSelect, items, placeholder
   const query = value.trim().toLowerCase();
   const results = useMemo(() => {
     if (!query) return items.slice(0, 25);
-    return items.filter((item) => item.name.toLowerCase().includes(query)).slice(0, 25);
+    return items.filter((item) => item.name.toLowerCase().includes(query) ||
+      item.bakeryNames?.some(name => name.toLowerCase().includes(query))).slice(0, 25);
   }, [items, query]);
   return (
     <div className="relative">
@@ -481,7 +497,9 @@ export function ItemSearchPicker({ value, onChange, onSelect, items, placeholder
               className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm hover:bg-muted/60"
             >
               <span className="font-bold">{item.name}</span>
-              <span className="text-[10px] font-black uppercase text-muted-foreground">{item.branches.join(' + ')}</span>
+              <span className="text-[10px] font-black uppercase text-muted-foreground">
+                {[...item.branches, ...(item.bakeryNames?.length ? ['Bakery'] : [])].join(' + ')}
+              </span>
             </button>
           ))}
         </div>

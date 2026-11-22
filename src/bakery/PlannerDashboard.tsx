@@ -1,5 +1,7 @@
 import {invoiceReturnItems} from './dispatchRevisionValidation';
-import {businessDateTime} from '@/lib/businessDate';
+import {businessDate, businessDateTime} from '@/lib/businessDate';
+import { useBakeryItemsStore } from './bakeryItemsStore';
+import { addBakeryCatalogItems } from './PlannerLeftoverTab';
 import {collectHosurOrderIds,useHosurShopOrders,type HosurShopOrderCard} from './useHosurShopOrders';
 import {financialLineTotal,financialPercent} from '@/lib/financialRounding';
 import {changeSampleInvoice, sampleRefundMethods, type SampleRefund} from './sampleInvoiceRequest';
@@ -561,6 +563,13 @@ export function passesProductionCutoff(
   return Number.isFinite(ts) ? ts >= cutoffMs : true;
 }
 
+const PRODUCTION_DAY_MS = 24 * 60 * 60 * 1000;
+
+export function nightlyProductionCutoff(now = Date.now()): number {
+  const todayAt11 = Date.parse(`${businessDate(now)}T23:00:00+05:30`);
+  return now >= todayAt11 ? todayAt11 : todayAt11 - PRODUCTION_DAY_MS;
+}
+
 // BUG FIX (2026-09-24): "unable to send the Advance order SNB-ADV-348 — I
 // entered the production but also I was not able to dispatch it." Confirmed
 // live: order #1613 (SNB-ADV-348) requested 200 pcs OPPAT, only 99 pcs was
@@ -1089,11 +1098,30 @@ export default function PlannerDashboard({ embedded = false }: { embedded?: bool
   const needsOrders = ['incoming','sent','merged','planning','production','dispatch','advance','leftover-stock','reports','invoice'].includes(tab);
 
   // Nightly Production/Dispatch "clean slate" cutoff (see PRODUCTION_CUTOFF_KEY).
+  const [scheduledProductionCutoff, setScheduledProductionCutoff] = useState(() => nightlyProductionCutoff());
   const [productionCutoff, setProductionCutoffState] = useState<string | null>(null);
-  const productionCutoffMs = useMemo(
-    () => (productionCutoff ? new Date(productionCutoff).getTime() : null),
-    [productionCutoff],
-  );
+  const serverCutoffMs = Date.parse(productionCutoff ?? '');
+  const productionCutoffMs = Number.isFinite(serverCutoffMs)
+    ? Math.max(scheduledProductionCutoff, serverCutoffMs)
+    : scheduledProductionCutoff;
+
+  useEffect(() => {
+    if (!needsOrders) return;
+    let timer: ReturnType<typeof setTimeout>;
+    const updateCutoff = () => {
+      clearTimeout(timer);
+      const now = Date.now();
+      const cutoff = nightlyProductionCutoff(now);
+      setScheduledProductionCutoff(cutoff);
+      timer = setTimeout(updateCutoff, cutoff + PRODUCTION_DAY_MS - now);
+    };
+    updateCutoff();
+    document.addEventListener('visibilitychange', updateCutoff);
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener('visibilitychange', updateCutoff);
+    };
+  }, [needsOrders]);
 
   useEffect(() => {
     if(!needsOrders)return;
@@ -1259,10 +1287,10 @@ export default function PlannerDashboard({ embedded = false }: { embedded?: bool
             {tab === 'sent' && <SentOrdersTab orders={sentOrders} />}
             {tab === 'merged' && <MergedSummaryTab orders={mergeableOrders} />}
             {tab === 'planning' && <PlanningTab orders={orders} />}
-            {tab === 'production' && <ProductionEntryTab orders={productionSourceOrders} productionCutoff={productionCutoff} />}
+            {tab === 'production' && <ProductionEntryTab orders={productionSourceOrders} cutoff={scheduledProductionCutoff} />}
             {dispatchVisited && (
               <div style={{ display: tab === 'dispatch' ? 'block' : 'none' }}>
-                <DispatchTab orders={productionSourceOrders} allOrders={productionSourceOrdersAll} productionCutoff={productionCutoff} />
+                <DispatchTab orders={productionSourceOrders} allOrders={productionSourceOrdersAll} />
               </div>
             )}
             {tab === 'hosur' && <HosurUnifiedSection embedded={embedded} />}
@@ -2645,7 +2673,7 @@ function groupOrdersByStoreDate(orders: BakeryOrder[]): DateGroup[] {
 // gets its own collapsible group with its own merged rows, so an item still
 // pending from an earlier date stays visible under that date instead of
 // getting folded into today's total.
-function ProductionEntryTab(props: { orders: BakeryOrder[]; productionCutoff?: string | null }) {
+function ProductionEntryTab(props: { orders: BakeryOrder[]; cutoff: number }) {
   const [festivalMode, setFestivalMode] = useState(false);
   return <div className="space-y-4">
     <div className="flex items-center justify-between gap-4 rounded-2xl border border-purple-200 bg-card p-4">
@@ -2656,7 +2684,7 @@ function ProductionEntryTab(props: { orders: BakeryOrder[]; productionCutoff?: s
   </div>;
 }
 
-function NormalProductionEntryTab({ orders, productionCutoff }: { orders: BakeryOrder[]; productionCutoff?: string | null }) {
+function NormalProductionEntryTab({ orders, cutoff }: { orders: BakeryOrder[]; cutoff: number }) {
   const [search, setSearch] = useState('');
   // FEATURE (2026-08-24): "date-wise grouping should be removed, add new
   // quantity to old" — computeProductionRows already sums by item across
@@ -2695,12 +2723,12 @@ function NormalProductionEntryTab({ orders, productionCutoff }: { orders: Bakery
         </div>
       </div>
       <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-700">
-        This list clears every night at 11 PM — items here won't carry over to tomorrow. Reports and Dispatched history still keep everything.
+        Daily production, including More to come, clears at 11 PM IST. Outstanding customer advance orders stay in the queue. Reports and dispatch history keep the recorded activity.
       </div>
       <ExtraProducedItemForm />
       {rows.length === 0 && <EmptyState text="No items waiting on production entry." />}
       {rows.length > 0 && (
-        <ProductionEntryDateGroup dateKey="all" label="Pending Production" orders={orders} rows={rows} search={search} defaultOpen unitOverrides={unitOverrides} />
+        <ProductionEntryDateGroup key={cutoff} dateKey="all" label="Pending Production" orders={orders} rows={rows} search={search} defaultOpen unitOverrides={unitOverrides} />
       )}
     </div>
   );
@@ -2720,8 +2748,16 @@ function NormalProductionEntryTab({ orders, productionCutoff }: { orders: Bakery
 function ExtraProducedItemForm() {
   const currentUser = useAuthStore(s => s.currentUser);
   const staffName = currentUser?.displayName || currentUser?.username || 'Planner Staff';
-  const catalog = useMergedLeftoverCatalog();
   const [open, setOpen] = useState(false);
+  const branchCatalog = useMergedLeftoverCatalog();
+  const bakeryItems = useBakeryItemsStore(s => s.items);
+  const loadBakeryItems = useBakeryItemsStore(s => s.loadItems);
+  const subscribeBakeryItems = useBakeryItemsStore(s => s.subscribe);
+  useEffect(() => {
+    void loadBakeryItems().catch(() => {});
+    return subscribeBakeryItems();
+  }, [loadBakeryItems, subscribeBakeryItems]);
+  const catalog = useMemo(() => addBakeryCatalogItems(branchCatalog, bakeryItems), [branchCatalog, bakeryItems]);
   const [itemQuery, setItemQuery] = useState('');
   const [selectedItem, setSelectedItem] = useState<MergedCatalogItem | null>(null);
   const [qty, setQty] = useState('');
@@ -2783,7 +2819,7 @@ function ExtraProducedItemForm() {
       <div className="flex items-center justify-between gap-2">
         <div>
           <h3 className="text-sm font-black text-foreground">Record Extra Produced Item</h3>
-          <p className="text-xs text-muted-foreground">For something made that isn't tied to any order — suggestions come from both SNB and VRSNB catalogues (no duplicates). It's added to Closing Stock immediately and marked "extra" everywhere it's reported.</p>
+          <p className="text-xs text-muted-foreground">Search Bakery, SNB and VRSNB items. Recorded quantities are added to Closing Stock and reported as extra production.</p>
         </div>
         <button onClick={() => { setOpen(false); resetForm(); setError(''); }} className="rounded-lg p-1.5 hover:bg-muted"><X className="size-4" /></button>
       </div>
@@ -2794,7 +2830,7 @@ function ExtraProducedItemForm() {
             onChange={(v) => { setItemQuery(v); setSelectedItem(null); }}
             onSelect={(item) => { setSelectedItem(item); setItemQuery(item.name); }}
             items={catalog}
-            placeholder="Search item (SNB + VRSNB, no duplicates)…"
+            placeholder="Search Bakery, SNB or VRSNB items"
           />
         </div>
         <label className="space-y-1">
@@ -4007,8 +4043,8 @@ async function setReportsCutoff(dateKey: string): Promise<void> {
 // (roll_planner_production_cutoff, '30 17 * * *' = 23:00 IST) advances this
 // app_state key to now(); the two working lists then only show orders sent to
 // Store after it. NOT applied to Reports, the Dispatch "Dispatched" sub-tab,
-// dispatch_log or requested-qty history — those stay complete. Null key
-// (no roll yet) = show everything.
+// dispatch_log or requested-qty history - those stay complete. The dashboard
+// also observes the scheduled boundary when the server update is delayed.
 const PRODUCTION_CUTOFF_KEY = 'planner_production_cutoff';
 async function getProductionCutoff(): Promise<string | null> {
   const { data } = await supabase.from('app_state').select('value').eq('key', PRODUCTION_CUTOFF_KEY).maybeSingle();
@@ -9618,7 +9654,7 @@ function plannedDispatchedForRow(row: ProductionRow, orders: BakeryOrder[]): num
 // dispatch line (computeProductionRows already does this per date-bucket) —
 // only the cross-date merge is removed, so yesterday's still-pending items
 // stay under "Yesterday" instead of silently folding into "Today".
-function DispatchTab({ orders: sourceOrders, allOrders, productionCutoff }: { orders: BakeryOrder[]; allOrders: BakeryOrder[]; productionCutoff?: string | null }) {
+function DispatchTab({ orders: sourceOrders, allOrders }: { orders: BakeryOrder[]; allOrders: BakeryOrder[] }) {
   const orders = sourceOrders.filter(order => !isAdvanceOrderTagged(order.notes));
   // FEATURE (2026-09-06): "In dispatch tab: create a new sub tab called
   // Return — search the invoice number, show items+qty, let them edit the
