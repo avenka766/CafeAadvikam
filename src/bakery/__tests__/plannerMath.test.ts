@@ -1,6 +1,7 @@
 // src/bakery/__tests__/plannerMath.test.ts
 import { describe, it, expect } from 'vitest';
-import { computeMergedSummary, autoSplitForItem, passesProductionCutoff } from '../PlannerDashboard';
+import { computeMergedSummary, computeProductionRows, autoSplitForItem, nightlyProductionCutoff, passesProductionCutoff } from '../PlannerDashboard';
+import { addBakeryCatalogItems } from '../PlannerLeftoverTab';
 import { vrsnbPacketGrams, pcsToKgForItem, kgToPcsForItem, kgToPcs, VRSNB_DEFAULT_PACKET_GRAMS } from '../itemMatcher';
 import type { BakeryOrder } from '../types';
 
@@ -119,4 +120,36 @@ describe('passesProductionCutoff', () => {
     expect(passesProductionCutoff({ storeConfirmedAt: undefined, createdAt: '2026-09-09T00:00:00Z' }, cutoff)).toBe(false);
     expect(passesProductionCutoff({ storeConfirmedAt: undefined, createdAt: '2026-09-10T20:00:00Z' }, cutoff)).toBe(true);
   });
+});
+
+it('clears partially produced daily orders at 11 pm IST and keeps orders from the new window', () => {
+  const before = Date.parse('2026-11-22T22:59:59+05:30');
+  const atReset = before + 1000;
+  const old = makeOrder('old', 'SNB', [{ itemName: 'Rusk', quantity: 10 }]);
+  old.storeConfirmedAt = new Date(before).toISOString();
+  old.producedItems = [{ itemId: old.items[0].itemId, itemName: 'Rusk', quantityPrepared: 3,
+    preparedAt: old.storeConfirmedAt, status: 'pending' }];
+  const next = makeOrder('next', 'VRSNB', [{ itemName: 'Rusk', quantity: 5 }]);
+  next.storeConfirmedAt = new Date(atReset).toISOString();
+
+  expect(nightlyProductionCutoff(before)).toBe(atReset - 86_400_000);
+  expect(nightlyProductionCutoff(atReset)).toBe(atReset);
+  expect(nightlyProductionCutoff(Date.parse('2026-11-23T00:01:00+05:30'))).toBe(atReset);
+  expect(computeProductionRows([old])).toMatchObject([{ itemStatus: 'pending', preparedTotal: 3 }]);
+  const active = [old, next].filter(order => passesProductionCutoff(order, nightlyProductionCutoff(atReset)));
+  expect(computeProductionRows(active)).toMatchObject([{ itemStatus: 'not_started', preparedTotal: 0, totalRequested: 5 }]);
+});
+
+it('adds enabled Bakery items and merges their names with matching branch items', () => {
+  const catalog = addBakeryCatalogItems([{ slug: 'rusk', name: 'Rusk', branches: ['SNB', 'VRSNB'] }], [
+    { name: 'RUSK (250G)', enabled: true },
+    { name: 'Tea Cake', enabled: true },
+    { name: 'tea cake', enabled: true },
+    { name: 'Tea Cake (Eggless)', enabled: true },
+    { name: 'Disabled bakery item', enabled: false },
+  ]);
+  expect(catalog).toHaveLength(3);
+  expect(catalog[0]).toMatchObject({ name: 'Rusk', branches: ['SNB', 'VRSNB'], bakeryNames: ['RUSK (250G)'] });
+  expect(catalog[1]).toMatchObject({ name: 'Tea Cake', branches: [], bakeryNames: ['Tea Cake', 'tea cake'] });
+  expect(catalog[2].name).toBe('Tea Cake (Eggless)');
 });
