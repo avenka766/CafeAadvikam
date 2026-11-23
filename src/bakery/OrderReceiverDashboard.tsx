@@ -2290,6 +2290,7 @@ function SnbSplitStockCountPanel({
           itemName: item.name,
           unit,
           systemQty: Number(stockItem?.quantity ?? 0),
+          reservedQty: Number(stockItem?.reservedQuantity ?? 0),
           category: (item.category ?? "").trim() || "Uncategorised",
         };
       });
@@ -2610,7 +2611,14 @@ function SnbSplitStockCountPanel({
                         {activeCategory === "All" && row.category !== "Uncategorised" && <span className="text-slate-400"> · {row.category}</span>}
                       </p>
                     </div>
-                    <span className="font-black tabular-nums">{row.systemQty}</span>
+                    <div>
+                      <span className="font-black tabular-nums">{row.systemQty}</span>
+                      {row.reservedQty > 0 && (
+                        <p className="text-[10px] font-semibold text-slate-600">
+                          {formatStockQuantity(row.reservedQty)} {row.unit} reserved
+                        </p>
+                      )}
+                    </div>
                     <button
                       type="button"
                       onClick={() => setCalculatorRow({ itemName: row.itemName, unit: row.unit })}
@@ -2636,6 +2644,9 @@ function SnbSplitStockCountPanel({
                       )}
                     >
                       {diff === null ? "Not counted" : diff}
+                      {hasConfirmedCount && physical < row.reservedQty && (
+                        <span className="block font-semibold text-amber-800">Below reserved stock</span>
+                      )}
                     </span>
                   </div>
                 );
