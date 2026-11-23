@@ -26,6 +26,8 @@ import { useBranchStore, type BranchDataScope } from "@/branch/branchStore";
 import AdvanceClosingReportTab from "@/components/admin/AdvanceClosingReportTab";
 import DailySalesTab from "@/components/admin/DailySalesTab";
 import { EditCreditPaymentModeModal } from "@/components/admin/AdminCreditTab";
+import BranchUpiClosureReport from "@/components/admin/BranchUpiClosureReport";
+import SnbCreditBillActions from "@/components/admin/SnbCreditBillActions";
 import {
   money,
   useBranchOpsStore,
@@ -33,6 +35,7 @@ import {
   type PurchaseRecord,
   type QuotationRecord,
   type SalespersonProfile,
+  type StockCountPostingIssue,
 } from "@/branch/branchOpsStore";
 import { useBranchCatalogStore } from "@/stores/branchCatalogStore";
 import { printAccountingVoucher, printCounterBill, printHtml } from "@/branch/printUtils";
@@ -531,7 +534,7 @@ export default function AdminSNBDashboard() {
   const catalogItems = useSNBCatalog();
   const { loadCatalog, subscribe } = useBranchCatalogStore();
   const [searchParams, setSearchParams] = useSearchParams();
-  const { stock, sales, creditSales: dbCreditSales, creditPayments: dbCreditPayments, fetchBranchData, fetchCreditPayments, manualUpdateStock } = useBranchStore();
+  const { stock, sales, creditSales: dbCreditSales, creditPayments: dbCreditPayments, fetchBranchData, fetchCreditPayments } = useBranchStore();
   const {
     bills,
     returns,
@@ -1187,7 +1190,6 @@ export default function AdminSNBDashboard() {
         <StockAuditTab
           userName={userName}
           branchStock={branchStock}
-          manualUpdateStock={manualUpdateStock}
           fetchBranchData={fetchBranchData}
           setNotice={setNotice}
         />
@@ -3358,12 +3360,10 @@ function QuotationsTab({ userName }: { userName: string }) {
 }
 
 function CreditTab({ userName, role, fromDate, toDate }: { userName: string; role: string; fromDate: string; toDate: string }) {
-  const { creditSales, creditPayments, settleCreditSale, applyCreditDiscount, fetchBranchData, fetchCreditPayments } = useBranchStore();
-  const creditUpdatesReady = import.meta.env.VITE_SNB_OPERATIONS_ROLLOUT !== "pending";
+  const { creditSales, creditPayments, settleCreditSale, applyCreditDiscount, fetchCreditSales, fetchCreditPayments } = useBranchStore();
   const bills = useBranchOpsStore((state) => state.bills);
   const credits = creditSales[BRANCH] || [];
   const payments = creditPayments[BRANCH] || [];
-  const paymentsInRange = payments.filter((payment) => inRange(payment.createdAt, fromDate, toDate));
   const [party, setParty] = useState('');
   const [reportMode, setReportMode] = useState('all');
   const partyKey = (credit: (typeof credits)[number]) =>
@@ -3372,11 +3372,20 @@ function CreditTab({ userName, role, fromDate, toDate }: { userName: string; rol
   const parties = new Map(credits.map(credit => [partyKey(credit),
     [credit.customerName, credit.customerPhone].filter(Boolean).join(' · ')]));
   const creditsById = new Map(credits.map(credit => [credit.id, credit]));
+  const creditSettledDate = (credit: (typeof credits)[number] | undefined) =>
+    credit?.status === 'settled' ? credit.settledAt : null;
+  const paymentsInRange = payments.filter(payment => {
+    const credit = creditsById.get(payment.creditSaleId);
+    return inRange(payment.createdAt, fromDate, toDate) && (!party || (credit && partyKey(credit) === party));
+  });
+  useEffect(() => {
+    void fetchCreditSales(BRANCH);
+    void fetchCreditPayments(BRANCH);
+  }, [fetchCreditSales, fetchCreditPayments]);
   const [discountEvents, setDiscountEvents] = useState<{id: string; credit_id: string; recorded_at: string; amount: number; reason: string | null}[]>([]);
   const [reportError, setReportError] = useState('');
   const [reportRefresh, setReportRefresh] = useState(0);
   useEffect(() => {
-    if (!creditUpdatesReady) return;
     let active = true;
     setDiscountEvents([]);
     setReportError('');
@@ -3386,36 +3395,14 @@ function CreditTab({ userName, role, fromDate, toDate }: { userName: string; rol
       else setDiscountEvents(data ?? []);
     });
     return () => { active = false; };
-  }, [creditUpdatesReady, fromDate, toDate, reportRefresh]);
-  const [editingName, setEditingName] = useState<{id: string; original: string; value: string} | null>(null);
-  const [nameSaving, setNameSaving] = useState(false);
-  const [nameMessage, setNameMessage] = useState('');
-  const saveName = async () => {
-    if (!editingName || nameSaving || !editingName.value.trim()) return;
-    setNameSaving(true);
-    setNameMessage('');
-    try {
-      const { error } = await supabase.rpc('rename_snb_credit_customer_v1', {
-        p_credit_id: editingName.id, p_expected_name: editingName.original, p_name: editingName.value.trim(),
-      });
-      if (error) throw new Error(error.message);
-      await fetchBranchData(BRANCH, true, ['credit']);
-      setEditingName(null);
-      setParty('');
-      setNameMessage('Customer name updated.');
-    } catch (error) {
-      setNameMessage(error instanceof Error ? error.message : 'Customer name could not be saved.');
-    } finally {
-      setNameSaving(false);
-    }
-  };
+  }, [fromDate, toDate, reportRefresh]);
 
-  const pending = credits.filter((credit) => credit.status !== "settled" && credit.creditAmount > 0);
+  const pending = credits.filter((credit) => !credit.cancelledAt && credit.status !== "settled" && credit.creditAmount > 0 && (!party || partyKey(credit) === party));
   const [creditRefreshing, setCreditRefreshing] = useState(false);
   const refreshCredit = async () => {
     setCreditRefreshing(true);
     try {
-      await Promise.all([fetchBranchData(BRANCH, true, ['credit']), fetchCreditPayments(BRANCH)]);
+      await Promise.all([fetchCreditSales(BRANCH), fetchCreditPayments(BRANCH)]);
       setReportRefresh(value => value + 1);
     } finally {
       setCreditRefreshing(false);
@@ -3430,18 +3417,28 @@ function CreditTab({ userName, role, fromDate, toDate }: { userName: string; rol
   const [message, setMessage] = useState("");
   const selected = pending.find((credit) => credit.id === selectedId);
   const [creditSortField, setCreditSortField] = useState<
-    "billNo" | "createdAt" | "customerName" | "customerPhone" | "subtotal" | "amountPaid" | "creditAmount" | "dueDate" | "status"
-  >("billNo");
+    "billNo" | "createdAt" | "settledAt" | "customerName" | "customerPhone" | "subtotal" | "amountPaid" | "creditAmount" | "dueDate" | "status"
+  >("createdAt");
   const [creditSortDir, setCreditSortDir] = useState<"asc" | "desc">("desc");
   const sortedCredits = useMemo(() => {
     const dir = creditSortDir === "asc" ? 1 : -1;
     return credits.filter(credit => !party || partyKey(credit) === party).sort((a, b) => {
-      const av = a[creditSortField];
-      const bv = b[creditSortField];
+      const av = creditSortField === 'status' && a.cancelledAt ? 'cancelled' : a[creditSortField];
+      const bv = creditSortField === 'status' && b.cancelledAt ? 'cancelled' : b[creditSortField];
       if (typeof av === "number" && typeof bv === "number") return (av - bv) * dir;
       return String(av ?? "").localeCompare(String(bv ?? "")) * dir;
     });
   }, [credits, party, creditSortField, creditSortDir]);
+  const partyTotals = new Map<string, { party: string; bills: number; cancelled: number; balance: number }>();
+  for (const credit of sortedCredits) {
+    const key = partyKey(credit);
+    const total = partyTotals.get(key) ?? { party: parties.get(key) ?? credit.customerName, bills: 0, cancelled: 0, balance: 0 };
+    total.bills++;
+    if (credit.cancelledAt) total.cancelled++;
+    else total.balance += credit.creditAmount;
+    partyTotals.set(key, total);
+  }
+  const partyRows = [...partyTotals.entries()].sort(([, a], [, b]) => a.party.localeCompare(b.party));
   const toggleCreditSort = (field: typeof creditSortField) => {
     if (creditSortField === field) setCreditSortDir((d) => (d === "asc" ? "desc" : "asc"));
     else { setCreditSortField(field); setCreditSortDir("asc"); }
@@ -3560,7 +3557,7 @@ function CreditTab({ userName, role, fromDate, toDate }: { userName: string; rol
     });
     setSaving(false);
     if (error) return setMessage(error);
-    await Promise.all([fetchBranchData(BRANCH, false, ['credit']), fetchCreditPayments(BRANCH)]); // EGRESS FIX: credit collection only touches credit sales
+    await Promise.all([fetchCreditSales(BRANCH), fetchCreditPayments(BRANCH)]); // EGRESS FIX: credit collection only touches credit sales
     setMessage(`Collected ${money(value)} against ${selected.billNo}.`);
     setSelectedId("");
     setAmount("");
@@ -3578,7 +3575,7 @@ function CreditTab({ userName, role, fromDate, toDate }: { userName: string; rol
     const error = await applyCreditDiscount(BRANCH, selected.id, value, discountReason.trim() || undefined, userName);
     setApplyingDiscount(false);
     if (error) return setDiscountMessage(error);
-    await Promise.all([fetchBranchData(BRANCH, false, ['credit']), fetchCreditPayments(BRANCH)]); // EGRESS FIX: credit discount only touches credit sales
+    await Promise.all([fetchCreditSales(BRANCH), fetchCreditPayments(BRANCH)]); // EGRESS FIX: credit discount only touches credit sales
     setDiscountMessage(`Discount of ${money(value)} applied to ${selected.billNo}.`);
     setSelectedId("");
     setReportRefresh(value => value + 1);
@@ -3595,7 +3592,8 @@ function CreditTab({ userName, role, fromDate, toDate }: { userName: string; rol
     const credit = creditsById.get(row.creditId);
     if (party && (!credit || partyKey(credit) !== party)) return [];
     if (reportMode !== 'all' && row.mode !== reportMode) return [];
-    return [{ ...row, party: credit?.customerName ?? '—' }];
+    return [{ ...row, party: credit?.customerName ?? '-', billDate: credit?.createdAt, settledDate: creditSettledDate(credit),
+      status: credit?.cancelledAt ? 'cancelled' : credit?.status ?? '' }];
   }).sort((a, b) => b.date.localeCompare(a.date));
 
 
@@ -3703,44 +3701,46 @@ function CreditTab({ userName, role, fromDate, toDate }: { userName: string; rol
             <p className="text-[11px] text-slate-500">This writes off the balance directly — it is not counted as cash/UPI/card collected.</p>
           </div>
         </Panel>
-        <Panel className="xl:col-span-2" title="SNB Branch Credit Register" icon={<WalletCards className="size-4" />} action={<div className="flex flex-wrap gap-2"><button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => void refreshCredit()} disabled={creditRefreshing}><RefreshCcw className={cn("size-4", creditRefreshing && "animate-spin")} /> Refresh</button><button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Credit_Register.xls", sortedCredits.map((credit) => ({ Bill: credit.billNo, BillDate: fmtDateTime(credit.createdAt), CreditDiscount: credit.discountAmount ?? 0, Customer: credit.customerName, Mobile: credit.customerPhone || "-", Total: credit.subtotal, Paid: credit.amountPaid, Balance: credit.creditAmount, Due: credit.dueDate || "-", Status: credit.status })))}><Download className="size-4" /> Excel</button></div>}>
+        <Panel className="xl:col-span-2" title="SNB Branch Credit Register" icon={<WalletCards className="size-4" />} action={<div className="flex flex-wrap gap-2"><button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => void refreshCredit()} disabled={creditRefreshing}><RefreshCcw className={cn("size-4", creditRefreshing && "animate-spin")} /> Refresh</button><button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Credit_Register.xls", sortedCredits.map((credit) => ({ Bill: credit.billNo, BillDate: fmtDateTime(credit.createdAt), SettledDate: creditSettledDate(credit) ? fmtDateTime(creditSettledDate(credit)!) : "", CancelledDate: credit.cancelledAt ? fmtDateTime(credit.cancelledAt) : "", CreditDiscount: credit.discountAmount ?? 0, Customer: credit.customerName, Mobile: credit.customerPhone || "-", Total: credit.subtotal, Paid: credit.amountPaid, Balance: credit.creditAmount, Due: credit.dueDate || "-", Status: credit.cancelledAt ? "cancelled" : credit.status, CancellationReason: credit.cancellationReason ?? "" })))}><Download className="size-4" /> Excel</button></div>}>
           <div className="mb-3 flex flex-wrap items-end gap-3">
-            <Field label="Credit party"><select className={inputCls} value={party} onChange={event => { setParty(event.target.value); setDetailId(''); setEditingName(null); }}>
+            <Field label="Credit party"><select className={inputCls} value={party} onChange={event => { setParty(event.target.value); setDetailId(''); }}>
               <option value="">All parties</option>
               {[...parties].sort((a,b) => a[1].localeCompare(b[1])).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
             </select></Field>
+            <button type="button" className={btnCls} disabled={!partyRows.length}
+              onClick={() => csvDownload("SNB_Credit_Party_Summary.xls", partyRows.map(([, row]) => ({
+                Party: row.party, Bills: row.bills, Cancelled: row.cancelled, Outstanding: row.balance,
+              })))}><Download className="size-4" /> Party Summary Excel</button>
             {party && <p className="pb-2 text-sm font-bold">{sortedCredits.length} bills · Outstanding {money(sortedCredits.reduce((sum, credit) => sum + credit.creditAmount, 0))}</p>}
           </div>
+          {!party && partyRows.length > 0 && (
+            <details className="mb-3 rounded-xl border px-3 py-2 text-sm">
+              <summary className="cursor-pointer font-bold">Party balances</summary>
+              <ul className="mt-2 max-h-56 divide-y overflow-auto">
+                {partyRows.map(([key, row]) => (
+                  <li key={key}>
+                    <button type="button" className="flex w-full justify-between gap-3 py-2 text-left hover:text-blue-700"
+                      onClick={() => { setParty(key); setDetailId(""); }}>
+                      <span>{row.party} · {row.bills} bills</span><b>{money(row.balance)}</b>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
 
           <div className="grid min-h-[420px] gap-3 lg:grid-cols-[minmax(0,1.35fr)_minmax(280px,.65fr)]">
             <div className="overflow-auto rounded-2xl border border-slate-200">
-              <table className="w-full min-w-[720px] text-left text-xs"><thead className="sticky top-0 bg-slate-950 text-white"><tr>{([["Bill","billNo"],["Bill Date","createdAt"],["Customer","customerName"],["Mobile","customerPhone"],["Total","subtotal"],["Paid","amountPaid"],["Balance","creditAmount"],["Due","dueDate"],["Status","status"]] as const).map(([label, field]) => <th key={label} onClick={() => toggleCreditSort(field)} className="cursor-pointer select-none px-3 py-2.5 font-black uppercase tracking-wide hover:bg-slate-800">{label}{creditSortArrow(field)}</th>)}</tr></thead><tbody>{sortedCredits.map((credit) => <tr key={credit.id} onClick={() => setDetailId(credit.id)} className={cn("cursor-pointer border-t border-slate-100 hover:bg-amber-50", detailId === credit.id && "bg-amber-100")}><td className="px-3 py-2.5 font-black text-blue-700 underline">{credit.billNo}</td><td className="px-3 py-2.5 whitespace-nowrap">{fmtDateTime(credit.createdAt)}</td><td className="px-3 py-2.5 font-bold">{credit.customerName}</td><td className="px-3 py-2.5">{credit.customerPhone || "-"}</td><td className="px-3 py-2.5 font-bold">{money(credit.subtotal)}</td><td className="px-3 py-2.5">{money(credit.amountPaid)}</td><td className="px-3 py-2.5 font-black text-red-600">{money(credit.creditAmount)}</td><td className="px-3 py-2.5">{credit.dueDate || "-"}</td><td className="px-3 py-2.5"><StatusBadge tone={credit.status === "settled" ? "green" : credit.status === "partial" ? "amber" : "red"}>{credit.status}</StatusBadge></td></tr>)}</tbody></table>
+              <table className="w-full min-w-[720px] text-left text-xs"><thead className="sticky top-0 bg-slate-950 text-white"><tr>{([["Bill","billNo"],["Bill Date","createdAt"],["Settled Date","settledAt"],["Customer","customerName"],["Mobile","customerPhone"],["Total","subtotal"],["Paid","amountPaid"],["Balance","creditAmount"],["Due","dueDate"],["Status","status"]] as const).map(([label, field]) => <th key={label} onClick={() => toggleCreditSort(field)} className="cursor-pointer select-none px-3 py-2.5 font-black uppercase tracking-wide hover:bg-slate-800">{label}{creditSortArrow(field)}</th>)}</tr></thead><tbody>{sortedCredits.map((credit) => <tr key={credit.id} onClick={() => setDetailId(credit.id)} className={cn("cursor-pointer border-t border-slate-100 hover:bg-amber-50", detailId === credit.id && "bg-amber-100")}><td className="px-3 py-2.5 font-black text-blue-700 underline">{credit.billNo}</td><td className="px-3 py-2.5 whitespace-nowrap">{fmtDateTime(credit.createdAt)}</td><td className="px-3 py-2.5 whitespace-nowrap">{creditSettledDate(credit) ? fmtDateTime(creditSettledDate(credit)!) : "—"}</td><td className="px-3 py-2.5 font-bold">{credit.customerName}</td><td className="px-3 py-2.5">{credit.customerPhone || "-"}</td><td className="px-3 py-2.5 font-bold">{money(credit.subtotal)}</td><td className="px-3 py-2.5">{money(credit.amountPaid)}</td><td className="px-3 py-2.5 font-black text-red-600">{money(credit.creditAmount)}</td><td className="px-3 py-2.5">{credit.dueDate || "-"}</td><td className="px-3 py-2.5"><StatusBadge tone={credit.cancelledAt ? "red" : credit.status === "settled" ? "green" : credit.status === "partial" ? "amber" : "red"}>{credit.cancelledAt ? "Cancelled" : credit.status}</StatusBadge></td></tr>)}</tbody></table>
               {credits.length === 0 && <p className="p-8 text-center text-sm font-bold text-slate-500">No SNB credit sales found.</p>}
             </div>
             <aside className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-              {creditUpdatesReady && detailCredit && <div className="mb-3">
-                {editingName?.id === detailCredit.id ? (
-                  <form className="space-y-2" onSubmit={event => { event.preventDefault(); void saveName(); }}>
-                    <Field label="Customer name"><input className={inputCls} value={editingName.value} required maxLength={120}
-                      onChange={event => setEditingName({ ...editingName, value: event.target.value })} /></Field>
-                    <div className="flex flex-wrap gap-2">
-                      <button type="submit" disabled={nameSaving} className={cn(btnCls, "bg-slate-950 text-white")}>Save name</button>
-                      <button type="button" disabled={nameSaving} onClick={() => setEditingName(null)} className={btnCls}>Cancel</button>
-                    </div>
-                  </form>
-                ) : <button type="button" disabled={nameSaving} className={btnCls} onClick={() => {
-                  setNameMessage('');
-                  setEditingName({ id: detailCredit.id, original: detailCredit.customerName, value: detailCredit.customerName });
-                }}><Pencil className="size-4" /> Edit customer name</button>}
-                {nameMessage && <p role="status" className="mt-2 text-xs">{nameMessage}</p>}
-              </div>}
-
-              {!detailCredit ? <div className="grid h-full min-h-64 place-items-center text-center"><div><Receipt className="mx-auto size-8 text-slate-300"/><p className="mt-2 text-sm font-bold text-slate-500">Select a bill to see its details.</p></div></div> : <div className="space-y-3"><div><p className="text-xs font-black uppercase tracking-wide text-slate-400">Credit Bill</p><h4 className="text-lg font-black text-slate-950">{detailCredit.billNo}</h4><p className="text-sm font-bold text-slate-600">{detailCredit.customerName} · {detailCredit.customerPhone || "No mobile"}</p></div><div className="space-y-2">{detailCredit.items.map((item, index) => <div key={`${item.itemName}-${index}`} className="rounded-xl bg-white p-3 ring-1 ring-slate-200"><div className="flex justify-between gap-2"><span className="font-black">{item.itemName}</span><span className="font-black">{money(item.lineTotal)}</span></div><p className="text-xs font-bold text-slate-500">{item.quantity} {item.sellUnit} × {money(item.price)}</p></div>)}</div><div className="rounded-xl bg-white p-3 text-sm font-bold ring-1 ring-slate-200"><div className="flex justify-between"><span>Item Subtotal</span><b>{money(detailItemSubtotal)}</b></div>{detailBillDiscount > 0 && <div className="mt-1 flex justify-between text-amber-700"><span>Bill Discount</span><b>- {money(detailBillDiscount)}</b></div>}{detailTax > 0 && <div className="mt-1 flex justify-between"><span>Tax</span><b>+ {money(detailTax)}</b></div>}{Math.abs(detailRoundOff) > 0.001 && <div className="mt-1 flex justify-between"><span>Round-Off</span><b>{detailRoundOff > 0 ? "+ " : "- "}{money(Math.abs(detailRoundOff))}</b></div>}<div className="mt-1 flex justify-between border-t pt-1"><span>Bill Total</span><b>{money(detailBillTotal)}</b></div><div className="mt-1 flex justify-between"><span>Paid</span><b className="text-emerald-700">{money(detailCredit.amountPaid)}</b></div>{Number(detailCredit.discountAmount || 0) > 0 && <div className="mt-1 flex justify-between text-amber-700"><span>Credit Discount</span><b>- {money(Number(detailCredit.discountAmount || 0))}</b></div>}<div className="mt-1 flex justify-between border-t pt-1"><span>Pending</span><b className="text-red-700">{money(detailCredit.creditAmount)}</b></div></div><button type="button" onClick={() => void duplicateCreditBill(detailCredit)} className={cn(btnCls,"w-full bg-slate-950 text-white")}><Printer className="size-4"/>Print Duplicate Bill</button>{printError && <p className="rounded-xl bg-red-50 p-2 text-xs font-bold text-red-700">{printError}</p>}</div>}
+              {!detailCredit ? <div className="grid h-full min-h-64 place-items-center text-center"><div><Receipt className="mx-auto size-8 text-slate-300"/><p className="mt-2 text-sm font-bold text-slate-500">Select a bill to see its details.</p></div></div> : <div className="space-y-3"><div><p className="text-xs font-black uppercase tracking-wide text-slate-400">Credit Bill</p><h4 className="text-lg font-black text-slate-950">{detailCredit.billNo}</h4><p className="text-sm font-bold text-slate-600">{detailCredit.customerName} · {detailCredit.customerPhone || "No mobile"}</p></div><dl className="grid gap-1 text-xs"><div>Created {fmtDateTime(detailCredit.createdAt)}</div><div>Settled {creditSettledDate(detailCredit) ? fmtDateTime(creditSettledDate(detailCredit)!) : "—"}</div>{detailCredit.cancelledAt && <div className="text-red-700">Cancelled {fmtDateTime(detailCredit.cancelledAt)} · {detailCredit.cancellationReason}</div>}</dl><SnbCreditBillActions key={detailCredit.id} credit={detailCredit} onSaved={async () => { await refreshCredit(); setParty(""); }} /><div className="space-y-2">{detailCredit.items.map((item, index) => <div key={`${item.itemName}-${index}`} className="rounded-xl bg-white p-3 ring-1 ring-slate-200"><div className="flex justify-between gap-2"><span className="font-black">{item.itemName}</span><span className="font-black">{money(item.lineTotal)}</span></div><p className="text-xs font-bold text-slate-500">{item.quantity} {item.sellUnit} × {money(item.price)}</p></div>)}</div><div className="rounded-xl bg-white p-3 text-sm font-bold ring-1 ring-slate-200"><div className="flex justify-between"><span>Item Subtotal</span><b>{money(detailItemSubtotal)}</b></div>{detailBillDiscount > 0 && <div className="mt-1 flex justify-between text-amber-700"><span>Bill Discount</span><b>- {money(detailBillDiscount)}</b></div>}{detailTax > 0 && <div className="mt-1 flex justify-between"><span>Tax</span><b>+ {money(detailTax)}</b></div>}{Math.abs(detailRoundOff) > 0.001 && <div className="mt-1 flex justify-between"><span>Round-Off</span><b>{detailRoundOff > 0 ? "+ " : "- "}{money(Math.abs(detailRoundOff))}</b></div>}<div className="mt-1 flex justify-between border-t pt-1"><span>Bill Total</span><b>{money(detailBillTotal)}</b></div><div className="mt-1 flex justify-between"><span>Paid</span><b className="text-emerald-700">{money(detailCredit.amountPaid)}</b></div>{Number(detailCredit.discountAmount || 0) > 0 && <div className="mt-1 flex justify-between text-amber-700"><span>Credit Discount</span><b>- {money(Number(detailCredit.discountAmount || 0))}</b></div>}<div className="mt-1 flex justify-between border-t pt-1"><span>Pending</span><b className="text-red-700">{money(detailCredit.creditAmount)}</b></div></div><button type="button" onClick={() => void duplicateCreditBill(detailCredit)} className={cn(btnCls,"w-full bg-slate-950 text-white")}><Printer className="size-4"/>Print Duplicate Bill</button>{printError && <p className="rounded-xl bg-red-50 p-2 text-xs font-bold text-red-700">{printError}</p>}</div>}
             </aside>
           </div>
         </Panel>
       </div>
-      {creditUpdatesReady && <Panel title="Credit Settlement Report" icon={<History className="size-4" />} action={<button disabled={Boolean(reportError) && ['all', 'discount'].includes(reportMode)} className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Credit_Settlements.xls", settlementRows.map(row => ({ Date: fmtDateTime(row.date), Party: row.party, Bill: row.bill, Mode: row.mode, Collected: row.mode === 'discount' ? 0 : row.amount, Discount: row.mode === 'discount' ? row.amount : 0, Remarks: row.remarks })))}><Download className="size-4" /> Excel</button>}>
+      <Panel title="Credit Settlement Report" icon={<History className="size-4" />} action={<button disabled={Boolean(reportError) && ['all', 'discount'].includes(reportMode)} className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Credit_Settlements.xls", settlementRows.map(row => ({ ActivityDate: fmtDateTime(row.date), Party: row.party, Bill: row.bill, BillDate: row.billDate ? fmtDateTime(row.billDate) : "", SettledDate: row.settledDate ? fmtDateTime(row.settledDate) : "", BillStatus: row.status, Mode: row.mode, Collected: row.mode === 'discount' ? 0 : row.amount, Discount: row.mode === 'discount' ? row.amount : 0, Remarks: row.remarks })))}><Download className="size-4" /> Excel</button>}>
         <div className="mb-3 flex flex-wrap items-end gap-3">
           <Field label="Settlement mode"><select className={inputCls} value={reportMode} onChange={event => setReportMode(event.target.value)}>
             <option value="all">All modes</option><option value="cash">Cash</option><option value="discount">Discount</option>
@@ -3749,25 +3749,26 @@ function CreditTab({ userName, role, fromDate, toDate }: { userName: string; rol
           <p className="pb-2 text-sm font-bold">Collections {money(settlementRows.filter(row => row.mode !== 'discount').reduce((sum,row) => sum + row.amount,0))} · Discounts {money(settlementRows.filter(row => row.mode === 'discount').reduce((sum,row) => sum + row.amount,0))}</p>
         </div>
         {reportError && <p role="alert" className="mb-3 text-sm text-red-700">{reportError}</p>}
-        <DataTable headers={["Date", "Party", "Bill", "Mode", "Collected", "Discount", "Remarks"]}
-          rows={settlementRows.map(row => [fmtDateTime(row.date), row.party, row.bill, row.mode.toUpperCase(),
+        <DataTable headers={["Activity date", "Party", "Bill", "Bill Date", "Settled Date", "Status", "Mode", "Collected", "Discount", "Remarks"]}
+          rows={settlementRows.map(row => [fmtDateTime(row.date), row.party, row.bill, row.billDate ? fmtDateTime(row.billDate) : "-", row.settledDate ? fmtDateTime(row.settledDate) : "-", row.status, row.mode.toUpperCase(),
             row.mode === 'discount' ? "—" : money(row.amount), row.mode === 'discount' ? money(row.amount) : "—", row.remarks])}
           empty="No settlements match the selected dates, party and mode." />
-      </Panel>}
+      </Panel>
 
-      <Panel title="Credit Collection History" icon={<History className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Credit_Collections.xls", paymentsInRange.map((payment) => ({ Date: payment.createdAt, Bill: payment.billNo, Amount: payment.amount, Mode: payment.paymentMode, Reference: payment.reference || "-", CollectedBy: payment.collectedBy, Remarks: payment.remarks || "-" })))}><Download className="size-4" /> Excel</button>}>
+      <Panel title="Credit Collection History" icon={<History className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Credit_Collections.xls", paymentsInRange.map((payment) => ({ PaymentDate: fmtDateTime(payment.createdAt), Party: creditsById.get(payment.creditSaleId)?.customerName ?? "-", Bill: payment.billNo, BillDate: creditsById.get(payment.creditSaleId)?.createdAt ?? "", SettledDate: creditSettledDate(creditsById.get(payment.creditSaleId)) ?? "", Amount: payment.amount, Mode: payment.paymentMode, Reference: payment.reference || "-", CollectedBy: payment.collectedBy, Remarks: payment.remarks || "-" })))}><Download className="size-4" /> Excel</button>}>
         {correctionMessage && <p className="mb-3 rounded-2xl bg-emerald-50 p-3 text-sm font-black text-emerald-700 ring-1 ring-emerald-100">{correctionMessage}</p>}
         <DataTable
-          headers={["Date", "Bill", "Amount", "Mode", "Reference", "Collected By", "Remarks", "Action"]}
+          headers={["Payment Date", "Party", "Bill", "Amount", "Mode", "Reference", "Collected By", "Remarks", "Action"]}
           rows={paymentsInRange.map((payment) => [
             fmtDateTime(payment.createdAt),
+            creditsById.get(payment.creditSaleId)?.customerName ?? "-",
             payment.billNo,
             money(payment.amount),
             payment.paymentMode.toUpperCase(),
             payment.reference || "-",
             payment.collectedBy,
             payment.remarks || "-",
-            <button key="fix" onClick={() => { setEditingPayment(payment); setCorrectionMessage(""); }} className={cn(btnCls, "bg-amber-50 text-amber-700 ring-1 ring-amber-200")}><Pencil className="size-3.5" /> Fix Mode</button>,
+            <button key="fix" onClick={() => { setEditingPayment(payment); setCorrectionMessage(""); }} className={cn(btnCls, "bg-amber-50 text-amber-700 ring-1 ring-amber-200")}><Pencil className="size-3.5" /> Edit payment mode</button>,
           ])}
           empty="No credit collections found."
         />
@@ -3780,7 +3781,7 @@ function CreditTab({ userName, role, fromDate, toDate }: { userName: string; rol
           onSaved={async (message) => {
             setEditingPayment(null);
             setCorrectionMessage(message);
-            await Promise.all([fetchBranchData(BRANCH, false, ['credit']), fetchCreditPayments(BRANCH)]); // EGRESS FIX: correcting a payment mode only touches credit sales
+            await Promise.all([fetchCreditSales(BRANCH), fetchCreditPayments(BRANCH)]); // EGRESS FIX: correcting a payment mode only touches credit sales
           }}
         />
       )}
@@ -4217,7 +4218,7 @@ function DenominationAuditModal({ row, onClose }: { row: any; onClose: () => voi
   );
 }
 
-function CashierClosureTab(props: { dbReports: ReturnType<typeof useSnbAdminReports> }) {
+function CashierClosureTab(props: { dbReports: ReturnType<typeof useSnbAdminReports>; fromDate: string; toDate: string }) {
   const db = props.dbReports;
   const rows = db.counterSessions.filter(row => row.status === "finalized");
   const [denomRow, setDenomRow] = useState<(typeof rows)[number] | null>(null);
@@ -4243,6 +4244,7 @@ function CashierClosureTab(props: { dbReports: ReturnType<typeof useSnbAdminRepo
           <button key="denom" className={btnCls} onClick={() => setDenomRow(row)}><WalletCards className="size-4" /> View count</button>])}
         empty="No closed counters in the selected date range." />
       {denomRow && <DenominationAuditModal row={denomRow} onClose={() => setDenomRow(null)} />}
+      <BranchUpiClosureReport branch="SNB" fromDate={props.fromDate} toDate={props.toDate} />
     </Panel>
   );
 }
@@ -7824,13 +7826,11 @@ function StockCountClaimsPanel({ userName }: { userName: string }) {
 function StockAuditTab({
   userName,
   branchStock,
-  manualUpdateStock,
   fetchBranchData,
   setNotice,
 }: {
   userName: string;
   branchStock: Array<{ itemName: string; price: number | null }>;
-  manualUpdateStock: (branch: Branch, itemName: string, quantity: number, updatedBy: string, itemBarcode?: number) => Promise<string | null>;
   fetchBranchData: (branch: Branch, force?: boolean, scopes?: BranchDataScope[]) => Promise<void>;
   setNotice: (message: string) => void;
 }) {
@@ -7880,6 +7880,14 @@ function StockAuditTab({
     .filter((report) => report.branch === BRANCH)
     .sort((a, b) => Number(new Date(b.createdAt)) - Number(new Date(a.createdAt)));
   const pending = reports.filter((report) => report.status === "Pending Admin Review");
+  const postingIssueText = (issue: StockCountPostingIssue, unit?: string) => {
+    if (issue.reason === "COUNT_BELOW_RESERVED" || issue.physicalQty < issue.reservedQuantity) {
+      const orders = issue.advanceOrders?.length ? ` for ${issue.advanceOrders.join(", ")}` : "";
+      return `Counted ${roundQty(issue.physicalQty)} ${unit ?? ""}, with ${roundQty(issue.reservedQuantity)} ${unit ?? ""} reserved${orders}. Resolve the advance reservation, then recount.`;
+    }
+    if (issue.reason === "STOCK_CHANGED_SINCE_COUNT") return "Stock moved after the count. Recount this item before posting.";
+    return issue.reason;
+  };
 
   useEffect(() => {
     let mounted = true;
@@ -8005,6 +8013,7 @@ function StockAuditTab({
     const rows = reports.flatMap((report) =>
       sortedLines(report).map((line) => {
         const differenceValue = lineValue(line);
+        const postingIssue = report.postingIssues?.find(issue => issue.itemName === line.itemName);
         return {
           "Report No": report.reportNo,
           "Report Status": report.status,
@@ -8019,6 +8028,8 @@ function StockAuditTab({
           Unit: correctLineUnit(line) || "",
           "System Qty": line.systemQty,
           "Physical Qty": line.physicalQty,
+          "Posting Exception": postingIssue ? postingIssueText(postingIssue, correctLineUnit(line)) : "",
+          "System Qty at Approval": postingIssue?.liveQty ?? "",
           Difference: line.difference,
           "Difference Value": differenceValue,
           "Absolute Difference Value": Math.abs(differenceValue),
@@ -8051,45 +8062,24 @@ function StockAuditTab({
         p_report_id: report.id,
         p_confirmed_by: userName,
       });
-      let skipped: Array<{ itemName: string; reason: string }> = [];
       if (rpcError) {
-        const missingRpc =
-          /confirm_branch_stock_count_report|could not find the function|does not exist|schema cache|not found/i.test(
-            rpcError.message || "",
-          );
-        if (!missingRpc) {
-          setNotice(`Stock count confirmation failed: ${rpcError.message}`);
-          return;
-        }
-        for (const line of report.lines) {
-          const catalogItem = catalogItems.find((item) => normal(item.name) === normal(line.itemName));
-          const error = await manualUpdateStock(BRANCH, line.itemName, line.physicalQty, userName, catalogItem?.barcode);
-          if (error) {
-            setNotice(
-              `${report.reportNo} stopped at ${line.itemName}: ${error}. Re-check Stock Audit before confirming again.`,
-            );
-            return;
-          }
-        }
-      } else {
-        // BUG FIX (2026-09-17): the RPC now applies every line independently and
-        // reports back any items it couldn't touch (e.g. physical count below
-        // stock still reserved for a pending order) instead of failing the whole
-        // report — surface those so admin knows exactly what still needs a look.
-        skipped = Array.isArray((rpcData as { skipped?: unknown })?.skipped)
-          ? ((rpcData as { skipped: Array<{ itemName: string; reason: string }> }).skipped)
-          : [];
+        setNotice(`Stock count confirmation failed: ${rpcError.message}`);
+        return;
       }
-      confirmStockCountReport(report.id, userName);
-      await fetchBranchData(BRANCH, false, ['stock']); // EGRESS FIX: stock count confirmation only touches stock
+      const result = rpcData as { skipped?: StockCountPostingIssue[] } | null;
+      const skipped = Array.isArray(result?.skipped) ? result.skipped : [];
+      confirmStockCountReport(report.id, userName, skipped);
       if (skipped.length > 0) {
         const names = skipped.map((s) => s.itemName).join(", ");
         setNotice(
-          `${report.reportNo} confirmed. SNB stock updated for all other items, but skipped ${skipped.length} item(s) still reserved for a pending order: ${names}. Resolve those reservations first, then re-count and re-submit just those items.`,
+          `${report.reportNo} confirmed with ${skipped.length} unposted item(s): ${names}. Review the posting exceptions on the report.`,
         );
       } else {
         setNotice(`${report.reportNo} confirmed. SNB stock updated and variance sent to Owner/Admin.`);
       }
+      await fetchBranchData(BRANCH, true, ['stock']);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Could not confirm or refresh the stock count. Refresh Stock Audit before retrying.");
     } finally {
       setSavingId("");
     }
@@ -8137,7 +8127,7 @@ function StockAuditTab({
           <div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-xl">
             <h3 className="text-sm font-black">Confirm {confirmingReport.reportNo}?</h3>
             <p className="mt-1 text-xs font-semibold text-slate-500">
-              This will update SNB stock to the physical counted quantities. This can't be undone from here.
+              Confirm to post the physical count. Items with a reservation conflict or a changed stock balance will be flagged for review.
             </p>
             <div className="mt-4 flex justify-end gap-2">
               <button type="button" onClick={() => setConfirmingReportId(null)} className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")}>Cancel</button>
@@ -8187,10 +8177,11 @@ function StockAuditTab({
       ) : (
         reports.map((report) => {
           const isExpanded = expandedReportIds.has(report.id);
+          const postingIssues = new Map(report.postingIssues?.map(issue => [issue.itemName, issue]));
           return (
           <Panel
             key={report.id}
-            title={`${report.reportNo} - ${report.status}`}
+            title={`${report.reportNo} - ${postingIssues.size && report.status === "Confirmed" ? "Confirmed with exceptions" : report.status}`}
             icon={<ClipboardCheck className="size-4" />}
             action={
               <div className="flex items-center gap-2">
@@ -8213,6 +8204,8 @@ function StockAuditTab({
                   </button>
                 ) : reportReversals[report.id] ? (
                   <StatusBadge tone="amber">Reversed</StatusBadge>
+                ) : postingIssues.size ? (
+                  <StatusBadge tone="amber">{postingIssues.size} unposted</StatusBadge>
                 ) : (
                   <button
                     type="button"
@@ -8242,7 +8235,7 @@ function StockAuditTab({
                 <thead className="bg-slate-50 text-left text-[11px] font-black uppercase tracking-wide text-slate-500">
                   <tr>
                     <th className="px-4 py-3">Item</th>
-                    <th className="px-4 py-3 text-right">System Qty</th>
+                    <th className="px-4 py-3 text-right">System Qty at Count</th>
                     <th className="px-4 py-3">Physical Qty</th>
                     <th className="px-4 py-3 text-right">
                       <button type="button" onClick={() => toggleSort("difference")} className="ml-auto flex items-center gap-1" title="Sort by stock difference">
@@ -8268,6 +8261,7 @@ function StockAuditTab({
                     const changed = draft.trim() !== "" && Number.isFinite(parsedDraft) && Math.abs(parsedDraft - Number(line.physicalQty || 0)) >= 0.0001;
                     const differenceValue = lineValue(line);
                     const displayUnit = correctLineUnit(line);
+                    const postingIssue = postingIssues.get(line.itemName);
                     const unit = String(displayUnit || "").toLowerCase();
                     const step = unit === "pcs" || unit.includes("nos") ? "1" : "0.001";
                     return (
@@ -8324,6 +8318,13 @@ function StockAuditTab({
                           <StatusBadge tone={line.difference === 0 ? "green" : line.difference > 0 ? "blue" : "red"}>
                             {line.difference > 0 ? "Excess" : line.difference < 0 ? "Short" : "Matched"}
                           </StatusBadge>
+                          {postingIssue && (
+                            <div className="mt-2 max-w-xs text-xs font-semibold text-amber-800">
+                              <p className="font-black">Stock not updated</p>
+                              {postingIssue.liveQty != null && <p>System balance at approval {roundQty(postingIssue.liveQty)} {displayUnit}</p>}
+                              <p>{postingIssueText(postingIssue, displayUnit)}</p>
+                            </div>
+                          )}
                         </td>
                         <td className="px-4 py-3 text-xs font-semibold text-slate-500">
                           {line.editedAt ? (

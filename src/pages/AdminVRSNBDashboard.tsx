@@ -1,4 +1,5 @@
 import { ReportSourceFailures } from '@/components/ReportSourceFailures';
+import BranchUpiClosureReport from "@/components/admin/BranchUpiClosureReport";
 import { AdminReportDateRange, AdminSummaryCard } from '@/components/admin/AdminReportControls';
 // src/pages/AdminVRSNBDashboard.tsx
 // VRSNB Admin Dashboard – manager control center for sales, returns, stock, purchase, balance, salesperson, closure and reports.
@@ -2850,6 +2851,7 @@ function CashierClosureTab(props: any) {
           empty="No cashier closures saved."
         />
       </Panel>
+      <BranchUpiClosureReport branch="VRSNB" fromDate={props.fromDate} toDate={props.toDate} />
     </div>
   );
 }
