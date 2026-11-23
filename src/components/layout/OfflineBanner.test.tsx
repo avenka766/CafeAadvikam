@@ -39,6 +39,13 @@ it('shows staff failures only to their operator and keeps public pages clear of 
  await act(async()=>root.render(<OfflineBanner/>));
  expect(host.textContent).toContain('another staff member');
  expect(host.textContent).not.toContain('failed to sync');
+ expect(host.querySelector('[role=status]')).not.toBeNull();
+ await act(async()=>host.querySelector('button')!.click());
+ expect(host.textContent).toContain('Billing can continue');
+ queue.pending.push({id:'2',staffId:'test-staff',attempts:0});
+ await act(async()=>root.render(<OfflineBanner/>));
+ expect(host.textContent).toContain('Waiting to sync 1 change from your session');
+ expect(host.textContent).not.toContain('another staff member');
  queue.staffId='original';
  await act(async()=>root.render(<OfflineBanner/>));
  expect(host.textContent).toContain('failed to sync');

@@ -94,16 +94,19 @@ export default function OfflineBanner({showStaffQueue = true}: {showStaffQueue?:
 
   if (!offline && pendingCount === 0 && !backOnline && !storageError) return null;
 
-  const syncingWhileOnline = !offline && pendingCount > 0;
+  const syncingWhileOnline = !offline && eligible.length > 0;
   const hasFailure = failed.length > 0;
-  const hasWaitingForOwner = !hasFailure && waitingForOwner.length > 0;
+  const hasWaitingForOwner = !offline && !storageError && eligible.length === 0 && waitingForOwner.length > 0;
 
   return (
-    <div className="fixed top-0 left-0 right-0 z-[9999]">
+    <div className={hasWaitingForOwner
+      ? "fixed right-2 top-2 z-[9999] max-w-[calc(100%-1rem)] sm:max-w-sm"
+      : "fixed top-0 left-0 right-0 z-[9999]"}>
       <div
-        role="alert"
-        aria-live="assertive"
-        className="flex items-center justify-center gap-2 px-4 py-2 text-sm font-body font-semibold text-white"
+        role={hasWaitingForOwner ? "status" : "alert"}
+        className={hasWaitingForOwner
+          ? "flex justify-end rounded-lg px-2.5 py-1.5 text-xs font-semibold text-white shadow-sm"
+          : "flex items-center justify-center gap-2 px-4 py-2 text-sm font-body font-semibold text-white"}
         style={{ background: storageError?'#B91C1C':offline?'#854F0B':!offline&&pendingCount===0&&backOnline?'#047857':hasFailure&&!offline ? '#B91C1C' : hasWaitingForOwner ? '#7C3AED' : syncingWhileOnline ? '#1D4ED8' : '#854F0B' }}
       >
         {storageError ? (<><AlertTriangle className="size-4 shrink-0" /><span>{storageError}</span></>) : hasFailure && !offline ? (
@@ -113,15 +116,15 @@ export default function OfflineBanner({showStaffQueue = true}: {showStaffQueue?:
             {expanded ? <ChevronUp className="size-3.5" /> : <ChevronDown className="size-3.5" />}
           </button>
         ) : hasWaitingForOwner && !offline ? (
-          <button onClick={() => setExpanded((v) => !v)} className="flex items-center gap-2">
+          <button type="button" aria-expanded={expanded} onClick={() => setExpanded((v) => !v)} className="flex items-center gap-2">
             <UserCog className="size-4 shrink-0" />
-            {waitingForOwner.length} change{waitingForOwner.length === 1 ? '' : 's'} queued by another staff member — they need to log back in to sync
+            {waitingForOwner.length} queued by another staff member
             {expanded ? <ChevronUp className="size-3.5" /> : <ChevronDown className="size-3.5" />}
           </button>
         ) : syncingWhileOnline ? (
           <>
             <RefreshCw className={`size-4 shrink-0 ${flushing ? 'animate-spin' : ''}`} />
-            Back online — syncing {pendingCount} change{pendingCount === 1 ? '' : 's'} made while offline…
+            {flushing ? 'Syncing' : 'Waiting to sync'} {eligible.length} change{eligible.length === 1 ? '' : 's'} from your session.
           </>
         ) : backOnline && !offline ? (
           <><Wifi className="size-4 shrink-0" />Back online</>
@@ -139,7 +142,7 @@ export default function OfflineBanner({showStaffQueue = true}: {showStaffQueue?:
             <div key={entry.id} className="flex items-start justify-between gap-3 border-b border-violet-100 px-4 py-3">
               <div className="min-w-0">
                 <p className="text-sm font-bold text-slate-900">{KIND_LABELS[entry.kind] || entry.kind}</p>
-                <p className="mt-0.5 text-xs text-violet-700">The original staff member can sync this from their account.</p>
+                <p className="mt-0.5 text-xs text-violet-700">Billing can continue. To sync this change, the staff member who saved it needs to sign in again on this device.</p>
                 <p className="mt-0.5 text-[11px] text-slate-500">
                   Queued {new Date(entry.createdAt).toLocaleString('en-IN')}
                 </p>
