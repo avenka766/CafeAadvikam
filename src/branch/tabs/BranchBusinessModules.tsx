@@ -815,7 +815,9 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch', c
       photoCharge: orderType === 'cake' ? cakePrice.photoCharge : undefined,
       topperCharge: orderType === 'cake' ? topperChargeNum : undefined,
       toyCharges: orderType === 'cake' ? toyChargesNum : undefined,
-      messageOnCake: orderType === 'cake' ? cake.messageOnCake : '', designNotes: orderType === 'cake' ? cake.designNotes : orderType === 'custom' ? custom.notes : 'Existing branch stock advance order [Stock Reserved]',
+      messageOnCake: orderType === 'cake' ? cake.messageOnCake : '',
+      designNotes: orderType === 'cake' ? cake.designNotes : orderType === 'custom' ? custom.notes :
+        branch === 'SNB' ? 'Existing branch stock advance order' : 'Existing branch stock advance order [Stock Reserved]',
       attachmentName, attachmentDataUrl, orderValue, advanceAmount: adv, balanceAmount, salesperson: staff, paymentMode: common.paymentMode as 'cash'|'upi'|'card'|'split'|'credit',
       advancePaymentSplits: paymentSplitLines.length > 0 ? paymentSplitLines : undefined,
       advanceCreditDueDate: common.paymentMode === 'credit' ? (advanceCreditDueDate || undefined) : undefined,
@@ -824,9 +826,8 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch', c
     const confirmed=await saveAdvanceCreation(currentUser?.id||'',{p_order:orderDraft,p_receiver:isSnbOrder});
     const order = addAdvanceCakeOrder({...orderDraft,orderNo:confirmed.orderNo},confirmed);
     const orderNo=confirmed.orderNo;
-    const stockReserved=orderType==='store';
-    if(isSnbOrder)void fetchBranchData(branch,false,orderType === 'store' ? ['stock','advance'] : ['advance']);
-    else if(orderType==='store')void fetchBranchData(branch,false,['stock']);
+    if (isSnbOrder) void fetchBranchData(branch, false, ['advance']);
+    else if (branch !== 'SNB' && orderType === 'store') void fetchBranchData(branch, false, ['stock']);
 
     // FEATURE (2026-09-12): "even if its store item also it should have gone
     // to planner dashboard: advance orders tab and then only if they would
@@ -1208,6 +1209,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch', c
         <Field label="Mobile Number *"><Input value={common.mobile} onChange={(e)=>updateCommon('mobile',e.target.value)}/></Field>
         <div className="grid grid-cols-2 gap-3"><Field label="Delivery Date *"><Input type="date" value={common.deliveryDate} onChange={(e)=>updateCommon('deliveryDate',e.target.value)}/></Field><Field label="Delivery Time"><Input type="time" value={common.deliveryTime} onChange={(e)=>updateCommon('deliveryTime',e.target.value)}/></Field></div>
         {mode === 'store' && <>
+          {branch === 'SNB' && <p className="text-xs text-slate-600">Stock stays available for sale when you book an advance order. The final bill checks and deducts stock.</p>}
           <div className="grid grid-cols-[1fr_110px] gap-2"><Field label="Item"><Select value={storePick.itemName} onChange={(e)=>setStorePick({...storePick,itemName:e.target.value})}>{items.map((i)=><option key={i.name}>{i.name}</option>)}</Select></Field><Field label="Qty"><Input type="number" min="0" value={storePick.quantity} onChange={(e)=>setStorePick({...storePick,quantity:e.target.value})}/></Field></div>
           <SoftButton onClick={addStoreLine}><Plus className="size-4"/>Add Item</SoftButton>
           <div className="max-h-52 space-y-2 overflow-y-auto rounded-2xl bg-slate-50 p-2">{storeLines.length === 0 ? <p className="p-3 text-sm font-bold text-slate-500">No items selected.</p> : storeLines.map((line, idx)=>{ const avail = stockQty(branchStock, line.itemName, line.barcode); return <div key={`${line.itemName}-${idx}`} className="flex items-center justify-between gap-2 rounded-xl bg-white p-3 text-sm font-bold"><span>{line.itemName} - {line.quantity} {line.unit}{avail < line.quantity && <span className="ml-2 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-black text-amber-700">Low stock ({avail} in stock)</span>}</span><span>{money(line.lineTotal)}</span><button data-delete-confirmation="Are you sure you want to delete or remove this item? Choose Cancel to keep it." onClick={()=>removeStoreLine(idx)} className="rounded-lg bg-red-50 p-2 text-red-600"><XCircle className="size-4"/></button></div>; })}</div>
@@ -1909,6 +1911,7 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
   const isCashierView = source === 'branch';
   const { currentUser } = useAuthStore();
   const cashOnly = branch === 'SNB' && currentUser?.role === 'branch_snb' && isCashierView;
+  const reportUpiVariance = branch === 'SNB' || branch === 'VRSNB';
   const { bills, returns, cashierClosures, purchasePayments, cashMovements, counterOpenings, expenses, bankDeposits, addCashierClosure, openCounter, closeCounter, addNotification } = useBranchOpsStore();
   const { creditSales, creditPayments, fetchCreditSales, fetchCreditPayments } = useBranchStore();
   const [opening, setOpening] = useState('0');
@@ -2219,8 +2222,11 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
   const upiAuditEntered = actualUpiInput.trim() !== '';
   const cashMatches = Math.abs(diff) < 0.01;
   const upiMatches = upiAuditEntered && Math.abs(upiDifference) < 0.01;
-  const closureAuditComplete = cashOnly ? validCount : countedCash > 0 && upiAuditEntered;
-  const closureMatches = closureAuditComplete && (cashOnly || (cashMatches && upiMatches));
+  const needsUpi = reportUpiVariance || !cashOnly;
+  const upiRemarksRequired = !reportUpiVariance && Math.abs(upiDifference) >= 0.01;
+  const closureAuditComplete = (cashOnly ? validCount : Number.isFinite(countedCash) && countedCash >= 0) &&
+    (!needsUpi || (upiAuditEntered && Number.isFinite(actualUpi) && actualUpi >= 0));
+  const closureMatches = closureAuditComplete && cashMatches && (!needsUpi || upiMatches);
 
   const saveClosure = async () => {
     if (!branchCounterOpenRecord) { setSavedMessage('Open the counter before saving a closure.'); return; }
@@ -2235,11 +2241,11 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
       }
     }
     if (cashOnly && !validCount) { setSavedMessage('Enter whole, non-negative denomination counts. Enter 0 if the drawer is empty.'); return; }
-    if (!cashOnly && (!upiAuditEntered || !Number.isFinite(actualUpi) || actualUpi < 0)) {
+    if (needsUpi && (!upiAuditEntered || !Number.isFinite(actualUpi) || actualUpi < 0)) {
       setSavedMessage('Enter the verified UPI amount before saving the closure. Enter 0 when there was no UPI settlement.');
       return;
     }
-    if (!cashOnly && Math.abs(upiDifference) >= 0.01 && upiAuditNotes.trim().length < 3) {
+    if (needsUpi && upiRemarksRequired && upiAuditNotes.trim().length < 3) {
       setSavedMessage('Enter UPI audit remarks because the verified amount does not match the system UPI total.');
       return;
     }
@@ -2257,9 +2263,9 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
       closing_denominations: Object.fromEntries(Object.entries(closeDenominations).map(([denom, count]) => [String(denom), String(count || '')])),
       cash_total: cash,
       upi_total: upi,
-      actual_upi: cashOnly ? undefined : actualUpi,
-      upi_difference: cashOnly ? undefined : upiDifference,
-      upi_notes: cashOnly ? null : upiAuditNotes.trim() || null,
+      actual_upi: needsUpi ? actualUpi : undefined,
+      upi_difference: needsUpi ? upiDifference : undefined,
+      upi_notes: upiAuditNotes.trim() || null,
       card_total: card,
       credit_billed: creditSalesTotal,
       credit_collected: creditCollectionTotal,
@@ -2283,14 +2289,13 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
       `System UPI: ${upi.toFixed(2)}`,
       `Verified UPI: ${actualUpi.toFixed(2)}`,
       `Difference: ${upiDifference.toFixed(2)}`,
-      `Remarks: ${upiAuditNotes.trim() || 'Matched'}`,
+      `Remarks: ${upiAuditNotes.trim() || (upiMatches ? 'Matched' : 'No remarks entered')}`,
     ].join(' | ');
     const isMissingUpiSchemaCacheError = (candidate: { code?: string; message?: string } | null | undefined) =>
       candidate?.code === 'PGRST204'
       && /actual_upi|upi_difference|upi_notes|counted_upi/i.test(candidate.message || '');
     const rpcPayload = {
       ...closurePayload,
-      cash_only: cashOnly,
       session_advance_collected: advanceCollectedToday,
       supplier_payments: supplierPaymentTotal,
       bank_deposits: bankDepositTotal,
@@ -2341,8 +2346,8 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
           cash_sales: cash,
           upi_sales: upi,
           counted_upi: actualUpi,
-          upi_difference: cashOnly ? undefined : upiDifference,
-          upi_notes: cashOnly ? null : upiAuditNotes.trim() || null,
+          upi_difference: needsUpi ? upiDifference : undefined,
+          upi_notes: upiAuditNotes.trim() || null,
           card_sales: card,
           credit_sales: creditSalesTotal,
           credit_collected: creditCollectionTotal,
@@ -2695,7 +2700,7 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
           </div>
           <p className="mt-2 text-sm font-bold text-muted-foreground">
             {isCashierView
-              ? (!branchCounterOpenRecord && branchClosureRecord ? `Closed by ${branchClosureRecord.cashier}.` : cashOnly ? 'Enter denomination counts, then save.' : 'Enter your counted cash and verified UPI, then save.')
+              ? (!branchCounterOpenRecord && branchClosureRecord ? `Closed by ${branchClosureRecord.cashier}.` : cashOnly ? 'Enter denomination counts and counted UPI, then save.' : 'Enter your counted cash and verified UPI, then save.')
               : !branchCounterOpenRecord && branchClosureRecord
               ? `Closed by ${branchClosureRecord.cashier}. Cash difference ${money(branchClosureRecord.difference)} - UPI difference ${money(branchClosureRecord.upiDifference || 0)}`
               : `Cash difference ${money(diff)} - UPI difference ${upiAuditEntered ? money(upiDifference) : 'enter verified UPI'}`}
@@ -2858,7 +2863,7 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
             )}
           </div>
 
-          {!cashOnly && <div className="rounded-2xl border border-blue-200 bg-blue-50/70 p-3 space-y-3">
+          {needsUpi && <div className="rounded-2xl border border-blue-200 bg-blue-50/70 p-3 space-y-3">
             <div className="flex items-center justify-between gap-3">
               <div>
                 <p className="text-[10px] font-black uppercase tracking-widest text-blue-700">UPI audit</p>
@@ -2889,11 +2894,14 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
             <Textarea
               value={upiAuditNotes}
               onChange={(e)=>{ setUpiAuditNotes(e.target.value); setSavedMessage(''); }}
-              placeholder={upiAuditEntered && Math.abs(upiDifference) >= 0.01 ? 'Required: explain UPI shortage or excess' : 'UPI verification remarks (optional when matched)'}
+              placeholder={upiAuditEntered && upiRemarksRequired ? 'Explain the UPI shortage or excess' : 'UPI remarks (optional)'}
               rows={2}
             />
-            {upiAuditEntered && Math.abs(upiDifference) >= 0.01 && upiAuditNotes.trim().length < 3 && (
+            {upiAuditEntered && upiRemarksRequired && upiAuditNotes.trim().length < 3 && (
               <p className="text-xs font-black text-red-700">Remarks are required because the UPI amount does not match.</p>
+            )}
+            {reportUpiVariance && upiAuditEntered && !upiMatches && (
+              <p className="text-xs font-semibold text-amber-800">You can close the counter. {branch} Admin will see the entered amount and the difference.</p>
             )}
           </div>}
 
