@@ -212,6 +212,8 @@ export interface CreditSale {
   createdAt: string;
   dueDate: string | null;
   settledAt: string | null;
+  cancelledAt?: string | null;
+  cancellationReason?: string | null;
   status: 'pending' | 'partial' | 'settled';
   notes: string | null;
   billNo: string;
@@ -475,6 +477,8 @@ function computeBranchRealtimeChange(state: BranchState, branch: Branch, table: 
         createdAt: String(row.created_at ?? ''),
         dueDate: row.due_date == null ? null : String(row.due_date),
         settledAt: row.settled_at == null ? null : String(row.settled_at),
+        cancelledAt: row.cancelled_at == null ? null : String(row.cancelled_at),
+        cancellationReason: row.cancellation_reason == null ? null : String(row.cancellation_reason),
         status: (row.status ?? 'pending') as CreditSale['status'],
         notes: row.notes == null ? null : String(row.notes),
         billNo: String(row.bill_no ?? ''),
@@ -812,7 +816,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         // advance orders above — same-day-only, the unsettled backlog below
         // is untouched.
         wantCredit ? supabase.from('branch_credit_sales')
-          .select('id,branch,source,source_id,customer_ref,customer_name,customer_phone,items,subtotal,amount_paid,credit_amount,sold_by,created_at,due_date,settled_at,status,notes,bill_no,discount_amount')
+          .select('id,branch,source,source_id,customer_ref,customer_name,customer_phone,items,subtotal,amount_paid,credit_amount,sold_by,created_at,due_date,settled_at,status,notes,bill_no,discount_amount,cancelled_at,cancellation_reason')
           .eq('branch', branch)
           .gte('created_at', startOfToday)
           .order('created_at', { ascending: false })
@@ -828,7 +832,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
           .order('created_at', { ascending: false })
           .limit(1000) : SKIP,
         wantCredit ? supabase.from('branch_credit_sales')
-          .select('id,branch,source,source_id,customer_ref,customer_name,customer_phone,items,subtotal,amount_paid,credit_amount,sold_by,created_at,due_date,settled_at,status,notes,bill_no,discount_amount')
+          .select('id,branch,source,source_id,customer_ref,customer_name,customer_phone,items,subtotal,amount_paid,credit_amount,sold_by,created_at,due_date,settled_at,status,notes,bill_no,discount_amount,cancelled_at,cancellation_reason')
           .eq('branch', branch)
           .neq('status', 'settled')
           .order('created_at', { ascending: false })
@@ -1004,6 +1008,8 @@ export const useBranchStore = create<BranchState>((set, get) => ({
               createdAt:     d.created_at ?? new Date().toISOString(),
               dueDate:       d.due_date ?? null,
               settledAt:     d.settled_at ?? null,
+              cancelledAt: d.cancelled_at ?? null,
+              cancellationReason: d.cancellation_reason ?? null,
               status:        (d.status ?? 'pending') as 'pending' | 'partial' | 'settled',
               notes:         d.notes ?? null,
               billNo:        d.bill_no ?? '',
@@ -1499,7 +1505,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     // history with no status filter, not just the unsettled/pending subset,
     // so it can genuinely exceed 1000 over time. Paginated.
     const { data, error } = await fetchAllRows<any>('branch_credit_sales', (q) => {let query=q
-      .select('id, branch, source, source_id, customer_ref, customer_name, customer_phone, items, subtotal, amount_paid, credit_amount, sold_by, created_at, due_date, settled_at, status, notes, bill_no, discount_amount')
+      .select('id, branch, source, source_id, customer_ref, customer_name, customer_phone, items, subtotal, amount_paid, credit_amount, sold_by, created_at, due_date, settled_at, status, notes, bill_no, discount_amount, cancelled_at, cancellation_reason')
       .eq('branch', branch)
       .order('created_at', { ascending: false });
       if(fromISO)query=query.gte('created_at',fromISO);
@@ -1527,6 +1533,8 @@ export const useBranchStore = create<BranchState>((set, get) => ({
           createdAt:     d.created_at ?? new Date().toISOString(),
           dueDate:       d.due_date ?? null,
           settledAt:     d.settled_at ?? null,
+          cancelledAt: d.cancelled_at ?? null,
+          cancellationReason: d.cancellation_reason ?? null,
           status:        (d.status ?? 'pending') as 'pending' | 'partial' | 'settled',
           notes:         d.notes ?? null,
           billNo:        d.bill_no ?? '',

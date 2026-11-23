@@ -561,12 +561,22 @@ export interface BranchStockCountReport {
   branch: Branch;
   reportNo: string;
   lines: BranchStockCountLine[];
+  postingIssues?: StockCountPostingIssue[];
   status: "Pending Admin Review" | "Confirmed" | "Rejected";
   reportedBy: string;
   confirmedBy?: string;
   confirmedAt?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface StockCountPostingIssue {
+  itemName: string;
+  physicalQty: number;
+  reservedQuantity: number;
+  liveQty?: number | null;
+  advanceOrders?: string[];
+  reason: string;
 }
 
 export interface BranchStockVarianceRecord {
@@ -813,6 +823,7 @@ interface BranchOpsState {
   confirmStockCountReport: (
     reportId: string,
     confirmedBy: string,
+    postingIssues?: StockCountPostingIssue[],
   ) => BranchStockCountReport | undefined;
   addAuditLog: (log: Omit<AuditLogRecord, "id" | "createdAt">) => void;
 }
@@ -1222,7 +1233,7 @@ const branchOpsSupabaseStorage: PersistStorage<BranchOpsState> = {
 
       let stockCountQuery = supabase
         .from("branch_stock_count_reports")
-        .select("id, branch, report_no, lines, status, reported_by, confirmed_by, confirmed_at, created_at, updated_at")
+        .select("*")
         .order("created_at", { ascending: false })
         .limit(sessionBranch ? 200 : 1000); // EGRESS FIX: reduced from 1000
 
@@ -1326,6 +1337,7 @@ const branchOpsSupabaseStorage: PersistStorage<BranchOpsState> = {
           branch: row.branch as Branch,
           reportNo: String(row.report_no),
           lines: (row.lines as BranchStockCountLine[]) ?? [],
+          postingIssues: Array.isArray(row.posting_issues) ? row.posting_issues as StockCountPostingIssue[] : undefined,
           status: row.status as BranchStockCountReport["status"],
           reportedBy: String(row.reported_by ?? ""),
           confirmedBy: row.confirmed_by ? String(row.confirmed_by) : undefined,
@@ -3121,13 +3133,14 @@ export const useBranchOpsStore = create<BranchOpsState>()(
         });
         return null;
       },
-      confirmStockCountReport: (reportId, confirmedBy) => {
+      confirmStockCountReport: (reportId, confirmedBy, postingIssues) => {
         const report = get().stockCountReports.find((r) => r.id === reportId);
         if (!report) return undefined;
         if (report.status === "Confirmed") return report;
         const now = new Date().toISOString();
         const confirmedReport: BranchStockCountReport = {
           ...report,
+          postingIssues,
           status: "Confirmed",
           confirmedBy,
           confirmedAt: now,
@@ -3155,8 +3168,10 @@ export const useBranchOpsStore = create<BranchOpsState>()(
                 id: uid("note"),
                 branch: report.branch,
                 type: "Stock Variance",
-                title: "Stock variance confirmed",
-                details: `${report.reportNo} confirmed by ${confirmedBy}. ${varianceRows.length} item differences sent to Owner/Admin.`,
+                title: postingIssues?.length ? "Stock count confirmed with exceptions" : "Stock variance confirmed",
+                details: postingIssues?.length
+                  ? `${report.reportNo} confirmed by ${confirmedBy}. ${postingIssues.length} item(s) were not posted. See Stock Audit.`
+                  : `${report.reportNo} confirmed by ${confirmedBy}. ${varianceRows.length} item differences sent to Owner/Admin.`,
                 createdAt: now,
                 raisedBy: confirmedBy,
                 status: "Unread",
@@ -3194,6 +3209,7 @@ export const useBranchOpsStore = create<BranchOpsState>()(
             actor: confirmedBy,
           });
         }
+        if (postingIssues !== undefined) return confirmedReport;
         void supabase.from("branch_stock_count_reports").upsert(
           {
             id: confirmedReport.id,
