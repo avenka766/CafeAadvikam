@@ -560,7 +560,7 @@ export function passesProductionCutoff(
 ): boolean {
   if (cutoffMs == null) return true;
   const ts = new Date(o.storeConfirmedAt ?? o.createdAt).getTime();
-  return Number.isFinite(ts) ? ts >= cutoffMs : true;
+  return Number.isFinite(ts) && ts >= cutoffMs;
 }
 
 const PRODUCTION_DAY_MS = 24 * 60 * 60 * 1000;
@@ -568,6 +568,10 @@ const PRODUCTION_DAY_MS = 24 * 60 * 60 * 1000;
 export function nightlyProductionCutoff(now = Date.now()): number {
   const todayAt11 = Date.parse(`${businessDate(now)}T23:00:00+05:30`);
   return now >= todayAt11 ? todayAt11 : todayAt11 - PRODUCTION_DAY_MS;
+}
+
+export function productionOrdersInWindow(orders: BakeryOrder[], cutoff: number) {
+  return orders.filter(order => passesProductionCutoff(order, cutoff));
 }
 
 // BUG FIX (2026-09-24): "unable to send the Advance order SNB-ADV-348 — I
@@ -1194,9 +1198,12 @@ export default function PlannerDashboard({ embedded = false }: { embedded?: bool
   // Cut set — the nightly 11 PM clean slate. Feeds the Production Entry tab and
   // the Dispatch → "To Dispatch" list only.
   const productionSourceOrders = useMemo(
-    () => productionSourceOrdersAll.filter(o =>
-      passesProductionCutoff(o, productionCutoffMs)
-      || (isAdvanceOrderTagged(o.notes) && advanceOrderStillOwesDispatch(o))),
+    () => productionOrdersInWindow(productionSourceOrdersAll, productionCutoffMs),
+    [productionSourceOrdersAll, productionCutoffMs],
+  );
+  const advanceCarryoverOrders = useMemo(
+    () => productionSourceOrdersAll.filter(o => !passesProductionCutoff(o, productionCutoffMs)
+      && isAdvanceOrderTagged(o.notes) && advanceOrderStillOwesDispatch(o)),
     [productionSourceOrdersAll, productionCutoffMs],
   );
   const activeLeftovers    = useMemo(() => orders.filter(o => (o.leftoverStatus ?? 'pending') === 'pending' && o.status === 'dispatched'), [orders]);
@@ -1295,7 +1302,7 @@ export default function PlannerDashboard({ embedded = false }: { embedded?: bool
             )}
             {tab === 'hosur' && <HosurUnifiedSection embedded={embedded} />}
             {tab === 'cake' && <PackingCakeOrdersTab mode="planner" />}
-            {tab === 'advance' && <AdvancePlannerOrdersTab orders={orders} />}
+            {tab === 'advance' && <AdvancePlannerOrdersTab orders={orders} carryoverOrders={advanceCarryoverOrders} />}
             {tab === 'transfer-in' && <PackingTransferInTab />}
             {tab === 'transfer-out' && <PlannerTransferOutTab />}
             {tab === 'waste' && <PlannerWasteLogsTab />}
@@ -2723,12 +2730,12 @@ function NormalProductionEntryTab({ orders, cutoff }: { orders: BakeryOrder[]; c
         </div>
       </div>
       <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-700">
-        Daily production, including More to come, clears at 11 PM IST. Outstanding customer advance orders stay in the queue. Reports and dispatch history keep the recorded activity.
+        Production Entry clears at 11 PM IST. Continue earlier customer orders in Advance Orders.
       </div>
       <ExtraProducedItemForm />
       {rows.length === 0 && <EmptyState text="No items waiting on production entry." />}
       {rows.length > 0 && (
-        <ProductionEntryDateGroup key={cutoff} dateKey="all" label="Pending Production" orders={orders} rows={rows} search={search} defaultOpen unitOverrides={unitOverrides} />
+        <ProductionEntryDateGroup key={cutoff} label="Pending Production" orders={orders} rows={rows} search={search} defaultOpen unitOverrides={unitOverrides} />
       )}
     </div>
   );
@@ -2869,12 +2876,9 @@ function ExtraProducedItemForm() {
 // One collapsible calendar-day group — owns its own qty/save/confirm state so
 // the exact same item name pending on two different dates never collides.
 function ProductionEntryDateGroup({ label, orders, rows, search, defaultOpen, unitOverrides }: {
-  dateKey: string; label: string; orders: BakeryOrder[]; rows: ProductionRow[]; search: string; defaultOpen: boolean;
+  label: string; orders: BakeryOrder[]; rows: ProductionRow[]; search: string; defaultOpen?: boolean;
   unitOverrides: Map<string, ProductionUnitOverride>;
 }) {
-  // Anything not dated "Today" is a past date still carrying pending items —
-  // flag it so it doesn't get mistaken for (or buried under) today's work.
-  const isPastDate = label !== 'Today';
   const { recordProduction } = useBakeryStore();
   const currentUser = useAuthStore(s => s.currentUser);
   const [open, setOpen] = useState(defaultOpen);
@@ -3113,11 +3117,6 @@ function ProductionEntryDateGroup({ label, orders, rows, search, defaultOpen, un
           <CalendarDays className="size-4 text-muted-foreground" />
           <span className="text-sm font-black text-foreground">{label}</span>
           <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-bold text-muted-foreground">{displayGroups.length} item{displayGroups.length === 1 ? '' : 's'}</span>
-          {isPastDate && displayGroups.length > 0 && (
-            <span className="flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-black text-red-700">
-              <AlertTriangle className="size-3" /> Past date — still pending
-            </span>
-          )}
         </div>
         <ChevronDown className={cn('size-4 text-muted-foreground transition-transform', open && 'rotate-180')} />
       </button>
@@ -12256,7 +12255,10 @@ function fmtAdvDate(dateOnly: string): string {
   return `${Number(m[3])} ${months[Number(m[2]) - 1] || m[2]}`;
 }
 
-function AdvancePlannerOrdersTab({ orders }: { orders: BakeryOrder[] }) {
+function AdvancePlannerOrdersTab({ orders, carryoverOrders }: { orders: BakeryOrder[]; carryoverOrders: BakeryOrder[] }) {
+  const carryoverRows = useMemo(() => computeProductionRows(carryoverOrders).filter(row => row.itemStatus !== 'completed'), [carryoverOrders]);
+  const [unitOverrides, setUnitOverrides] = useState<Map<string, ProductionUnitOverride>>(new Map());
+  useEffect(() => { void fetchProductionUnitOverrides().then(setUnitOverrides); }, []);
   const { currentUser } = useAuthStore();
   const dispatchedBy = currentUser?.displayName || currentUser?.username || 'Planner';
   const { submitDispatch, fetchOrders } = useBakeryStore();
@@ -12331,6 +12333,8 @@ function AdvancePlannerOrdersTab({ orders }: { orders: BakeryOrder[] }) {
           reached this tab at all. See StoreAdvanceOrdersPanel's own comment
           for the full root cause. */}
       <StoreAdvanceOrdersPanel />
+      {carryoverRows.length > 0 && <ProductionEntryDateGroup label="Production for earlier advance orders"
+        orders={carryoverOrders} rows={carryoverRows} search="" unitOverrides={unitOverrides} />}
     <section className="space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border bg-card p-3.5">
         <div className="flex items-center gap-2">
