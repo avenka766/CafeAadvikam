@@ -28,6 +28,7 @@ import DailySalesTab from "@/components/admin/DailySalesTab";
 import { EditCreditPaymentModeModal } from "@/components/admin/AdminCreditTab";
 import BranchUpiClosureReport from "@/components/admin/BranchUpiClosureReport";
 import SnbCreditBillActions from "@/components/admin/SnbCreditBillActions";
+import SnbCreditPaymentBatch, { snbCreditPartyKey as partyKey } from "@/components/admin/SnbCreditPaymentBatch";
 import {
   money,
   useBranchOpsStore,
@@ -1153,7 +1154,7 @@ export default function AdminSNBDashboard() {
       {tab === "complaints" && <ComplaintsTab userName={userName} />}
       {tab === "waste" && <WasteLogsTab userName={userName} role={role} />}
       {tab === "quotations" && <QuotationsTab userName={userName} />}
-      {tab === "credit" && <CreditTab userName={userName} role={role} fromDate={fromDate} toDate={toDate} />}
+      {tab === "credit" && <CreditTab userName={userName} fromDate={fromDate} toDate={toDate} />}
       {tab === "invoices" && (
         <PurchaseInvoicesTab
           userName={userName}
@@ -3359,16 +3360,22 @@ function QuotationsTab({ userName }: { userName: string }) {
   );
 }
 
-function CreditTab({ userName, role, fromDate, toDate }: { userName: string; role: string; fromDate: string; toDate: string }) {
-  const { creditSales, creditPayments, settleCreditSale, applyCreditDiscount, fetchCreditSales, fetchCreditPayments } = useBranchStore();
+function CreditTab({ userName, fromDate, toDate }: { userName: string; fromDate: string; toDate: string }) {
+  const { creditSales, creditPayments, applyCreditDiscount, fetchCreditSales, fetchCreditPayments } = useBranchStore();
   const bills = useBranchOpsStore((state) => state.bills);
   const credits = creditSales[BRANCH] || [];
   const payments = creditPayments[BRANCH] || [];
   const [party, setParty] = useState('');
   const [reportMode, setReportMode] = useState('all');
-  const partyKey = (credit: (typeof credits)[number]) =>
-    credit.customerRef ? 'customer:' + credit.customerRef : credit.customerPhone?.replace(/\D/g, '')
-      ? 'phone:' + credit.customerPhone.replace(/\D/g, '') : 'name:' + credit.customerName.trim().toLowerCase();
+  const [creditSearch, setCreditSearch] = useState('');
+  const [creditStatus, setCreditStatus] = useState<'all' | 'pending' | 'settled' | 'cancelled'>('all');
+  const matchesCredit = (credit: (typeof credits)[number]) => {
+    const status = credit.cancelledAt ? 'cancelled' : credit.creditAmount > 0 ? 'pending' : credit.status;
+    return (!party || partyKey(credit) === party)
+      && (creditStatus === 'all' || creditStatus === status)
+      && [credit.customerName, credit.customerPhone, credit.billNo].some(value =>
+        (value ?? '').toLowerCase().includes(creditSearch.trim().toLowerCase()));
+  };
   const parties = new Map(credits.map(credit => [partyKey(credit),
     [credit.customerName, credit.customerPhone].filter(Boolean).join(' · ')]));
   const creditsById = new Map(credits.map(credit => [credit.id, credit]));
@@ -3376,7 +3383,8 @@ function CreditTab({ userName, role, fromDate, toDate }: { userName: string; rol
     credit?.status === 'settled' ? credit.settledAt : null;
   const paymentsInRange = payments.filter(payment => {
     const credit = creditsById.get(payment.creditSaleId);
-    return inRange(payment.createdAt, fromDate, toDate) && (!party || (credit && partyKey(credit) === party));
+    return inRange(payment.createdAt, fromDate, toDate) &&
+      (credit ? matchesCredit(credit) : !party && !creditSearch.trim() && creditStatus === 'all');
   });
   useEffect(() => {
     void fetchCreditSales(BRANCH);
@@ -3409,12 +3417,6 @@ function CreditTab({ userName, role, fromDate, toDate }: { userName: string; rol
     }
   };
   const [selectedId, setSelectedId] = useState("");
-  const [amount, setAmount] = useState("");
-  const [mode, setMode] = useState<"cash" | "upi" | "card" | "bank">("cash");
-  const [reference, setReference] = useState("");
-  const [remarks, setRemarks] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [message, setMessage] = useState("");
   const selected = pending.find((credit) => credit.id === selectedId);
   const [creditSortField, setCreditSortField] = useState<
     "billNo" | "createdAt" | "settledAt" | "customerName" | "customerPhone" | "subtotal" | "amountPaid" | "creditAmount" | "dueDate" | "status"
@@ -3422,13 +3424,13 @@ function CreditTab({ userName, role, fromDate, toDate }: { userName: string; rol
   const [creditSortDir, setCreditSortDir] = useState<"asc" | "desc">("desc");
   const sortedCredits = useMemo(() => {
     const dir = creditSortDir === "asc" ? 1 : -1;
-    return credits.filter(credit => !party || partyKey(credit) === party).sort((a, b) => {
+    return credits.filter(matchesCredit).sort((a, b) => {
       const av = creditSortField === 'status' && a.cancelledAt ? 'cancelled' : a[creditSortField];
       const bv = creditSortField === 'status' && b.cancelledAt ? 'cancelled' : b[creditSortField];
       if (typeof av === "number" && typeof bv === "number") return (av - bv) * dir;
       return String(av ?? "").localeCompare(String(bv ?? "")) * dir;
     });
-  }, [credits, party, creditSortField, creditSortDir]);
+  }, [credits, party, creditSearch, creditStatus, creditSortField, creditSortDir]);
   const partyTotals = new Map<string, { party: string; bills: number; cancelled: number; balance: number }>();
   for (const credit of sortedCredits) {
     const key = partyKey(credit);
@@ -3453,6 +3455,33 @@ function CreditTab({ userName, role, fromDate, toDate }: { userName: string; rol
   const [detailId, setDetailId] = useState("");
   const [printError, setPrintError] = useState("");
   const [editingPayment, setEditingPayment] = useState<(typeof payments)[number] | null>(null);
+  const [returningPayment, setReturningPayment] = useState<(typeof payments)[number] | null>(null);
+  const [paymentReturnReason, setPaymentReturnReason] = useState("");
+  const [paymentReturnMessage, setPaymentReturnMessage] = useState("");
+  const [returning, setReturning] = useState(false);
+  const returningRef = useRef(false);
+  const returnedPayments = new Set(payments.flatMap(payment => payment.reversalOf ? [payment.reversalOf] : []));
+  const returnPayment = async () => {
+    if (!returningPayment || !paymentReturnReason.trim() || returningRef.current) return;
+    returningRef.current = true;
+    setReturning(true);
+    setPaymentReturnMessage("");
+    try {
+      const { error } = await supabase.rpc('return_snb_credit_payment_v1', {
+        p_payment_id: returningPayment.id, p_reason: paymentReturnReason.trim(),
+        p_expected_amount: returningPayment.amount, p_expected_mode: returningPayment.paymentMode,
+      });
+      if (error) throw Error(error.message);
+      setReturningPayment(null);
+      setCorrectionMessage('Credit bill payment returned. The balance is due again.');
+      await refreshCredit();
+    } catch (error) {
+      setPaymentReturnMessage(error instanceof Error ? error.message : 'Could not return the payment.');
+    } finally {
+      returningRef.current = false;
+      setReturning(false);
+    }
+  };
   const [correctionMessage, setCorrectionMessage] = useState("");
   const detailCredit = credits.find((credit) => credit.id === detailId) || null;
   const [detailLedger, setDetailLedger] = useState<{
@@ -3536,34 +3565,9 @@ function CreditTab({ userName, role, fromDate, toDate }: { userName: string; rol
   useEffect(() => {
     if (selectedId && !pending.some((credit) => credit.id === selectedId)) {
       setSelectedId("");
-      setAmount("");
+      setDiscountAmount("");
     }
   }, [pending, selectedId]);
-
-  const collect = async () => {
-    const value = Number(amount);
-    setMessage("");
-    if (!selected) return setMessage("Select a pending credit bill.");
-    if (!Number.isFinite(value) || value <= 0) return setMessage("Enter a valid collection amount.");
-    if (value > selected.creditAmount + 0.001) return setMessage(`Collection cannot exceed ${money(selected.creditAmount)}.`);
-    if (mode !== "cash" && !reference.trim()) return setMessage(`Enter the ${mode.toUpperCase()} reference number.`);
-    setSaving(true);
-    const error = await settleCreditSale(BRANCH, selected.id, value, {
-      mode,
-      reference: reference.trim(),
-      remarks: remarks.trim() || "SNB Admin credit collection",
-      collectedBy: userName,
-      collectedRole: role,
-    });
-    setSaving(false);
-    if (error) return setMessage(error);
-    await Promise.all([fetchCreditSales(BRANCH), fetchCreditPayments(BRANCH)]); // EGRESS FIX: credit collection only touches credit sales
-    setMessage(`Collected ${money(value)} against ${selected.billNo}.`);
-    setSelectedId("");
-    setAmount("");
-    setReference("");
-    setRemarks("");
-  };
 
   const applyDiscount = async () => {
     const value = Number(discountAmount);
@@ -3585,13 +3589,13 @@ function CreditTab({ userName, role, fromDate, toDate }: { userName: string; rol
 
   const settlementRows = [
     ...paymentsInRange.map(payment => ({ creditId: payment.creditSaleId, date: payment.createdAt, bill: payment.billNo,
-      mode: payment.paymentMode, amount: payment.amount, remarks: payment.remarks || '' })),
+      mode: payment.paymentMode, amount: payment.amount, remarks: payment.remarks || '', returned: Boolean(payment.reversalOf) })),
     ...discountEvents.map(event => ({ creditId: event.credit_id, date: event.recorded_at,
-      bill: creditsById.get(event.credit_id)?.billNo ?? '—', mode: 'discount', amount: Number(event.amount), remarks: event.reason || '' })),
+      bill: creditsById.get(event.credit_id)?.billNo ?? '-', mode: 'discount', amount: Number(event.amount), remarks: event.reason || '', returned: false })),
   ].flatMap(row => {
     const credit = creditsById.get(row.creditId);
-    if (party && (!credit || partyKey(credit) !== party)) return [];
-    if (reportMode !== 'all' && row.mode !== reportMode) return [];
+    if (credit ? !matchesCredit(credit) : party || creditSearch.trim() || creditStatus !== 'all') return [];
+    if (reportMode !== 'all' && (reportMode === 'returned' ? !row.returned : row.mode !== reportMode)) return [];
     return [{ ...row, party: credit?.customerName ?? '-', billDate: credit?.createdAt, settledDate: creditSettledDate(credit),
       status: credit?.cancelledAt ? 'cancelled' : credit?.status ?? '' }];
   }).sort((a, b) => b.date.localeCompare(a.date));
@@ -3604,62 +3608,21 @@ function CreditTab({ userName, role, fromDate, toDate }: { userName: string; rol
         <Kpi label="Collected (Selected Dates)" value={money(paymentsInRange.reduce((sum, payment) => sum + payment.amount, 0))} icon={<CheckCircle2 className="size-5" />} tone="green" />
         <Kpi label="Credit Bills" value={credits.length} icon={<Receipt className="size-5" />} tone="amber" />
       </div>
-      <div className="grid gap-4 xl:grid-cols-[430px_minmax(0,1fr)]">
-        <Panel title="Collect Credit Payment" icon={<IndianRupee className="size-4" />}>
-          <div className="space-y-3">
-            <Field label="Pending Credit Bill">
-              <select
-                className={inputCls}
-                value={selectedId}
-                onChange={(e) => {
-                  const credit = pending.find((row) => row.id === e.target.value);
-                  setSelectedId(e.target.value);
-                  setAmount(credit ? String(credit.creditAmount) : "");
-                  setMessage("");
-                }}
-              >
-                <option value="">Select bill</option>
-                {pending.map((credit) => (
-                  <option key={credit.id} value={credit.id}>
-                    {credit.billNo} · {credit.customerName} · Due {money(credit.creditAmount)}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            {selected && (
-              <div className="rounded-2xl bg-slate-50 p-3 text-sm font-bold text-slate-700 ring-1 ring-slate-200">
-                <div className="flex justify-between gap-3"><span>Customer</span><b>{selected.customerName}</b></div>
-                <div className="mt-1 flex justify-between gap-3"><span>Mobile</span><b>{selected.customerPhone || "-"}</b></div>
-                <div className="mt-1 flex justify-between gap-3"><span>Due date</span><b>{selected.dueDate || "-"}</b></div>
-                <div className="mt-1 flex justify-between gap-3"><span>Balance</span><b className="text-red-600">{money(selected.creditAmount)}</b></div>
-              </div>
-            )}
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="Amount">
-                <input type="number" min="0.01" max={selected?.creditAmount || undefined} step="0.01" className={inputCls} value={amount} onChange={(e) => { setAmount(e.target.value); setMessage(""); }} />
-              </Field>
-              <Field label="Collection Mode">
-                <select className={inputCls} value={mode} onChange={(e) => { setMode(e.target.value as typeof mode); setMessage(""); }}>
-                  <option value="cash">Cash</option>
-                  <option value="upi">UPI</option>
-                  <option value="card">Card</option>
-                  <option value="bank">Bank</option>
-                </select>
-              </Field>
-            </div>
-            <Field label={mode === "cash" ? "Reference (optional)" : `${mode.toUpperCase()} Reference *`}>
-              <input className={inputCls} value={reference} onChange={(e) => setReference(e.target.value)} />
-            </Field>
-            <Field label="Remarks">
-              <textarea className={inputCls} value={remarks} onChange={(e) => setRemarks(e.target.value)} />
-            </Field>
-            {message && <p className={cn("rounded-2xl p-3 text-sm font-black ring-1", message.startsWith("Collected") ? "bg-emerald-50 text-emerald-700 ring-emerald-100" : "bg-red-50 text-red-700 ring-red-100")}>{message}</p>}
-            <button disabled={saving || !selected} onClick={collect} className={cn(btnCls, "w-full bg-slate-950 text-white disabled:cursor-not-allowed disabled:opacity-50")}>
-              {saving ? <RefreshCcw className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
-              {saving ? "Saving…" : "Save Credit Collection"}
-            </button>
-          </div>
-        </Panel>
+      <SnbCreditPaymentBatch credits={credits} onSaved={refreshCredit} />
+      <div className="flex flex-wrap items-end gap-3 rounded-2xl border bg-white p-3">
+        <Field label="Search credit customer">
+          <input className={inputCls} placeholder="Search name, phone or bill number" value={creditSearch}
+            onChange={event => { setCreditSearch(event.target.value); setDetailId(""); }} />
+        </Field>
+        <Field label="Credit status">
+          <select className={inputCls} value={creditStatus} onChange={event => { setCreditStatus(event.target.value as typeof creditStatus); setDetailId(""); }}>
+            <option value="all">All statuses</option><option value="pending">Pending and partially paid</option>
+            <option value="settled">Settled</option><option value="cancelled">Cancelled</option>
+          </select>
+        </Field>
+        <p className="pb-2 text-xs font-bold text-slate-600">{sortedCredits.length} of {credits.length} bills</p>
+      </div>
+      <div className="grid gap-4 xl:grid-cols-[360px_minmax(0,1fr)]">
         <Panel title="Give Credit Discount" icon={<WalletCards className="size-4" />}>
           <div className="space-y-3">
             <Field label="Pending Credit Bill">
@@ -3701,7 +3664,7 @@ function CreditTab({ userName, role, fromDate, toDate }: { userName: string; rol
             <p className="text-[11px] text-slate-500">This writes off the balance directly — it is not counted as cash/UPI/card collected.</p>
           </div>
         </Panel>
-        <Panel className="xl:col-span-2" title="SNB Branch Credit Register" icon={<WalletCards className="size-4" />} action={<div className="flex flex-wrap gap-2"><button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => void refreshCredit()} disabled={creditRefreshing}><RefreshCcw className={cn("size-4", creditRefreshing && "animate-spin")} /> Refresh</button><button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Credit_Register.xls", sortedCredits.map((credit) => ({ Bill: credit.billNo, BillDate: fmtDateTime(credit.createdAt), SettledDate: creditSettledDate(credit) ? fmtDateTime(creditSettledDate(credit)!) : "", CancelledDate: credit.cancelledAt ? fmtDateTime(credit.cancelledAt) : "", CreditDiscount: credit.discountAmount ?? 0, Customer: credit.customerName, Mobile: credit.customerPhone || "-", Total: credit.subtotal, Paid: credit.amountPaid, Balance: credit.creditAmount, Due: credit.dueDate || "-", Status: credit.cancelledAt ? "cancelled" : credit.status, CancellationReason: credit.cancellationReason ?? "" })))}><Download className="size-4" /> Excel</button></div>}>
+        <Panel title="SNB Branch Credit Register" icon={<WalletCards className="size-4" />} action={<div className="flex flex-wrap gap-2"><button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => void refreshCredit()} disabled={creditRefreshing}><RefreshCcw className={cn("size-4", creditRefreshing && "animate-spin")} /> Refresh</button><button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Credit_Register.xls", sortedCredits.map((credit) => ({ Bill: credit.billNo, BillDate: fmtDateTime(credit.createdAt), SettledDate: creditSettledDate(credit) ? fmtDateTime(creditSettledDate(credit)!) : "", CancelledDate: credit.cancelledAt ? fmtDateTime(credit.cancelledAt) : "", CreditDiscount: credit.discountAmount ?? 0, Customer: credit.customerName, Mobile: credit.customerPhone || "-", Total: credit.subtotal, Paid: credit.amountPaid, Balance: credit.creditAmount, Due: credit.dueDate || "-", Status: credit.cancelledAt ? "cancelled" : credit.status, CancellationReason: credit.cancellationReason ?? "" })))}><Download className="size-4" /> Excel</button></div>}>
           <div className="mb-3 flex flex-wrap items-end gap-3">
             <Field label="Credit party"><select className={inputCls} value={party} onChange={event => { setParty(event.target.value); setDetailId(''); }}>
               <option value="">All parties</option>
@@ -3740,22 +3703,22 @@ function CreditTab({ userName, role, fromDate, toDate }: { userName: string; rol
           </div>
         </Panel>
       </div>
-      <Panel title="Credit Settlement Report" icon={<History className="size-4" />} action={<button disabled={Boolean(reportError) && ['all', 'discount'].includes(reportMode)} className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Credit_Settlements.xls", settlementRows.map(row => ({ ActivityDate: fmtDateTime(row.date), Party: row.party, Bill: row.bill, BillDate: row.billDate ? fmtDateTime(row.billDate) : "", SettledDate: row.settledDate ? fmtDateTime(row.settledDate) : "", BillStatus: row.status, Mode: row.mode, Collected: row.mode === 'discount' ? 0 : row.amount, Discount: row.mode === 'discount' ? row.amount : 0, Remarks: row.remarks })))}><Download className="size-4" /> Excel</button>}>
+      <Panel title="Credit Settlement Report" icon={<History className="size-4" />} action={<button disabled={Boolean(reportError) && ['all', 'discount'].includes(reportMode)} className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Credit_Settlements.xls", settlementRows.map(row => ({ ActivityDate: fmtDateTime(row.date), Party: row.party, Bill: row.bill, BillDate: row.billDate ? fmtDateTime(row.billDate) : "", SettledDate: row.settledDate ? fmtDateTime(row.settledDate) : "", BillStatus: row.status, Activity: row.returned ? "Payment returned" : row.mode === 'discount' ? "Discount" : "Collection", Mode: row.mode, Collected: row.mode === 'discount' || row.returned ? 0 : row.amount, Returned: row.returned ? -row.amount : 0, Discount: row.mode === 'discount' ? row.amount : 0, Remarks: row.remarks })))}><Download className="size-4" /> Excel</button>}>
         <div className="mb-3 flex flex-wrap items-end gap-3">
           <Field label="Settlement mode"><select className={inputCls} value={reportMode} onChange={event => setReportMode(event.target.value)}>
-            <option value="all">All modes</option><option value="cash">Cash</option><option value="discount">Discount</option>
+            <option value="all">All activity</option><option value="cash">Cash</option><option value="discount">Discount</option><option value="returned">Payment returned</option>
             <option value="upi">UPI</option><option value="card">Card</option><option value="bank">Bank</option><option value="mixed">Mixed</option>
           </select></Field>
-          <p className="pb-2 text-sm font-bold">Collections {money(settlementRows.filter(row => row.mode !== 'discount').reduce((sum,row) => sum + row.amount,0))} · Discounts {money(settlementRows.filter(row => row.mode === 'discount').reduce((sum,row) => sum + row.amount,0))}</p>
+          <p className="pb-2 text-sm font-bold">Net collections {money(settlementRows.filter(row => row.mode !== 'discount').reduce((sum,row) => sum + row.amount,0))} · Discounts {money(settlementRows.filter(row => row.mode === 'discount').reduce((sum,row) => sum + row.amount,0))}</p>
         </div>
         {reportError && <p role="alert" className="mb-3 text-sm text-red-700">{reportError}</p>}
-        <DataTable headers={["Activity date", "Party", "Bill", "Bill Date", "Settled Date", "Status", "Mode", "Collected", "Discount", "Remarks"]}
-          rows={settlementRows.map(row => [fmtDateTime(row.date), row.party, row.bill, row.billDate ? fmtDateTime(row.billDate) : "-", row.settledDate ? fmtDateTime(row.settledDate) : "-", row.status, row.mode.toUpperCase(),
+        <DataTable headers={["Activity date", "Party", "Bill", "Bill Date", "Settled Date", "Status", "Mode", "Collected", "Returned", "Discount", "Remarks"]}
+          rows={settlementRows.map(row => [fmtDateTime(row.date), row.party, row.bill, row.billDate ? fmtDateTime(row.billDate) : "-", row.settledDate ? fmtDateTime(row.settledDate) : "-", row.returned ? "Payment returned" : row.status, row.mode.toUpperCase(),
             row.mode === 'discount' ? "—" : money(row.amount), row.mode === 'discount' ? money(row.amount) : "—", row.remarks])}
           empty="No settlements match the selected dates, party and mode." />
       </Panel>
 
-      <Panel title="Credit Collection History" icon={<History className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Credit_Collections.xls", paymentsInRange.map((payment) => ({ PaymentDate: fmtDateTime(payment.createdAt), Party: creditsById.get(payment.creditSaleId)?.customerName ?? "-", Bill: payment.billNo, BillDate: creditsById.get(payment.creditSaleId)?.createdAt ?? "", SettledDate: creditSettledDate(creditsById.get(payment.creditSaleId)) ?? "", Amount: payment.amount, Mode: payment.paymentMode, Reference: payment.reference || "-", CollectedBy: payment.collectedBy, Remarks: payment.remarks || "-" })))}><Download className="size-4" /> Excel</button>}>
+      <Panel title="Credit Collection History" icon={<History className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Credit_Collections.xls", paymentsInRange.map((payment) => ({ PaymentDate: fmtDateTime(payment.createdAt), Party: creditsById.get(payment.creditSaleId)?.customerName ?? "-", Bill: payment.billNo, BillDate: creditsById.get(payment.creditSaleId)?.createdAt ?? "", SettledDate: creditSettledDate(creditsById.get(payment.creditSaleId)) ?? "", Amount: payment.amount, Activity: payment.reversalOf ? "Payment returned" : "Collection", Mode: payment.paymentMode, Reference: payment.reference || "-", CollectedBy: payment.collectedBy, Remarks: payment.remarks || "-" })))}><Download className="size-4" /> Excel</button>}>
         {correctionMessage && <p className="mb-3 rounded-2xl bg-emerald-50 p-3 text-sm font-black text-emerald-700 ring-1 ring-emerald-100">{correctionMessage}</p>}
         <DataTable
           headers={["Payment Date", "Party", "Bill", "Amount", "Mode", "Reference", "Collected By", "Remarks", "Action"]}
@@ -3768,11 +3731,34 @@ function CreditTab({ userName, role, fromDate, toDate }: { userName: string; rol
             payment.reference || "-",
             payment.collectedBy,
             payment.remarks || "-",
-            <button key="fix" onClick={() => { setEditingPayment(payment); setCorrectionMessage(""); }} className={cn(btnCls, "bg-amber-50 text-amber-700 ring-1 ring-amber-200")}><Pencil className="size-3.5" /> Edit payment mode</button>,
+            payment.reversalOf || returnedPayments.has(payment.id) ? <StatusBadge key="returned" tone="amber">Payment returned</StatusBadge> :
+              <div key="actions" className="flex flex-wrap gap-2">
+                <button type="button" onClick={() => { setEditingPayment(payment); setCorrectionMessage(""); }} className={cn(btnCls, "bg-amber-50 text-amber-700")}><Pencil className="size-3.5" /> Edit mode</button>
+                {payment.reversalOf !== undefined && payment.purpose === 'credit_settlement' && payment.paymentMode !== 'mixed' && !creditsById.get(payment.creditSaleId)?.cancelledAt &&
+                  <button type="button" onClick={() => { setReturningPayment(payment); setPaymentReturnReason(""); setPaymentReturnMessage(""); }}
+                    className={cn(btnCls, "bg-red-50 text-red-700")}><RotateCcw className="size-3.5" /> Return payment</button>}
+              </div>,
           ])}
           empty="No credit collections found."
         />
       </Panel>
+
+      {returningPayment && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4">
+          <form className="w-full max-w-md space-y-3 rounded-2xl bg-white p-5" onSubmit={event => { event.preventDefault(); void returnPayment(); }}>
+            <h3 className="font-black">Return credit bill payment</h3>
+            <p className="text-sm">{returningPayment.billNo} · {money(returningPayment.amount)} · {returningPayment.paymentMode.toUpperCase()}</p>
+            <p className="text-xs text-slate-600">This records the return in the original payment mode and puts the amount back on the bill balance. If money was received, refund it in that mode before confirming.</p>
+            <Field label="Reason for the wrong entry"><textarea className={inputCls} required maxLength={500}
+              value={paymentReturnReason} onChange={event => setPaymentReturnReason(event.target.value)} /></Field>
+            {paymentReturnMessage && <p role="alert" className="text-xs text-red-700">{paymentReturnMessage}</p>}
+            <div className="flex gap-2">
+              <button type="submit" disabled={returning || !paymentReturnReason.trim()} className={cn(btnCls, "bg-red-700 text-white")}>{returning ? "Saving…" : "Confirm payment return"}</button>
+              <button type="button" disabled={returning} onClick={() => setReturningPayment(null)} className={btnCls}>Back</button>
+            </div>
+          </form>
+        </div>
+      )}
 
       {editingPayment && (
         <EditCreditPaymentModeModal
