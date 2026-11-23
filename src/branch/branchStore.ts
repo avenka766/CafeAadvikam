@@ -232,6 +232,8 @@ export interface CreditPayment {
   collectedBy: string;
   collectedRole: string | null;
   createdAt: string;
+  purpose?: string | null;
+  reversalOf?: string | null;
 }
 
 interface BranchState {
@@ -501,6 +503,8 @@ function computeBranchRealtimeChange(state: BranchState, branch: Branch, table: 
         remarks: row.remarks == null ? null : String(row.remarks),
         collectedBy: String(row.collected_by ?? ''),
         collectedRole: row.collected_role == null ? null : String(row.collected_role),
+        purpose: row.payment_purpose == null ? null : String(row.payment_purpose),
+        reversalOf: row.reversal_of === undefined ? undefined : row.reversal_of == null ? null : String(row.reversal_of),
         createdAt: String(row.created_at ?? ''),
       };
       return { creditPayments: { ...state.creditPayments, [branch]: [next, ...current.filter((payment) => payment.id !== id)].slice(0, 3000) } };
@@ -1548,7 +1552,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     // BUG FIX (2026-09-16): same unbounded-lifetime-history risk as
     // fetchCreditSales above — paginated with fetchAllRows.
     const { data, error } = await fetchAllRows<any>('branch_credit_payments', (q) => {let query=q
-      .select('id, credit_sale_id, branch, bill_no, amount, payment_mode, reference, remarks, collected_by, collected_role, created_at')
+      .select(branch === 'SNB' ? '*' : 'id, credit_sale_id, branch, bill_no, amount, payment_mode, reference, remarks, collected_by, collected_role, created_at,payment_purpose')
       .eq('branch', branch)
       .order('created_at', { ascending: false });
       if(fromISO)query=query.gte('created_at',fromISO);
@@ -1571,6 +1575,8 @@ export const useBranchStore = create<BranchState>((set, get) => ({
           remarks: d.remarks ?? null,
           collectedBy: d.collected_by ?? 'Staff',
           collectedRole: d.collected_role ?? null,
+          purpose: d.payment_purpose ?? null,
+          reversalOf: d.reversal_of,
           createdAt: d.created_at ?? new Date().toISOString(),
         }));
       return { creditPayments };
