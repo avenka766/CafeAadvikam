@@ -23,6 +23,7 @@ import { useBranchOpsStore, type BranchStockVarianceRecord } from '@/branch/bran
 import type { Branch } from '@/branch/types';
 import { BRANCH_LABELS } from '@/branch/types';
 import { useInvoiceStore } from '@/bakery/invoiceStore';
+import GrnWorkspace from '@/bakery/GrnWorkspace';
 import { usePurchaseOrderStore } from '@/bakery/purchaseOrderStore';
 import { useStorePurchaseOrderStore, type StorePurchaseOrder } from '@/bakery/storePurchaseOrderStore';
 import { useBranchLedger } from '@/hooks/useBranchLedger';
@@ -3665,6 +3666,8 @@ function OwnerPOApprovalsTab() {
 
   return (
     <div className="owner-tab-stack">
+      <GrnWorkspace ownerApprovals />
+      <h2 className="text-lg font-semibold">Store purchase order approvals</h2>
       <section className="owner-metric-grid">
         <OwnerMetricCard icon={<ClipboardList className="size-5" />} label="Pending Your Approval" value={pending} tone={pending ? 'amber' : 'green'} sub="Store purchase orders" />
         <OwnerMetricCard icon={<CheckCircle2 className="size-5" />} label="Approved" value={orders.filter(po => po.status === 'approved' || po.status === 'converted').length} tone="green" sub="Ready or already converted" />
@@ -4663,7 +4666,7 @@ export default function OwnerDashboard() {
     { id: 'sales',      label: 'Sales & Profit',     icon: <BarChart3     className="size-4" />, hint: 'Trends and payment split' },
     { id: 'credit',     label: 'Credit Tracking',    icon: <IndianRupee   className="size-4" />, hint: 'Pending collections' },
     { id: 'purchases',  label: 'Store Purchases',    icon: <ShoppingBag   className="size-4" />, hint: 'Supplier and invoice view' },
-    { id: 'poApprovals', label: 'PO Approvals',      icon: <ClipboardList className="size-4" />, hint: 'Approve or reject Store purchase orders' },
+    { id: 'poApprovals', label: 'PO Approvals',      icon: <ClipboardList className="size-4" />, hint: 'Review GRN and Store purchase orders' },
     { id: 'closure',    label: 'Daily Closure',      icon: <WalletCards   className="size-4" />, hint: 'All unit closing status' },
     { id: 'variance',   label: 'Stock Variance',     icon: <AlertTriangle className="size-4" />, hint: 'Physical stock differences' },
     { id: 'attendance', label: 'Staff & Payroll',    icon: <CalendarCheck className="size-4" />, hint: 'Attendance and advances' },
