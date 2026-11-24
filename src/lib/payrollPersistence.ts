@@ -1,3 +1,4 @@
+import type { AdvanceDeductionChoice } from './payrollAdvance';
 import {supabase} from './supabase';
 import type { AttendanceTimes } from './attendanceHours';
 export interface PayrollDay {present:boolean;half:boolean;woff:boolean;absent:boolean;bf:boolean;lunch:boolean;dinner:boolean}
@@ -13,8 +14,8 @@ export async function savePayrollTimes(employeeId: string, year: number, month: 
   if (error) throw new Error(error.message || 'Shift times could not be saved.');
 }
 
-export async function savePayrollDeduction(employeeId:string,year:number,month:number,value:{deductAdvance:boolean;deductOther:boolean;deductUniform:boolean;deductESI:boolean;deductPF:boolean}) {
- const {error}=await supabase.from('deduction_decisions').upsert({employee_id:employeeId,year,month,deduct_advance:value.deductAdvance,deduct_other:value.deductOther,deduct_uniform:value.deductUniform,deduct_esi:value.deductESI,deduct_pf:value.deductPF},{onConflict:'employee_id,year,month'});
+export async function savePayrollDeduction(employeeId:string,year:number,month:number,value:AdvanceDeductionChoice & {deductOther:boolean;deductUniform:boolean;deductESI:boolean;deductPF:boolean}) {
+ const {error}=await supabase.from('deduction_decisions').upsert({employee_id:employeeId,year,month,deduct_advance:value.deductAdvance,advance_deduction_mode:value.advanceMode ?? null,advance_deduction_amount:value.advanceAmount ?? null,deduct_other:value.deductOther,deduct_uniform:value.deductUniform,deduct_esi:value.deductESI,deduct_pf:value.deductPF},{onConflict:'employee_id,year,month'});
  if(error)throw new Error(error.message||'Deductions could not be saved.');
 }
 
