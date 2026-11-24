@@ -21,7 +21,7 @@ vi.mock('@/lib/safeSpreadsheet', async importOriginal => ({
 vi.mock('@/lib/supabase', () => ({
   fetchAllRows: async (table: string) => ({
     data: table === 'employees' ? [
-      { id: 'employee-1', name: 'Example Staff', branch: 'SNB', department: 'Packing', is_active: true },
+      { id: 'employee-1', name: 'Example Staff', branch: 'SNB', department: 'Packing', is_active: true, gross_salary: 30000, salary_advance: 500 },
       { id: 'employee-2', name: 'Second Staff', branch: 'SNB', department: 'Packing', is_active: true },
     ] : table === 'attendance' ? [{ employee_id: 'employee-1', day: 1, ...mocks.saved }] : [],
   }),
@@ -151,6 +151,44 @@ it('keeps date buttons consecutive, preserves meals, and stores shift times inde
     const report = host.querySelector('[aria-label="Working hours analytics"]');
     expect(report?.textContent).toContain('7h 45m');
     expect(report?.textContent).toContain('Example Staff');
+  } finally {
+    await act(async () => root.unmount());
+    host.remove();
+    vi.unstubAllGlobals();
+  }
+});
+
+it('asks for a partial advance amount and saves the exact amount for the selected payroll month', async () => {
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+  const host = document.createElement('div');
+  document.body.append(host);
+  const root = createRoot(host);
+  mocks.upsert.mockClear().mockResolvedValue({ error: null });
+  try {
+    await act(async () => root.render(<AttendanceSalary />));
+    const employee = Array.from(host.querySelectorAll('button')).find(button => button.textContent?.includes('Example Staff'))!;
+    await act(async () => employee.click());
+    const picker = Array.from(host.querySelectorAll('fieldset')).find(item => item.textContent?.includes('Salary advance deduction'))!;
+    const select = picker.querySelector('select')!;
+    const button = picker.querySelector('button')!;
+    expect(picker.querySelector('input')).toBeNull();
+    await act(async () => {
+      select.value = 'partial';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    const amount = picker.querySelector('input')!;
+    expect(button.disabled).toBe(true);
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(amount, '125.25');
+      amount.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    expect(button.disabled).toBe(false);
+    expect(picker.textContent).toContain('374.75');
+    await act(async () => button.click());
+    expect(mocks.upsert.mock.lastCall![0]).toMatchObject({
+      employee_id: 'employee-1', deduct_advance: true, advance_deduction_mode: 'partial', advance_deduction_amount: 125.25,
+    });
+    expect(mocks.upsert.mock.lastCall![0]).not.toHaveProperty('salary_advance');
   } finally {
     await act(async () => root.unmount());
     host.remove();

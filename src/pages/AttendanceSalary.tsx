@@ -6,6 +6,8 @@ import EmployeeExitsPanel from '@/components/admin/EmployeeExitsPanel';
 import {savePayrollDay,savePayrollDeduction,savePayrollAttendanceImport,savePayrollTimes} from '@/lib/payrollPersistence';
 import AttendanceHoursAnalytics from '@/components/admin/AttendanceHoursAnalytics';
 import { foodOnlyPayroll, shiftMinutes, type AttendanceTimes } from '@/lib/attendanceHours';
+import AdvanceDeductionPicker from '@/components/admin/AdvanceDeductionPicker';
+import { advanceDeductionQuote, formatAdvanceAmount, type AdvanceDeductionChoice } from '@/lib/payrollAdvance';
 import AdminPayrollGate from '@/components/admin/AdminPayrollGate';
 import {payrollWeekOffLimit as weekOffLimit} from '@/lib/payrollWeekOff';
 import ContractTeamsPanel, { type ContractTeam } from '@/components/admin/ContractTeamsPanel';
@@ -88,8 +90,7 @@ interface SalaryAdvanceRecord {
   cleared: boolean;
 }
 
-interface DeductionDecision {
-  deductAdvance: boolean;
+interface DeductionDecision extends AdvanceDeductionChoice {
   deductOther: boolean;
   deductUniform: boolean;
   deductESI: boolean;
@@ -232,11 +233,11 @@ async function fetchAttendance(year: number, month: number): Promise<MonthAttend
 }
 
 async function fetchDeductionDecisions(year: number, month: number): Promise<DeductionDecisions> {
-  const { data, error } = await supabase.from('deduction_decisions').select('employee_id, deduct_advance, deduct_other, deduct_uniform, deduct_esi, deduct_pf').eq('year', year).eq('month', month);
+  const { data, error } = await supabase.from('deduction_decisions').select('employee_id, deduct_advance, advance_deduction_mode, advance_deduction_amount, deduct_other, deduct_uniform, deduct_esi, deduct_pf').eq('year', year).eq('month', month);
   if (error) throw new Error('Payroll deductions could not load: '+error.message);
   const result: DeductionDecisions = {};
   for (const row of (data || [])) {
-    result[row.employee_id as string] = { deductAdvance: row.deduct_advance as boolean, deductOther: row.deduct_other as boolean, deductUniform: row.deduct_uniform as boolean, deductESI: (row.deduct_esi ?? false) as boolean, deductPF: (row.deduct_pf ?? false) as boolean };
+    result[row.employee_id as string] = { deductAdvance: row.deduct_advance as boolean, advanceMode: row.advance_deduction_mode as AdvanceDeductionChoice['advanceMode'], advanceAmount: row.advance_deduction_amount == null ? null : Number(row.advance_deduction_amount), deductOther: row.deduct_other as boolean, deductUniform: row.deduct_uniform as boolean, deductESI: (row.deduct_esi ?? false) as boolean, deductPF: (row.deduct_pf ?? false) as boolean };
   }
   return result;
 }
@@ -252,11 +253,6 @@ async function updateEmployee(emp: Employee): Promise<boolean> {
   const { error } = await supabase.from('employees').update({ name: emp.name, branch: emp.branch, department: emp.department, gross_salary: emp.grossSalary, salary_advance: emp.salaryAdvance, uniform_deduction: emp.uniformDeduction, other_deduction: emp.otherDeduction, account_number: emp.accountNumber || null, bank_name: emp.bankName || null, ifsc_code: emp.ifscCode || null, payment_mode: emp.paymentMode || null, account_holder_name: emp.accountHolderName || null, bank_branch_location: emp.bankBranchLocation || null }).eq('id', emp.id);
   if (error) { console.error('Update employee failed:', error.message); return false; }
   return true;
-}
-
-async function clearAdvance(employeeId: string, year: number, month: number, amount: number): Promise<void> {
-  const { error } = await supabase.rpc('record_monthly_advance_deduction_v1', {p_employee: employeeId,p_year:year,p_month:month,p_amount:amount});
-  if (error) throw new Error(error.message);
 }
 
 // ─── Advance Records DB helpers ───────────────────────────────────────────────
@@ -327,7 +323,6 @@ export function calcSalary(emp: Employee, att: MonthAttendance, daysInMonth: num
   const wagePd = emp.grossSalary > 0 ? emp.grossSalary / daysInMonth : 0;
   const earned = Math.round(wagePd * worked);
   const foodOnly = foodOnlyPayroll(emp.payrollYear, emp.payrollMonth);
-  const advanceDed = foodOnly ? 0 : emp.recordedAdvanceDeduction ?? (decision.deductAdvance ? emp.salaryAdvance : 0);
   const uniformDed  = !foodOnly && decision.deductUniform ? emp.uniformDeduction : 0;
   const otherDed    = !foodOnly && decision.deductOther   ? emp.otherDeduction : 0;
   // LOGIC FIX: ESI and PF must be calculated on the *earned* (pro-rated) salary, not on gross.
@@ -338,8 +333,11 @@ export function calcSalary(emp: Employee, att: MonthAttendance, daysInMonth: num
   // against the contracted gross, not the prorated earned amount.
   const esiDed      = !foodOnly && decision.deductESI     ? calcESI(earned, emp.grossSalary) : 0;
   const pfDed       = !foodOnly && decision.deductPF      ? calcPF(earned, emp.payrollYear, emp.payrollMonth)  : 0;
+  const advance = advanceDeductionQuote(decision, emp.salaryAdvance, earned - canteenTotal - uniformDed - otherDed - esiDed - pfDed, foodOnly);
+  const advanceDed = foodOnly ? advance.amount : emp.recordedAdvanceDeduction ?? advance.amount;
+  const advanceIssue = emp.recordedAdvanceDeduction || emp.paidSalary ? '' : advance.issue;
   const totalDed = advanceDed + canteenTotal + uniformDed + otherDed + esiDed + pfDed;
-  const calculated={ presentDays, halfDays, woffDays, absentDays, worked, canteenTotal, earned, totalDed, advanceDed, uniformDed, otherDed, esiDed, pfDed, net: Math.max(0, earned - totalDed) };
+  const calculated={ presentDays, halfDays, woffDays, absentDays, worked, canteenTotal, earned, totalDed, advanceDed, advanceIssue, uniformDed, otherDed, esiDed, pfDed, net: Math.max(0, earned - totalDed) };
   if(!emp.paidSalary)return calculated;
   const p=emp.paidSalary;
   return {...calculated,presentDays:p.present,halfDays:p.half,woffDays:p.week_off,worked:p.present+p.half*.5+p.week_off,canteenTotal:p.canteen,earned:p.earned,totalDed:p.deductions,advanceDed:p.advance,uniformDed:p.uniform,otherDed:p.other,esiDed:p.esi,pfDed:p.pf,net:p.net};
@@ -455,9 +453,11 @@ function generatePayslipPdf(emp: Employee, calc: ReturnType<typeof calcSalary>, 
   doc.setTextColor(0, 0, 0);
   y += 18;
 
-  if (calc.advanceDed === 0 && emp.salaryAdvance > 0) {
+  const carry = emp.paidSalary ? emp.paidSalary.advance_carry_forward ?? 0
+    : Math.max(0, emp.salaryAdvance - (emp.recordedAdvanceDeduction ? 0 : calc.advanceDed));
+  if (carry > 0) {
     doc.setFont('helvetica', 'italic'); doc.setFontSize(8.5);
-    doc.text(`Note: Rs. ${emp.salaryAdvance.toLocaleString('en-IN')} salary advance carried forward, not deducted this period.`, left, y);
+    doc.text(`Advance balance carried forward: Rs. ${carry.toLocaleString('en-IN')}.`, left, y);
     y += 6;
   }
 
@@ -1255,15 +1255,14 @@ function AttRow({ emp, att, onUpdate, expanded, onToggle, decision, onDecisionCh
             <span className="flex items-center gap-1 text-[10px] font-body text-muted-foreground"><span className="size-2.5 rounded-sm bg-orange-400 inline-block" /> BF / Lunch / Dinner ₹10</span>
             <span className="ml-auto text-[10px] font-body font-bold text-orange-600">🍽 {'₹'}{canteenTotal}</span>
           </div>
-          {!foodOnly && (hasAdvance || hasOther || hasUniform) && (
+          {!emp.paidSalary && !emp.recordedAdvanceDeduction && (hasAdvance || decision.advanceMode) &&
+            <AdvanceDeductionPicker key={JSON.stringify(decision)} balance={emp.salaryAdvance} choice={decision}
+              onSave={choice => onDecisionChange(emp.id, { ...decision, ...choice })} />}
+          {!foodOnly && !emp.paidSalary && (hasOther || hasUniform) && (
             <div className="mb-3 space-y-1.5">
               <p className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-1">Deductions this month</p>
-              {hasAdvance && <DeductToggle label="Salary Advance" amount={emp.salaryAdvance} checked={decision.deductAdvance} onChange={v => onDecisionChange(emp.id, { ...decision, deductAdvance: v })} />}
               {hasUniform && <DeductToggle label="Uniform Deduction" amount={emp.uniformDeduction} checked={decision.deductUniform} onChange={v => onDecisionChange(emp.id, { ...decision, deductUniform: v })} />}
               {hasOther && <DeductToggle label="Other Deduction" amount={emp.otherDeduction} checked={decision.deductOther} onChange={v => onDecisionChange(emp.id, { ...decision, deductOther: v })} />}
-              {hasAdvance && !decision.deductAdvance && (
-                <p className="text-[10px] font-body text-amber-600 flex items-center gap-1"><AlertCircle className="size-3" /> Advance {'₹'}{emp.salaryAdvance.toLocaleString('en-IN')} will carry forward</p>
-              )}
             </div>
           )}
         </div>
@@ -1273,17 +1272,14 @@ function AttRow({ emp, att, onUpdate, expanded, onToggle, decision, onDecisionCh
 }
 
 // ─── Salary card ──────────────────────────────────────────────────────────────
-function SalaryCard({ emp, att, decision, onDecisionChange, daysInMonth, monthLabel, onAdvanceCleared, saving }: {
+function SalaryCard({ emp, att, decision, onDecisionChange, daysInMonth, monthLabel, saving }: {
   emp: Employee; att: MonthAttendance; daysInMonth: number; monthLabel: string;
   decision: DeductionDecision;
   onDecisionChange: (empId: string, d: DeductionDecision) => void;
-  onAdvanceCleared: () => Promise<void>;
   saving: boolean;
 }) {
-  const [clearing, setClearing] = useState(false);
-  const [clearError, setClearError] = useState<string | null>(null);
   const calc = calcSalary(emp, att, daysInMonth, decision);
-  const { presentDays, halfDays, woffDays, absentDays, worked, canteenTotal, earned, advanceDed, uniformDed, otherDed, esiDed, pfDed, net } = calc;
+  const { presentDays, halfDays, woffDays, absentDays, worked, canteenTotal, earned, advanceDed, advanceIssue, uniformDed, otherDed, esiDed, pfDed, net } = calc;
   // Preview amounts shown in toggle labels: use earned as base, gross for ESI eligibility check
   const esiAmount = calcESI(earned, emp.grossSalary);
   const pfAmount  = calcPF(earned, emp.payrollYear, emp.payrollMonth);
@@ -1292,19 +1288,8 @@ function SalaryCard({ emp, att, decision, onDecisionChange, daysInMonth, monthLa
   const hasUniform = emp.uniformDeduction > 0;
 
   const foodOnly = foodOnlyPayroll(emp.payrollYear, emp.payrollMonth);
-  const handleMarkPaid = async () => {
-    if (foodOnly || saving || emp.paidSalary || emp.recordedAdvanceDeduction || !decision.deductAdvance || emp.salaryAdvance <= 0 || !emp.payrollYear || !emp.payrollMonth) return;
-    setClearing(true);
-    setClearError(null);
-    try {
-      await clearAdvance(emp.id, emp.payrollYear, emp.payrollMonth, emp.salaryAdvance);
-      await onAdvanceCleared();
-    } catch {
-      setClearError('Failed to clear advance — please try again.');
-    } finally {
-      setClearing(false);
-    }
-  };
+  const carry = emp.paidSalary ? emp.paidSalary.advance_carry_forward ?? 0
+    : Math.max(0, emp.salaryAdvance - (emp.recordedAdvanceDeduction ? 0 : advanceDed));
 
   return (
     <div className="bg-card border border-border rounded-2xl overflow-hidden">
@@ -1322,7 +1307,7 @@ function SalaryCard({ emp, att, decision, onDecisionChange, daysInMonth, monthLa
           <p className="text-[10px] font-body text-muted-foreground">Net Salary</p>
           <button
             type="button"
-            disabled={saving}
+            disabled={saving || !!advanceIssue}
             onClick={() => generatePayslipPdf(emp, calc, monthLabel, daysInMonth)}
             className="mt-1.5 inline-flex items-center gap-1 rounded-lg bg-primary/10 px-2 py-1 text-[10px] font-body font-bold text-primary hover:bg-primary/20"
           >
@@ -1331,16 +1316,17 @@ function SalaryCard({ emp, att, decision, onDecisionChange, daysInMonth, monthLa
         </div>
       </div>
 
-      {!foodOnly && <div className="px-4 pt-3 space-y-1.5">
+      {!emp.paidSalary && !emp.recordedAdvanceDeduction && (hasAdvance || decision.advanceMode) && <div className="px-4 pt-3">
+        <AdvanceDeductionPicker key={JSON.stringify(decision)} balance={emp.salaryAdvance} choice={decision}
+          disabled={saving} onSave={choice => onDecisionChange(emp.id, { ...decision, ...choice })} />
+        {advanceIssue && <p role="alert" className="mt-2 text-xs text-destructive">{advanceIssue}</p>}
+      </div>}
+      {!foodOnly && !emp.paidSalary && <div className="px-4 pt-3 space-y-1.5">
           <p className="text-[10px] font-body font-bold text-muted-foreground uppercase">Deductions — select what to apply</p>
-          {hasAdvance && <DeductToggle label="Salary Advance" amount={emp.salaryAdvance} checked={decision.deductAdvance} onChange={v => onDecisionChange(emp.id, { ...decision, deductAdvance: v })} />}
           {hasUniform && <DeductToggle label="Uniform Deduction" amount={emp.uniformDeduction} checked={decision.deductUniform} onChange={v => onDecisionChange(emp.id, { ...decision, deductUniform: v })} />}
           {hasOther && <DeductToggle label="Other Deduction" amount={emp.otherDeduction} checked={decision.deductOther} onChange={v => onDecisionChange(emp.id, { ...decision, deductOther: v })} />}
           <DeductToggle label={`ESI (0.75% of earned${emp.grossSalary > ESI_WAGE_LIMIT ? ' — not applicable, gross > ₹21k' : ''})`} amount={esiAmount} checked={decision.deductESI} onChange={v => onDecisionChange(emp.id, { ...decision, deductESI: v })} />
           <DeductToggle label={emp.paidSalary ? 'PF (recorded paid salary)' : 'PF (12% of 60% earned, max ₹1,800)'} amount={pfAmount} checked={decision.deductPF} onChange={v => onDecisionChange(emp.id, { ...decision, deductPF: v })} />
-          {hasAdvance && !decision.deductAdvance && (
-            <p className="text-[10px] font-body text-amber-600 pb-1 flex items-center gap-1"><AlertCircle className="size-3" /> Advance {'₹'}{emp.salaryAdvance.toLocaleString('en-IN')} carried forward to next month</p>
-          )}
         </div>}
 
       <div className="px-4 py-3 grid grid-cols-2 gap-x-6 gap-y-1.5">
@@ -1353,25 +1339,17 @@ function SalaryCard({ emp, att, decision, onDecisionChange, daysInMonth, monthLa
         <SalRow label="Earned" value={`₹${earned.toLocaleString('en-IN')}`} highlight />
         <SalRow label="Food Deduction" value={canteenTotal > 0 ? `-₹${canteenTotal}` : '—'} neg={canteenTotal > 0} />
         {advanceDed > 0 && <SalRow label="Salary Advance" value={`-₹${advanceDed.toLocaleString('en-IN')}`} neg />}
-        {!decision.deductAdvance && hasAdvance && <SalRow label="Advance (Carry Fwd)" value={`₹${emp.salaryAdvance.toLocaleString('en-IN')}`} />}
-        {decision.deductUniform && uniformDed > 0 && <SalRow label="Uniform Ded." value={`-₹${uniformDed}`} neg />}
-        {decision.deductOther && otherDed > 0 && <SalRow label="Other Ded." value={`-₹${otherDed}`} neg />}
-        {decision.deductESI && esiDed > 0 && <SalRow label="ESI (0.75%)" value={`-₹${esiDed}`} neg />}
-        {decision.deductPF && pfDed > 0 && <SalRow label="PF (12%)" value={`-₹${pfDed.toLocaleString('en-IN')}`} neg />}
+        {carry > 0 && <SalRow label="Advance to carry forward" value={formatAdvanceAmount(carry)} />}
+        {uniformDed > 0 && <SalRow label="Uniform Ded." value={`-₹${uniformDed}`} neg />}
+        {otherDed > 0 && <SalRow label="Other Ded." value={`-₹${otherDed}`} neg />}
+        {esiDed > 0 && <SalRow label="ESI (0.75%)" value={`-₹${esiDed}`} neg />}
+        {pfDed > 0 && <SalRow label="PF (12%)" value={`-₹${pfDed.toLocaleString('en-IN')}`} neg />}
         <div className="col-span-2 border-t border-border pt-2 mt-0.5 flex justify-between items-center">
           <span className="text-sm font-body font-bold text-foreground">Net Payable</span>
           <span className={cn('font-display font-bold text-lg tabular-nums', net < 0 ? 'text-destructive' : 'text-primary')}>{'₹'}{net.toLocaleString('en-IN')}</span>
         </div>
       </div>
 
-      {!foodOnly && hasAdvance && decision.deductAdvance && !emp.recordedAdvanceDeduction && !emp.paidSalary && (
-        <div className="px-4 pb-3">
-          <button onClick={handleMarkPaid} disabled={clearing || saving} className="w-full h-9 rounded-xl bg-emerald-500 text-white text-xs font-body font-bold flex items-center justify-center gap-1.5 active:scale-95 transition-all disabled:opacity-50">
-            {clearing ? <Loader2 className="size-3.5 animate-spin" /> : <CheckCircle2 className="size-3.5" />} Confirm Advance Deduction for This Month
-          </button>
-          {clearError && <p className="text-xs font-body text-destructive text-center mt-1">{clearError}</p>}
-        </div>
-      )}
 
       {emp.ifscCode && (
         <div className="px-4 py-2 bg-muted/40 border-t border-border flex flex-wrap items-center gap-x-2 gap-y-0.5">
@@ -2067,7 +2045,6 @@ function AttendanceSalaryContent() {
   },[activeMonth.year,activeMonth.month,employees]);
 
   const updateDecision = useCallback(async(empId:string,d:DeductionDecision)=>{
-    if (foodOnlyPayroll(activeMonth.year, activeMonth.month)) return;
     const period=`${activeMonth.year}-${activeMonth.month}`;const lock=`${period}:deduction:${empId}`;
     if(writeLocks.current.has('attendance-import') || writeLocks.current.has(lock))return;
     const previous=decisions[empId]??defaultDecision();writeLocks.current.add(lock);setPendingWrites(n=>n+1);setSaveError('');
@@ -2079,12 +2056,9 @@ function AttendanceSalaryContent() {
 
   const getDecision = useCallback((empId: string): DeductionDecision =>
     foodOnlyPayroll(activeMonth.year, activeMonth.month)
-      ? { deductAdvance: false, deductOther: false, deductUniform: false, deductESI: false, deductPF: false }
+      ? { ...decisions[empId], deductAdvance: Boolean(decisions[empId]?.advanceMode && decisions[empId]?.deductAdvance),
+          deductOther: false, deductUniform: false, deductESI: false, deductPF: false }
       : decisions[empId] ?? defaultDecision(), [activeMonth.year, activeMonth.month, decisions]);
-
-  const handleAdvanceCleared = async () => {
-    if (activePeriod.current === `${activeMonth.year}-${activeMonth.month}`) await loadData({silent:true});
-  };
 
   const handleAdvanceRecordAdded = (rec: SalaryAdvanceRecord) => {
     setAdvanceRecords(prev => [rec, ...prev]);
@@ -2480,7 +2454,7 @@ function AttendanceSalaryContent() {
             <h2 className="font-display font-bold text-foreground">Daily Attendance — {activeMonth.label}</h2>
             <p className="text-[10px] font-body text-muted-foreground mt-0.5">Former staff are included in previous months. Blank days mean no saved attendance. Tap row to expand → tap day: blank → ✓ Present → ½ Half Day → W Week Off → X Absent → blank. Meals ₹10 each, on any day. Admin staff follow the month’s Sunday allowance (4 or 5); others have 4. Individual monthly exceptions appear in each employee’s Week Off limit.</p>
             <p className="mt-2 text-xs text-muted-foreground">Open an employee, then use Tab to move through the dates and Enter to mark the focused day. IN / OUT and meals follow the date buttons.</p>
-            {foodOnlyPayroll(activeMonth.year, activeMonth.month) && <p className="mt-2 text-xs font-semibold text-foreground">November unpaid payroll applies food deductions only.</p>}
+            {foodOnlyPayroll(activeMonth.year, activeMonth.month) && <p className="mt-2 text-xs font-semibold text-foreground">November payroll applies food deductions and any explicitly selected advance deduction.</p>}
             <div className="mt-3 flex flex-wrap items-center gap-2">
               <button type="button" onClick={downloadTemplate} disabled={refreshing || pendingWrites > 0 || filtered.length === 0}
                 className="rounded-lg border px-3 py-2 text-xs font-semibold disabled:opacity-50">Download Attendance Template</button>
@@ -2514,7 +2488,7 @@ function AttendanceSalaryContent() {
       {tab === 'salary' && (
         <div className="px-4 space-y-3">
           <div className="bg-card border border-border rounded-2xl p-4">
-            <p className="mb-3 text-xs text-muted-foreground">{foodOnlyPayroll(activeMonth.year, activeMonth.month) ? 'November unpaid payroll applies food deductions only. Outstanding advances carry forward.' : 'Unpaid payroll: PF is 12% of 60% of earned salary, capped at ₹1,800. Recorded paid payroll retains its payment snapshot.'}</p>
+            <p className="mb-3 text-xs text-muted-foreground">{foodOnlyPayroll(activeMonth.year, activeMonth.month) ? 'November payroll applies food deductions and any explicitly selected advance deduction. Advance balances reduce when Finance records payroll.' : 'Unpaid payroll: PF is 12% of 60% of earned salary, capped at ₹1,800. Recorded paid payroll retains its payment snapshot.'}</p>
             <h3 className="font-display font-bold text-foreground mb-3 flex items-center gap-2">
               <TrendingDown className="size-4 text-primary" />
               {branch === 'All' ? 'All Branches' : branch} — {activeMonth.label} Summary
@@ -2529,7 +2503,7 @@ function AttendanceSalaryContent() {
             </div>
           </div>
           {filtered.map(e => (
-            <SalaryCard key={e.id} emp={e} att={att} decision={getDecision(e.id)} onDecisionChange={updateDecision} daysInMonth={activeMonth.daysInMonth} monthLabel={activeMonth.label} onAdvanceCleared={handleAdvanceCleared} saving={pendingWrites > 0} />
+            <SalaryCard key={e.id} emp={e} att={att} decision={getDecision(e.id)} onDecisionChange={updateDecision} daysInMonth={activeMonth.daysInMonth} monthLabel={activeMonth.label} saving={pendingWrites > 0} />
           ))}
           {filtered.length === 0 && <EmptyState icon="👥" message="No employees found" sub="Add staff in Staff Management to see them here." />}
         </div>
