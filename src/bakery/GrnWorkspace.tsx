@@ -36,11 +36,11 @@ function SupplierCatalogue({ data }: { data: PurchaseData }) {
   </section>;
 }
 
-export default function GrnWorkspace() {
+export default function GrnWorkspace({ ownerApprovals = false }: { ownerApprovals?: boolean }) {
   const canPurchase = useAuthStore(state => state.currentUser?.role === 'grn');
   const workspace = useMaterialWorkspace<PurchaseData>('purchase_read');
-  const [params, setParams] = useSearchParams();
-  const tab = tabs.find(item => item === params.get('tab')) ?? (canPurchase ? tabs[0] : 'Approved Status');
+  const [params] = useSearchParams();
+  const tab = ownerApprovals ? 'Approved Status' : tabs.find(item => item === params.get('tab')) ?? (canPurchase ? tabs[0] : 'Approved Status');
   const [editorTab, setEditorTab] = useState<Tab>(tab);
   const [editor, setEditor] = useState<Editor>();
   if (tab !== editorTab) {
@@ -49,7 +49,7 @@ export default function GrnWorkspace() {
   }
   const { data, dates, loading, busy, readError } = workspace;
   const sheets = data && purchaseSheets(data, dates.from, dates.through);
-  const draft = data?.orders.filter(order => order.status === 'draft' || order.status === 'rejected') ?? [];
+  const openOrders = data?.orders.filter(order => order.status !== 'received') ?? [];
   const pending = data?.orders.filter(order => order.status === 'submitted') ?? [];
   const approved = data?.orders.filter(order => order.status === 'approved') ?? [];
   const preferred = new Set(data?.catalogue.filter(entry => entry.preferred && data.suppliers.some(supplier => supplier.id === entry.supplier_id))
@@ -62,19 +62,32 @@ export default function GrnWorkspace() {
       <h2 className="font-semibold">{title}</h2>
       <MaterialTable key={title} label={title} headings={['PO number', 'Supplier', 'Items', 'Status', 'PO date', 'Action']}
         rows={queue.map(order => [poNumber(order.number), order.supplier,
-          <span title={order.lines.map(line => line.name).join(', ')}>{order.lines.length} {order.lines.length === 1 ? 'item' : 'items'}{order.automatic && ' · Low stock'}</span>,
+          <details className="min-w-32">
+            <summary className="cursor-pointer font-medium">{order.lines.length} {order.lines.length === 1 ? 'item' : 'items'}{order.automatic && ' · Low stock'}</summary>
+            <ul className="mt-2 space-y-1">
+              {order.lines.map(line => <li key={line.stock_id}>{line.name} · {line.quantity} {line.unit} × ₹{line.price}</li>)}
+            </ul>
+            {order.notes && <p className="mt-2 text-muted-foreground">{order.notes}</p>}
+            {order.review_note && <p className="mt-2 text-muted-foreground">Owner note · {order.review_note}</p>}
+          </details>,
           statusLabel[order.status], displayDate(order.created_at), action(order)])} empty={empty} />
     </section>;
 
-  return <main className="mx-auto grid max-w-[1500px] gap-4 px-3 py-4 sm:px-6">
-    <WorkspaceHeader title="GRN" subtitle="Purchase & GRN tracking" icon={<Truck className="size-6" />}
+  const Container = ownerApprovals ? 'section' : 'main';
+  const receiveAction = (order: PurchaseOrder) => canPurchase
+    ? <Button type="button" size="sm" variant="outline" disabled={busy || !!readError}
+        onClick={() => open({ kind: 'receive', order })}>Convert to GRN</Button>
+    : 'Ready to receive';
+
+  return <Container className={ownerApprovals ? 'grid gap-4' : 'mx-auto grid max-w-[1500px] gap-4 px-3 py-4 sm:px-6'}>
+    <WorkspaceHeader title={ownerApprovals ? "GRN purchase order approvals" : "GRN"} subtitle={ownerApprovals ? "Review purchase orders submitted by the GRN team" : "Purchase & GRN tracking"} icon={<Truck className="size-6" />}
       tools={<>
         <Button variant="secondary" disabled={!sheets || busy || loading || !!readError}
           onClick={() => sheets && void workspace.run(() => downloadMaterialWorkbook('Purchases-' + dates.from + '-to-' + dates.through + '.xlsx', sheets))}>
           <Download className="size-4" /> Download Excel report
         </Button>
-        {canPurchase && <Button disabled={busy || !data || !!readError}
-          onClick={() => { setEditorTab('Daily PO Report'); setParams({ tab: 'Daily PO Report' }); open({ kind: 'po', order: null }); }}><Plus className="size-4" /> New PO</Button>}
+        {canPurchase && tab === 'Daily PO Report' && <Button disabled={busy || !data || !!readError}
+          onClick={() => open({ kind: 'po', order: null })}><Plus className="size-4" /> New PO</Button>}
       </>} />
     {workspace.message && <p role="status" className="rounded-lg border border-teal-400/50 bg-teal-500/10 p-3 text-sm">{workspace.message}</p>}
     {(workspace.writeError || readError) && <p role="alert" className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm">{workspace.writeError || readError}</p>}
@@ -83,7 +96,8 @@ export default function GrnWorkspace() {
     </section>}
     {loading && <p role="status" className="text-sm text-muted-foreground">Loading purchase records…</p>}
     {data && editor?.kind === 'po' && canPurchase && <PurchaseOrderForm key={editor.order?.id ?? 'new'} data={data} order={editor.order} busy={busy || !!readError}
-      close={close} save={payload => workspace.save('po_save', payload, 'Purchase order saved.')} />}
+      close={close} save={payload => workspace.save('po_save', payload, payload.status === 'submitted'
+        ? 'Purchase order submitted to the Owner for approval.' : 'Purchase order saved as a draft.')} />}
     {data && editor?.kind === 'receive' && canPurchase && <ReceiptForm key={editor.order.id} data={data} order={editor.order} busy={busy || !!readError}
       close={close} save={payload => workspace.save('receive', payload, 'GRN recorded and raw material stock updated.')} />}
     {editor?.kind === 'review' && !canPurchase && <ReviewForm key={editor.order.id} order={editor.order} busy={busy || !!readError}
@@ -95,15 +109,18 @@ export default function GrnWorkspace() {
         <p className="mt-2 text-muted-foreground">Add a preferred supplier and price in Suppliers to include these materials in automatic draft POs.</p>
         <ul className="mt-2 flex flex-wrap gap-2">{unmapped.map(item => <li className="rounded bg-muted px-2 py-1" key={item.id}>{item.name}</li>)}</ul>
       </details>}
-      {orderQueue(draft, order => <Button type="button" size="sm" variant="outline" disabled={busy || !!readError}
-        onClick={() => open({ kind: 'po', order })}>Review draft</Button>, 'Drafts and rejected orders', 'No draft or rejected POs to edit.')}
+      {orderQueue(openOrders, order => {
+        if (order.status === 'approved') return receiveAction(order);
+        if (order.status === 'submitted') return 'Awaiting Owner';
+        return <Button type="button" size="sm" variant="outline" disabled={busy || !!readError}
+          onClick={() => open({ kind: 'po', order })}>{order.status === 'rejected' ? 'Edit and resubmit' : 'Edit draft'}</Button>;
+      }, 'Open purchase orders', 'No open purchase orders.')}
     </>}
     {data && tab === 'Approved Status' && orderQueue(pending, order => canPurchase ? 'Awaiting Owner'
       : <Button type="button" size="sm" variant="outline" disabled={busy || !!readError} onClick={() => open({ kind: 'review', order })}>
         <ClipboardCheck className="size-4" /> Review</Button>, 'Pending approval', 'No purchase orders are waiting for approval.')}
-    {data && tab === 'GRN Report' && orderQueue(approved, order => canPurchase
-      ? <Button type="button" size="sm" variant="outline" disabled={busy || !!readError} onClick={() => open({ kind: 'receive', order })}>Create GRN</Button>
-      : 'Ready to receive', 'Approved POs with stock outstanding', 'No approved purchase orders have outstanding items.')}
+    {data && (tab === 'Approved Status' || tab === 'GRN Report') && orderQueue(approved, receiveAction,
+      'Approved POs with stock outstanding', 'No approved purchase orders have outstanding items.')}
     {data && tab === 'Suppliers' && <>
       {canPurchase && <WorkbookImport kind="supplier" busy={busy || !!readError}
         instruction="Use one row per supplier and material. Enter the unit and unit price. Mark one supplier Yes per material to allow automatic POs."
@@ -120,6 +137,6 @@ export default function GrnWorkspace() {
       <SupplierCatalogue data={data} />
     </>}
     {!loading && !readError && sheets && tab !== 'Suppliers' && <ReportSection key={tab} sheet={sheets[tabs.indexOf(tab)]} empty="No report rows fall within this date range." />}
-  </main>;
+  </Container>;
 }
 

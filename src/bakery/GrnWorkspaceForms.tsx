@@ -5,11 +5,13 @@ import { Input } from '@/components/ui/input';
 import { Field, MaterialSelect, fieldClass, panelClass } from './MaterialWorkspaceControls';
 import { dateKey, poNumber, remainingQuantity, type PurchaseData, type PurchaseOrder } from './materialWorkspace';
 
-type Save = (payload: object) => Promise<boolean>;
+type Save<Payload = object> = (payload: Payload) => Promise<boolean>;
 const blankLine = () => ({ key: crypto.randomUUID(), stock_id: '', quantity: '', price: '' });
 
 export function PurchaseOrderForm({ data, order, busy, save, close }: {
-  data: PurchaseData; order: PurchaseOrder | null; busy: boolean; save: Save; close: () => void;
+  data: PurchaseData; order: PurchaseOrder | null; busy: boolean; save: Save<{ status: 'draft' | 'submitted'; id?: string;
+    version?: number; supplier_id: string; expected_date: string | null; notes: string;
+    rows: Array<{ stock_id: string; unit?: string; quantity: number; price: number }> }>; close: () => void;
 }) {
   const [supplier, setSupplier] = useState(order?.supplier_id ?? '');
   const [expected, setExpected] = useState(order?.expected_date ?? '');
@@ -19,7 +21,7 @@ export function PurchaseOrderForm({ data, order, busy, save, close }: {
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const button = (event.nativeEvent as SubmitEvent).submitter as HTMLButtonElement | null;
-    const status = button?.value ?? 'draft';
+    const status = button?.value === 'submitted' ? 'submitted' : 'draft';
     const rows = lines.map(line => ({
       stock_id: line.stock_id, unit: data.materials.find(item => item.id === line.stock_id)?.unit,
       quantity: Number(line.quantity), price: Number(line.price),
