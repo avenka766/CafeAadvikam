@@ -110,3 +110,50 @@ it('syncs a selected workbook on demand and includes the changes on the next dow
     vi.unstubAllGlobals();
   }
 });
+
+it('keeps date buttons consecutive, preserves meals, and stores shift times independently', async () => {
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+  const host = document.createElement('div');
+  document.body.append(host);
+  const root = createRoot(host);
+  mocks.upsert.mockClear().mockResolvedValue({ error: null });
+  try {
+    await act(async () => root.render(<AttendanceSalary />));
+    const employee = Array.from(host.querySelectorAll('button')).find(button => button.textContent?.includes('Example Staff'))!;
+    await act(async () => employee.click());
+    const tabStops = Array.from(employee.parentElement!.querySelectorAll<HTMLButtonElement>('button:not(:disabled)'));
+    const dates = tabStops.filter(button => button.getAttribute('aria-label')?.endsWith(' attendance'));
+    expect(dates.length).toBeGreaterThanOrEqual(28);
+    expect(tabStops.slice(1, 1 + dates.length)).toEqual(dates);
+    await act(async () => dates[0].click());
+    expect(mocks.upsert.mock.lastCall![0]).toMatchObject({ day: 1, half: true, bf: true });
+
+    const timesButton = tabStops.find(button => button.getAttribute('aria-label') === 'Example Staff day 2 IN and OUT times')!;
+    await act(async () => timesButton.click());
+    const [start, end] = host.querySelectorAll<HTMLInputElement>('input[type=time]');
+    const change = (input: HTMLInputElement, value: string) => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    await act(async () => change(start, '22:15'));
+    await act(async () => change(end, '06:00'));
+    await act(async () => host.querySelector<HTMLButtonElement>('form button[type=submit]')!.click());
+    expect(mocks.upsert.mock.lastCall![0]).toEqual(expect.objectContaining({ day: 2, in_time: '22:15', out_time: '06:00' }));
+    expect(mocks.upsert.mock.lastCall![0]).not.toHaveProperty('present');
+    expect(timesButton.textContent).toBe('22:15–06:00');
+    await act(async () => dates[1].click());
+    expect(mocks.upsert.mock.lastCall![0]).toMatchObject({ day: 2, present: true });
+    expect(mocks.upsert.mock.lastCall![0]).not.toHaveProperty('in_time');
+    expect(timesButton.textContent).toBe('22:15–06:00');
+    vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+    const analytics = Array.from(host.querySelectorAll('button')).find(button => button.textContent?.includes('Analytics'))!;
+    await act(async () => analytics.click());
+    const report = host.querySelector('[aria-label="Working hours analytics"]');
+    expect(report?.textContent).toContain('7h 45m');
+    expect(report?.textContent).toContain('Example Staff');
+  } finally {
+    await act(async () => root.unmount());
+    host.remove();
+    vi.unstubAllGlobals();
+  }
+});

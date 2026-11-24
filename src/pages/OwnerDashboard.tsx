@@ -1,3 +1,5 @@
+import AttendanceHoursAnalytics from '@/components/admin/AttendanceHoursAnalytics';
+import { foodOnlyPayroll, type AttendanceTimes } from '@/lib/attendanceHours';
 import {payrollPf,visiblePayrollEmployee} from '@/lib/payrollPf';
 import {ReportReadCache,type ReportReadFailure} from '@/lib/reportReadCache';
 import { ReportSourceFailures } from '@/components/ReportSourceFailures';
@@ -1103,7 +1105,7 @@ function SalesOverviewTab() {
 
 // ── Attendance & Salary Tab ───────────────────────────────────────────────────
 // CHANGE 10: aggregate branch view (no per-employee list), stacked dept chart
-type OwnerAttendanceRow = { employee_id: string; day: number; present: boolean; half: boolean; woff: boolean; bf: boolean; lunch: boolean; dinner: boolean };
+type OwnerAttendanceRow = AttendanceTimes & { employee_id: string; day: number; present: boolean; half: boolean; woff: boolean; bf: boolean; lunch: boolean; dinner: boolean };
 type OwnerMonthAttendance = Record<string, OwnerAttendanceRow>;
 type OwnerDeductionDecision = { deductAdvance: boolean; deductOther: boolean; deductUniform: boolean; deductESI: boolean; deductPF: boolean };
 type OwnerDeductionDecisions = Record<string, OwnerDeductionDecision>;
@@ -1141,6 +1143,7 @@ function ownerCalcSalary(emp: { id: string; grossSalary: number; salaryAdvance: 
   }
   const worked = presentDays + halfDays * 0.5 + woffDays;
   const earned = Math.round((Number(emp.grossSalary || 0) / daysInMonth) * worked);
+  if (foodOnlyPayroll(year, month)) return { earned, deductions: canteenTotal, net: Math.max(0, earned - canteenTotal), worked };
   const deductions = (decision.deductAdvance ? Number(emp.salaryAdvance || 0) : 0)
     + (decision.deductUniform ? Number(emp.uniformDeduction || 0) : 0)
     + (decision.deductOther ? Number(emp.otherDeduction || 0) : 0)
@@ -1161,8 +1164,8 @@ function AttendanceSalaryTab() {
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const now = new Date();
-  const [payrollYear, setPayrollYear] = useState(now.getFullYear());
-  const [payrollMonth, setPayrollMonth] = useState(now.getMonth() + 1);
+  const [payrollYear, setPayrollYear] = useState(() => Number(businessDate().slice(0, 4)));
+  const [payrollMonth, setPayrollMonth] = useState(() => Number(businessDate().slice(5, 7)));
   const daysInMonth = new Date(payrollYear, payrollMonth, 0).getDate();
 
   const payrollLoad = useRef(0);
@@ -1177,7 +1180,7 @@ function AttendanceSalaryTab() {
       // fell past the cut-off. Paged with fetchAllRows.
       fetchAllRows<Record<string, unknown>>(
         'attendance',
-        (q) => q.select('employee_id, day, present, half, woff, bf, lunch, dinner').eq('year', payrollYear).eq('month', payrollMonth).order('employee_id', { ascending: true }).order('day', { ascending: true }),
+        (q) => q.select('employee_id, day, present, half, woff, bf, lunch, dinner, in_time, out_time').eq('year', payrollYear).eq('month', payrollMonth).order('employee_id', { ascending: true }).order('day', { ascending: true }),
       ).then((r) => ({ data: r.data, error: r.error ? { message: r.error } : null })),
       supabase.from('deduction_decisions').select('employee_id, deduct_advance, deduct_other, deduct_uniform, deduct_esi, deduct_pf').eq('year', payrollYear).eq('month', payrollMonth),
       supabase.rpc('admin_paid_payroll_snapshots_v1',{p_year:payrollYear,p_month:payrollMonth}),
@@ -1188,7 +1191,8 @@ function AttendanceSalaryTab() {
       console.debug('[AttendanceSalaryTab] employees:', data?.length, error?.message);
       if (error) setFetchError(error.message || 'Failed to load employee data.');
       else if (data) {
-        const paid=new Map((paidRes.data||[]).map((r:{employee_id:string;snapshot:Record<string,number>})=>[r.employee_id,r.snapshot]));
+        if (!Array.isArray(paidRes.data)) throw new Error('Paid payroll history returned an unexpected format. Reload payroll data.');
+        const paid=new Map(paidRes.data.map((r:{employee_id:string;snapshot:Record<string,number>})=>[r.employee_id,r.snapshot]));
         setEmployees(data.filter((row:any)=>visiblePayrollEmployee({id:row.id,isActive:row.is_active!==false,leftOn:row.left_on},payrollYear,payrollMonth)).map((row: any) => ({
           paidSalary:paid.get(row.id) as Record<string,number>|undefined,
           id: row.id,
@@ -1211,6 +1215,8 @@ function AttendanceSalaryTab() {
             bf: Boolean(row.bf),
             lunch: Boolean(row.lunch),
             dinner: Boolean(row.dinner),
+            in_time: row.in_time ?? null,
+            out_time: row.out_time ?? null,
           };
         });
         setAttendance(nextAttendance);
@@ -1306,13 +1312,14 @@ function AttendanceSalaryTab() {
     // POLISH FIX (2026-08-09 / #284): standardized wrapper — see SalesOverviewTab.
     <div className="owner-tab-stack">
       <div className="flex flex-wrap items-end justify-between gap-3 rounded-2xl border border-border bg-card p-3">
-        <div><p className="text-xs font-black uppercase tracking-wide text-muted-foreground">Payroll period</p><p className="font-display text-lg font-black">Attendance and approved deductions</p></div>
+        <div><p className="text-xs font-black uppercase tracking-wide text-muted-foreground">Payroll period</p><p className="font-display text-lg font-black">Attendance and approved deductions</p>{foodOnlyPayroll(payrollYear, payrollMonth) && <p className="text-xs text-muted-foreground">November unpaid payroll applies food deductions only.</p>}</div>
         <div className="flex gap-2">
           <select value={payrollMonth} onChange={(event) => setPayrollMonth(Number(event.target.value))} className="h-10 rounded-xl border border-border bg-background px-3 text-sm font-bold">{Array.from({length:12},(_,index)=><option key={index+1} value={index+1}>{new Date(2026,index,1).toLocaleString('en-IN',{month:'long'})}</option>)}</select>
           <select value={payrollYear} onChange={(event) => setPayrollYear(Number(event.target.value))} className="h-10 rounded-xl border border-border bg-background px-3 text-sm font-bold">{Array.from({length:5},(_,index)=>now.getFullYear()-index).map((year)=><option key={year} value={year}>{year}</option>)}</select>
           <button type="button" onClick={() => void loadEmployees()} className="h-10 flex items-center gap-1.5 rounded-xl border border-border bg-background px-3 text-sm font-bold hover:bg-muted"><RefreshCw className="size-4" />Refresh</button>
         </div>
       </div>
+      <AttendanceHoursAnalytics employees={employees} daysInMonth={daysInMonth} getDay={(id, day) => attendance[ownerAttendanceKey(id, day)]} />
       <div className="grid grid-cols-2 gap-3">
         <KPI icon={<Users       className="size-4" />} label="Total Staff"   value={String(employees.length)}              color="bg-primary/10 text-primary" />
         {/* FIX (MD Bug #10): labels clarified to emphasise these are contracted-salary estimates,
