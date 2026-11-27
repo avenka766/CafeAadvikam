@@ -46,4 +46,5 @@ export function getRoleDefaultPath(role: UserRole): string {
   }
 }
 
-export const stockWorkspaceTabs = ['Opening Stock', 'Outward Report', 'Custom Stock Deduction', 'Bulk Import'] as const;
+export const stockWorkspaceTabs = ['Opening Stock', 'Orders', 'Outward Report', 'Custom Stock Deduction', 'Bulk Import'] as const;
+export const grnWorkspaceTabs = ['Daily PO Report', 'Approved Status', 'GRN Report', 'Suppliers', 'Analytics'] as const;

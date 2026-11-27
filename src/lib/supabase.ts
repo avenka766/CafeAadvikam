@@ -1,6 +1,7 @@
 import {reportConnection} from '@/lib/connectionStatus';
 import { createClient } from '@supabase/supabase-js';
 import { getAppSessionToken } from '@/lib/appSession';
+import { getOwnerApkGrant } from '@/lib/platform';
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -14,11 +15,20 @@ if (!supabaseUrl || !supabaseAnonKey) {
 
 const sessionAwareFetch: typeof fetch = async (input, init: RequestInit = {}) => {
   const headers = new Headers(init.headers ?? {});
-  const requestUrl = typeof input === 'string'
+  let requestUrl = typeof input === 'string'
     ? input
     : input instanceof URL
       ? input.toString()
       : input.url;
+  const ownerApkGrant = getOwnerApkGrant();
+  if (ownerApkGrant && typeof input === 'string') {
+    const url = new URL(requestUrl);
+    if (url.pathname === '/rest/v1/employees' || url.pathname === '/rest/v1/app_state') {
+      url.pathname = url.pathname.replace('/rest/v1/', '/rest/v1/owner_apk_');
+      requestUrl = url.toString();
+      input = requestUrl;
+    }
+  }
   const isEdgeFunctionRequest = requestUrl.includes('/functions/v1/');
   const isDiagnosticRequest = requestUrl.includes('/rpc/report_client_error_secure');
   const isOperationReplay = requestUrl.includes('/rest/v1/branch_operation_records') && headers.has('x-cafe-session') && init.method?.toUpperCase() === 'POST';
@@ -43,7 +53,8 @@ const sessionAwareFetch: typeof fetch = async (input, init: RequestInit = {}) =>
   // never issue the POST request. PostgREST/RPC requests still receive them.
   if (!isEdgeFunctionRequest) {
     const token = typeof window !== 'undefined' ? getAppSessionToken() : null;
-    if (token && !headers.has('x-cafe-session')) headers.set('x-cafe-session', token);
+    if (ownerApkGrant) headers.set('x-cafe-session', ownerApkGrant);
+    else if (token && !headers.has('x-cafe-session')) headers.set('x-cafe-session', token);
     headers.set('x-client-app', 'cafe-aadvikam-web');
   }
   try {

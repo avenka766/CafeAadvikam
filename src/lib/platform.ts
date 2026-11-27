@@ -28,6 +28,13 @@ export function isNativeApp(): boolean {
   }
 }
 
+// A separate native build contains a distribution grant scoped to Owner screens.
+export function getOwnerApkGrant(): string | undefined {
+  const grant = import.meta.env.VITE_OWNER_APK_GRANT;
+  return isNativeApp() && typeof grant === 'string' && /^owner-apk-[0-9a-f]{64}$/.test(grant)
+    ? grant : undefined;
+}
+
 // Single declaration for window.cafeAadvikamDesktop (electron/preload.cjs) —
 // keep this the one source of truth for its shape; a second, differently-
 // shaped `declare global` for the same property elsewhere would conflict.
