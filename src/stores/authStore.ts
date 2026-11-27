@@ -4,7 +4,7 @@ import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import { supabase } from '@/lib/supabase';
 import { clearAppSession, saveAppSession, getAppSessionToken } from '@/lib/appSession';
-import { isNativeApp, isElectronApp } from '@/lib/platform';
+import { getOwnerApkGrant, isNativeApp, isElectronApp } from '@/lib/platform';
 import type { User, UserRole } from '@/types';
 
 const SESSION_TIMEOUT_MS = 8 * 60 * 60 * 1000; // 8 hours — web
@@ -280,6 +280,7 @@ export const useAuthStore = create<AuthState>()(
       // onRehydrateStorage fires once after sessionStorage is loaded; restart the timer here
       // if the user session was restored (so they are still auto-logged out after 8 hours).
       onRehydrateStorage: () => (state) => {
+        if (getOwnerApkGrant()) return;
         if (state?.currentUser) {
           // SM-03 FIX: if the auth record was restored from sessionStorage but the
           // matching app session token is missing (upgraded from old build that used
