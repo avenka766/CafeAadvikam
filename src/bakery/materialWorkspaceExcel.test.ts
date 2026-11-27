@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { MaterialLine, PurchaseData, PurchaseOrder, Receipt, StockData } from './materialWorkspace';
-import { purchaseSheets, readMaterialWorkbook, stockHeadings, stockSheets } from './materialWorkspaceExcel';
+import { purchaseSheets, readMaterialWorkbook, stockHeadings, stockImportSheet, stockSheets } from './materialWorkspaceExcel';
 
 vi.mock('@/lib/supabase', () => ({ supabase: {} }));
 
@@ -44,6 +44,33 @@ describe('Stock and GRN Excel workbooks', () => {
     expect(opening.rows.map(row => row[4])).toEqual(['Below minimum', 'Above maximum']);
     expect(outward.rows.map(row => row.slice(1, 6))).toEqual([
       ['Sweets', 'Mysore Pak', 'Sugar', 1, 'kg'], ['Sweets', 'Mysore Pak', 'Flour', 1, 'kg'],
+    ]);
+  });
+
+  it('exports running stock and separately records card-based and inventory-only deductions', async () => {
+    const stock: StockData = { materials: [
+      { id: 'sugar', name: 'Sugar', unit: 'kg', quantity: 0, minimum: 4, maximum: 20 },
+    ], opening: [], outward: [
+      { id: 'from-cards', section: 'Production', recipe: 'Veg Puff', reason: 'Production release',
+        created_at: '2026-11-14T06:00:00Z', created_by: 'Stock',
+        lines: [{ name: 'Sugar', unit: 'kg', quantity: 2, before: 3, after: 1, combined_card: 'MC-PUFF', item_card: 'OC-PUFF' }] },
+      { id: 'from-stock', section: 'Production', recipe: 'Custom deduction', reason: 'Kitchen use',
+        created_at: '2026-11-14T06:01:00Z', created_by: 'Stock',
+        lines: [{ name: 'Sugar', unit: 'kg', quantity: 1, before: 1, after: 0 }] },
+    ] };
+    const [,outward,current] = stockSheets(stock,'2026-11-14');
+    expect(outward.rows[0].slice(9)).toEqual(['MC-PUFF','11:30 IST',3,1,'from-cards']);
+    expect(outward.rows[1].slice(9)).toEqual(['','11:31 IST',1,0,'from-stock']);
+    expect(current.rows).toEqual([[1,'Sugar',0,'kg',4,20,'Below minimum']]);
+
+    const { utils, write } = await import('xlsx');
+    const template = stockImportSheet(stock.materials);
+    const book = utils.book_new();
+    utils.book_append_sheet(book,utils.aoa_to_sheet([template.headings,...template.rows]),template.name);
+    const bytes = write(book,{type:'array',bookType:'xlsx'}) as ArrayBuffer;
+    const file = { name:'Stock-Import-Template.xlsx', size:bytes.byteLength, arrayBuffer:async () => bytes } as File;
+    expect(await readMaterialWorkbook(file,'stock')).toEqual([
+      { name:'Sugar',unit:'kg',quantity:0,minimum:4,maximum:20,expected:0 },
     ]);
   });
 

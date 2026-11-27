@@ -1,4 +1,4 @@
-import IssueForm from './StockExtraIssueForm';
+import IssueForm, { type StockDeductionTab } from './StockExtraIssueForm';
 import { useSearchParams } from 'react-router-dom';
 import { StockProductionOrders, useStockProduction } from './StockProductionOrders';
 import { stockWorkspaceTabs } from '@/lib/routing';
@@ -8,19 +8,20 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { DateFilter, Field, MaterialTable, WorkbookImport, WorkspaceHeader,
   panelClass, ReportSection, useMaterialWorkspace } from './MaterialWorkspaceControls';
-import { stockStatus, type StockData } from './materialWorkspace';
-import { downloadMaterialWorkbook, stockHeadings, stockSheets } from './materialWorkspaceExcel';
+import { materialRequest, stockStatus, type StockData } from './materialWorkspace';
+import { downloadMaterialWorkbook, stockImportSheet, stockSheets } from './materialWorkspaceExcel';
 
 export default function StockWorkspace() {
   const workspace = useMaterialWorkspace<StockData>('stock_read');
   const [params] = useSearchParams();
   const tab = stockWorkspaceTabs.find(item => item === params.get('tab')) ?? stockWorkspaceTabs[0];
-  const productionTab = tab === 'Orders' || tab === 'Custom Stock Deduction';
-  const production = useStockProduction(productionTab);
-  const saveProduction = (action: 'release' | 'extra', payload: object) => workspace.run(async () => {
+  const [deductionTab, setDeductionTab] = useState<StockDeductionTab>('Recipe Materials');
+  const productionTab = tab === 'Orders' || (tab === 'Custom Stock Deduction' && deductionTab === 'Recipe Materials');
+  const production = useStockProduction(productionTab, tab === 'Orders' ? 'orders' : 'custom');
+  const saveProduction = (action: 'release' | 'release_batch' | 'extra', payload: object) => workspace.run(async () => {
     await production.save(action, payload);
     await workspace.reload(true);
-  }, action === 'release' ? 'Sent to production. Raw materials deducted.' : 'Extra deduction recorded against the root card.');
+  }, action !== 'extra' ? 'Sent to production. Raw materials deducted.' : 'Extra deduction recorded against the root card.');
   const [search, setSearch] = useState('');
   const { data, dates, busy, loading, readError } = workspace;
   const sheets = data && stockSheets(data, dates.from);
@@ -31,7 +32,10 @@ export default function StockWorkspace() {
   return <main className="mx-auto grid min-w-0 max-w-[1500px] grid-cols-[minmax(0,1fr)] gap-4 px-3 py-4 sm:px-6">
     <WorkspaceHeader title="Stock" subtitle="Stock & material movement" icon={<Layers3 className="size-6" />}
       tools={<Button variant="secondary" disabled={!sheets || busy || loading || !!readError}
-        onClick={() => sheets && void workspace.run(() => downloadMaterialWorkbook('Stock-' + dates.from + '.xlsx', sheets))}>
+        onClick={() => void workspace.run(async () => {
+          const latest = await materialRequest<StockData>('stock_read', dates);
+          await downloadMaterialWorkbook('Stock-' + dates.from + '.xlsx', stockSheets(latest, dates.from));
+        })}>
         <Download className="size-4" /> Download Excel report
       </Button>} />
     {workspace.message && <p role="status" className="rounded-lg border border-teal-400/50 bg-teal-500/10 p-3 text-sm">{workspace.message}</p>}
@@ -56,15 +60,17 @@ export default function StockWorkspace() {
     {productionTab && production.error && <div role="alert" className={panelClass}>{production.error} <Button variant="outline" onClick={() => void production.refresh()}>Retry</Button></div>}
     {productionTab && !production.data && !production.error && <p role="status">Loading orders and root cards…</p>}
     {data && production.data && tab === 'Orders' && <StockProductionOrders orders={production.data.orders} materials={data.materials}
-      busy={busy || !!readError || !!production.error} refresh={() => void production.refresh()} send={payload => saveProduction('release',payload)}/>}
-    {data && tab === 'Custom Stock Deduction' && <IssueForm cards={production.data?.cards ?? []} materials={data.materials} busy={busy || !!readError} recipeError={!!production.error}
-      submit={(mode,payload) => mode === 'Item' ? saveProduction('extra',payload) : workspace.save('issue',payload,'Custom deduction recorded and stock updated.')} />}
+      busy={busy || !!readError || !!production.error} refresh={() => void production.refresh()} send={orders => orders.length === 1 ? saveProduction('release',orders[0]) : saveProduction('release_batch',{ orders })}/>}
+    {data && tab === 'Custom Stock Deduction' && <IssueForm cards={production.error ? [] : production.data?.cards ?? []} materials={data.materials}
+      tab={deductionTab} changeTab={setDeductionTab} busy={busy || !!readError}
+      submitRecipe={payload => saveProduction('extra', payload)}
+      submitCustom={payload => workspace.save('issue', { ...payload, section: 'Production', recipe: 'Custom deduction' }, 'Custom deduction recorded.')} />}
     {data && tab === 'Bulk Import' && <WorkbookImport kind="stock" busy={busy || !!readError}
       instruction="Edit Qty and stock limits in the workbook. Leave Downloaded Qty unchanged for existing materials and blank for new rows."
-      download={() => void workspace.run(() => downloadMaterialWorkbook('Stock-Import-Template.xlsx', [{
-        name: 'Raw Material Import', headings: stockHeadings, rows: data.materials.map(item =>
-          [item.name, item.quantity, item.unit, item.minimum ?? 0, item.maximum ?? '', item.quantity]),
-      }]))}
+      download={() => void workspace.run(async () => {
+        const latest = await materialRequest<StockData>('stock_read', dates);
+        await downloadMaterialWorkbook('Stock-Import-Template.xlsx', [stockImportSheet(latest.materials)]);
+      })}
       upload={rows => workspace.save('stock_import', { rows }, 'Workbook applied. Raw material stock and thresholds are up to date.')} />}
   </main>;
 }

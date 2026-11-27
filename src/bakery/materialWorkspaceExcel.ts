@@ -4,14 +4,32 @@ import { approvalLabel, displayCapturedAt, displayDate, grnNumber, localDay, poN
 type Cell = string | number;
 export interface MaterialSheet { name: string; headings: string[]; rows: Cell[][]; currency?: number[] }
 export const stockHeadings = ['Item Name', 'Qty', 'UOM', 'Minimum', 'Maximum', 'Downloaded Qty'];
+export function stockImportSheet(materials: StockData['materials']): MaterialSheet {
+  return {
+    name: 'Raw Material Import',
+    headings: stockHeadings,
+    rows: materials.map(item => [item.name, item.quantity, item.unit, item.minimum ?? 0, item.maximum ?? '', item.quantity]),
+  };
+}
+
 export const supplierHeadings = ['Supplier Name', 'RM Item Name', 'UOM', 'Price', 'Preferred', 'Contact Name', 'Phone', 'Email', 'Address'];
 
 export function stockSheets(data: StockData, date: string): MaterialSheet[] {
   return [
     { name: 'Opening Stock', headings: ['Sl. No.', 'Item Name', 'Qty', 'UOM', 'Minimum or Maximum Status', 'Minimum', 'Maximum', 'Opening Date', 'Captured At'],
       rows: data.opening.map((item, i) => [i + 1, item.name, item.quantity, item.unit, stockStatus(item), item.minimum ?? 0, item.maximum ?? '', displayDate(date), displayCapturedAt(item.captured_at)]) },
-    { name: 'Outward', headings: ['Sl. No.', 'Section Name', 'Production Item Name', 'RM Item Name', 'Qty', 'UOM', 'Issue Date', 'Reason', 'Issued By', 'Root Card'],
-      rows: data.outward.flatMap(batch => batch.lines.map(line => [batch.section, batch.recipe, line.name, line.quantity, line.unit, displayDate(batch.created_at), batch.reason, batch.created_by, line.card ?? ''])).map((row, i) => [i + 1, ...row]) },
+    { name: 'Outward',
+      headings: ['Sl. No.', 'Section Name', 'Production Item Name', 'RM Item Name', 'Qty', 'UOM', 'Issue Date', 'Reason',
+        'Issued By', 'Root Card', 'Issue Time (IST)', 'Stock Before', 'Stock After', 'Issue Reference'],
+      rows: data.outward.flatMap(batch => batch.lines.map(line => [
+        batch.section, batch.recipe, line.name, line.quantity, line.unit, displayDate(batch.created_at), batch.reason,
+        batch.created_by, line.combined_card ?? line.item_card ?? line.order_card ?? '', displayCapturedAt(batch.created_at),
+        line.before ?? '', line.after ?? '', batch.id,
+      ])).map((row, i) => [i + 1, ...row]) },
+    { name: 'Current Stock', headings: ['Sl. No.', 'RM Item Name', 'Available Qty', 'UOM', 'Minimum', 'Maximum', 'Stock Status'],
+      rows: data.materials.map((item, i) => [
+        i + 1, item.name, item.quantity, item.unit, item.minimum ?? 0, item.maximum ?? '', stockStatus(item),
+      ]) },
   ];
 }
 
