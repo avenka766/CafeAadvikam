@@ -1,3 +1,4 @@
+import snbLogo from '@/assets/snb-logo.png';
 import { advanceDeductionQuote, type AdvanceDeductionChoice } from '@/lib/payrollAdvance';
 import AttendanceHoursAnalytics from '@/components/admin/AttendanceHoursAnalytics';
 import { foodOnlyPayroll, type AttendanceTimes } from '@/lib/attendanceHours';
@@ -50,7 +51,7 @@ import {
   ClipboardList, Loader2, ChevronDown, ChevronUp, LogOut, UserCircle2, Scale,
   Inbox, Flame, ShoppingCart, Menu, X,
 } from 'lucide-react';
-import { isNativeApp } from '@/lib/platform';
+import { getOwnerApkGrant, isNativeApp } from '@/lib/platform';
 import { businessDate } from '@/lib/businessDate';
 import { useOperationalBranchCatalog } from '@/hooks/useOperationalBranchCatalog';
 import { useBakeryStore } from '@/bakery/bakeryStore';
@@ -3679,7 +3680,7 @@ function OwnerPOApprovalsTab() {
   const pending = orders.filter(po => po.status === 'pending_approval').length;
 
   return (
-    <div className="owner-tab-stack">
+    <div className="owner-tab-stack owner-po-approvals">
       <GrnWorkspace ownerApprovals />
       <h2 className="text-lg font-semibold">Store purchase order approvals</h2>
       <section className="owner-metric-grid">
@@ -4655,7 +4656,7 @@ export default function OwnerDashboard() {
   const currentUser = useAuthStore(s => s.currentUser);
   const logout = useAuthStore(s => s.logout);
   useEffect(() => {
-    void initNativeNotifications(currentUser?.displayName || currentUser?.username || null);
+    if (!getOwnerApkGrant()) void initNativeNotifications(currentUser?.displayName || currentUser?.username || null);
   }, [currentUser]);
 
   // Native app (2026-08-07): App.tsx skips WorkspaceChrome/Header/BottomNav
@@ -4725,16 +4726,16 @@ export default function OwnerDashboard() {
           <button type="button" className="owner-native-hamburger" onClick={() => setDrawerOpen(true)} aria-label="Open menu">
             <Menu className="size-5" />
           </button>
-          <span className="owner-native-mark">CA</span>
+          <img className="owner-native-mark" src={snbLogo} alt="SNB Sweets and Bakes" />
           <div>
             <strong>Cafe Aadvikam</strong>
             <span>Owner · {activeTab.label}</span>
           </div>
         </div>
         <div className="owner-native-profile-wrap">
-          <button type="button" className="owner-native-avatar" onClick={() => setProfileOpen(v => !v)} aria-label="Account">
+          {!getOwnerApkGrant() && <button type="button" className="owner-native-avatar" onClick={() => setProfileOpen(v => !v)} aria-label="Account">
             <UserCircle2 className="size-6" />
-          </button>
+          </button>}
           {profileOpen && (
             <>
               <button type="button" className="owner-native-profile-scrim" aria-label="Close" onClick={() => setProfileOpen(false)} />
