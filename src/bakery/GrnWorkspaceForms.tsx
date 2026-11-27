@@ -145,7 +145,7 @@ export function ReviewForm({ order, busy, save, close }: { order: PurchaseOrder;
     setProblem('');
     if (await save({ id: order.id, version: order.version, status, reason })) close();
   };
-  return <form className={panelClass + ' space-y-4'} onSubmit={event => void review(event)}>
+  return <form className={panelClass + ' min-w-0 space-y-4 break-words'} onSubmit={event => void review(event)}>
     <div className="flex items-center justify-between gap-3"><div><h2 className="font-semibold">Review {poNumber(order.number)}</h2>
       <p className="text-sm text-muted-foreground">{order.supplier} · Submitted by {order.created_by}</p></div>
       <Button type="button" variant="ghost" disabled={busy} onClick={close}>Close</Button></div>
@@ -154,7 +154,7 @@ export function ReviewForm({ order, busy, save, close }: { order: PurchaseOrder;
     <Field label="Review note (required for rejection)"><textarea className={fieldClass} maxLength={2000} value={reason}
       disabled={busy} onChange={event => setReason(event.target.value)} /></Field>
     {problem && <p role="alert" className="text-sm text-destructive">{problem}</p>}
-    <div className="flex gap-2"><Button type="submit" value="approved" disabled={busy}>Approve PO</Button>
+    <div className="flex flex-wrap gap-2"><Button type="submit" value="approved" disabled={busy}>Approve PO</Button>
       <Button type="submit" variant="destructive" value="rejected" disabled={busy}>Reject PO</Button></div>
   </form>;
 }

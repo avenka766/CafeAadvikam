@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Button } from '@/components/ui/button';
 import { supabase } from '@/lib/supabase';
 import { Input } from '@/components/ui/input';
-import { Download, PackageOpen, RefreshCw, Upload } from 'lucide-react';
+import { ArrowDown, ArrowUp, ArrowUpDown, Download, PackageOpen, RefreshCw, Upload } from 'lucide-react';
 import { dateKey, materialRequest, type Material } from './materialWorkspace';
 import { readMaterialWorkbook, type MaterialSheet } from './materialWorkspaceExcel';
 
@@ -103,9 +103,9 @@ export function Field({ label, children }: { label: string; children: ReactNode 
 
 export function WorkspaceHeader({ title, subtitle, icon, tools }: { title: string; subtitle: string; icon: ReactNode; tools?: ReactNode }) {
   return <header className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-slate-700 bg-slate-900 px-5 py-5 text-white sm:px-7">
-    <div className="flex items-center gap-4">
+    <div className="flex min-w-0 items-center gap-3 sm:gap-4">
       <div className="grid size-11 shrink-0 place-items-center rounded-xl bg-teal-300/15 text-teal-200">{icon}</div>
-      <div><h1 className="text-2xl font-semibold tracking-tight">{title}</h1><p className="text-sm text-slate-300">{subtitle}</p></div>
+      <div className="min-w-0 break-words"><h1 className="text-xl font-semibold tracking-tight sm:text-2xl">{title}</h1><p className="text-sm text-slate-300">{subtitle}</p></div>
     </div>
     {tools && <div className="flex flex-wrap gap-2">{tools}</div>}
   </header>;
@@ -133,24 +133,67 @@ export function DateFilter({ dates, change, refresh, loading }: {
   </div>;
 }
 
-export function MaterialTable({ headings, rows, empty, label }: {
-  headings: string[]; rows: ReactNode[][]; empty: string; label: string;
+type SortValue = ReactNode | Date;
+const columnCollator = new Intl.Collator('en-IN', { numeric: true, sensitivity: 'base' });
+
+function cellSortValue(value: SortValue): string | number | null {
+  if (value == null || typeof value === 'boolean') return null;
+  if (value instanceof Date) return Number.isFinite(value.getTime()) ? value.getTime() : null;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  if (!text || text === '-' || text === '—') return null;
+  // The report sheets display English day-month-year dates.
+  if (/^\d{1,2} [A-Za-z]{3} \d{4}$/.test(text)) {
+    const time = Date.parse(text + ' UTC');
+    if (Number.isFinite(time)) return time;
+  }
+  return text;
+}
+
+export function MaterialTable({ headings, rows, sortValues, empty, label }: {
+  headings: string[]; rows: ReactNode[][]; sortValues?: SortValue[][]; empty: string; label: string;
 }) {
   const [page, setPage] = useState(0);
+  const [sort, setSort] = useState<{ column: number; direction: 'ascending' | 'descending' }>();
+  const ordered = useMemo(() => {
+    if (!sort) return rows.map((cells, index) => ({ cells, index }));
+    return rows.map((cells, index) => ({
+      cells, index, value: cellSortValue((sortValues?.[index] ?? cells)[sort.column]),
+    })).sort((a, b) => {
+      if (a.value === null || b.value === null) return a.value === b.value ? a.index - b.index : a.value === null ? 1 : -1;
+      const comparison = typeof a.value === 'number' && typeof b.value === 'number'
+        ? a.value - b.value : columnCollator.compare(String(a.value), String(b.value));
+      return (sort.direction === 'ascending' ? comparison : -comparison) || a.index - b.index;
+    });
+  }, [rows, sort, sortValues]);
+  const sortColumn = (column: number) => {
+    setSort(current => ({ column, direction: current?.column === column && current.direction === 'ascending' ? 'descending' : 'ascending' }));
+    setPage(0);
+  };
   const count = Math.max(1, Math.ceil(rows.length / 25));
   const shownPage = Math.min(page, count - 1);
   if (!rows.length) return <div className="flex items-center gap-3 rounded-lg border border-dashed px-4 py-7 text-sm text-muted-foreground">
     <PackageOpen className="size-5" />{empty}
   </div>;
   return <div className="space-y-3">
-    <div className="overflow-x-auto rounded-lg border" tabIndex={0} aria-label={label}>
+    <div className="max-w-full overflow-x-auto rounded-lg border" tabIndex={0} aria-label={label}>
       <table className="w-full text-left text-sm">
         <thead className="bg-slate-100 text-slate-900 dark:bg-slate-800 dark:text-slate-100">
-          <tr>{headings.map(heading => <th key={heading} scope="col" className="whitespace-nowrap px-3 py-2.5 font-semibold">{heading}</th>)}</tr>
+          <tr>{headings.map((heading, column) => {
+            const direction = sort?.column === column ? sort.direction : undefined;
+            const Icon = direction === 'ascending' ? ArrowUp : direction === 'descending' ? ArrowDown : ArrowUpDown;
+            return <th key={heading} scope="col" aria-sort={direction} className="whitespace-nowrap px-3 py-2.5 font-semibold">
+              <button type="button" className="inline-flex min-h-8 items-center gap-1.5 rounded text-left focus-visible:outline focus-visible:outline-2"
+                onClick={() => sortColumn(column)} aria-label={'Sort by ' + heading}>
+                {heading}<Icon className={'size-3.5 shrink-0 ' + (direction ? '' : 'opacity-50')} aria-hidden="true" />
+              </button>
+            </th>;
+          })}</tr>
         </thead>
-        <tbody>{rows.slice(shownPage * 25, (shownPage + 1) * 25).map((row, index) =>
-          <tr key={shownPage * 25 + index} className="border-t odd:bg-card even:bg-muted/30">
-            {row.map((cell, column) => <td key={column} className="px-3 py-2.5 align-top">{cell}</td>)}
+        <tbody>{ordered.slice(shownPage * 25, (shownPage + 1) * 25).map(({ cells, index }) =>
+          <tr key={index} className="border-t odd:bg-card even:bg-muted/30">
+            {cells.map((cell, column) => <td key={column} className="px-3 py-2.5 align-top">{cell}</td>)}
           </tr>)}</tbody>
       </table>
     </div>
@@ -207,8 +250,8 @@ const inr = new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR' 
 export function ReportSection({ sheet, empty }: { sheet: MaterialSheet; empty: string }) {
   const [search, setSearch] = useState('');
   const terms = search.trim().toLowerCase().split(/\s+/).filter(Boolean);
-  const rows = sheet.rows.filter(row => terms.every(term => row.some(cell => String(cell).toLowerCase().includes(term))))
-    .map(row => row.map((cell, index) => sheet.currency?.includes(index) && typeof cell === 'number' ? inr.format(cell) : cell));
+  const filtered = sheet.rows.filter(row => terms.every(term => row.some(cell => String(cell).toLowerCase().includes(term))));
+  const rows = filtered.map(row => row.map((cell, index) => sheet.currency?.includes(index) && typeof cell === 'number' ? inr.format(cell) : cell));
   const print = () => {
     const frame = document.createElement('iframe');
     frame.title = 'Print ' + sheet.name;
@@ -248,7 +291,7 @@ export function ReportSection({ sheet, empty }: { sheet: MaterialSheet; empty: s
         <Button type="button" variant="outline" disabled={!rows.length} onClick={print}>Print / Save PDF</Button>
       </div>
     </div>
-    <MaterialTable key={search} label={sheet.name} headings={sheet.headings} rows={rows} empty={terms.length && sheet.rows.length ? 'No report rows match your search.' : empty} />
+    <MaterialTable key={search} label={sheet.name} headings={sheet.headings} rows={rows} sortValues={filtered} empty={terms.length && sheet.rows.length ? 'No report rows match your search.' : empty} />
   </section>;
 }
 

@@ -61,8 +61,12 @@ it('shows a submitted PO in both dashboards and enables conversion only after Ow
     expect(button('Convert to GRN')).toBeUndefined();
 
     await show('/owner?tab=poApprovals', 'owner', true);
+    const pendingCard = button('Review')?.closest('li');
+    expect(pendingCard?.textContent).toContain('PO-000007');
+    expect(pendingCard?.closest('table')).toBeNull();
     expect(host.textContent).toContain('PO-000007');
     await click('Review');
+    expect(pendingCard?.querySelector('form')?.textContent).toContain('Approve PO');
     await click('Approve PO');
     expect(host.textContent).toContain('Ready to receive');
     expect(button('Convert to GRN')).toBeUndefined();

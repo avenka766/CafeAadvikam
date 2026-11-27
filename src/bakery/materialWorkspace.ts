@@ -1,3 +1,4 @@
+import { getOwnerApkGrant } from '@/lib/platform';
 import { supabase } from '@/lib/supabase';
 
 export interface Material {
@@ -61,7 +62,7 @@ export interface Outward {
   section: string;
   recipe: string;
   reason: string;
-  lines: Array<Omit<MaterialLine, 'price' | 'stock_id'> & { before: number | null; after: number | null }>;
+  lines: Array<Omit<MaterialLine, 'price' | 'stock_id'> & { card?: string; before: number | null; after: number | null }>;
   created_at: string;
   created_by: string;
 }
@@ -80,9 +81,13 @@ export interface PurchaseData {
 
 type Action = 'stock_read' | 'purchase_read' | 'stock_import' | 'supplier_import' | 'issue' | 'po_save' | 'review' | 'receive';
 export async function materialRequest<T>(action: Action, payload: object, request?: string): Promise<T> {
-  const { data, error } = await supabase.rpc('material_workspace_v1', {
-    p_action: action, p_payload: payload, p_request: request ?? null,
-  });
+  const { data, error } = getOwnerApkGrant() && action === 'purchase_read'
+    ? await supabase.rpc('owner_apk_material_purchase_read_v1', { p_payload: payload })
+    : getOwnerApkGrant() && action === 'review'
+      ? await supabase.rpc('owner_apk_material_purchase_review_v1', { p_request: request, p_payload: payload })
+      : await supabase.rpc('material_workspace_v1', {
+        p_action: action, p_payload: payload, p_request: request ?? null,
+      });
   if (error) {
     if (error.code === '28000') throw new Error('Your session has expired. Sign in again.');
     if (error.code === '42501') throw new Error('Your account does not have access to this action.');

@@ -10,8 +10,8 @@ export function stockSheets(data: StockData, date: string): MaterialSheet[] {
   return [
     { name: 'Opening Stock', headings: ['Sl. No.', 'Item Name', 'Qty', 'UOM', 'Minimum or Maximum Status', 'Minimum', 'Maximum', 'Opening Date', 'Captured At'],
       rows: data.opening.map((item, i) => [i + 1, item.name, item.quantity, item.unit, stockStatus(item), item.minimum ?? 0, item.maximum ?? '', displayDate(date), displayCapturedAt(item.captured_at)]) },
-    { name: 'Outward', headings: ['Sl. No.', 'Section Name', 'Production Item Name', 'RM Item Name', 'Qty', 'UOM', 'Issue Date', 'Reason', 'Issued By'],
-      rows: data.outward.flatMap(batch => batch.lines.map(line => [batch.section, batch.recipe, line.name, line.quantity, line.unit, displayDate(batch.created_at), batch.reason, batch.created_by])).map((row, i) => [i + 1, ...row]) },
+    { name: 'Outward', headings: ['Sl. No.', 'Section Name', 'Production Item Name', 'RM Item Name', 'Qty', 'UOM', 'Issue Date', 'Reason', 'Issued By', 'Root Card'],
+      rows: data.outward.flatMap(batch => batch.lines.map(line => [batch.section, batch.recipe, line.name, line.quantity, line.unit, displayDate(batch.created_at), batch.reason, batch.created_by, line.card ?? ''])).map((row, i) => [i + 1, ...row]) },
   ];
 }
 

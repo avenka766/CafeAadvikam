@@ -14,6 +14,7 @@ import {
   ResponsiveContainer, BarChart, Bar, Legend, ReferenceLine,
 } from 'recharts';
 import { cn } from '@/lib/utils';
+import { MaterialTable } from './MaterialWorkspaceControls';
 import { useInvoiceStore, type StoreInvoice, type InvoiceLineItem } from './invoiceStore';
 import { useStoreStockStore, normaliseName, convertToStockUnit } from './storeStockStore';
 
@@ -102,11 +103,21 @@ export default function StoreAnalyticsTab() {
   // state at all — a failed fetch left this tab's price/stock-comparison
   // math silently working off zero stock items, with no indication why.
   const { items: stockItems, load: loadStock, subscribe: subscribeStock, error: stockError } = useStoreStockStore();
-  const [search, setSearch] = useState('');
-  const [selectedItem, setSelectedItem] = useState<string | null>(null);
-
   useEffect(() => { if (!loaded) load(); }, [loaded, load]);
   useEffect(() => { void loadStock(); return subscribeStock(); }, [loadStock, subscribeStock]);
+  return <PurchasePriceAnalytics invoices={invoices} stockItems={stockItems} loaded={loaded} invoicesError={invoicesError} stockError={stockError} />;
+}
+
+export function PurchasePriceAnalytics({ invoices, stockItems, loaded = true, invoicesError, stockError, grn = false }: {
+  invoices: StoreInvoice[];
+  stockItems: readonly { name: string; unit: string }[];
+  loaded?: boolean;
+  invoicesError?: string | null;
+  stockError?: string | null;
+  grn?: boolean;
+}) {
+  const [search, setSearch] = useState('');
+  const [selectedItem, setSelectedItem] = useState<string | null>(null);
 
   // Build a deduplicated list of all item names across all approved invoices
   const allItems = useMemo(() => {
@@ -205,7 +216,7 @@ export default function StoreAnalyticsTab() {
         dateLabel: new Date(r.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }),
         supplier: r.supplier,
         pricePerUnit: normalizedPrice,
-        quantity: r.li.quantity,
+        quantity: grn && factor !== null ? Number((r.li.quantity * factor).toFixed(6)) : r.li.quantity,
         unit: unresolvedUnit ? r.li.unit : (targetUnit ?? r.li.unit),
         invoiceNumber: r.inv.invoiceNumber,
         diff,
@@ -213,7 +224,7 @@ export default function StoreAnalyticsTab() {
         unresolvedUnit,
       };
     });
-  }, [selectedItem, invoices, stockItems]);
+  }, [selectedItem, invoices, stockItems, grn]);
 
   // Aggregate stats and charts below compare/average prices across
   // purchases — that's only valid once everything is in the same unit.
@@ -298,10 +309,10 @@ export default function StoreAnalyticsTab() {
       <div className="bg-card border border-border rounded-3xl p-4 sm:p-5 shadow-soft">
         <div className="flex items-center gap-2 mb-1">
           <BarChart3 className="size-4 text-primary" />
-          <h2 className="font-display font-bold text-foreground">Store Analytics</h2>
+          <h2 className="font-display font-bold text-foreground">{grn ? 'Purchase Analytics' : 'Store Analytics'}</h2>
         </div>
         <p className="text-[11px] font-body text-muted-foreground">
-          Review purchase spend first, then drill into item-wise price changes across months and suppliers.
+          {grn ? 'Purchase spend and price trends from recorded GRNs, based on received quantities and prices.' : 'Review purchase spend first, then drill into item-wise price changes across months and suppliers.'}
         </p>
       </div>
 
@@ -325,9 +336,9 @@ export default function StoreAnalyticsTab() {
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 sm:gap-3">
         {[
-          { label: 'Invoice Spend', value: fmt(storeSummary.totalSpend), sub: 'Approved and pending bills', icon: ShoppingCart },
-          { label: 'Invoices', value: storeSummary.invoiceCount, sub: `Average ${fmt(storeSummary.avgInvoice)}`, icon: Calendar },
-          { label: 'Tracked Items', value: allItems.length, sub: 'Items found in invoices', icon: BarChart3 },
+          { label: grn ? 'Received Value' : 'Invoice Spend', value: fmt(storeSummary.totalSpend), sub: grn ? 'Recorded GRNs' : 'Approved and pending bills', icon: ShoppingCart },
+          { label: grn ? 'GRNs' : 'Invoices', value: storeSummary.invoiceCount, sub: `Average ${fmt(storeSummary.avgInvoice)}`, icon: Calendar },
+          { label: 'Tracked Items', value: allItems.length, sub: grn ? 'Items received via GRN' : 'Items found in invoices', icon: BarChart3 },
           { label: 'Top Supplier', value: storeSummary.topSupplierName, sub: fmt(storeSummary.topSupplierSpend), icon: Users },
         ].map(card => {
           const Icon = card.icon;
@@ -396,7 +407,7 @@ export default function StoreAnalyticsTab() {
         <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 flex gap-3">
           <Info className="size-4 text-amber-600 shrink-0 mt-0.5" />
           <p className="text-sm font-body text-amber-800">
-            No purchase records found for <strong>{selectedItem}</strong>. Create invoices containing this item to see analytics.
+            No purchase records found for <strong>{selectedItem}</strong>. {grn ? 'Record a GRN containing this item to see analytics.' : 'Create invoices containing this item to see analytics.'}
           </p>
         </div>
       )}
@@ -413,6 +424,14 @@ export default function StoreAnalyticsTab() {
         </div>
       )}
 
+      {grn && selectedItem && purchasePoints.length > 0 && <section className="min-w-0 space-y-3 rounded-2xl border bg-card p-4">
+        <h3 className="font-display font-bold">Purchase History · {selectedItem}</h3>
+        <MaterialTable key={selectedItem} label="Purchase history" empty="No purchases."
+          headings={['Date', 'Supplier', 'GRN Number', 'Quantity', 'Unit', 'Unit Price', 'Price Change']}
+          rows={[...purchasePoints].reverse().map(p => [p.dateLabel, p.supplier, p.invoiceNumber, p.quantity, p.unit,
+            fmt(p.pricePerUnit), p.unresolvedUnit ? 'Unit mismatch' : <DiffBadge diff={p.diff} pct={p.diffPct} />])}
+          sortValues={[...purchasePoints].reverse().map(p => [p.date, p.supplier, p.invoiceNumber, p.quantity, p.unit, p.pricePerUnit, p.diff])} />
+      </section>}
       {selectedItem && resolvedPurchasePoints.length > 0 && (
         <>
           {/* ── KPI Summary ── */}
@@ -516,7 +535,7 @@ export default function StoreAnalyticsTab() {
                 couldn't be compared (flagged below), so nothing is hidden
                 from the raw record even though it's excluded from the
                 chart/stats above. */}
-            <div className="divide-y divide-border/40">
+            {!grn && <div className="divide-y divide-border/40">
               {[...purchasePoints].reverse().map((p, i) => (
                 <div key={i} className={cn('px-4 py-3 flex items-start gap-3 border-b border-border/30', p.unresolvedUnit ? 'bg-destructive/5' : diffBg(p.diff))}>
                   <div className="flex-1 min-w-0">
@@ -540,7 +559,7 @@ export default function StoreAnalyticsTab() {
                   {!p.unresolvedUnit && <DiffBadge diff={p.diff} pct={p.diffPct} />}
                 </div>
               ))}
-            </div>
+            </div>}
           </div>
 
           {/* ── Section B: Month-over-month ── */}
@@ -567,7 +586,13 @@ export default function StoreAnalyticsTab() {
                   </BarChart>
                 </ResponsiveContainer>
               </div>
-              <div className="divide-y divide-border/40">
+              {grn ? <MaterialTable key={selectedItem} label="Monthly prices" empty="No monthly prices."
+                headings={['Month', 'Purchases', 'Minimum Price', 'Maximum Price', 'Average Price', 'Price Change']}
+                rows={[...monthlyAvgs].reverse().map((m, i, all) => [m.month, m.count, fmt(m.minPrice), fmt(m.maxPrice), fmt(m.avgPrice),
+                  all[i + 1] ? fmt(m.avgPrice - all[i + 1].avgPrice) : '—'])}
+                sortValues={[...monthlyAvgs].reverse().map((m, i, all) => [m.monthKey, m.count, m.minPrice, m.maxPrice, m.avgPrice,
+                  all[i + 1] ? m.avgPrice - all[i + 1].avgPrice : null])} />
+                : <div className="divide-y divide-border/40">
                 {[...monthlyAvgs].reverse().map((m, i, arr) => {
                   const prev = arr[i + 1];
                   const diff = prev ? parseFloat((m.avgPrice - prev.avgPrice).toFixed(2)) : null;
@@ -589,7 +614,7 @@ export default function StoreAnalyticsTab() {
                     </div>
                   );
                 })}
-              </div>
+              </div>}
             </div>
           )}
 
@@ -630,7 +655,11 @@ export default function StoreAnalyticsTab() {
                 </div>
               )}
 
-              <div className="divide-y divide-border/40">
+              {grn ? <MaterialTable key={selectedItem} label="Supplier price comparison" empty="No suppliers."
+                headings={['Supplier', 'Purchases', 'Last Purchase', 'Latest Price', 'Average Price', 'Minimum Price', 'Maximum Price']}
+                rows={supplierSummary.map(s => [s.supplier, s.purchaseCount, s.lastDate, fmt(s.latestPrice), fmt(s.avgPrice), fmt(s.minPrice), fmt(s.maxPrice)])}
+                sortValues={supplierSummary.map(s => [s.supplier, s.purchaseCount, s.lastDate, s.latestPrice, s.avgPrice, s.minPrice, s.maxPrice])} />
+                : <div className="divide-y divide-border/40">
                 {supplierSummary.map((s, i) => {
                   const isCheapest = s.supplier === cheapestSupplier && supplierSummary.length > 1;
                   const isMostExp = s.supplier === mostExpensiveSupplier && supplierSummary.length > 1;
@@ -690,7 +719,7 @@ export default function StoreAnalyticsTab() {
                     </div>
                   );
                 })}
-              </div>
+              </div>}
             </div>
           )}
 

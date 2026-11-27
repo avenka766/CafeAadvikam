@@ -1,3 +1,4 @@
+import { RecipeRootCardEditor, useAdminRecipeRootCards } from './AdminRecipeRootCards';
 import CatalogueExcelButton from '@/components/admin/CatalogueExcelButton';
 // src/bakery/RecipeManagement.tsx — NEW FILE
 // Admin screen: view, edit, and add recipe data per item
@@ -314,11 +315,12 @@ function RecipeEditor({
 
 // ── Item row in list ──────────────────────────────────────────────────────────
 function ItemRecipeRow({
-  item, recipe, onEdit,
+  item, recipe, onEdit, rootCard,
 }: {
   item: { id: string; name: string; icon: string };
   recipe: RecipeRow | null;
   onEdit: (itemId: string) => void;
+  rootCard?: ReactNode;
 }) {
   const [expanded, setExpanded] = useState(false);
   const hasRecipe = recipe && recipe.materials.length > 0;
@@ -352,7 +354,7 @@ function ItemRecipeRow({
       >
         <span className="text-base w-6 text-center shrink-0">{item.icon}</span>
         <div className="flex-1 min-w-0">
-          <p className="text-sm font-body font-semibold text-foreground truncate">{item.name}</p>
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1"><p className="text-sm font-body font-semibold text-foreground truncate">{item.name}</p>{rootCard}</div>
           {hasRecipe && !recipeIssue ? (
             <p className="text-[10px] font-body text-emerald-600">
               ✓ {recipe.materials.length} ingredients · {recipe.outputQty} {recipe.outputUnit}
@@ -660,6 +662,10 @@ export default function RecipeManagement({ embedded = false, storeMode = false }
   useEffect(() => { void loadAllItems(); return subscribeBakeryItems(); }, [loadAllItems, subscribeBakeryItems]);
 
   const { recipes, loading, loadRecipes, saveRecipe, subscribe: subscribeRecipes, getRecipe: getLiveRecipe } = useRecipeStore();
+  const showRootCards = !storeMode && currentUser?.role === 'admin';
+  const rootCards = useAdminRecipeRootCards(showRootCards);
+  const { refresh: refreshRootCards } = rootCards;
+  useEffect(() => { if (showRootCards && !loading) void refreshRootCards(); }, [showRootCards, loading, recipes, refreshRootCards]);
   useEffect(() => {
     void loadRecipes();
     const unsubscribe = subscribeRecipes();
@@ -678,7 +684,7 @@ export default function RecipeManagement({ embedded = false, storeMode = false }
     const recipe = getLiveRecipe(itemId, item?.name);
     if (!recipe) return null;
     return {
-      itemId,
+      itemId: recipe.itemId,
       outputQty: recipe.outputQty,
       outputUnit: recipe.outputUnit,
       materials: recipe.materials.map((material) => ({ ...material })),
@@ -755,19 +761,21 @@ export default function RecipeManagement({ embedded = false, storeMode = false }
       </div>
 
 
+      {showRootCards && rootCards.error && <p role="alert" className="text-sm text-destructive">{rootCards.error} <button type="button" className="underline" onClick={() => void refreshRootCards()}>Retry</button></p>}
       {(!storeMode || storeSection === 'recipes') && (
         <div className="flex justify-end">
-          <CatalogueExcelButton filename="Bakery-Recipes.xlsx" disabled={loading || filteredItems.length === 0} sheet={() => ({
+          <CatalogueExcelButton filename="Bakery-Recipes.xlsx" disabled={loading || (showRootCards && !rootCards.cards) || filteredItems.length === 0} sheet={() => ({
             name: 'Bakery Recipes',
             headings: ['Item ID', 'Item Name', 'Category', 'Output Quantity', 'Output Unit',
-              'Ingredient', 'Ingredient Quantity', 'Ingredient Unit', 'Recipe Source'],
+              'Ingredient', 'Ingredient Quantity', 'Ingredient Unit', 'Recipe Source', ...(showRootCards ? ['Root Card Number'] : [])],
             rows: filteredItems.flatMap(item => {
               const recipe = getRecipe(item.id);
               const itemColumns = [item.id, item.name, item.category, recipe?.outputQty ?? '', recipe?.outputUnit ?? ''];
               const source = recipe ? (recipe.source === 'db' ? 'Saved recipe' : 'Excel recipe') : 'No recipe';
+              const cardColumn = showRootCards ? [recipe ? rootCards.cards?.get(recipe.itemId) ?? '' : ''] : [];
               return recipe?.materials.length
-                ? recipe.materials.map(ingredient => [...itemColumns, ingredient.material, ingredient.qty, ingredient.unit, source])
-                : [[...itemColumns, '', '', '', source]];
+                ? recipe.materials.map(ingredient => [...itemColumns, ingredient.material, ingredient.qty, ingredient.unit, source, ...cardColumn])
+                : [[...itemColumns, '', '', '', source, ...cardColumn]];
             }),
           })} />
         </div>
@@ -822,6 +830,7 @@ export default function RecipeManagement({ embedded = false, storeMode = false }
                   ))}
                 </select>
                 <p className="text-[10px] text-muted-foreground mt-1">Recipes can only be created for items already saved in Admin &gt; Items. Items marked ✓ already have a recipe.</p>
+                {!storeMode && <p className="mt-2 text-xs text-muted-foreground">A root card number is assigned automatically when you save a new recipe.</p>}
               </div>
             </div>
             <div className="flex gap-2 px-5 pb-5">
@@ -880,6 +889,11 @@ export default function RecipeManagement({ embedded = false, storeMode = false }
         <div className="fixed inset-0 z-50 bg-black/50 flex items-end">
           <div className="bg-background w-full rounded-t-3xl px-4 pb-28 pt-4 max-h-[85vh] overflow-y-auto">
             <div className="w-12 h-1 bg-muted-foreground/20 rounded-full mx-auto mb-4" />
+            {!storeMode && !getRecipe(editingItem.id) && (
+              <p className="mb-2 rounded-lg bg-muted px-3 py-2 text-sm text-muted-foreground">
+                A root card number is assigned automatically when you save this recipe.
+              </p>
+            )}
             <RecipeEditor
               itemId={editingItem.id}
               itemName={editingItem.name}
@@ -906,14 +920,14 @@ export default function RecipeManagement({ embedded = false, storeMode = false }
         <div className="flex justify-center py-16"><Loader2 className="size-6 animate-spin text-muted-foreground" /></div>
       ) : (
         <div className="space-y-2">
-          {filteredItems.map(item => (
-            <ItemRecipeRow
-              key={item.id}
-              item={item}
-              recipe={getRecipe(item.id)}
-              onEdit={setEditingId}
-            />
-          ))}
+          {filteredItems.map(item => {
+            const recipe = getRecipe(item.id);
+            const card = recipe && rootCards.cards?.get(recipe.itemId);
+            return <ItemRecipeRow key={item.id} item={item} recipe={recipe} onEdit={setEditingId}
+              rootCard={showRootCards && recipe && (card
+                ? <RecipeRootCardEditor key={recipe.itemId} item={recipe.itemId} name={item.name} card={card} save={rootCards.save} />
+                : <span className="text-xs text-muted-foreground">Root card {rootCards.cards ? 'pending' : 'unavailable'}</span>)} />;
+          })}
           {filteredItems.length === 0 && (
             <div className="text-center py-12 text-muted-foreground">
               <ChefHat className="size-10 opacity-20 mx-auto mb-2" />

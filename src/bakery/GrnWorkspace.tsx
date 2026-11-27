@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { lazy, Suspense, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { ClipboardCheck, Download, Plus, Truck } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { grnWorkspaceTabs as tabs } from '@/lib/routing';
 import { useAuthStore } from '@/stores/authStore';
 import { DateFilter, Field, MaterialTable, WorkbookImport, WorkspaceHeader, panelClass,
   ReportSection, useMaterialWorkspace } from './MaterialWorkspaceControls';
@@ -10,7 +11,7 @@ import { PurchaseOrderForm, ReceiptForm, ReviewForm } from './GrnWorkspaceForms'
 import { displayDate, poNumber, statusLabel, type PurchaseData, type PurchaseOrder } from './materialWorkspace';
 import { downloadMaterialWorkbook, purchaseSheets, supplierHeadings } from './materialWorkspaceExcel';
 
-const tabs = ['Daily PO Report', 'Approved Status', 'GRN Report', 'Suppliers'] as const;
+const GrnAnalyticsTab = lazy(() => import('./GrnAnalyticsTab'));
 type Tab = typeof tabs[number];
 type Editor = { kind: 'po'; order: PurchaseOrder | null } | { kind: 'receive' | 'review'; order: PurchaseOrder };
 
@@ -31,7 +32,7 @@ function SupplierCatalogue({ data }: { data: PurchaseData }) {
     </div>
     <MaterialTable key={filter} label="Suppliers" headings={['Supplier', 'Contact', 'Materials on file', 'GRN catalogue']}
       rows={rows.map(({ supplier, supplied }) => [supplier.business_name,
-        <span>{[supplier.contact_name, supplier.phone, supplier.email].filter(Boolean).join(' · ') || '—'}</span>,
+        [supplier.contact_name, supplier.phone, supplier.email].filter(Boolean).join(' · ') || '—',
         supplier.items_supplied || '—', supplied || '—'])} empty="No suppliers match your search." />
   </section>;
 }
@@ -57,21 +58,45 @@ export default function GrnWorkspace({ ownerApprovals = false }: { ownerApproval
   const unmapped = data?.materials.filter(item => item.quantity < (item.minimum ?? 0) && !preferred.has(item.id)) ?? [];
   const close = () => setEditor(undefined);
   const open = (next: Editor) => { workspace.clearError(); setEditor(next); };
+  const currentReview = editor?.kind === 'review' && !canPurchase && <ReviewForm key={editor.order.id}
+    order={editor.order} busy={busy || !!readError}
+    close={close} save={payload => workspace.save('review', payload, 'Purchase order reviewed.')} />;
+  const orderItems = (order: PurchaseOrder) => <details className={ownerApprovals ? 'min-w-0 break-words' : 'min-w-32'}>
+    <summary className="cursor-pointer font-medium">{order.lines.length} {order.lines.length === 1 ? 'item' : 'items'}{order.automatic && ' · Low stock'}</summary>
+    <ul className="mt-2 space-y-1">
+      {order.lines.map(line => <li key={line.stock_id}>{line.name} · {line.quantity} {line.unit} × ₹{line.price}</li>)}
+    </ul>
+    {order.notes && <p className="mt-2 text-muted-foreground">{order.notes}</p>}
+    {order.review_note && <p className="mt-2 text-muted-foreground">Owner note · {order.review_note}</p>}
+  </details>;
   const orderQueue = (queue: PurchaseOrder[], action: (order: PurchaseOrder) => React.ReactNode, title: string, empty: string) =>
-    <section className={panelClass + ' space-y-3'}>
+    <section className={panelClass + ' min-w-0 space-y-3'}>
       <h2 className="font-semibold">{title}</h2>
-      <MaterialTable key={title} label={title} headings={['PO number', 'Supplier', 'Items', 'Status', 'PO date', 'Action']}
-        rows={queue.map(order => [poNumber(order.number), order.supplier,
-          <details className="min-w-32">
-            <summary className="cursor-pointer font-medium">{order.lines.length} {order.lines.length === 1 ? 'item' : 'items'}{order.automatic && ' · Low stock'}</summary>
-            <ul className="mt-2 space-y-1">
-              {order.lines.map(line => <li key={line.stock_id}>{line.name} · {line.quantity} {line.unit} × ₹{line.price}</li>)}
-            </ul>
-            {order.notes && <p className="mt-2 text-muted-foreground">{order.notes}</p>}
-            {order.review_note && <p className="mt-2 text-muted-foreground">Owner note · {order.review_note}</p>}
-          </details>,
-          statusLabel[order.status], displayDate(order.created_at), action(order)])} empty={empty} />
+      {ownerApprovals && queue.length > 0 ? <ul className="space-y-3">
+        {queue.map(order => <li key={order.id} className="min-w-0 space-y-3 rounded-xl border p-3 sm:p-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0 break-words">
+              <p className="font-semibold">{poNumber(order.number)}</p>
+              <p className="text-sm text-muted-foreground">{order.supplier}</p>
+            </div>
+            <div className="text-sm">{action(order)}</div>
+          </div>
+          <p className="text-sm text-muted-foreground">{statusLabel[order.status]} · {displayDate(order.created_at)}</p>
+          {orderItems(order)}
+          {editor?.kind === 'review' && editor.order.id === order.id && currentReview}
+        </li>)}
+      </ul> : <MaterialTable key={title} label={title} headings={['PO number', 'Supplier', 'Items', 'Status', 'PO date', 'Action']}
+        sortValues={queue.map(order => [order.number, order.supplier, order.lines.length, statusLabel[order.status], new Date(order.created_at),
+          order.status === 'submitted' ? canPurchase ? 'Awaiting Owner' : 'Review'
+            : order.status === 'approved' ? canPurchase ? 'Convert to GRN' : 'Ready to receive'
+            : order.status === 'rejected' ? 'Edit and resubmit' : 'Edit draft'])}
+        rows={queue.map(order => [poNumber(order.number), order.supplier, orderItems(order),
+          statusLabel[order.status], displayDate(order.created_at), action(order)])} empty={empty} />}
     </section>;
+  const pendingQueue = data && tab === 'Approved Status' && orderQueue(pending, order => canPurchase ? 'Awaiting Owner'
+    : <Button type="button" size="sm" variant={ownerApprovals ? 'default' : 'outline'} disabled={busy || !!readError}
+        onClick={() => open({ kind: 'review', order })}><ClipboardCheck className="size-4" /> Review</Button>,
+    'Pending approval', 'No purchase orders are waiting for approval.');
 
   const Container = ownerApprovals ? 'section' : 'main';
   const receiveAction = (order: PurchaseOrder) => canPurchase
@@ -79,19 +104,20 @@ export default function GrnWorkspace({ ownerApprovals = false }: { ownerApproval
         onClick={() => open({ kind: 'receive', order })}>Convert to GRN</Button>
     : 'Ready to receive';
 
-  return <Container className={ownerApprovals ? 'grid gap-4' : 'mx-auto grid max-w-[1500px] gap-4 px-3 py-4 sm:px-6'}>
+  return <Container className={ownerApprovals ? 'grid min-w-0 grid-cols-[minmax(0,1fr)] gap-4' : 'mx-auto grid min-w-0 max-w-[1500px] grid-cols-[minmax(0,1fr)] gap-4 px-3 py-4 sm:px-6'}>
     <WorkspaceHeader title={ownerApprovals ? "GRN purchase order approvals" : "GRN"} subtitle={ownerApprovals ? "Review purchase orders submitted by the GRN team" : "Purchase & GRN tracking"} icon={<Truck className="size-6" />}
       tools={<>
-        <Button variant="secondary" disabled={!sheets || busy || loading || !!readError}
+        {tab !== 'Analytics' && <Button variant="secondary" disabled={!sheets || busy || loading || !!readError}
           onClick={() => sheets && void workspace.run(() => downloadMaterialWorkbook('Purchases-' + dates.from + '-to-' + dates.through + '.xlsx', sheets))}>
           <Download className="size-4" /> Download Excel report
-        </Button>
+        </Button>}
         {canPurchase && tab === 'Daily PO Report' && <Button disabled={busy || !data || !!readError}
           onClick={() => open({ kind: 'po', order: null })}><Plus className="size-4" /> New PO</Button>}
       </>} />
     {workspace.message && <p role="status" className="rounded-lg border border-teal-400/50 bg-teal-500/10 p-3 text-sm">{workspace.message}</p>}
     {(workspace.writeError || readError) && <p role="alert" className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm">{workspace.writeError || readError}</p>}
-    {(tab !== 'Suppliers' || !data) && <section className={panelClass}>
+    {ownerApprovals && pendingQueue}
+    {tab !== 'Analytics' && (tab !== 'Suppliers' || !data) && <section className={panelClass}>
       <DateFilter dates={dates} change={workspace.setDates} refresh={() => void workspace.reload()} loading={loading} />
     </section>}
     {loading && <p role="status" className="text-sm text-muted-foreground">Loading purchase records…</p>}
@@ -100,8 +126,7 @@ export default function GrnWorkspace({ ownerApprovals = false }: { ownerApproval
         ? 'Purchase order submitted to the Owner for approval.' : 'Purchase order saved as a draft.')} />}
     {data && editor?.kind === 'receive' && canPurchase && <ReceiptForm key={editor.order.id} data={data} order={editor.order} busy={busy || !!readError}
       close={close} save={payload => workspace.save('receive', payload, 'GRN recorded and raw material stock updated.')} />}
-    {editor?.kind === 'review' && !canPurchase && <ReviewForm key={editor.order.id} order={editor.order} busy={busy || !!readError}
-      close={close} save={payload => workspace.save('review', payload, 'Purchase order reviewed.')} />}
+    {!ownerApprovals && currentReview}
 
     {data && tab === 'Daily PO Report' && canPurchase && <>
       {unmapped.length > 0 && <details className={panelClass + ' text-sm'}>
@@ -116,9 +141,7 @@ export default function GrnWorkspace({ ownerApprovals = false }: { ownerApproval
           onClick={() => open({ kind: 'po', order })}>{order.status === 'rejected' ? 'Edit and resubmit' : 'Edit draft'}</Button>;
       }, 'Open purchase orders', 'No open purchase orders.')}
     </>}
-    {data && tab === 'Approved Status' && orderQueue(pending, order => canPurchase ? 'Awaiting Owner'
-      : <Button type="button" size="sm" variant="outline" disabled={busy || !!readError} onClick={() => open({ kind: 'review', order })}>
-        <ClipboardCheck className="size-4" /> Review</Button>, 'Pending approval', 'No purchase orders are waiting for approval.')}
+    {!ownerApprovals && pendingQueue}
     {data && (tab === 'Approved Status' || tab === 'GRN Report') && orderQueue(approved, receiveAction,
       'Approved POs with stock outstanding', 'No approved purchase orders have outstanding items.')}
     {data && tab === 'Suppliers' && <>
@@ -136,7 +159,10 @@ export default function GrnWorkspace({ ownerApprovals = false }: { ownerApproval
         upload={rows => workspace.save('supplier_import', { rows }, 'Supplier catalogue imported and raw materials synced.')} />}
       <SupplierCatalogue data={data} />
     </>}
-    {!loading && !readError && sheets && tab !== 'Suppliers' && <ReportSection key={tab} sheet={sheets[tabs.indexOf(tab)]} empty="No report rows fall within this date range." />}
+    {data && tab === 'Analytics' && <Suspense fallback={<p role="status">Loading purchase analytics.</p>}>
+      <GrnAnalyticsTab stockItems={data.materials} />
+    </Suspense>}
+    {!loading && !readError && sheets && tab !== 'Suppliers' && tab !== 'Analytics' && <ReportSection key={tab} sheet={sheets[tabs.indexOf(tab)]} empty="No report rows fall within this date range." />}
   </Container>;
 }
 
