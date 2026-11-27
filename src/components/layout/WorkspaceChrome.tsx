@@ -1,4 +1,4 @@
-import { stockWorkspaceTabs } from '@/lib/routing';
+import { grnWorkspaceTabs, stockWorkspaceTabs } from '@/lib/routing';
 import { useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
@@ -545,12 +545,11 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
             ? currentRoute === item.path
             : (location.pathname === item.path && !location.search) || location.pathname.startsWith(item.path + '/');
           const isStock = item.path === '/bakery/stock';
-          const grnTabs = ['Daily PO Report', 'Approved Status', 'GRN Report', 'Suppliers'];
-          const sections = isStock ? stockWorkspaceTabs : grnTabs;
+          const sections = isStock ? stockWorkspaceTabs : grnWorkspaceTabs;
           const showSections = location.pathname === item.path && (isStock || item.path === '/bakery/grn');
           const requestedSection = new URLSearchParams(location.search).get('tab');
           const selectedSection = sections.find(tab => tab === requestedSection) ??
-            (isStock || currentUser?.role === 'grn' ? sections[0] : grnTabs[1]);
+            (isStock || currentUser?.role === 'grn' ? sections[0] : grnWorkspaceTabs[1]);
           const badgeCount = navBadges[item.path] ?? 0;
           return (
             <div key={item.path}>
