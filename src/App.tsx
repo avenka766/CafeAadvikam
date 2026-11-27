@@ -13,7 +13,8 @@ import ElectronRefreshButton from '@/components/layout/ElectronRefreshButton';
 import DesktopSalesBootstrap from '@/components/layout/DesktopSalesBootstrap';
 import WorkspaceChrome from '@/components/layout/WorkspaceChrome';
 import { getRoleDefaultPath } from '@/lib/routing';
-import { isNativeApp, isElectronApp } from '@/lib/platform';
+import { getOwnerApkGrant, isNativeApp, isElectronApp } from '@/lib/platform';
+import { supabase } from '@/lib/supabase';
 import type { UserRole } from '@/types';
 import { useMenuStore } from '@/stores/menuStore';
 import { useOfflineQueueStore } from '@/lib/offlineQueue';
@@ -322,8 +323,40 @@ function AppRoutes() {
   );
 }
 
+function OwnerApkRoutes() {
+  const [access, setAccess] = useState<'loading' | 'ready' | 'failed'>('loading');
+  const checkAccess = async () => {
+    setAccess('loading');
+    try {
+      const { data, error } = await supabase.rpc('owner_apk_status_v1');
+      if (error || !data || typeof data.id !== 'string') { setAccess('failed'); return; }
+      useAuthStore.setState({ currentUser: { id: data.id, username: data.username, displayName: data.displayName, role: 'owner', password: '' } });
+      setAccess('ready');
+    } catch {
+      setAccess('failed');
+    }
+  };
+
+  useEffect(() => { void checkAccess(); }, []);
+
+  if (access !== 'ready') return <main className="grid min-h-dvh place-content-center gap-3 p-6 text-center">
+    <h1 className="font-display text-xl font-bold">Cafe Aadvikam Owner</h1>
+    <p role={access === 'failed' ? 'alert' : 'status'}>
+      {access === 'failed' ? 'Live dashboard unavailable. Check your connection and retry.' : 'Opening dashboard…'}
+    </p>
+    {access === 'failed' && <button type="button" className="rounded-xl border px-4 py-2" onClick={() => void checkAccess()}>Retry</button>}
+  </main>;
+  return <Suspense fallback={<p role="status">Loading Owner dashboard…</p>}>
+    <Routes>
+      <Route path="/owner" element={<OwnerDashboard />} />
+      <Route path="*" element={<Navigate to="/owner" replace />} />
+    </Routes>
+  </Suspense>;
+}
+
 export default function App() {
   const auditOnly = useAuthStore(state => ['audit','finance'].includes(state.currentUser?.role || ''));
+  if (getOwnerApkGrant()) return <ErrorBoundary><BrowserRouter><OwnerApkRoutes /></BrowserRouter></ErrorBoundary>;
   return (
     <ErrorBoundary>
       <DeleteConfirmationGuard />

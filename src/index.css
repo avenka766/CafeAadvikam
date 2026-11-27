@@ -3926,17 +3926,12 @@
 
 .owner-native-brand { display: flex; align-items: center; gap: .65rem; min-width: 0; }
 .owner-native-mark {
-  display: grid;
-  place-items: center;
-  width: 2.3rem;
-  height: 2.3rem;
-  border-radius: .85rem;
-  background: linear-gradient(150deg, var(--owner-native-gold), #b9781f);
-  color: #241305;
-  font-weight: 900;
-  font-size: .8rem;
-  letter-spacing: .02em;
-  box-shadow: inset 0 1px 0 rgba(255,255,255,.5), 0 4px 10px rgba(0,0,0,.18);
+  width: 2.65rem;
+  height: 2.65rem;
+  padding: .14rem;
+  border-radius: .8rem;
+  background: #fff;
+  object-fit: contain;
   flex-shrink: 0;
 }
 .owner-native-brand strong { display: block; color: #fff; font-size: .95rem; font-weight: 900; letter-spacing: -.01em; }
@@ -4229,3 +4224,13 @@ html.android-admin-app .workspace-redesign { padding-bottom: 0; }
 .cafe-payment-heading {padding:10px 14px;}
 }
 .cafe-payment-overlay {z-index:100!important;padding:12px;}
+
+.workspace-redesign .owner-po-approvals {
+  grid-template-columns: minmax(0, 1fr);
+  width: 100%;
+  max-width: 100%;
+}
+.owner-po-approvals > * {
+  min-width: 0;
+  max-width: 100%;
+}
