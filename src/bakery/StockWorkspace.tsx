@@ -18,10 +18,13 @@ export default function StockWorkspace() {
   const [deductionTab, setDeductionTab] = useState<StockDeductionTab>('Recipe Materials');
   const productionTab = tab === 'Orders' || (tab === 'Custom Stock Deduction' && deductionTab === 'Recipe Materials');
   const production = useStockProduction(productionTab, tab === 'Orders' ? 'orders' : 'custom');
-  const saveProduction = (action: 'release' | 'release_batch' | 'extra', payload: object) => workspace.run(async () => {
-    await production.save(action, payload);
+  const [releasedCard, setReleasedCard] = useState<string>();
+  const saveProduction = (action: 'release_production' | 'production_extra', payload: object) => workspace.run(async () => {
+    if (action === 'release_production') setReleasedCard(undefined);
+    const result = await production.save(action, payload);
+    if (action === 'release_production') setReleasedCard(result.card);
     await workspace.reload(true);
-  }, action !== 'extra' ? 'Sent to production. Raw materials deducted.' : 'Extra deduction recorded against the root card.');
+  }, action === 'production_extra' ? 'Extra deduction recorded against the root card.' : undefined);
   const [search, setSearch] = useState('');
   const { data, dates, busy, loading, readError } = workspace;
   const sheets = data && stockSheets(data, dates.from);
@@ -38,6 +41,7 @@ export default function StockWorkspace() {
         })}>
         <Download className="size-4" /> Download Excel report
       </Button>} />
+    {tab === 'Orders' && releasedCard && <p role="status" className="rounded-lg border border-teal-400/50 bg-teal-500/10 p-3 text-sm">Sent to production. Raw materials deducted. Root Card {releasedCard}.</p>}
     {workspace.message && <p role="status" className="rounded-lg border border-teal-400/50 bg-teal-500/10 p-3 text-sm">{workspace.message}</p>}
     {(workspace.writeError || readError) && <p role="alert" className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm">{workspace.writeError || readError}</p>}
     {(tab === 'Opening Stock' || tab === 'Outward Report' || !data) && <section className={panelClass}>
@@ -60,10 +64,10 @@ export default function StockWorkspace() {
     {productionTab && production.error && <div role="alert" className={panelClass}>{production.error} <Button variant="outline" onClick={() => void production.refresh()}>Retry</Button></div>}
     {productionTab && !production.data && !production.error && <p role="status">Loading orders and root cards…</p>}
     {data && production.data && tab === 'Orders' && <StockProductionOrders orders={production.data.orders} materials={data.materials}
-      busy={busy || !!readError || !!production.error} refresh={() => void production.refresh()} send={orders => orders.length === 1 ? saveProduction('release',orders[0]) : saveProduction('release_batch',{ orders })}/>}
+      busy={busy || !!readError || !!production.error} refresh={() => void production.refresh()} send={payload => saveProduction('release_production',payload)}/>}
     {data && tab === 'Custom Stock Deduction' && <IssueForm cards={production.error ? [] : production.data?.cards ?? []} materials={data.materials}
       tab={deductionTab} changeTab={setDeductionTab} busy={busy || !!readError}
-      submitRecipe={payload => saveProduction('extra', payload)}
+      submitRecipe={payload => saveProduction('production_extra', payload)}
       submitCustom={payload => workspace.save('issue', { ...payload, section: 'Production', recipe: 'Custom deduction' }, 'Custom deduction recorded.')} />}
     {data && tab === 'Bulk Import' && <WorkbookImport kind="stock" busy={busy || !!readError}
       instruction="Edit Qty and stock limits in the workbook. Leave Downloaded Qty unchanged for existing materials and blank for new rows."

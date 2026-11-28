@@ -62,7 +62,7 @@ export interface Outward {
   section: string;
   recipe: string;
   reason: string;
-  lines: Array<Omit<MaterialLine, 'price' | 'stock_id'> & { combined_card?: string; item_card?: string; order_card?: string; before: number | null; after: number | null }>;
+  lines: Array<Omit<MaterialLine, 'price' | 'stock_id'> & { production_card?: string; production_batches?: number | null; production_output_qty?: number; production_output_unit?: string; combined_card?: string; item_card?: string; order_card?: string; before: number | null; after: number | null }>;
   created_at: string;
   created_by: string;
 }

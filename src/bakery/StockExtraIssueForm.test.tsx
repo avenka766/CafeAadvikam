@@ -25,7 +25,7 @@ it('filters recipe materials and submits a separate custom issue without a root 
   try {
     function Fixture() {
       const [tab,changeTab]=useState<StockDeductionTab>('Recipe Materials');
-      return <StockExtraIssueForm cards={[{id:'order-1',number:1,items:[{index:0,card:'OC-1-1',combined_card:'MC-SWEET',recipe_materials:['sugar'],name:'Sweet',quantity:2,unit:'kg'}]},{id:'order-2',number:2,items:[{index:0,card:'OC-2-1',combined_card:'MC-SWEET',recipe_materials:['sugar'],name:'Sweet',quantity:3,unit:'kg'}]}]}
+      return <StockExtraIssueForm cards={[{id:'run-1',card:'1',recipe_materials:['sugar'],name:'Sweet',quantity:5,unit:'kg'}]}
       materials={materials} busy={false} tab={tab} changeTab={changeTab} submitRecipe={submitRecipe} submitCustom={submitCustom}/>;
     }
     await act(async()=>root.render(<Fixture/>));
@@ -34,7 +34,7 @@ it('filters recipe materials and submits a separate custom issue without a root 
     expect(host.textContent).toContain('Sweet · 5 kg');
     expect(host.textContent).not.toContain('Order #');
     await click('Sweet');
-    expect(host.textContent).toContain('Root Card MC-SWEET');
+    expect(host.textContent).toContain('Root Card 1');
     expect(Array.from(host.querySelectorAll('option'), option => option.value)).toEqual(['','Sugar']);
     await click('Custom Items');
     expect(host.querySelector('input[type=search]')).toBeNull();

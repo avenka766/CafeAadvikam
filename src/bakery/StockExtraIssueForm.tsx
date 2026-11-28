@@ -19,23 +19,13 @@ export default function StockExtraIssueForm({ materials, cards, busy, tab, chang
   const [selected, select] = useState<string>();
   const [reason, setReason] = useState('');
   const [lines, setLines] = useState(() => [newIssueLine()]);
-  const groups = new Map<string, { order: string; index: number; name: string; unit: string; quantity: number; card: string; recipeMaterials: Set<string> }>();
-  for (const order of cards) for (const item of order.items) {
-    const current = groups.get(item.combined_card);
-    if (current) {
-      current.quantity += item.quantity;
-      for (const name of item.recipe_materials ?? []) current.recipeMaterials.add(name);
-    } else groups.set(item.combined_card, {
-      order: order.id, index: item.index, name: item.name, unit: item.unit, quantity: item.quantity, card: item.combined_card,
-      recipeMaterials: new Set(item.recipe_materials ?? []),
-    });
-  }
-  const item = selected ? groups.get(selected) : undefined;
+  const item = cards.find(card => card.id === selected);
   const search = query.trim().toLowerCase();
-  const matches = !item && search ? [...groups.values()]
-    .filter(group => group.name.toLowerCase().includes(search) || group.card.toLowerCase().includes(search)).slice(0, 12) : [];
+  const matches = !item && search ? cards
+    .filter(card => card.name.toLowerCase().includes(search) || card.card.toLowerCase().includes(search)).slice(0, 12) : [];
   const label = (quantity: number) => Number(quantity.toFixed(6));
-  const available = recipeOnly ? materials.filter(material => item?.recipeMaterials.has(material.name.trim().toLowerCase())) : materials;
+  const recipeMaterials = new Set(item?.recipe_materials ?? []);
+  const available = recipeOnly ? materials.filter(material => recipeMaterials.has(material.name.trim().toLowerCase())) : materials;
   const rows = issueRows(lines, available);
   const valid = !!((!recipeOnly || item) && reason.trim() && rows.length && rows.length === lines.length);
 
@@ -44,7 +34,7 @@ export default function StockExtraIssueForm({ materials, cards, busy, tab, chang
     if (!valid) return;
     const payload = { reason: reason.trim(), rows };
     const saved = recipeOnly
-      ? item && await submitRecipe({ ...payload, order: item.order, index: item.index, combined_card: item.card, material_mode: 'recipe' })
+      ? item && await submitRecipe({ ...payload, run: item.id })
       : await submitCustom(payload);
     if (saved) {
       setLines([newIssueLine()]);
@@ -62,17 +52,17 @@ export default function StockExtraIssueForm({ materials, cards, busy, tab, chang
         setLines([newIssueLine()]);
       }}/>
       {recipeOnly && <>
-        {!cards.length && <p className="text-sm text-muted-foreground">No Stock orders with root cards were placed today (IST).</p>}
-        <Field label="Find today's combined item"><Input type="search" autoComplete="off" placeholder="Search by item name or Root Card"
+        {!cards.length && <p className="text-sm text-muted-foreground">No items with recipes were sent to production today (IST).</p>}
+        <Field label="Find an item sent to production today"><Input type="search" autoComplete="off" placeholder="Search by item name or Root Card"
           value={query} onChange={event => { setQuery(event.target.value); select(undefined); setLines([newIssueLine()]); }}/></Field>
         {!!matches.length && <ul aria-label="Order item suggestions" className="divide-y rounded-md border">
           {matches.map(group => <li key={group.card}><button type="button"
             className="flex w-full flex-wrap justify-between gap-2 p-2 text-left hover:bg-muted"
-            onClick={() => { select(group.card); setQuery(group.name); }}>
+            onClick={() => { select(group.id); setQuery(group.name); }}>
             {group.name} · {label(group.quantity)} {group.unit}<span>Root Card {group.card}</span>
           </button></li>)}
         </ul>}
-        {search && !item && !matches.length && <p role="status">No matching order item placed today.</p>}
+        {search && !item && !matches.length && <p role="status">No matching item was sent to production today.</p>}
         {item && <>
           <p className="font-medium">{item.name} · {label(item.quantity)} {item.unit} · Root Card {item.card}</p>
           {recipeOnly && !available.length

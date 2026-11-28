@@ -20,11 +20,12 @@ export function stockSheets(data: StockData, date: string): MaterialSheet[] {
       rows: data.opening.map((item, i) => [i + 1, item.name, item.quantity, item.unit, stockStatus(item), item.minimum ?? 0, item.maximum ?? '', displayDate(date), displayCapturedAt(item.captured_at)]) },
     { name: 'Outward',
       headings: ['Sl. No.', 'Section Name', 'Production Item Name', 'RM Item Name', 'Qty', 'UOM', 'Issue Date', 'Reason',
-        'Issued By', 'Root Card', 'Issue Time (IST)', 'Stock Before', 'Stock After', 'Issue Reference'],
+        'Issued By', 'Root Card', 'Issue Time (IST)', 'Stock Before', 'Stock After', 'Issue Reference', 'Production Batches', 'Production Output Qty', 'Production Output UOM'],
       rows: data.outward.flatMap(batch => batch.lines.map(line => [
         batch.section, batch.recipe, line.name, line.quantity, line.unit, displayDate(batch.created_at), batch.reason,
-        batch.created_by, line.combined_card ?? line.item_card ?? line.order_card ?? '', displayCapturedAt(batch.created_at),
-        line.before ?? '', line.after ?? '', batch.id,
+        batch.created_by, line.production_card ?? line.combined_card ?? line.item_card ?? line.order_card ?? '', displayCapturedAt(batch.created_at),
+        line.before ?? '', line.after ?? '', batch.id, line.production_batches ?? '',
+        line.production_output_qty ?? '', line.production_output_unit ?? '',
       ])).map((row, i) => [i + 1, ...row]) },
     { name: 'Current Stock', headings: ['Sl. No.', 'RM Item Name', 'Available Qty', 'UOM', 'Minimum', 'Maximum', 'Stock Status'],
       rows: data.materials.map((item, i) => [

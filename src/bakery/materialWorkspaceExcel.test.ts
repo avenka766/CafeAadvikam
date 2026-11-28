@@ -59,8 +59,8 @@ describe('Stock and GRN Excel workbooks', () => {
         lines: [{ name: 'Sugar', unit: 'kg', quantity: 1, before: 1, after: 0 }] },
     ] };
     const [,outward,current] = stockSheets(stock,'2026-11-14');
-    expect(outward.rows[0].slice(9)).toEqual(['MC-PUFF','11:30 IST',3,1,'from-cards']);
-    expect(outward.rows[1].slice(9)).toEqual(['','11:31 IST',1,0,'from-stock']);
+    expect(outward.rows[0].slice(9,14)).toEqual(['MC-PUFF','11:30 IST',3,1,'from-cards']);
+    expect(outward.rows[1].slice(9,14)).toEqual(['','11:31 IST',1,0,'from-stock']);
     expect(current.rows).toEqual([[1,'Sugar',0,'kg',4,20,'Below minimum']]);
 
     const { utils, write } = await import('xlsx');
